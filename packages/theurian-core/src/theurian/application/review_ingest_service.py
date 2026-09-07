@@ -13,24 +13,38 @@ failure at one pull request is one known-bad member of a set that is still
 trustworthy.
 
 * **Repository scope halts.** Everything :meth:`ReviewProvider.list_pull_requests`
-  raises -- the allowlist, a repository that resolves private, a rename
+  *raises* -- the allowlist, a repository that resolves private, a rename
   redirect, a transport override, a ``gh`` that is missing, too old or
-  unauthenticated, and the pull-request listing's own page cap -- propagates as
-  the graded envelope it was raised as. Nothing is fetched afterwards and
-  nothing is written, because the set of pull requests this run would iterate is
-  the thing that could not be established.
-* **Record scope skips.** A refusal raised by :meth:`ReviewProvider.get_threads`
-  or :meth:`ReviewProvider.get_reviews` for **one** pull request is caught at
-  that call site. That pull request's records -- the event, its reviews and its
-  threads -- are withheld **whole**, the refusal is reported by identity with
-  its grade and summary, and the run continues to the next pull request.
+  unauthenticated, an answer whose envelope cannot be read, and the pull-request
+  listing's own page cap -- propagates as the graded envelope it was raised as.
+  Nothing is fetched afterwards and nothing is written, because the set of pull
+  requests this run would iterate is the thing that could not be established.
+* **Record scope skips, at both seams.** Two things reach this run about one
+  pull request rather than about the repository, and they are folded into one
+  report channel:
 
-**The discrimination is by call site and never by grade.** Both scopes can raise
-``LIMIT_EXCEEDED``: the pull-request cap is a repository-scope stop and a
-thread's comment cap is a record-scope one, and they carry the same grade
-because an operator does the same thing about either. A run that told them apart
-by reading ``exc.grade`` would halt on an over-long thread and skip a repository
-it may not contact.
+  1. a :class:`~theurian.domain.ports.review_provider.SkippedPullRequest` in the
+     listing the provider *returned* -- one pull request whose own data the
+     provider could not build a record from;
+  2. a refusal *raised* by :meth:`ReviewProvider.get_threads` or
+     :meth:`ReviewProvider.get_reviews` for **one** pull request, caught at that
+     call site.
+
+  Either way that pull request's records -- the event, its reviews and its
+  threads -- are withheld **whole**, the refusal is reported by identity with
+  its grade and summary in :attr:`ReviewIngestReport.skipped`, and the run
+  continues to the next pull request.
+
+**The discrimination is by where the fault was, never by grade.** Both scopes
+carry ``LIMIT_EXCEEDED``: the pull-request listing's page cap is a
+repository-scope stop while one pull request's label cap and a thread's comment
+cap are record-scope ones, and all three share a grade because an operator does
+the same thing about any of them. A run that told them apart by reading
+``exc.grade`` would halt on an over-long thread and skip a repository it may not
+contact. The key is
+``test_one_grade_halts_at_the_listing_and_skips_at_both_seams`` in
+``tests/unit/test_review_ingest_service.py``: it drives that one grade through
+all three and asserts three different outcomes.
 
 One consequence is worth naming rather than discovering. ``get_threads`` and
 ``get_reviews`` re-check the allowlist and the transport override themselves, so
@@ -44,8 +58,9 @@ its own envelope and the run does not read as clean.
 "last ingested" file, no watermark, nothing that records a pull request as seen.
 The window is the caller's: an explicit ``since_number``, and otherwise the
 newest ``limit`` pull requests. A skipped record is therefore retried by the
-next run whose window covers its number, with no state to reconcile -- which is
-the property :meth:`run` exists to keep. A marker invented now would have to
+next run whose window covers its number -- from either seam above, with no state
+to reconcile -- which is the property :meth:`run` exists to keep. A marker
+invented now would have to
 decide whether a *skipped* record counts as seen, and a marker that answered yes
 would step over the record permanently: the skip would become a silent data
 loss, which is the one failure this arm cannot have. When slice 3 builds the
@@ -80,7 +95,11 @@ from theurian.domain.identifiers import ProjectId
 from theurian.domain.knowledge import SourceAnchor
 from theurian.domain.ports.review_provider import ReviewProvider
 from theurian.domain.review import ReviewEvent, ReviewSubmission, ReviewThread
-from theurian.domain.review_ingest import RefusalGrade, ReviewIngestRefusedError
+from theurian.domain.review_ingest import (
+    RefusalEnvelope,
+    RefusalGrade,
+    ReviewIngestRefusedError,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,12 +168,27 @@ class FetchRefusal:
     Carries the envelope's own three fields rather than the exception: a report is
     a published document, and the summary is already bounded by
     :class:`~theurian.domain.review_ingest.RefusalEnvelope`'s construction.
+
+    **One shape for both record-scope seams**, the listing's returned skip and a
+    per-pull-request fetch's raised refusal. Two shapes would be two vocabularies
+    for one fact -- *this pull request's records are not here, and here is why* --
+    and a composition root would have to publish both.
     """
 
     identity: ReviewRecordIdentity
     grade: RefusalGrade
     summary: str
     remedy: str
+
+    @classmethod
+    def of(cls, repository: str, number: int, envelope: RefusalEnvelope) -> FetchRefusal:
+        """The report's shape for one refused pull request, from its envelope."""
+        return cls(
+            identity=ReviewRecordIdentity(repository, number),
+            grade=envelope.grade,
+            summary=envelope.summary,
+            remedy=envelope.remedy,
+        )
 
     def describe(self) -> str:
         """One line naming the pull request, the grade and what was refused."""
@@ -211,7 +245,11 @@ class ReviewIngestReport:
     refused: tuple[ReviewRecordIdentity, ...]
     #: Every finding, under either policy, described without the matched bytes.
     findings: tuple[ReviewSecretFinding, ...]
-    #: Every pull request whose fetch refused, by identity and envelope.
+    #: Every pull request this run withheld whole, by identity and envelope --
+    #: the ones the listing could not build and the ones whose fetch refused, in
+    #: that order. One channel for both, because an operator reads it to answer
+    #: "which pull requests am I missing", and which seam lost a record is a
+    #: property of the refusal rather than a second question.
     skipped: tuple[FetchRefusal, ...]
 
     @property
@@ -284,7 +322,7 @@ class ReviewIngestService:
                 name.
         """
         already = self._read_landed()
-        events = await self._provider.list_pull_requests(
+        listing = await self._provider.list_pull_requests(
             request.project_id,
             request.repository,
             since_number=request.since_number,
@@ -292,8 +330,13 @@ class ReviewIngestService:
         )
 
         fetched: list[_Fetched] = []
-        skipped: list[FetchRefusal] = []
-        for event in events:
+        # Listing skips first, and the order is the run's own: the provider
+        # answered them before a single fetch happened, so a report that
+        # interleaved them would order two seams by nothing.
+        skipped: list[FetchRefusal] = [
+            FetchRefusal.of(item.repository, item.number, item.envelope) for item in listing.skipped
+        ]
+        for event in listing.events:
             outcome = await self._fetch(request.project_id, event)
             if isinstance(outcome, FetchRefusal):
                 skipped.append(outcome)
@@ -320,23 +363,23 @@ class ReviewIngestService:
     async def _fetch(self, project_id: ProjectId, event: ReviewEvent) -> _Fetched | FetchRefusal:
         """One pull request's two per-record reads, or the refusal that stopped them.
 
-        **The catch is here and nowhere wider**, which is what makes the scope
-        discrimination a property of the call site rather than of the grade. Both
-        reads sit inside one ``try`` on purpose: a pull request whose threads
-        arrived and whose reviews refused is a pull request this run cannot
-        record honestly, so it is withheld whole rather than landed missing its
-        verdicts.
+        **This ``try`` wraps one pull request's reads and nothing wider**, which
+        is what makes the scope discrimination a property of where the fault was
+        rather than of the grade: a refusal from anywhere else in :meth:`run`
+        propagates. Both reads sit inside the one ``try`` on purpose -- a pull
+        request whose threads arrived and whose reviews refused is a pull request
+        this run cannot record honestly, so it is withheld whole rather than
+        landed missing its verdicts.
+
+        The listing's own record-scope faults never reach here: the provider
+        already answered them as values, and :meth:`run` folds them into the same
+        report channel this returns into.
         """
         try:
             threads = await self._provider.get_threads(project_id, event)
             submissions = await self._provider.get_reviews(project_id, event)
         except ReviewIngestRefusedError as exc:
-            return FetchRefusal(
-                identity=ReviewRecordIdentity(event.repository, event.number),
-                grade=exc.grade,
-                summary=exc.envelope.summary,
-                remedy=exc.remedy,
-            )
+            return FetchRefusal.of(event.repository, event.number, exc.envelope)
         return _Fetched(event=event, submissions=submissions, threads=threads)
 
     def _screen(

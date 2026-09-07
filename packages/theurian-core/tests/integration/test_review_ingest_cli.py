@@ -135,6 +135,7 @@ def _canned(
     *,
     threads: dict[int, tuple[ReviewThread, ...]] | None = None,
     refusals: dict[ReadKey, ReviewIngestRefusedError] | None = None,
+    listing_faults: dict[int, ReviewIngestRefusedError] | None = None,
 ) -> CannedReviewProvider:
     given = threads or {}
     return CannedReviewProvider(
@@ -142,6 +143,7 @@ def _canned(
         threads={event.number: given.get(event.number, (_thread(event),)) for event in events},
         submissions={event.number: (_submission(event),) for event in events},
         refusals=refusals,
+        listing_faults=listing_faults,
     )
 
 
@@ -149,6 +151,19 @@ def _over_cap(number: int) -> ReviewIngestRefusedError:
     return ReviewIngestRefusedError(
         RefusalGrade.LIMIT_EXCEEDED,
         f"Review thread on {REPOSITORY}#{number} carries more than the recorded cap.",
+    )
+
+
+def _over_the_label_cap(number: int) -> ReviewIngestRefusedError:
+    """The refusal the adapter meets while **building** one pull request's record.
+
+    Same grade as :func:`_over_cap` and as the listing's own page cap, which is
+    the point: what the command must publish differently is the *scope*, and no
+    reader of the grade can tell these apart.
+    """
+    return ReviewIngestRefusedError(
+        RefusalGrade.LIMIT_EXCEEDED,
+        f"Pull request {REPOSITORY}#{number} carries more than the recorded label cap.",
     )
 
 
@@ -322,6 +337,43 @@ def test_a_skipped_pull_request_exits_one_and_is_named_by_identity(
     assert "#42" in payload["skipped"][0]
     assert "limit-exceeded" in payload["skipped"][0]
     assert not any("42" in name for name in _landed(project))
+
+
+def test_a_newest_pull_request_the_listing_could_not_build_does_not_deny_the_rest(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The finding's own shape, through the shipped command.
+
+    A record-scope fault met **inside** the pull-request listing used to leave
+    the adapter as a raised refusal, and from the newest pull request that is an
+    exit-1 refusal for the whole repository with nothing landed and no window an
+    operator can move: ``--since`` steps backward, never forward. What ships now
+    is one named skip and everything else on disk.
+
+    The neighbour's records are asserted on disk rather than only counted,
+    because "the rest landed" is the claim and a report can say three without
+    three files existing.
+    """
+    _settings(project)
+    _install(
+        monkeypatch,
+        _canned((_event(42), _event(41)), listing_faults={42: _over_the_label_cap(42)}),
+    )
+
+    code, payload = _invoke("review", "ingest", REPOSITORY)
+
+    assert code == 1
+    assert payload["clean"] is False
+    assert payload["landed"]["total"] == 3
+    (skipped,) = payload["skipped"]
+    assert "#42" in skipped
+    assert "limit-exceeded" in skipped
+    assert "label cap" in skipped
+    landed = _landed(project)
+    assert len(landed) == 3
+    assert not any("42" in name for name in landed), (
+        f"the skipped pull request left a file behind: {sorted(landed)}"
+    )
 
 
 def test_a_repository_the_allowlist_does_not_name_is_refused_before_any_process(

@@ -31,6 +31,16 @@ happen before a single record is built:
   deliberately not checked here: on a first ingest there is nothing to compare it
   to, and an id read out of the same response it would validate proves nothing.
 
+**Not every refusal about an answer stops the read, and what decides is whose
+data was faulty rather than how bad it is.** A fault in one pull request's node
+-- an unreadable field of that pull request, one of its own single-page
+connections past a cap -- is *that pull request's*, and ``list_pull_requests``
+answers it in the listing's ``skipped`` channel instead of raising: one
+pathological pull request may not deny a caller the rest of a repository. A
+fault in the listing's own machinery is the *repository's* and is raised.
+``GitHubReviewProvider._listed`` names both populations, and the same grade
+appears in both.
+
 **Bodies are carried, never interpreted.** Every author-controlled string -- a
 comment body, a pull request title and description, a label, a head branch name,
 a milestone name, a display name, a file path as received -- is copied into the
@@ -58,6 +68,7 @@ from typing import Any, Final, NamedTuple, final
 
 from theurian.domain.enums import ReviewThreadState
 from theurian.domain.identifiers import ProjectId
+from theurian.domain.ports.review_provider import PullRequestListing, SkippedPullRequest
 from theurian.domain.review import (
     ReviewComment,
     ReviewEvent,
@@ -154,7 +165,7 @@ class GitHubReviewProvider:
         *,
         since_number: int | None = None,
         limit: int = 100,
-    ) -> tuple[ReviewEvent, ...]:
+    ) -> PullRequestListing:
         """Pull requests, newest first, for one allowlisted public repository.
 
         ``since_number`` is the incremental handle: the read stops at the first
@@ -172,10 +183,20 @@ class GitHubReviewProvider:
         record with no number is one no boundary can place.
 
         Raises:
-            ReviewIngestRefusedError: For every refusal this adapter has, each
-                carrying its own grade and the recorded remedy for it.
+            ReviewIngestRefusedError: For every **repository-scope** refusal this
+                adapter has -- see :meth:`_listed` for which those are -- each
+                carrying its own grade and the recorded remedy for it. A fault in
+                one pull request's own data is answered in
+                :attr:`~theurian.domain.ports.review_provider.PullRequestListing.skipped`
+                instead.
         """
         entry = self._allowlisted(repository)
+        self._refuse_an_unusable_limit(limit)
+        cli = await self._ready()
+        return await self._listed(cli, project_id, entry, since_number=since_number, limit=limit)
+
+    def _refuse_an_unusable_limit(self, limit: int) -> None:
+        """The caller's own bound on how many pull requests one window may hold."""
         # `limit` is the caller's own integer and it is echoed through
         # `bounded_echo` for both reasons that helper exists: `str()` of an
         # integer is not total past the interpreter's digit limit -- a raw
@@ -202,10 +223,52 @@ class GitHubReviewProvider:
                 f"and the recorded cap is {MAX_PULL_REQUESTS}. The run stopped rather "
                 f"than quietly returning fewer than were asked for.",
             )
-        cli = await self._ready()
-        owner, name = entry.split("/", 1)
 
+    async def _listed(
+        self,
+        cli: GhCli,
+        project_id: ProjectId,
+        entry: str,
+        *,
+        since_number: int | None,
+        limit: int,
+    ) -> PullRequestListing:
+        """One window of a repository's pull requests, page by page and bounded.
+
+        **Whose data was faulty decides whether this raises or skips, and the
+        grade decides nothing.** The two populations, each named by where its
+        refusal is raised:
+
+        * **One node's own data** -- everything :meth:`_event` raises, which is
+          every field read of that pull request, the merged-guard, and the two
+          single-page connections :meth:`_refuse_a_capped_overflow` caps. Caught
+          per node and answered as a
+          :class:`~theurian.domain.ports.review_provider.SkippedPullRequest`, so
+          the rest of the window still arrives.
+        * **This listing's own machinery** -- the allowlist and the transport
+          check (already passed by the time this is reached), the response
+          envelope :meth:`_request` reads, the resolved name and visibility
+          :meth:`_repository_of` checks, the cursor
+          :func:`response.next_cursor` validates, this loop's own page cap, and
+          the pull-request number itself. Raised, because the set of pull
+          requests being iterated is what could not be established.
+
+        Both can carry ``LIMIT_EXCEEDED``: the page cap below and a node's label
+        cap do, and a reader of ``exc.grade`` would confuse them.
+
+        **A skipped pull request spends its slot in the window.** The window is
+        the newest ``limit`` pull requests, and a member of it that could not be
+        built is still a member -- counting only the built ones would quietly
+        reach further back into history than the caller asked for, and would
+        spend more requests doing it.
+        """
+        owner, name = entry.split("/", 1)
         events: list[ReviewEvent] = []
+        skipped: list[SkippedPullRequest] = []
+
+        def listed() -> PullRequestListing:
+            return PullRequestListing(tuple(events), tuple(skipped))
+
         cursor: str | None = None
         for _page in range(MAX_PAGES):
             variables: dict[str, str | int] = {
@@ -222,13 +285,16 @@ class GitHubReviewProvider:
             for node in response.nodes(connection):
                 number = response.positive_integer(node.get("number"), "pull request number")
                 if since_number is not None and number <= since_number:
-                    return tuple(events)
-                events.append(self._event(project_id, entry, node, number))
-                if len(events) >= limit:
-                    return tuple(events)
+                    return listed()
+                try:
+                    events.append(self._event(project_id, entry, node, number))
+                except ReviewIngestRefusedError as exc:
+                    skipped.append(SkippedPullRequest(entry, number, exc.envelope))
+                if len(events) + len(skipped) >= limit:
+                    return listed()
             cursor = response.next_cursor(connection, "pull requests")
             if cursor is None:
-                return tuple(events)
+                return listed()
         raise self._page_cap("pull requests", entry)
 
     async def get_threads(

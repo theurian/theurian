@@ -44,6 +44,8 @@ import pytest
 
 from theurian.domain.enums import ReviewThreadState
 from theurian.domain.identifiers import ProjectId
+from theurian.domain.ports.review_provider import SkippedPullRequest
+from theurian.domain.review import ReviewEvent
 from theurian.domain.review_ingest import (
     MAX_REFUSAL_SUMMARY_CHARS,
     RefusalGrade,
@@ -267,6 +269,52 @@ def _provider(
     )
 
 
+async def _listed(
+    provider: GitHubReviewProvider,
+    *,
+    since_number: int | None = None,
+    limit: int = 100,
+) -> tuple[ReviewEvent, ...]:
+    """One window's events, asserting the listing skipped no pull request.
+
+    Every driver that unwraps through here plants a well-formed pull request, so
+    a skip would mean the adapter folded a fault the test never planted -- the
+    failure a per-node ``try`` newly makes possible, and the one a bare
+    ``.events`` would hide. Asserting it at the unwrap buys that control at every
+    call site rather than at the one that thought of it.
+    """
+    listing = await provider.list_pull_requests(
+        PROJECT, REPOSITORY, since_number=since_number, limit=limit
+    )
+
+    assert listing.skipped == (), (
+        f"the listing skipped pull requests {[skip.number for skip in listing.skipped]} "
+        f"and this driver planted no per-pull-request fault"
+    )
+
+    return listing.events
+
+
+async def _one_skip(provider: GitHubReviewProvider) -> SkippedPullRequest:
+    """The listing's single skipped pull request, from a fixture carrying one node.
+
+    Two claims, both of which a bare ``listing.skipped[0]`` would leave unmade.
+    *Returning at all* is what says the fault was answered rather than raised --
+    the whole of what separates a record-scope fault from a repository-scope one
+    at this seam -- and the empty ``events`` says the faulty pull request was not
+    also recorded.
+    """
+    listing = await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert listing.events == (), (
+        f"the faulty pull request was recorded as well as skipped: "
+        f"{[event.number for event in listing.events]}"
+    )
+
+    (skip,) = listing.skipped
+    return skip
+
+
 #: "the response does not carry this field at all", as distinct from carrying it
 #: set to ``null``. Both are answers GitHub can give and they are different
 #: documents, so the fixture has to be able to build each.
@@ -311,6 +359,28 @@ def _pull_requests(
     if private is not _ABSENT:
         repository["isPrivate"] = private
     return {"data": {"repository": repository}}
+
+
+def _over_the_label_cap(template: dict[str, Any], number: int) -> dict[str, Any]:
+    """One pull-request node whose labels overflow the single page they are asked for.
+
+    A **record-scope** fault: the overflow is a fact about this pull request's
+    own data. It carries ``LIMIT_EXCEEDED``, which is also what the listing's own
+    page cap carries -- so an implementation that discriminated on the grade
+    could not be told apart from one that discriminates on scope, except by
+    driving both. That pair is
+    ``test_one_grade_stops_the_listing_and_skips_one_of_its_nodes``.
+    """
+    return {
+        **template,
+        "number": number,
+        "labels": {
+            "pageInfo": {"hasNextPage": True},
+            "nodes": [
+                {"name": f"area/{index}"} for index in range(limits.MAX_LABELS_PER_PULL_REQUEST)
+            ],
+        },
+    }
 
 
 def _threads(*, has_more_comments: bool = False, resolved: bool = True) -> dict[str, Any]:
@@ -481,7 +551,7 @@ async def test_the_child_receives_the_constructed_environment_and_nothing_else(
     }
     provider = _provider(tmp_path, fake_gh, parent=parent)
 
-    await provider.list_pull_requests(PROJECT, REPOSITORY)
+    await _listed(provider)
     seen = fake_gh.child_environment(1)
     passed = {name: value for name, value in seen.items() if name not in _SHELL_ADDED}
 
@@ -523,7 +593,7 @@ async def test_the_child_cannot_read_the_parents_stdin(
     try:
         os.dup2(read_end, 0)
         os.close(read_end)
-        await provider.list_pull_requests(PROJECT, REPOSITORY)
+        await _listed(provider)
     finally:
         os.dup2(saved, 0)
         os.close(saved)
@@ -543,7 +613,7 @@ async def test_the_recorded_argv_is_the_vector_the_clauses_describe(
     fake_gh.answer("prs", 1, _pull_requests())
     provider = _provider(tmp_path, fake_gh)
 
-    await provider.list_pull_requests(PROJECT, REPOSITORY)
+    await _listed(provider)
     argv = fake_gh.argv(3)
 
     assert argv[0] == "api"
@@ -581,7 +651,7 @@ async def test_the_binary_the_child_is_spawned_as_is_the_resolved_absolute_path(
     fake_gh.answer("prs", 1, _pull_requests())
     provider = _provider(tmp_path, None, parent={"PATH": str(on_the_path)})
 
-    await provider.list_pull_requests(PROJECT, REPOSITORY)
+    await _listed(provider)
 
     assert fake_gh.spawned_as(1) == str(fake_gh.binary.resolve())
     assert fake_gh.spawned_as(1) != str(on_the_path / "gh"), (
@@ -601,7 +671,7 @@ async def test_the_probes_run_once_per_adapter_rather_than_once_per_call(
     fake_gh.answer("threads", 1, _threads())
     provider = _provider(tmp_path, fake_gh)
 
-    events = await provider.list_pull_requests(PROJECT, REPOSITORY)
+    events = await _listed(provider)
     await provider.get_threads(PROJECT, events[0])
 
     assert fake_gh.argv(1) == ["--version"]
@@ -716,7 +786,7 @@ async def test_a_case_difference_is_not_a_rename(tmp_path: pathlib.Path, fake_gh
     fake_gh.answer("prs", 1, _pull_requests(resolved_name="Acme/Order-Service"))
     provider = _provider(tmp_path, fake_gh)
 
-    events = await provider.list_pull_requests(PROJECT, REPOSITORY)
+    events = await _listed(provider)
 
     assert events[0].repository == REPOSITORY
 
@@ -833,7 +903,7 @@ async def test_a_variable_too_large_to_render_refuses_instead_of_raising(
     """
     fake_gh.answer("prs", 1, _pull_requests())
     provider = _provider(tmp_path, fake_gh)
-    (event,) = await provider.list_pull_requests(PROJECT, REPOSITORY)
+    (event,) = await _listed(provider)
     unrenderable = dataclasses.replace(event, number=10**5000)
 
     with pytest.raises(ReviewIngestRefusedError) as raised:
@@ -869,7 +939,7 @@ async def test_a_limit_at_either_boundary_is_read_rather_than_refused(
     fake_gh.answer("prs", 1, _pull_requests())
     provider = _provider(tmp_path, fake_gh)
 
-    events = await provider.list_pull_requests(PROJECT, REPOSITORY, limit=limit)
+    events = await _listed(provider, limit=limit)
 
     assert [event.number for event in events] == [12]
 
@@ -893,7 +963,7 @@ async def test_a_read_stops_at_the_limit_rather_than_one_past_it(
     fake_gh.answer("prs", 1, page)
     provider = _provider(tmp_path, fake_gh)
 
-    events = await provider.list_pull_requests(PROJECT, REPOSITORY, limit=2)
+    events = await _listed(provider, limit=2)
 
     assert [event.number for event in events] == [14, 13], (
         f"the page carried three pull requests, the caller asked for two, and "
@@ -923,7 +993,7 @@ async def test_a_response_that_never_stops_paging_is_stopped_by_the_page_cap(
     fake_gh.answer("threads", 2, endless)
     fake_gh.answer("prs", 1, _pull_requests())
     provider = _provider(tmp_path, fake_gh)
-    events = await provider.list_pull_requests(PROJECT, REPOSITORY)
+    events = await _listed(provider)
     before = fake_gh.invocations
 
     with pytest.raises(ReviewIngestRefusedError) as raised:
@@ -946,7 +1016,7 @@ async def test_a_thread_past_the_comment_cap_is_reported_not_truncated(
     fake_gh.answer("prs", 1, _pull_requests())
     fake_gh.answer("threads", 1, _threads(has_more_comments=True))
     provider = _provider(tmp_path, fake_gh)
-    events = await provider.list_pull_requests(PROJECT, REPOSITORY)
+    events = await _listed(provider)
 
     with pytest.raises(ReviewIngestRefusedError) as raised:
         await provider.get_threads(PROJECT, events[0])
@@ -990,6 +1060,10 @@ async def test_a_linked_issue_number_below_one_is_a_graded_refusal(
     A linked issue number is recorded as a string, so a zero reaches
     ``linked_issue_ids`` as ``"0"`` and reads downstream as an issue. Nothing
     below this adapter would have refused it.
+
+    The refusal is the pull request's own, so it is answered as a skip: the
+    unreadable number is a fact about *this* pull request's data and says nothing
+    about the repository the rest of the window comes from.
     """
     fake_gh.answer(
         "prs",
@@ -1000,11 +1074,11 @@ async def test_a_linked_issue_number_below_one_is_a_graded_refusal(
     )
     provider = _provider(tmp_path, fake_gh)
 
-    with pytest.raises(ReviewIngestRefusedError) as raised:
-        await provider.list_pull_requests(PROJECT, REPOSITORY)
+    skip = await _one_skip(provider)
 
-    assert raised.value.grade is RefusalGrade.TOOL_FAILED
-    assert "linked issue number" in str(raised.value)
+    assert skip.number == 12
+    assert skip.envelope.grade is RefusalGrade.TOOL_FAILED
+    assert "linked issue number" in skip.envelope.summary
 
 
 @pytest.mark.asyncio
@@ -1154,11 +1228,11 @@ async def test_a_timestamp_with_no_offset_is_refused_rather_than_read_as_local_t
     fake_gh.answer("prs", 1, _pull_requests(createdAt="2026-09-01T10:00:00"))
     provider = _provider(tmp_path, fake_gh)
 
-    with pytest.raises(ReviewIngestRefusedError) as raised:
-        await provider.list_pull_requests(PROJECT, REPOSITORY)
+    skip = await _one_skip(provider)
 
-    assert raised.value.grade is RefusalGrade.TOOL_FAILED
-    assert "createdAt" in str(raised.value)
+    assert skip.number == 12
+    assert skip.envelope.grade is RefusalGrade.TOOL_FAILED
+    assert "createdAt" in skip.envelope.summary
 
 
 @pytest.mark.asyncio
@@ -1183,7 +1257,7 @@ async def test_a_deleted_author_is_recorded_under_githubs_own_name_for_one(
     fake_gh.answer("prs", 1, _pull_requests(author=None))
     provider = _provider(tmp_path, fake_gh)
 
-    (event,) = await provider.list_pull_requests(PROJECT, REPOSITORY)
+    (event,) = await _listed(provider)
 
     assert event.author.external_id == "ghost"
     assert event.author.display_name == "ghost"
@@ -1216,7 +1290,7 @@ async def test_an_author_the_response_gave_no_node_id_is_recorded_under_its_logi
     fake_gh.answer("prs", 1, _pull_requests(author=author))
     provider = _provider(tmp_path, fake_gh)
 
-    (event,) = await provider.list_pull_requests(PROJECT, REPOSITORY)
+    (event,) = await _listed(provider)
 
     assert event.author.external_id == "utchy"
     assert event.author.display_name == "utchy"
@@ -1230,16 +1304,19 @@ async def test_a_merged_pull_request_with_no_merge_commit_is_refused(
 
     Same argument as the number bound: the domain invariant is real, and reaching
     it from here would be a traceback rather than an envelope. The summary names
-    the pull request so a reader knows which answer was unreadable.
+    the pull request so a reader knows which answer was unreadable -- and the
+    skip names it a second way, by number, so a caller need not parse a sentence
+    to know which record is missing.
     """
     fake_gh.answer("prs", 1, _pull_requests(merged=True, mergeCommit=None))
     provider = _provider(tmp_path, fake_gh)
 
-    with pytest.raises(ReviewIngestRefusedError) as raised:
-        await provider.list_pull_requests(PROJECT, REPOSITORY)
+    skip = await _one_skip(provider)
 
-    assert raised.value.grade is RefusalGrade.TOOL_FAILED
-    assert f"{REPOSITORY}#12" in str(raised.value)
+    assert skip.number == 12
+    assert skip.repository == REPOSITORY
+    assert skip.envelope.grade is RefusalGrade.TOOL_FAILED
+    assert f"{REPOSITORY}#12" in skip.envelope.summary
 
 
 @pytest.mark.asyncio
@@ -1266,12 +1343,12 @@ async def test_a_pull_request_past_the_linked_issue_cap_is_reported_not_truncate
     fake_gh.answer("prs", 1, over)
     provider = _provider(tmp_path, fake_gh)
 
-    with pytest.raises(ReviewIngestRefusedError) as raised:
-        await provider.list_pull_requests(PROJECT, REPOSITORY)
+    skip = await _one_skip(provider)
 
-    assert raised.value.grade is RefusalGrade.LIMIT_EXCEEDED
-    assert f"{REPOSITORY}#12" in str(raised.value)
-    assert str(limits.MAX_LINKED_ISSUES) in str(raised.value)
+    assert skip.number == 12
+    assert skip.envelope.grade is RefusalGrade.LIMIT_EXCEEDED
+    assert f"{REPOSITORY}#12" in skip.envelope.summary
+    assert str(limits.MAX_LINKED_ISSUES) in skip.envelope.summary
 
 
 @pytest.mark.asyncio
@@ -1296,11 +1373,10 @@ async def test_more_linked_issues_than_the_cap_is_refused_without_the_flag_sayin
     fake_gh.answer("prs", 1, over)
     provider = _provider(tmp_path, fake_gh)
 
-    with pytest.raises(ReviewIngestRefusedError) as raised:
-        await provider.list_pull_requests(PROJECT, REPOSITORY)
+    skip = await _one_skip(provider)
 
-    assert raised.value.grade is RefusalGrade.LIMIT_EXCEEDED
-    assert str(limits.MAX_LINKED_ISSUES) in str(raised.value)
+    assert skip.envelope.grade is RefusalGrade.LIMIT_EXCEEDED
+    assert str(limits.MAX_LINKED_ISSUES) in skip.envelope.summary
 
 
 @pytest.mark.asyncio
@@ -1329,12 +1405,12 @@ async def test_a_pull_request_past_the_label_cap_is_reported_not_truncated(
     fake_gh.answer("prs", 1, over)
     provider = _provider(tmp_path, fake_gh)
 
-    with pytest.raises(ReviewIngestRefusedError) as raised:
-        await provider.list_pull_requests(PROJECT, REPOSITORY)
+    skip = await _one_skip(provider)
 
-    assert raised.value.grade is RefusalGrade.LIMIT_EXCEEDED
-    assert f"{REPOSITORY}#12" in str(raised.value)
-    assert str(limits.MAX_LABELS_PER_PULL_REQUEST) in str(raised.value)
+    assert skip.number == 12
+    assert skip.envelope.grade is RefusalGrade.LIMIT_EXCEEDED
+    assert f"{REPOSITORY}#12" in skip.envelope.summary
+    assert str(limits.MAX_LABELS_PER_PULL_REQUEST) in skip.envelope.summary
 
 
 @pytest.mark.asyncio
@@ -1359,11 +1435,10 @@ async def test_more_labels_than_the_cap_is_refused_without_the_flag_saying_so(
     fake_gh.answer("prs", 1, over)
     provider = _provider(tmp_path, fake_gh)
 
-    with pytest.raises(ReviewIngestRefusedError) as raised:
-        await provider.list_pull_requests(PROJECT, REPOSITORY)
+    skip = await _one_skip(provider)
 
-    assert raised.value.grade is RefusalGrade.LIMIT_EXCEEDED
-    assert str(limits.MAX_LABELS_PER_PULL_REQUEST) in str(raised.value)
+    assert skip.envelope.grade is RefusalGrade.LIMIT_EXCEEDED
+    assert str(limits.MAX_LABELS_PER_PULL_REQUEST) in skip.envelope.summary
 
 
 @pytest.mark.asyncio
@@ -1389,11 +1464,10 @@ async def test_a_label_whose_name_is_not_text_is_refused_rather_than_recorded(
     )
     provider = _provider(tmp_path, fake_gh)
 
-    with pytest.raises(ReviewIngestRefusedError) as raised:
-        await provider.list_pull_requests(PROJECT, REPOSITORY)
+    skip = await _one_skip(provider)
 
-    assert raised.value.grade is RefusalGrade.TOOL_FAILED
-    assert "label name" in str(raised.value)
+    assert skip.envelope.grade is RefusalGrade.TOOL_FAILED
+    assert "label name" in skip.envelope.summary
 
 
 @pytest.mark.asyncio
@@ -1423,11 +1497,10 @@ async def test_a_label_paging_flag_that_is_not_a_boolean_is_refused_not_read_as_
     fake_gh.answer("prs", 1, _pull_requests(labels=labels))
     provider = _provider(tmp_path, fake_gh)
 
-    with pytest.raises(ReviewIngestRefusedError) as raised:
-        await provider.list_pull_requests(PROJECT, REPOSITORY)
+    skip = await _one_skip(provider)
 
-    assert raised.value.grade is RefusalGrade.TOOL_FAILED
-    assert "labels" in str(raised.value)
+    assert skip.envelope.grade is RefusalGrade.TOOL_FAILED
+    assert "labels" in skip.envelope.summary
 
 
 @pytest.mark.asyncio
@@ -1489,11 +1562,10 @@ async def test_a_merged_flag_that_is_not_a_boolean_is_refused_not_read_as_unmerg
     fake_gh.answer("prs", 1, _pull_requests(merged="true", mergeCommit=None))
     provider = _provider(tmp_path, fake_gh)
 
-    with pytest.raises(ReviewIngestRefusedError) as raised:
-        await provider.list_pull_requests(PROJECT, REPOSITORY)
+    skip = await _one_skip(provider)
 
-    assert raised.value.grade is RefusalGrade.TOOL_FAILED
-    assert "merged" in str(raised.value)
+    assert skip.envelope.grade is RefusalGrade.TOOL_FAILED
+    assert "merged" in skip.envelope.summary
 
 
 @pytest.mark.asyncio
@@ -1519,7 +1591,7 @@ async def test_a_thread_flag_that_is_not_a_boolean_is_refused_not_folded_into_op
     fake_gh.answer("prs", 1, _pull_requests())
     fake_gh.answer("threads", 1, threads)
     provider = _provider(tmp_path, fake_gh)
-    (event,) = await provider.list_pull_requests(PROJECT, REPOSITORY)
+    (event,) = await _listed(provider)
 
     with pytest.raises(ReviewIngestRefusedError) as raised:
         await provider.get_threads(PROJECT, event)
@@ -1528,66 +1600,21 @@ async def test_a_thread_flag_that_is_not_a_boolean_is_refused_not_folded_into_op
     assert next(iter(flags)) in str(raised.value)
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "shape",
-    ("a merged pull request's number", "a capped pull request's number", "a resolved name"),
-)
-async def test_a_megabyte_of_answer_does_not_become_a_megabyte_of_summary(
-    tmp_path: pathlib.Path, fake_gh: FakeGh, shape: str
-) -> None:
-    """A refusal names what it refused, and what it refused came from the answer.
+def _assert_the_summary_is_bounded(summary: str, planted: int) -> None:
+    """The two halves of the bound, wherever a summary names a value from an answer.
 
-    Every summary below interpolates a value this adapter read out of a GraphQL
-    response, and a response is a document from somewhere else: a one-megabyte
-    ``number`` produced a one-megabyte summary, published in whatever a caller
-    prints it into. The envelope's ``detail`` was contained and its ``summary``
-    was not.
-
-    Both halves are asserted because they close different failures. The **cut**
-    is what bounds the channel; the **cap the sentence was reporting** surviving
-    the cut is what says the bound was applied to the value rather than to the
-    end of the sentence -- a summary cut at its tail keeps the megabyte and loses
-    the number an operator acts on.
-
-    **The two number shapes plant a very wide integer rather than a megabyte
-    string, and what changed is the read order rather than the bound.** The
-    number goes through ``positive_integer`` and the window is applied to it
-    *before* the record is built, so a ``number`` that is not an integer never
-    reaches either sentence below. What still reaches them is a wide integer, and
-    :data:`_WIDEST_NUMBER` is the widest one that can: a longer literal is
-    refused by ``json.loads`` before this adapter sees a document at all. So the
-    plant is the largest value these summaries can be asked to name.
+    Both are asserted because they close different failures. The **cut** is what
+    bounds the channel; the **cap the sentence was reporting** surviving the cut
+    is what says the bound was applied to the value rather than to the end of the
+    sentence -- a summary cut at its tail keeps the megabyte and loses the number
+    an operator acts on.
     """
-    payloads: dict[str, tuple[dict[str, Any], int]] = {
-        "a merged pull request's number": (
-            _pull_requests(number=_WIDEST_NUMBER, merged=True, mergeCommit=None),
-            len(str(_WIDEST_NUMBER)),
-        ),
-        "a capped pull request's number": (
-            _pull_requests(
-                number=_WIDEST_NUMBER,
-                closingIssuesReferences={"pageInfo": {"hasNextPage": True}, "nodes": []},
-            ),
-            len(str(_WIDEST_NUMBER)),
-        ),
-        "a resolved name": (_pull_requests(resolved_name="R" * 1_000_000), 1_000_000),
-    }
-    payload, planted = payloads[shape]
-    fake_gh.answer("prs", 1, payload)
-    provider = _provider(tmp_path, fake_gh)
-
-    with pytest.raises(ReviewIngestRefusedError) as raised:
-        await provider.list_pull_requests(PROJECT, REPOSITORY)
-
-    summary = raised.value.envelope.summary
     assert len(summary) <= MAX_REFUSAL_SUMMARY_CHARS, (
         f"the answer carried {planted} characters and the published summary is "
         f"{len(summary)} characters. `summary` is a channel for text this process "
         f"did not write, and it is bounded on the type so that no producer has to "
         f"remember it."
     )
-    assert len(str(raised.value)) <= MAX_REFUSAL_SUMMARY_CHARS
     cut = re.search(r"cut from (\d+) characters", summary)
     assert cut is not None, (
         "the planted value was shortened without saying so; a value silently cut to "
@@ -1597,6 +1624,73 @@ async def test_a_megabyte_of_answer_does_not_become_a_megabyte_of_summary(
     # *rendering* rather than the raw value -- `repr` of a megabyte string is two
     # characters longer, and more than that once anything in it needs escaping.
     assert int(cut[1]) >= planted
+
+
+@pytest.mark.asyncio
+async def test_a_megabyte_of_answer_does_not_become_a_megabyte_of_summary(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """A refusal names what it refused, and what it refused came from the answer.
+
+    The summary here interpolates a value this adapter read out of a GraphQL
+    response, and a response is a document from somewhere else: a one-megabyte
+    resolved name produced a one-megabyte summary, published in whatever a caller
+    prints it into. The envelope's ``detail`` was contained and its ``summary``
+    was not.
+
+    This is the **repository-scope** half -- the resolved name is a fact about
+    the answer as a whole, so it raises. Its record-scope twin below plants the
+    same class of value in a summary that comes back as a skip, because a bound
+    that held only on the raising path would leave the returned one open.
+    """
+    fake_gh.answer("prs", 1, _pull_requests(resolved_name="R" * 1_000_000))
+    provider = _provider(tmp_path, fake_gh)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    _assert_the_summary_is_bounded(raised.value.envelope.summary, 1_000_000)
+    assert len(str(raised.value)) <= MAX_REFUSAL_SUMMARY_CHARS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    (
+        _pull_requests(number=_WIDEST_NUMBER, merged=True, mergeCommit=None),
+        _pull_requests(
+            number=_WIDEST_NUMBER,
+            closingIssuesReferences={"pageInfo": {"hasNextPage": True}, "nodes": []},
+        ),
+    ),
+    ids=("a merged pull request's number", "a capped pull request's number"),
+)
+async def test_a_wide_number_is_bounded_in_a_skipped_pull_requests_summary(
+    tmp_path: pathlib.Path, fake_gh: FakeGh, payload: dict[str, Any]
+) -> None:
+    """The same bound on the channel that returns rather than raises.
+
+    Both summaries name the pull request's ``number``, and both now arrive as a
+    skip. A skip's envelope is published exactly as a raised one is, so it needs
+    the same bound -- and it is a *different* code path to reach it, which is why
+    this is driven rather than argued from the raising twin.
+
+    **The plant is an integer rather than a megabyte string, and what changed is
+    the read order rather than the bound.** The number goes through
+    ``positive_integer`` and the window is applied to it before the record is
+    built, so a ``number`` that is not an integer never reaches either sentence.
+    What still reaches them is a wide integer, and :data:`_WIDEST_NUMBER` is the
+    widest one that can --
+    ``test_a_number_one_digit_wider_is_refused_as_an_unreadable_document`` is
+    that ceiling's key.
+    """
+    fake_gh.answer("prs", 1, payload)
+    provider = _provider(tmp_path, fake_gh)
+
+    skip = await _one_skip(provider)
+
+    assert skip.number == _WIDEST_NUMBER
+    _assert_the_summary_is_bounded(skip.envelope.summary, len(str(_WIDEST_NUMBER)))
 
 
 @pytest.mark.asyncio
@@ -1755,7 +1849,7 @@ async def test_a_probe_at_the_recorded_stdout_bound_is_read_rather_than_refused(
     fake_gh.answer("prs", 1, _pull_requests())
     provider = _provider(tmp_path, fake_gh)
 
-    (event,) = await provider.list_pull_requests(PROJECT, REPOSITORY)
+    (event,) = await _listed(provider)
 
     assert event.number == 12
 
@@ -1849,7 +1943,7 @@ async def test_a_pull_request_maps_onto_the_domain_record(
     fake_gh.answer("prs", 1, _pull_requests())
     provider = _provider(tmp_path, fake_gh)
 
-    (event,) = await provider.list_pull_requests(PROJECT, REPOSITORY)
+    (event,) = await _listed(provider)
 
     assert event.provider == "github"
     assert event.repository == REPOSITORY
@@ -1885,7 +1979,7 @@ async def test_the_author_controlled_pull_request_fields_arrive_verbatim(
     fake_gh.answer("prs", 1, _pull_requests())
     provider = _provider(tmp_path, fake_gh)
 
-    (event,) = await provider.list_pull_requests(PROJECT, REPOSITORY)
+    (event,) = await _listed(provider)
 
     assert event.body == "The join check refused the leaf and not the directory itself."
     assert event.labels == ("security", "area/paths")
@@ -1917,7 +2011,7 @@ async def test_a_pull_request_in_no_milestone_records_none_rather_than_a_name(
     fake_gh.answer("prs", 1, payload)
     provider = _provider(tmp_path, fake_gh)
 
-    (event,) = await provider.list_pull_requests(PROJECT, REPOSITORY)
+    (event,) = await _listed(provider)
 
     assert event.milestone is None
 
@@ -1937,7 +2031,7 @@ async def test_a_pull_request_with_no_labels_records_an_empty_set_not_a_refusal(
     )
     provider = _provider(tmp_path, fake_gh)
 
-    (event,) = await provider.list_pull_requests(PROJECT, REPOSITORY)
+    (event,) = await _listed(provider)
 
     assert event.labels == ()
 
@@ -1969,7 +2063,7 @@ async def test_an_unrecognised_ci_state_becomes_unknown_never_failed(
     fake_gh.answer("prs", 1, _pull_requests(commits=rollup))
     provider = _provider(tmp_path, fake_gh)
 
-    (event,) = await provider.list_pull_requests(PROJECT, REPOSITORY)
+    (event,) = await _listed(provider)
 
     assert event.ci_successful is expected
 
@@ -1986,7 +2080,7 @@ async def test_a_resolved_thread_records_an_unknown_resolution_time(
     fake_gh.answer("prs", 1, _pull_requests())
     fake_gh.answer("threads", 1, _threads())
     provider = _provider(tmp_path, fake_gh)
-    events = await provider.list_pull_requests(PROJECT, REPOSITORY)
+    events = await _listed(provider)
 
     (thread,) = await provider.get_threads(PROJECT, events[0])
 
@@ -2010,7 +2104,7 @@ async def test_an_unresolved_thread_records_no_resolution(
     fake_gh.answer("prs", 1, _pull_requests())
     fake_gh.answer("threads", 1, _threads(resolved=False))
     provider = _provider(tmp_path, fake_gh)
-    events = await provider.list_pull_requests(PROJECT, REPOSITORY)
+    events = await _listed(provider)
 
     (thread,) = await provider.get_threads(PROJECT, events[0])
 
@@ -2033,7 +2127,7 @@ async def test_a_second_page_is_asked_for_with_a_cursor(
     fake_gh.answer("prs", 2, second)
     provider = _provider(tmp_path, fake_gh)
 
-    events = await provider.list_pull_requests(PROJECT, REPOSITORY)
+    events = await _listed(provider)
 
     assert [event.number for event in events] == [12, 11]
     page_one, page_two = fake_gh.argv(3), fake_gh.argv(4)
@@ -2049,7 +2143,7 @@ async def test_since_number_stops_the_read_where_the_caller_asked(
     fake_gh.answer("prs", 1, _pull_requests())
     provider = _provider(tmp_path, fake_gh)
 
-    assert await provider.list_pull_requests(PROJECT, REPOSITORY, since_number=12) == ()
+    assert await _listed(provider, since_number=12) == ()
 
 
 @pytest.mark.asyncio
@@ -2069,26 +2163,111 @@ async def test_since_number_steps_over_an_excluded_pull_request_however_bad_it_i
     The poison node is **last** in the page, so a read that answers the two above
     it has genuinely walked as far as the boundary rather than stopped early for
     an unrelated reason.
+
+    The listing is unwrapped by hand rather than through :func:`_listed`, because
+    the empty ``skipped`` is a claim this case makes rather than a control it
+    inherits: an excluded pull request is not a skipped one. Reporting it would
+    put a record the caller deliberately did not ask for into the run's report,
+    and make every incremental re-run read as unclean forever.
     """
     page = _pull_requests()
     nodes = page["data"]["repository"]["pullRequests"]["nodes"]
-    poison = {
-        **nodes[0],
-        "number": 100,
-        "labels": {
-            "pageInfo": {"hasNextPage": True},
-            "nodes": [
-                {"name": f"area/{index}"} for index in range(limits.MAX_LABELS_PER_PULL_REQUEST)
-            ],
-        },
-    }
-    nodes[:] = [{**nodes[0], "number": 102}, {**nodes[0], "number": 101}, poison]
+    nodes[:] = [
+        {**nodes[0], "number": 102},
+        {**nodes[0], "number": 101},
+        _over_the_label_cap(nodes[0], 100),
+    ]
     fake_gh.answer("prs", 1, page)
     provider = _provider(tmp_path, fake_gh)
 
-    events = await provider.list_pull_requests(PROJECT, REPOSITORY, since_number=100)
+    listing = await provider.list_pull_requests(PROJECT, REPOSITORY, since_number=100)
 
-    assert [event.number for event in events] == [102, 101]
+    assert [event.number for event in listing.events] == [102, 101]
+    assert listing.skipped == (), (
+        f"pull request 100 is outside the window and was reported as skipped anyway: "
+        f"{[skip.number for skip in listing.skipped]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_poison_newest_pull_request_does_not_deny_the_rest_of_the_repository(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """One pathological pull request costs its own record and no other.
+
+    The over-cap node is **first** in the page -- the newest pull request, which
+    is where every default window starts -- because that is the position from
+    which a raised refusal denied the whole repository at any ``--limit``: there
+    is no ``--since`` an operator can pass that steps *forward* over it.
+
+    What the skip carries is asserted rather than merely counted. A caller has to
+    be able to name which pull request is missing without parsing a sentence, and
+    to hand its remedy to whoever runs the command.
+    """
+    page = _pull_requests()
+    nodes = page["data"]["repository"]["pullRequests"]["nodes"]
+    nodes[:] = [
+        _over_the_label_cap(nodes[0], 14),
+        {**nodes[0], "number": 13},
+        {**nodes[0], "number": 12},
+    ]
+    fake_gh.answer("prs", 1, page)
+    provider = _provider(tmp_path, fake_gh)
+
+    listing = await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert [event.number for event in listing.events] == [13, 12]
+    (skip,) = listing.skipped
+    assert skip.number == 14
+    assert skip.repository == REPOSITORY
+    assert skip.envelope.grade is RefusalGrade.LIMIT_EXCEEDED
+    assert str(limits.MAX_LABELS_PER_PULL_REQUEST) in skip.envelope.summary
+    assert "gh api graphql" in skip.envelope.remedy
+
+
+@pytest.mark.asyncio
+async def test_one_grade_stops_the_listing_and_skips_one_of_its_nodes(
+    tmp_path: pathlib.Path,
+) -> None:
+    """``LIMIT_EXCEEDED`` from both scopes, and only one of them ends the read.
+
+    The listing's page cap is this adapter's own machinery; a pull request's
+    label cap is one node's data. Both raise ``LIMIT_EXCEEDED`` inside this
+    module, so an implementation that decided by reading the grade -- or one
+    whose ``try`` reached one statement too wide -- answers the same for both.
+    Driving the pair in one test is what makes the scope rule falsifiable.
+
+    Two stand-in children and two project roots, because each half needs its own
+    canned answers and ``_project`` creates the directory it allowlists.
+    """
+    halting = _write_fake(tmp_path / "halting", version="2.86.0")
+    endless = _pull_requests()
+    endless["data"]["repository"]["pullRequests"]["pageInfo"] = {
+        "hasNextPage": True,
+        "endCursor": "CURSOR",
+    }
+    halting.answer("prs", 1, endless)
+    halting.answer("prs", 2, endless)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await _provider(tmp_path / "a", halting).list_pull_requests(PROJECT, REPOSITORY)
+
+    assert raised.value.grade is RefusalGrade.LIMIT_EXCEEDED
+    assert str(limits.MAX_PAGES) in str(raised.value)
+
+    skipping = _write_fake(tmp_path / "skipping", version="2.86.0")
+    page = _pull_requests()
+    nodes = page["data"]["repository"]["pullRequests"]["nodes"]
+    nodes[:] = [_over_the_label_cap(nodes[0], 12)]
+    skipping.answer("prs", 1, page)
+
+    listing = await _provider(tmp_path / "b", skipping).list_pull_requests(PROJECT, REPOSITORY)
+
+    assert [skip.number for skip in listing.skipped] == [12]
+    assert listing.skipped[0].envelope.grade is raised.value.grade, (
+        "the two halves no longer share a grade, so this pair can no longer tell a "
+        "scope-reading implementation from a grade-reading one"
+    )
 
 
 @pytest.mark.asyncio
@@ -2104,7 +2283,7 @@ async def test_a_repository_reached_through_an_event_is_re_checked_against_the_a
     """
     fake_gh.answer("prs", 1, _pull_requests())
     provider = _provider(tmp_path, fake_gh)
-    (event,) = await provider.list_pull_requests(PROJECT, REPOSITORY)
+    (event,) = await _listed(provider)
     forged = dataclasses.replace(event, repository="acme/billing")
     before = fake_gh.invocations
 
@@ -2122,7 +2301,7 @@ async def _one_event(tmp_path: pathlib.Path, fake: FakeGh) -> tuple[GitHubReview
     """A provider and the pull request it just read, so a reviews test starts there."""
     fake.answer("prs", 1, _pull_requests())
     provider = _provider(tmp_path, fake)
-    (event,) = await provider.list_pull_requests(PROJECT, REPOSITORY)
+    (event,) = await _listed(provider)
     return provider, event
 
 

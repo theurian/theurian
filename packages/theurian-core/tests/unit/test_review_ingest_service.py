@@ -2,17 +2,19 @@
 
 The claims, each with cases of its own:
 
-* **Scope-matched containment.** A refusal from ``list_pull_requests`` halts the
-  run before a single per-pull-request fetch happens; a refusal from
-  ``get_threads`` or ``get_reviews`` withholds that one pull request's records
-  whole and the run continues. Both are driven with the **same grade**
-  (``LIMIT_EXCEEDED``), because the discrimination the service makes is by call
-  site and a pair of cases using two grades could not tell that rule apart from
-  a shortcut that read the grade.
+* **Scope-matched containment, across three seams.** A refusal *raised* by
+  ``list_pull_requests`` halts the run before a single per-pull-request fetch
+  happens; a pull request the listing *returned* as skipped, and a refusal raised
+  by ``get_threads`` or ``get_reviews``, each withhold that one pull request's
+  records whole while the run continues. All three are driven with the **same
+  grade** (``LIMIT_EXCEEDED``), because the discrimination the service makes is
+  by where the fault was and a set of cases using different grades could not tell
+  that rule apart from a shortcut that read the grade.
 * **Retryability without a marker.** Run one skips a record; run two over the
   same window lands it once the cause is gone. Driven rather than asserted: the
   second run is a real second run against the same directory, with the same
-  arguments and nothing carried between them.
+  arguments and nothing carried between them -- and driven from **both** skip
+  seams, because a marker invented at either one would step over the record.
 * **Only the verdict's payload is written.** A redacting run's landed file
   carries the placeholder, and the control beside it shows the records the
   provider answered with still carry the real name -- so a service that
@@ -158,11 +160,25 @@ def _over_cap(number: int) -> ReviewIngestRefusedError:
 
     ``LIMIT_EXCEEDED`` deliberately: the pull-request listing's page cap carries
     the same grade, so a service that discriminated on the grade rather than on
-    the call site would treat this one as a reason to halt the whole run.
+    where the fault was would treat this one as a reason to halt the whole run.
     """
     return ReviewIngestRefusedError(
         RefusalGrade.LIMIT_EXCEEDED,
         f"Review thread on {REPOSITORY}#{number} carries more than the recorded cap.",
+    )
+
+
+def _over_the_label_cap(number: int) -> ReviewIngestRefusedError:
+    """The refusal the adapter meets while **building** one pull request's record.
+
+    The third grade-sharing member, and the one this file could not express
+    before the port carried a skip channel: a pull request's labels overflow the
+    single page they are asked for, which is a fact about that pull request and
+    not about the repository. Same grade as the two above, again on purpose.
+    """
+    return ReviewIngestRefusedError(
+        RefusalGrade.LIMIT_EXCEEDED,
+        f"Pull request {REPOSITORY}#{number} carries more than the recorded label cap.",
     )
 
 
@@ -171,6 +187,7 @@ def _provider(
     *,
     refusals: dict[ReadKey, ReviewIngestRefusedError] | None = None,
     listing_refusal: ReviewIngestRefusedError | None = None,
+    listing_faults: dict[int, ReviewIngestRefusedError] | None = None,
     threads: dict[int, tuple[ReviewThread, ...]] | None = None,
 ) -> CannedReviewProvider:
     """The fake, pre-loaded with one thread and one review per pull request."""
@@ -181,6 +198,7 @@ def _provider(
         submissions={event.number: (_submission(event),) for event in events},
         refusals=refusals,
         listing_refusal=listing_refusal,
+        listing_faults=listing_faults,
     )
 
 
@@ -428,18 +446,91 @@ async def test_an_over_cap_pull_request_is_skipped_while_its_neighbour_lands(
 
 
 @pytest.mark.asyncio
-async def test_one_grade_halts_at_the_listing_and_skips_at_a_fetch(tmp_path: Path) -> None:
-    """The discrimination is by call site: one grade, two outcomes.
+async def test_a_pull_request_the_listing_could_not_build_is_skipped_not_a_halt(
+    tmp_path: Path,
+) -> None:
+    """The newest pull request is unbuildable, and the rest of the repository lands.
 
-    Both halves raise ``LIMIT_EXCEEDED`` -- the grade the pull-request page cap
-    and a thread's comment cap share -- so a service reading ``exc.grade`` to
-    decide would answer the same for both. This is the case that tells the rule
-    apart from that shortcut.
+    This is the seam the service could not see before the port carried it. A
+    record-scope fault met **inside** the listing -- one pull request's labels
+    past their cap -- used to leave the adapter as a raised refusal, and from the
+    newest pull request that denied the whole repository at any ``--limit``: no
+    ``--since`` steps forward over it.
+
+    The read log is the assertion that carries the containment claim: the
+    unbuildable pull request was never fetched, and its neighbour was.
+    """
+    provider = _provider([_event(42), _event(41)], listing_faults={42: _over_the_label_cap(42)})
+
+    report, lander, root = await _run(tmp_path, provider)
+
+    assert not report.clean
+    assert report.landed == 3
+    assert provider.reads == [("get_threads", 41), ("get_reviews", 41)]
+    (skip,) = report.skipped
+    assert skip.identity.pull_request_number == 42
+    assert skip.grade is RefusalGrade.LIMIT_EXCEEDED
+    assert "#42" in skip.identity.describe()
+    assert "label cap" in skip.summary
+    assert "`limit`" in skip.remedy
+    assert [
+        record.payload.number for record in lander.handed if isinstance(record.payload, ReviewEvent)
+    ] == [41]
+    assert len(_landed_files(root)) == 3
+
+
+@pytest.mark.asyncio
+async def test_a_pull_request_outside_the_window_is_not_reported_as_skipped(
+    tmp_path: Path,
+) -> None:
+    """An excluded pull request is not a withheld one, however bad its data is.
+
+    ``since_number`` says which pull requests this run is about, so a fault in
+    one below the boundary is not this run's to report. Reporting it would put a
+    record the caller deliberately excluded into the report and make every
+    incremental re-run read as unclean for as long as the bad record exists.
+
+    The fake applies the window before consulting its fault map, which is the
+    adapter's own order -- see :class:`~fakes.CannedReviewProvider` on why that
+    ordering is load-bearing rather than incidental.
+    """
+    provider = _provider(
+        [_event(102), _event(101), _event(100)], listing_faults={100: _over_the_label_cap(100)}
+    )
+
+    report, _lander, _root = await _run(tmp_path, provider, since_number=100)
+
+    assert report.clean
+    assert report.skipped == ()
+    assert report.pull_requests == 2
+    assert provider.reads == [
+        ("get_threads", 102),
+        ("get_reviews", 102),
+        ("get_threads", 101),
+        ("get_reviews", 101),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_one_grade_halts_at_the_listing_and_skips_at_both_seams(tmp_path: Path) -> None:
+    """The discrimination is by where the fault was: one grade, three outcomes.
+
+    All three drive ``LIMIT_EXCEEDED`` -- the grade the pull-request listing's
+    page cap, a pull request's own label cap and a thread's comment cap share --
+    so a service reading ``exc.grade`` to decide would answer the same for every
+    one of them. This is the case that tells the rule apart from that shortcut,
+    and it is the reason a listing fault has to arrive as a **value**: an
+    exception carries no scope a caller can read.
     """
     at_the_fetch, _lander, _root = await _run(
         tmp_path / "fetch", _provider([_event(42)], refusals={("get_threads", 42): _over_cap(42)})
     )
     assert [skip.grade for skip in at_the_fetch.skipped] == [RefusalGrade.LIMIT_EXCEEDED]
+
+    in_the_listing, _lander, _root = await _run(
+        tmp_path / "node", _provider([_event(42)], listing_faults={42: _over_the_label_cap(42)})
+    )
+    assert [skip.grade for skip in in_the_listing.skipped] == [RefusalGrade.LIMIT_EXCEEDED]
 
     halting = _provider([_event(42)], listing_refusal=_over_cap(42))
     with pytest.raises(ReviewIngestRefusedError):
@@ -538,6 +629,41 @@ async def test_a_skipped_pull_request_lands_on_the_next_run_over_the_same_window
     )
     assert first.landed == 0
     assert [skip.identity.pull_request_number for skip in first.skipped] == [42]
+    assert _landed_files(root) == set()
+
+    healthy = _provider([_event(42)])
+    second = await _service(root, config_file, healthy, _Lander(store, RUN_TWO), store).run(
+        _request()
+    )
+
+    assert second.clean
+    assert second.landed == 3
+    assert (second.new, second.updated, second.kept) == (3, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_a_pull_request_skipped_in_the_listing_lands_on_the_next_run(
+    tmp_path: Path,
+) -> None:
+    """AC-3, listing cause: the third skip seam is retryable like the other two.
+
+    Retryability is a property of the *absence of a marker*, and a marker would
+    have to decide what a skip means at every seam that produces one. This drives
+    the seam the port newly carries: run one cannot build the record, run two
+    over the same window with the same arguments lands it. Were a marker to exist
+    and count the skipped pull request as seen, the second run would land nothing
+    and this would go RED.
+    """
+    root, config_file = _project(tmp_path)
+    store = _store(root)
+
+    unbuildable = _provider([_event(42)], listing_faults={42: _over_the_label_cap(42)})
+    first = await _service(root, config_file, unbuildable, _Lander(store, RUN_ONE), store).run(
+        _request()
+    )
+    assert first.landed == 0
+    assert [skip.identity.pull_request_number for skip in first.skipped] == [42]
+    assert unbuildable.reads == [], "the unbuildable pull request was fetched anyway"
     assert _landed_files(root) == set()
 
     healthy = _provider([_event(42)])
