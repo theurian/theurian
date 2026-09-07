@@ -41,7 +41,9 @@ from theurian.application.project_service import ensure_gitignore
 from theurian.application.setup_context import SetupContext
 from theurian.application.setup_steps import (
     _REQUIRED_PROJECT_DIRS,
+    apply_data_directory,
     probe_core,
+    probe_data_directory,
     probe_gitignore,
     probe_project_layout,
 )
@@ -51,17 +53,21 @@ from theurian.infrastructure.secrets.file_store import FileSecretStore
 
 
 def _context(
-    tmp_path: Path, *, executable: str = "", project_root: Path | None = None
+    tmp_path: Path,
+    *,
+    executable: str = "",
+    project_root: Path | None = None,
+    data_dir: Path | None = None,
 ) -> SetupContext:
-    data_dir = tmp_path / "home" / ".theurian"
+    resolved_data_dir = data_dir if data_dir is not None else tmp_path / "home" / ".theurian"
     return SetupContext(
         home=tmp_path / "home",
-        data_dir=data_dir,
+        data_dir=resolved_data_dir,
         port=7419,
         project_root=project_root,
         connection=ConnectionSpec(port=7419),
         mcp_config=FakeMcpConfig(),
-        secrets=FileSecretStore(data_dir),
+        secrets=FileSecretStore(resolved_data_dir),
         health=lambda: None,
         service=FakeService(),
         executable=executable,
@@ -289,6 +295,127 @@ def test_a_file_is_not_a_directory_for_the_purpose_of_the_layout(tmp_path: Path)
     step = probe_project_layout(_context(tmp_path, project_root=root))
 
     assert step.status is StepStatus.MISSING
+
+
+# -- data-directory -----------------------------------------------------------
+
+#: Every shape a symlink can take at the data-dir path, none of them a real
+#: directory Theurian created. Parametrised so a fix that catches only the
+#: dangling face -- the one #362 was filed against -- still leaves the other
+#: three green against the unfixed probe.
+_SYMLINK_SHAPES: Final = (
+    "dangling",
+    "to-a-real-directory-elsewhere",
+    "into-the-containment-root",
+    "self-referential",
+)
+
+
+def _symlinked_data_dir(tmp_path: Path, shape: str) -> Path:
+    """A data-dir path built as a symlink of *shape*, and never a real directory."""
+    home = tmp_path / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    data_dir = home / ".theurian"
+    if shape == "dangling":
+        data_dir.symlink_to(home / "nowhere-at-all")
+    elif shape == "to-a-real-directory-elsewhere":
+        target = tmp_path / "elsewhere"
+        target.mkdir(mode=0o700)
+        data_dir.symlink_to(target)
+    elif shape == "into-the-containment-root":
+        # Names `home` itself: a real, existing directory, so `exists()` and
+        # `is_dir()` both answer `True` through it -- the shape that used to
+        # read `satisfied` rather than `missing`.
+        data_dir.symlink_to(home)
+    elif shape == "self-referential":
+        # A link naming itself. `exists()`/`is_dir()` chase it until `ELOOP`,
+        # which `Path.exists()` swallows and reports as `False` -- the same
+        # wrong answer the dangling case gets, for a different reason.
+        data_dir.symlink_to(data_dir)
+    else:  # pragma: no cover - guards the fixture, not the probe under test
+        raise ValueError(shape)
+    return data_dir
+
+
+@pytest.mark.parametrize("shape", _SYMLINK_SHAPES)
+def test_a_symlink_at_the_data_directory_is_a_conflict_whatever_it_names(
+    tmp_path: Path, shape: str
+) -> None:
+    """#362: every symlink shape is CONFLICTING, checked before `exists()` at all.
+
+    Measured against the unfixed probe (@ c7992354): "dangling" and
+    "self-referential" both read ``missing`` -- `exists()` catches `ENOENT`/
+    `ELOOP` and answers `False` -- and `apply_data_directory`'s
+    `mkdir(parents=True, exist_ok=True)` then raises `FileExistsError` for a
+    name a link already occupies. "to-a-real-directory-elsewhere" and
+    "into-the-containment-root" both read ``satisfied`` (or the mode arm, over
+    the *target*'s bits), reporting a converged private directory that is not
+    the one Theurian created. All four are one class: setup acting on a name
+    that does not point at a directory it made (SEC-18).
+    """
+    data_dir = _symlinked_data_dir(tmp_path, shape)
+
+    step = probe_data_directory(_context(tmp_path, data_dir=data_dir))
+
+    assert step.status is StepStatus.CONFLICTING, (
+        f"{shape}: probe answered {step.status} ({step.summary!r}), not a conflict"
+    )
+    assert "symbolic link" in step.summary
+    assert data_dir.is_symlink(), "a probe reports; it does not touch what it found"
+
+
+def test_a_symlinked_data_directory_never_reaches_apply(tmp_path: Path) -> None:
+    """AC-2: CONFLICTING halts the run before `apply_data_directory`'s `mkdir`.
+
+    Not a claim about `_blocking_conflicts` or `SetupService` -- both are
+    exercised elsewhere -- but the narrower one this probe alone can make:
+    `apply_data_directory` unconditionally `mkdir`s, so the only thing that can
+    keep it from running over a symlink is the plan step reading `missing`
+    never being produced for one. Confirmed directly: calling `apply` on this
+    exact context still raises, which is why the step's own status is what has
+    to change, not a caller wrapping it in a try/except.
+    """
+    data_dir = _symlinked_data_dir(tmp_path, "dangling")
+
+    step = probe_data_directory(_context(tmp_path, data_dir=data_dir))
+
+    assert step.status is not StepStatus.MISSING, (
+        "MISSING is the status `SetupService._apply` acts on -- a symlink reported "
+        "missing is a symlink `apply_data_directory` is about to mkdir over"
+    )
+    with pytest.raises(FileExistsError):
+        apply_data_directory(_context(tmp_path, data_dir=data_dir))
+
+
+def test_an_absent_data_directory_is_still_missing(tmp_path: Path) -> None:
+    """Unregressed: the symlink arm must not swallow the ordinary absent case."""
+    data_dir = tmp_path / "home" / ".theurian"
+
+    step = probe_data_directory(_context(tmp_path, data_dir=data_dir))
+
+    assert step.status is StepStatus.MISSING
+
+
+def test_a_regular_file_at_the_data_directory_is_still_a_conflict(tmp_path: Path) -> None:
+    """Unregressed: a plain file, not a link, still takes the not-a-directory arm."""
+    data_dir = tmp_path / "home" / ".theurian"
+    data_dir.parent.mkdir(parents=True)
+    data_dir.write_text("not a directory\n", encoding="utf-8")
+
+    step = probe_data_directory(_context(tmp_path, data_dir=data_dir))
+
+    assert step.status is StepStatus.CONFLICTING
+    assert "not a directory" in step.summary
+
+
+def test_a_real_private_directory_is_still_satisfied(tmp_path: Path) -> None:
+    """Unregressed: a real directory Theurian could have created is unaffected."""
+    data_dir = tmp_path / "home" / ".theurian"
+    data_dir.mkdir(parents=True, mode=0o700)
+
+    step = probe_data_directory(_context(tmp_path, data_dir=data_dir))
+
+    assert step.status is StepStatus.SATISFIED
 
 
 # -- gitignore ---------------------------------------------------------------

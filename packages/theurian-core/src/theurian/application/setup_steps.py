@@ -381,8 +381,41 @@ def probe_data_directory(context: SetupContext) -> SetupStep:
     CONFLICTING rather than MISSING, because setup replaces nothing it did not
     create (SEC-18): what is there is somebody's file, and ``missing`` is the
     status that would have setup act on it.
+
+    **The symlink arm goes ahead of everything, including ``exists()`` (#362).**
+    A dangling link and a self-referential one both make ``exists()`` and
+    ``is_dir()`` catch ``OSError`` (``ENOENT``/``ELOOP``) and answer ``False`` --
+    measured -- so this step reported ``missing`` over a name that is very much
+    occupied, and ``apply_data_directory``'s ``mkdir(parents=True,
+    exist_ok=True)`` then raised ``FileExistsError``: ``exist_ok`` suppresses the
+    error only for a real directory already at the path, not for a link sitting
+    in its place. A link to a real directory fares no better the other way --
+    ``exists()`` and ``is_dir()`` both answer ``True`` through it, so that shape
+    read ``satisfied`` (or the mode arm, reading the *target*'s bits) with
+    nothing said about the link at all. Mirrors the ``is_symlink()`` arm
+    :func:`probe_token` and :func:`probe_token_storage` already carry, for the
+    same SEC-18 reason: ``missing`` is the status that makes setup act, and
+    acting on a link means writing through whatever it names.
+
+    **Recorded decision:** this turns a symlink pointing at a real, private
+    directory from ``satisfied`` into ``conflicting`` -- a behaviour change from
+    the token-precedent consistency above, accepted because no documented
+    configuration points ``THEURIAN_DATA_DIR`` through a symlink. The remedy is
+    the same as the not-a-directory arm's: setup replaces nothing it did not
+    create.
     """
     directory = context.data_dir
+    if directory.is_symlink():
+        return SetupStep(
+            step_id=StepId.DATA_DIRECTORY,
+            status=StepStatus.CONFLICTING,
+            summary=f"{directory} is a symbolic link.",
+            detail=(
+                f"{directory} is a symbolic link, not the data directory Theurian "
+                f"created. Setup never replaces a file it did not create -- move it "
+                f"aside; setup then creates the directory with mode 0700."
+            ),
+        )
     if not directory.exists():
         return SetupStep(
             step_id=StepId.DATA_DIRECTORY,
