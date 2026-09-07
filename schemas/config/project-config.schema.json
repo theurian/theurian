@@ -14,7 +14,7 @@
       "maxLength": 200
     },
     "defaultBranch": { "type": "string", "default": "main" },
-    "knowledgeDirectory": { "type": "string", "default": ".theurian" },
+    "knowledgeDirectory": { "type": "string", "deprecated": true },
     "providers": {
       "type": "object",
       "additionalProperties": false,
