@@ -334,11 +334,32 @@ async def _drain_capped(stream: asyncio.StreamReader, cap: int) -> str:
 async def _end(child: asyncio.subprocess.Process, draining: asyncio.Task[str]) -> None:
     """Kill ``child`` and stop draining it, so no refusal leaves a process behind.
 
-    The two statements that actually release the resources -- cancelling the
-    drain task and signalling the child -- are synchronous and run before any
-    ``await`` here, because this is reached from a ``finally`` that a cancelled
-    caller may re-enter: an ``await`` in that state raises immediately, and
-    anything sequenced after one would not run.
+    **The two statements that release the resources are synchronous and run
+    first** -- cancelling the drain task, signalling the child. Nothing that can
+    go wrong afterwards can then skip them, and what can go wrong afterwards is
+    ordinary: a second cancellation arriving while this unwinds, or the reap
+    raising something the suppressions below do not name. Either leaves the rest
+    of this function unrun, and by then the two that matter have happened.
+
+    **The awaits after them do run to completion, cancelled path included**, and
+    that is what makes :func:`_release` -- the held-file-descriptor fix --
+    reachable at all. A cancelled coroutine's ``finally`` is ordinary code:
+    measured on CPython 3.13, an ``await`` inside one completes and the statement
+    sequenced after it runs. An earlier version of this docstring said an
+    ``await`` in that state raises immediately and gave *that* as the reason for
+    the ordering above. The ordering is right; the reason was false, and it was
+    false in the direction that would have made this function's own last line
+    dead.
+
+    **What a caller pays for it**: cancelling a ``run_bounded`` no longer returns
+    at once. The canceller waits for this unwind, up to :data:`_REAP_SECONDS` --
+    the ceiling is reached by the one shape that reaches it anywhere here, a
+    descendant holding a pipe open past the child's exit, since
+    ``Process.wait()`` waits for both. That is the deliberate trade: the same
+    cancellation used to return immediately and leave a live child and a pending
+    drain task behind, and what replaces it is a wait bounded by a recorded
+    number. ``test_a_cancelled_call_waits_for_the_reap_it_is_bounded_by`` drives
+    it from the caller's side.
     """
     draining.cancel()
     # The child can exit between the `returncode` read and the signal, and a

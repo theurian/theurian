@@ -18,8 +18,10 @@ a test can shape byte by byte in a way ``/bin/sh`` cannot.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import pathlib
+import signal
 import sys
 import time
 from typing import Final
@@ -31,7 +33,7 @@ from theurian.domain.review_ingest import (
     RefusalGrade,
     ReviewIngestRefusedError,
 )
-from theurian.infrastructure.github import limits
+from theurian.infrastructure.github import gh_cli, limits
 from theurian.infrastructure.github.gh_cli import run_bounded
 
 pytestmark = pytest.mark.integration
@@ -99,16 +101,42 @@ _WIDE_STDERR = (
 #: fd 2. The grandchild's own stdout and stdin go to ``/dev/null``, so the stdout
 #: pipe reaches EOF and the child is reaped normally: the only thing still open
 #: is the stderr pipe, which is the one stream nothing used to bound.
+#:
+#: The grandchild writes its pid down before the child answers, because **nobody
+#: else can end it**. It is not this process's child, so the loop knows nothing
+#: about it, and ``run_bounded`` deliberately walks no process tree -- so a test
+#: that spawns one and does not reap it leaves it sleeping for
+#: :data:`_CHILD_SLEEP_SECONDS` after the run has finished, once per run.
 _ANSWER_THEN_LEAVE_STDERR_HELD = (
     "import os, subprocess, sys\n"
     "devnull = os.open(os.devnull, os.O_WRONLY)\n"
-    "subprocess.Popen(\n"
+    "held = subprocess.Popen(\n"
     "    [sys.executable, '-c', 'import time; time.sleep({sleep})'],\n"
     "    stdout=devnull, stdin=devnull,\n"
     ")\n"
+    "open({pidfile!r}, 'w').write(str(held.pid))\n"
     "sys.stdout.write('done')\n"
     "sys.stdout.flush()\n"
 )
+
+#: A reap short enough to assert on. :data:`~theurian.infrastructure.github.gh_cli._REAP_SECONDS`
+#: is 5 seconds, and the tests below assert that a cancelled call waits for the
+#: whole of it -- at the shipped value that is five seconds of suite time to
+#: learn something a fraction of a second demonstrates just as well.
+_PATCHED_REAP_SECONDS: Final = 0.5
+
+
+def _reap_descendant(pidfile: pathlib.Path) -> None:
+    """Kill the grandchild a child left holding the stderr pipe.
+
+    Called from a ``finally`` rather than after the assertions, so a failing
+    assertion does not also leak a process. Silent when the file was never
+    written or the process is already gone: both mean there is nothing to end.
+    """
+    if not pidfile.exists():
+        return
+    with contextlib.suppress(ProcessLookupError, ValueError):
+        os.kill(int(pidfile.read_text(encoding="utf-8")), signal.SIGKILL)
 
 
 def _is_alive(pid: int) -> bool:
@@ -240,7 +268,9 @@ async def test_a_child_that_never_answers_is_stopped_at_the_recorded_timeout() -
 
 
 @pytest.mark.asyncio
-async def test_a_descendant_that_holds_stderr_open_is_refused_at_the_deadline() -> None:
+async def test_a_descendant_that_holds_stderr_open_is_refused_at_the_deadline(
+    tmp_path: pathlib.Path,
+) -> None:
     """The deadline covers the stderr drain, not only the reads and the exit.
 
     The child writes its answer, exits, and leaves a grandchild holding fd 2. So
@@ -254,26 +284,101 @@ async def test_a_descendant_that_holds_stderr_open_is_refused_at_the_deadline() 
     ``_BOUNDED_WAIT_SECONDS`` with a ``TimeoutError``, which is not the
     ``ReviewIngestRefusedError`` this expects.
     """
+    pidfile = tmp_path / "grandchild.pid"
     started = time.monotonic()
 
-    with pytest.raises(ReviewIngestRefusedError) as raised:
-        await asyncio.wait_for(
-            run_bounded(
-                [
-                    sys.executable,
-                    "-c",
-                    _ANSWER_THEN_LEAVE_STDERR_HELD.format(sleep=_CHILD_SLEEP_SECONDS),
-                ],
-                env=_ENV,
-                timeout=1.0,
-            ),
-            timeout=_BOUNDED_WAIT_SECONDS,
-        )
-    elapsed = time.monotonic() - started
+    try:
+        with pytest.raises(ReviewIngestRefusedError) as raised:
+            await asyncio.wait_for(
+                run_bounded(
+                    [
+                        sys.executable,
+                        "-c",
+                        _ANSWER_THEN_LEAVE_STDERR_HELD.format(
+                            sleep=_CHILD_SLEEP_SECONDS, pidfile=str(pidfile)
+                        ),
+                    ],
+                    env=_ENV,
+                    timeout=1.0,
+                ),
+                timeout=_BOUNDED_WAIT_SECONDS,
+            )
+        elapsed = time.monotonic() - started
+    finally:
+        _reap_descendant(pidfile)
 
     assert raised.value.grade is RefusalGrade.TOOL_FAILED
     assert "timeout" in str(raised.value)
     assert elapsed < _BOUNDED_WAIT_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_call_waits_for_the_reap_it_is_bounded_by(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cancelled call unwinds through ``_end``, and ``_end``'s awaits complete.
+
+    Both halves of that sentence are the assertion, and both were stated
+    wrongly. ``_end``'s docstring said an ``await`` inside a ``finally`` entered
+    by cancellation raises immediately -- which would make the reap, the drain
+    join and ``_release`` on the last line all unreachable on this path, and
+    ``_release`` is the fix that stops a held file descriptor per abandoned
+    child. The elapsed floor below is what says otherwise: if those awaits raised
+    at once the cancellation would return in milliseconds, and it does not.
+
+    **The child is the shape that reaches the ceiling.** It leaves a descendant
+    holding fd 2, so ``Process.wait()`` -- which waits for the exit *and* the
+    pipes -- cannot return, and the reap runs its full length. That is also what
+    the caller pays: cancelling this call is not free, it costs
+    ``_REAP_SECONDS``, and the number is recorded rather than incidental. The
+    constant is patched down here because five seconds of suite time demonstrates
+    nothing half a second does not.
+
+    The trade is deliberate and it replaced a worse one: the same cancellation
+    used to return at once and leave a live child and a pending drain task
+    behind.
+    """
+    monkeypatch.setattr(gh_cli, "_REAP_SECONDS", _PATCHED_REAP_SECONDS)
+    pidfile = tmp_path / "grandchild.pid"
+    call = asyncio.ensure_future(
+        run_bounded(
+            [
+                sys.executable,
+                "-c",
+                _ANSWER_THEN_LEAVE_STDERR_HELD.format(
+                    sleep=_CHILD_SLEEP_SECONDS, pidfile=str(pidfile)
+                ),
+            ],
+            env=_ENV,
+            timeout=_CHILD_SLEEP_SECONDS,
+        )
+    )
+
+    try:
+        # Wait for the grandchild to exist rather than sleeping a guessed amount:
+        # what this measures is the unwind, and a cancel that arrives before the
+        # child has spawned would measure the spawn instead.
+        deadline = time.monotonic() + _BOUNDED_WAIT_SECONDS
+        while not pidfile.exists() and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        started = time.monotonic()
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        elapsed = time.monotonic() - started
+    finally:
+        _reap_descendant(pidfile)
+
+    assert elapsed >= _PATCHED_REAP_SECONDS, (
+        f"the cancellation returned after {elapsed:.3f}s and the reap it should have "
+        f"waited out is {_PATCHED_REAP_SECONDS}s. An `await` in a `finally` entered by "
+        f"cancellation completes -- it does not raise at once -- and `_end` depends on "
+        f"that for its own last line."
+    )
+    assert elapsed < _BOUNDED_WAIT_SECONDS, (
+        f"the cancellation took {elapsed:.1f}s, so the wait is not bounded by "
+        f"`_REAP_SECONDS` at all"
+    )
 
 
 @pytest.mark.asyncio
