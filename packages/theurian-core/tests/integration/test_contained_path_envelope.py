@@ -470,6 +470,21 @@ PLANTS: Final = (
         ),
     ),
     Plant(
+        helper="review",
+        relative="review",
+        is_directory=True,
+        remedy=KNOWLEDGE_DIR_ESCAPE_REMEDY,
+        outside_the_class_because=(
+            "no swept command reaches it: ADR-0030 decision 3's evidence directory "
+            "has one writer and one reader, both in "
+            "`infrastructure/review_evidence/`, and no CLI command reaches either "
+            "in this slice -- the review verb is a later one. Its remedy is the "
+            "knowledge-directory text and not a derived one on purpose: review "
+            "evidence is canonical with no replayable source, so `rm -rf` is data "
+            "loss rather than a rebuild."
+        ),
+    ),
+    Plant(
         helper="config",
         relative=PROJECT_CONFIG_FILE,
         is_directory=False,
@@ -646,7 +661,14 @@ PLANT_BY_HELPER: Final = {plant.helper: plant for plant in PLANTS}
 #: class and must arrive as a failure, and a plant that stops being reached has
 #: quietly hollowed out every property below.
 REACHES_NO_SWEPT_COMMAND: Final = frozenset(
-    {"specifications", "proposals", "proposals_local", "findings_for", "ingestion_manifest"}
+    {
+        "specifications",
+        "proposals",
+        "proposals_local",
+        "findings_for",
+        "ingestion_manifest",
+        "review",
+    }
 )
 
 #: The plants whose refusals are ``_contained``'s own -- the class #525 closes,
