@@ -501,6 +501,41 @@ def test_a_broken_migration_warns_and_points_at_doctor(tmp_path: Path) -> None:
     assert "doctor" in result.stderr
 
 
+def test_a_resolved_project_with_a_corrupt_pointer_warns_without_claiming_unresolved(
+    tmp_path: Path,
+) -> None:
+    """A2: registered *and* resolved, with ``reason`` from the pointer read instead.
+
+    Measured against the real Core binary (see the fidelity row below): a
+    corrupt ``.theurian/state/active.json`` does not stop ``resolve_context``
+    from finishing -- it makes ``project status --json`` answer on its
+    *resolved* branch, with ``registered: true``, ``statePointerCorrupt:
+    true``, ``indexStale`` present, and a ``reason``/``remedy`` pair from
+    ``_pointer_failure_fields`` rather than from ``_unresolved_status``. Round
+    one (code review HIGH) caught the hook's warning claiming "could not be
+    fully resolved" for exactly this arm, where resolution had succeeded.
+    """
+    status_payload = json.dumps(
+        {
+            "registered": True,
+            "statePointerCorrupt": True,
+            "indexStale": True,
+            "reason": "active.json is unreadable: Expecting value: line 1 column 1 (char 0)",
+            "remedy": "Delete .theurian/state/active.json and run `theurian migrate apply`; "
+            "the index and the registry entry are both still intact.",
+        }
+    )
+    sandbox = _make_sandbox(tmp_path, daemon_healthy=True, status_payload=status_payload)
+
+    result = _run_hook(sandbox)
+
+    assert result.returncode == 0
+    assert "degraded" in result.stderr
+    assert "doctor" in result.stderr
+    assert "Delete .theurian/state/active.json" in result.stderr
+    assert "could not be fully resolved" not in result.stderr
+
+
 def test_an_unreadable_registry_warns_and_surfaces_the_remedy(tmp_path: Path) -> None:
     """B1: ``registered: null`` -- the registry itself could not be read.
 
@@ -675,6 +710,42 @@ def test_a_broken_migration_produces_the_real_payload_the_a1_row_assumes(tmp_pat
     assert payload["registered"] is True
     assert "reason" in payload
     assert "indexStale" not in payload
+
+
+@pytest.mark.skipif(_GIT is None, reason="git is required to build this row's sandbox")
+def test_a_corrupt_state_pointer_produces_the_real_payload_the_a2_row_assumes(
+    tmp_path: Path,
+) -> None:
+    """AC-6, the A2 face: a corrupt state pointer in an otherwise-resolved project.
+
+    Reproduced end to end and checked in before this test was written
+    (2026-09-07, against this checkout's own Core build): registering a
+    project, running ``migrate apply`` to build its state, and then
+    overwriting ``.theurian/state/active.json`` with non-JSON bytes answers
+    ``project status --json`` on its *resolved* branch -- ``registered:
+    true``, unlike the A1 row above -- with ``statePointerCorrupt: true``,
+    ``indexStale`` present, and a ``reason``. This is the arm round one
+    (code review HIGH) found the hook's warning misdescribing as
+    "could not be fully resolved".
+    """
+    env = _sandbox_env(tmp_path)
+    root = tmp_path / "repo"
+    root.mkdir()
+    _init_git_repo(root, env)
+    _register_a_fresh_project(root, env)
+    apply_result = _run_real_cli(["migrate", "apply"], cwd=root, env=env)
+    assert apply_result.returncode == 0, apply_result.stderr
+
+    (root / ".theurian" / "state" / "active.json").write_text("not json at all", encoding="utf-8")
+
+    status_result = _run_real_cli(["project", "status", "--json"], cwd=root, env=env)
+
+    assert status_result.returncode == 0, status_result.stderr
+    payload = json.loads(status_result.stdout)
+    assert payload["registered"] is True
+    assert payload["statePointerCorrupt"] is True
+    assert "reason" in payload
+    assert "indexStale" in payload
 
 
 @pytest.mark.skipif(_GIT is None, reason="git is required to build this row's sandbox")
