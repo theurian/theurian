@@ -154,11 +154,12 @@ def test_the_refusal_reaches_a_person_as_an_error_line_and_not_a_traceback(
 ) -> None:
     """Nobody runs this with ``--json``. The default output is the one that matters.
 
-    ``ensure_gitignore`` raising was correct all along; the only ``except`` in
-    ``init_command`` wrapped ``resolve_context``, so the refusal arrived as a
-    Typer traceback with the remedy somewhere in the middle of it. Pinned on the
-    rendered stderr, because that is the difference -- the exception is the same
-    either way.
+    ``ensure_gitignore`` raising was correct all along; ``init_command``'s only
+    guard at the time wrapped the resolve (now ``_resolve_or_refuse``) and not
+    this call, so the refusal arrived as a Typer traceback with the remedy
+    somewhere in the middle of it. ``ensure_gitignore`` has its own ``except``
+    now; this pins the rendered stderr, because that is the difference -- the
+    exception is the same either way.
     """
     (project / ".gitignore").write_text(UNRESOLVABLE["repeated-start"], encoding="utf-8")
 

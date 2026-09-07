@@ -204,6 +204,15 @@ def resolve_context(
             registered under more than one project id, or if the registry holds
             an entry that cannot be read and no explicit ``project_id`` was
             given.
+        ProjectPathEscapeError: If ``.theurian`` itself resolves outside the
+            working tree -- a clone delivered it as a symbolic link (#237, #550).
+            A ``ProjectError`` subtype, named because the three callers
+            (``_require_project``, ``_resolve_or_refuse``, ``project_status``)
+            arm against it specifically to grade it ``EXIT_STATE_ERROR``.
+        PathEscapeError: If ``.theurian/migrations`` resolves outside the tree.
+            The migration loader raises it (#233); a ``SecurityError``, *not* a
+            ``MigrationError``, and the same three callers arm against it beside
+            ``ProjectPathEscapeError`` for one grade over both.
         MigrationError: If the migrations under it do not load or validate.
         SchemaUnreadableError: If probing for the installed package's JSON
             Schema raised (``schema_root``), or the schema was found but a

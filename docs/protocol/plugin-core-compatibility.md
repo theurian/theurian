@@ -268,6 +268,40 @@ containment refusals over a contained path**: it says nothing about `compat
 check`'s 0/2/3, which a plugin script does branch on, nor about exit 1 elsewhere
 in `index build`, which still means the build failed.
 
+**The guard one level up followed, and it is the same decision**
+([#550](https://github.com/theurian/theurian/issues/550)). #525's move covered
+paths *under* `.theurian/`; `.theurian` **itself** delivered as a symbolic link
+out of the working tree is refused earlier, by the root-join check in
+`ProjectPaths.of`, and kept whatever each caller assigned to "could not resolve a
+project". Measured at `8372cc8c` against the real CLI, one fresh repository per
+command: `migrate status`, `migrate validate`, `migrate apply`, `index build`,
+`index status` and `index gc` each answered **1** for that face and **4** for the
+identical link one level deeper, and `theurian project status` answered **0**
+with a payload calling the project registered. Thirteen commands now report
+`EXIT_STATE_ERROR` for it — the six above, `project status`, `init`, `project
+register`, `ingest`, `findings build`, `propose` and `propose accept`. A sibling
+face moves with it: an escaping `.theurian/migrations` (honest `.theurian`, the
+loader's `PathEscapeError`, #233) that the ten `_require_project` commands already
+graded 4 but `project status` graded **0** and `init`/`project register` graded
+**1** — now uniformly 4, so a doctored `.theurian` answers one code at whichever
+level the link sits. The population is derived from the source by
+`packages/theurian-core/tests/integration/test_escaping_knowledge_dir_grading.py`,
+which reads each resolver's `except` arms from the AST and asserts they grade both
+escape types alike, and classifies the five `doctor`/`setup` call sites that
+absorb the refusal into a `conflicting` step; those keep their verdict, only the
+withheld `detail`'s type name refining from `ProjectError` to
+`ProjectPathEscapeError`.
+
+The same three plugin commands read the code, and none of their branches changes
+meaning: `index.md`'s "exit 1 and exit 4 both mean nothing was published" and its
+selected-exit set (1, 4, 6) are unaffected because both codes were already in it,
+`reindex.md`'s exit-4 paragraph is broadened to name the new doctored-checkout
+shapes while keeping "relay the remedy it prints", and `propose.md`'s "**4** means
+the project's knowledge state refuses the move" is what a doctored `.theurian` was
+previously answering **1** for. So the #329 condition is discharged by the
+branches already being right (or broadened in the same change), rather than by
+re-meaning them — a weaker claim than #525's and stated as one.
+
 On a bump: raise `CURRENT_PROTOCOL_VERSION` in Core, release Core, then update
 every client's `protocolVersion` and `coreCompatibility`, and release the
 clients. In that order — clients that stop working loudly are recoverable;

@@ -2425,10 +2425,13 @@ def test_apply_refuses_an_escaping_theurian_symlink_and_writes_nothing_outside_t
 
     code, payload = _invoke("migrate", "apply")
 
-    # Exit 1, not `EXIT_STATE_ERROR`: the refusal is raised while resolving the
-    # project context (`ProjectPaths.of`), upstream of the migration load that
-    # owns exit 4 -- so the escape is caught before a state directory is named.
-    assert code == 1
+    # `EXIT_STATE_ERROR`, since #550 made `ProjectPaths.of` raise the same
+    # `ProjectPathEscapeError` the containment chokepoint raises. Being upstream
+    # of the migration load is why the *refusal* happens here and not there; it
+    # was never a reason for a different exit code, and while it was treated as
+    # one this command answered 1 for a link at `.theurian` and 4 for the same
+    # link one level deeper at `.theurian/state`.
+    assert code == EXIT_STATE_ERROR
     assert payload["remedy"] == KNOWLEDGE_DIR_ESCAPE_REMEDY
     assert _escaped_state_artefacts(shared) == [], "migrate apply wrote state outside the tree"
 
@@ -2459,9 +2462,12 @@ def test_status_over_an_escaping_theurian_symlink_reads_nothing_from_outside_the
 
     code, payload = _invoke("migrate", "status")
 
-    # Exit 1 for the same reason the write face refuses at exit 1: the escape is
-    # caught resolving the context, before any pointer under the tree is read.
-    assert code == 1
+    # `EXIT_STATE_ERROR` for the same reason the write face above reports it: one
+    # root cause, one grade, whichever guard notices it (#550). The escape is
+    # still caught resolving the context, before any pointer under the tree is
+    # read -- what changed is that being caught early no longer means being
+    # graded differently.
+    assert code == EXIT_STATE_ERROR
     assert payload["remedy"] == KNOWLEDGE_DIR_ESCAPE_REMEDY
 
 
@@ -2887,7 +2893,10 @@ def test_validate_does_not_tell_a_user_to_delete_a_migration_an_ancestor_symlink
     symlink the root join does not resolve.
 
     What stays pinned here is that the earlier refusal is non-destructive even
-    with a real migration sitting behind the link: the entry is untouched.
+    with a real migration sitting behind the link: the entry is untouched. Its
+    grade is ``EXIT_STATE_ERROR`` since #550, which is also what the loader's own
+    ``PathEscapeError`` earns -- so a caller reading the code cannot tell the two
+    guards apart, and does not have to.
     """
     _invoke("init")
     _write_migration(project)
@@ -2899,7 +2908,7 @@ def test_validate_does_not_tell_a_user_to_delete_a_migration_an_ancestor_symlink
 
     code, payload = _invoke("migrate", "validate")
 
-    assert code == 1
+    assert code == EXIT_STATE_ERROR
     assert payload["remedy"] == KNOWLEDGE_DIR_ESCAPE_REMEDY
     assert "is a symbolic link" not in payload["remedy"]
     assert "remove it" not in payload["remedy"], "that instruction destroys the user's work"
@@ -2921,7 +2930,8 @@ def test_validate_does_not_tell_a_user_to_delete_a_symlink_that_is_not_the_escap
     at all -- so the entry's link-ness never selects a remedy. What this pins is
     the outcome that made the old wording a defect rather than a nit: the refusal
     removes nothing, so the migration is still there to be repaired once the
-    `.theurian` link is fixed.
+    `.theurian` link is fixed. It reports ``EXIT_STATE_ERROR`` since #550, the
+    grade every other face of a doctored clone already carried.
     """
     _invoke("init")
     _write_migration(project)
@@ -2937,7 +2947,7 @@ def test_validate_does_not_tell_a_user_to_delete_a_symlink_that_is_not_the_escap
 
     code, payload = _invoke("migrate", "validate")
 
-    assert code == 1
+    assert code == EXIT_STATE_ERROR
     assert payload["remedy"] == KNOWLEDGE_DIR_ESCAPE_REMEDY
     assert "remove it" not in payload["remedy"], "that instruction destroys the user's work"
     assert entry.is_symlink(), "the entry is still there to be repaired"

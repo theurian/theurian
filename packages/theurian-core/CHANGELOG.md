@@ -12,6 +12,74 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING: thirteen commands move an escaping `.theurian` *directory* from
+  exit 1 — `theurian project status` from exit **0** — to exit 4**
+  ([#550](https://github.com/theurian/theurian/issues/550), #237, T-5, SEC-7).
+  0.1.0 unified the grading for a doctored path *under* `.theurian/`
+  ([#525](https://github.com/theurian/theurian/issues/525)). The guard one level
+  up did not move with it: `ProjectPaths.of`'s join check — which refuses
+  `.theurian` **itself** delivered as a symbolic link out of the working tree,
+  before any helper derives a path — raised the base `ProjectError` rather than
+  the escape type the CLI grades on, so its refusal fell past every handler keyed
+  on a containment escape into whatever each caller assigns to "could not resolve
+  a project". Which *level* of the tree the clone's link sat at decided the exit
+  code.
+
+  Measured against the real CLI at `8372cc8c` (macOS 26.6, CPython 3.13.3), one
+  fresh repository per command, `.theurian/state` escaping beside `.theurian`
+  escaping:
+
+  | command | leaf | directory |
+  | :-- | --: | --: |
+  | `migrate status`, `migrate validate`, `migrate apply` | 4 | 1 |
+  | `index build`, `index status`, `index gc` | 4 | 1 |
+  | `project status` | 4 | **0** |
+
+  `theurian project status` was the sharpest of them: it published a payload
+  saying `registered: true` at exit 0 for a project whose entire layout resolved
+  outside the working tree. It now refuses, for the reason the same command
+  already refuses over a doctored state database — no partial answer about a tree
+  in that condition is worth publishing. `init`, `project register`, `ingest`,
+  `findings build`, `propose` and `propose accept` move from 1 to 4 with them.
+
+  **The same three commands close a sibling face: an escaping
+  `.theurian/migrations`.** `.theurian` is honest there and only `migrations`
+  under it is the link, so `ProjectPaths.of` passes and the *migration loader*
+  refuses (`PathEscapeError`, #233) — a different escape type the ten
+  `_require_project` commands already graded 4, but that `project status` graded
+  **0** and `init`/`project register` graded **1** (measured at `dbad3898`). All
+  thirteen now grade it 4 too, so a doctored `.theurian` answers one code whether
+  the link is the directory itself or the migrations under it.
+
+  `EXIT_STATE_ERROR` (4) is the survivor for #525's reason, unchanged: exit 1 is
+  this CLI's "the command could not run here", and a working tree carrying a link
+  force-added past ADR-0004's ignore is a knowledge-state problem the user must
+  repair. Exit codes are a published contract, so this is called out as breaking;
+  `docs/protocol/plugin-core-compatibility.md` records it beside #525's decision.
+  The CP-2 envelope does not move — one `{error, remedy}` document on stderr with
+  stdout empty — only the number beside it.
+
+  **The population is derived rather than listed.**
+  `tests/integration/test_escaping_knowledge_dir_grading.py` reads the eight
+  `ProjectPaths.of` call sites and the thirteen context-resolving callers out of
+  the source, and — since "uniform" is a claim about the resolvers, not a hope —
+  reads each resolver's `except` arms from the AST and asserts all three grade the
+  same escape types (both `PathEscapeError` and `ProjectPathEscapeError`) the same
+  way. Every key was shown to fail on a planted member by name, so the closure is
+  checkable rather than asserted.
+
+  **What did *not* move, and why.** `theurian doctor` and `theurian setup` reach
+  five of those call sites and keep reporting `conflicting`, "Could not check
+  initial-index." / "Could not check migrations-valid." for both faces — the step
+  status, summary and consent flag are byte-identical before and after. The one
+  thing that does change is the withheld `detail`: it names the exception type,
+  which is now `ProjectPathEscapeError` where it was the base `ProjectError` (a
+  type-name refinement, nothing a caller branches on). A probe has to come back
+  with a verdict, and publishing a containment refusal as a claim about the
+  operator's YAML is the misattribution that placement decision exists to avoid.
+
 ### Fixed
 
 - **The project-config schema stops advertising a knowledge directory you can
@@ -66,6 +134,18 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   parametrised row for a directory name with a space is the tripwire on the
   hazard #533 recorded — honour the key and that name renders unquoted into the
   `rm` command `derived_escape_remedy` builds.
+- **An escaping `.theurian` reached an MCP caller with no cure attached**
+  ([#550](https://github.com/theurian/theurian/issues/550), SEC-7). Every
+  knowledge tool resolves a project through one function, and the
+  `ProjectPaths.of` in it was the single resolve on that path with no guard. Its
+  refusal therefore reached the tool boundary through the forwarding wrapper,
+  which republishes `str(exc)` and drops `.remedy` by design — so an agent asking
+  about a project whose `.theurian` was a link out of the tree received
+  *".theurian resolves outside the project root …"* and no next action, while the
+  read one line below published *"Remove `.theurian/state` …"* for the leaf face
+  of the identical root cause. The resolve is now guarded like its neighbour and
+  the knowledge-directory cure travels with the refusal.
+
 - **`theurian doctor` no longer blames your migrations for a broken
   installation** ([#529](https://github.com/theurian/theurian/issues/529), O-3,
   SEC-6). A build that cannot locate or read the JSON Schemas it publishes

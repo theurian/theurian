@@ -1174,7 +1174,32 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         # for `/etc`). Making the directory configurable is one change across
         # the writer, the CLI and here; until then the default is the single
         # authority and the recorded field is documentation.
-        paths = ProjectPaths.of(Path(entry["rootPath"]))
+        #
+        # Guarded for the reason the `read_active_state` call below is, and it was
+        # the one resolve on this path that was not (#550). `of`'s join check
+        # refuses a `.theurian` a clone delivered as a link out of the working
+        # tree; raised from here it reached `_forwarding`, which republishes
+        # `str(exc)` and drops `.remedy` *by design* -- so an agent was told
+        # ".theurian resolves outside the project root …" and given no next
+        # action, while the leaf face of the identical root cause arrived one line
+        # below through `_with_remedy` carrying "Remove `.theurian/state` …".
+        #
+        # `_with_remedy` and not the message-suppressing treatment
+        # `state_database_named`'s handler gives its neighbour, because both of
+        # that one's reasons are false here. The absolute path this message names
+        # is `rootPath` itself, which the "no built knowledge state" refusal three
+        # lines below already publishes to this same caller through `_publishable`,
+        # and `project.list` publishes for every registered project; the entry's
+        # own `rootPath` is not withheld from the grant that named the project.
+        # (`_unresolvable` names project *ids*, not `rootPath` -- so it is not the
+        # precedent, the no-built-state refusal is.) And the remedy is
+        # `KNOWLEDGE_DIR_ESCAPE_REMEDY`, keyed on the knowledge directory -- which
+        # is exactly what escaped here, rather than the mis-keyed cure a pointer's
+        # own `../` would have earned.
+        try:
+            paths = ProjectPaths.of(Path(entry["rootPath"]))
+        except ProjectError as exc:
+            raise _with_remedy(exc) from exc
         try:
             active = read_active_state(paths)
         except ProjectError as exc:
