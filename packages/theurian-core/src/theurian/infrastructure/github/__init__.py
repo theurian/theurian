@@ -25,9 +25,13 @@ docstrings carry them one by one; the shape is:
   never merely scrubbed;
 * the binary is resolved to an absolute path and no shell is used anywhere;
 * no ``--paginate``: every page is a cursor this adapter hands back;
-* a request timeout, a page cap, a pull-request cap, a per-thread comment cap
-  and a per-response byte cap, each a named constant in
-  :mod:`~theurian.infrastructure.github.limits`;
+* a request timeout, a page cap, a pull-request cap and a per-response byte cap,
+  each a named constant in :mod:`~theurian.infrastructure.github.limits` -- and
+  **no bound lives as a number inside a query string**: every ``first:`` literal a
+  document spells is pinned to a constant there, which
+  ``test_every_first_literal_in_a_document_is_pinned_to_a_constant`` reddens when
+  one is not. The list above is deliberately not the list of caps, because the
+  per-connection ones grow with the documents;
 * a version floor, expressed as a constant with a refusal rather than as prose;
 * ``gh`` absent or unauthenticated is a graded refusal envelope with a remedy,
   and the child's stderr surfaces only inside it.
