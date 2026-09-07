@@ -350,6 +350,24 @@ def _interpolations() -> list[tuple[str, str]]:
     return found
 
 
+def _value_sources(text: str) -> list[str]:
+    """The names an interpolated expression takes its **value** from.
+
+    A method name is not one of them: ``' '.join(arguments)`` takes its value
+    from ``arguments``, and ``join`` is how it is spelled. Collecting the callee
+    of a call would make every rendering helper look like an unbounded source and
+    push the answer into :data:`_THIS_PACKAGES_OWN` as noise, which is the
+    opposite of what that table is for.
+    """
+    tree = ast.parse(text)
+    called = {node.func for node in ast.walk(tree) if isinstance(node, ast.Call)}
+    return [node.id for node in ast.walk(tree) if isinstance(node, ast.Name)] + [
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute) and node not in called
+    ]
+
+
 def test_the_summary_walk_finds_the_interpolations_it_is_meant_to_judge() -> None:
     """The can-fail companion: an empty walk would make the row below always green.
 
@@ -391,11 +409,7 @@ def test_every_summary_interpolation_is_routed_or_this_packages_own() -> None:
         f"  {where}  {text}"
         for where, text in _interpolations()
         if not any(router in text for router in _ROUTERS)
-        and not all(
-            part in _THIS_PACKAGES_OWN
-            for part in [n.id for n in ast.walk(ast.parse(text)) if isinstance(n, ast.Name)]
-            + [n.attr for n in ast.walk(ast.parse(text)) if isinstance(n, ast.Attribute)]
-        )
+        and not all(part in _THIS_PACKAGES_OWN for part in _value_sources(text))
     ]
 
     assert not unrouted, (

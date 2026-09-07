@@ -235,8 +235,16 @@ def bounded_echo(value: object) -> str:
     exception must not be raised -- ADR-0030 clause 9 wants an envelope, never a
     traceback -- and ``str()`` of an integer is not total: CPython refuses to
     render one past ``sys.get_int_max_str_digits()`` (4300 by default), which is
-    a shape a JSON number can carry. Nothing upstream of every producer promises
-    otherwise, so this answers with the type's name instead of raising.
+    a shape a JSON number can carry.
+
+    **What guards that upstream guards one half of it.** A number parsed out of a
+    response is bounded by ``json.loads``, which applies the same interpreter
+    limit while parsing, so no producer reading a response can reach the failure.
+    A number a *caller* passed is bounded by nothing at all, and
+    ``list_pull_requests`` proved it: it interpolated a caller's ``limit`` raw
+    and a 4301-digit one left the refusal path as a ``ValueError``. So the
+    totality here is load-bearing rather than defensive, and it is why this
+    answers with the type's name instead of raising.
     """
     try:
         text = str(value)

@@ -500,6 +500,12 @@ class GhCli:
 
         The refusal happened at the cap either way -- nothing past it was read --
         and what changes is the sentence and the cure a reader is handed.
+
+        The whole vector is named rather than its first word, because the two
+        probes share one and `gh auth` is not a command a reader can run: the
+        summary is the only place that says which spawn produced 64 KiB, and
+        `auth status --hostname github.com` is what they would have to type to
+        see it again. Every element is this adapter's own literal.
         """
         try:
             return await run_bounded(
@@ -512,7 +518,7 @@ class GhCli:
                 raise
             raise ReviewIngestRefusedError(
                 RefusalGrade.TOOL_FAILED,
-                f"`gh {arguments[0]}` printed more than the recorded "
+                f"`gh {' '.join(arguments)}` printed more than the recorded "
                 f"{MAX_PROBE_STDOUT_BYTES}-byte probe cap, which is not something the "
                 f"GitHub CLI does. It was stopped at the cap, so nothing past it was "
                 f"read, and no request was made with the answer.",

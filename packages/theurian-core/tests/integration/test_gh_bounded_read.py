@@ -143,10 +143,20 @@ _ANSWER_LEAVE_STDERR_HELD_THEN_SLEEP = (
     "time.sleep({sleep})\n"
 )
 
-#: A reap short enough to assert on. :data:`~theurian.infrastructure.github.limits.REAP_SECONDS`
-#: is 5 seconds, and the tests below assert that a cancelled call waits for the
-#: whole of it -- at the shipped value that is five seconds of suite time to
-#: learn something a fraction of a second demonstrates just as well.
+#: A reap short enough to bound a test by.
+#: :data:`~theurian.infrastructure.github.limits.REAP_SECONDS` is 5 seconds, and
+#: the tests below have to allow for the whole of it -- at the shipped value that
+#: is five seconds of waiting per test to learn something a fraction of a second
+#: bounds just as well.
+#:
+#: **What the tests below assert is completion and an upper bound, not a
+#: duration.** An earlier version asserted that a cancelled call spent the whole
+#: reap, which held on two developer machines and on ubuntu and failed on the
+#: macOS runner: ``Process.wait()`` returns as soon as the child's exit has been
+#: observed rather than waiting for the pipes, so how much of the reap is spent
+#: is a race with a callback. Patching the number down is what keeps a lost race
+#: from turning into a test that waits five seconds, or an outer bound that a
+#: slow machine overruns.
 _PATCHED_REAP_SECONDS: Final = 0.5
 
 #: How long a test waits for a child it has to catch **running** before it acts.
@@ -210,7 +220,9 @@ def _is_alive(pid: int) -> bool:
 
 
 @pytest.mark.asyncio
-async def test_a_child_that_overruns_the_cap_is_refused_without_waiting_for_it_to_finish() -> None:
+async def test_a_child_that_overruns_the_cap_is_refused_without_waiting_for_it_to_finish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Clause 10, spelled so a buffering implementation reddens rather than hangs.
 
     The child writes four times the cap -- which fits a pipe buffer, so it does
@@ -218,7 +230,15 @@ async def test_a_child_that_overruns_the_cap_is_refused_without_waiting_for_it_t
     cap is passed inside the first chunk and the refusal is immediate. Reading to
     EOF first, the refusal cannot arrive before the child exits, and the elapsed
     assertion is what says which of the two happened.
+
+    The reap is patched down for the reason it is in the two tests below, and it
+    is a bound on this one's headroom rather than on what it measures: the cap
+    refusal unwinds through ``_end``, and whether that reap returns at once or
+    runs its full length is a race with the exit callback. Losing it here would
+    put five seconds inside a five-second assertion -- the same shape as the
+    cancellation flake, sitting on a smaller margin.
     """
+    monkeypatch.setattr(gh_cli, "REAP_SECONDS", _PATCHED_REAP_SECONDS)
     cap = 1024
     started = time.monotonic()
 
@@ -305,8 +325,16 @@ async def test_a_child_at_the_cap_exactly_is_read_rather_than_refused() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_child_that_never_answers_is_stopped_at_the_recorded_timeout() -> None:
-    """SEC-19, and the child is killed rather than left behind."""
+async def test_a_child_that_never_answers_is_stopped_at_the_recorded_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SEC-19, and the child is killed rather than left behind.
+
+    The reap is patched down for the same reason as its neighbours: the deadline
+    is what this measures, and the unwind after it is headroom whose length is a
+    race with the exit callback rather than a constant.
+    """
+    monkeypatch.setattr(gh_cli, "REAP_SECONDS", _PATCHED_REAP_SECONDS)
     started = time.monotonic()
 
     with pytest.raises(ReviewIngestRefusedError) as raised:
@@ -462,9 +490,11 @@ async def test_a_cancelled_call_runs_end_to_its_last_line(
     spawn, and "provably" is doing work there.** ``run_bounded`` awaits
     ``_start`` *outside* its own ``try``, so a cancellation delivered while
     ``create_subprocess_exec`` is in flight raises there and ``_end`` never runs
-    at all -- the call unwinds in a millisecond and the elapsed floor below reads
-    it as the false semantic it exists to disprove. That is what failed on the
-    macOS runner and passed everywhere else.
+    at all -- so `_release` is never reached, and the assertion below would be
+    reading a call that never entered the code it is about. (An earlier version
+    asserted an elapsed floor here instead, and that is what the macOS runner
+    falsified; the gate is kept because the assertion still needs `_end` to have
+    run, whatever it now asserts about it.)
 
     Two conditions gate the cancel, and they are different facts:
 
@@ -472,8 +502,12 @@ async def test_a_cancelled_call_runs_end_to_its_last_line(
       and inside the ``try``. Nothing else says it: the marker file below is
       written by the child, and a child can be running while the parent's
       coroutine has not yet resumed;
-    * **the descendant is up**, which is what holds the stderr pipe open past the
-      kill so ``wait()`` is held for the whole reap.
+    * **the descendant is up**, which holds the stderr pipe open past the kill.
+      That is a statement about the *conditions* ``_end`` unwinds under -- the
+      shape this test is about -- and not a guarantee about how long ``wait()``
+      then takes: with the exit already observed it returns at once, and the
+      measured cost of the same cancellation ranged from 0.0009s on the macOS
+      runner to the full reap here.
 
     Waiting on the second alone is what this did, under a timer that let it
     proceed anyway when the wait expired -- so on a slow enough machine it
@@ -555,10 +589,14 @@ async def test_a_cancelled_call_runs_end_to_its_last_line(
         f"its awaits is wrapped in `suppress` for exactly this reason: whatever a "
         f"cancellation does to one of them, the statements after it still run."
     )
-    assert elapsed < _PATCHED_REAP_SECONDS + _BOUNDED_WAIT_SECONDS, (
-        f"the cancellation took {elapsed:.1f}s, so the unwind is not bounded by "
-        f"`REAP_SECONDS` at all -- that bound is the whole reason a caller may "
-        f"cancel this call and expect to get control back."
+    # The reap, twice, plus a second for the machine. Tight enough that the
+    # shipped five-second reap would fail it -- a bound of `_BOUNDED_WAIT_SECONDS`
+    # on top would have passed whether or not `REAP_SECONDS` was honoured at all.
+    ceiling = _PATCHED_REAP_SECONDS * 2 + 1.0
+    assert elapsed < ceiling, (
+        f"the cancellation took {elapsed:.1f}s against a {ceiling:g}s ceiling, so the "
+        f"unwind is not bounded by `REAP_SECONDS` at all -- and that bound is the "
+        f"whole reason a caller may cancel this call and expect to get control back."
     )
 
 
