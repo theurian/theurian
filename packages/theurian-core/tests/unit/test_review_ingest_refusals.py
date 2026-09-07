@@ -303,7 +303,6 @@ _THIS_PACKAGES_OWN: Final[dict[str, str]] = {
     "byte_cap": "a parameter; both production call sites pass a module constant",
     "timeout": "a parameter; production passes REQUEST_TIMEOUT_SECONDS",
     "entry": "the allowlist entry, so the operator's own config and pattern-bounded",
-    "repository": "an allowlisted name, so pattern-bounded before it reaches a summary",
     "field": "this adapter's own literal naming a response field",
     "what": "this adapter's own literal naming a read",
     "name": "a GraphQL variable name from a closed set",
@@ -311,12 +310,33 @@ _THIS_PACKAGES_OWN: Final[dict[str, str]] = {
     "key": "a member of TRANSPORT_OVERRIDE_KEYS",
     "named": "an OSError's strerror, the operating system's own short message",
     "arguments": "a probe's vector, which is this adapter's own literals",
-    "exc": "reached only as type(exc).__name__ -- a class name, not a value",
-    "value": "reached only as type(value).__name__ -- a class name, not a value",
-    "__name__": "a class name: bounded by being an identifier, and not the value",
-    "type": "the builtin, reached only to take a class name",
-    "event": "reached only as event.repository, which is the allowlisted name",
 }
+
+#: Expressions that are safe **in this exact shape and not otherwise**.
+#:
+#: The distinction is the whole point, and it was measured rather than argued.
+#: ``exc``, ``value`` and ``event`` used to sit in the table above as bare names
+#: with a reason that named a shape -- "reached only as ``type(exc).__name__``"
+#: -- and nothing enforced the shape. So regressing ``_start``'s
+#: ``{named or type(exc).__name__}`` to ``{exc}`` stayed green, and ``{exc}`` is
+#: how an ``OSError``'s ``str()`` publishes the absolute path of the operator's
+#: ``gh``: the disclosure a whole commit was written to close. Matching the
+#: unparsed expression is what makes the reason enforceable instead of a note.
+_EXEMPT_EXPRESSIONS: Final[dict[str, str]] = {
+    "named or type(exc).__name__": (
+        "an OS message or a class name; `{exc}` would publish the OSError's filename"
+    ),
+    "type(value).__name__": "a class name, not the value",
+    "type(exc).__name__": "a class name, not the value",
+    "event.repository": (
+        "the allowlisted name; `{event}` would publish the whole record, response "
+        "title and url included"
+    ),
+}
+
+#: How the source text mentions the refusal as a call, for the count that keeps
+#: the syntax walk honest about its own population.
+_MENTIONS_THE_REFUSAL: Final = re.compile(r"\bReviewIngestRefusedError\(")
 
 #: The helpers that bound a value on its way into a summary.
 _ROUTERS: Final[frozenset[str]] = frozenset(
@@ -324,29 +344,72 @@ _ROUTERS: Final[frozenset[str]] = frozenset(
 )
 
 
-def _interpolations() -> list[tuple[str, str]]:
-    """Every interpolated expression in every refusal summary the package builds.
+def _source_files() -> list[pathlib.Path]:
+    """Every module in the shipped package, in a stable order."""
+    return sorted(pathlib.Path(review_ingest.__file__).parents[2].rglob("*.py"))
 
-    The population key, stated so it can be attacked: the **first positional
-    argument** of every ``ReviewIngestRefusedError(...)`` call in
-    ``packages/theurian-core/src``, which is the summary. ``detail`` is excluded
-    deliberately -- it has a bound of its own, enforced by refusing at
-    construction rather than by its producers.
-    """
-    source_root = pathlib.Path(review_ingest.__file__).parents[2]
-    found: list[tuple[str, str]] = []
-    for path in sorted(source_root.rglob("*.py")):
+
+def _refusal_calls() -> list[tuple[pathlib.Path, ast.Call]]:
+    """Every ``ReviewIngestRefusedError(...)`` construction the package makes."""
+    found: list[tuple[pathlib.Path, ast.Call]] = []
+    for path in _source_files():
         source = path.read_text(encoding="utf-8")
         if "ReviewIngestRefusedError(" not in source:
             continue
         for node in ast.walk(ast.parse(source)):
-            if not isinstance(node, ast.Call):
-                continue
-            if getattr(node.func, "id", "") != "ReviewIngestRefusedError" or len(node.args) < 2:
-                continue
-            for piece in ast.walk(node.args[1]):
-                if isinstance(piece, ast.FormattedValue):
-                    found.append((f"{path.name}:{piece.lineno}", ast.unparse(piece.value)))
+            if isinstance(node, ast.Call) and getattr(node.func, "id", "") == (
+                "ReviewIngestRefusedError"
+            ):
+                found.append((path, node))
+    return found
+
+
+def _summary_of(call: ast.Call) -> ast.expr | None:
+    """The summary argument, however it was passed.
+
+    Positionally it is the **second** -- ``(grade, summary)`` -- and by keyword it
+    is ``summary=``. Reading only the positional form is not a stylistic
+    limitation: a producer that passed it by keyword would have every
+    interpolation in it go unexamined, and the walk would report the same clean
+    result it reports now.
+    """
+    if len(call.args) >= 2:
+        return call.args[1]
+    for keyword in call.keywords:
+        if keyword.arg == "summary":
+            return keyword.value
+    return None
+
+
+def _interpolations() -> list[tuple[str, str]]:
+    """Every interpolated expression in every refusal summary the package builds.
+
+    The population key, stated so it can be attacked: the **summary argument** --
+    the second positional, or ``summary=`` -- of every
+    ``ReviewIngestRefusedError(...)`` call under
+    ``packages/theurian-core/src``. ``detail`` is excluded deliberately: it has a
+    bound of its own, enforced by refusing at construction rather than by its
+    producers.
+
+    **What this key cannot see, said here rather than discovered later.** It
+    matches the class by *name* at the call, so a qualified call
+    (``review_ingest.ReviewIngestRefusedError(...)``) is invisible to it -- that
+    one is caught, because
+    :func:`test_the_walk_matches_every_call_the_source_text_mentions` counts the
+    text too and the two then disagree. An **aliased import** escapes both, since
+    neither the text nor the name matches. So does a summary built in a helper
+    and passed in as a variable: the interpolation happens somewhere this does
+    not look, and the variable itself reads as a bare name. The last is why
+    :data:`_THIS_PACKAGES_OWN` is a table of *reasons* and not a list of names.
+    """
+    found: list[tuple[str, str]] = []
+    for path, call in _refusal_calls():
+        summary = _summary_of(call)
+        if summary is None:
+            continue
+        for piece in ast.walk(summary):
+            if isinstance(piece, ast.FormattedValue):
+                found.append((f"{path.name}:{piece.lineno}", ast.unparse(piece.value)))
     return found
 
 
@@ -366,6 +429,47 @@ def _value_sources(text: str) -> list[str]:
         for node in ast.walk(tree)
         if isinstance(node, ast.Attribute) and node not in called
     ]
+
+
+def test_the_walk_matches_every_call_the_source_text_mentions() -> None:
+    """The walk's key is a name at a call site, so a different call shape is silent.
+
+    Two counts of one population, taken different ways. The text knows nothing
+    about syntax and finds every mention; the walk knows the syntax and finds
+    every call it recognises. While they agree, the walk is looking at all of it.
+
+    A **keyword** summary (``summary=``) used to fall out of the walk while the
+    text still counted it, and a **qualified** call
+    (``review_ingest.ReviewIngestRefusedError(...)``) still does -- the walk
+    matches ``node.func.id``, which a qualified call does not have. Either now
+    shows up here as a disagreement rather than as a clean report over a
+    population that quietly shrank.
+
+    The class's own ``class ReviewIngestRefusedError(TheurianError):`` line
+    matches the text and is not a call, so it is subtracted by name rather than
+    by counting it out.
+    """
+    mentions = 0
+    definitions = 0
+    for path in _source_files():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not _MENTIONS_THE_REFUSAL.search(line):
+                continue
+            if line.lstrip().startswith("class ReviewIngestRefusedError("):
+                definitions += 1
+            else:
+                mentions += 1
+
+    assert definitions == 1, (
+        f"the refusal class is defined {definitions} times, so the subtraction below "
+        "is measuring something other than what it was written for"
+    )
+    assert len(_refusal_calls()) == mentions, (
+        f"the source text mentions the refusal as a call {mentions} times and the "
+        f"walk recognises {len(_refusal_calls())}. A call the walk cannot see is a "
+        "summary nobody checks: give it the plain, unqualified form, or teach "
+        "`_refusal_calls` the shape and say here why the two counts still line up."
+    )
 
 
 def test_the_summary_walk_finds_the_interpolations_it_is_meant_to_judge() -> None:
@@ -409,6 +513,7 @@ def test_every_summary_interpolation_is_routed_or_this_packages_own() -> None:
         f"  {where}  {text}"
         for where, text in _interpolations()
         if not any(router in text for router in _ROUTERS)
+        and text not in _EXEMPT_EXPRESSIONS
         and not all(part in _THIS_PACKAGES_OWN for part in _value_sources(text))
     ]
 
@@ -417,8 +522,10 @@ def test_every_summary_interpolation_is_routed_or_this_packages_own() -> None:
         "bounding helper nor this package's own:\n"
         + "\n".join(unrouted)
         + "\n\nRoute it through `bounded_echo` (or `bounded_quote` where the site "
-        "quotes), or add the name to `_THIS_PACKAGES_OWN` with the reason it needs "
-        "no bound. A summary is published; an unbounded value in one is a megabyte "
-        "in somebody's terminal, or a `ValueError` out of the one path that may "
-        "not raise."
+        "quotes); or, if it needs no bound, add the *name* to `_THIS_PACKAGES_OWN` "
+        "when any use of it is safe, and the *whole expression* to "
+        "`_EXEMPT_EXPRESSIONS` when only this shape is -- with the reason either "
+        "way. A summary is published; an unbounded value in one is a megabyte in "
+        "somebody's terminal, or a `ValueError` out of the one path that may not "
+        "raise."
     )
