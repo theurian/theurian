@@ -48,12 +48,15 @@ import shutil
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final
+from typing import Final, cast
 
 import pytest
 
+from theurian.domain.enums import ReviewThreadState
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.review import ReviewComment, ReviewEvent, ReviewParticipant, ReviewThread
+from theurian.domain.review_ingest import RefusalGrade, ReviewIngestRefusedError
+from theurian.infrastructure.github.environment import FORWARDED_BY_VALUE
 from theurian.infrastructure.github.review_provider import GitHubReviewProvider
 
 pytestmark = [pytest.mark.integration, pytest.mark.e2e, pytest.mark.asyncio]
@@ -95,10 +98,48 @@ def _real_environment() -> dict[str, str]:
     Only the variables the adapter forwards by value are worth passing; it
     strips everything else regardless. The real ``HOME`` is what lets the
     spawned ``gh`` reach the operator's keyring, which is how the shipped tool
-    authenticates.
+    authenticates. The set is imported from the production constant rather than
+    re-listed, so a new config-locator added there is forwarded here too.
     """
-    forwarded = ("HOME", "GH_CONFIG_DIR", "XDG_CONFIG_HOME")
-    return {name: os.environ[name] for name in forwarded if name in os.environ}
+    return {name: os.environ[name] for name in FORWARDED_BY_VALUE if name in os.environ}
+
+
+async def _read_or_skip(coro: object) -> object:
+    """Await a real adapter read, degrading a transport refusal to a skip.
+
+    The up-front ``gh auth status`` guard cannot cover a network that drops
+    *between* the guard and a read, and it rests on ``gh`` exiting non-zero when
+    offline (unpinned third-party behaviour). Either way a transport-layer
+    ``ReviewIngestRefusedError`` here is an environment condition, not an adapter
+    defect, so it skips rather than erroring the run -- which keeps a
+    network-restricted CI job (``Full suite with no network``) green even on a
+    machine where ``gh`` is authenticated locally. A refusal that is NOT
+    transport (a page cap, a malformed document) is a real finding and is left to
+    raise.
+    """
+    try:
+        return await coro  # type: ignore[misc]
+    except ReviewIngestRefusedError as exc:
+        if exc.grade in _TRANSPORT_GRADES:
+            pytest.skip(f"gh could not reach the API ({exc.grade}): {exc}")
+        raise
+
+
+#: The refusal grades that mean "the environment could not run the read", not
+#: "the read returned a shape the adapter refuses". Keyed on the structured
+#: :class:`RefusalGrade` the adapter attaches, never on message text: a
+#: non-zero exit or empty output is ``TOOL_FAILED`` (``gh_cli`` grades it so),
+#: the binary being gone is ``TOOL_MISSING``, and auth/version faults are their
+#: own grades. A ``LIMIT_EXCEEDED`` or an allowlist/transport-override refusal is
+#: NOT here -- those are real findings and are left to raise.
+_TRANSPORT_GRADES: Final = frozenset(
+    {
+        RefusalGrade.TOOL_MISSING,
+        RefusalGrade.TOOL_TOO_OLD,
+        RefusalGrade.TOOL_UNAUTHENTICATED,
+        RefusalGrade.TOOL_FAILED,
+    }
+)
 
 
 @pytest.fixture(scope="module")
@@ -129,7 +170,15 @@ def provider(tmp_path: Path, _skip_reason: str | None) -> GitHubReviewProvider:
 
 
 async def _some_events(provider: GitHubReviewProvider, limit: int = 20) -> tuple[ReviewEvent, ...]:
-    return await provider.list_pull_requests(_PROJECT, _REPOSITORY, limit=limit)
+    result = await _read_or_skip(provider.list_pull_requests(_PROJECT, _REPOSITORY, limit=limit))
+    return cast("tuple[ReviewEvent, ...]", result)
+
+
+async def _threads_of(
+    provider: GitHubReviewProvider, event: ReviewEvent
+) -> tuple[ReviewThread, ...]:
+    result = await _read_or_skip(provider.get_threads(_PROJECT, event))
+    return cast("tuple[ReviewThread, ...]", result)
 
 
 async def _threads_across(
@@ -138,7 +187,7 @@ async def _threads_across(
     """Threads gathered across events until ``cap`` are seen or events run out."""
     gathered: list[ReviewThread] = []
     for event in events:
-        for thread in await provider.get_threads(_PROJECT, event):
+        for thread in await _threads_of(provider, event):
             gathered.append(thread)
             if len(gathered) >= cap:
                 return gathered
@@ -275,7 +324,7 @@ async def test_the_recorded_thread_corpus_is_read_at_the_counts_the_adr_pins(
     """
 
     async def _read(number: int) -> int:
-        threads = await provider.get_threads(_PROJECT, _event_for(number))
+        threads = await _threads_of(provider, _event_for(number))
         for thread in threads:
             assert thread.event_key
             assert thread.comments  # every recorded thread has at least one comment
@@ -300,23 +349,29 @@ async def test_the_recorded_thread_corpus_is_read_at_the_counts_the_adr_pins(
         )
 
 
-async def test_pull_request_352_carries_five_threads_left_unresolved(
+async def test_pull_request_352_carries_five_resolved_threads_with_no_timestamp(
     provider: GitHubReviewProvider,
 ) -> None:
-    """#352's five threads have no resolution timestamp -- the unresolved shape.
+    """#352's five threads are resolved, and the resolution carries no timestamp.
 
-    ADR-0030 and Forge's independent real run both record #352 as five threads
-    with ``resolved_at`` unset. That is the only unresolved-thread positive
-    control Theurian's own corpus offers, so the adapter's nullable-resolution
-    parse (a resolved thread may carry no ``resolvedBy``; an unresolved one no
-    resolution at all) is exercised here against real data rather than only the
-    constructed fixture.
+    This is the resolved-with-no-timestamp nullable arm, not an unresolved one:
+    measured 2026-09-07, #352's five threads are all ``isResolved: true``. The
+    adapter records that state as a ``ReviewResolution(state=RESOLVED)`` whose
+    ``resolved_at`` is structurally ``None`` -- GitHub's ``PullRequestReviewThread``
+    carries no resolution timestamp (ADR-0030 decision 5), so the domain records
+    the resolution as a fact and the timestamp as the absence it is. Asserting
+    the *state* (not ``resolved_at``, which is invariant and so cannot fail) is
+    what makes this a live positive control: if #352's threads were unresolved
+    tomorrow, ``resolution`` would be ``None`` and this fails.
     """
-    threads = await provider.get_threads(_PROJECT, _event_for(352))
+    threads = await _threads_of(provider, _event_for(352))
     assert len(threads) == 5, f"#352 recorded as five threads; read {len(threads)}"
     for thread in threads:
-        resolved_at = None if thread.resolution is None else thread.resolution.resolved_at
-        assert resolved_at is None, (
-            "#352's threads were recorded unresolved (no resolved_at); "
-            f"thread {thread.external_id} now carries {resolved_at!r}"
+        assert thread.resolution is not None, (
+            f"#352's threads were recorded resolved; thread {thread.external_id} "
+            "read as unresolved (resolution is None)"
         )
+        assert thread.resolution.state is ReviewThreadState.RESOLVED
+        # The timestamp is structurally absent for this provider object; recorded
+        # here as the documented shape, not asserted as a falsifiable dimension.
+        assert thread.resolution.resolved_at is None
