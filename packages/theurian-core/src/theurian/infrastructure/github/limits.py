@@ -1,10 +1,14 @@
 """What one review-ingestion run may spend, as named constants (ADR-0030 clauses 7, 8, 10).
 
-Every bound here is reached by a **reported, graded stop** -- never a silent
-truncation and never an unbounded loop. The severity table grades "a caller can
-make the system spend work no recorded limit bounds" as HIGH, so a cap that
-exists only as a page size somewhere in a query string is not a bound: it has to
-be a constant a test can read and prose can name, which is the shape
+Every bound here is enforced by a **reported, graded stop**, or derived from
+ones that are -- never a silent truncation and never an unbounded loop.
+:data:`REAP_SECONDS` is the single exception and is stated as one: it bounds the
+cleanup that follows a stop rather than any work a caller asked for.
+
+The severity table grades "a caller can make the system spend work no recorded
+limit bounds" as HIGH, so a cap that exists only as a page size somewhere in a
+query string is not a bound: it has to be a constant a test can read and prose
+can name, which is the shape
 [#26](https://github.com/theurian/theurian/issues/26)'s T-6 concurrency cap set.
 
 **The version floor is the one version this design measured, and that is
@@ -27,6 +31,17 @@ from typing import Final
 #: repository and short enough that a hung child is an error rather than a hang.
 REQUEST_TIMEOUT_SECONDS: Final = 30.0
 
+#: How long a killed child is given to die before it is left to the runtime.
+#:
+#: The module docstring's exception, and here is what it costs. It is spent
+#: *after* a graded stop rather than on work a caller asked for -- reaping the
+#: child so no refusal leaves a process behind. It is also what an external
+#: cancellation pays: ``gh_cli._end`` runs from a ``finally``, so a caller that
+#: cancels a ``run_bounded`` waits for the unwind instead of returning at once.
+#: That replaced a worse trade, a cancellation that returned immediately and
+#: left a live child and a pending drain task behind.
+REAP_SECONDS: Final = 5.0
+
 #: How many nodes one page asks for. Not a *bound* on anything by itself -- it is
 #: the page size the caps below are counted in -- but it is a constant rather
 #: than a literal in a query because the two caps are stated in terms of it.
@@ -42,6 +57,13 @@ MAX_PAGES: Final = 20
 #: ceiling on the ``limit`` a caller may ask for. Ten pages at
 #: :data:`PAGE_SIZE`, so it bites before :data:`MAX_PAGES` does on that read and
 #: both caps stay reachable rather than one shadowing the other.
+#:
+#: **On full pages.** What this counts is pull requests collected, not pages
+#: read, and GitHub may answer a page with fewer nodes than were asked for. A
+#: read of short pages therefore reaches :data:`MAX_PAGES` first and stops
+#: there: measured against a stand-in ``gh`` answering one node and another page
+#: every time (2026-09-07), the page cap fires after 22 spawns and this cap
+#: never does.
 MAX_PULL_REQUESTS: Final = 500
 
 #: The most comments one thread may carry before the read stops and reports.
@@ -70,13 +92,36 @@ MAX_LINKED_ISSUES: Final = 20
 #: drives under a bounded wait.
 MAX_RESPONSE_BYTES: Final = 8 * 1024 * 1024
 
-#: **The derived ceiling on one paginated read**, recorded because neither
+#: **The derived byte ceiling on one paginated read**, recorded because neither
 #: constant states it and a reader pricing a call needs the product rather than
 #: the factors: :data:`MAX_PAGES` pages at :data:`MAX_RESPONSE_BYTES` each is
-#: 160 MiB of child output a single ``get_threads`` may make this process read.
-#: What bounds *memory* is the per-page cap -- a page is released once it is
-#: parsed -- so the two numbers answer different questions and both are needed.
+#: 160 MiB of child output a single ``list_pull_requests`` or ``get_threads``
+#: may make this process read -- both reach the page cap, and the earlier
+#: version of this sentence named only the second. What bounds *memory* is the
+#: per-page cap -- a page is released once it is parsed -- so the two numbers
+#: answer different questions and both are needed.
 MAX_READ_BYTES_PER_CALL: Final = MAX_PAGES * MAX_RESPONSE_BYTES
+
+#: The two probes -- ``gh --version`` and ``gh auth status`` -- counted as what
+#: they are, spawns, because the two ceilings below are counted in spawns. They
+#: run once per adapter instance rather than once per call, so including them
+#: prices the first call rather than every call.
+_PROBE_SPAWNS: Final = 2
+
+#: **The derived spawn ceiling on one documented call.** The byte ceiling above
+#: prices what a call may *read*; this prices what it may *start*, and no
+#: constant states it on its own. Measured rather than reasoned: 22 children for
+#: ``list_pull_requests`` and 22 for ``get_threads``, against a stand-in ``gh``
+#: that answers a short page and another cursor every time (2026-09-07).
+MAX_SPAWNS_PER_CALL: Final = _PROBE_SPAWNS + MAX_PAGES
+
+#: **The derived wall-clock ceiling on one documented call**, at the recorded
+#: worst case per spawn: :data:`REQUEST_TIMEOUT_SECONDS` before a child is
+#: stopped and :data:`REAP_SECONDS` more for it to die. 770 seconds -- thirteen
+#: minutes of bounded, graded refusing -- which is not a number a reader derives
+#: from a 30-second timeout, and is what a caller with a deadline of its own has
+#: to price against.
+MAX_SECONDS_PER_CALL: Final = MAX_SPAWNS_PER_CALL * (REQUEST_TIMEOUT_SECONDS + REAP_SECONDS)
 
 #: The most stdout a **probe** may produce. ``gh --version`` prints one line and
 #: ``gh auth status`` a short report, so this is generous by orders of magnitude
@@ -87,6 +132,11 @@ MAX_READ_BYTES_PER_CALL: Final = MAX_PAGES * MAX_RESPONSE_BYTES
 #: ``gh --version`` was refused as "a GitHub response larger than the recorded
 #: 4096-byte cap" -- a *stderr* bound, named as a *response* bound, about a
 #: vector that makes no request.
+#:
+#: It is the same number as ``gh_cli._CHUNK_BYTES`` and that is a coincidence,
+#: recorded so a reader does not take it for a relation: one is how much a probe
+#: may print in total, the other how much stdout is taken per read. Neither is
+#: derived from the other and moving one is no reason to move the other.
 MAX_PROBE_STDOUT_BYTES: Final = 64 * 1024
 
 #: The most bytes of a child's stderr this adapter will hold, before it is

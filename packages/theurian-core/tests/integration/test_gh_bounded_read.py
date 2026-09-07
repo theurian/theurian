@@ -143,7 +143,7 @@ _ANSWER_LEAVE_STDERR_HELD_THEN_SLEEP = (
     "time.sleep({sleep})\n"
 )
 
-#: A reap short enough to assert on. :data:`~theurian.infrastructure.github.gh_cli._REAP_SECONDS`
+#: A reap short enough to assert on. :data:`~theurian.infrastructure.github.limits.REAP_SECONDS`
 #: is 5 seconds, and the tests below assert that a cancelled call waits for the
 #: whole of it -- at the shipped value that is five seconds of suite time to
 #: learn something a fraction of a second demonstrates just as well.
@@ -428,7 +428,7 @@ async def test_a_cancelled_call_waits_for_the_reap_it_is_bounded_by(
     that raced, and why.
 
     That length is what the caller pays: cancelling this call is not free, it
-    costs ``_REAP_SECONDS``, and the number is recorded rather than incidental.
+    costs ``REAP_SECONDS``, and the number is recorded rather than incidental.
     The constant is patched down here because five seconds of suite time
     demonstrates nothing half a second does not.
 
@@ -436,7 +436,7 @@ async def test_a_cancelled_call_waits_for_the_reap_it_is_bounded_by(
     used to return at once and leave a live child and a pending drain task
     behind.
     """
-    monkeypatch.setattr(gh_cli, "_REAP_SECONDS", _PATCHED_REAP_SECONDS)
+    monkeypatch.setattr(gh_cli, "REAP_SECONDS", _PATCHED_REAP_SECONDS)
     pidfile = tmp_path / "grandchild.pid"
     call = asyncio.ensure_future(
         run_bounded(
@@ -474,8 +474,7 @@ async def test_a_cancelled_call_waits_for_the_reap_it_is_bounded_by(
         f"that for its own last line."
     )
     assert elapsed < _BOUNDED_WAIT_SECONDS, (
-        f"the cancellation took {elapsed:.1f}s, so the wait is not bounded by "
-        f"`_REAP_SECONDS` at all"
+        f"the cancellation took {elapsed:.1f}s, so the wait is not bounded by `REAP_SECONDS` at all"
     )
 
 

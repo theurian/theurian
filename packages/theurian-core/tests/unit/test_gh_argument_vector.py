@@ -401,13 +401,16 @@ def test_a_page_size_the_document_spells_is_the_constant_that_names_the_cap(
 #: * ``MAX_GH_CONFIG_BYTES`` and ``MAX_REPOSITORY_CHARS`` -- the two
 #:   fixture-independence rebuilds, in their own files.
 #:
-#: ``MAX_READ_BYTES_PER_CALL`` is absent for a different reason: it is *derived*,
-#: so restating its value here would pin a product rather than the derivation.
+#: Three more are absent for a different reason: ``MAX_READ_BYTES_PER_CALL``,
+#: ``MAX_SPAWNS_PER_CALL`` and ``MAX_SECONDS_PER_CALL`` are *derived*, so
+#: restating a value here would pin a product rather than the derivation.
 #: :func:`test_the_derived_per_call_ceiling_is_still_the_product_of_its_factors`
-#: is its pin, and the figure ``limits.py``'s prose names is entailed by that
-#: plus the two factors below.
+#: and :func:`test_the_derived_spawn_and_time_ceilings_are_still_their_derivations`
+#: are their pins, and the figures ``limits.py``'s prose names are entailed by
+#: those plus the factors below.
 RECORDED_BOUNDS: Final[tuple[tuple[str, object], ...]] = (
     ("REQUEST_TIMEOUT_SECONDS", 30.0),
+    ("REAP_SECONDS", 5.0),
     ("PAGE_SIZE", 50),
     ("MAX_PAGES", 20),
     ("MAX_PULL_REQUESTS", 500),
@@ -464,6 +467,47 @@ def test_the_derived_per_call_ceiling_is_still_the_product_of_its_factors() -> N
         f"{limits.MAX_PAGES * limits.MAX_RESPONSE_BYTES}. The ceiling is recorded as a "
         f"derivation so it cannot drift from its factors; if it has become a literal, "
         f"the prose beside it names a product nothing computes."
+    )
+
+
+#: How many spawns the two probes are, restated here rather than imported.
+#:
+#: :data:`~theurian.infrastructure.github.limits.MAX_SPAWNS_PER_CALL` is written
+#: as ``_PROBE_SPAWNS + MAX_PAGES``, so a pin that read ``_PROBE_SPAWNS`` would
+#: be an identity and would stay green if a third probe were added and the
+#: constant left alone. Written out, it is the second copy that has to move.
+_RECORDED_PROBE_SPAWNS: Final = 2
+
+
+def test_the_derived_spawn_and_time_ceilings_are_still_their_derivations() -> None:
+    """The same argument as the byte ceiling, for the two that price a call's cost.
+
+    Neither number is stated by any single constant: 22 children and 770 seconds
+    come out of the page cap, the probe count and the per-spawn ceiling together,
+    and a reader pricing one ``list_pull_requests`` or ``get_threads`` call needs
+    the products. Written as derivations so they cannot drift from their factors
+    -- a hand-typed ``770.0`` is right on the day it is typed and silently wrong
+    the first time the timeout or the reap moves, with the prose beside it still
+    naming the old figure.
+
+    The factors themselves are pinned in :data:`RECORDED_BOUNDS`, so between that
+    table and these two assertions the published numbers are entailed rather than
+    transcribed.
+    """
+    assert limits.MAX_SPAWNS_PER_CALL == _RECORDED_PROBE_SPAWNS + limits.MAX_PAGES, (
+        f"`MAX_SPAWNS_PER_CALL` is {limits.MAX_SPAWNS_PER_CALL} and the two probes "
+        f"plus {limits.MAX_PAGES} pages is "
+        f"{_RECORDED_PROBE_SPAWNS + limits.MAX_PAGES}. A probe added or removed is a "
+        f"change to what one call may start: move the constant and this number "
+        f"together, and say what the new ceiling costs."
+    )
+    assert limits.MAX_SECONDS_PER_CALL == limits.MAX_SPAWNS_PER_CALL * (
+        limits.REQUEST_TIMEOUT_SECONDS + limits.REAP_SECONDS
+    ), (
+        f"`MAX_SECONDS_PER_CALL` is {limits.MAX_SECONDS_PER_CALL} and its factors give "
+        f"{limits.MAX_SPAWNS_PER_CALL * (limits.REQUEST_TIMEOUT_SECONDS + limits.REAP_SECONDS)}. "
+        f"The wall-clock ceiling is recorded as a derivation so it cannot drift; if it "
+        f"has become a literal, the prose beside it names a figure nothing computes."
     )
 
 
@@ -530,6 +574,12 @@ def test_the_pull_request_cap_bites_before_the_page_cap_on_that_read() -> None:
     the shape ADR-0030 grades as unproven. The pull-request cap is 10 pages and
     the page cap is 20, so the first stops a pull-request read and the second
     stops a thread read, which is how each has an input that reaches it.
+
+    **On full pages**, which is what this inequality is about and all it claims.
+    What ``MAX_PULL_REQUESTS`` counts is pull requests collected, not pages read,
+    so a read of short pages reaches the page cap first -- and then a
+    ``list_pull_requests`` call stops exactly where a ``get_threads`` call does.
+    ``limits.MAX_SPAWNS_PER_CALL`` is priced against that reading, not this one.
     """
     assert limits.MAX_PULL_REQUESTS < limits.MAX_PAGES * limits.PAGE_SIZE
 
@@ -570,4 +620,35 @@ def test_an_integer_variable_is_typed_and_every_caller_derived_value_is_raw() ->
         f"a non-integer value reached `-F`: {typed}. `gh` reads a `-F` value "
         f"opening with `@` as a filename to send, so nothing a caller chose may "
         f"travel on that flag."
+    )
+
+
+def test_a_boolean_never_reaches_the_flag_that_types_an_integer() -> None:
+    """The guard nothing real drives, driven synthetically so it survives deletion.
+
+    ``bool`` is a subclass of ``int`` in Python, so ``isinstance(value, int)`` is
+    true of ``True`` and the routing would send it on ``-F`` -- the flag chosen
+    because the documents declare ``$first`` and ``$number`` as ``Int!``. A
+    Boolean is not an ``Int``, and the value that arrived would not be the one
+    the document asked for.
+
+    **No call site passes one**, which is exactly the problem this test solves: a
+    guard no input reaches is a guard whose deletion nothing notices, and the
+    variables today are strings the caller supplied and integers this adapter
+    produced. The input is therefore synthetic and says so. The variable name is
+    a declared one so the vector stays a shape the documents would accept, and
+    only the value's *type* is the thing under test.
+    """
+    vector = _vector(queries.PULL_REQUESTS, {"owner": "acme", "first": True})
+    flagged = {
+        vector[index]: vector[index - 1]
+        for index in range(1, len(vector))
+        if vector[index - 1] in {"-f", "-F"}
+    }
+
+    assert flagged["first=True"] == "-f", (
+        "a `bool` reached `-F`, the flag that exists because the documents type "
+        "two variables as `Int!`. `isinstance(True, int)` is True and nothing else "
+        "in the routing notices, so dropping the `not isinstance(value, bool)` "
+        "clause is a change with no other symptom."
     )

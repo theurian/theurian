@@ -643,6 +643,14 @@ def _positive_integer(value: object, field: str) -> int:
     the string ``"0"`` and looks like an issue -- so both go through here.
     """
     number = _integer(value, field)
+    # The refusal below renders `number`, and `str()` of an integer is not total:
+    # CPython refuses past `sys.get_int_max_str_digits()`, 4300 by default. What
+    # keeps that unreachable from here is `json.loads`, which applies the same
+    # interpreter limit while parsing -- so a longer number never becomes an
+    # `int` at all and `_request` refuses the document instead. The limit is a
+    # default rather than a guarantee, which is why `bounded_echo` renders this
+    # rather than an f-string: a process that raised it would otherwise turn this
+    # refusal into the traceback clause 9 forbids.
     if number < 1:
         raise ReviewIngestRefusedError(
             RefusalGrade.TOOL_FAILED,

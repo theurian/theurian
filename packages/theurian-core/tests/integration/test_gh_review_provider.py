@@ -1338,6 +1338,13 @@ async def test_a_probe_one_byte_past_the_recorded_stdout_bound_is_refused(
     The response is canned as well, so a green result here cannot come from the
     run failing for some other reason: lift the cap and this call **succeeds**,
     which is a `DID NOT RAISE` rather than a differently-graded refusal.
+
+    **The grade is ``TOOL_FAILED`` and that is the point of asserting it.** A
+    response past its cap is ``LIMIT_EXCEEDED``, because there the bound is one
+    a caller can act on -- ask for fewer pull requests, narrow the run. A probe
+    takes no bounds from anybody, so the same grade would hand this operator a
+    remedy for a cause they do not have: 64 KiB out of ``gh --version`` says the
+    binary is not the one this adapter is written against.
     """
     fake_gh.pad_version_stdout_to(RECORDED_PROBE_STDOUT_BYTES + 1)
     fake_gh.answer("prs", 1, _pull_requests())
@@ -1346,8 +1353,12 @@ async def test_a_probe_one_byte_past_the_recorded_stdout_bound_is_refused(
     with pytest.raises(ReviewIngestRefusedError) as raised:
         await provider.list_pull_requests(PROJECT, REPOSITORY)
 
-    assert raised.value.grade is RefusalGrade.LIMIT_EXCEEDED
+    assert raised.value.grade is RefusalGrade.TOOL_FAILED
     assert str(RECORDED_PROBE_STDOUT_BYTES) in str(raised.value)
+    assert "gh --version" in str(raised.value), (
+        "the refusal does not name the probe that overran, so a reader cannot tell "
+        "which of the two spawns produced 64 KiB"
+    )
     assert fake_gh.invocations == 1, (
         "the version probe overran its cap and something was spawned after it"
     )

@@ -75,6 +75,7 @@ from theurian.infrastructure.github.limits import (
     MAX_CHILD_STDERR_BYTES,
     MAX_PROBE_STDOUT_BYTES,
     MAX_RESPONSE_BYTES,
+    REAP_SECONDS,
     REQUEST_TIMEOUT_SECONDS,
     rendered_version,
 )
@@ -95,9 +96,6 @@ GH_EXECUTABLE: Final = "gh"
 #: How much stdout is taken per read. Large enough that a normal response costs a
 #: handful of reads, small enough that the cap is noticed within one of them.
 _CHUNK_BYTES: Final = 64 * 1024
-
-#: How long a killed child is given to die before it is left to the runtime.
-_REAP_SECONDS: Final = 5.0
 
 _VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 
@@ -186,8 +184,8 @@ async def run_bounded(
 
     What outlives ``timeout`` is the reap, deliberately and by a recorded amount:
     once the deadline expires the child is killed and given at most
-    :data:`_REAP_SECONDS` to die, so the wall-clock ceiling on this call is
-    ``timeout + _REAP_SECONDS`` plus whatever the spawn itself costs. Waiting for
+    :data:`REAP_SECONDS` to die, so the wall-clock ceiling on this call is
+    ``timeout + REAP_SECONDS`` plus whatever the spawn itself costs. Waiting for
     a killed child is what keeps a refusal from leaving a process behind, and
     :func:`_end` runs from a ``finally`` so a cancellation or an exception this
     function does not name cannot skip it.
@@ -352,7 +350,7 @@ async def _end(child: asyncio.subprocess.Process, draining: asyncio.Task[str]) -
     dead.
 
     **What a caller pays for it**: cancelling a ``run_bounded`` no longer returns
-    at once. The canceller waits for this unwind, up to :data:`_REAP_SECONDS` --
+    at once. The canceller waits for this unwind, up to :data:`REAP_SECONDS` --
     the ceiling is reached by the one shape that reaches it anywhere here, a
     descendant holding a pipe open past the child's death: ``Process.wait()``,
     called before the exit has been observed, waits for the exit **and** every
@@ -370,7 +368,7 @@ async def _end(child: asyncio.subprocess.Process, draining: asyncio.Task[str]) -
         if child.returncode is None:
             child.kill()
     with contextlib.suppress(TimeoutError, asyncio.CancelledError):
-        await asyncio.wait_for(child.wait(), _REAP_SECONDS)
+        await asyncio.wait_for(child.wait(), REAP_SECONDS)
     with contextlib.suppress(asyncio.CancelledError):
         await draining
     _release(child)
@@ -429,6 +427,38 @@ class GhCli:
         """
         return (str(self._binary), *arguments)
 
+    async def _probe(self, *arguments: str) -> ChildOutcome:
+        """One probe spawn, read against the probes' own stdout cap.
+
+        **The overrun is a broken tool, not a caller's limit**, which is why the
+        grade is re-stated here rather than left as ``run_bounded``'s. That
+        function refuses ``LIMIT_EXCEEDED`` because for a *response* the cap is a
+        bound a caller can act on -- ask for fewer pull requests, narrow the run.
+        A probe takes no bounds from anybody: ``gh --version`` prints one line
+        and ``gh auth status`` a short report, so 64 KiB from either says the
+        binary is not the one this adapter is written against. Sending that
+        operator to adjust `limit` is a remedy for a cause they do not have.
+
+        The refusal happened at the cap either way -- nothing past it was read --
+        and what changes is the sentence and the cure a reader is handed.
+        """
+        try:
+            return await run_bounded(
+                self.vector(*arguments),
+                env=self._environment,
+                byte_cap=MAX_PROBE_STDOUT_BYTES,
+            )
+        except ReviewIngestRefusedError as exc:
+            if exc.grade is not RefusalGrade.LIMIT_EXCEEDED:
+                raise
+            raise ReviewIngestRefusedError(
+                RefusalGrade.TOOL_FAILED,
+                f"`gh {arguments[0]}` printed more than the recorded "
+                f"{MAX_PROBE_STDOUT_BYTES}-byte probe cap, which is not something the "
+                f"GitHub CLI does. It was stopped at the cap, so nothing past it was "
+                f"read, and no request was made with the answer.",
+            ) from exc
+
     async def version(self) -> tuple[int, int, int]:
         """The installed ``gh``'s version, refusing below the recorded floor.
 
@@ -439,11 +469,7 @@ class GhCli:
                 adapter cannot parse is a binary it has no measurement of, which
                 is the same position as one below the floor.
         """
-        outcome = await run_bounded(
-            self.vector("--version"),
-            env=self._environment,
-            byte_cap=MAX_PROBE_STDOUT_BYTES,
-        )
+        outcome = await self._probe("--version")
         match = _VERSION.search(outcome.stdout.decode("utf-8", errors="replace"))
         if outcome.returncode != 0 or match is None:
             raise ReviewIngestRefusedError(
@@ -476,11 +502,7 @@ class GhCli:
                 assume, and grading them apart would report which of the two the
                 machine is in.
         """
-        outcome = await run_bounded(
-            self.vector("auth", "status", "--hostname", GITHUB_HOSTNAME),
-            env=self._environment,
-            byte_cap=MAX_PROBE_STDOUT_BYTES,
-        )
+        outcome = await self._probe("auth", "status", "--hostname", GITHUB_HOSTNAME)
         if outcome.returncode != 0:
             raise ReviewIngestRefusedError(
                 RefusalGrade.TOOL_UNAUTHENTICATED,
