@@ -41,12 +41,15 @@ is the key, and its sibling holds the same for the ``str()`` a caller prints.
 that is not redundant with the bound above. The type's cut takes the *end* of a
 sentence, so a summary whose echoed value ran long would lose the cap it was
 reporting and the remedy's context with it; cutting the value instead keeps the
-sentence. :func:`bounded_echo` is where a producer does it, :func:`bounded_quote`
-where the site wants the value quoted, and ``security/review_allowlist.py``'s
-``_rendered`` is the same shape against its own bound. **A producer picks the
-one that matches how it renders**: applying ``!r`` to a ``bounded_echo`` result
-bounds the wrong string, because quoting expands control characters and the
-sentence pays for the expansion afterwards.
+sentence. :func:`bounded_echo` is where a producer does it and
+:func:`bounded_quote` where the site wants the value quoted;
+``security/review_allowlist.py``'s ``_rendered`` calls the second of those,
+having previously kept a second copy of the same reasoning against a bound of
+its own. **A producer picks the one that matches how it renders**: applying
+``!r`` to a ``bounded_echo`` result bounds the wrong string, because quoting
+expands control characters and the sentence pays for the expansion afterwards.
+Both sites in this repository that quote got that ordering wrong before they got
+it right, which is why the helper exists rather than the pattern.
 
 **What needs routing is a value from outside this package, and only that.** A
 summary also names this package's own numbers -- a page cap, a version floor,

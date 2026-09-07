@@ -41,7 +41,11 @@ from pathlib import Path
 from typing import Final
 
 from theurian.domain.errors import ProjectConfigError
-from theurian.domain.review_ingest import RefusalGrade, ReviewIngestRefusedError
+from theurian.domain.review_ingest import (
+    RefusalGrade,
+    ReviewIngestRefusedError,
+    bounded_quote,
+)
 from theurian.security.project_config import PROJECT_CONFIG_FILE, read_review_repositories
 
 #: The shape a configured entry, and a requested repository, must have. Byte for
@@ -154,12 +158,32 @@ def allowlisted_repository(root: Path, config_file: Path, repository: str) -> st
 
 
 def _rendered(repository: str) -> str:
-    """The requested name, bounded, for a message.
+    """The requested name, quoted and bounded, for a message.
 
     A refusal echoes what the caller sent so the operator can see the typo, and a
-    caller can send a megabyte. The cut is at :data:`MAX_REPOSITORY_CHARS`, past
-    which nothing could have been a repository name anyway.
+    caller can send a megabyte. It can also send something that *quotes* long:
+    this used to cut the raw value at :data:`MAX_REPOSITORY_CHARS` and apply
+    ``repr`` afterwards, and ``repr`` is not length-preserving. One U+202E
+    becomes the six characters ``\u202e``, so a cut-to-200 value came back
+    1,200 characters long, the summary ran past
+    :data:`~theurian.domain.review_ingest.MAX_REFUSAL_SUMMARY_CHARS`, and the
+    type's cut took the end of the sentence -- which is where this refusal names
+    the configuration key to edit and says that no process was started.
+
+    **The bound is a different one now, and it had to change with the ordering.**
+    :data:`MAX_REPOSITORY_CHARS` is a *validation* bound: the reason it was
+    defensible here was "past which nothing could have been a repository name
+    anyway", and that is a statement about the value, not about its rendering.
+    Once the cut applies to the rendering it stops holding -- a hundred-character
+    name can render to six hundred characters and every one of them is a
+    character this sentence pays for. So the cut is
+    :data:`~theurian.domain.review_ingest.MAX_SUMMARY_ECHO_CHARS`, which is the
+    bound on *what a summary may echo*, and this delegates to the one helper that
+    applies it in the right order rather than keeping a second copy of the
+    reasoning that was wrong here.
+
+    The function stays, rather than the call site reaching for ``bounded_quote``
+    directly, because what it records is a decision about **this** message: the
+    request is echoed and the configured allowlist is not.
     """
-    if len(repository) <= MAX_REPOSITORY_CHARS:
-        return repr(repository)
-    return f"{repository[:MAX_REPOSITORY_CHARS]!r} (cut from {len(repository)} characters)"
+    return bounded_quote(repository)

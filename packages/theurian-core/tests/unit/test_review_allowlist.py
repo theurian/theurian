@@ -22,12 +22,17 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 from typing import Final
 
 import pytest
 
 from theurian.domain.errors import ProjectConfigError
-from theurian.domain.review_ingest import RefusalGrade, ReviewIngestRefusedError
+from theurian.domain.review_ingest import (
+    MAX_REFUSAL_SUMMARY_CHARS,
+    RefusalGrade,
+    ReviewIngestRefusedError,
+)
 from theurian.security.project_config import PROJECT_CONFIG_FILE, read_review_repositories
 from theurian.security.review_allowlist import (
     MAX_REPOSITORY_CHARS,
@@ -245,6 +250,91 @@ def test_a_refusal_does_not_publish_the_repositories_this_project_does_allow(
     published = f"{raised.value} {raised.value.remedy} {raised.value.envelope.detail}"
     assert "order-service" not in published
     assert "private-plans" not in published
+
+
+#: Characters whose ``repr`` is several times their own length.
+#:
+#: The point of each is the *expansion factor*, not the character: a value cut to
+#: :data:`~theurian.domain.review_ingest.MAX_SUMMARY_ECHO_CHARS` and quoted
+#: afterwards comes back that many times longer, which is what pushed this
+#: refusal's summary past the type's cut. U+E0001 is the widest at ten characters
+#: (``\U000e0001``); the surrogate is here because it is a value no encoder
+#: accepts and a caller can still send it.
+_EXPANDING: Final[tuple[tuple[str, str], ...]] = (
+    ("a right-to-left override", "\u202e"),
+    ("a left-to-right mark", "\u200e"),
+    ("a lone surrogate", "\ud800"),
+    ("a line separator", "\u2028"),
+    ("a TAG character", "\U000e0001"),
+    ("the largest code point", "\U0010ffff"),
+)
+
+
+@pytest.mark.parametrize("character", [c for _, c in _EXPANDING], ids=[n for n, _ in _EXPANDING])
+def test_a_request_that_quotes_long_keeps_the_whole_refusal_sentence(
+    tmp_path: pathlib.Path, character: str
+) -> None:
+    """The echo is quoted, so the bound has to be on the quoting, not on the value.
+
+    ``repr`` is not length-preserving. This refusal used to cut the raw request at
+    the repository-name bound and quote it afterwards, so a request made of
+    characters that expand under quoting came back several times the bound, the
+    summary ran past ``MAX_REFUSAL_SUMMARY_CHARS``, and the **type's** cut took
+    the end of the sentence. What lives at that end is not decoration: it is the
+    configuration key an operator has to edit and the assurance that no process
+    was started. A refusal that loses both has kept its grade and thrown away
+    everything the reader acts on.
+
+    Driven through :func:`allowlisted_repository` rather than through the
+    renderer, because the claim is about the published envelope: the summary a
+    caller receives, and the remedy beside it.
+    """
+    root, config = _project(tmp_path, _listing("acme/order-service"))
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        allowlisted_repository(root, config, character * 100_000)
+
+    summary = raised.value.envelope.summary
+    assert raised.value.grade is RefusalGrade.REPOSITORY_NOT_ALLOWLISTED
+    assert len(summary) <= MAX_REFUSAL_SUMMARY_CHARS, (
+        f"the summary is {len(summary)} characters, so the type had to cut it. The "
+        f"value-side bound is what keeps the sentence, and it only does that when "
+        f"it is applied to the rendering."
+    )
+    assert "`providers.review.repositories`" in summary, (
+        "the summary no longer names the configuration key to edit, which is the "
+        "one thing an operator does about this refusal"
+    )
+    assert summary.endswith("so no process was started."), (
+        f"the refusal lost its own tail to the type's cut; it ends {summary[-48:]!r}"
+    )
+    assert raised.value.remedy
+
+
+def test_a_request_that_quotes_long_still_shows_the_caller_what_it_sent(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Cutting the echo may not turn the message into one that names nothing.
+
+    The reason this refusal echoes at all is so an operator can see the typo they
+    made. A bound that kept the sentence by dropping the value entirely would
+    satisfy the test above and be useless, so this asserts the other direction:
+    the quoted request is still there, escaped, and it says how much was cut.
+    """
+    root, config = _project(tmp_path, _listing("acme/order-service"))
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        allowlisted_repository(root, config, "\u202e" * 100_000)
+
+    summary = raised.value.envelope.summary
+    assert "\\u202e" in summary, "the request is not shown back in its escaped form"
+    assert "\u202e" not in summary, (
+        "a raw right-to-left override reached the published sentence, where it "
+        "reorders the text around it in whatever prints the refusal"
+    )
+    assert re.search(r"cut from \d+ characters", summary), (
+        "the echo was shortened without saying so"
+    )
 
 
 def test_a_traversal_request_is_refused_with_the_same_grade_as_an_unlisted_one(
