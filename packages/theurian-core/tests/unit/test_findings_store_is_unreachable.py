@@ -351,6 +351,13 @@ _APPLICATION_NON_SERVING_MODULES: frozenset[str] = frozenset(
         "migration_engine.py",
         "project_service.py",
         "proposal_service.py",
+        # One review-ingestion run (ADR-0030 decisions 3 and 4): it fetches
+        # through the provider port, screens through the gate below, and lands
+        # what the gate cleared through an injected callable. It names no store
+        # at all -- the evidence files it produces are a different artifact from
+        # the findings one in every sense, and this module could not reach either
+        # without a composition root handing it one.
+        "review_ingest_service.py",
         # The ingestion secret gate (ADR-0030 decision 4). It decides whether a
         # review *evidence* record may become a file and returns the payload that
         # may be written; it serves nothing and reaches no store, and the

@@ -17,7 +17,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from fakes import FakeReviewFindingSource
+from fakes import CannedReviewProvider, FakeReviewFindingSource
 from write_lock_claims import REPO_ROOT, collapsed
 
 from theurian.application.index_builder import IndexBuilder
@@ -801,6 +801,18 @@ def test_the_fake_review_finding_source_satisfies_its_port() -> None:
     must satisfy :class:`ReviewFindingSource` structurally, empty and populated.
     """
     assert isinstance(FakeReviewFindingSource(), ReviewFindingSource)
+
+
+def test_the_canned_review_provider_satisfies_its_port() -> None:
+    """``fakes.__init__``'s claim, held for ADR-0030's fake as well.
+
+    The landing service takes :class:`ReviewProvider` by injection and is driven
+    against this fake, so a fake that drifted from the port would leave every one
+    of those cases exercising a shape the shipped adapter does not have -- the
+    failure mode the sibling above records, arriving at the other end of the same
+    port.
+    """
+    assert isinstance(CannedReviewProvider(), ReviewProvider)
 
 
 def test_typing_protocol_is_the_base() -> None:
