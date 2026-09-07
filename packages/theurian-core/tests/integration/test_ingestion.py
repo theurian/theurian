@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath
 import pytest
 
 from theurian.application.ingestion_service import (
+    INGESTIBLE_SUBDIRECTORIES,
     IngestionRequest,
     IngestionService,
     manifest_from,
@@ -23,6 +24,7 @@ from theurian.infrastructure.filesystem.parsers.registry import (
     ParserRegistry,
     detect_media_type,
 )
+from theurian.infrastructure.review_evidence import EvidenceKind, record_path
 
 pytestmark = pytest.mark.integration
 
@@ -216,6 +218,61 @@ def test_derived_directories_are_not_ingested(project: Path) -> None:
     report = _ingest(project)
 
     assert [d.path for d in report.documents] == [".theurian/knowledge/architecture/real.md"]
+
+
+def test_the_walk_reaches_exactly_two_subdirectories_of_the_theurian_root() -> None:
+    """The membership `.theurian/review/` is outside, pinned rather than argued.
+
+    ADR-0030 slice 2 lands review evidence at `.theurian/review/`, a **sibling**
+    of the two directories below. Nothing about that placement stops a later
+    change adding a third member to this tuple, and adding one is how review
+    evidence would start reaching the knowledge index -- a corpus the review
+    ingestion's own gate screened for a different purpose, arriving on a serving
+    surface slice 2 does not own. The equality is what makes that a deliberate
+    two-file diff.
+
+    What a third member has to answer, stated here because this is where the
+    diff lands: whether the directory holds *sources* a project authored, and
+    whether everything under it has already passed whatever gate the surface
+    that serves it requires. `review/` fails the first (Theurian writes it) and
+    slice 2 does not answer the second (its serving slice is 3).
+    """
+    assert INGESTIBLE_SUBDIRECTORIES == ("knowledge", "specifications"), (
+        "the ingestion walk's subdirectory list moved. If a member was added, say "
+        "in the same commit what serves it and which gate cleared it; "
+        "`.theurian/review/` in particular is written by `theurian review ingest` "
+        "and is served by nothing in this slice."
+    )
+
+
+def test_a_landed_review_evidence_file_is_not_discovered(project: Path) -> None:
+    """The cross-tool claim, driven from the walk that would carry it.
+
+    The plant is built through the evidence store's own layout function rather
+    than spelled here, so it sits exactly where `theurian review ingest` writes
+    -- a hashed repository directory, a kind directory, a leaf -- and the test
+    follows the layout if it moves.
+
+    The knowledge document beside it is the positive control: without it, a walk
+    that discovered nothing at all would pass.
+    """
+    relative = record_path(
+        provider="github",
+        identity="acme/order-service",
+        kind=EvidenceKind.PULL_REQUEST,
+        provider_id="1",
+    )
+    _write(project, f"review/{relative}", '{"formatVersion": 1}\n')
+    _write(project, "knowledge/architecture/real.md", "# Real\n")
+
+    report = _ingest(project)
+
+    assert [d.path for d in report.documents] == [".theurian/knowledge/architecture/real.md"]
+    assert report.total_discovered == 1, (
+        f"the walk discovered {report.total_discovered} files where one document "
+        f"was planted under an ingestible subdirectory"
+    )
+    assert "review" not in " ".join([*report.skipped, *(f.path for f in report.failures)])
 
 
 def test_unknown_formats_are_skipped_not_failed(project: Path) -> None:
