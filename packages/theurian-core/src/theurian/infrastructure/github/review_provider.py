@@ -665,6 +665,26 @@ class GitHubReviewProvider:
         not a shape ``ReviewThread`` can hold. The cap's own flag is read through
         :func:`response.boolean`, so an unreadable ``hasNextPage`` is a third refusal
         rather than a quiet "there is no more".
+
+        **The thread id is quoted, not echoed, and the two other values in these
+        sentences are not.** ``external_id`` is a *string GitHub chose*: it goes
+        through :func:`~theurian.domain.review_ingest.bounded_quote`, which
+        renders and then bounds, so a U+202E in a node id is published as
+        ``\\u202e`` rather than reordering the sentence that names it. Neither
+        the CLI's ``escape_terminal_controls`` nor anything else downstream would
+        catch it -- that escapes C0, C1 and DEL, and a bidirectional override is
+        none of those -- so quoting here is the only place it happens.
+
+        The other two are deliberately left as they are. ``event.number`` is an
+        ``int``, which renders as digits and needs no expansion; and
+        ``event.repository`` has been through
+        :func:`~theurian.security.review_allowlist.allowlisted_repository` before
+        this method is reachable -- ``get_threads`` calls ``_allowlisted`` first
+        -- so it matched the schema's own ``[\\w.-]+/[\\w.-]+`` under ``re.ASCII``
+        at no more than ``MAX_REPOSITORY_CHARS``. It is an operator's own
+        configured spelling, not a value a response chose.
+        ``test_a_hostile_repository_on_an_event_is_refused_before_this_sentence_exists``
+        is that precondition, driven rather than asserted.
         """
         if response.boolean(
             response.mapping(comments.get("pageInfo")).get("hasNextPage"),
@@ -672,7 +692,7 @@ class GitHubReviewProvider:
         ):
             raise ReviewIngestRefusedError(
                 RefusalGrade.LIMIT_EXCEEDED,
-                f"Review thread {bounded_echo(external_id)} on {event.repository}"
+                f"Review thread {bounded_quote(external_id)} on {event.repository}"
                 f"#{bounded_echo(event.number)} carries more than the recorded "
                 f"{MAX_COMMENTS_PER_THREAD}-comment cap. "
                 f"The read stopped rather than recording a thread that looks whole and "
@@ -682,7 +702,7 @@ class GitHubReviewProvider:
         if not built:
             raise ReviewIngestRefusedError(
                 RefusalGrade.TOOL_FAILED,
-                f"GitHub returned review thread {bounded_echo(external_id)} on "
+                f"GitHub returned review thread {bounded_quote(external_id)} on "
                 f"{event.repository}#{bounded_echo(event.number)} with no comments, "
                 f"which is not a thread this adapter can record.",
             )

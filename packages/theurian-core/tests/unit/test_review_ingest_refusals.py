@@ -313,7 +313,15 @@ _THIS_PACKAGES_OWN: Final[dict[str, str]] = {
     "timeout": "a parameter; production passes REQUEST_TIMEOUT_SECONDS",
     "entry": "the allowlist entry, so the operator's own config and pattern-bounded",
     "field": "this adapter's own literal naming a response field",
-    "what": "this adapter's own literal naming a read",
+    # Not "this adapter's own literal" any more, and the correction is the point:
+    # `_pages_of` builds `what` as `f"{read.subject} on #{bounded_echo(event.number)}"`,
+    # so half of it is the pull request's number. That half is routed where it is
+    # built rather than where it is spent, which this row has to say or a reader
+    # takes the name for a constant.
+    "what": (
+        "this adapter's own literal naming a read, plus the pull request number, "
+        "which `_pages_of` routes through `bounded_echo` where it composes them"
+    ),
     "name": "a GraphQL variable name from a closed set",
     "selected_by": "one of three literals naming the variable that chose a directory",
     "key": "a member of TRANSPORT_OVERRIDE_KEYS",
@@ -337,9 +345,18 @@ _EXEMPT_EXPRESSIONS: Final[dict[str, str]] = {
     ),
     "type(value).__name__": "a class name, not the value",
     "type(exc).__name__": "a class name, not the value",
+    # The reason rests on a *precondition*, and the precondition is driven rather
+    # than trusted: every site interpolating this sits inside `get_threads` or
+    # `get_reviews`, whose first act is `_allowlisted(event.repository)`, so the
+    # value matched the schema's `[\w.-]+/[\w.-]+` under `re.ASCII` at no more
+    # than `MAX_REPOSITORY_CHARS` before this sentence could exist.
+    # `test_gh_review_provider.py`'s
+    # `test_a_hostile_repository_on_an_event_is_refused_before_this_sentence_exists`
+    # is what fails if a site ever interpolates it ahead of that call.
     "event.repository": (
-        "the allowlisted name; `{event}` would publish the whole record, response "
-        "title and url included"
+        "the allowlisted name, pattern-bounded by the check `get_threads` and "
+        "`get_reviews` run first; `{event}` would publish the whole record, "
+        "response title and url included"
     ),
 }
 

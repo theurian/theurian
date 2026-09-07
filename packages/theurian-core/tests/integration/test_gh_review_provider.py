@@ -1026,6 +1026,107 @@ async def test_a_thread_past_the_comment_cap_is_reported_not_truncated(
     assert str(limits.MAX_COMMENTS_PER_THREAD) in str(raised.value)
 
 
+# -- what a refusal may spell out of a response --------------------------------
+
+#: A bidirectional override: one character that reorders everything printed after
+#: it, and **not** something ``cli/output.py``'s ``escape_terminal_controls``
+#: touches -- that escapes C0, C1 and DEL, and U+202E is a format character in
+#: none of those ranges. So the only thing standing between a node id GitHub
+#: chose and an operator's terminal is whether the producer quoted it.
+#:
+#: It is also the expander the ordering argument needs: ``repr`` renders it as a
+#: six-character escape, so bounding before quoting would let a value cut to the
+#: echo bound come back six times that long.
+#:
+#: Spelled by code point because a literal one is invisible in a diff and
+#: reorders every line it sits on -- which ``ruff``'s ``PLE2502`` also refuses.
+_RIGHT_TO_LEFT_OVERRIDE: Final = "\u202e"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("has_more_comments", "grade"),
+    ((True, RefusalGrade.LIMIT_EXCEEDED), (False, RefusalGrade.TOOL_FAILED)),
+    ids=("over-the-comment-cap", "with-no-comments"),
+)
+async def test_a_thread_id_carrying_a_bidi_override_is_quoted_into_its_refusal(
+    tmp_path: pathlib.Path,
+    fake_gh: FakeGh,
+    has_more_comments: bool,
+    grade: RefusalGrade,
+) -> None:
+    """Both refusals that name a thread id, driven with a hostile one.
+
+    The id is the channel a stand-in has to supply, because nothing the *caller*
+    passes reaches these sentences: it is ``response.required_text(node["id"])``,
+    a string the provider chose. Rendered bare it reordered the sentence that
+    named it, and it survived the CLI's own escape, which does not reach a
+    format character.
+
+    Two rows because the two refusals are two producers of one sentence shape and
+    a fix applied to one is invisible in a test of the other. The positive
+    control is the second assertion -- the id has to still be *there*, escaped,
+    or "no raw override reached the summary" would hold for a refusal that
+    stopped naming the thread at all.
+    """
+    hostile_id = f"PRRT_{_RIGHT_TO_LEFT_OVERRIDE}42"
+    page = _threads(has_more_comments=has_more_comments)
+    thread = page["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"][0]
+    thread["id"] = hostile_id
+    if not has_more_comments:
+        thread["comments"]["nodes"] = []
+    fake_gh.answer("prs", 1, _pull_requests())
+    fake_gh.answer("threads", 1, page)
+    provider = _provider(tmp_path, fake_gh)
+    events = await _listed(provider)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.get_threads(PROJECT, events[0])
+
+    summary = raised.value.envelope.summary
+    assert raised.value.grade is grade
+    assert _RIGHT_TO_LEFT_OVERRIDE not in summary, (
+        f"a raw bidirectional override a response chose reached the summary: {summary!r}"
+    )
+    assert "\\u202e" in summary, "the id is no longer named at all, escaped or otherwise"
+    assert "PRRT_" in summary
+
+
+@pytest.mark.asyncio
+async def test_a_hostile_repository_on_an_event_is_refused_before_this_sentence_exists(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """The precondition ``event.repository``'s raw interpolation rests on.
+
+    Those refusal sentences spell ``event.repository`` unrouted, and the recorded
+    reason is that it is the operator's own allowlisted name rather than a value
+    a response chose. That holds only because ``get_threads`` calls
+    ``_allowlisted`` **first**, so a ``ReviewEvent`` a caller built with a
+    hostile repository never reaches the sentence.
+
+    Driven from the caller's side, which is the only side that can supply one:
+    the refusal has to be the allowlist's, the echo in *it* has to be quoted, and
+    nothing may have been spawned.
+    """
+    fake_gh.answer("prs", 1, _pull_requests())
+    provider = _provider(tmp_path, fake_gh)
+    events = await _listed(provider)
+    before = fake_gh.invocations
+    hostile = dataclasses.replace(
+        events[0], repository=f"acme/order{_RIGHT_TO_LEFT_OVERRIDE}service"
+    )
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.get_threads(PROJECT, hostile)
+
+    summary = raised.value.envelope.summary
+    assert raised.value.grade is RefusalGrade.REPOSITORY_NOT_ALLOWLISTED
+    assert _RIGHT_TO_LEFT_OVERRIDE not in summary, (
+        f"the allowlist refusal published the override raw: {summary!r}"
+    )
+    assert fake_gh.invocations == before, "a repository the allowlist refuses was contacted"
+
+
 # -- clause 9: an answer this adapter cannot read is an envelope, never a traceback
 
 
