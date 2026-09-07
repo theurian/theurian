@@ -33,6 +33,21 @@ _A_MOMENT: Final = 0.2
 #: The hold bound the reclaim tests run at. Long enough that an ordinary
 #: acquire/release pair inside one cannot expire by accident, short enough that
 #: waiting it out twice is imperceptible.
+#:
+#: **Nothing may assert a refusal that depends on a hold under this bound still
+#: being live**, and two tests did until CI found them one at a time. It is of
+#: the same order as ``_A_MOMENT`` and as a loaded runner's scheduling jitter --
+#: measured on CI's macOS box, where this suite took 894 s -- so between granting
+#: a hold and asking about it, the hold can legitimately expire and be reclaimed.
+#: An assertion written that way blames the gate for doing exactly what it is
+#: built to do.
+#:
+#: Two shapes are safe and are what the tests below use. Ask
+#: :attr:`AdmissionGate.outstanding`, which reads both sets under the lock and
+#: reclaims nothing, so its answer cannot be overtaken by an expiry. Or assert a
+#: refusal that the **ceiling** guarantees rather than the clock -- with
+#: ``permits`` reclaims outstanding no further reclaim is possible, so the
+#: refusal holds however much time has passed.
 _A_SHORT_HOLD: Final = 0.3
 
 #: The ceiling on any wait a *thread* in this file makes, so a lost wake-up
@@ -105,11 +120,21 @@ def test_a_permit_whose_holder_never_returns_is_reclaimed() -> None:
     A parked holder is simulated by acquiring and simply never releasing, which
     is exactly what a thread inside an unbounded ``open`` does to the gate.
     Before the reclaim, the gate's capacity was gone until the process ended.
+
+    The precondition -- that the gate is at capacity before the reclaim -- is read
+    off :attr:`AdmissionGate.outstanding` and not off a second ``acquire``. See
+    :data:`_A_SHORT_HOLD`: that acquisition waits, and while it waits the hold it
+    is trying to prove is live can expire and be reclaimed, which CI caught here
+    on a loaded macOS runner. ``outstanding`` reclaims nothing, and for a
+    one-permit gate ``1`` *is* "full".
     """
     gate = AdmissionGate(1, max_hold_seconds=_A_SHORT_HOLD)
     parked = gate.acquire(_A_MOMENT)
     assert parked is not None
-    assert gate.acquire(_A_MOMENT) is None, "the gate admitted a second caller against one permit"
+    assert gate.outstanding == 1, (
+        "the gate is not at capacity after its only permit was taken, so the reclaim below "
+        "would prove nothing"
+    )
 
     reclaimed = gate.acquire(_A_SHORT_HOLD * 4)
     assert reclaimed is not None, (
