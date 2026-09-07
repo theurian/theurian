@@ -645,21 +645,35 @@ UNIVERSAL_CASES: Final[tuple[tuple[str, bool], ...]] = (
 )
 
 #: One case per form the pronoun scan claims to catch, and per form it claims to
-#: let past.
+#: let past, as ``(sentence, is it the universal, the surface it is transcribed
+#: from *now*)``.
 #:
 #: The first positive is the exact sentence the example carried before #426. The
 #: negatives are transcribed from the annotation it carries now, and from the
 #: schema description #199 unit B rewrote, so a pattern that misread one would be
 #: RED on a clean tree.
-PRONOUN_CASES: Final[tuple[tuple[str, bool], ...]] = (
+#:
+#: **The third field is what turns "carries now" from a label into an
+#: assertion.** Every row here is a *pattern* case: what it asserts is what
+#: :data:`_THIS_FILE_UNREAD` sees, and that holds whatever document the sentence
+#: came from. So a row labelled as current prose could go stale silently -- and
+#: two of them did, on this branch, between ADR-0030 decision 3 landing a third
+#: config key and a hand scan catching the rows that still said two. A row that
+#: names a surface is asserted to still be *in* that surface by
+#: :func:`test_every_pronoun_case_transcribed_from_a_surface_is_still_in_it`;
+#: ``None`` says the sentence is deliberately not current -- the retracted
+#: wording, an invented shape, or #455's row transcribed from the schema at
+#: ``5a14145`` and kept precisely because the schema no longer carries it.
+PRONOUN_CASES: Final[tuple[tuple[str, bool, pathlib.Path | None], ...]] = (
     (
         "The allowlist review ingestion will read (SEC-10). Nothing in `src/` reads this "
         "file, so the allowlist is not in force; review ingestion is owed with Milestone "
         "7 (#129).",
         True,
+        None,
     ),
-    ("No module reads that configuration file", True),
-    ("nothing in `src/` reads the file", True),
+    ("No module reads that configuration file", True, None),
+    ("nothing in `src/` reads the file", True, None),
     # #455's member, transcribed from `schemas/config/project-config.schema.json`
     # at `5a14145`. This row used to say the pattern *would* see the sentence if
     # the schema were ever scanned; #199 unit B scanned it, so the row now says
@@ -671,26 +685,30 @@ PRONOUN_CASES: Final[tuple[tuple[str, bool], ...]] = (
         "Nothing in src/ reads this file, so no value in it takes effect today: where a "
         "default here is also honoured by the product, the code carries its own copy.",
         True,
+        None,
     ),
     # -- the descriptions the schema carries now, which must keep passing ----
     #
     # Transcribed from the wheel-shipped root `description`, and re-transcribed
     # whenever it moves: ADR-0030 decision 3's `redactParticipantNames` made it
-    # three keys where slice 1 had made it two. A row here labelled "carries now"
-    # and holding a sentence the schema no longer carries would still pass -- the
-    # assertion is about the *pattern*, not about the file -- so the label is
-    # checked by hand until the pin these rows owe exists.
+    # three keys where slice 1 had made it two. Both rows name their surface, so
+    # the "carries now" label is the transcription pin's assertion rather than a
+    # comment: a row holding a sentence the schema no longer carries passes the
+    # pattern case -- what that case asserts is what `_THIS_FILE_UNREAD` sees --
+    # and reddens beside it instead.
     (
         "This file has one reader: `security/project_config.py` takes `security.secretScan`, "
         "`providers.review.repositories` and `providers.review.redactParticipantNames` from "
         "it and nothing else (ADR-0027 decision 3, ADR-0030 decisions 2 and 3), so those "
         "three keys are in force and every other key published here is reserved.",
         False,
+        PROJECT_CONFIG_SCHEMA,
     ),
     (
         "Setting a reserved key changes nothing, and where a default below is also honoured "
         "by the product the code carries its own copy rather than reading this file.",
         False,
+        PROJECT_CONFIG_SCHEMA,
     ),
     # -- the annotation the example carries now, which must keep passing -----
     (
@@ -699,13 +717,15 @@ PRONOUN_CASES: Final[tuple[tuple[str, bool], ...]] = (
         "before the process that reaches GitHub is started -- an empty or absent list "
         "allows nothing.",
         False,
+        SAMPLE_CONFIG,
     ),
     (
         "`theurian review ingest` is the command that reads it, so listing a repository "
         "here starts nothing until you run that.",
         False,
+        SAMPLE_CONFIG,
     ),
-    ("Every provider defaults to a deterministic in-tree implementation.", False),
+    ("Every provider defaults to a deterministic in-tree implementation.", False, SAMPLE_CONFIG),
 )
 
 #: The phrasings both scans measurably do **not** catch, as ``(what the shape is,
@@ -1441,12 +1461,12 @@ def test_the_recorded_escapes_are_still_escapes(
 
 
 @pytest.mark.parametrize(
-    ("sentence", "is_the_universal"),
+    ("sentence", "is_the_universal", "_transcribed_from"),
     PRONOUN_CASES,
     ids=[case[0][:60] for case in PRONOUN_CASES],
 )
 def test_the_pronoun_scan_sees_the_sample_configs_retracted_wording(
-    sentence: str, is_the_universal: bool
+    sentence: str, is_the_universal: bool, _transcribed_from: pathlib.Path | None
 ) -> None:
     """RED means the sample config's half of the negative pin asserts nothing.
 
@@ -1464,6 +1484,102 @@ def test_the_pronoun_scan_sees_the_sample_configs_retracted_wording(
         f"opposite. The scanner is broken, not the example: fix `_THIS_FILE_UNREAD` "
         f"before trusting a green result from "
         f"`test_no_scanned_surface_reasserts_that_nothing_in_src_reads_the_config_file`."
+    )
+
+
+#: How each scanned surface's prose is blocked, keyed by the surface.
+#:
+#: Derived from :data:`SCANNED_SURFACES` for :data:`CORRECTION_NOTES_PER_SURFACE`'s
+#: reason: a second hand-written copy of the pairing is a second copy to keep in
+#: step, and the transcription pin below would then read a surface with the wrong
+#: reader -- which for the schema means reading raw JSON, where no collapsed
+#: description ever appears and every row would fail for a reason that is not the
+#: one being tested.
+_BLOCK_READERS: Final[dict[pathlib.Path, Callable[[str], list[str]]]] = {
+    path: blocks for path, blocks, _ in SCANNED_SURFACES
+}
+
+#: A sentence in the shape these rows take that no scanned surface carries.
+#:
+#: The negative control for the transcription pin. Its expected result is
+#: "present in a block", and a block reader that answered with the whole file --
+#: or with one block per character -- could satisfy that for the wrong reason, so
+#: one sentence that must **not** resolve is asserted beside the rows that must.
+_UNCARRIED_SENTENCE: Final = (
+    "`security/project_config.py` takes `providers.review.mirrorEverything` from it, "
+    "which no build has ever published."
+)
+
+
+@pytest.mark.parametrize(
+    ("sentence", "surface"),
+    [(case[0], case[2]) for case in PRONOUN_CASES if case[2] is not None],
+    ids=[case[0][:60] for case in PRONOUN_CASES if case[2] is not None],
+)
+def test_every_pronoun_case_transcribed_from_a_surface_is_still_in_it(
+    sentence: str, surface: pathlib.Path
+) -> None:
+    """A row labelled "carries now" must still be carried, or the label is fiction.
+
+    The pattern case beside this one asserts what :data:`_THIS_FILE_UNREAD` sees,
+    and that answer does not depend on where the sentence came from. So a row
+    transcribed from the schema or from the sample config keeps passing after the
+    document moves on, and the table quietly becomes a record of what those files
+    used to say -- while reading, to anyone opening it, as a transcription of what
+    they say now.
+
+    **That is not hypothetical here.** ADR-0030 decision 3 added a third key to
+    ``.theurian/config.yaml``; the schema's root description and the sample
+    config's annotation both moved from two keys to three, and two rows in this
+    table went on stating the two-key wording, green, until a hand scan on this
+    branch caught them. This is that hand scan, run every time.
+
+    Matched after collapsing whitespace and through the surface's **own** block
+    reader, so a sentence that wraps across four comment lines or sits inside a
+    JSON string is compared as a reader sees it rather than as the bytes happen to
+    break.
+
+    What this does not assert: that the sentence is *true*, or that the surface
+    still means what the row's comment says it means. It asserts that the
+    transcription is a transcription.
+    """
+    blocks = _BLOCK_READERS[surface](surface.read_text(encoding="utf-8"))
+
+    assert any(_collapsed(sentence) in block for block in blocks), (
+        f"{surface.relative_to(REPO_ROOT)} no longer carries {sentence!r}.\n\n"
+        "This row is labelled as prose the file carries now, and the pattern case "
+        "beside it would stay green whatever the file says -- which is how two rows "
+        "here survived ADR-0030 decision 3 stating a key count that had moved. "
+        "Re-transcribe the row from the file if the wording moved for a reason, or "
+        "restore the wording if it moved by accident; do not drop the surface from "
+        "the row to make this pass, because that turns a live transcription back "
+        "into an unwatched one."
+    )
+
+
+def test_the_transcription_pin_would_notice_a_sentence_no_surface_carries() -> None:
+    """The negative control, because the pin above expects to *find* something.
+
+    Every row it runs resolves today, so a block reader that returned the whole
+    file as one block -- or any other over-broad answer -- would look exactly like
+    a clean result. This asserts the opposite direction on a sentence written in
+    the same shape as the rows and carried by none of the surfaces: if this ever
+    resolves, the pin above has stopped discriminating and its greens mean nothing.
+    """
+    resolved = [
+        path.relative_to(REPO_ROOT).as_posix()
+        for path, blocks, _ in SCANNED_SURFACES
+        if any(
+            _collapsed(_UNCARRIED_SENTENCE) in block
+            for block in blocks(path.read_text(encoding="utf-8"))
+        )
+    ]
+
+    assert resolved == [], (
+        f"a sentence no scanned surface carries resolved against {resolved}. Either "
+        f"someone wrote it into one of those files, or a block reader has become "
+        f"broad enough that `test_every_pronoun_case_transcribed_from_a_surface_is_"
+        f"still_in_it` can no longer fail."
     )
 
 

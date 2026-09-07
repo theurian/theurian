@@ -1781,6 +1781,65 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         ),
     ),
     (
+        "docs/architecture/review-knowledge.md",
+        "docs/architecture/review-knowledge.md",
+        (
+            # The sixth surface the reader enumeration's failure message names,
+            # and the last of them to be pinned (ADR-0030 slice 2). Its allowlist
+            # paragraph said the reader did not exist, which slice 1 falsified and
+            # slice 2's docs commit rewrote; nothing then asserted the rewritten
+            # wording, which is #461's shape arriving on the sixth surface.
+            #
+            # The *number* in that paragraph is deliberately not a fragment here.
+            # It belongs to
+            # `test_review_knowledges_reader_population_is_the_one_the_tree_has`,
+            # which rebuilds the sentence from the live scan -- a spelling pin on
+            # "three" would be RED for the shapeless reason "the document moved"
+            # and would say nothing about which direction it moved in.
+            #
+            # Four fragments, one per clause that can be dropped on its own: where
+            # the allowlist refuses, the paragraph's own statement that its
+            # population is measured rather than asserted, the two directions that
+            # measurement reddens in, and the residual it must not swallow.
+            "an unallowlisted repository produces no spawn at all rather than a filtered result",
+            "**That reader population is a measurement, not a sentence in this file.**",
+            (
+                "A fourth key, or a second module opening the file, reddens those "
+                "rather than leaving this paragraph quietly wrong."
+            ),
+            # The over-claim guard, and the direction this file has already been
+            # wrong in once. #429's raw-URL controls are *not* discharged by
+            # anything slice 1 or slice 2 built -- the `$ref` fetcher is a
+            # different code path -- so a rewrite that drops this sentence while
+            # celebrating the `gh` path publishes a scheme allowlist and a
+            # private-network rejection that do not exist.
+            "What is still owed on the fetch side is the raw-URL controls",
+            # R-12's half, which the Privacy section states as *shipped* since
+            # slice 2. Both clauses: that it ships, and what it does and does not
+            # replace -- a redaction that dropped `external_id` would not
+            # anonymise the record, it would disconnect the identity graph, and a
+            # surface describing the control without that reads as the stronger
+            # promise.
+            (
+                "Redaction at ingestion is configurable, and **this half is shipped "
+                "rather than designed**"
+            ),
+            (
+                "every participant's `display_name` becomes the one fixed "
+                "`REDACTED_DISPLAY_NAME` placeholder and their `external_id` is left alone"
+            ),
+            # The header caveat, which is what stops the whole document reading as
+            # shipped behaviour. It enumerates the three parts that *are*, so a
+            # fourth shipping without moving this sentence leaves a design
+            # document describing itself as design while a fourth arm runs.
+            (
+                "Three parts of it are the exception and are named as such where they "
+                "appear: the fetch half of the first stage, the landing half beside it, "
+                "and the ingestion-time privacy control the landing gate applies."
+            ),
+        ),
+    ),
+    (
         "plugins/claude-code/commands/ingest.md",
         "plugins/claude-code/commands/ingest.md",
         (
@@ -1922,6 +1981,17 @@ def test_each_secret_scan_prose_surface_states_the_control_and_its_bound(
 
 #: Where the core changelog's account of this module's pins lives.
 CORE_CHANGELOG = REPO_ROOT / "packages" / "theurian-core" / "CHANGELOG.md"
+
+#: The architecture document whose allowlist paragraph states the reader
+#: population as a sentence, with its own grep key printed beside the claim.
+REVIEW_KNOWLEDGE = REPO_ROOT / "docs" / "architecture" / "review-knowledge.md"
+
+#: The module the whole reader population sits in, as a path under the package.
+#:
+#: Spelled once because two claims are keyed on it -- "the one module in ``src/``
+#: that opens that file" and the grep key's own scope -- and a second spelling is
+#: a second thing to keep in step.
+PROJECT_CONFIG_PATH: Final = "security/project_config.py"
 
 #: The reader whose *reach* four documents describe, and the modules that call it.
 #:
@@ -2802,3 +2872,201 @@ def test_the_changelog_states_the_pin_reach_this_module_actually_has() -> None:
             f"a fragment match, because a fragment match is what let the first "
             f"wording through."
         )
+
+
+# ---------------------------------------------------------------------------
+# The reader population as `docs/architecture/review-knowledge.md` states it,
+# recomputed rather than transcribed (ADR-0030 slice 2).
+# ---------------------------------------------------------------------------
+
+
+def _json_spellings() -> frozenset[str]:
+    """The published key spelling of every watched key, as the file writes it.
+
+    The last dotted component -- ``secretScan`` out of ``security.secretScan`` --
+    which is the one spelling a module *reading the file* has to name. The
+    snake_case and SCREAMING twins in :data:`WATCHED_SPELLINGS` are what a value
+    is bound to after the read, and a module naming only those has read nothing:
+    ``application/index_builder.py`` holds ``secret_scan`` as a field and opens no
+    file.
+    """
+    return frozenset(key.rsplit(".", maxsplit=1)[-1] for key in WATCHED_SPELLINGS)
+
+
+def _live_reader_sites() -> tuple[tuple[str, str], ...]:
+    """The scan's answer over the shipped package right now, not the pinned set.
+
+    :data:`CONFIG_KEY_READER_SITES` is what a reader added or removed is measured
+    *against*; this is the measurement itself, so the sentence built below moves
+    with the tree rather than with the table. Using the pinned set here would make
+    the document agree with a constant instead of with the source, and the two go
+    out of step in exactly the case this exists to catch.
+    """
+    return tuple(
+        sorted(
+            {
+                site
+                for path in sorted(SRC.rglob("*.py"))
+                for site in _key_references(
+                    path.read_text(encoding="utf-8"), path.relative_to(SRC).as_posix()
+                )
+            }
+        )
+    )
+
+
+def _keys_with_a_live_reader() -> tuple[str, ...]:
+    """Every watched key some module names in the file's own spelling, sorted.
+
+    Sorted by the dotted path, which is **not** the order the document lists them
+    in -- so the caller re-orders rather than reading this as prose order.
+    """
+    named = {spelling for _module, spelling in _live_reader_sites()}
+    return tuple(
+        sorted(key for key in WATCHED_SPELLINGS if key.rsplit(".", maxsplit=1)[-1] in named)
+    )
+
+
+def _modules_naming_a_published_key() -> tuple[str, ...]:
+    """Every module that names a key in the spelling ``.theurian/config.yaml`` uses.
+
+    The fact side of *"the one module in ``src/`` that opens that file"*. It is a
+    proxy and the bound is the module docstring's: a module that assembled the key
+    at runtime, or read the whole ``security`` mapping without naming
+    ``secretScan``, opens the file and is invisible here. What it does catch is
+    every shape a second reader has actually taken.
+    """
+    spellings = _json_spellings()
+    return tuple(
+        sorted({module for module, spelling in _live_reader_sites() if spelling in spellings})
+    )
+
+
+def _reader_functions() -> tuple[str, ...]:
+    """The public ``read_*`` functions ``security/project_config.py`` defines, sorted.
+
+    Derived from the module's syntax tree rather than listed, because the grep key
+    printed in ``review-knowledge.md`` is an alternation of exactly these names: a
+    fourth reader added without extending that key leaves the document publishing
+    a command that answers less than the claim beside it.
+
+    Private helpers are excluded -- ``_read_document`` is the shared loader all
+    three call, not a fourth reader -- and so is anything not defined at module
+    level, which no reader is.
+    """
+    tree = ast.parse((SRC / PROJECT_CONFIG_PATH).read_text(encoding="utf-8"))
+    return tuple(
+        sorted(
+            node.name
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+            and node.name.startswith("read_")
+        )
+    )
+
+
+def _grep_key_alternatives(document: str) -> tuple[str, ...]:
+    """The names the document's own ``git grep`` key searches for, sorted.
+
+    The key is printed in a ``console`` block *beside* the claim, which is what
+    makes the claim attackable by a reader rather than only by this test. Parsing
+    it is how the key itself is held to the population: a document that narrowed
+    its key to one name would otherwise keep printing a command that answers
+    "yes" for the wrong reason.
+    """
+    match = re.search(r'\$ git grep -n "([^"]+)"', document)
+    assert match is not None, (
+        "docs/architecture/review-knowledge.md no longer prints a `git grep` key "
+        "beside its reader-population claim. The claim is only checkable because "
+        "the key sits next to it; restore the console block rather than deleting "
+        "this test."
+    )
+    return tuple(sorted(match.group(1).split(r"\|")))
+
+
+def test_review_knowledges_reader_population_is_the_one_the_tree_has() -> None:
+    """SEC-10, SEC-11, ADR-0030: the document's key count is recomputed, not read.
+
+    ``docs/architecture/review-knowledge.md`` is the sixth surface the reader
+    enumeration's failure message names, and until ADR-0030 slice 2 it was the one
+    that said the allowlist reader **did not exist**. That sentence was true when
+    it was written, false from slice 1, and rewritten by slice 2's documentation
+    commit -- and a rewrite is exactly where the next wrong number goes in, because
+    nothing was holding the old one either.
+
+    So the paragraph was written to be pinnable and this is the pin. Three claims
+    in it are rebuilt here from a live scan of the shipped package and asserted
+    word for word:
+
+    * **which module opens the file** -- the modules naming a key in the file's
+      own published spelling, which today is one;
+    * **how many keys it reads** -- rendered as the word the paragraph uses, so a
+      fourth key makes the rebuilt sentence say "four" against a document saying
+      "three";
+    * **which keys they are**, in the document's own order and spelling.
+
+    The fourth is the document's own ``git grep`` key: it names one function per
+    key, and it is asserted to name exactly the public readers
+    ``security/project_config.py`` defines. A reader added without extending the
+    key leaves the paragraph printing a command that under-answers its own claim,
+    which is the failure a printed key exists to make impossible.
+
+    **What this is not.** It is not the spelling pin -- that is
+    :data:`SECRET_SCAN_PROSE_SURFACES`' row for the same file, which holds the
+    clauses around these numbers and would stay green against any count. And it is
+    not a proof that only one module can read the file: the scan's bound is the
+    module docstring's, and a key assembled at runtime passes both halves.
+    """
+    document = " ".join(REVIEW_KNOWLEDGE.read_text(encoding="utf-8").split())
+    modules = _modules_naming_a_published_key()
+    keys = _keys_with_a_live_reader()
+
+    assert len(modules) == 1, (
+        f"{len(modules)} modules name a published config key in the file's own "
+        f"spelling: {list(modules)}. `review-knowledge.md` says one module opens "
+        f"`.theurian/config.yaml`, the schema's root description says the same, and "
+        f"this pin cannot rebuild a sentence that names a single module. Correct "
+        f"both documents in the change that added the second reader."
+    )
+    ordered = (
+        "security.secretScan",
+        "providers.review.repositories",
+        "providers.review.redactParticipantNames",
+    )
+    assert set(ordered) == set(keys), (
+        f"the keys with a reader are {list(keys)} and this pin still renders the "
+        f"sentence for {list(ordered)}. The document lists them in a reading order "
+        f"the scan cannot derive, so the order lives here -- move it, and the "
+        f"paragraph, in the same change."
+    )
+
+    sentence = (
+        f"`{modules[0]}` is the one module in `src/` that opens that file, and it "
+        f"reads **{_number_word(len(keys))}** keys out of it and nothing else: "
+        + ", ".join(f"`{key}`" for key in ordered[:-1])
+        + f" and `{ordered[-1]}`"
+    )
+
+    assert sentence in document, (
+        f"docs/architecture/review-knowledge.md no longer states, in the words this "
+        f"module's own scan derives:\n\n  {sentence}\n\n"
+        f"Measured here: {list(modules)} name a published key spelling, and the keys "
+        f"with a reader are {list(keys)}.\n\n"
+        f"This paragraph is a security claim -- how far SEC-10's allowlist and "
+        f"SEC-11's policy reach, and what an operator setting a key gets. It has "
+        f"been wrong in both directions already: it said the allowlist reader did "
+        f"not exist for the two slices after it did (#129, ADR-0030 decision 2), "
+        f"and it counted two keys on the day a third landed. If the population "
+        f"moved, move the paragraph in the same change; do not relax this to a "
+        f"fragment, because a fragment match is what let the first wording through."
+    )
+
+    assert _grep_key_alternatives(document) == _reader_functions(), (
+        f"the `git grep` key printed beside that paragraph searches for "
+        f"{list(_grep_key_alternatives(document))}, and `{PROJECT_CONFIG_PATH}` "
+        f"defines {list(_reader_functions())}.\n\n"
+        f"The key is what makes the claim checkable by a reader rather than only "
+        f"by this test, so a key that has stopped naming every reader is a "
+        f"paragraph that cannot be verified from the outside. Extend the console "
+        f"block in the same change that adds or removes a reader."
+    )

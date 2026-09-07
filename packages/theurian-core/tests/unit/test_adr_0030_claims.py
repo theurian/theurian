@@ -1,0 +1,699 @@
+"""What ADR-0030's record claims about slice 2, held against the tree (#479).
+
+Three claims live here, and they have one thing in common: each is a sentence a
+reader takes as settled, in a document nothing was checking.
+
+- **The Compliance section names the test that discharges each owed item.** A
+  name in a governed record is a promise that the reader can go and look, and a
+  name that resolves to nothing is worse than no name -- it reports coverage that
+  cannot be inspected. :func:`test_every_test_the_compliance_section_names_resolves`
+  resolves every ``path::test_name`` reference in that section against the live
+  test tree.
+- **``KnowledgeCandidate`` is constructed nowhere in ``src/``.** ``README.md``
+  and ``docs/architecture/review-knowledge.md`` both state it, because it is the
+  sentence that says review *ingestion* is not review *promotion*: ADR-0013's
+  direction (an AI proposes, a human approves) rests on nothing in the shipped
+  package building a candidate at all.
+- **``.theurian/review/`` has one writer.** ``SECURITY.md``'s retention paragraph
+  says an upstream deletion does not propagate *because* nothing else revisits a
+  landed file, and that is a claim about the source tree rather than about a
+  policy: what makes it true is that no code exists which could delete or rewrite
+  a record the run did not fetch.
+
+**Every one of the three is asserted from both sides.** The document has to keep
+saying it (a fragment pin, which holds spelling and is blind to truth), and the
+tree has to keep making it true (a scan, which is blind to the document). Neither
+half is sufficient, which is the split ``test_config_key_call_sites.py`` records
+at length and the reason its rows are not folded into one test here.
+
+**The scans' bound, stated once.** They read names out of syntax trees. A
+construction reached through ``getattr``, a deletion spelled through
+``os.system`` or a helper in another module, and a path rebuilt from string
+literals rather than from ``ProjectPaths.review`` are all invisible. That is a
+floor on the review a change gets, not a proof that the shape cannot exist --
+the same bound ``test_network_call_sites.py`` and ``test_gate_call_sites.py``
+record for theirs. Each scan whose expected answer is *nothing* carries a
+positive control that plants the shape it claims to see, because a broken
+extractor and a clean tree are indistinguishable from the outside.
+
+Pure: it parses the shipped ``.py`` files and four documents as text, and opens
+no database, no socket and no temporary directory.
+"""
+
+from __future__ import annotations
+
+import ast
+import pathlib
+import re
+from collections.abc import Iterator
+from typing import Final
+
+import pytest
+
+import theurian
+
+pytestmark = pytest.mark.unit
+
+#: The package as *imported*, for the reason ``test_config_key_call_sites.py``
+#: gives: a hand-built relative path can drift from the installed package and
+#: would then scan a directory with nothing in it whatever the source did.
+SRC: Final = pathlib.Path(theurian.__file__).resolve().parent
+
+#: ``parents[4]`` is ``.../tests/unit/`` -> ``tests`` -> ``theurian-core`` ->
+#: ``packages`` -> repo root.
+REPO_ROOT: Final = pathlib.Path(__file__).resolve().parents[4]
+
+ADR_0030: Final = REPO_ROOT / "docs" / "adr" / "0030-github-review-ingestion-spawns-gh.md"
+README: Final = REPO_ROOT / "README.md"
+SECURITY_MD: Final = REPO_ROOT / "SECURITY.md"
+REVIEW_KNOWLEDGE: Final = REPO_ROOT / "docs" / "architecture" / "review-knowledge.md"
+
+#: Where the Compliance section's relative paths are rooted.
+#:
+#: The section says so itself -- *"Paths are ``packages/theurian-core/tests/``"* --
+#: and that sentence is asserted below rather than assumed, because a resolver
+#: whose base is written only here would keep resolving after the document moved
+#: its own base and would then be checking names against the wrong tree.
+TEST_ROOT: Final = REPO_ROOT / "packages" / "theurian-core" / "tests"
+TEST_ROOT_SENTENCE: Final = "Paths are `packages/theurian-core/tests/`."
+
+
+def _collapsed(text: str) -> str:
+    """Runs of whitespace flattened to single spaces, case preserved.
+
+    These documents are line-wrapped Markdown, so a sentence routinely breaks
+    across two source lines and a raw substring match would miss the real wording
+    and pass vacuously.
+    """
+    return " ".join(text.split())
+
+
+# ---------------------------------------------------------------------------
+# The Compliance section's test names (ADR-0030, and #603's future slice-1 fill).
+# ---------------------------------------------------------------------------
+
+#: A ``path::test_name`` reference, with the path optional.
+#:
+#: The bare form is real prose rather than an edge case: the section writes
+#: ``...py::test_a`` once and then ``::test_b`` for each sibling in the same file,
+#: which is how a reader reads it too. :func:`_named_tests` resolves a bare
+#: reference against the last file named, so a sibling list inherits its file the
+#: way the paragraph means it to.
+_REFERENCE: Final = re.compile(
+    r"(?:(?P<path>[A-Za-z0-9_./-]*test_[A-Za-z0-9_]+\.py))?::(?P<name>test_[a-z0-9_]+)"
+)
+
+#: The heading the section opens with, and the one that would end it.
+#:
+#: Sliced by heading rather than read to end of file, so a section appended after
+#: Compliance does not silently join it -- and so an empty slice fails loudly at
+#: :func:`test_the_compliance_section_is_findable_and_names_its_own_test_root`
+#: rather than reporting no references and reading as compliance.
+_COMPLIANCE_HEADING: Final = "\n## Compliance\n"
+_NEXT_HEADING: Final = re.compile(r"^## ", re.MULTILINE)
+
+
+def _compliance_section(text: str) -> str:
+    """ADR-0030's Compliance section, from its heading to the next one."""
+    start = text.find(_COMPLIANCE_HEADING)
+    if start < 0:
+        return ""
+    body = text[start + len(_COMPLIANCE_HEADING) :]
+    following = _NEXT_HEADING.search(body)
+    return body[: following.start()] if following else body
+
+
+def _named_tests(section: str) -> tuple[tuple[str, str], ...]:
+    """Every ``(path, test name)`` the section names, bare references resolved.
+
+    Paths are returned as the document spells them, relative to
+    :data:`TEST_ROOT`. A bare ``::name`` takes the last path seen, and a bare one
+    with no path before it is returned with an empty path so the caller reports it
+    by name rather than resolving it against something arbitrary.
+    """
+    found: list[tuple[str, str]] = []
+    current = ""
+    for match in _REFERENCE.finditer(_collapsed(section)):
+        if match.group("path"):
+            current = match.group("path")
+        found.append((current, match.group("name")))
+    return tuple(found)
+
+
+def _defined_tests(path: pathlib.Path) -> frozenset[str]:
+    """Every test function name ``path`` defines, at module level or in a class.
+
+    An AST lookup rather than an import, deliberately. Importing a test module to
+    ask what it defines runs its module-level code -- fixtures, ``CliRunner``
+    construction, path resolution -- inside a test whose subject is a document,
+    and a collection error in an unrelated module would then read as a broken
+    reference here.
+
+    Parametrisation is invisible to this and does not need to be visible: the
+    section names functions, and a parametrised function is one function whatever
+    ids pytest generates for it.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.name)
+    return frozenset(
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        and node.name.startswith("test_")
+    )
+
+
+def _unresolved(section: str) -> Iterator[tuple[str, str, str]]:
+    """Each reference in ``section`` that does not resolve, with the reason."""
+    for relative, name in _named_tests(section):
+        if not relative:
+            yield "", name, "the reference names no file and none precedes it"
+            continue
+        path = TEST_ROOT / relative
+        if not path.is_file():
+            yield relative, name, f"{path.relative_to(REPO_ROOT)} does not exist"
+            continue
+        if name not in _defined_tests(path):
+            yield relative, name, f"{relative} defines no such test"
+
+
+def test_the_compliance_section_is_findable_and_names_its_own_test_root() -> None:
+    """The population control, asserted before anything is resolved.
+
+    :func:`test_every_test_the_compliance_section_names_resolves` reports its
+    result as an empty list of failures, and a section that could not be located
+    -- renamed heading, moved file, a slice that ends at the wrong place --
+    produces exactly the same empty list. So the section is asserted to exist and
+    to carry references before the absence of failures is allowed to mean
+    anything.
+
+    The base path is asserted for the same reason from the other side. The
+    resolver joins each relative path onto ``packages/theurian-core/tests/``
+    because the section says that is where they are rooted; a document that moved
+    its base without moving that sentence would have every reference resolved
+    against the wrong tree, and the failures -- or the passes -- would be about
+    files nobody named.
+    """
+    section = _compliance_section(ADR_0030.read_text(encoding="utf-8"))
+
+    assert section, (
+        "ADR-0030's `## Compliance` section could not be located, so the resolver "
+        "below would report no broken references over no text at all. The heading "
+        "moved, or the file did."
+    )
+    references = _named_tests(section)
+    assert references, (
+        "ADR-0030's Compliance section names no `path::test_name` reference at "
+        "all. Slice 2 recorded five items with the test that discharges each, so "
+        "an empty result means the section was rewritten to name none -- which is "
+        "the state this pin exists to notice, not a reason to delete it."
+    )
+    assert TEST_ROOT_SENTENCE in _collapsed(section), (
+        f"ADR-0030's Compliance section no longer states {TEST_ROOT_SENTENCE!r}. "
+        f"That sentence is what tells a reader -- and this resolver -- where the "
+        f"relative paths beside each item are rooted. Restore it, or move it and "
+        f"`TEST_ROOT` in the same change."
+    )
+
+
+def test_every_test_the_compliance_section_names_resolves() -> None:
+    """ADR-0030: a named discharge must be one a reader can open (#479, #603).
+
+    The section moved slice 2's five owed items from *owed* to *landed* and named
+    the test that discharges each, which is the form this project uses to make an
+    ADR checkable rather than aspirational. That form has one failure mode, and it
+    is silent: a name that never existed, a name left behind by a rename, or a
+    name spelled from memory reads exactly like a discharged obligation. Nobody
+    notices, because the only way to notice is to go and look -- which is what
+    this does, every run.
+
+    It matters beyond slice 2. Slice 1's list is currently marked shipped with its
+    discharges *not yet recorded* ([#603](https://github.com/theurian/theurian/issues/603)),
+    so the next change to this section is a fill of eleven or so names written
+    against a tree they were not read from. This resolver is what that fill lands
+    against.
+
+    Resolved by parsing rather than by importing, and the reference grammar
+    follows the paragraph's own: a bare ``::sibling`` belongs to the file last
+    named. What is *not* asserted: that the named test actually tests what the
+    bullet says it tests. No mechanical check reaches that, and pretending
+    otherwise is the over-claim this docstring refuses to make.
+    """
+    section = _compliance_section(ADR_0030.read_text(encoding="utf-8"))
+
+    broken = tuple(_unresolved(section))
+
+    assert broken == (), (
+        "ADR-0030's Compliance section names tests that do not resolve:\n"
+        + "\n".join(f"  {relative}::{name} -- {why}" for relative, name, why in broken)
+        + "\n\nA discharge named in a governed record is a promise that the reader "
+        "can open the test and read it. Fix the reference, or -- if the test was "
+        "deliberately removed -- move the item back to *owed* with the slice that "
+        "will take it, which is what the section says a slice does with an item it "
+        "did not reach."
+    )
+
+
+def test_the_resolver_would_report_a_name_no_test_file_defines() -> None:
+    """The positive control: a clean result above has to be capable of being dirty.
+
+    The assertion beside this one expects an empty tuple, which is what a resolver
+    that extracted nothing, resolved nothing, or silently swallowed a missing file
+    would also produce. So the same functions are run over a synthetic section
+    carrying one reference that resolves and three that cannot, and each failure
+    shape is asserted to be reported: a file that does not exist, a name the file
+    does not define, and a bare sibling reference inheriting a file that does.
+
+    The resolving reference is real on purpose. A control built only from broken
+    inputs proves the resolver can say no and not that it can say yes, and a
+    resolver that reported *everything* would make the pin above red for the wrong
+    reason on its first honest failure.
+    """
+    section = (
+        "Paths are `packages/theurian-core/tests/`. "
+        "`unit/test_adr_0030_claims.py::test_every_test_the_compliance_section_names_resolves` "
+        "and `::test_a_sibling_that_was_never_written`, with "
+        "`unit/test_a_module_nobody_wrote.py::test_anything_at_all` and "
+        "`unit/test_adr_0030_claims.py::test_a_name_this_file_does_not_define`."
+    )
+
+    broken = {(relative, name) for relative, name, _why in _unresolved(section)}
+
+    assert broken == {
+        ("unit/test_adr_0030_claims.py", "test_a_sibling_that_was_never_written"),
+        ("unit/test_a_module_nobody_wrote.py", "test_anything_at_all"),
+        ("unit/test_adr_0030_claims.py", "test_a_name_this_file_does_not_define"),
+    }, (
+        f"the resolver reported {sorted(broken)} over a synthetic section with one "
+        f"resolving reference and three that cannot resolve. It has stopped "
+        f"discriminating, so a green result from "
+        f"`test_every_test_the_compliance_section_names_resolves` means nothing "
+        f"until this is fixed."
+    )
+
+
+# ---------------------------------------------------------------------------
+# `KnowledgeCandidate` is constructed nowhere in `src/` (ADR-0013, FR-V2/V3).
+# ---------------------------------------------------------------------------
+
+#: The domain type whose absence from the shipped call graph is the claim.
+CANDIDATE_TYPE: Final = "KnowledgeCandidate"
+
+#: The two documents that state it, and that must move when it stops being true.
+#:
+#: Both are named in the failure message rather than only here, because whoever
+#: lands candidate generation reads the message and not this constant.
+CANDIDATE_DOCUMENTS: Final = ("README.md", "docs/architecture/review-knowledge.md")
+
+
+def _construction_sites(source: str, module: str) -> Iterator[tuple[str, int]]:
+    """Every call to :data:`CANDIDATE_TYPE` in ``source``, as ``(module, line)``.
+
+    Both spellings a construction takes: the bare name after
+    ``from ... import KnowledgeCandidate``, and the attribute form
+    ``review.KnowledgeCandidate(...)`` after a module import. A call and not a
+    mention -- the type appears in a docstring in ``review/__init__.py`` and in
+    its own ``class`` statement, and neither builds one.
+    """
+    for node in ast.walk(ast.parse(source, filename=module)):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        named = (isinstance(func, ast.Name) and func.id == CANDIDATE_TYPE) or (
+            isinstance(func, ast.Attribute) and func.attr == CANDIDATE_TYPE
+        )
+        if named:
+            yield module, node.lineno
+
+
+def test_nothing_in_the_shipped_package_constructs_a_knowledge_candidate() -> None:
+    """ADR-0013: the shipped package proposes nothing, and this is the fact side.
+
+    ``README.md`` reaches its "AI proposes, humans approve" row through this
+    sentence: the fetch and landing halves of ADR-0030 write *review evidence*,
+    never approved knowledge, and the evidence for that is that no code in
+    ``src/`` builds a :class:`~theurian.domain.review.KnowledgeCandidate` at all.
+    ``docs/architecture/review-knowledge.md`` says the same in its own words --
+    "no code path generates a candidate".
+
+    That is a claim about a call graph, and it is precisely the claim ADR-0030
+    slice 2 puts under pressure: the ingestion path now runs, lands files, and
+    sits one import away from the domain type it must not build. The day
+    candidate generation arrives (FR-V2, FR-V3), both documents become false in
+    the same commit -- and the point of this test is that the commit cannot land
+    without meeting them.
+
+    The type's *definition* and the docstrings naming it are not constructions and
+    are deliberately not counted; what is counted is a call.
+    """
+    sites = tuple(
+        site
+        for path in sorted(SRC.rglob("*.py"))
+        for site in _construction_sites(
+            path.read_text(encoding="utf-8"), path.relative_to(SRC).as_posix()
+        )
+    )
+
+    assert sites == (), (
+        f"`{CANDIDATE_TYPE}` is constructed in the shipped package:\n"
+        + "\n".join(f"  {module}:{line}" for module, line in sites)
+        + "\n\nTwo documents say it is not, and each of them reaches a promise "
+        "through that sentence:\n"
+        + "\n".join(f"  {document}" for document in CANDIDATE_DOCUMENTS)
+        + "\n\nREADME.md's `AI proposes, humans approve` row says the ingestion "
+        "path writes review evidence and never approved knowledge, quoting the "
+        "grep that answers nothing; review-knowledge.md says no code path "
+        "generates a candidate. If candidate generation has landed (FR-V2, "
+        "FR-V3), both move in this change -- and ADR-0013's direction needs "
+        "restating with whatever now stands between a generated candidate and "
+        "approved state."
+    )
+
+
+def test_the_construction_scan_sees_both_spellings_of_a_construction() -> None:
+    """The positive control for a pin whose expected answer is nothing.
+
+    A scan that resolved no calls at all would report the same empty tuple as a
+    package that builds no candidate, and the difference is the whole value of the
+    pin. Both call spellings are planted here, and the three shapes that are
+    *not* constructions -- the class statement, a docstring naming the type, and
+    an import of it -- are asserted invisible, because a scan that flagged those
+    would be red on a clean tree and the only way back to green would be to stop
+    naming the type in the documents that describe it.
+    """
+    seen = {
+        module: tuple(line for _module, line in _construction_sites(source, module))
+        for module, source in (
+            ("imported.py", f"from theurian.domain.review import {CANDIDATE_TYPE}\n"),
+            ("bare_call.py", f"candidate = {CANDIDATE_TYPE}(body=body)\n"),
+            ("attribute_call.py", f"candidate = review.{CANDIDATE_TYPE}(body=body)\n"),
+            ("definition.py", f"class {CANDIDATE_TYPE}:\n    pass\n"),
+            ("mentioned.py", f'"""The {CANDIDATE_TYPE} type lives in domain/review.py."""\n'),
+        )
+    }
+
+    assert seen == {
+        "imported.py": (),
+        "bare_call.py": (1,),
+        "attribute_call.py": (1,),
+        "definition.py": (),
+        "mentioned.py": (),
+    }, (
+        f"the construction scan read the planted sources as {seen}. It is the "
+        f"scanner that is broken, not the product: fix `_construction_sites` "
+        f"before trusting a green result from "
+        f"`test_nothing_in_the_shipped_package_constructs_a_knowledge_candidate`, "
+        f"which would keep passing with a scanner that sees nothing."
+    )
+
+
+# ---------------------------------------------------------------------------
+# `.theurian/review/` has one writer (ADR-0030 decision 3, R-12, SECURITY.md).
+# ---------------------------------------------------------------------------
+
+#: The package that owns every write under the review directory.
+EVIDENCE_PACKAGE: Final = "infrastructure/review_evidence"
+
+#: Where each module that reaches ``ProjectPaths.review`` sits, and what it does.
+#:
+#: **The honest output of an attribute scan, not a curated list of writers.** The
+#: scan matches the name ``review`` in an attribute position and cannot tell a
+#: paths object from any other, so a third member is not automatically a second
+#: writer -- what it is, is a module somebody has to explain:
+#:
+#: * ``application/project_service.py`` **defines** the property. It composes the
+#:   path and proves it contained; it opens nothing.
+#: * ``cli/review_commands.py`` is the composition root, and the one place the
+#:   directory is handed to anything: it constructs ``ReviewEvidenceStore`` with
+#:   it and hands the store's methods to the service as opaque callables.
+#: * ``domain/specification.py``'s ``self.review`` is a different ``review``
+#:   entirely -- a ``PolicyRequirement`` field on a project specification, which
+#:   never was a path. It is recorded rather than filtered because a filter would
+#:   need the semantics this scan refuses, and because a rule that hid it would
+#:   hide a future member for the same reason.
+REVIEW_PATH_SITES: Final[tuple[tuple[str, str], ...]] = (
+    ("application/project_service.py", "defines `ProjectPaths.review` and proves it contained"),
+    ("cli/review_commands.py", "hands it to `ReviewEvidenceStore` and to nothing else"),
+    ("domain/specification.py", "a `PolicyRequirement` field of the same name, not a path"),
+)
+
+#: The names a module would use to remove or move a landed file.
+#:
+#: Read as **names in any position**, not as resolved calls, so ``path.unlink``
+#: passed as a callable counts as much as ``path.unlink()``. Over-broad in the RED
+#: direction on purpose: the claim is that this package contains no such code at
+#: all, and a false RED on an innocent identifier costs a read while a false green
+#: costs the claim.
+_REMOVAL_NAMES: Final = frozenset(
+    {"unlink", "rmdir", "rmtree", "remove", "removedirs", "rename", "replace", "truncate"}
+)
+
+
+def _removal_names(source: str, module: str) -> Iterator[tuple[str, str, int]]:
+    """Every removal-shaped name ``source`` uses, as ``(module, name, line)``."""
+    for node in ast.walk(ast.parse(source, filename=module)):
+        if not isinstance(node, ast.Attribute | ast.Name):
+            continue
+        name = node.attr if isinstance(node, ast.Attribute) else node.id
+        if name in _REMOVAL_NAMES:
+            yield module, name, node.lineno
+
+
+def _names_the_review_path(node: ast.AST) -> bool:
+    """Whether ``node`` names ``review`` in a position a paths object reaches it by.
+
+    Two shapes, and the second is not an afterthought: ``paths.review`` is how a
+    caller reaches the directory, and ``def review`` is where the path is
+    *composed* -- a second definition anywhere would be a second composition of
+    it, which is the same claim from the other end.
+    """
+    if isinstance(node, ast.Attribute):
+        return node.attr == "review"
+    if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+        return node.name == "review"
+    return False
+
+
+def _review_path_sites() -> tuple[str, ...]:
+    """Every module of the shipped package naming ``review`` in one of those positions."""
+    return tuple(
+        sorted(
+            {
+                path.relative_to(SRC).as_posix()
+                for path in sorted(SRC.rglob("*.py"))
+                for node in ast.walk(
+                    ast.parse(path.read_text(encoding="utf-8"), filename=path.name)
+                )
+                if _names_the_review_path(node)
+            }
+        )
+    )
+
+
+def test_the_review_directory_is_reached_from_the_recorded_modules_only() -> None:
+    """SECURITY.md's retention paragraph rests on there being one writer (R-12).
+
+    The paragraph tells an operator that a comment deleted upstream *stays* in
+    ``.theurian/review/`` as the run that fetched it landed it, and that "nothing
+    else revisits a landed file, so a record no later run fetches does not
+    change". An operator reads that as a retention guarantee and plans a deletion
+    procedure around it -- one step today, delete the file.
+
+    That guarantee is not enforced by a policy anywhere. It is true because of
+    what the tree does *not* contain, and this is the half of that which can be
+    measured: which modules reach the directory at all. Three do, and only one of
+    them hands it to anything --
+    :data:`REVIEW_PATH_SITES` records what each is.
+
+    An equality, so it fails in both directions. A fourth module reaching the
+    review root is a second place a landed file can be opened, and SECURITY.md's
+    sentence is then a claim about a tree that has changed under it. A member
+    disappearing means the composition root stopped reaching the directory, which
+    is a different product.
+
+    **What this cannot see**, and it is the honest bound rather than a hedge: a
+    module that rebuilds ``.theurian/review`` from literals instead of asking
+    ``ProjectPaths`` for it names no ``review`` attribute and is invisible here.
+    ``test_project_paths_containment.py`` covers whether the path is contained;
+    nothing covers whether somebody assembled their own.
+    """
+    sites = _review_path_sites()
+    recorded = tuple(module for module, _why in REVIEW_PATH_SITES)
+
+    assert sites == recorded, (
+        f"the modules naming a `review` attribute are {list(sites)}, and the "
+        f"recorded set is {list(recorded)}:\n"
+        + "\n".join(f"  {module} -- {why}" for module, why in REVIEW_PATH_SITES)
+        + "\n\nA NEW module: it reaches `.theurian/review/` -- or it names an "
+        "unrelated `review` attribute, and this scan cannot tell them apart, "
+        "which is why a new row states which it is. If it reaches the directory, "
+        "SECURITY.md's `Nothing else revisits a landed file` now describes a tree "
+        "with a second reacher in it; say what the new module does to a landed "
+        "record before recording the site.\n\n"
+        "A MISSING module: the composition root no longer hands the directory to "
+        "the evidence store, so either review evidence is landing somewhere else "
+        "or it is not landing at all."
+    )
+
+
+def test_the_evidence_package_contains_nothing_that_removes_or_moves_a_file() -> None:
+    """Decision 3's *refetch never deletes*, as the absence it actually is.
+
+    ``ReviewEvidenceStore.write`` writes the records it is given and touches
+    nothing else -- it never enumerates a repository's landed files to diff them,
+    and it never unlinks. Its own docstring says the property holds because there
+    is no code that could do otherwise, which is a claim about the package's
+    contents and therefore checkable.
+
+    It is the mechanism under a promise made to a person. SECURITY.md tells an
+    operator that a comment edited or deleted on GitHub stays as it landed, and
+    that removing an ingested comment is a manual step they perform. A refetch
+    that quietly reconciled the directory against upstream would delete evidence
+    of a review that a person is entitled to have kept -- data loss no refetch
+    recovers, since the file *is* the record.
+
+    Names in any position, so a removal handed round as a callable counts. The
+    write itself is not a removal: ``write_text_without_following_a_link``
+    replaces the contents of the record's *own* path, which is decision 3's
+    best-effort refresh and is what :attr:`ReviewIngestReport.updated` counts.
+    """
+    package = SRC / EVIDENCE_PACKAGE
+    found = tuple(
+        site
+        for path in sorted(package.rglob("*.py"))
+        for site in _removal_names(
+            path.read_text(encoding="utf-8"), path.relative_to(SRC).as_posix()
+        )
+    )
+
+    assert found == (), (
+        f"`{EVIDENCE_PACKAGE}` names something that removes or moves a file:\n"
+        + "\n".join(f"  {module}:{line} -- {name}" for module, name, line in found)
+        + "\n\nADR-0030 decision 3 is that a refetch updates what upstream still "
+        "returns and never deletes what it no longer does, and SECURITY.md tells "
+        "an operator so. If this is a rename used to publish a record atomically "
+        "rather than a deletion, it is still a second way a landed file changes "
+        "and the retention paragraph has to describe it -- record the name here "
+        "with what it does, in the change that adds it."
+    )
+
+
+def test_the_removal_scan_sees_a_deletion_however_it_is_spelled() -> None:
+    """The positive control, because the pin above expects to find nothing.
+
+    Three spellings a deletion takes are planted -- a method call, the same
+    method passed as a callable without being called, and the module-level
+    ``os.remove`` form -- and one shape that is not a deletion is asserted
+    invisible. Without this, a scan that had stopped resolving attributes would
+    report the evidence package as clean forever, which is exactly what a package
+    that deletes nothing also reports.
+    """
+    seen = {
+        module: tuple(name for _module, name, _line in _removal_names(source, module))
+        for module, source in (
+            ("called.py", "target.unlink()\n"),
+            ("passed.py", "cleanup(target.unlink)\n"),
+            ("module_level.py", "os.remove(str(target))\n"),
+            ("shutil_tree.py", "shutil.rmtree(directory)\n"),
+            ("innocent.py", "document = json.dumps(payload)\n"),
+        )
+    }
+
+    assert seen == {
+        "called.py": ("unlink",),
+        "passed.py": ("unlink",),
+        "module_level.py": ("remove",),
+        "shutil_tree.py": ("rmtree",),
+        "innocent.py": (),
+    }, (
+        f"the removal scan read the planted sources as {seen}. Fix `_removal_names` "
+        f"before trusting a green result from "
+        f"`test_the_evidence_package_contains_nothing_that_removes_or_moves_a_file`."
+    )
+
+
+# ---------------------------------------------------------------------------
+# The prose half: the sentences those three scans are the fact side of.
+# ---------------------------------------------------------------------------
+
+#: Each claim's document and the wording that carries it.
+#:
+#: Spelling and nothing else, which is the split this project keeps separate on
+#: purpose: every fragment here would match word for word against a tree that had
+#: stopped making it true, and every scan above would stay green against a
+#: document that had stopped saying it. Neither half is worth having alone -- the
+#: first three rounds of #198 are the worked example, where four documents
+#: described a control that did not run.
+CLAIM_SURFACES: Final[tuple[tuple[str, pathlib.Path, tuple[str, ...]], ...]] = (
+    (
+        "README.md (AI proposes, humans approve)",
+        README,
+        (
+            "`KnowledgeCandidate` is constructed nowhere in `src/`",
+            '(`git grep -n "KnowledgeCandidate(" -- packages/theurian-core/src` answers nothing)',
+            # The bound beside the claim: what the two shipped halves *do* write.
+            # Dropping it leaves "constructed nowhere" reading as "the ingestion
+            # path writes nothing", which is false since slice 2.
+            (
+                "what they write is review evidence under `.theurian/review/`, never "
+                "approved knowledge"
+            ),
+        ),
+    ),
+    (
+        "docs/architecture/review-knowledge.md (nothing collects into it yet)",
+        REVIEW_KNOWLEDGE,
+        ("no code path generates a candidate",),
+    ),
+    (
+        "SECURITY.md (R-12 retention)",
+        SECURITY_MD,
+        (
+            (
+                "a later run refreshes what upstream still returns and **never deletes** "
+                "what it no longer does"
+            ),
+            (
+                "Nothing else revisits a landed file, so a record no later run fetches "
+                "does not change."
+            ),
+            # The remediation the paragraph promises, which is only one step
+            # because there is one writer and one copy. A rewrite that drops it
+            # leaves the retention claim with no stated way out of it.
+            "Today it is one step: delete that record's file under `.theurian/review/`.",
+        ),
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("label", "document", "sentences"),
+    CLAIM_SURFACES,
+    ids=[case[0] for case in CLAIM_SURFACES],
+)
+def test_each_document_still_states_the_claim_its_scan_holds(
+    label: str, document: pathlib.Path, sentences: tuple[str, ...]
+) -> None:
+    """The prose half of the three scans above, in the shape #198 arrived at.
+
+    A scan holds a property of the tree and is blind to what any document says
+    about it. The failure that costs something is the other direction: the tree
+    stays correct, the sentence is quietly deleted or softened in a rewrite, and
+    the next reader has no reason to believe the property holds at all -- so the
+    change after that removes it, and nothing objects.
+
+    Both directions therefore have to be pinned separately, and this is the half
+    that keeps the words. If a claim genuinely stopped being true, its scan above
+    is what says so first; a fragment failing here while the scans are green means
+    a document drifted, and the document is what gets fixed.
+    """
+    normalized = _collapsed(document.read_text(encoding="utf-8"))
+
+    for sentence in sentences:
+        assert sentence in normalized, (
+            f"{label} no longer states {sentence!r}.\n\n"
+            "This sentence is what a reader takes the property from -- that the "
+            "shipped package builds no knowledge candidate, or that a landed "
+            "review record is revisited by nothing. The fact side is in this same "
+            "module and is green, so nothing in the tree moved: restore the "
+            "wording, or move it together with the scan it belongs to."
+        )

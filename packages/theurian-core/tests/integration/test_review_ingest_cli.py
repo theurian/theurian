@@ -537,11 +537,9 @@ def test_the_help_says_the_evidence_is_source_and_whose_decision_committing_it_i
     assert "the project's decision" in collapsed
 
 
-def test_a_redacting_project_lands_the_placeholder_and_says_so(
-    project: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """R-12 end to end: the report says redaction ran and the files carry it."""
-    (project / ".theurian" / "config.yaml").write_text(
+def _redacting(root: Path) -> None:
+    """The project's configuration with R-12's switch on."""
+    (root / ".theurian" / "config.yaml").write_text(
         "apiVersion: theurian.dev/v1\n"
         "providers:\n"
         "  review:\n"
@@ -550,17 +548,84 @@ def test_a_redacting_project_lands_the_placeholder_and_says_so(
         "    redactParticipantNames: true\n",
         encoding="utf-8",
     )
+
+
+def _landed_text(root: Path) -> str:
+    """Every landed record's bytes, concatenated in path order."""
+    return "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted((root / ".theurian" / "review").rglob("*.json"))
+    )
+
+
+def test_a_redacting_project_lands_the_placeholder_and_says_so(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-12 end to end: the report says redaction ran and the files carry it."""
+    _redacting(project)
     _install(monkeypatch, _canned((_event(42),)))
 
     code, payload = _invoke("review", "ingest", REPOSITORY)
 
     assert code == 0
     assert payload["participantNamesRedacted"] is True
-    landed_text = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in sorted((project / ".theurian" / "review").rglob("*.json"))
-    )
+    landed_text = _landed_text(project)
     assert REDACTED_DISPLAY_NAME in landed_text
     assert "Reviewer One" not in landed_text
     assert "Reviewer Two" not in landed_text
     assert "U_kwDO1" in landed_text
+
+
+def test_turning_redaction_on_rewrites_the_names_already_on_disk(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R-12 composed with decision 3's refetch: the second run rewrites, not skips.
+
+    SECURITY.md tells an operator that the switch "governs what a run writes
+    rather than what is already on disk", and an operator turning it on reads that
+    as: names already landed stay until something fetches those records again.
+    What that sentence does *not* say -- and what an operator would be entitled to
+    assume it means -- is that a refetch leaves them alone too. It does not: a
+    record refetched under the new setting is written again, redacted, over the
+    file that carried the name.
+
+    Nothing tested the composition of the two features before this. Each half was
+    held on its own: redaction lands the placeholder on a clean project, and a
+    second run over the same window updates rather than adds. The product of them
+    is the case an operator actually meets, because a project that ingests before
+    it configures is the ordinary order of events.
+
+    The property rests on ``ReviewEvidenceStore._write_one`` writing
+    unconditionally -- it compares nothing against what is on disk -- so a future
+    "skip records we already have" optimisation would silently leave the names
+    behind while both existing tests stayed green. The ``updated`` count is
+    asserted beside the bytes so this cannot pass by landing *new* files somewhere
+    else and leaving the originals in place.
+    """
+    _settings(project)
+    _install(monkeypatch, _canned((_event(42),)))
+
+    first_code, first = _invoke("review", "ingest", REPOSITORY)
+
+    assert first_code == 0
+    assert first["participantNamesRedacted"] is False
+    before = _landed_text(project)
+    assert "Reviewer One" in before, "the first run must land the name for this to mean anything"
+    assert REDACTED_DISPLAY_NAME not in before
+    landed_before = _landed(project)
+
+    _redacting(project)
+    second_code, second = _invoke("review", "ingest", REPOSITORY)
+
+    assert second_code == 0
+    assert second["participantNamesRedacted"] is True
+    assert (second["new"], second["updated"], second["kept"]) == (0, 3, 0), (
+        "the second run must rewrite the same three records rather than land new ones beside them"
+    )
+    assert _landed(project) == landed_before
+
+    after = _landed_text(project)
+    assert REDACTED_DISPLAY_NAME in after
+    assert "Reviewer One" not in after, "a name landed before redaction survived the refetch"
+    assert "Reviewer Two" not in after
+    assert "U_kwDO1" in after, "the identity graph must survive the redaction (R-12)"
