@@ -1120,7 +1120,7 @@ and a moving window cannot be re-checked later:
 | Measurement | Population, bounded | Result |
 | :-- | :-- | :-- |
 | Design consult, 2026-09-05 (`gh api graphql`, `pullRequests(last: 40, states: MERGED)`) | a moving window, bounded by naming the **merge list** it covered rather than a range: the last 40 commits on `origin/main` at `1fe3302b` carry **38** trailing pull-request refs — 440, 446, 448, 460, 466, 467, 470, 471, 474, 475, 478, 482, 486, 487, 488, 489, 490, 492, 498, 500, 501, 504, 513, 514, 518, 519, 524, 525, 534, 536, 541, 545, 552, 554, 556, 557, 560, 563 (`git log origin/main --format='%s' -40 \| sed -n 's/.*(\(#[0-9 #]*\))$/\1/p' \| awk '{print $NF}'`, taking the **trailing** ref per ADR-0029's rule, so `(#520 #525)` contributes 525 and not 520; two of the forty commits carry no ref) | **0** inline review threads, **0** top-level reviews |
-| Adversarial review, 2026-09-05 (REST `pulls` / `comments`), re-run by the orchestrator | keyed by PR number, not by a window: **#12, #132, #224, #352, #569** | **11** inline review threads (#352 ×5, #12 ×2, #224 ×2, #132, #569) and **5** `COMMENTED` top-level reviews — every root comment authored by `github-advanced-security[bot]`, one dated 2026-09-05 on the still-open #569 |
+| Adversarial review, 2026-09-05 (REST `pulls` / `comments`), re-run by the orchestrator | keyed by PR number, not by a window: **#12, #132, #224, #352, #569** | **11** inline review threads (#352 ×5, #12 ×2, #224 ×2, #132, #569 ×1 — open at measurement, so a floor rather than a pin; 2 as of 2026-09-07) and **5** `COMMENTED` top-level reviews — every root comment authored by `github-advanced-security[bot]`, one dated 2026-09-05 on the still-open #569 |
 
 **Both figures are dated snapshots, and the thread count moved while this PR was
 under review**: a further bot thread landed on the open #569 six minutes after this PR's
@@ -1128,6 +1128,20 @@ round-one fix commit, taking 11 to **12**. The number is therefore written as *1
 round-two measurement, 12 shortly after* rather than as a property of the
 repository — and the movement is not a nuisance, it is the evidence for the
 fixture decision below.
+
+**Re-measured 2026-09-07, and the row's `#569 ×1` is annotated rather than
+corrected.** Mend's harness re-ran the by-PR-number population and found #569
+carrying **2** inline threads — both authored by `github-advanced-security`, both
+dated 2026-09-05 — where the member list reads it as one. The 2026-09-05 figures
+stay exactly as they were taken: #569 was **open** when they were, so its member
+count was a floor from the moment it was written, and a snapshot that a later
+snapshot exceeds is not a snapshot that was wrong. The second thread is
+consistent with the one this paragraph already records as arriving mid-round; no
+comment id was compared across the two runs, so they are recorded as agreeing
+rather than as identified. Discovering record: [PR #595](https://github.com/theurian/theurian/pull/595)'s
+body. What this adds to the argument below is a second independent observation of
+the same property — the population moves, on an open PR, between one round and
+the next — rather than a new number for it.
 
 **The second measurement falsifies the universal an earlier draft of this section
 drew from the first**, which said this repository "cannot exercise thread
