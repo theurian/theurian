@@ -84,6 +84,18 @@ _UNREADABLE_CURE: Final = (
     "recovers it (ADR-0030 decision 3)."
 )
 
+#: What an operator does about two records in one run that name one file. Nothing
+#: was overwritten and there is no file to open: the fault is in what the
+#: provider answered with, so the cure is the query that shows it.
+_COLLISION_CURE: Final = (
+    "Report this against the provider adapter: two records naming one file is an "
+    "answer no repository should give -- either one key returned twice, or two keys "
+    "a case-insensitive filesystem cannot tell apart -- and writing the second over "
+    "the first would discard evidence no refetch recovers. Run the same query by "
+    "hand with `gh api graphql --hostname github.com` to see what the provider "
+    "returned."
+)
+
 #: What a reader does about a directory it cannot write or list. The write is the
 #: last step of an ingestion run, so the run is what gets repeated.
 _UNWRITABLE_CURE: Final = (
@@ -307,12 +319,29 @@ class ReviewEvidenceStore:
     def write(self, records: Iterable[EvidenceRecord], *, run: IngestionRun) -> tuple[str, ...]:
         """Land ``records``, stamped with ``run``, and answer where each went.
 
+        **The collision guard keys on the path the *filesystem* would collide
+        on**, which is the casefolded one. macOS and Windows fold case by
+        default, so a guard comparing byte spellings passes two records the disk
+        then merges into one, and "a silently overwritten record is a lost one"
+        would be a promise this method breaks on the platform most of this
+        project's development happens on. The layout keeps two ids' leaves apart
+        after folding
+        (:mod:`theurian.infrastructure.review_evidence.layout`), so the only
+        thing it emits that reaches this refusal is one record key returned
+        twice; the guard does not *rest* on that, because a store that inherited
+        the layout's injectivity as an assumption would go quiet the day the
+        layout changed.
+        ``tests/unit/test_review_evidence_store.py::test_two_records_a_folding_filesystem_would_merge_are_refused``
+        is what fails when the key stops being the folded one, and it drives the
+        guard with a deliberately colliding layout because the shipped one has no
+        input that reaches it.
+
         Returns:
             Each record's path relative to the review directory, in the order the
             records were given.
 
         Raises:
-            ReviewEvidenceError: If two records in one call claim one path -- a
+            ReviewEvidenceError: If two records in one call name one file -- a
                 silently overwritten record is a lost one -- if a record would
                 land larger than :meth:`read_all` will read back, if a symbolic
                 link sits where a record belongs, or if the directory cannot be
@@ -325,23 +354,21 @@ class ReviewEvidenceStore:
                 at a permission.
         """
         landed: list[str] = []
-        claimed: set[str] = set()
+        # Keyed by the folded path and valued by the spelling that claimed it, so
+        # the refusal can name both: told only its own path, an operator on a
+        # folding filesystem would go looking for a file spelled the other way.
+        claimed: dict[str, str] = {}
         for record in records:
             relative = record.relative_path
-            if relative in claimed:
+            earlier = claimed.get(relative.casefold())
+            if earlier is not None:
                 raise ReviewEvidenceError(
-                    f"Two records in one ingestion run claim `{relative}`: "
+                    f"Two records in one ingestion run name one file: "
                     f"{record.kind.value} {record.record_key!r} of {record.repository!r} "
-                    "was already written by this run.",
-                    remedy=(
-                        "Report this against the provider adapter: two records sharing "
-                        "one key is an answer no repository should give, and writing "
-                        "the second over the first would discard evidence no refetch "
-                        "recovers. Run the same query by hand with `gh api graphql "
-                        "--hostname github.com` to see what the provider returned."
-                    ),
+                    f"claims `{relative}`, and `{earlier}` was already written by this run.",
+                    remedy=_COLLISION_CURE,
                 )
-            claimed.add(relative)
+            claimed[relative.casefold()] = relative
             self._write_one(record, relative, run)
             landed.append(relative)
         return tuple(landed)

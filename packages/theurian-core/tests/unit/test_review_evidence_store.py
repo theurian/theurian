@@ -867,6 +867,42 @@ def test_two_records_claiming_one_path_in_one_run_are_refused(tmp_path: Path) ->
     assert "gh api graphql" in raised.value.remedy
 
 
+def _colliding_record_path(
+    *, provider: str, identity: str, kind: EvidenceKind, provider_id: str
+) -> str:
+    """A layout that spells a safe id out with no case tag -- the one H-E was found in."""
+    return f"{repository_directory(provider, identity)}/{kind.value}/{provider_id}{EVIDENCE_SUFFIX}"
+
+
+def test_two_records_a_folding_filesystem_would_merge_are_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard's own case, driven with a layout that collides on purpose.
+
+    The shipped layout keeps two ids' leaves apart after folding, so nothing it
+    emits reaches this refusal -- which would leave the guard a line no input
+    could fail, and a guard nothing reaches survives its own deletion. What it
+    defends is the *store's* promise rather than the layout's: "a silently
+    overwritten record is a lost one" is a claim about the disk, and the disk on
+    macOS and Windows compares folded names. The layout installed here is
+    exactly the one this store must not depend on being gone.
+
+    Both spellings are named in the refusal, because an operator told only the
+    second one would go looking for a file that is on disk under the first.
+    """
+    store = _store(tmp_path)
+    monkeypatch.setattr(store_module, "record_path", _colliding_record_path)
+
+    with pytest.raises(ReviewEvidenceError) as raised:
+        store.write([_thread("PRRT_kwDOAbc"), _thread("prrt_kwdoabc")], run=RUN_ONE)
+
+    assert "PRRT_kwDOAbc.json" in str(raised.value)
+    assert "prrt_kwdoabc.json" in str(raised.value)
+    assert "case-insensitive filesystem" in raised.value.remedy
+    assert "gh api graphql" in raised.value.remedy
+    assert len(list(_review_root(tmp_path).rglob(f"*{EVIDENCE_SUFFIX}"))) == 1
+
+
 @pytest.mark.parametrize(
     ("label", "mangle"),
     (

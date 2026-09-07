@@ -263,6 +263,43 @@ def test_a_second_invocation_updates_rather_than_adds(
     assert len(_landed(project)) == 3
 
 
+def test_two_thread_ids_that_differ_only_in_case_both_land_and_read_back(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """H-E through the shipped command, which is where its full cost showed.
+
+    Two thread ids differing only in case used to cost three things at once on a
+    filesystem that folds them: the second record was written over the first, the
+    report still counted four landings over the three files that existed and
+    called the run ``clean``, and the surviving file then named a record whose own
+    derived path was the other spelling -- so **every later run** refused the
+    whole repository before fetching anything. The second invocation here is what
+    covers that third cost: it reads the corpus back before it fetches.
+
+    The file-count assertion is the one that reddens on a folding filesystem, and
+    the folded-name assertion is the one that reddens anywhere -- on a
+    case-sensitive filesystem the count passes on its own, so alone it would
+    carry no claim there.
+    """
+    _settings(project)
+    event = _event(42)
+    threads = (
+        _thread(event, external_id="PRRT_kwDOAbc"),
+        _thread(event, external_id="prrt_kwdoabc"),
+    )
+    _install(monkeypatch, _canned((event,), threads={event.number: threads}))
+
+    first_code, first = _invoke("review", "ingest", REPOSITORY)
+    second_code, second = _invoke("review", "ingest", REPOSITORY)
+
+    landed = _landed(project)
+    assert (first_code, second_code) == (0, 0)
+    assert first["clean"] is True
+    assert first["landed"]["total"] == len(landed) == 4
+    assert len({name.casefold() for name in landed}) == 4
+    assert (second["new"], second["updated"], second["kept"]) == (0, 4, 0)
+
+
 # -- scope-matched containment, through the CLI -------------------------------
 
 
