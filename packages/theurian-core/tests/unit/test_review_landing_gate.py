@@ -460,7 +460,9 @@ def test_under_block_a_flagged_record_does_not_stop_another_pull_request_landing
 
     assert [verdict.refused for verdict in outcome.verdicts] == [True, False]
     landed = [path.name for path in ProjectPaths.of(root).review.rglob("*.json")]
-    assert landed == ["PRRT_kwDO2.json"]
+    # `~18f` is the case tag `review_evidence/layout.py` gives a mixed-case id, so
+    # that two ids differing only in case do not name one file where case folds.
+    assert landed == ["PRRT_kwDO2~18f.json"]
 
 
 def test_under_warn_the_record_lands_and_every_finding_is_reported(tmp_path: Path) -> None:
@@ -474,8 +476,9 @@ def test_under_warn_the_record_lands_and_every_finding_is_reported(tmp_path: Pat
 
     assert outcome.policy is SecretScanPolicy.WARN
     assert outcome.refusals == ()
+    # `~18f` is the case tag `review_evidence/layout.py` gives a mixed-case id.
     assert [path.name for path in ProjectPaths.of(root).review.rglob("*.json")] == [
-        "PRRT_kwDO1.json"
+        "PRRT_kwDO1~18f.json"
     ]
     (finding,) = outcome.findings
     assert finding.identity.repository == REPOSITORY

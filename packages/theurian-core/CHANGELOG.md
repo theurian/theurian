@@ -98,11 +98,14 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   string into a filesystem path escapes the directory while satisfying the
   contract. A repository becomes a hashed directory name; a record becomes a leaf
   named after its provider id when that id is a name a filesystem should carry,
-  and after its `sha256-` hash otherwise. The two name sets are disjoint *by
-  construction* rather than by improbability — an id that already starts with the
-  hashed prefix is sent down the hashing arm — so no id can be made to name
-  another id's file, and every write and every read resolves through
-  `security/paths.py`'s containment on top of that.
+  and after its `sha256-` hash otherwise. **Two ids that differ get two files on
+  a filesystem that folds case as well as on one that does not** — macOS and
+  Windows fold by default, so byte-distinct names were not enough: an id that is
+  not already its own casefold keeps its spelling and carries a short hex tag
+  naming the positions the fold changes, and the `sha256-` escape prefix is
+  matched against the id's casefold so `SHA256-…` cannot be spelled out to name a
+  hashed leaf. Every write and every read resolves through `security/paths.py`'s
+  containment on top of that.
 
   **A record is published by rename, and a directory that is a symbolic link is
   refused.** The bytes go to a sibling `.writing` file inside the same proved

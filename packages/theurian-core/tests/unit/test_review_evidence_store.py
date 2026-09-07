@@ -1,6 +1,6 @@
 """Evidence files are the source, and they land inside the project (ADR-0030 decision 3).
 
-Four claims, and each fails on its own:
+Five claims, and each fails on its own:
 
 * **The round trip loses nothing.** The files *are* the record -- upstream
   comments are editable and deletable, so a field dropped on the way to disk is
@@ -17,6 +17,11 @@ Four claims, and each fails on its own:
 * **A planted symbolic link is refused, not followed.** Containment answers where
   a path points; the route walk answers how it got there; ``O_NOFOLLOW`` answers
   the leaf. Each is driven with a plant that only it catches.
+* **Two records that differ get two files, on a filesystem that folds case too.**
+  macOS and Windows fold by default, so a layout and a collision guard that only
+  keep byte spellings apart lose a record to a silent overwrite and then refuse
+  the whole corpus. Every assertion about distinctness here is therefore made
+  between *folded* names, which is the comparison those filesystems answer with.
 
 Marked ``unit`` and writes only under ``tmp_path``. Nothing here touches this
 repository's own ``.theurian/``.
@@ -25,6 +30,7 @@ repository's own ``.theurian/``.
 from __future__ import annotations
 
 import json
+import string
 import sys
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -58,7 +64,11 @@ from theurian.infrastructure.review_evidence import (
     repository_directory,
 )
 from theurian.infrastructure.review_evidence import store as store_module
-from theurian.infrastructure.review_evidence.layout import EVIDENCE_SUFFIX
+from theurian.infrastructure.review_evidence.layout import (
+    _FILESYSTEM_SAFE,
+    _HASHED_PREFIX,
+    EVIDENCE_SUFFIX,
+)
 from theurian.security.paths import MAX_SOURCE_FILE_BYTES
 
 pytestmark = pytest.mark.unit
@@ -366,6 +376,7 @@ def test_a_hostile_repository_identity_lands_inside_the_review_directory(
         ("a newline", "a\nb"),
         ("a name that is only dots", "..."),
         ("something that already looks hashed", "sha256-deadbeef"),
+        ("something that looks hashed, shouted", "SHA256-deadbeef"),
     ),
 )
 def test_a_hostile_provider_id_lands_inside_the_review_directory(
@@ -374,9 +385,10 @@ def test_a_hostile_provider_id_lands_inside_the_review_directory(
     """AC-4's other half: the id the provider sent is not trusted to be a name.
 
     A GraphQL response is untrusted input, so an id is charset-checked before it
-    is spelled into a filename and hashed when it fails. The last case is the
-    escape-prefix rule: an id that already looks like a hash is hashed anyway, so
-    a verbatim leaf and a hashed leaf can never name the same file.
+    is spelled into a filename and hashed when it fails. The last two cases are
+    the escape-prefix rule: an id that already looks like a hash is hashed
+    anyway, in either spelling, because the prefix is matched against the id's
+    casefold.
     """
     store = _store(tmp_path)
 
@@ -389,61 +401,239 @@ def test_a_hostile_provider_id_lands_inside_the_review_directory(
     assert store.read_all()[0].record.payload == _thread(external_id=external_id).payload
 
 
+def test_two_ids_that_differ_only_in_case_land_as_two_files(tmp_path: Path) -> None:
+    """H-E's own shape, asserted on the disk rather than on the return value.
+
+    Before the layout carried a case tag this run reported two landings and left
+    one file: the second record was written over the first by the filesystem, the
+    file then named a record whose own derived path was the *other* spelling, and
+    every later ``read_all`` refused the whole corpus over it. So the assertion
+    that matters is the equality between what ``write`` says it landed and what is
+    on the disk -- the count of files, not the count of paths returned.
+
+    On a filesystem that folds case this reddens the moment two leaves fold
+    together again; on one that does not, the file count passes on its own and
+    the folded-name assertion is what carries the claim. Both are asserted so the
+    test means something on either.
+    """
+    store = _store(tmp_path)
+
+    landed = store.write([_thread("PRRT_kwDOAbc"), _thread("prrt_kwdoabc")], run=RUN_ONE)
+
+    on_disk = list(_review_root(tmp_path).rglob(f"*{EVIDENCE_SUFFIX}"))
+    assert len(landed) == len(on_disk) == 2
+    assert len({path.casefold() for path in landed}) == 2
+    assert {stored.record.record_key for stored in store.read_all()} == {
+        "PRRT_kwDOAbc",
+        "prrt_kwdoabc",
+    }
+
+
 def test_a_provider_id_that_is_already_a_name_is_spelled_out_rather_than_hashed() -> None:
     """The positive control on the hashing rule.
 
     Without it the rule could hash everything and pass every containment test
     while making the committed tree unreadable -- which is the property the
-    verbatim arm exists for. GitHub's current node ids are the shape driven here.
+    verbatim arm exists for. GitHub's current node ids are the shape driven here,
+    and they are mixed-case, so what the arm preserves is the *spelling*: the id
+    is still there to read and to grep, followed by the case tag that keeps it
+    apart from its own case-variants on a filesystem that folds them together.
+
+    The expectations are written out rather than recomputed. A tag derived here
+    from the function under test would agree with it however wrong both were.
     """
-    assert record_leaf("PRRT_kwDOABCD1M5abcde") == "PRRT_kwDOABCD1M5abcde.json"
+    assert record_leaf("PRRT_kwDOABCD1M5abcde") == "PRRT_kwDOABCD1M5abcde~5f8f.json"
+    assert record_leaf("prrt_kwdoabcd1m5abcde") == "prrt_kwdoabcd1m5abcde.json"
     assert record_leaf("42") == "42.json"
     assert record_leaf("../../etc/passwd").startswith("sha256-")
     assert record_leaf("sha256-anything").startswith("sha256-")
 
 
 def test_no_provider_id_can_be_made_to_name_another_ids_file() -> None:
-    """``layout.py``'s disjointness claim, driven from the impostor's side.
+    """``layout.py``'s escape-prefix rule, driven from the impostor's side.
 
-    The module records that the verbatim and the hashed leaf names are disjoint
-    sets "by construction rather than by improbability", so that "no id can be
-    made to name another id's file". Every other case here drives one id at a
-    time and so holds only one half of that: they say a hostile id is hashed,
-    never that a second id cannot be spelled to land on the first one's file.
+    Every other case here drives one id at a time and so holds only one half of
+    that claim: they say a hostile id is hashed, never that a second id cannot be
+    spelled to land on the first one's file.
 
     The attack the claim forbids is exactly that. Read the leaf a hashed id
     landed under, hand that leaf back to the store as some other record's
     provider id, and see where it goes: it is inside the verbatim arm's charset
     and length, so the **escape prefix alone** is what sends it to be hashed. The
-    control below is the same string with the prefix spelled one digit off, which
-    the verbatim arm accepts -- so a failure here is the prefix rule and not the
-    charset.
+    ``lookalike`` control is the same string with the prefix spelled one digit
+    off, which the verbatim arm accepts -- so a failure here is the prefix rule
+    and not the charset.
+
+    The shouted spelling is the same attack one ``casefold`` further out, and it
+    is the face that was live: ``SHA256-<hex>`` passed the charset, missed a
+    case-sensitive prefix test, and was written out verbatim, which on macOS and
+    Windows is the hashed leaf's own file. The comparison is between *folded*
+    names for that reason -- byte inequality is not what those two filesystems
+    answer.
 
     Two ids naming one file is not caught downstream: the store refuses a
     collision only *within* one run, and these two arrive in different ones.
     """
     victim = record_leaf("../../etc/passwd")
-    impostor = victim.removesuffix(EVIDENCE_SUFFIX)
-    lookalike = f"sha257-{impostor.removeprefix('sha256-')}"
+    digest = victim.removesuffix(EVIDENCE_SUFFIX).removeprefix("sha256-")
+    impostor = f"sha256-{digest}"
+    shouting = f"SHA256-{digest}"
+    lookalike = f"sha257-{digest}"
 
     landed = record_leaf(impostor)
 
     assert landed != victim, "an id spelled as another id's leaf named that id's file"
     assert landed.startswith("sha256-"), "the impostor was not sent down the hashing arm"
+    assert record_leaf(shouting).casefold() != victim.casefold(), (
+        "a shouted hashed prefix named the hashed leaf's own file where case folds"
+    )
+    assert record_leaf(shouting).startswith(_HASHED_PREFIX), (
+        "a shouted hashed prefix took the verbatim arm, so a leaf outside the hashed "
+        "family folds onto the hashed prefix and the module's argument across the families "
+        "stops holding"
+    )
     assert record_leaf(lookalike) == f"{lookalike}{EVIDENCE_SUFFIX}", (
         "the control: this shape is one the verbatim arm accepts, so what sent the "
         "impostor to be hashed was the prefix rather than its charset or its length"
     )
 
 
+#: Ids whose leaves must stay apart on a filesystem that folds case, covering
+#: every pair the layout's argument ranges over. Verbatim against verbatim (the
+#: numbers), tagged against tagged and against its own folded spelling (the H-E
+#: face), hashed against hashed, and each family against the other two --
+#: including an id spelled as another id's *tagged* leaf, which the separator is
+#: chosen to make impossible to reach.
+#:
+#: The last pair looks arbitrary and is not: those two spellings share the first
+#: eight hex digits of their SHA-256, so they are what a ``sha256[:8]`` case tag
+#: would merge. They were found in 0.01 s by walking the case variants of
+#: ``PRRT_kwDOABCD1M5abcde`` -- a 32-bit birthday search -- which is why the tag
+#: is an exact mask and not a short digest. Their presence here is what makes
+#: that a tested property rather than a remembered argument.
+_IDS_THAT_MUST_NOT_SHARE_A_LEAF: Final = (
+    "PRRT_kwDOAbc",
+    "prrt_kwdoabc",
+    "PRRT_KWDOABC",
+    "pRRT_kwDOAbC",
+    "PRRT_kwDOAbc~38f",
+    "PRRT_kwDOAbc~38f.json",
+    "42",
+    "43",
+    "sha256-deadbeef",
+    "SHA256-deadbeef",
+    "Sha256-DeadBeef",
+    "sha257-deadbeef",
+    "SHA257-deadbeef",
+    "../../etc/passwd",
+    "..",
+    "a/b",
+    "Prrt_kWDoabcd1M5abcde",
+    "Prrt_KwDoabCd1M5abcde",
+)
+
+
+def test_no_two_ids_share_a_leaf_on_a_case_insensitive_filesystem() -> None:
+    """The layout's universal, keyed on the population above.
+
+    ``record_leaf`` is injective on bytes and always was; what H-E showed is that
+    macOS and Windows do not compare bytes. So the assertion is on the *folded*
+    leaves, which is the equality those filesystems answer with, and it holds on
+    a case-sensitive one too -- there it is simply the weaker statement.
+
+    The second assertion is the one the *stated argument* rests on rather than
+    the outcome: the module separates the hashed family from the other two by
+    the prefix, and a reader -- or slice 3 -- that keys on ``sha256-`` is
+    entitled to that. A shouted spelling left in the verbatim arm would fold onto
+    the prefix while not being a hash, which the distinctness assertion above
+    does not notice because the case tag keeps such a name distinct anyway.
+
+    The third is the control on the population rather than on the function: a
+    sweep that happened to drive one arm would pass while saying nothing about
+    the pairs that cross two.
+    """
+    leaves = [record_leaf(identifier) for identifier in _IDS_THAT_MUST_NOT_SHARE_A_LEAF]
+
+    assert len({leaf.casefold() for leaf in leaves}) == len(_IDS_THAT_MUST_NOT_SHARE_A_LEAF)
+    assert [leaf for leaf in leaves if leaf.casefold().startswith(_HASHED_PREFIX)] == [
+        leaf for leaf in leaves if _leaf_family(leaf) == "hashed"
+    ]
+    assert {_leaf_family(leaf) for leaf in leaves} == {"hashed", "verbatim", "tagged"}
+
+
+def _leaf_family(leaf: str) -> str:
+    """Which of the three shapes a leaf is, read off the name the way a reader is."""
+    if leaf.startswith(_HASHED_PREFIX):
+        return "hashed"
+    return "tagged" if "~" in leaf else "verbatim"
+
+
+#: Characters whose fold a positional case tag could not record, spelled by code
+#: point because a literal one is easy to read as its ASCII neighbour in a diff.
+#: The first three fold to two characters where they were one, so no mask over
+#: positions could restore them; the last two fold *into* ASCII from outside it,
+#: so a name carrying one would fold onto a name that never did. All five are
+#: outside the verbatim charset, which is why the tag never meets them.
+_FOLDS_THE_CASE_TAG_COULD_NOT_RECORD: Final = (
+    ("LATIN SMALL LETTER SHARP S", 0x00DF),
+    ("LATIN SMALL LIGATURE FI", 0xFB01),
+    ("LATIN CAPITAL LETTER I WITH DOT ABOVE", 0x0130),
+    ("KELVIN SIGN", 0x212A),
+    ("LATIN SMALL LETTER LONG S", 0x017F),
+)
+
+
+def test_the_verbatim_charset_folds_one_ascii_character_at_a_time() -> None:
+    """The key under the case tag being exact rather than probable.
+
+    The tag records *which positions* folding changes, and that recovers the id
+    only while folding is one character to one character over the charset the
+    verbatim arm admits. It is, because that charset is ASCII. The characters
+    that would break it are real and are driven below: three fold to two
+    characters where they were one, and two fold *into* the ASCII range from
+    outside it. An id carrying any of them takes the hashing arm instead, which
+    needs no tag at all.
+
+    The counts are the key. They fail on a widened charset, which is the change
+    that would otherwise make the tag inexact without saying so.
+    """
+    leading = [chr(code) for code in range(0x80) if _FILESYSTEM_SAFE.match(chr(code))]
+    following = [chr(code) for code in range(0x80) if _FILESYSTEM_SAFE.match(f"a{chr(code)}")]
+
+    assert (len(leading), len(following)) == (63, 65)
+    assert all(len(character.casefold()) == 1 for character in {*leading, *following})
+    assert [c for c in following if c != c.casefold()] == list(string.ascii_uppercase)
+    for name, code in _FOLDS_THE_CASE_TAG_COULD_NOT_RECORD:
+        assert _FILESYSTEM_SAFE.match(chr(code)) is None, f"{name} reached the verbatim arm"
+
+
+def test_the_longest_leaf_this_layout_can_emit_fits_a_path_component() -> None:
+    """The arithmetic ``_FILESYSTEM_SAFE`` states, measured instead of trusted.
+
+    The worst case is an id at the charset's own bound with every character
+    tagged: 120 characters, a 30-hex-digit mask, the separator and the suffix.
+    """
+    longest = record_leaf("A" * 120)
+
+    assert len(longest) == 156
+    assert len(longest.encode("utf-8")) <= 255
+
+
 def test_two_repositories_never_share_a_directory() -> None:
     """The identity hash separates repositories, which is what keeps keys unique.
 
     A pull request is keyed by its number, and every repository has a pull
-    request 1; the directory is the only thing that tells those apart.
+    request 1; the directory is the only thing that tells those apart. The
+    separation has to survive a filesystem that folds case, and here it does
+    without an argument: the name is a prefix and lowercase hex, so it is its own
+    fold.
     """
-    assert repository_directory(PROVIDER, "acme/one") != repository_directory(PROVIDER, "acme/two")
+    one = repository_directory(PROVIDER, "acme/one")
+    two = repository_directory(PROVIDER, "acme/two")
+
+    assert one != two
     assert repository_directory("github", REPOSITORY) != repository_directory("gitlab", REPOSITORY)
+    assert (one.casefold(), two.casefold()) == (one, two)
 
 
 def test_two_identity_pairs_that_split_one_string_land_in_different_directories() -> None:

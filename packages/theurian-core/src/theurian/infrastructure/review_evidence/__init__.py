@@ -37,10 +37,11 @@ the coarser shape:
 accepts ``../..``, so joining a configured string into a filesystem path escapes
 the directory while satisfying the published contract. A repository becomes a
 hashed directory name and a record becomes a leaf named after its provider id --
-or, when that id is not a name a filesystem should carry, after its hash.
-:mod:`theurian.infrastructure.review_evidence.layout` is where both rules live,
-and every write and every read resolves through ``security/paths.py``'s
-containment on top of them.
+or, when that id is not a name a filesystem should carry, after its hash -- plus
+a short case tag on any spelling a case-folding filesystem would otherwise merge
+into another id's file. :mod:`theurian.infrastructure.review_evidence.layout` is
+where both rules live, and every write and every read resolves through
+``security/paths.py``'s containment on top of them.
 """
 
 from __future__ import annotations
