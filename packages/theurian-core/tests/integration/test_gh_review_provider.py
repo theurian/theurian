@@ -36,6 +36,7 @@ import json
 import os
 import pathlib
 import re
+import sys
 from collections.abc import Iterator
 from typing import Any, Final
 
@@ -56,6 +57,17 @@ pytestmark = pytest.mark.integration
 
 PROJECT: Final = ProjectId("demo")
 REPOSITORY: Final = "acme/order-service"
+
+#: The widest pull-request number a GraphQL answer can carry into this adapter.
+#:
+#: ``json.loads`` converts a JSON integer literal with ``int()``, which CPython
+#: refuses past ``sys.get_int_max_str_digits()`` -- so a literal one digit wider
+#: never becomes a number at all: the whole document is refused as one this
+#: adapter cannot read.
+#: ``test_a_number_one_digit_wider_is_refused_as_an_unreadable_document`` is that
+#: boundary's key, and it is what lets the summary-bound test above call this the
+#: largest value its sentences can be asked to name.
+_WIDEST_NUMBER: Final = 10 ** (sys.get_int_max_str_digits() - 1)
 
 #: How much stdout a **probe** may produce before the read is refused, **written
 #: out here and never imported**.
@@ -165,7 +177,19 @@ class FakeGh:
 
     def answer(self, kind: str, page: int, payload: dict[str, Any]) -> None:
         """Give the child a canned response for one query kind and page."""
-        (self.directory / f"{kind}{page}.json").write_text(json.dumps(payload), encoding="utf-8")
+        self.answer_text(kind, page, json.dumps(payload))
+
+    def answer_text(self, kind: str, page: int, document: str) -> None:
+        """Give the child a canned response as literal text.
+
+        :meth:`answer` renders a Python object, and there are documents no Python
+        object renders into: an integer literal past the interpreter's digit
+        limit is one -- ``json.dumps`` refuses it for the same reason
+        ``json.loads`` refuses to read one. That shape is the boundary
+        :data:`_WIDEST_NUMBER` is measured against, so it has to be writable
+        without going through a Python ``int``.
+        """
+        (self.directory / f"{kind}{page}.json").write_text(document, encoding="utf-8")
 
     def pad_version_stdout_to(self, total: int) -> None:
         """Make ``--version``'s stdout exactly ``total`` bytes.
@@ -1525,19 +1549,32 @@ async def test_a_megabyte_of_answer_does_not_become_a_megabyte_of_summary(
     the cut is what says the bound was applied to the value rather than to the
     end of the sentence -- a summary cut at its tail keeps the megabyte and loses
     the number an operator acts on.
+
+    **The two number shapes plant a very wide integer rather than a megabyte
+    string, and what changed is the read order rather than the bound.** The
+    number goes through ``positive_integer`` and the window is applied to it
+    *before* the record is built, so a ``number`` that is not an integer never
+    reaches either sentence below. What still reaches them is a wide integer, and
+    :data:`_WIDEST_NUMBER` is the widest one that can: a longer literal is
+    refused by ``json.loads`` before this adapter sees a document at all. So the
+    plant is the largest value these summaries can be asked to name.
     """
-    million = "N" * 1_000_000
-    payloads = {
-        "a merged pull request's number": _pull_requests(
-            number=million, merged=True, mergeCommit=None
+    payloads: dict[str, tuple[dict[str, Any], int]] = {
+        "a merged pull request's number": (
+            _pull_requests(number=_WIDEST_NUMBER, merged=True, mergeCommit=None),
+            len(str(_WIDEST_NUMBER)),
         ),
-        "a capped pull request's number": _pull_requests(
-            number=million,
-            closingIssuesReferences={"pageInfo": {"hasNextPage": True}, "nodes": []},
+        "a capped pull request's number": (
+            _pull_requests(
+                number=_WIDEST_NUMBER,
+                closingIssuesReferences={"pageInfo": {"hasNextPage": True}, "nodes": []},
+            ),
+            len(str(_WIDEST_NUMBER)),
         ),
-        "a resolved name": _pull_requests(resolved_name="R" * 1_000_000),
+        "a resolved name": (_pull_requests(resolved_name="R" * 1_000_000), 1_000_000),
     }
-    fake_gh.answer("prs", 1, payloads[shape])
+    payload, planted = payloads[shape]
+    fake_gh.answer("prs", 1, payload)
     provider = _provider(tmp_path, fake_gh)
 
     with pytest.raises(ReviewIngestRefusedError) as raised:
@@ -1545,20 +1582,53 @@ async def test_a_megabyte_of_answer_does_not_become_a_megabyte_of_summary(
 
     summary = raised.value.envelope.summary
     assert len(summary) <= MAX_REFUSAL_SUMMARY_CHARS, (
-        f"the answer carried a megabyte and the published summary is {len(summary)} "
-        f"characters. `summary` is a channel for text this process did not write, "
-        f"and it is bounded on the type so that no producer has to remember it."
+        f"the answer carried {planted} characters and the published summary is "
+        f"{len(summary)} characters. `summary` is a channel for text this process "
+        f"did not write, and it is bounded on the type so that no producer has to "
+        f"remember it."
     )
     assert len(str(raised.value)) <= MAX_REFUSAL_SUMMARY_CHARS
     cut = re.search(r"cut from (\d+) characters", summary)
     assert cut is not None, (
-        "the megabyte was shortened without saying so; a value silently cut to look "
-        "plausible is worse for a reader than one that is visibly incomplete"
+        "the planted value was shortened without saying so; a value silently cut to "
+        "look plausible is worse for a reader than one that is visibly incomplete"
     )
     # The number is the length of what was cut, which at a site that quotes is the
     # *rendering* rather than the raw value -- `repr` of a megabyte string is two
     # characters longer, and more than that once anything in it needs escaping.
-    assert int(cut[1]) >= 1_000_000
+    assert int(cut[1]) >= planted
+
+
+@pytest.mark.asyncio
+async def test_a_number_one_digit_wider_is_refused_as_an_unreadable_document(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """The key for :data:`_WIDEST_NUMBER` being the widest, and not merely wide.
+
+    ``json.loads`` converts an integer literal with ``int()``, and CPython
+    refuses that past ``sys.get_int_max_str_digits()``. So a wider ``number``
+    does not arrive as a large number this adapter has to bound -- the whole
+    answer stops being readable, one stage earlier and at the repository scope,
+    because a document that cannot be parsed says nothing about any one pull
+    request in it.
+
+    Written as literal text rather than through :meth:`FakeGh.answer`, because
+    ``json.dumps`` refuses the same literal from the other side: there is no
+    Python ``int`` that renders into this document.
+    """
+    wider = "9" * (sys.get_int_max_str_digits() + 1)
+    document = json.dumps(_pull_requests()).replace('"number": 12', f'"number": {wider}', 1)
+
+    assert wider in document, "the fixture's pull-request number was not the one replaced"
+
+    fake_gh.answer_text("prs", 1, document)
+    provider = _provider(tmp_path, fake_gh)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert raised.value.grade is RefusalGrade.TOOL_FAILED
+    assert "cannot read as a GraphQL response" in str(raised.value)
 
 
 @pytest.mark.asyncio
@@ -1980,6 +2050,45 @@ async def test_since_number_stops_the_read_where_the_caller_asked(
     provider = _provider(tmp_path, fake_gh)
 
     assert await provider.list_pull_requests(PROJECT, REPOSITORY, since_number=12) == ()
+
+
+@pytest.mark.asyncio
+async def test_since_number_steps_over_an_excluded_pull_request_however_bad_it_is(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """A pull request outside the window is one whose data is never read at all.
+
+    The record used to be built before the boundary was checked, so a pull
+    request *at* ``since_number`` could still refuse the run on a field nobody
+    asked to read: #100's labels overflow their cap, the refusal fires while the
+    boundary check is still a statement away, and ``--since 100`` -- the way an
+    operator steps past a known-bad record -- could not step past it. The two
+    newer pull requests, which are the whole point of an incremental re-run,
+    never came back.
+
+    The poison node is **last** in the page, so a read that answers the two above
+    it has genuinely walked as far as the boundary rather than stopped early for
+    an unrelated reason.
+    """
+    page = _pull_requests()
+    nodes = page["data"]["repository"]["pullRequests"]["nodes"]
+    poison = {
+        **nodes[0],
+        "number": 100,
+        "labels": {
+            "pageInfo": {"hasNextPage": True},
+            "nodes": [
+                {"name": f"area/{index}"} for index in range(limits.MAX_LABELS_PER_PULL_REQUEST)
+            ],
+        },
+    }
+    nodes[:] = [{**nodes[0], "number": 102}, {**nodes[0], "number": 101}, poison]
+    fake_gh.answer("prs", 1, page)
+    provider = _provider(tmp_path, fake_gh)
+
+    events = await provider.list_pull_requests(PROJECT, REPOSITORY, since_number=100)
+
+    assert [event.number for event in events] == [102, 101]
 
 
 @pytest.mark.asyncio

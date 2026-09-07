@@ -162,6 +162,15 @@ class GitHubReviewProvider:
         creation order and the query is ordered by creation, so that is the same
         boundary the caller means.
 
+        **The number is read and the window applied before the record is built**,
+        which is the order and not an ordering. Building first meant a pull
+        request the caller had excluded could still refuse the whole run on a
+        field nobody asked to read: ``--since 100`` could not step over a
+        pull request 100 whose labels overflowed their cap, because the overflow
+        was met before the boundary was. What cannot be windowed is the number
+        itself -- an unreadable one is refused here rather than skipped, since a
+        record with no number is one no boundary can place.
+
         Raises:
             ReviewIngestRefusedError: For every refusal this adapter has, each
                 carrying its own grade and the recorded remedy for it.
@@ -211,10 +220,10 @@ class GitHubReviewProvider:
             )
             connection = response.mapping(repo.get("pullRequests"))
             for node in response.nodes(connection):
-                event = self._event(project_id, entry, node)
-                if since_number is not None and event.number <= since_number:
+                number = response.positive_integer(node.get("number"), "pull request number")
+                if since_number is not None and number <= since_number:
                     return tuple(events)
-                events.append(event)
+                events.append(self._event(project_id, entry, node, number))
                 if len(events) >= limit:
                     return tuple(events)
             cursor = response.next_cursor(connection, "pull requests")
@@ -420,8 +429,17 @@ class GitHubReviewProvider:
 
     # -- mapping the provider's shapes onto the domain ------------------------
 
-    def _event(self, project_id: ProjectId, entry: str, node: Mapping[str, Any]) -> ReviewEvent:
+    def _event(
+        self, project_id: ProjectId, entry: str, node: Mapping[str, Any], number: int
+    ) -> ReviewEvent:
         """One pull request as a :class:`ReviewEvent`.
+
+        ``number`` is taken as an argument rather than read here because the
+        caller has already read it: the window is applied to it before this is
+        reached, so it arrives checked. Every refusal below names it in that
+        checked form, which is why none of them can publish a megabyte of
+        ``number`` -- ``json.loads`` bounds an integer at the interpreter's digit
+        limit, and a value that is not an integer never reaches this method.
 
         The ``repository`` recorded is the **allowlisted entry**, not the
         response's spelling: the two are equal case-folded by the check above,
@@ -447,11 +465,11 @@ class GitHubReviewProvider:
         if merged and not isinstance(merge_commit, str):
             raise ReviewIngestRefusedError(
                 RefusalGrade.TOOL_FAILED,
-                f"GitHub reported pull request {entry}#{bounded_echo(node.get('number'))} "
+                f"GitHub reported pull request {entry}#{bounded_echo(number)} "
                 f"as merged with no merge commit, which is not a pull request this "
                 f"adapter can record honestly.",
             )
-        self._refuse_a_capped_overflow(entry, node)
+        self._refuse_a_capped_overflow(entry, node, number)
         rollup = response.nodes(response.mapping(node.get("commits")))
         state = None
         if rollup:
@@ -462,7 +480,7 @@ class GitHubReviewProvider:
             project_id=project_id,
             provider=PROVIDER_ID,
             repository=entry,
-            number=response.positive_integer(node.get("number"), "pull request number"),
+            number=number,
             title=response.text(node.get("title")),
             body=response.text(node.get("body")),
             author=response.participant(node.get("author")),
@@ -486,7 +504,7 @@ class GitHubReviewProvider:
             milestone=response.optional_text(response.mapping(node.get("milestone")).get("title")),
         )
 
-    def _refuse_a_capped_overflow(self, entry: str, node: Mapping[str, Any]) -> None:
+    def _refuse_a_capped_overflow(self, entry: str, node: Mapping[str, Any], number: int) -> None:
         """The two connections a pull request node carries one page of, each capped.
 
         ``closingIssuesReferences`` and ``labels`` are asked for a single page and
@@ -519,7 +537,7 @@ class GitHubReviewProvider:
             ):
                 raise ReviewIngestRefusedError(
                     RefusalGrade.LIMIT_EXCEEDED,
-                    f"Pull request {entry}#{bounded_echo(node.get('number'))} carries more "
+                    f"Pull request {entry}#{bounded_echo(number)} carries more "
                     f"than the recorded {cap}-{members} cap. The read stopped rather than "
                     f"recording an event that looks whole and is not.",
                 )
