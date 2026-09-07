@@ -155,7 +155,7 @@ _PATCHED_REAP_SECONDS: Final = 0.5
 #: it bounds something different: not the behaviour under test but two cold
 #: CPython start-ups on whatever machine is running the suite. A GitHub macOS
 #: runner is slower than any developer's, and it is the machine that decides --
-#: ``test_a_cancelled_call_waits_for_the_reap_it_is_bounded_by`` failed there and
+#: ``test_a_cancelled_call_runs_end_to_its_last_line`` failed there and
 #: nowhere else. It stays well under :data:`_CHILD_SLEEP_SECONDS` so the child is
 #: still alive when the wait ends.
 _START_UP_SECONDS: Final = 10.0
@@ -425,37 +425,38 @@ async def test_a_descendant_that_holds_stderr_open_is_refused_at_the_deadline(
 
 
 @pytest.mark.asyncio
-async def test_a_cancelled_call_waits_for_the_reap_it_is_bounded_by(
+async def test_a_cancelled_call_runs_end_to_its_last_line(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A cancelled call unwinds through ``_end``, and ``_end``'s awaits complete.
+    """A cancelled call unwinds all the way through ``_end``, whatever the reap costs.
 
-    Both halves of that sentence are the assertion, and both were stated
-    wrongly. ``_end``'s docstring said an ``await`` inside a ``finally`` entered
-    by cancellation raises immediately -- which would make the reap, the drain
-    join and ``_release`` on the last line all unreachable on this path, and
-    ``_release`` is the fix that stops a held file descriptor per abandoned
-    child. The elapsed floor below is what says otherwise: if those awaits raised
-    at once the cancellation would return in milliseconds, and it does not.
+    ``_end``'s docstring used to say an ``await`` inside a ``finally`` entered by
+    cancellation raises immediately, and gave that as the reason for its own
+    ordering. If it were true, the reap, the drain join and ``_release`` on the
+    last line would all be unreachable on this path -- and ``_release`` is the
+    fix that stops a held file descriptor per abandoned child. The closed
+    transport below is what says otherwise: it is set by that last line, so
+    seeing it closed after a cancellation says every statement before it was
+    reached.
 
-    **The child is the shape that reaches the ceiling, and the shape is exact.**
-    It is still running when the cancellation arrives, so ``_end`` kills it and
-    ``Process.wait()`` is called before the exit has been observed -- the path
-    where it waits for the exit *and* every pipe disconnection. It also leaves a
-    descendant holding fd 2, so that second condition never arrives and the reap
-    runs its full length. Swap either half out and the measurement changes
-    rather than the behaviour: see
-    :data:`_ANSWER_LEAVE_STDERR_HELD_THEN_SLEEP` for the version of this test
-    that raced, and why.
+    **What this deliberately does not assert is how long the unwind took.** An
+    earlier version asserted an elapsed *floor* -- that the cancellation paid the
+    whole reap -- and it passed on two developer machines and on ubuntu while
+    failing on the macOS runner at 0.001s. The floor is not a property.
+    ``_end``'s reap is ``wait_for(child.wait(), REAP_SECONDS)``, and
+    ``Process.wait()`` returns at once when the child's exit has already been
+    observed rather than waiting for the pipes -- a race with a callback, which
+    this file already records beside
+    :data:`_ANSWER_LEAVE_STDERR_HELD_THEN_SLEEP`. Arranging for that race to go
+    one way on one machine is not the same as it going that way everywhere, and a
+    test that pins the *slow* outcome is pinning a scheduling accident. What is
+    true on every machine is the **upper** bound and the completion, and those
+    are what is asserted.
 
-    That length is what the caller pays: cancelling this call is not free, it
-    costs ``REAP_SECONDS``, and the number is recorded rather than incidental.
-    The constant is patched down here because five seconds of suite time
-    demonstrates nothing half a second does not.
-
-    The trade is deliberate and it replaced a worse one: the same cancellation
-    used to return at once and leave a live child and a pending drain task
-    behind.
+    The trade is still deliberate and it still replaced a worse one: the same
+    cancellation used to return at once and leave a live child and a pending
+    drain task behind. It is the *bound* on that wait that is recorded, not a
+    promise about how much of it gets spent.
 
     **The cancellation may not be issued until the call is provably past the
     spawn, and "provably" is doing work there.** ``run_bounded`` awaits
@@ -484,15 +485,19 @@ async def test_a_cancelled_call_waits_for_the_reap_it_is_bounded_by(
     monkeypatch.setattr(gh_cli, "REAP_SECONDS", _PATCHED_REAP_SECONDS)
     pidfile = tmp_path / "grandchild.pid"
     spawn_returned = asyncio.Event()
+    spawned: list[asyncio.subprocess.Process] = []
     real_exec = asyncio.create_subprocess_exec
 
     # `Any` at the `**kwargs` edge, which is where this project admits it: the
     # keywords are `create_subprocess_exec`'s own and are forwarded untouched.
     async def recording(*args: str, **keywords: Any) -> asyncio.subprocess.Process:
         child = await real_exec(*args, **keywords)
-        # Set before returning, so a waiter that observes it can only be resumed
-        # on a later loop iteration -- by which time `_start` has returned and
-        # `run_bounded` is suspended inside its `try`.
+        # Kept for the same two reasons as in the deadline test above: a strong
+        # reference, so refcounting does not close the transport and answer the
+        # question this asks, and an event that says the *parent* is past the
+        # spawn. Set before returning, so a waiter observing it can only resume
+        # on a later loop iteration -- by when `run_bounded` is inside its `try`.
+        spawned.append(child)
         spawn_returned.set()
         return child
 
@@ -539,14 +544,21 @@ async def test_a_cancelled_call_waits_for_the_reap_it_is_bounded_by(
             await call
         _reap_descendant(pidfile)
 
-    assert elapsed >= _PATCHED_REAP_SECONDS, (
-        f"the cancellation returned after {elapsed:.3f}s and the reap it should have "
-        f"waited out is {_PATCHED_REAP_SECONDS}s. An `await` in a `finally` entered by "
-        f"cancellation completes -- it does not raise at once -- and `_end` depends on "
-        f"that for its own last line."
+    transport = _transport_of(spawned[-1])
+    assert transport is not None, (
+        "the child publishes no `_transport`, so neither `_release` nor this "
+        "assertion can see one. That needs `_release` re-taken, not this relaxed."
     )
-    assert elapsed < _BOUNDED_WAIT_SECONDS, (
-        f"the cancellation took {elapsed:.1f}s, so the wait is not bounded by `REAP_SECONDS` at all"
+    assert transport.is_closing(), (
+        f"the cancellation returned after {elapsed:.3f}s with the child's transport "
+        f"still open, so `_end` did not reach `_release` on its last line. Each of "
+        f"its awaits is wrapped in `suppress` for exactly this reason: whatever a "
+        f"cancellation does to one of them, the statements after it still run."
+    )
+    assert elapsed < _PATCHED_REAP_SECONDS + _BOUNDED_WAIT_SECONDS, (
+        f"the cancellation took {elapsed:.1f}s, so the unwind is not bounded by "
+        f"`REAP_SECONDS` at all -- that bound is the whole reason a caller may "
+        f"cancel this call and expect to get control back."
     )
 
 

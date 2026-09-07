@@ -361,26 +361,31 @@ async def _end(child: asyncio.subprocess.Process, draining: asyncio.Task[str]) -
     raising something the suppressions below do not name. Either leaves the rest
     of this function unrun, and by then the two that matter have happened.
 
-    **The awaits after them do run to completion, cancelled path included**, and
-    that is what makes :func:`_release` -- the held-file-descriptor fix --
-    reachable at all. A cancelled coroutine's ``finally`` is ordinary code:
-    measured on CPython 3.13, an ``await`` inside one completes and the statement
-    sequenced after it runs. An earlier version of this docstring said an
-    ``await`` in that state raises immediately and gave *that* as the reason for
-    the ordering above. The ordering is right; the reason was false, and it was
-    false in the direction that would have made this function's own last line
-    dead.
+    **Each await after them is wrapped on its own**, which is what makes
+    :func:`_release` -- the held-file-descriptor fix -- reachable however the
+    cancellation is delivered. A cancelled coroutine's ``finally`` is ordinary
+    code and an ``await`` inside one does *not* raise on sight: measured on
+    CPython 3.13, one completes and the statement after it runs, on both delivery
+    paths (cancelled at a pending future, and cancelled while already scheduled).
+    An earlier version of this docstring claimed the opposite and gave it as the
+    reason for the ordering above; the ordering is right and the reason was
+    false. But "does not raise on sight" is not "always completes" -- a second
+    cancellation can arrive mid-unwind -- so the suppressions are per-statement
+    rather than one around the group, and the last line is reached either way.
 
     **What a caller pays for it**: cancelling a ``run_bounded`` no longer returns
-    at once. The canceller waits for this unwind, up to :data:`REAP_SECONDS` --
-    the ceiling is reached by the one shape that reaches it anywhere here, a
-    descendant holding a pipe open past the child's death: ``Process.wait()``,
-    called before the exit has been observed, waits for the exit **and** every
-    pipe disconnection. That is the deliberate trade: the same
-    cancellation used to return immediately and leave a live child and a pending
-    drain task behind, and what replaces it is a wait bounded by a recorded
-    number. ``test_a_cancelled_call_waits_for_the_reap_it_is_bounded_by`` drives
-    it from the caller's side.
+    at once. The canceller waits for this unwind, **up to** :data:`REAP_SECONDS`
+    -- an upper bound and not a promise about how much of it is spent.
+    ``Process.wait()`` returns as soon as the child's exit has already been
+    observed, and waits for the exit *and* every pipe disconnection only when it
+    is called before that; which of the two happens is a race with a callback,
+    so the same cancellation can cost the whole reap on one machine and nothing
+    on another. Both are correct, and
+    ``test_a_cancelled_call_runs_end_to_its_last_line`` asserts what holds on
+    both: the unwind finishes, it reaches ``_release``, and it is bounded. That
+    is the deliberate trade -- the same cancellation used to return immediately
+    and leave a live child and a pending drain task behind, and what replaces it
+    is a wait with a recorded ceiling.
     """
     draining.cancel()
     # The child can exit between the `returncode` read and the signal, and a
