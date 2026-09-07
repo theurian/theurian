@@ -351,6 +351,12 @@ _APPLICATION_NON_SERVING_MODULES: frozenset[str] = frozenset(
         "migration_engine.py",
         "project_service.py",
         "proposal_service.py",
+        # The ingestion secret gate (ADR-0030 decision 4). It decides whether a
+        # review *evidence* record may become a file and returns the payload that
+        # may be written; it serves nothing and reaches no store, and the
+        # findings store is a different arm entirely -- `Review-Finding:` trailers
+        # out of local git history (ADR-0029).
+        "review_landing_gate.py",
         "setup_context.py",
         "setup_service.py",
         "setup_steps.py",
@@ -417,6 +423,17 @@ _INFRASTRUCTURE_NON_SERVING_MODULES: frozenset[str] = frozenset(
         "github/review_provider.py",
         "github/transport_guard.py",
         "raptor/__init__.py",
+        # Review evidence on disk (ADR-0030 decision 3): the writer an ingestion
+        # run calls and the reader slice 3's serving store will be built from.
+        # It reads and writes `.theurian/review/`, which is a different store
+        # from the findings one in every sense -- different source, different
+        # schema, different arm of FR-V.
+        "review_evidence/__init__.py",
+        "review_evidence/codec.py",
+        "review_evidence/errors.py",
+        "review_evidence/layout.py",
+        "review_evidence/run.py",
+        "review_evidence/store.py",
         "raptor/extractive.py",
         "secrets/__init__.py",
         "secrets/file_store.py",
