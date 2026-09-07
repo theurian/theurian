@@ -68,9 +68,17 @@ their own allowlist without seeing it. What makes it safe is the surface rather
 than the ordering -- the rename check runs *before* the private check, so the
 echoed name has not been shown to be public when it is printed: the name comes
 from the operator's own authenticated ``gh`` resolving a repository their own
-``.theurian/config.yaml`` lists, and no CLI command, MCP tool or application
-service reaches the adapter that raises it. A version that publishes these
-envelopes to somebody who is not the operator has to re-take this decision.
+``.theurian/config.yaml`` lists.
+
+**That decision has been re-taken once, and the surface it rests on is named
+rather than assumed.** ``theurian review ingest`` publishes these envelopes as
+of ADR-0030 slice 2, so "nothing reaches the adapter" is no longer what makes
+the echo safe. What makes it safe now is *who* reads it: a CLI command is an
+operator surface, and every input to the sentence is that same operator's --
+their ``gh``, their configuration file, their terminal. They are being shown
+where their own allowlist entry now points. **The MCP tool slice 3 adds is not
+that surface**, and it must re-take this decision on its own terms: a tool
+answers an agent, and an agent is not the person whose ``gh`` resolved the name.
 """
 
 from __future__ import annotations

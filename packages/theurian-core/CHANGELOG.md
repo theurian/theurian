@@ -31,8 +31,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   per-response byte cap are named constants with graded stops. A `gh` that is
   absent, below the 2.86.0 version floor, or unauthenticated is a refusal
   envelope carrying a remedy, with the child's stderr contained inside it.
-  **Nothing is exposed yet**: no CLI command and no MCP tool reaches this code,
-  and `system.capabilities` still reports `reviewIngestion: false`.
+  `theurian review ingest` is what reaches this code; **no MCP tool does**, so
+  `system.capabilities` still reports `reviewIngestion: false`.
 - **`providers.review.redactParticipantNames`, R-12's ingestion-time redaction
   switch** (ADR-0030 decision 3, part of
   [#479](https://github.com/theurian/theurian/issues/479)). A boolean, default
@@ -47,8 +47,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `tools/audit/config_object_claims.py` now say. A reader
   added for any of the six spellings in `WATCHED_SPELLINGS` — five of them
   published key blocks, plus `raptor.maxLevels`, which has no block — reddens
-  the call-site scan. **Nothing is exposed yet**: no command reaches review
-  ingestion, so setting the key redacts nothing on its own.
+  the call-site scan. `theurian review ingest` is the one command that applies
+  it, so setting the key redacts nothing until that command runs.
 - **`providers.review.repositories` publishes the length bound its reader
   enforces.** The `items` subschema gained `maxLength: 200`, equal to
   `review_allowlist.MAX_REPOSITORY_CHARS`, and

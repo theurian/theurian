@@ -112,8 +112,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `providers.review.repositories` — read by `security/project_config.py`, the
   file's one reader — and refuses a repository the list does not
   name before any process is spawned. The key is read and enforced; what it
-  protects is the review-ingestion path, which no command reaches yet, and that
-  — rather than "it protects no one" — is the sentence `ingest.md` now carries.
+  protects is the review-ingestion path, reached by `theurian review ingest` and
+  not by this command — and that, rather than "it protects no one", is the
+  sentence `ingest.md` now carries.
   The file is read for two keys, not one.
 
   Naming `security.secretScan` as in force left a second gap in the same

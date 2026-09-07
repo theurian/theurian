@@ -52,8 +52,9 @@ allowlist, and an offline trailer read owes none.
 [ADR-0030](adr/0030-github-review-ingestion-spawns-gh.md) slice 1 shipped the
 adapter that does — `infrastructure/github/` spawns the operator's `gh` — and
 with it SEC-10's repository allowlist, which is now read and enforced before any
-process is spawned. The flag stayed `false` because no CLI command and no MCP
-tool reaches that code, so there is nothing for a client to call; from slice 3 it
+process is spawned. Slice 2 added `theurian review ingest`, which reaches that
+code and lands evidence files; the flag stays `false` because **no MCP tool**
+reaches it, so there is nothing for a client to call; from slice 3 it
 means *an ingestion call surface exists*, published beside a scope field. The
 window in between is a recorded residual: for two slices the machine-readable
 answer reads `false` while a fetch path ships. The raw-URL fetch controls — a
@@ -256,9 +257,9 @@ not; **absent** — effectively nothing.
   `domain/review.py`) is built, and since
   [ADR-0030](adr/0030-github-review-ingestion-spawns-gh.md) slice 1 so is the
   collection adapter: `infrastructure/github/` fetches pull requests, threads,
-  comments and resolution state over the operator's `gh`. Nothing lands on disk
-  and nothing exposes it — no CLI command, no MCP tool — so
-  `reviewIngestion` stays `false` until the serve slice.
+  comments and resolution state over the operator's `gh`. Slice 2 lands that
+  evidence on disk behind `theurian review ingest`; no MCP tool exposes any of
+  it, so `reviewIngestion` stays `false` until the serve slice.
 - **Multi-vendor integration** — neutral wire, Claude-only bootstrap (§0).
 
 ### Absent

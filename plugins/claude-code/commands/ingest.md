@@ -33,16 +33,17 @@ Report what was ingested by source type and how many documents changed.
   `.theurian/config.yaml` is read and enforced (SEC-10, ADR-0030 decision 2):
   `security/review_allowlist.py` refuses a repository
   `providers.review.repositories` does not name, before any process is spawned.
-  It protects a path no command exposes yet, so do not tell the user that
-  listing a repository has turned anything on. That file is read for three keys:
+  It protects a different command — `theurian review ingest` — so do not tell
+  the user that listing a repository has turned anything on here. That file is
+  read for three keys:
   `security/project_config.py` takes `security.secretScan`,
   `providers.review.repositories` and `providers.review.redactParticipantNames`
   from it and nothing else (ADR-0027 decision 3, ADR-0030 decisions 2 and 3).
-  The third is R-12's ingestion-time redaction switch and belongs to the same
-  unexposed path as the allowlist: setting it redacts nothing until a command
-  reaches review ingestion. The first selects a control this command never reaches:
-  it covers the approval gate and the index build — `theurian ingest` runs no
-  scan of its own, and
+  The third is R-12's ingestion-time redaction switch and belongs to that same
+  other command: setting it redacts nothing `theurian ingest` writes. The first
+  selects a control this command never reaches:
+  it covers the approval gate, the index build and review ingestion —
+  `theurian ingest` runs no scan of its own, and
   `theurian index build` scans every body it indexes, with the source anchors
   and relation notes served beside them, and reports rather than refusing
   (SEC-11,

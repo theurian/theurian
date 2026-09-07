@@ -731,13 +731,17 @@ SECRET_SCAN_DESCRIPTION: Final = (
     "content already in the canonical store and already served, the same three values are "
     "signal severity and not a gate: the index is published either way, `block` makes the "
     "build exit non-zero and `theurian doctor` report it until a rebuild is clean, `warn` "
-    "reports and exits zero, `off` scans nothing. The default is the behaviour an absent key "
+    "reports and exits zero, `off` scans nothing. At `theurian review ingest`, which runs "
+    "before the record exists anywhere in Theurian, the three values are a gate again: "
+    "`block` withholds the flagged record whole so it never becomes a file, `warn` lands it "
+    "and reports every finding, `off` scans nothing. The default is the behaviour an absent key "
     "and an absent config file both select, so it states what the product does rather than a "
     "policy nothing applies. Write `off` **quoted** in YAML -- a bare `off` is the boolean "
     "false under YAML 1.1 and is refused rather than guessed at. The detector is in-house and "
     "best effort -- known credential shapes plus an entropy heuristic -- and is not a "
-    "replacement for a repository secret scanner. It covers the approval gate and the index "
-    "build: `theurian ingest` runs no scan of its own, and `theurian index build` scans every "
+    "replacement for a repository secret scanner. It covers the approval gate, the index "
+    "build and review ingestion: `theurian ingest` runs no scan of its own, and `theurian "
+    "index build` scans every "
     "body it indexes, with the source anchors and relation notes served beside them, and "
     "reports rather than refusing "
     "(https://github.com/theurian/theurian/issues/329)."
@@ -789,15 +793,17 @@ INGEST_CONFIG_BULLET: Final = (
     "(`remote get-url origin`). The allowlist in `.theurian/config.yaml` is read and "
     "enforced (SEC-10, ADR-0030 decision 2): `security/review_allowlist.py` refuses a "
     "repository `providers.review.repositories` does not name, before any process is "
-    "spawned. It protects a path no command exposes yet, so do not tell the user that "
-    "listing a repository has turned anything on. That file is read for three keys: "
+    "spawned. It protects a different command — `theurian review ingest` — so do not "
+    "tell the user that listing a repository has turned anything on here. That file is "
+    "read for three keys: "
     "`security/project_config.py` takes `security.secretScan`, "
     "`providers.review.repositories` and `providers.review.redactParticipantNames` "
     "from it and nothing else (ADR-0027 decision 3, ADR-0030 decisions 2 and 3). "
-    "The third is R-12's ingestion-time redaction switch and belongs to the same "
-    "unexposed path as the allowlist: setting it redacts nothing until a command "
-    "reaches review ingestion. The first selects a control this command never reaches: it "
-    "covers the approval gate and the index build — `theurian ingest` runs no scan of "
+    "The third is R-12's ingestion-time redaction switch and belongs to that same "
+    "other command: setting it redacts nothing `theurian ingest` writes. The first "
+    "selects a control this command never reaches: it "
+    "covers the approval gate, the index build and review ingestion — `theurian ingest` "
+    "runs no scan of "
     "its own, and `theurian index build` scans every body it indexes, with the source "
     "anchors and relation notes served beside them, and reports rather than refusing "
     "(SEC-11, "
@@ -1299,9 +1305,9 @@ WATCHED_KEY_DESCRIPTIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
         "written, placeholder included. Off by default: a review record names the "
         "people who wrote the review, and dropping their names is a decision a "
         "project makes rather than one an upgrade makes for it. Write it unquoted -- "
-        'a quoted `"true"` is a string and is refused rather than guessed at. No '
-        "command exposes review ingestion yet, so setting this key redacts nothing on "
-        "its own.",
+        'a quoted `"true"` is a string and is refused rather than guessed at. '
+        "`theurian review ingest` is the one command that applies it, so setting this "
+        "key redacts nothing until that command runs.",
     ),
     (
         "providers.review.repositories",
@@ -1795,9 +1801,14 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             # ADR-0030 decision 2 turned the allowlist half over: the fragments
             # used to hold "for one key only" and "nothing reads the allowlist",
             # and both went false in the commit that added the reader. What
-            # replaces them is the *reach* -- before any process is spawned, and
-            # no command exposes it yet -- because over-reading is now the way a
-            # reader of this page gets it wrong.
+            # replaced them was the *reach* -- before any process is spawned, and
+            # no command exposes it yet -- because over-reading is how a reader of
+            # this page gets it wrong. Slice 2 then moved the second half again:
+            # `theurian review ingest` exposes that path now, so the warning is no
+            # longer "nothing is on" but "a *different command* is what these two
+            # keys reach". The over-reading it guards against is unchanged -- a
+            # reader who believes `theurian ingest` scans or redacts -- which is
+            # why the fragments below did not have to move with it.
             "That file is read for three keys",
             (
                 "`security/project_config.py` takes `security.secretScan`, "
@@ -1817,7 +1828,8 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             # false while this pin -- spelling, and only spelling -- stays green.
             (
                 "The first selects a control this command never reaches: it covers the "
-                "approval gate and the index build — `theurian ingest` runs no scan of "
+                "approval gate, the index build and review ingestion — `theurian ingest` "
+                "runs no scan of "
                 "its own, and `theurian index build` scans every body it indexes, with "
                 "the source anchors and relation notes served beside them, and reports "
                 "rather than refusing (SEC-11, "
@@ -1927,10 +1939,12 @@ SECRET_SCAN_POLICY_MODULE: Final = "theurian.security.project_config"  # noqa: S
 #: ``IndexRequest.secret_scan`` -- the same "cannot be omitted" property, moved
 #: onto the type. The third arrived with ADR-0030 decision 4:
 #: ``review_landing_gate`` takes the project root and reads the policy itself, for
-#: ``ProposalService``'s reason and not the build's. **No command reaches it
-#: yet** -- the CLI verb is a later slice -- so the reach the four documents below
-#: describe is unchanged: ``security.secretScan`` still governs the approval gate
-#: and the index build, and nothing else a user can run.
+#: ``ProposalService``'s reason and not the build's. **``theurian review ingest``
+#: reaches it**, as of ADR-0030 slice 2, so the reach the four documents below
+#: describe moved with that verb: ``security.secretScan`` governs the approval
+#: gate, the index build **and** review ingestion -- three entry points a user can
+#: run, which is what the schema's own description and
+#: ``plugins/claude-code/commands/ingest.md`` now say in the same words.
 SECRET_SCAN_POLICY_CALL_SITES: dict[str, int] = {
     "application/proposal_service.py": 1,
     "application/review_landing_gate.py": 1,
@@ -2001,9 +2015,15 @@ SECRET_SCANNER_MODULE: Final = "theurian.security.content_secrets"  # noqa: S105
 #: single call screens one record's author-controlled fields before the record
 #: becomes a file. It is the only one of the three that *refuses* on a finding,
 #: because it is the only one that runs before the content exists anywhere in
-#: Theurian -- and no command reaches it yet, so the four documents this pin
-#: protects, which describe what ``theurian ingest`` and ``theurian index build``
-#: do, are untouched by it.
+#: Theurian. ``theurian review ingest`` reaches it since ADR-0030 slice 2, which
+#: moved three of the four documents this pin protects: the schema's
+#: ``security.secretScan`` description and ``ingest.md`` both name review
+#: ingestion as a third covered surface now, and the threat model's T-15 records
+#: which posture that third control takes and why. ``SECURITY.md`` was checked
+#: rather than assumed and did **not** move -- its sentence is scoped to what the
+#: *canonical store* holds, and review evidence is not in it. What all four still
+#: say is that ``theurian ingest`` runs no scan of its own, which no slice has
+#: changed.
 SECRET_SCANNER_CALL_SITES: dict[str, int] = {
     "application/index_builder.py": 3,
     "application/proposal_service.py": 3,

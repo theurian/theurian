@@ -51,12 +51,14 @@ or call a model -- that separation is what lets raw ingestion succeed when
 candidate generation fails (FR-V5), and here it holds structurally: no model
 exists anywhere in this path.
 
-**What is not here yet**, so no reader infers a capability from an adapter:
-nothing lands on disk (ADR-0030 slice 2 owns the evidence files and the
-ingestion-time secret scan), no CLI command reaches this code, and no MCP tool
-exposes it -- ``system.capabilities`` reports ``reviewIngestion: false``, which
-from slice 3 will mean *an ingestion call surface exists that a client may call*
-rather than *this build cannot reach GitHub*.
+**What reaches this code, and what does not.** ``theurian review ingest`` does,
+as of ADR-0030 slice 2: it composes this adapter, screens every record through
+the ingestion secret gate, and lands what the gate cleared as evidence files
+under ``.theurian/review/``. **No MCP tool exposes it**, so
+``system.capabilities`` still reports ``reviewIngestion: false`` -- read that
+narrowly, as the flag's own pin in ``tests/integration/test_mcp_tools.py`` says:
+it means *no ingestion call surface is callable by a client*, never *this build
+cannot reach GitHub*. Slice 3 adds the tool and flips it.
 """
 
 from __future__ import annotations

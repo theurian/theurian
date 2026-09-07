@@ -26,10 +26,11 @@ much. `infrastructure/github/` **holds the adapter now**
 ([ADR-0030](../adr/0030-github-review-ingestion-spawns-gh.md) slice 1): it
 fetches pull requests, review threads, inline comments and resolution state by
 spawning the operator's `gh`, over public repositories the project has
-allowlisted. What is still missing is everything after the fetch — nothing lands
-on disk, `theurian ingest` reads local files only, no code path generates a
-candidate, and no CLI command or MCP tool reaches the adapter, so
-`system.capabilities` reports `reviewIngestion: false`, pinned by
+allowlisted. Slice 2 added the landing half: `theurian review ingest` screens
+each fetched record and writes what the gate clears under `.theurian/review/`.
+What is still missing is everything after that — `theurian ingest` reads local
+files only, no code path generates a candidate, and **no MCP tool** reaches any
+of it, so `system.capabilities` reports `reviewIngestion: false`, pinned by
 `test_capabilities_report_what_is_and_is_not_built`. So the sections below that
 describe *collection* — the landing stages, classification, candidate
 generation, provider access and privacy handling — describe a **design**, not

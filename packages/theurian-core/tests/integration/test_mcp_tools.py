@@ -1979,11 +1979,12 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
     )
     assert result["capabilities"]["reviewIngestion"] is False, (
         "no tool ingests review *history*: `infrastructure/github/` holds the "
-        "ADR-0030 adapter, but no CLI command and no MCP tool reaches it, nothing "
-        "lands on disk, and a client reading `true` would offer a call this "
-        "server does not answer. Read the `false` narrowly -- it says no "
-        "ingestion call surface is callable, **not** that this build cannot reach "
-        "GitHub, which it can. `reviewFindings` above is a different thing "
+        "ADR-0030 adapter and `theurian review ingest` now reaches it and lands "
+        "evidence files, but **no MCP tool does**, and a client reading `true` "
+        "would offer a call this server does not answer. Read the `false` "
+        "narrowly -- it says no ingestion call surface is callable, **not** that "
+        "this build cannot reach GitHub, which it can, and **not** that nothing "
+        "lands on disk, which the CLI verb does. `reviewFindings` above is a different thing "
         "entirely: an offline read of local git trailers. What made T-7's "
         "repository allowlist load-bearing was the adapter landing, not this flag "
         "moving, and the allowlist is enforced now (`security/review_allowlist.py`, "

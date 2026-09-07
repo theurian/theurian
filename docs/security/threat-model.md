@@ -2023,8 +2023,8 @@ holds the ordering through the real CLI and
 `::test_the_planted_value_is_one_the_detector_reports` is the positive control
 the rest rests on.
 
-**The two SEC-11 controls sit at opposite postures, and each posture is the
-answer to who is standing there.** At accept time a human operator is present to
+**The three SEC-11 controls sit at two opposite postures, and the posture is the
+answer to who is standing there and to what is already readable.** At accept time a human operator is present to
 act on a refusal — the proposal survives, the author corrects it — so refusing is
 the correct action and `block` is the default. At build time nobody is there, and
 the content is already readable through `knowledge.search` and `knowledge.get`,
@@ -2034,6 +2034,15 @@ merged ([#329](https://github.com/theurian/theurian/issues/329)'s recorded
 ground). Same control class, opposite posture, each for a stated reason. The
 evidence channel added by #361 belongs to the first, which is why its default is
 a refusal and not a warning.
+
+The third arrived with ADR-0030 decision 4 and takes the accept-time posture, for
+the accept-time reason rather than by analogy: `theurian review ingest` screens a
+fetched review record **before it becomes a file**, so nothing about it is
+readable through any Theurian surface yet and refusing genuinely un-discloses.
+A flagged record is withheld whole, the run reports it by identity and never by
+the matched bytes, and the operator who ran the command is there to act on it.
+The reach of that third control is recorded here rather than in T-15's summary
+row, which still describes the two that write to the canonical store.
 
 **Measured, because a `block` default that fires on real documents is a control
 projects switch off.** Over the migration corpus this repository tracks — the 26

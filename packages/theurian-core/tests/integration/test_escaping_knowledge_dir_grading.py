@@ -526,6 +526,7 @@ REACHED_BY: Final = {
     "cli.findings_commands::findings_build": "findings build",
     "cli.propose_commands::propose_accept": "propose accept",
     "cli.propose_commands::_draft": "propose",
+    "cli.review_commands::review_ingest": "review ingest",
 }
 
 #: A valid `ProposalId` naming nothing, so `propose accept` gets past its own
@@ -533,11 +534,18 @@ REACHED_BY: Final = {
 #: and would measure the parser instead of the resolve.
 ABSENT_PROPOSAL: Final = "01J0000000000000000000000A"
 
+#: A repository no allowlist here names, so `review ingest` gets past its own
+#: required argument and reaches `_require_project`. It never reaches the
+#: allowlist, let alone a spawn: the context resolve is the first thing the
+#: command does, and over a doctored tree it refuses there.
+UNLISTED_REPOSITORY: Final = "acme/order-service"
+
 #: The argv each swept command needs beyond its path. `propose` is a callback
 #: group whose required options are checked before its body runs, so it takes the
 #: full set or it never reaches the resolve.
 EXTRA_ARGS: Final[dict[str, tuple[str, ...]]] = {
     "propose accept": (ABSENT_PROPOSAL,),
+    "review ingest": (UNLISTED_REPOSITORY,),
     "propose": (
         "--item-id",
         "architecture.demo",

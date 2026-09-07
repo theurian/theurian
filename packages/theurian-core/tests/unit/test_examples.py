@@ -212,10 +212,11 @@ def _cites_said_to_be_closed(annotation: str, required: tuple[str, ...]) -> dict
 #: ``repositories`` used to read nowhere, so its annotation had to say so; the
 #: allowlist is read and enforced now, so what a copying reader must not
 #: over-read is the **reach**: it refuses before a spawn, an empty list allows
-#: nothing, and no command exposes review ingestion yet -- so listing a
-#: repository here starts nothing on its own. ``secretScan`` has had that shape
-#: since ADR-0027 decision 3 -- the approval gate, where it refuses, and the
-#: index build, where it only signals.
+#: nothing, and the one command that reads it is ``theurian review ingest`` -- so
+#: listing a repository here starts nothing until that command runs.
+#: ``secretScan`` reaches three surfaces since ADR-0030 slice 2 -- the approval
+#: gate and review ingestion, where it refuses, and the index build, where it
+#: only signals.
 #:
 #: ``repositories``' four sentences are one claim in four parts, and the last two
 #: are there because the annotation has been wrong in both directions. It said
@@ -225,8 +226,10 @@ def _cites_said_to_be_closed(annotation: str, required: tuple[str, ...]) -> dict
 #: (``security/review_allowlist.py`` is what refuses), **when the refusal
 #: happens** -- before a process is spawned, which is the property that makes it
 #: a control rather than a filter -- **that an empty list allows nothing**, and
-#: **that no command reaches it yet**, which is the sentence that keeps a reader
-#: from believing they have turned something on.
+#: **which command reads it**, which is the sentence that keeps a reader from
+#: believing that listing a repository has turned something on. That last
+#: fragment moved with ADR-0030 slice 2: it used to say no command reached the
+#: path at all, and ``theurian review ingest`` is what falsified it.
 #:
 #: ``secretScan``'s third sentence is the same requirement on the other key, and
 #: it has now moved twice for the same reason (#428, then #329). It required
@@ -255,7 +258,7 @@ ANNOTATED_KEYS: tuple[tuple[str, Any, tuple[str, ...]], ...] = (
             "`security/review_allowlist.py`",
             "before the process that reaches GitHub is started",
             "an empty or absent list allows nothing",
-            "No command exposes review ingestion yet",
+            "`theurian review ingest` is the command that reads it",
         ),
     ),
 )

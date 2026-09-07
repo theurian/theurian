@@ -385,6 +385,12 @@ _CLI_NON_SERVING_MODULES: frozenset[str] = frozenset(
         "migration_pipeline.py",
         "output.py",
         "propose_commands.py",
+        # `theurian review ingest` (ADR-0030): the composition root that lands
+        # review *evidence* files. It is a write path -- but not the findings
+        # write path this module's buckets are about, and it names no store at
+        # all: `Review-Finding:` trailers out of local git history are a
+        # different arm entirely (ADR-0029).
+        "review_commands.py",
         "setup_commands.py",
     }
 )

@@ -36,7 +36,10 @@ comment body, a pull request title and description, a label, a head branch name,
 a milestone name, a display name, a file path as received -- is copied into the
 domain record as data. In particular a received ``path`` is never joined into
 a filesystem path here, a label's value decides nothing (ADR-0019, discharged by
-ADR-0030 decision 3), and this slice writes no file at all.
+ADR-0030 decision 3), and **nothing in this module writes a file**. What lands
+these records is ``infrastructure/review_evidence``, which derives every path
+from a provider identifier or a hash of the repository identity rather than from
+a string a response chose.
 
 **What an answer may be read as lives next door**, in ``response.py``: every
 field below goes through one of its helpers rather than being indexed, so a
