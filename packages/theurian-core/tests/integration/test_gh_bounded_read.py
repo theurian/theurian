@@ -24,7 +24,7 @@ import pathlib
 import signal
 import sys
 import time
-from typing import Final
+from typing import Any, Final, Protocol
 
 import pytest
 
@@ -119,6 +119,30 @@ _ANSWER_THEN_LEAVE_STDERR_HELD = (
     "sys.stdout.flush()\n"
 )
 
+#: The same child, **staying alive** after it answers.
+#:
+#: Which of the two shapes a cancellation test needs is not a style choice, and
+#: measuring it is what found this: ``Process.wait()`` returns *immediately* when
+#: the child's exit has already been observed -- ``BaseSubprocessTransport._wait``
+#: short-circuits on a set ``_returncode`` -- and only waits for the exit **and**
+#: the pipe disconnections when it is called before that. So a child that has
+#: already exited makes the reap's length a race with the exit callback: the same
+#: assertion passed alone and failed after a test that changed the timing. A
+#: child still running when the cancellation arrives is killed by ``_end``, and
+#: ``wait()`` then takes the waiting path and is held there by the descendant.
+_ANSWER_LEAVE_STDERR_HELD_THEN_SLEEP = (
+    "import os, subprocess, sys, time\n"
+    "devnull = os.open(os.devnull, os.O_WRONLY)\n"
+    "held = subprocess.Popen(\n"
+    "    [sys.executable, '-c', 'import time; time.sleep({sleep})'],\n"
+    "    stdout=devnull, stdin=devnull,\n"
+    ")\n"
+    "open({pidfile!r}, 'w').write(str(held.pid))\n"
+    "sys.stdout.write('done')\n"
+    "sys.stdout.flush()\n"
+    "time.sleep({sleep})\n"
+)
+
 #: A reap short enough to assert on. :data:`~theurian.infrastructure.github.gh_cli._REAP_SECONDS`
 #: is 5 seconds, and the tests below assert that a cancelled call waits for the
 #: whole of it -- at the shipped value that is five seconds of suite time to
@@ -137,6 +161,26 @@ def _reap_descendant(pidfile: pathlib.Path) -> None:
         return
     with contextlib.suppress(ProcessLookupError, ValueError):
         os.kill(int(pidfile.read_text(encoding="utf-8")), signal.SIGKILL)
+
+
+class _ClosingTransport(Protocol):
+    """The one method the assertion below needs from a child's transport."""
+
+    def is_closing(self) -> bool: ...
+
+
+def _transport_of(child: asyncio.subprocess.Process) -> _ClosingTransport | None:
+    """The child's transport, reached the way :func:`_release` reaches it.
+
+    ``Process`` publishes no accessor, which is why production names the
+    attribute through a ``Protocol`` and a ``getattr`` default. This asks the
+    same way rather than inventing a second route: a runtime that renames it
+    leaves *both* answering ``None``, and the assertion below fails loudly
+    instead of the pin quietly agreeing with a production path that has stopped
+    closing anything.
+    """
+    transport: _ClosingTransport | None = getattr(child, "_transport", None)
+    return transport
 
 
 def _is_alive(pid: int) -> bool:
@@ -269,9 +313,9 @@ async def test_a_child_that_never_answers_is_stopped_at_the_recorded_timeout() -
 
 @pytest.mark.asyncio
 async def test_a_descendant_that_holds_stderr_open_is_refused_at_the_deadline(
-    tmp_path: pathlib.Path,
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The deadline covers the stderr drain, not only the reads and the exit.
+    """The deadline covers the stderr drain, and the abandoned transport is closed.
 
     The child writes its answer, exits, and leaves a grandchild holding fd 2. So
     stdout reaches EOF and ``child.wait()`` returns at once: every wait the
@@ -283,7 +327,42 @@ async def test_a_descendant_that_holds_stderr_open_is_refused_at_the_deadline(
     hang -- an implementation that does not bound the drain fails here at
     ``_BOUNDED_WAIT_SECONDS`` with a ``TimeoutError``, which is not the
     ``ReviewIngestRefusedError`` this expects.
+
+    **The last assertion is the one that names ``_release``.** This is the shape
+    that needs it: a descendant holding fd 2 keeps the stderr pipe connected past
+    the child's own exit, so ``asyncio`` will not finish the transport by itself
+    and a refusal used to return with the pipe still open. Until now the only
+    thing holding that line was a ``ResourceWarning`` this suite raises as an
+    error -- which fires wherever the collector happens to reach the abandoned
+    child, so a regression reddened some unrelated test in some other file, or
+    none at all.
+
+    **Two instruments were measured and one was discarded.** Counting this
+    process's open descriptors across the call answers the same either way: the
+    transport's ``close`` is scheduled on the loop, so at the moment
+    ``run_bounded`` returns -- which is where this assertion belongs -- nothing
+    has been released yet, and letting the loop turn first makes the count depend
+    on what earlier calls in the same process leaked. Asking the transport
+    whether it is closing is the state ``_release`` actually sets, and it is the
+    same answer on every run.
+
+    The spawn is recorded through a seam for one reason: to hold a **strong
+    reference** to the child. Without one the child becomes unreachable as
+    ``run_bounded`` returns and CPython's refcounting closes the transport
+    immediately -- the collector answering the question the assertion is asking,
+    and answering it the same way whether or not ``_release`` did anything.
     """
+    spawned: list[asyncio.subprocess.Process] = []
+    real_exec = asyncio.create_subprocess_exec
+
+    # `Any` at the `**kwargs` edge, which is where this project admits it: the
+    # keywords are `create_subprocess_exec`'s own and are forwarded untouched.
+    async def recording(*args: str, **keywords: Any) -> asyncio.subprocess.Process:
+        child = await real_exec(*args, **keywords)
+        spawned.append(child)
+        return child
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", recording)
     pidfile = tmp_path / "grandchild.pid"
     started = time.monotonic()
 
@@ -304,12 +383,24 @@ async def test_a_descendant_that_holds_stderr_open_is_refused_at_the_deadline(
                 timeout=_BOUNDED_WAIT_SECONDS,
             )
         elapsed = time.monotonic() - started
+        transport = _transport_of(spawned[-1])
     finally:
         _reap_descendant(pidfile)
 
     assert raised.value.grade is RefusalGrade.TOOL_FAILED
     assert "timeout" in str(raised.value)
     assert elapsed < _BOUNDED_WAIT_SECONDS
+    assert transport is not None, (
+        "the child publishes no `_transport`, so `_release` closed nothing and this "
+        "assertion could not have seen it either. Both reach the attribute by name; "
+        "a runtime that renames it needs `_release` re-taken, not this test relaxed."
+    )
+    assert transport.is_closing(), (
+        "the refusal returned with the child's transport still open. A descendant "
+        "holds the stderr pipe past the child's exit, so nothing else will close it: "
+        "that is a held file descriptor per abandoned child, and `_release` is the "
+        "line that stops it."
+    )
 
 
 @pytest.mark.asyncio
@@ -326,13 +417,20 @@ async def test_a_cancelled_call_waits_for_the_reap_it_is_bounded_by(
     child. The elapsed floor below is what says otherwise: if those awaits raised
     at once the cancellation would return in milliseconds, and it does not.
 
-    **The child is the shape that reaches the ceiling.** It leaves a descendant
-    holding fd 2, so ``Process.wait()`` -- which waits for the exit *and* the
-    pipes -- cannot return, and the reap runs its full length. That is also what
-    the caller pays: cancelling this call is not free, it costs
-    ``_REAP_SECONDS``, and the number is recorded rather than incidental. The
-    constant is patched down here because five seconds of suite time demonstrates
-    nothing half a second does not.
+    **The child is the shape that reaches the ceiling, and the shape is exact.**
+    It is still running when the cancellation arrives, so ``_end`` kills it and
+    ``Process.wait()`` is called before the exit has been observed -- the path
+    where it waits for the exit *and* every pipe disconnection. It also leaves a
+    descendant holding fd 2, so that second condition never arrives and the reap
+    runs its full length. Swap either half out and the measurement changes
+    rather than the behaviour: see
+    :data:`_ANSWER_LEAVE_STDERR_HELD_THEN_SLEEP` for the version of this test
+    that raced, and why.
+
+    That length is what the caller pays: cancelling this call is not free, it
+    costs ``_REAP_SECONDS``, and the number is recorded rather than incidental.
+    The constant is patched down here because five seconds of suite time
+    demonstrates nothing half a second does not.
 
     The trade is deliberate and it replaced a worse one: the same cancellation
     used to return at once and leave a live child and a pending drain task
@@ -345,7 +443,7 @@ async def test_a_cancelled_call_waits_for_the_reap_it_is_bounded_by(
             [
                 sys.executable,
                 "-c",
-                _ANSWER_THEN_LEAVE_STDERR_HELD.format(
+                _ANSWER_LEAVE_STDERR_HELD_THEN_SLEEP.format(
                     sleep=_CHILD_SLEEP_SECONDS, pidfile=str(pidfile)
                 ),
             ],

@@ -354,8 +354,9 @@ async def _end(child: asyncio.subprocess.Process, draining: asyncio.Task[str]) -
     **What a caller pays for it**: cancelling a ``run_bounded`` no longer returns
     at once. The canceller waits for this unwind, up to :data:`_REAP_SECONDS` --
     the ceiling is reached by the one shape that reaches it anywhere here, a
-    descendant holding a pipe open past the child's exit, since
-    ``Process.wait()`` waits for both. That is the deliberate trade: the same
+    descendant holding a pipe open past the child's death: ``Process.wait()``,
+    called before the exit has been observed, waits for the exit **and** every
+    pipe disconnection. That is the deliberate trade: the same
     cancellation used to return immediately and leave a live child and a pending
     drain task behind, and what replaces it is a wait bounded by a recorded
     number. ``test_a_cancelled_call_waits_for_the_reap_it_is_bounded_by`` drives
