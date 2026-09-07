@@ -826,6 +826,31 @@ class ProjectPaths:
         return self._contained(self.knowledge_dir / "proposals-local")
 
     @property
+    def review(self) -> Path:
+        """Where ingested review evidence lands (ADR-0030 decision 3).
+
+        **Not derived, and that is the decision rather than an oversight.**
+        ADR-0004's *Never Git-tracked* list named "raw GitHub review caches" and
+        ADR-0030 withdraws that entry in place: upstream comments are editable
+        and deletable, so a discarded local copy of a deleted comment is data
+        loss and no refetch recovers it. It must therefore never join
+        ``DERIVED_SUBDIRECTORIES``, and ``theurian init`` does not write it into
+        the managed ``.gitignore`` block -- whether a project commits its review
+        evidence is the project's decision.
+
+        A helper rather than a join at the call site, for the reason
+        :attr:`ingestion_manifest` records: a path assembled by the writer never
+        passes :meth:`_contained`, and a clone can force-add
+        ``.theurian/review -> ../../shared`` and put every evidence file outside
+        the working tree. The per-record leaf beneath this directory is contained
+        again by ``infrastructure/review_evidence``, which resolves every
+        relative path against *this* root through ``security/paths.py`` -- so a
+        hostile provider id is refused there and an escaping ``review`` symlink
+        is refused here.
+        """
+        return self._contained(self.knowledge_dir / "review")
+
+    @property
     def config(self) -> Path:
         """The project's own settings, if it has written any.
 
