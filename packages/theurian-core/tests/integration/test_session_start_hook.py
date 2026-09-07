@@ -570,3 +570,136 @@ def test_an_unregistered_repository_with_a_reason_keeps_the_original_advice(
     assert result.returncode == 0
     assert "this repository is not registered. Run /theurian:register-project." in result.stderr
     assert "doctor" not in result.stderr
+
+
+# -- Fidelity: the real Core binary must still produce the payloads above -----
+#
+# Every stubbed row above asserts against a payload this module *chose*. These
+# two rows build it instead, by running the real ``theurian`` binary against a
+# real Git repository -- so a future Core release that stops emitting `reason`
+# here, or starts emitting `indexStale` beside it, fails *these* tests rather
+# than leaving the stubbed rows quietly describing a shape Core no longer
+# produces. Deliberately coupled to Core's payload: that is the whole point of
+# a drift detector, not an accident to fix. When issue #381 changes what
+# `registered: false` carries, it does not touch these two -- both stay on
+# `registered` values #381 does not disambiguate further.
+#
+# `git` is a real requirement of the sandbox these rows build, not of the hook
+# itself, so its absence is a skip and not a failure.
+
+
+def _sandbox_env(tmp_path: Path) -> dict[str, str]:
+    """A minimal environment for driving the real Core binary directly.
+
+    Built from scratch rather than inherited, the same reason
+    :func:`_make_sandbox` does it for the hook's own stub -- plus the
+    directory ``git`` actually resolves to, since ``find_git_root`` and
+    ``resolve_context`` shell out to it.
+    """
+    assert _GIT is not None
+    return {
+        "PATH": f"{Path(_GIT).parent}:/usr/bin:/bin",
+        "HOME": str(tmp_path / "home"),
+        "THEURIAN_DATA_DIR": str(tmp_path / "data"),
+    }
+
+
+def _run_real_cli(
+    args: list[str], *, cwd: Path, env: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    """Run the real Core binary this checkout built, never leaning on an earlier ``cd``."""
+    return subprocess.run(  # noqa: S603 - fixed argv, sandboxed environment
+        [str(_REAL_THEURIAN), *args],
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+
+def _init_git_repo(root: Path, env: dict[str, str]) -> None:
+    for args in (
+        ["init", "-q", "-b", "main"],
+        ["config", "user.email", "test@example.com"],
+        ["config", "user.name", "Test"],
+    ):
+        subprocess.run(  # noqa: S603 - fixed argv, sandboxed environment
+            [str(_GIT), *args], cwd=root, env=env, check=True, capture_output=True, timeout=30
+        )
+
+
+def _register_a_fresh_project(root: Path, env: dict[str, str]) -> None:
+    """``init`` + commit + ``project register``, the shared setup both fidelity rows need."""
+    init_result = _run_real_cli(["init"], cwd=root, env=env)
+    assert init_result.returncode == 0, init_result.stderr
+    subprocess.run(  # noqa: S603 - fixed argv, sandboxed environment
+        [str(_GIT), "add", "-A"], cwd=root, env=env, check=True, capture_output=True, timeout=30
+    )
+    subprocess.run(  # noqa: S603 - fixed argv, sandboxed environment
+        [str(_GIT), "commit", "-q", "-m", "init"],
+        cwd=root,
+        env=env,
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    register_result = _run_real_cli(["project", "register", "--json"], cwd=root, env=env)
+    assert register_result.returncode == 0, register_result.stderr
+
+
+@pytest.mark.skipif(_GIT is None, reason="git is required to build this row's sandbox")
+def test_a_broken_migration_produces_the_real_payload_the_a1_row_assumes(tmp_path: Path) -> None:
+    """AC-6, the A1 face: a malformed migration in a *real*, registered project.
+
+    Reproduced end to end and checked in before this test was written (2026-09-07,
+    against this checkout's own Core build): breaking a committed migration's
+    YAML after registration answers ``registered: true`` with a ``reason`` and
+    no ``indexStale`` at all.
+    """
+    env = _sandbox_env(tmp_path)
+    root = tmp_path / "repo"
+    root.mkdir()
+    _init_git_repo(root, env)
+    _register_a_fresh_project(root, env)
+
+    (root / ".theurian" / "migrations" / "broken.yaml").write_text(
+        "not: yaml: [\n", encoding="utf-8"
+    )
+
+    status_result = _run_real_cli(["project", "status", "--json"], cwd=root, env=env)
+
+    assert status_result.returncode == 0, status_result.stderr
+    payload = json.loads(status_result.stdout)
+    assert payload["registered"] is True
+    assert "reason" in payload
+    assert "indexStale" not in payload
+
+
+@pytest.mark.skipif(_GIT is None, reason="git is required to build this row's sandbox")
+def test_an_unreadable_registry_produces_the_real_payload_the_b1_row_assumes(
+    tmp_path: Path,
+) -> None:
+    """AC-6, the B1 face: a registry that will not parse, after a real registration.
+
+    Reproduced end to end and checked in before this test was written
+    (2026-09-07): overwriting ``THEURIAN_DATA_DIR/projects.json`` with
+    non-JSON text after registration answers ``registered: null`` with a
+    ``reason``.
+    """
+    env = _sandbox_env(tmp_path)
+    root = tmp_path / "repo"
+    root.mkdir()
+    _init_git_repo(root, env)
+    _register_a_fresh_project(root, env)
+
+    registry_path = tmp_path / "data" / "projects.json"
+    registry_path.write_text("{ this is not json", encoding="utf-8")
+
+    status_result = _run_real_cli(["project", "status", "--json"], cwd=root, env=env)
+
+    assert status_result.returncode == 0, status_result.stderr
+    payload = json.loads(status_result.stdout)
+    assert payload["registered"] is None
+    assert "reason" in payload
