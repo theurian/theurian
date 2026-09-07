@@ -38,6 +38,7 @@ from theurian.security.no_follow import (
     write_text_without_following_a_link,
 )
 from theurian.security.project_config import PROJECT_CONFIG_FILE
+from theurian.security.regular_file import read_text_from_a_regular_file
 
 #: Directories `theurian init` creates. The derived ones are created too, so a
 #: fresh clone has somewhere to put state without a later mkdir race.
@@ -1568,12 +1569,25 @@ def read_active_state(paths: ProjectPaths) -> ActiveState | None:
     :func:`read_active_index_pointer`, which has had this ``isinstance`` guard
     since it was written -- the same defect, caught in the sibling and missed
     here, and the whole reason a family is swept rather than reasoned about.
+
+    **A fifth way to fail did not fail at all: it never returned** (#586). A
+    named pipe at this path answers ``exists()`` with ``True`` and then holds
+    ``read_text`` inside ``read()`` until a writer appears. Measured 2026-09-06
+    against the real CLI: ``migrate status``, ``project status``, ``index
+    status`` and ``findings build`` each ran until a 12-second kill, with zero
+    bytes on stdout and stderr -- a `--json` caller cannot tell that from a
+    daemon that is merely slow. :func:`~theurian.security.regular_file
+    .read_text_from_a_regular_file` is the read now, and it refuses by asking the
+    **descriptor** what it opened rather than asking the name beforehand, so the
+    swap window a path check leaves is not reopened here. The refusal arrives as
+    an ``OSError`` and so takes :data:`ACTIVE_POINTER_UNREADABLE_REMEDY`, which
+    is the cure that names both the delete and the directory's permissions.
     """
     pointer = paths.active_pointer
     try:
         if not pointer.exists():
             return None
-        loaded = json.loads(pointer.read_text(encoding="utf-8"))
+        loaded = json.loads(read_text_from_a_regular_file(pointer))
         if not isinstance(loaded, dict):
             # `raise ... from None` is not used: the `except` below re-raises with
             # the message and the remedy every other failure here carries, so the
@@ -1646,7 +1660,7 @@ def read_active_index_pointer(paths: ProjectPaths) -> ActiveIndexPointer:
     empty id and reported `index-file-missing` — "the published index build is
     no longer on disk", about a build that was never named.
 
-    **The ``is_file`` probe is inside the ``try``, for the reason its sibling
+    **The presence probe is inside the ``try``, for the reason its sibling
     :func:`read_active_state` records in full.** It sat above it until #389's
     third face, and a ``.theurian/state`` at mode ``000`` made it raise
     ``PermissionError`` past the ``except`` written for exactly that errno one
@@ -1664,12 +1678,29 @@ def read_active_index_pointer(paths: ProjectPaths) -> ActiveIndexPointer:
     ``unreadable`` asserts only that the file could not be interpreted, which is
     exactly what happened. The cure being imperfect for one errno is a smaller
     fault than the report being wrong for every reader.
+
+    **The probe is ``exists()`` and was ``is_file()``, and the swap is the whole
+    of #586's index-pointer face.** ``is_file()`` answers ``False`` for a named
+    pipe, so a FIFO planted here never blocked -- it was reported as *no pointer
+    at all*: measured 2026-09-06 through the real CLI, ``index status``
+    published ``built: false``, ``indexBuildId: null`` and
+    ``indexPointerCorrupt: false`` at exit 0 for a project whose index was built
+    and whose pointer file was sitting right there. That is the answer the
+    paragraph above rules out, arriving through a probe instead of through a
+    branch. ``exists()`` is ``True`` for the pipe, so the read below runs and
+    :func:`~theurian.security.regular_file.read_text_from_a_regular_file` refuses it as
+    an ``OSError`` -- landing on ``unreadable``, which publishes
+    ``indexPointerCorrupt`` and the delete-the-pointer cure. Two other shapes
+    move with it, both from ``None`` to ``unreadable``: a **directory** (the
+    ``read`` answers ``EISDIR``) and a **socket** or **device**. A dangling
+    symbolic link stays ``None`` under either probe, which is right -- nothing
+    was ever stored there.
     """
     pointer = paths.active_index_pointer
     try:
-        if not pointer.is_file():
+        if not pointer.exists():
             return ActiveIndexPointer()
-        loaded = json.loads(pointer.read_text(encoding="utf-8"))
+        loaded = json.loads(read_text_from_a_regular_file(pointer))
     except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         # `UnicodeDecodeError` is a `ValueError`, not an `OSError`, and
         # `JSONDecodeError` is not its parent: a pointer holding arbitrary bytes

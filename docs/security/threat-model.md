@@ -754,10 +754,13 @@ in this table is read as a control that runs.
   Nothing in `src/` calls `signal`, `sqlite3.Connection.set_progress_handler`,
   `interrupt`, or `asyncio.wait_for` (same search, re-run 2026-08-30). What
   [#26](https://github.com/theurian/theurian/issues/26) (a8c1ce3) added is
-  `threading.BoundedSemaphore.acquire(timeout=ADMISSION_WAIT_SECONDS)`
-  (`mcp/tools.py`) — a wall-clock bound, but on a **lock wait for an admission
-  permit**, not on a parse or a query: it bounds how long a caller waits for a
-  slot to open, never how long the search holding a slot runs. It is a third
+  `AdmissionGate.acquire(ADMISSION_WAIT_SECONDS)` (`mcp/admission.py`, a
+  `threading.BoundedSemaphore` until #586) — a wall-clock bound, but on a **wait
+  for an admission permit**, not on a parse or a query: it bounds how long a
+  caller waits for a slot to open, never how long the search holding a slot
+  runs. #586's hold bound does not change that either: it reclaims the
+  accounting *token* of a holder that stopped coming back, and cancels no
+  query. It is a third
   near miss of the same shape as the two named further down for the query
   side, not a counterexample to this paragraph: `busy_timeout` is a lock wait
   on the database writer, `GIT_TIMEOUT_SECONDS` bounds a subprocess, and the
@@ -1016,8 +1019,9 @@ progress handler, and — because sync MCP tools run through
 not stop — a transport-level wall-clock bound would still cap only how long a
 caller waits, not the daemon's own CPU or GIL spend, even if one were added.
 The concurrency half changed by construction, not by absence:
-`mcp/tools.py::register` now builds a `threading.BoundedSemaphore` that gates
-admission to the answer block for all three members. What it bounds, what it
+`mcp/tools.py::register` now builds an `AdmissionGate` (`mcp/admission.py`; a
+`threading.BoundedSemaphore` until #586) that gates admission to the answer block
+for all three members. What it bounds, what it
 does not, and the tests that pin it are below, at the remediation table's
 third row.
 
@@ -1102,7 +1106,7 @@ its own review; the third — concurrent occupancy — has since shipped:
 | :-- | :-- |
 | peak memory on the dense path | streaming the cursor and keeping a top-*k* heap instead of `fetchall` + sort, or pushing the scoring into SQL |
 | GIL-held time on the dense path | the same, or moving the cosine into a released-GIL extension |
-| concurrent occupancy, any of the three members | **Shipped** ([#26](https://github.com/theurian/theurian/issues/26), a8c1ce3, 2026-08-30): `mcp/tools.py::register`'s admission gate, a `threading.BoundedSemaphore` sized by `MAX_CONCURRENT_SEARCHES` (4) with a bounded admission wait, `ADMISSION_WAIT_SECONDS` (1.0 s) — both recorded defaults, not tuned. The per-query-timeout half of the OR is recorded as not taken, below |
+| concurrent occupancy, any of the three members | **Shipped** ([#26](https://github.com/theurian/theurian/issues/26), a8c1ce3, 2026-08-30): `mcp/tools.py::register`'s admission gate, an `AdmissionGate` (`mcp/admission.py`; a `threading.BoundedSemaphore` until #586) sized by `MAX_CONCURRENT_SEARCHES` (4) with a bounded admission wait, `ADMISSION_WAIT_SECONDS` (1.0 s) — both recorded defaults, not tuned. Since #586 it also bounds how long one permit is counted, `MAX_PERMIT_HOLD_SECONDS` (30 s), with a ceiling of `MAX_CONCURRENT_SEARCHES` outstanding reclaims, so worst-case occupancy is 2x the cap. The per-query-timeout half of the OR is recorded as not taken, below |
 | rows and memory on the fallback path | a page bound on `list_items`, which is a change to the search fallback's published surface rather than a retrieval tuning |
 
 **Why the timeout half of that row is recorded as not taken.** Sync MCP tools
@@ -1319,7 +1323,7 @@ listed separately because none of the measurements above ranges over it.
 | characters per served `findingText`, cut inside the store's own `SELECT` | `mcp/findings.py::max_finding_text_chars()`, derived from `MAX_QUERY_CHARS` (2,000) rather than respelled, and applied by `infrastructure/sqlite/findings_store.py::_SERVE_COLUMNS` as `substr(finding_text, 1, ?)` | **clamps**, and marks the cut — the one bound on this surface that does, see below |
 | bytes per string filter, before anything is matched or echoed | `mcp/findings.py::MAX_FILTER_CHARS` (200) | **refuses**, reporting the length and never quoting the value (#17's amplification discipline) |
 | magnitude of `pullRequest` | `mcp/findings.py::MAX_PULL_REQUEST`, defined as the widest value the store's signed 64-bit column can hold (`2**63 - 1`); a refusal quotes at most `MAX_ECHOED_DIGITS` (20) decimal digits and describes anything larger by its digit count | **refuses** |
-| concurrent occupancy | its own `threading.BoundedSemaphore` sized by `MAX_CONCURRENT_SEARCHES` (4), waited on for `ADMISSION_WAIT_SECONDS` (1.0 s), refusing with `FINDINGS_CAPACITY_REFUSAL` | **refuses** |
+| concurrent occupancy | its own `AdmissionGate` sized by `MAX_CONCURRENT_SEARCHES` (4), waited on for `ADMISSION_WAIT_SECONDS` (1.0 s), refusing with `FINDINGS_CAPACITY_REFUSAL` | **refuses** |
 | wall clock per call | **nothing**, for the reason recorded above: a sync tool's worker thread is not stopped by cancelling the awaiting task, so a transport timeout bounds the wait and not the spend | neither — recorded as not taken, like its three siblings |
 
 **Only the row count was bounded when the tool was first written, and that was
@@ -1549,11 +1553,19 @@ landed, and a blocked open inside the daemon holds an admission permit
 | the daemon's instance lock takes the same flags and the same descriptor check | `daemon/instance.py::InstanceLock.acquire` |
 | the review-finding store's serving read refuses an artefact before it opens anything | `infrastructure/sqlite/findings_store.py::SqliteReviewFindingStore._read`, through `schema.py::irregular_shape_at` |
 | a `flock` refusal that is not contention is reported at once rather than polled to the 30 s deadline | `connection.py::WriteLock._acquire`, through `CONTENTION_ERRNOS` |
+| both derived-state pointers are read through a descriptor whose shape is checked, so a pipe at `active.json` cannot hold every project-resolving command | `security/regular_file.py::read_text_from_a_regular_file`, called by `application/project_service.py`'s two pointer readers ([#586](https://github.com/theurian/theurian/issues/586)) |
+| every index-database open in `index_store` passes one shape-refusing function, and `index_purge` asks the same of its source | `index_store.py::_connect_to` and `index_purge.py::_copy`, pinned structurally by `tests/unit/test_index_opener_claims.py` (#586) |
+| the token's openers cannot wait, and the descriptor they return is refused if it is not a regular file | `security/no_follow.py::WRITE_FLAGS`/`READ_FLAGS` (`O_NONBLOCK`) and `_opened_regular_file`'s `os.fstat` (#586) |
+| an admission permit whose holder never returns is reclaimed, and outstanding reclaims are capped, so parked threads plateau at 2x the permit count instead of draining the worker pool | `mcp/admission.py::AdmissionGate`, `MAX_PERMIT_HOLD_SECONDS` and the `_reclaimed` ceiling, pinned by `test_admission_gate.py::test_parked_holders_plateau_at_twice_the_permits` (#586) |
 
 The shape vocabulary is one function, `infrastructure/sqlite/schema.py::
-irregular_shape`, held equal to `security/paths.py::_unbounded_shape` by
+irregular_shape`, held equal to `security/paths.py::unbounded_shape` by
 `tests/unit/test_connection_faults.py::
-test_both_shape_namers_answer_alike_for_every_file_type`.
+test_both_shape_namers_answer_alike_for_every_file_type`. The `security/` side is
+also what the descriptor check asks — `security/regular_file.py::
+assert_a_regular_file` calls `unbounded_shape` on an `os.fstat`, so the pointer
+readers, the token openers and the lock openers all name a named pipe the same
+way.
 
 **Two residuals are accepted here rather than closed, both races and both
 availability-only.** Neither discloses anything: no content is read, and the
@@ -1564,15 +1576,42 @@ caller is refused rather than served.
    them and hand the open a named pipe. Measured on the fixing branch at 4.7
    swaps/second with four workers: one worker parked inside the open and was
    still parked 30 seconds after the artefact had been removed and a healthy
-   database restored — so the permit it holds is gone until the daemon restarts,
-   and the "Retry shortly" an exhausted gate publishes is false for that member.
-   It cannot be closed where the lock openers closed theirs: `sqlite3.connect`
-   takes a path and no descriptor, so there is no `fstat` to move the question
-   onto. Precondition: a **racing writer** with local write access to
-   `.theurian/state/` or the data directory, which is T-1's actor.
-   [#586](https://github.com/theurian/theurian/issues/586) bounds the
-   admission-permit path's open; when it lands this residual's reach drops from
-   a permanent wedge to a bounded stall.
+   database restored. It cannot be closed where the lock openers closed theirs:
+   `sqlite3.connect` takes a path and no descriptor, so there is no `fstat` to
+   move the question onto. Precondition: a **racing writer** with local write
+   access to `.theurian/state/` or the data directory, which is T-1's actor.
+
+   **The reach, stated in two regimes rather than one**
+   ([#586](https://github.com/theurian/theurian/issues/586)). It was *permanent
+   capacity loss*: a permit a parked thread held was never re-issued, so the gate
+   ran a slot short until the daemon restarted. `mcp/admission.py::AdmissionGate`
+   reclaims the accounting token of a hold past `MAX_PERMIT_HOLD_SECONDS` (30 s)
+   and caps outstanding reclaims at `MAX_CONCURRENT_SEARCHES`, which gives:
+
+   - **fewer than four threads parked** — a *bounded stall*. The permit returns
+     and "Retry shortly" becomes true again. Measured 2026-09-06 with all four
+     permits held by threads parked in a real reader-less-FIFO `open()`: a caller
+     arriving is refused after 1.004 s (`ADMISSION_WAIT_SECONDS`), the first
+     permit returns after **29.001 s**, and all four are recovered, where the
+     `threading.BoundedSemaphore` that stood there before was still refusing
+     after 60.005 s of patience. Reproduced twice, agreeing within 6 ms.
+   - **four threads parked and four reclaims outstanding** — the ceiling stops
+     reclaiming and the gate **wedges for the residual's duration**, exactly as
+     the semaphore did. That is the deliberate trade: a wedged gate refuses with
+     a constant message, while reclaiming without a ceiling drains the
+     process-wide worker pool. Measured before the ceiling, at the shipped
+     constants: four parked holders per 30 s window accumulating to all **40**
+     anyio pool tokens by t=323 s, at which point *every* synchronous MCP tool
+     stopped answering — `system.capabilities` included, which takes no permit
+     from either gate. With the ceiling, the same recipe plateaus at **8** parked
+     threads from wave 1 and `system.capabilities` answers at every wave through
+     t=416 s.
+
+   What is reclaimed is the accounting token and nothing else — the parked thread
+   is not cancelled, which no Python API can do — so in-flight work can exceed
+   `MAX_CONCURRENT_SEARCHES` by at most `MAX_CONCURRENT_SEARCHES`, and the
+   worst-case occupancy is 2x the cap. Those holders consume no CPU and no GIL,
+   which is the resource the cap protects.
 2. **`mkdir` and `open` are two calls at both lock paths.** `O_NOFOLLOW`
    constrains the final component only, so an actor who rewrites a *prefix*
    component between them defeats the ordering argument `WriteLock._open`

@@ -15,24 +15,37 @@ can, and says plainly what the user must do when it cannot.
 from __future__ import annotations
 
 import asyncio
-import os
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Final
 
 import typer
 
 from theurian.cli.setup_commands import _executable
 from theurian.daemon.instance import DEFAULT_PORT, probe_health
+from theurian.domain.errors import SecurityError
 from theurian.domain.ports.daemon_manager import ServiceState
 from theurian.infrastructure.secrets.file_store import (
     TOKEN_KEY,
     FileSecretStore,
-    SecretPathIsASymbolicLinkError,
     default_data_dir,
 )
 from theurian.infrastructure.services import detect_manager
 from theurian.security.env_file import MalformedEnvBlockError, merge_env_file
+from theurian.security.no_follow import (
+    is_a_symbolic_link_refusal,
+    write_text_without_following_a_link,
+)
+from theurian.security.regular_file import (
+    IrregularArtefactError,
+    read_text_from_a_regular_file,
+)
 from theurian.security.tokens import TOKEN_ENV_VAR, describe, generate_token
+
+#: The mode `<data_dir>/env` is created with and re-asserted at, matching
+#: `setup_steps._SECRET_FILE_MODE`: this command and `theurian setup` write the
+#: same file, and a mode that differed between them would depend on which ran
+#: last.
+_ENV_FILE_MODE: Final = 0o600
 
 auth_app = typer.Typer(help="Manage the local access token.", no_args_is_help=True)
 
@@ -56,7 +69,7 @@ def auth_rotate(
     token = generate_token()
     try:
         asyncio.run(store.set(TOKEN_KEY, token))
-    except SecretPathIsASymbolicLinkError as exc:
+    except SecurityError as exc:
         # The one command that reaches `FileSecretStore.set` with no handler
         # above it (#371). `setup` runs it through `SetupService._apply`, whose
         # `except Exception` records a FAILED step, and `daemon start
@@ -64,10 +77,51 @@ def auth_rotate(
         # -- so this is where the refusal would otherwise have become a Rich
         # traceback with an empty machine channel under `--json` (CP-2).
         #
+        # **`SecurityError` and not the link class it named until #586.** The
+        # store refuses a plant at the secret's path with a *family* of errors --
+        # a symbolic link, and now a named pipe, socket, device or directory --
+        # and naming one of them made this handler the maintained-list shape the
+        # same issue is about elsewhere: measured 2026-09-06, a 0600 named pipe at
+        # `<data_dir>/auth/mcp-token` escaped here as
+        # `SecretPathIsNotAFileError` at exit 1 with **both channels empty**,
+        # while the link at the same path published its document. Every member
+        # carries its own message and its own cure, so one arm serves them all.
+        #
         # Exit 1 rather than a state code: nothing about the caller's knowledge
         # state is wrong, and this command has no `EXIT_STATE_ERROR` vocabulary of
         # its own -- the data directory is the thing to repair.
         _fail(str(exc), remedy=exc.remedy, as_json=as_json, code=1)
+        return
+    except OSError as exc:
+        # **#572, closed here.** `SecurityError` covers every fault the store
+        # *classifies*; it does not cover the ones it merely propagates. A token
+        # file the owner cannot rewrite -- another account's, a read-only mount,
+        # ENOSPC, or a macOS immutable flag (`chflags uchg`, which is what drove
+        # this arm RED) -- reaches the `os.open` inside `set` as a plain
+        # `OSError` and escaped `--json` as a Rich traceback with empty stdout.
+        # That is the CP-2 shape on a command whose contract is a parseable
+        # `{error, remedy}` document.
+        #
+        # The *cause* and not `str(exc)`: an `OSError`'s `str` appends the
+        # filename, which is the operator's absolute path, and the path already
+        # travels in the remedy where a reader acts on it (GHSA-97q9). The
+        # remedy names the artefact, the two commands that inspect it, and the
+        # fact that the old token is still in place -- because it is: `set`
+        # failed, so nothing was rotated and the caller's clients still work.
+        token_file = data_dir / "auth" / TOKEN_KEY
+        _fail(
+            f"The local access token could not be written ({type(exc).__name__}).",
+            remedy=(
+                f"Theurian could not replace {token_file}, so the old token is still in "
+                f"place and nothing was rotated. Check that the file and "
+                f"{data_dir / 'auth'} are yours to write and not read-only: "
+                f"`ls -ld {token_file} {data_dir / 'auth'}` shows the owner and the mode, "
+                f"and on macOS `ls -ldO` also shows an immutable flag that `chflags "
+                f"nouchg {token_file}` clears. Then run `theurian auth rotate` again."
+            ),
+            as_json=as_json,
+            code=1,
+        )
         return
 
     # Brought up to date too. Not because rotation moves anything it names --
@@ -123,29 +177,55 @@ def _refresh_env_file(data_dir: Path) -> list[str]:
     the command with a fresh token on disk, a daemon never restarted, and a
     traceback where the remedy should be.
 
-    ``newline=""`` on both sides and the creation mode on the ``open``, for the
+    ``newline=""`` on both sides and the creation mode on the write, for the
     reasons :func:`~theurian.application.setup_steps.apply_env_reference` states:
-    this is the second writer of the same file and the two must not differ.
+    this is the second writer of the same file and the two must not differ. Both
+    go through ``no_follow``'s writer and the bounded reader since #586 -- the
+    byte-identical pair of ``open`` calls they had before carried neither
+    ``O_NOFOLLOW`` nor ``O_NONBLOCK``, so a symbolic link at ``<data_dir>/env``
+    was followed out of the data directory and its victim overwritten at exit 0,
+    and a named pipe there held this command with both channels empty until it
+    was killed.
     """
     env_path = data_dir / "env"
     try:
-        existing = env_path.read_text(encoding="utf-8", newline="") if env_path.is_file() else None
+        # `exists()` rather than `is_file()`: the latter answers `False` for a
+        # named pipe, which would read as "no file yet" and send a planted
+        # artefact into the write below rather than to the refusal.
+        existing = (
+            read_text_from_a_regular_file(env_path, newline="") if env_path.exists() else None
+        )
         merged = merge_env_file(existing, data_dir)
-        with open(
-            env_path,
-            "w",
-            encoding="utf-8",
-            newline="",
-            opener=lambda file, flags: os.open(file, flags, 0o600),
-        ) as handle:
-            handle.write(merged)
+        write_text_without_following_a_link(env_path, merged, mode=_ENV_FILE_MODE)
         # Re-asserted, for the same two reasons the setup step re-asserts it:
         # the creation mode is ANDed with the umask, and a file an earlier
         # version created keeps whatever mode it was given.
-        env_path.chmod(0o600)
+        env_path.chmod(_ENV_FILE_MODE)
     except MalformedEnvBlockError as exc:
         return [f"{env_path} was left untouched: {exc}"]
+    except IrregularArtefactError as exc:
+        # Ahead of the `OSError` arm, whose sentence is about a file that was
+        # opened and half-written. Nothing was opened here, and what the reader
+        # needs is what is at the path -- the generic text would send them to
+        # repair a block that is not there (#586).
+        return [
+            f"{env_path} was left untouched: it is {exc.shape}, not the env file Theurian "
+            f"writes. `ls -l {env_path}` shows what is at the path now. Remove it and run "
+            f"`theurian setup` to rewrite the block; the new token is already in place."
+        ]
     except OSError as exc:
+        if is_a_symbolic_link_refusal(exc):
+            # The link is refused rather than followed, so nothing was written
+            # through it -- and saying so is the point: an operator who did not
+            # create it needs to know something with write access to their data
+            # directory did.
+            return [
+                f"{env_path} was left untouched: it is a symbolic link, and Theurian will "
+                f"not write the block through one -- the lines would land wherever it "
+                f"points. Remove it and run `theurian setup`; something with write access "
+                f"to {data_dir} put it there, so check that directory's permissions. The "
+                f"new token is already in place."
+            ]
         # The type and the path, never the message: an OSError carries whatever
         # the OS put in it, and this line is printed beside a rotation somebody
         # may well paste into a bug report.

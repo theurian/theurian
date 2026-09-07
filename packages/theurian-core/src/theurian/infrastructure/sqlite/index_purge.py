@@ -54,7 +54,11 @@ from typing import Final
 from theurian.domain.chunking import ChunkScope
 from theurian.domain.errors import TheurianError
 from theurian.domain.ports.index_store import ForestRecompute
-from theurian.infrastructure.sqlite.schema import CONNECTION_PRAGMAS, read_only_uri
+from theurian.infrastructure.sqlite.schema import (
+    CONNECTION_PRAGMAS,
+    irregular_shape_at,
+    read_only_uri,
+)
 
 #: The chunks a purge removes: exactly the withdrawn revisions. A chunk is never
 #: the *target* of a derivation edge -- only a node can be built from something
@@ -627,7 +631,45 @@ def _copy(source: Path, target: Path) -> None:
     schema mismatch rather than a missing file, because a file that exists cannot
     take the missing-file branch. That is the same defect ADR-0024 decision 7
     closed on the read path, arriving on the write path.
+
+    **The source's shape is asked before the open, for the reason #586 records
+    about the reader one module over.** ``mode=ro`` on a named pipe waits inside
+    ``open()`` for a writer with no bound, and this open runs inside ``migrate
+    apply``'s withdrawal purge -- so a pipe planted at the published index path
+    would hold that command, and the write lock it has taken, indefinitely.
+    ``withdrawal_purge`` probes ``is_file()`` before calling here, which is what
+    keeps the plant off this path today; the check below is what stops that probe
+    from being the only thing that does.
+
+    **The target's guard is ``purge_into``'s existence check, and it has one
+    hole** (#586 round two, M-6). That check is ``Path.exists()``, which follows
+    a symbolic link and answers ``False`` for a **dangling** one -- so a link at
+    the ``.building`` name pointing at a path that does not exist passes it, and
+    this ``connect`` then creates the purged build *through* the link, outside
+    the tree, after which ``os.replace`` publishes the link's own name. Measured.
+    It is unreachable by planting: the ``.building`` name is derived from a ULID
+    nobody outside the process knows before the purge starts. The ``lstat``
+    below closes it anyway, because "unguessable" is not a guard and the check
+    costs one syscall on a path this function is about to open.
     """
+    if target.is_symlink():
+        msg = (
+            f"{target.name} is a symbolic link, so the purged build would be written "
+            f"through it rather than into the project. Nothing was published, so retrieval "
+            f"still uses the current index. Remove {target} and run `theurian index build`; "
+            f"`ls -ld {target}` shows what is at the path now."
+        )
+        raise IndexPurgeError(msg)
+    shape = irregular_shape_at(source)
+    if shape is not None:
+        msg = (
+            f"The index build being purged cannot be read: its path holds {shape}, not a "
+            f"file Theurian wrote. Nothing was published, so retrieval still uses the "
+            f"current index. Remove {source} and run `theurian index build` to rebuild it; "
+            f"`ls -l {source}` shows what is at the path now. The index is derived, so "
+            f"nothing authored is lost."
+        )
+        raise IndexPurgeError(msg)
     try:
         with (
             closing(sqlite3.connect(read_only_uri(source), uri=True)) as reader,

@@ -45,6 +45,7 @@ from theurian.application.project_service import (
 )
 from theurian.security.no_follow import write_text_without_following_a_link
 from theurian.security.project_config import SecretScanPolicy
+from theurian.security.regular_file import read_text_from_a_regular_file
 
 #: What to do about a secret that has already landed in the canonical store.
 #:
@@ -388,8 +389,7 @@ def _loaded_mapping(record: Path) -> dict[str, Any] | None:
 
     ``UnicodeDecodeError`` is a ``ValueError`` and not a ``JSONDecodeError``, so a
     record holding arbitrary bytes -- a partially overwritten file, a restored
-    binary -- escapes a handler that lists only the latter. The same three-way
-    catch ``read_active_index_pointer`` carries, for the same file shape.
+    binary -- escapes a handler that lists only the latter.
 
     **The ``is_file`` probe is inside the ``try``**, swept here with the two
     pointer readers beside it (#389): ``pathlib`` re-raises ``EACCES`` rather
@@ -397,11 +397,28 @@ def _loaded_mapping(record: Path) -> dict[str, Any] | None:
     this probe raise past the ``except`` written for that errno. The two callers
     of this function reach ``theurian doctor`` and the withdrawal-triggered
     purge, and neither grades an ``OSError`` from here.
+
+    **The third file under ``.theurian/state/`` with this shape, and it was left
+    behind when the other two were converted** (#586 round two, M-5). The
+    sentence here said it carried "the same three-way catch
+    ``read_active_index_pointer`` carries, for the same file shape", and both
+    halves stopped being true when that sibling started reading through a
+    descriptor: this one still asked ``is_file()`` and then ``Path.read_text``.
+    It never *waited* -- ``is_file()`` answers ``False`` for a named pipe, so a
+    plant was silently read as "no record", which for a scan record is
+    fail-**open**: an unrecorded scan reads as a project that was never scanned
+    rather than one whose record somebody replaced. The read is now bounded and
+    the plant lands on the ``OSError`` arm, which is the same ``None`` with the
+    swap window closed.
+
+    The population key that missed it is worth naming: the sweep was keyed on the
+    two pointers' *leaf names*, and a leaf-name key cannot see a third file in
+    the same directory serving the same role.
     """
     try:
-        if not record.is_file():
+        if not record.exists():
             return None
-        loaded = json.loads(record.read_text(encoding="utf-8"))
+        loaded = json.loads(read_text_from_a_regular_file(record))
     except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return None
     return loaded if isinstance(loaded, dict) else None

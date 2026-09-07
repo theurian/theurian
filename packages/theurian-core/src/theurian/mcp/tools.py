@@ -25,7 +25,6 @@ from __future__ import annotations
 import functools
 import inspect
 import shlex
-import threading
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -60,6 +59,7 @@ from theurian.infrastructure.sqlite.findings_store import (
 )
 from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore
+from theurian.mcp.admission import AdmissionGate
 from theurian.mcp.findings import (
     DEFAULT_FINDINGS_LIMIT,
     build_query,
@@ -96,9 +96,19 @@ MAX_QUERY_CHARS: Final = 2_000
 #: transport-level wall-clock timeout bounds how long a caller waits, never how
 #: much CPU or GIL time the daemon spends answering. This cap bounds concurrent
 #: occupancy -- the *rate* of spend, at most `MAX_CONCURRENT_SEARCHES` threads'
-#: worth at once -- not the total: a permit has no upper bound on how long it
-#: is held once acquired. Bounding how long a permit may be held is what a
-#: per-query timeout would do instead, and T-6 records that as not taken here.
+#: worth at once -- not the total: nothing here stops a caller's query from
+#: running as long as it runs. A **per-query timeout** would bound that, and T-6
+#: records it as not taken; `AdmissionGate`'s hold bound is not it, and the two
+#: are worth telling apart. That gate reclaims the *accounting token* of a holder
+#: that has stopped coming back (#586), so a thread parked inside an `open` costs
+#: capacity for `MAX_PERMIT_HOLD_SECONDS` rather than until restart -- **while
+#: fewer than `MAX_CONCURRENT_SEARCHES` reclaims are outstanding.** Past that the
+#: gate stops reclaiming and wedges, which is what keeps parked threads at 2x
+#: this cap instead of accumulating a cohort per hold window until anyio's
+#: 40-token pool is gone (round two, H-1; `mcp/admission.py` carries the
+#: measurement). It cancels nothing and refuses no admitted caller -- a sync
+#: tool's thread cannot be cancelled, which is the same fact this paragraph opens
+#: with.
 #: What this cap does bound is an unbounded queue of callers building up
 #: behind however much work is already running.
 #:
@@ -109,8 +119,8 @@ MAX_QUERY_CHARS: Final = 2_000
 MAX_CONCURRENT_SEARCHES: Final = 4
 
 #: How long an admission attempt waits for a permit before it is refused.
-#: `threading.BoundedSemaphore.acquire(timeout=...)` releases the GIL while
-#: waiting, so a caller parked here never blocks the asyncio loop serving
+#: `AdmissionGate.acquire` waits on a `threading.Condition`, which releases the
+#: GIL while blocked, so a caller parked here never blocks the asyncio loop serving
 #: `/health` or any other tool. But the wait is not free: the token it holds
 #: is drawn from the same pool every other tool draws from -- `knowledge.get`,
 #: `knowledge.status`, `project.list`, `review.findings` and
@@ -928,12 +938,19 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
     # installation built it (ADR-0004, SEC-7).
     provenance = BuildProvenance.for_registry(registry)
 
-    # One bounded semaphore per server registration, shared by every
-    # `knowledge.search` call this daemon serves (ADR-0002: one process, many
-    # concurrent agents). See the gated block inside `knowledge_search` for
-    # why this is a cap rather than a per-query timeout, and why a refusal is
-    # a `ToolError` rather than an empty result or a `fallbackReason`.
-    search_admission = threading.BoundedSemaphore(MAX_CONCURRENT_SEARCHES)
+    # One gate per server registration, shared by every `knowledge.search` call
+    # this daemon serves (ADR-0002: one process, many concurrent agents). See the
+    # gated block inside `knowledge_search` for why this is a cap rather than a
+    # per-query timeout, and why a refusal is a `ToolError` rather than an empty
+    # result or a `fallbackReason`.
+    #
+    # `AdmissionGate` and not `threading.BoundedSemaphore` since #586: a thread
+    # parked inside an `open` held its permit for the life of the process, so a
+    # named pipe swapped in at a database path cost this gate a permit
+    # permanently. The gate reclaims a hold past `MAX_PERMIT_HOLD_SECONDS`, which
+    # turns that into a bounded stall; that module records what the reclamation
+    # costs and why the open itself cannot be bounded instead.
+    search_admission = AdmissionGate(MAX_CONCURRENT_SEARCHES)
 
     # `review.findings` gets **its own** semaphore, sized by the same constant,
     # and the split is the decision rather than the number (PR #504 round 1, R1-3).
@@ -955,7 +972,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
     # over a corpus-sized table, strictly cheaper than a search, so a second number
     # would be a tuning claim nothing here has measured (T-6 records it as a
     # default, like its sibling).
-    findings_admission = threading.BoundedSemaphore(MAX_CONCURRENT_SEARCHES)
+    findings_admission = AdmissionGate(MAX_CONCURRENT_SEARCHES)
 
     def _with_remedy(exc: ProjectError) -> ToolError:
         """A ``ProjectError``, with its remedy still attached.
@@ -1455,16 +1472,17 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         # asyncio loop, never through `anyio.to_thread.run_sync`, so it never
         # takes a worker thread from the pool this gate parks callers in -- a
         # saturated gate leaves no thread for `/health` to wait behind in the
-        # first place. `BoundedSemaphore.acquire(timeout=...)` also releases
-        # the GIL while blocked rather than busy-looping, but that is what
+        # first place. `AdmissionGate.acquire` also releases the GIL while
+        # blocked -- it waits on a `Condition` -- rather than busy-looping, but that is what
         # keeps the *other* sync tools sharing that pool merely queued rather
         # than starved, not what keeps `/health` prompt -- see
         # `ADMISSION_WAIT_SECONDS` above for what that queuing costs them.
         #
         # The refusal is raised *before* the `try`: a failed `acquire` holds
         # no permit, and calling `release()` for it would hand this
-        # semaphore's count a permit it never had (AC-4).
-        if not search_admission.acquire(timeout=ADMISSION_WAIT_SECONDS):
+        # gate a permit it never had (AC-4).
+        permit = search_admission.acquire(ADMISSION_WAIT_SECONDS)
+        if permit is None:
             raise ToolError(SEARCH_CAPACITY_REFUSAL)
         try:
             answer = hybrid_answer(
@@ -1495,7 +1513,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                     as_of=as_of,
                 )
         finally:
-            search_admission.release()
+            search_admission.release(permit)
 
         # The #30 integrity signal, checked against the same `active` pointer
         # that chose `database` and answered `snapshotId`. Two measurements --
@@ -2016,9 +2034,10 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         # bounding anything.
         #
         # Raised before the `try`, like its sibling: a failed `acquire` holds no
-        # permit, and releasing one it never had would hand this semaphore a permit
+        # permit, and releasing one it never had would hand this gate a permit
         # from nowhere.
-        if not findings_admission.acquire(timeout=ADMISSION_WAIT_SECONDS):
+        permit = findings_admission.acquire(ADMISSION_WAIT_SECONDS)
+        if permit is None:
             raise ToolError(FINDINGS_CAPACITY_REFUSAL)
         try:
             # One call, one connection: the store checks its own stamp inside the
@@ -2045,7 +2064,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             # carries the same remedy without that variation (SEC-13).
             raise ToolError(FINDINGS_UNAVAILABLE_REFUSAL) from exc
         finally:
-            findings_admission.release()
+            findings_admission.release(permit)
         return findings_payload(served, page_size=query.limit)
 
     @_tool(

@@ -110,6 +110,7 @@ from theurian.security.no_follow import (
     symbolic_link_remedy,
     write_text_without_following_a_link,
 )
+from theurian.security.regular_file import read_text_from_a_regular_file
 
 #: Exit code for a knowledge-state problem the user must resolve: a checksum
 #: mismatch, a revision conflict, a dependency cycle. Distinct from 1 so a script
@@ -2661,7 +2662,15 @@ def ingest_command(as_json: JsonOption = False) -> None:
     previous: dict[str, str] = {}
     if manifest_path.exists():
         try:
-            previous = json.loads(manifest_path.read_text(encoding="utf-8"))
+            # The bounded reader, not `Path.read_text` (#586 round two, H-4).
+            # `.theurian/cache/` is derived state inside the project tree --
+            # `cache` is in `DERIVED_SUBDIRECTORIES` -- so this is the same
+            # exists-then-read shape the two state pointers had, and a named pipe
+            # here held `theurian ingest --json` for 12 s with both channels
+            # empty. The refusal is an `OSError`, so it lands on the arm below
+            # and costs a full reparse, which is what this comment already says
+            # a corrupt manifest costs.
+            previous = json.loads(read_text_from_a_regular_file(manifest_path))
         except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             # The manifest is a derived cache. A corrupt one costs a full
             # reparse, which is the correct price -- refusing to run would make

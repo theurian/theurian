@@ -425,7 +425,7 @@ def assert_no_symlink_escape(root: Path, *, base: Path, requested: str | PurePos
         raise PathEscapeError(str(walk.requested), str(walk.resolved_root))
 
 
-def _unbounded_shape(mode: int) -> str | None:
+def unbounded_shape(mode: int) -> str | None:
     """Name the file type whose read ``st_size`` does not bound, or ``None``.
 
     The size cap below is computed from ``st_size``, which says what a read will
@@ -433,6 +433,12 @@ def _unbounded_shape(mode: int) -> str | None:
     and then either blocks (a FIFO with no writer, a device waiting on hardware)
     or returns bytes without end (``/dev/zero``), so the cap it passed was never
     a bound on anything (issue #215).
+
+    Public because :mod:`theurian.security.no_follow` asks the same question of a
+    *descriptor* it has just opened (#586). One namer rather than two spellings
+    of the same vocabulary in one package -- and the descriptor form is what
+    :func:`read_source_file` below records as the way to close its own race,
+    which is why the two now share this function rather than only agreeing.
 
     A directory is not named, and so is not refused here: ``open()`` rejects one
     with ``EISDIR`` before a byte is read, which can neither block nor stream,
@@ -491,7 +497,7 @@ def read_source_file(root: Path, relative: str | PurePosixPath) -> bytes:
     assert_no_symlink_escape(root, base=root, requested=relative)
 
     info = resolved.stat()
-    shape = _unbounded_shape(info.st_mode)
+    shape = unbounded_shape(info.st_mode)
     if shape is not None:
         # Refused before the size cap, because for these types the size is the
         # lie: a FIFO reports 0, passes the cap, and then blocks in `open()`
@@ -504,7 +510,13 @@ def read_source_file(root: Path, relative: str | PurePosixPath) -> bytes:
         # Residual, recorded rather than closed: the file could be replaced by a
         # FIFO between this `stat` and the read below -- the same window the
         # post-read size re-check covers for a file that grows. Closing it means
-        # opening with `O_NONBLOCK` and reading through the descriptor.
+        # opening with `O_NONBLOCK` and reading through the descriptor, which is
+        # what `security/regular_file.py::read_text_from_a_regular_file` does for
+        # the derived pointers (#586). This reader is deliberately not converted
+        # with them: its subject is an *authored* file under
+        # `.theurian/knowledge/`, so it is outside that change's population, and
+        # its cap wants `st_size` before a byte moves rather than after. The race
+        # stays #215's.
         #
         # It is graded on the *actor*, not on an equivalence to the parked case.
         # A FIFO left in place is exactly what this branch refuses, so "they

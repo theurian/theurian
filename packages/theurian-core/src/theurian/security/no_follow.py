@@ -20,12 +20,16 @@ mis-aimed open into data loss), and
 on the migration, whose name must never land on another file. Neither could use
 :data:`WRITE_FLAGS` without losing the property it was written for.
 
-**Two guards, and neither replaces the other.** A path derived from a contained
-one must *also* be proved contained (``ProjectPaths._contained``): ``O_NOFOLLOW``
+**Three guards, and none replaces another.** A path derived from a contained one
+must *also* be proved contained (``ProjectPaths._contained``): ``O_NOFOLLOW``
 refuses a link **at the final component**, but a caller that never asked whether
 the path stays inside the working tree has not asked the containment question at
 all -- and containment alone waves through a link whose target is *inside* the
-tree, which is the shape that truncates a file in the user's own checkout.
+tree, which is the shape that truncates a file in the user's own checkout. The
+third is the *shape* of what the open returned
+(:func:`~theurian.security.regular_file.assert_a_regular_file`, #586): a
+contained path that is no symbolic link can still be a named pipe, and the first
+two say nothing about that.
 
 **The refusal covers the final component only**, which is the bound
 ``WriteLock._open`` already records for #481 and this module does not widen:
@@ -66,11 +70,17 @@ mkdir succeeded**, and a mkdir that succeeded resolved that prefix, so an
 ``ELOOP`` reaching the open cannot be from it.
 
 *Reads.* :func:`open_for_reading_without_following_a_link` has no ``mkdir`` --
-its one caller, ``FileSecretStore.get``, creates nothing -- so none of that
-argument applies to it. What holds the read side is a single call in the caller:
-``Path.exists()`` runs first, and ``pathlib`` swallows ``ELOOP`` among the errnos
-it treats as "not there", so a prefix loop makes ``exists()`` answer ``False`` and
-``get`` return ``None`` before any open is attempted. Measured 2026-09-05 on a
+neither of its callers creates anything. ``git grep -n
+'open_for_reading_without_following_a_link(' -- packages/theurian-core/src``
+answers four lines on 2026-09-06, and two of them are calls --
+``FileSecretStore.get`` and ``project_service._read_authored_file``; the other
+two are this sentence and the definition below, which is what a line-grep over
+prose always does. So none of that argument applies here. The attribution below is
+about ``FileSecretStore.get`` and is not claimed of the other: what holds it is a
+single call in that caller, ``Path.exists()``, which runs first, and ``pathlib``
+swallows ``ELOOP`` among the errnos it treats as "not there", so a prefix loop
+makes ``exists()`` answer ``False`` and ``get`` return ``None`` before any open
+is attempted. Measured 2026-09-05 on a
 self-loop (``auth -> auth``) and a mutual loop (``auth -> a -> auth``): both give
 ``exists() is False`` and ``get() is None``, while the raw open at the same path
 raises errno 62. That barrier is a *side effect* of a probe written for a
@@ -108,16 +118,41 @@ import errno
 import os
 from typing import TYPE_CHECKING, Final
 
+from theurian.security.regular_file import assert_a_regular_file
+
 if TYPE_CHECKING:
     from pathlib import Path
 
-#: The flags a truncating write takes here. ``O_NOFOLLOW`` is the guard;
-#: everything else reproduces what ``open(path, "w")`` does, so a caller that
-#: swaps one for the other changes nothing but the refusal.
-WRITE_FLAGS: Final = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+#: The flags a truncating write takes here. ``O_NOFOLLOW`` is the link guard;
+#: ``O_NONBLOCK`` is the *waiting* guard (#586); everything else reproduces what
+#: ``open(path, "w")`` does, so a caller that swaps one for the other changes
+#: nothing but the refusal.
+#:
+#: ``O_NONBLOCK`` costs nothing on a regular file and is what keeps a named pipe
+#: from holding the write. Re-measured on this branch, 2026-09-06, the whole flag
+#: set: a fresh create still lands at the mode passed (``0600`` for the token);
+#: an ``O_TRUNC`` write over ten existing bytes still leaves exactly the two
+#: written; a symbolic link still refuses ``ELOOP``; a directory still refuses
+#: ``EISDIR``; and a reader-less named pipe answers ``ENXIO`` instead of waiting,
+#: which is the refusal ``daemon/instance.py`` and ``connection.LOCK_OPEN_FLAGS``
+#: already rely on.
+#:
+#: **A pipe with a reader attached takes it without complaint**, which is why the
+#: flag is not the whole guard: the open returns a descriptor and the write goes
+#: into somebody's pipe. :func:`~theurian.security.regular_file.assert_a_regular_file`
+#: is what answers that, from the descriptor.
+WRITE_FLAGS: Final = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_NONBLOCK
 
-#: The flags a *read* takes. ``O_RDONLY`` and the same guard, and no ``O_CREAT``:
-#: a read of a path that is not there is a missing file, not something to make.
+#: The flags a *read* takes. ``O_RDONLY``, the same two guards, and no
+#: ``O_CREAT``: a read of a path that is not there is a missing file, not
+#: something to make.
+#:
+#: ``O_NONBLOCK`` matters more here than on the write side, and differently. An
+#: ``O_RDONLY`` open of a named pipe waits for a *writer*; with the flag it
+#: returns at once -- measured 2026-09-06, on a pipe with no writer at either
+#: end -- and the ``read`` behind it is then what would have waited. So on this
+#: side the flag moves the stall one line down rather than removing it, and the
+#: ``fstat`` is what removes it.
 #:
 #: A read through a planted link is not the mirror image of a write through one
 #: -- nothing is destroyed -- and it is worse in the direction that matters for a
@@ -127,7 +162,7 @@ WRITE_FLAGS: Final = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
 #: served it as its bearer token because ``ensure_token`` re-mints only when
 #: there is *no* token, and ``theurian doctor`` reported the arrangement
 #: satisfied (security round one, HIGH-1).
-READ_FLAGS: Final = os.O_RDONLY | os.O_NOFOLLOW
+READ_FLAGS: Final = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
 
 #: The creation mode for a derived artefact, and **deliberately not the ``0o666``
 #: that** ``open(path, "w")`` **passes**.
@@ -161,30 +196,86 @@ _DEFAULT_CREATE_MODE: Final = 0o644
 _SECRET_READ_MODE: Final = 0o600
 
 
+def _refuse_an_irregular_descriptor(descriptor: int, path: Path) -> None:
+    """Close ``descriptor`` and re-raise if it is not a regular file.
+
+    The shared tail of both openers below, so the ``fstat`` is not a line each of
+    them could be edited out of separately, and the close-on-refusal is written
+    once rather than twice.
+
+    ``except BaseException``, not ``Exception``: an interrupt landing between the
+    open and the check leaks the descriptor exactly as an error would, and this
+    is the only place that can still close it.
+
+    **It takes the descriptor and not the open, which is deliberate** (#586 round
+    two). An earlier cut of this helper owned the ``os.open`` as well, with
+    ``flags`` and ``mode`` as parameters -- and that hid the creation mode from
+    static analysis: CodeQL raised ``py/overly-permissive-file`` at the shared
+    line, because through a parameter it can no longer see *which* mode reaches
+    it. The mode had not changed; only its visibility had. It is worth keeping
+    visible, because CodeQL reading the literal is what caught the ``0o666`` that
+    :data:`_DEFAULT_CREATE_MODE` records tightening. So each opener keeps its own
+    ``os.open`` with its own constant, and shares the part that has no constant
+    in it.
+    """
+    try:
+        assert_a_regular_file(descriptor, path)
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
 def open_without_following_a_link(path: Path, *, mode: int = _DEFAULT_CREATE_MODE) -> int:
-    """``os.open`` for a truncating write, refusing a link at the final component.
+    """``os.open`` for a truncating write, refusing a link or a planted artefact.
 
     Returns the descriptor; the caller owns closing it.
 
+    **Two guards, and the flags are only one of them** (#586). ``O_NOFOLLOW``
+    refuses a symbolic link at the final component and ``O_NONBLOCK`` refuses a
+    reader-less named pipe with ``ENXIO``, but a pipe *with a reader attached*
+    takes both without complaint -- measured 2026-09-06, the open returned a
+    descriptor -- and the write would then land in somebody's pipe rather than in
+    the file this function promises. The ``fstat`` in
+    :func:`_opened_regular_file` is what answers that, and it asks the
+    **descriptor**: a path check answers about a name, and the name can be
+    re-pointed between the answer and the open.
+
     Raises:
+        IrregularArtefactError: If the descriptor is a named pipe, a socket or a
+            device. An ``OSError``, so every caller's existing handler still
+            grades it.
         OSError: Whatever the open refuses with. ``ELOOP`` is the symbolic link
-            (:func:`is_a_symbolic_link_refusal`); every other errno means what it
-            always meant and reaches the caller's existing handler unchanged.
+            (:func:`is_a_symbolic_link_refusal`); ``EISDIR`` is a directory,
+            which ``O_WRONLY`` refuses before the ``fstat`` can be reached; every
+            other errno means what it always meant.
     """
-    return os.open(path, WRITE_FLAGS, mode)
+    descriptor = os.open(path, WRITE_FLAGS, mode)
+    _refuse_an_irregular_descriptor(descriptor, path)
+    return descriptor
 
 
 def open_for_reading_without_following_a_link(path: Path) -> int:
-    """``os.open`` for a read, refusing a link at the final component.
+    """``os.open`` for a read, refusing a link or a planted artefact.
 
     The read twin, and it exists because the write guard alone leaves a
     credential readable through a plant (security round one, HIGH-1). Returns the
     descriptor; the caller owns closing it.
 
+    The shape refusal matters more on this side than on the write side. A named
+    pipe at the token's path made ``FileSecretStore.get`` wait inside the open
+    for a writer that never came, and the real-CLI consequence was measured on
+    2026-09-06: ``theurian daemon start --foreground --json`` published **zero
+    bytes on both channels** and never returned, *after* taking the daemon lock,
+    so every later starter read a stale holder (#586).
+
     Raises:
+        IrregularArtefactError: If the descriptor is a named pipe, a socket or a
+            device.
         OSError: ``ELOOP`` for the link (:func:`is_a_symbolic_link_refusal`),
             ``ENOENT`` for a path that is not there, and whatever else the open
-            refuses with.
+            refuses with. A **directory** opens here and is refused by the
+            caller's ``read`` with ``EISDIR``, which is where it was refused
+            before.
     """
     # The mode is passed and is never applied: `READ_FLAGS` carries no `O_CREAT`,
     # so this call cannot create a file and the argument reaches nothing. It is
@@ -193,7 +284,9 @@ def open_for_reading_without_following_a_link(path: Path) -> int:
     # takes an omitted mode for the mode this call would create with. Spelling the
     # restrictive one costs nothing and says which answer is intended if a future
     # edit ever adds the flag that would use it.
-    return os.open(path, READ_FLAGS, _SECRET_READ_MODE)
+    descriptor = os.open(path, READ_FLAGS, _SECRET_READ_MODE)
+    _refuse_an_irregular_descriptor(descriptor, path)
+    return descriptor
 
 
 def write_text_without_following_a_link(
