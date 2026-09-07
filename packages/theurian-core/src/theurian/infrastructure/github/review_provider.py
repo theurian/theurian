@@ -554,10 +554,19 @@ def _next_cursor(connection: Mapping[str, Any], what: str) -> str | None:
     vector**, and what these checks ask is whether it can *be* one: no NUL, and
     encodable as UTF-8. ``asyncio.create_subprocess_exec`` declines an argument
     for both, raising a ``ValueError`` either way -- a bare one for the NUL and a
-    ``UnicodeEncodeError`` for an unpaired surrogate. That pair is the shape
-    ``infrastructure/sqlite/index_query.py``'s ``_is_spendable`` already guards a
-    query with, and ``application/proposal_service.py`` a resolved path; this is
-    the third boundary in the repository where the same two arrive together.
+    ``UnicodeEncodeError`` for an unpaired surrogate.
+
+    **That pair travels together, and this repository guards it in several
+    places -- named here rather than counted.** Counting them is what two
+    earlier versions of this sentence got wrong, in both directions. The key is
+    *a value crossing a boundary that accepts neither an embedded NUL nor an
+    unpaired surrogate*: ``infrastructure/sqlite/index_query.py``'s
+    ``_is_transportable`` guards a query term before FTS5, ``mcp/findings.py``'s
+    ``_transportable`` guards a filter value before the store and the response,
+    and this guards a cursor before an argv element.
+    ``application/proposal_service.py`` meets the same pair at a resolved path
+    and closes it the other way, by catching ``ValueError`` rather than checking
+    for each.
 
     **The closure is two seams, and neither of them is this function.** An argv
     element can fail at two stages, and they are caught in different places
@@ -576,8 +585,10 @@ def _next_cursor(connection: Mapping[str, Any], what: str) -> str | None:
     **A page this adapter cannot ask for is a refusal, not a last page.**
     ``hasNextPage`` true with no usable ``endCursor`` says the answer in hand is
     part of a larger one, so returning it would present a partial read as the
-    whole -- the silent truncation every recorded cap in this adapter exists to
-    replace with a report.
+    whole -- the silent truncation this adapter's **read** caps exist to replace
+    with a report. (Its one bound that does truncate silently is the stderr
+    drain, which keeps a prefix of a child's own diagnostic; ``limits.py``
+    records that as the exception it is.)
     """
     page_info = _mapping(connection.get("pageInfo"))
     if not _boolean(page_info.get("hasNextPage"), f"`hasNextPage` on {what}"):

@@ -1,9 +1,17 @@
 """What one review-ingestion run may spend, as named constants (ADR-0030 clauses 7, 8, 10).
 
 Every bound here is enforced by a **reported, graded stop**, or derived from
-ones that are -- never a silent truncation and never an unbounded loop.
-:data:`REAP_SECONDS` is the single exception and is stated as one: it bounds the
-cleanup that follows a stop rather than any work a caller asked for.
+ones that are -- never an unbounded loop -- with **two exceptions, both named
+here rather than left for a reader to find**. :data:`REAP_SECONDS` bounds the
+cleanup that follows a stop rather than any work a caller asked for, so there is
+nothing for it to report. :data:`MAX_CHILD_STDERR_BYTES` is the one bound that
+*does* truncate silently: a child that writes 200,000 bytes to stderr has 2,000
+characters of it published and the rest dropped with nothing saying so
+(measured 2026-09-07). That is a deliberate trade rather than an oversight --
+what it cuts is a child's own diagnostic, not a record this adapter keeps, and
+the alternative costs a marker inside a published field that already refuses an
+oversized value at construction. It is recorded because "never a silent
+truncation" was written here as a universal and this is its counterexample.
 
 The severity table grades "a caller can make the system spend work no recorded
 limit bounds" as HIGH, so a cap that exists only as a page size somewhere in a
@@ -142,6 +150,13 @@ MAX_PROBE_STDOUT_BYTES: Final = 64 * 1024
 #: The most bytes of a child's stderr this adapter will hold, before it is
 #: decoded with replacement and sliced into a refusal envelope. Small: the point
 #: is to locate a failure, not to relay a log.
+#:
+#: **The module docstring's second exception, and this is the cost.** What is
+#: dropped is dropped without a marker: a reader of a refusal's ``detail`` cannot
+#: tell a child that wrote two thousand characters from one that wrote two
+#: hundred thousand. Every other bound in this file reports; this one is a
+#: prefix of somebody else's error output, where a report would have to fit
+#: inside the same published field the prefix is already competing for.
 MAX_CHILD_STDERR_BYTES: Final = 4_096
 
 #: The lowest ``gh`` this adapter will spawn a request through, as
