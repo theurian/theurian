@@ -426,13 +426,17 @@ class ReviewEvidenceStore:
         if not self._root.is_dir():
             return []
         try:
+            # `kind_directory` rather than `kind`: the name `kind` is an
+            # `EvidenceKind` everywhere else in this package, and a `Path` bound
+            # to it here made `kind.name` read as the enum's member name when it
+            # is the directory's.
             return [
-                f"{repository.name}/{kind.name}/{leaf.name}"
+                f"{repository.name}/{kind_directory.name}/{leaf.name}"
                 for repository in self._root.iterdir()
                 if repository.is_dir()
-                for kind in repository.iterdir()
-                if kind.is_dir() and kind.name in _KIND_DIRECTORIES
-                for leaf in kind.iterdir()
+                for kind_directory in repository.iterdir()
+                if kind_directory.is_dir() and kind_directory.name in _KIND_DIRECTORIES
+                for leaf in kind_directory.iterdir()
                 if leaf.name.endswith(EVIDENCE_SUFFIX)
             ]
         except OSError as exc:

@@ -51,6 +51,7 @@ from theurian.infrastructure.review_evidence.layout import (
     EVIDENCE_FORMAT_VERSION,
     EvidenceKind,
     record_leaf,
+    record_path,
     repository_directory,
 )
 from theurian.infrastructure.review_evidence.run import IngestionRun, new_ingestion_run
@@ -68,5 +69,6 @@ __all__ = [
     "ReviewEvidenceStore",
     "new_ingestion_run",
     "record_leaf",
+    "record_path",
     "repository_directory",
 ]

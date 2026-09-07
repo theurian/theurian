@@ -977,12 +977,13 @@ async def test_a_response_that_never_stops_paging_is_stopped_by_the_page_cap(
 ) -> None:
     """A repository -- or a hostile response -- cannot keep this adapter asking.
 
-    **The request count is the assertion the grade cannot make.** A page cap of
-    twenty-five stops an endless response too, and reports the same grade and the
-    same recorded number in the same sentence -- so a message-only check passes
-    against a loop that made five more requests than the record says it may. What
-    bounds the work is how many times the child was spawned, which is counted
-    here against the constant the refusal names.
+    **The request count is the assertion the grade cannot make.** A loop that
+    kept asking to twenty-five pages stops an endless response too, and reports
+    the same grade with the same ``limits.MAX_PAGES`` interpolated into the same
+    sentence -- the refusal names the *constant*, never how many pages were
+    actually read -- so a message-only check passes against a read that made five
+    more requests than the record says it may. What bounds the work is how many
+    times the child was spawned, which is counted here against that constant.
     """
     endless = _threads()
     endless["data"]["repository"]["pullRequest"]["reviewThreads"]["pageInfo"] = {
