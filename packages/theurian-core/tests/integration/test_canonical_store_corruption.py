@@ -612,6 +612,12 @@ CLI_NOT_SWEPT: Final = {
     "options to reach the point where it would write anything",
     "propose accept": "moves a migration file into .theurian/migrations/, which moves the "
     "state hash and so the database -- the same reason as `ingest`",
+    "review ingest": "never opens the canonical store: it fetches review evidence over the "
+    "operator's `gh` and writes it under .theurian/review/, which no canonical cell reaches "
+    "and which is a different store in every sense (ADR-0030 decision 3). It would also "
+    "need a repository this corpus allowlists and a `gh` this suite must not spawn, and a "
+    "run that landed anything would write into the corpus the next case is measured against "
+    "-- the same reason as `ingest`",
     "setup": "writes ~/.claude.json and a LaunchAgent on the developer's own machine",
     "uninstall": "removes what `setup` installed, on the developer's own machine",
 }
