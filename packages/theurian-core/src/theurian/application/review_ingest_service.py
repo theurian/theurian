@@ -46,13 +46,36 @@ contact. The key is
 ``tests/unit/test_review_ingest_service.py``: it drives that one grade through
 all three and asserts three different outcomes.
 
-One consequence is worth naming rather than discovering. ``get_threads`` and
-``get_reviews`` re-check the allowlist and the transport override themselves, so
-a repository-scope condition that first becomes true *during* a run -- the
-operator edits ``.theurian/config.yaml``, or a ``gh`` setting, mid-run --
-arrives at those call sites and degrades **every remaining pull request** to a
-skip. That is loud rather than silent: each skip is reported by identity with
-its own envelope and the run does not read as clean.
+**A configuration edited while a run is in flight has three outcomes, not
+one.** ``get_threads`` and ``get_reviews`` re-check the allowlist and the
+transport override themselves, so an edit to ``.theurian/config.yaml`` -- or to
+a ``gh`` setting -- arrives at those call sites mid-run. What happens next
+depends on which exception the re-check raises, and the split is the same one
+:meth:`_fetch` makes everywhere: it catches
+:class:`~theurian.domain.review_ingest.ReviewIngestRefusedError` and nothing
+else. Each behaviour is driven in
+``tests/unit/test_review_ingest_service.py``:
+
+1. **The repository is removed from the allowlist, or a transport override
+   appears** -- a ``ReviewIngestRefusedError``, so **every remaining pull
+   request degrades to a skip** and the run finishes. Loud rather than silent:
+   each skip is reported by identity with its own envelope and the run does not
+   read as clean.
+   ``test_an_allowlist_entry_removed_mid_run_degrades_every_remaining_record``.
+2. **The file stops parsing as YAML**, and
+3. **an entry stops being an ``owner/repo`` name** -- both a
+   ``ProjectConfigError``, which is not a ``ReviewIngestRefusedError``, so
+   neither is caught: the run **halts**, nothing lands, no report exists and no
+   skip names the records that were lost. The composition root publishes the
+   error and its remedy instead.
+   ``test_a_configuration_fault_mid_run_halts_and_reports_nothing`` drives both
+   rows.
+
+The asymmetry is deliberate and worth reading as such: (1) is a decision the
+operator made about *which repositories to ingest*, and the run reports what it
+could not do about it; (2) and (3) mean the file that decides is unreadable, and
+a run that continued would be one screening records against a policy nobody can
+state.
 
 **What one run costs is bounded by the port's implementation, and the numbers
 live with it.** This service makes one

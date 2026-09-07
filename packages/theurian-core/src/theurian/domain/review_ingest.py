@@ -371,10 +371,20 @@ class RefusalEnvelope:
 class ReviewIngestRefusedError(TheurianError):
     """A review-ingestion run declined, carrying its whole envelope.
 
-    Raised rather than returned because every refusal aborts the run that met it,
-    and a caller that wants the envelope reads :attr:`envelope` instead of
-    re-parsing a message. ``remedy`` is set from :data:`REMEDIES` by grade, so no
-    call site can raise one without a cure.
+    Raised rather than returned because a refusal aborts the operation that
+    raised it, and a caller that wants the envelope reads :attr:`envelope`
+    instead of re-parsing a message. ``remedy`` is set from :data:`REMEDIES` by
+    grade, so no call site can raise one without a cure.
+
+    **The operation, not the run**, and the narrowing is a correction rather
+    than a hedge. This said "every refusal aborts the run that met it", which was
+    true when nothing caught one and is false now that two seams do: a listing
+    converts a single pull request's refusal into a
+    :class:`~theurian.domain.ports.review_provider.SkippedPullRequest` it
+    *returns*, and an ingestion run converts a per-pull-request fetch's refusal
+    into a reported skip. Whether a given refusal ends a run is therefore the
+    catching seam's decision, recorded on the port and on
+    ``application/review_ingest_service.py``, and not a property of this class.
     """
 
     def __init__(self, grade: RefusalGrade, summary: str, *, detail: str = "") -> None:

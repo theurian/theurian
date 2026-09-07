@@ -20,10 +20,16 @@ The claims, each with cases of its own:
   provider answered with still carry the real name -- so a service that
   re-derived the payload from the candidate fails here rather than passing
   quietly.
+* **A configuration edited mid-run has three outcomes**, not the one this
+  module's docstring used to describe: an allowlist removal degrades each
+  remaining record to a reported skip, while an unparseable file and an entry
+  the pattern refuses both halt the run with nothing landed and nothing
+  reported.
 
-The provider is :class:`~fakes.CannedReviewProvider`; nothing here spawns ``gh``
-and nothing reaches the network. Marked ``unit`` and writes only under
-``tmp_path``.
+The provider is :class:`~fakes.CannedReviewProvider`, wrapped by
+:class:`_RechecksTheAllowlist` where a case needs the configuration consulted
+per record; nothing here spawns ``gh`` and nothing reaches the network. Marked
+``unit`` and writes only under ``tmp_path``.
 """
 
 from __future__ import annotations
@@ -51,8 +57,10 @@ from theurian.application.review_landing_gate import (
     screen_landing_candidates,
 )
 from theurian.domain.enums import ReviewThreadState
+from theurian.domain.errors import ProjectConfigError
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.knowledge import SourceAnchor
+from theurian.domain.ports.review_provider import PullRequestListing, ReviewProvider
 from theurian.domain.review import (
     ReviewComment,
     ReviewEvent,
@@ -72,6 +80,7 @@ from theurian.infrastructure.review_evidence import (
     ReviewEvidenceStore,
 )
 from theurian.security.project_config import PROJECT_CONFIG_FILE
+from theurian.security.review_allowlist import allowlisted_repository
 
 pytestmark = pytest.mark.unit
 
@@ -268,7 +277,7 @@ def _store(root: Path) -> ReviewEvidenceStore:
 def _service(
     root: Path,
     config_file: Path,
-    provider: CannedReviewProvider,
+    provider: ReviewProvider,
     lander: _Lander,
     store: ReviewEvidenceStore,
 ) -> ReviewIngestService:
@@ -647,6 +656,150 @@ async def test_a_pull_request_whose_reviews_refuse_lands_none_of_its_records(
     assert provider.reads == [("get_threads", 42), ("get_reviews", 42)]
     assert report.landed == 0
     assert lander.handed == []
+    assert _landed_files(root) == set()
+
+
+# -- a configuration edited while the run is in flight ------------------------
+
+
+@final
+class _RechecksTheAllowlist:
+    """A provider that re-reads the allowlist per record, as the real one does.
+
+    The canned fake answers from preset values and consults no configuration, so
+    it cannot express the case this section is about. This wraps it and calls the
+    **shipped** ``allowlisted_repository`` at each per-record read -- which is
+    what ``GitHubReviewProvider.get_threads`` and ``get_reviews`` do first -- and
+    rewrites ``config.yaml`` immediately before the first of them.
+
+    The rewrite happens *inside* a read rather than between two runs on purpose:
+    that is the only moment that distinguishes a mid-run edit from a differently
+    configured run, and it is the moment the docstring's three behaviours are
+    about.
+    """
+
+    provider_id = PROVIDER
+
+    def __init__(self, inner: CannedReviewProvider, config: Path, replacement: str) -> None:
+        self._inner = inner
+        self._config = config
+        self._replacement = replacement
+        self._root = config.parent.parent
+        self.edited = False
+
+    async def list_pull_requests(
+        self,
+        project_id: ProjectId,
+        repository: str,
+        *,
+        since_number: int | None = None,
+        limit: int = 100,
+    ) -> PullRequestListing:
+        return await self._inner.list_pull_requests(
+            project_id, repository, since_number=since_number, limit=limit
+        )
+
+    def _recheck(self, event: ReviewEvent) -> None:
+        if not self.edited:
+            self._config.write_text(self._replacement, encoding="utf-8")
+            self.edited = True
+        allowlisted_repository(self._root, self._config, event.repository)
+
+    async def get_threads(
+        self, project_id: ProjectId, event: ReviewEvent
+    ) -> tuple[ReviewThread, ...]:
+        self._recheck(event)
+        return await self._inner.get_threads(project_id, event)
+
+    async def get_reviews(
+        self, project_id: ProjectId, event: ReviewEvent
+    ) -> tuple[ReviewSubmission, ...]:
+        self._recheck(event)
+        return await self._inner.get_reviews(project_id, event)
+
+
+_ALLOWLISTED: Final = (
+    f"apiVersion: theurian.dev/v1\nproviders:\n  review:\n    repositories:\n      - {REPOSITORY}\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_an_allowlist_entry_removed_mid_run_degrades_every_remaining_record(
+    tmp_path: Path,
+) -> None:
+    """Behaviour one of three: a graded refusal per record, and a report.
+
+    The removal makes the *re-check* fail, which is a ``ReviewIngestRefusedError``
+    reaching the per-pull-request ``try``. Each record is withheld whole and named
+    in ``skipped``, and the run finishes -- loudly, because the report is not
+    clean.
+    """
+    root, config = _project(tmp_path, _ALLOWLISTED)
+    store = _store(root)
+    lander = _Lander(store, RUN_ONE)
+    emptied = "apiVersion: theurian.dev/v1\nproviders:\n  review:\n    repositories: []\n"
+    provider = _RechecksTheAllowlist(_provider([_event(42), _event(41)]), config, emptied)
+
+    report = await _service(root, config, provider, lander, store).run(_request())
+
+    assert not report.clean
+    assert [skip.identity.pull_request_number for skip in report.skipped] == [42, 41]
+    assert {skip.grade for skip in report.skipped} == {RefusalGrade.REPOSITORY_NOT_ALLOWLISTED}
+    assert report.landed == 0
+    assert _landed_files(root) == set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "replacement"),
+    (
+        (
+            "unparseable",
+            "apiVersion: theurian.dev/v1\nproviders:\n  review:\n    repositories:\n   - [oops\n",
+        ),
+        (
+            "malformed-entry",
+            "apiVersion: theurian.dev/v1\nproviders:\n  review:\n"
+            "    repositories:\n      - ../..\n",
+        ),
+    ),
+    ids=("unparseable-yaml", "an-entry-the-pattern-refuses"),
+)
+async def test_a_configuration_fault_mid_run_halts_and_reports_nothing(
+    tmp_path: Path, name: str, replacement: str
+) -> None:
+    """Behaviours two and three: a halt, with no report and no skip.
+
+    Both are ``ProjectConfigError``, which is **not** a
+    ``ReviewIngestRefusedError``, so the per-pull-request ``try`` does not catch
+    it and the run leaves through :meth:`ReviewIngestService.run` entirely. The
+    difference from the case above is the whole point of driving all three: an
+    operator who breaks their own file mid-run gets nothing -- no landed records,
+    no report, and no entry in ``skipped`` saying which records were lost.
+
+    Asserted on the disk as well as on the exception, because "halts" is a claim
+    about what did *not* happen.
+
+    **The two rows are not equally load-bearing, and which is which was
+    measured.** Widening ``_fetch``'s ``except`` to swallow every exception into
+    a skip leaves ``unparseable-yaml`` green -- a file that will not parse breaks
+    the gate's own read of ``security.secretScan`` too, so the run raises a
+    second time a step later -- and turns ``an-entry-the-pattern-refuses`` RED,
+    because a malformed *entry* is a fault only the allowlist reader sees. The
+    second row is therefore the one holding the catch narrow; the first holds
+    that a broken file does not land records by some other route.
+    """
+    root, config = _project(tmp_path, _ALLOWLISTED)
+    store = _store(root)
+    lander = _Lander(store, RUN_ONE)
+    provider = _RechecksTheAllowlist(_provider([_event(42), _event(41)]), config, replacement)
+
+    with pytest.raises(ProjectConfigError) as raised:
+        await _service(root, config, provider, lander, store).run(_request())
+
+    assert raised.value.remedy
+    assert not isinstance(raised.value, ReviewIngestRefusedError)
+    assert lander.calls == 0
     assert _landed_files(root) == set()
 
 
