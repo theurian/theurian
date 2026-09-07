@@ -985,7 +985,7 @@ class IrregularSourceFileError(SecurityError):
     :class:`PathEscapeError` already use on this load path.
 
     **Every caller that can reach this refusal either attaches one, names the
-    file by context, or cannot reach it at all**, and all eight
+    file by context, or cannot reach it at all**, and all nine
     :func:`read_source_file` call sites in this build are enumerated rather
     than summarised, because "a caller attaches it" was written while only one
     did and the accept path published a refusal naming no path at all::
@@ -1043,6 +1043,15 @@ class IrregularSourceFileError(SecurityError):
       unreached, because ``_discover``'s ``is_file()`` drops a non-regular file
       before ``_ingest_one`` runs (a narrow TOCTOU aside) -- silently, which is
       issue #327's own subject and not this class's.
+    * ``infrastructure/review_evidence/store.py::_read_one`` -- catches
+      :class:`SecurityError`, this class included, and re-raises as a
+      ``ReviewEvidenceError`` naming the path **its own walk built** from
+      ``iterdir()``, never a value read out of the file. Reachable: the walk
+      selects a leaf by its name alone, so a FIFO named ``<id>.json`` under a
+      kind directory is listed and then handed here. This call site arrived with
+      ADR-0030 slice 2 and made the count above nine; until its catch clause
+      covered the family, it was the one caller that satisfied none of the three
+      branches.
     """
 
     def __init__(self, shape: str, *, referrer: str | None = None) -> None:

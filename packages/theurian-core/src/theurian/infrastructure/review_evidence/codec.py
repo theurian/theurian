@@ -17,8 +17,17 @@ than a ``KeyError`` three frames up; what makes reading an evidence file safe is
 the containment its caller applies to the path
 (:class:`~theurian.infrastructure.review_evidence.store.ReviewEvidenceStore`) and
 the domain types' own ``__post_init__``, which every value below is handed to.
-They raise :class:`ValueError`; the store is the one place that turns those into
-a refusal carrying the file's name and a remedy.
+
+**The two halves raise different families, and that difference bit once.** The
+readers below raise :class:`ValueError` for a wrong shape; the domain types they
+hand every value to raise :class:`~theurian.domain.errors.DomainError` --
+``InvariantViolationError`` for a thread with no comments or a blank submission
+state, ``InvalidIdentifierError`` for a malformed project id -- and a
+``DomainError`` is **not** a ``ValueError``. A reader that caught only the first
+let a landed file whose *record* was impossible escape as a bare traceback.
+:meth:`~theurian.infrastructure.review_evidence.store.ReviewEvidenceStore.read_all`
+catches both families and is the one place that turns either into a refusal
+carrying the file's name and a remedy.
 """
 
 from __future__ import annotations

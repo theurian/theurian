@@ -28,9 +28,15 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Final, final
 
-from theurian.domain.errors import InvariantViolationError
+from theurian.domain.errors import (
+    DomainError,
+    InvariantViolationError,
+    PathEscapeError,
+    SecurityError,
+)
 from theurian.domain.knowledge import SourceAnchor
 from theurian.domain.review import ReviewEvent, ReviewSubmission, ReviewThread
+from theurian.domain.review_ingest import bounded_echo
 from theurian.infrastructure.review_evidence.codec import (
     anchor_from_json,
     anchor_to_json,
@@ -54,6 +60,7 @@ from theurian.security.no_follow import (
     write_text_without_following_a_link,
 )
 from theurian.security.paths import (
+    MAX_SOURCE_FILE_BYTES,
     assert_no_symlink_escape,
     read_source_file,
     resolve_within_root,
@@ -102,6 +109,26 @@ def _planted_link_cure(relative: str) -> str:
         f"refuses a link at, this one is not derived state, so a write that followed "
         f"it would have truncated whatever it names and Theurian would recreate "
         f"neither."
+    )
+
+
+def _oversized_record_cure(record: EvidenceRecord) -> str:
+    """The cure for a record larger than the reader that has to read it back.
+
+    Names the **upstream** conversation rather than a file, because there is no
+    file: the refusal fires before the write, so there is nothing on disk to
+    open. What the operator can act on is the review the record came from, and
+    the anchor is the pointer to it -- echoed through
+    :func:`~theurian.domain.review_ingest.bounded_echo`, because a source URI is
+    a value the provider chose and a refusal must not carry a megabyte of it.
+    """
+    return (
+        f"Look at the review this record came from -- `{bounded_echo(record.anchor.source_uri)}` "
+        f"is the pull request, and `gh api graphql --hostname github.com` re-runs the "
+        f"read by hand -- then shorten or split the conversation there. Nothing was "
+        f"written: the size this refuses at is the one the reader enforces, so landing "
+        f"the file would have produced a record every later run refuses to read, and "
+        f"review evidence has no rebuild that could clear it (ADR-0030 decision 3)."
     )
 
 
@@ -225,8 +252,9 @@ class ReviewEvidenceStore:
 
         Raises:
             ReviewEvidenceError: If two records in one call claim one path -- a
-                silently overwritten record is a lost one -- if a symbolic link
-                sits where a record belongs, or if the directory cannot be
+                silently overwritten record is a lost one -- if a record would
+                land larger than :meth:`read_all` will read back, if a symbolic
+                link sits where a record belongs, or if the directory cannot be
                 written.
             PathEscapeError: If a record's derived path resolves outside the
                 review directory, or reaches it through a route that leaves.
@@ -268,11 +296,17 @@ class ReviewEvidenceStore:
         Raises:
             ReviewEvidenceError: If a file under the review directory is not a
                 record this build can read: the wrong format version, not JSON, a
-                field of the wrong shape, or a record whose own identity does not
-                match where it sits. Refused rather than skipped -- a run that
+                field of the wrong shape, a field the *domain* refuses (a thread
+                with no comments, a submission whose state is blank, an
+                identifier of the wrong form), a record whose own identity does
+                not match where it sits, a file above the reader's own size limit
+                or one that is not a regular file, or a file the filesystem
+                refuses to hand over. Refused rather than skipped -- a run that
                 ignored a file it could not parse would report a corpus smaller
                 than the one on disk and give no reason.
-            PathEscapeError: If a file's path leaves the review directory.
+            PathEscapeError: If a file's path leaves the review directory. Passed
+                through rather than translated: it carries its own remedy about
+                *where the path points*, which is not a fault in the bytes.
         """
         return tuple(self._read_one(relative) for relative in sorted(self._relative_paths()))
 
@@ -323,11 +357,30 @@ class ReviewEvidenceStore:
         ``read_source_file``'s "pass the path as the caller wrote it" lesson
         arriving on the write side. The resolved form is kept for the containment
         proof and is deliberately not the thing opened.
+
+        **The writer's cap is the reader's cap, imported rather than restated.**
+        :meth:`read_all` reads through ``read_source_file``, which refuses a file
+        above ``MAX_SOURCE_FILE_BYTES`` (SEC-8), and an unbounded writer in front
+        of a bounded reader lands a record no later run can read: every
+        subsequent ``review ingest`` then refuses the whole corpus before it
+        fetches anything. The record's own caps do not close this -- the adapter
+        allows 100 comments of GitHub's own 65,536-character limit, which in
+        CJK is roughly 19 MB in one thread -- so the size is measured on the
+        bytes that would land and refused before the ``open``.
         """
         resolve_within_root(self._root, PurePosixPath(relative))
         assert_no_symlink_escape(self._root, base=self._root, requested=PurePosixPath(relative))
         target = self._root / PurePosixPath(relative)
         document = _document(record, run)
+        landing = len(document.encode("utf-8"))
+        if landing > MAX_SOURCE_FILE_BYTES:
+            raise ReviewEvidenceError(
+                f"{record.kind.value} {bounded_echo(record.record_key)} of "
+                f"{bounded_echo(record.repository)} would land as {landing} bytes, and "
+                f"a review evidence file is read back through a {MAX_SOURCE_FILE_BYTES}-byte "
+                "limit, so it was not written.",
+                remedy=_oversized_record_cure(record),
+            )
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             write_text_without_following_a_link(target, document)
@@ -347,23 +400,50 @@ class ReviewEvidenceStore:
     def _read_one(self, relative: str) -> StoredRecord:
         """Read one record back, translating every way its bytes can be wrong.
 
-        A ``PathEscapeError`` and its siblings are deliberately **not** caught:
-        they already carry their own remedy, and re-labelling a containment
-        refusal as an unreadable record would send the operator to inspect a file
-        whose problem is where it points.
+        **Three exception families reach this method and only one of them is a
+        ``ValueError``**, which is what the first cut of these two catch clauses
+        assumed. The codec refuses a value of the wrong *shape* with a
+        ``ValueError``; the domain types it hands every value to refuse an
+        impossible *record* with a ``DomainError``, which is not a subclass of
+        one; and ``read_source_file`` refuses a file that is too large or is not
+        a regular file with a ``SecurityError``, which is not either. All three
+        say the same thing to an operator -- this file under
+        ``.theurian/review/`` is not one this build can read -- and a landed
+        file carrying any of them left ``review ingest`` as the traceback
+        ADR-0030 clause 9 forbids, naming no path and offering no cure.
+
+        The clauses key on those **families** rather than on their members, so a
+        domain invariant or a security limit added later is graded by the change
+        that adds it rather than by the next round that meets it. That is also
+        why the decode is not named beside them: a file whose bytes are not UTF-8
+        raises ``UnicodeDecodeError``, which *is* a ``ValueError``, and listing it
+        would suggest the tuple were an enumeration of members.
+
+        ``PathEscapeError`` is the one member deliberately re-raised. It already
+        carries its own remedy, and it is not a fault in the bytes at all:
+        re-labelling a containment refusal as an unreadable record would send
+        the operator to inspect a file whose problem is where it points.
         """
         try:
             raw = read_source_file(self._root, PurePosixPath(relative))
+        except PathEscapeError:
+            raise
         except OSError as exc:
             raise ReviewEvidenceError(
                 f"`{relative}` was listed under the review directory and could not be "
                 f"read: {exc.strerror or 'the read was refused'}.",
                 remedy=_UNREADABLE_CURE,
             ) from exc
+        except SecurityError as exc:
+            raise ReviewEvidenceError(
+                f"`{relative}` was listed under the review directory and this build "
+                f"refused to read it: {exc}",
+                remedy=_UNREADABLE_CURE,
+            ) from exc
 
         try:
             return _stored(raw.decode("utf-8"), relative)
-        except (UnicodeDecodeError, ValueError) as exc:
+        except (ValueError, DomainError) as exc:
             raise ReviewEvidenceError(
                 f"`{relative}` is not a review evidence record this build can read: {exc}",
                 remedy=_UNREADABLE_CURE,

@@ -2057,12 +2057,17 @@ async def test_a_review_that_was_never_submitted_records_no_time(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("field", "named"),
-    (("id", "review id"), ("state", "review state")),
-    ids=("no id", "no state"),
+    ("field", "named", "sent"),
+    (
+        ("id", "review id", None),
+        ("state", "review state", None),
+        ("state", "review state", "   "),
+        ("id", "review id", "\t\n"),
+    ),
+    ids=("no id", "no state", "a state of only spaces", "an id of only whitespace"),
 )
 async def test_a_review_missing_a_field_its_identity_needs_is_a_graded_refusal(
-    tmp_path: pathlib.Path, fake_gh: FakeGh, field: str, named: str
+    tmp_path: pathlib.Path, fake_gh: FakeGh, field: str, named: str, sent: str | None
 ) -> None:
     """Clause 9 on the new read: an unreadable answer is an envelope, never a traceback.
 
@@ -2071,8 +2076,14 @@ async def test_a_review_missing_a_field_its_identity_needs_is_a_graded_refusal(
     string would leave this adapter as the traceback the ADR forbids -- on a
     response shape a partly-errored GraphQL answer produces routinely, with the
     errored field back as ``null`` beside a ``data`` that looks ordinary.
+
+    **The whitespace cases are the same fault one character further on.** The
+    domain's guard on ``state`` is ``.strip()``-keyed, so a ``"   "`` walked
+    straight through an emptiness check into the invariant this refusal exists to
+    pre-empt; the identifier beside it is carried for the same reason a screen
+    that admits a value no reader can name is not a screen.
     """
-    fake_gh.answer("reviews", 1, _reviews(**{field: None}))
+    fake_gh.answer("reviews", 1, _reviews(**{field: sent}))
     provider, event = await _one_event(tmp_path, fake_gh)
 
     with pytest.raises(ReviewIngestRefusedError) as raised:
@@ -2081,6 +2092,25 @@ async def test_a_review_missing_a_field_its_identity_needs_is_a_graded_refusal(
     assert raised.value.grade is RefusalGrade.TOOL_FAILED
     assert named in str(raised.value)
     assert raised.value.remedy
+
+
+@pytest.mark.asyncio
+async def test_a_review_state_the_provider_padded_is_carried_as_the_provider_spelled_it(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """The positive control on the whitespace screen: it screens, it does not normalise.
+
+    A state is carried against no closed set, so the adapter is not the layer
+    that decides what one looks like. Without this, ``required_text`` could
+    return ``value.strip()`` and pass every refusal case above while silently
+    editing a value the record exists to carry verbatim.
+    """
+    fake_gh.answer("reviews", 1, _reviews(state=" APPROVED "))
+    provider, event = await _one_event(tmp_path, fake_gh)
+
+    (submission,) = await provider.get_reviews(PROJECT, event)
+
+    assert submission.state == " APPROVED "
 
 
 @pytest.mark.asyncio

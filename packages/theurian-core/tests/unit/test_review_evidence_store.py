@@ -29,13 +29,13 @@ import sys
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 import pytest
 
 from theurian.application.project_service import ProjectPaths
 from theurian.domain.enums import ReviewCommentCategory, ReviewThreadState
-from theurian.domain.errors import InvariantViolationError, PathEscapeError
+from theurian.domain.errors import DomainError, InvariantViolationError, PathEscapeError
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.knowledge import SourceAnchor
 from theurian.domain.review import (
@@ -58,6 +58,7 @@ from theurian.infrastructure.review_evidence import (
     repository_directory,
 )
 from theurian.infrastructure.review_evidence.layout import EVIDENCE_SUFFIX
+from theurian.security.paths import MAX_SOURCE_FILE_BYTES
 
 pytestmark = pytest.mark.unit
 
@@ -622,6 +623,193 @@ def test_a_file_this_build_cannot_read_is_refused_with_a_cure(
     assert landed in str(raised.value), label
     assert ".theurian/review/" in raised.value.remedy
     assert "git log -p" in raised.value.remedy
+
+
+def _in_record(document: dict[str, Any], **fields: Any) -> dict[str, Any]:
+    """The same document with ``record`` fields replaced, never mutated."""
+    return {**document, "record": {**document["record"], **fields}}
+
+
+def _thread_carrying(body: str) -> EvidenceRecord:
+    """The thread fixture with its first comment body replaced, and nothing else."""
+    record = _thread()
+    payload = record.payload
+    assert isinstance(payload, ReviewThread)
+    return replace(
+        record,
+        payload=replace(payload, comments=(replace(payload.comments[0], body=body),)),
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "record", "edit"),
+    (
+        (
+            "a thread with no comments",
+            _thread(),
+            lambda document: _in_record(document, comments=[]),
+        ),
+        (
+            "a submission whose state is only whitespace",
+            _submission(),
+            lambda document: _in_record(document, state="   "),
+        ),
+        (
+            "a participant with no external id",
+            _event(),
+            lambda document: _in_record(
+                document, author={**document["record"]["author"], "externalId": ""}
+            ),
+        ),
+        (
+            "a project id of the wrong form",
+            _event(),
+            lambda document: _in_record(document, projectId="Not Kebab"),
+        ),
+        (
+            "a pull request numbered zero",
+            _event(),
+            lambda document: _in_record(document, number=0),
+        ),
+        (
+            "an empty provider",
+            _event(),
+            lambda document: {**document, "provider": ""},
+        ),
+        (
+            "an empty run id",
+            _event(),
+            lambda document: {
+                **document,
+                "lastSeenRun": {**document["lastSeenRun"], "runId": ""},
+            },
+        ),
+        (
+            "an anchor whose line numbering starts at zero",
+            _thread(),
+            lambda document: {
+                **document,
+                "sourceAnchor": {**document["sourceAnchor"], "lineStart": 0},
+            },
+        ),
+    ),
+)
+def test_a_landed_file_the_domain_refuses_is_graded_and_names_the_file(
+    tmp_path: Path, label: str, record: EvidenceRecord, edit: object
+) -> None:
+    """The read path's second exception family, driven one invariant at a time.
+
+    A ``DomainError`` is not a ``ValueError``, so a catch tuple naming only the
+    latter let every case here out of ``read_all`` as a bare traceback carrying
+    no path and no cure -- the ADR-0030 clause 9 escape, arriving through a file
+    rather than through a provider. The ``__cause__`` assertion is what makes
+    each case drive *that* clause: without it a case whose edit happened to
+    produce a shape fault instead would pass on the ``ValueError`` arm that was
+    always there, and the test would hold nothing.
+
+    The eight cases range over both ``DomainError`` subclasses and over every
+    object the codec builds -- payload, participant, anchor, identifier, the
+    record wrapper and the run stamp -- because the family is what is caught and
+    a single member would not show that.
+    """
+    store = _store(tmp_path)
+    (landed,) = store.write([record], run=RUN_ONE)
+    path = _review_root(tmp_path) / landed
+    assert callable(edit)
+    path.write_text(json.dumps(edit(json.loads(path.read_text(encoding="utf-8")))), "utf-8")
+
+    with pytest.raises(ReviewEvidenceError) as raised:
+        store.read_all()
+
+    assert isinstance(raised.value.__cause__, DomainError), (
+        f"{label}: this case is graded by the ValueError arm, so it drives nothing new"
+    )
+    assert landed in str(raised.value), label
+    assert "git log -p" in raised.value.remedy
+
+
+def test_a_landed_file_whose_bytes_are_not_utf8_is_graded_and_names_the_file(
+    tmp_path: Path,
+) -> None:
+    """The decode is inside the ``ValueError`` family rather than beside it.
+
+    ``_read_one``'s tuple stopped naming ``UnicodeDecodeError`` when it started
+    naming families, on the grounds that it is a ``ValueError``. This is what
+    fails if that reading is ever wrong.
+    """
+    store = _store(tmp_path)
+    (landed,) = store.write([_event(number=42)], run=RUN_ONE)
+    (_review_root(tmp_path) / landed).write_bytes(b"\xff\xfe not utf-8")
+
+    with pytest.raises(ReviewEvidenceError) as raised:
+        store.read_all()
+
+    assert landed in str(raised.value)
+    assert "git log -p" in raised.value.remedy
+
+
+def test_a_record_larger_than_the_reader_accepts_is_refused_before_it_is_written(
+    tmp_path: Path,
+) -> None:
+    """The writer's cap is the reader's, so the store cannot write what it cannot read.
+
+    ``read_all`` reads through ``read_source_file``, which refuses a file above
+    ``MAX_SOURCE_FILE_BYTES``. An unbounded writer in front of it lands a record
+    that makes every later ``review ingest`` exit before it fetches anything --
+    and review evidence has no rebuild, so the file cannot simply be deleted. The
+    refusal therefore has to happen *before* the write, which is what the empty
+    directory below asserts: an exception raised after a partial write would
+    satisfy ``pytest.raises`` and leave the unreadable file behind.
+    """
+    store = _store(tmp_path)
+    oversized = _thread_carrying("x" * MAX_SOURCE_FILE_BYTES)
+
+    with pytest.raises(ReviewEvidenceError) as raised:
+        store.write([oversized], run=RUN_ONE)
+
+    assert "PRRT_kwDOABCD1" in str(raised.value)
+    assert str(MAX_SOURCE_FILE_BYTES) in str(raised.value)
+    assert "gh api graphql" in raised.value.remedy
+    assert list(_review_root(tmp_path).rglob("*.json")) == [], (
+        "the refusal fired after the write, so the unreadable file is on disk anyway"
+    )
+    assert store.read_all() == ()
+
+
+def test_a_record_the_reader_accepts_still_lands_when_it_is_large(tmp_path: Path) -> None:
+    """The positive control on the cap: it refuses above the limit, not merely large.
+
+    Without it the guard could refuse every record whose body is not tiny and
+    still pass the refusal test above.
+    """
+    store = _store(tmp_path)
+    large = _thread_carrying("x" * (MAX_SOURCE_FILE_BYTES // 8))
+
+    (landed,) = store.write([large], run=RUN_ONE)
+
+    assert (_review_root(tmp_path) / landed).is_file()
+    assert store.read_all()[0].record == large
+
+
+def test_a_landed_file_too_large_to_read_is_graded_rather_than_escaping(tmp_path: Path) -> None:
+    """The other half of the size seam: a file that grew past the cap on disk.
+
+    ``InputTooLargeError`` is a ``SecurityError`` and neither an ``OSError`` nor a
+    ``ValueError``, so it left ``read_all`` ungraded -- with its own remedy, which
+    tells the reader to "shrink or split" a file that is a *record*, not an input
+    anyone can edit down. The cure here is the one that names the file and the
+    command that shows how it got that way.
+    """
+    store = _store(tmp_path)
+    (landed,) = store.write([_event(number=42)], run=RUN_ONE)
+    (_review_root(tmp_path) / landed).write_bytes(b"x" * (MAX_SOURCE_FILE_BYTES + 1))
+
+    with pytest.raises(ReviewEvidenceError) as raised:
+        store.read_all()
+
+    assert landed in str(raised.value)
+    assert "git log -p" in raised.value.remedy
+    assert "shrink or split" not in raised.value.remedy
 
 
 def test_a_write_the_filesystem_refuses_names_the_record_and_a_command(tmp_path: Path) -> None:

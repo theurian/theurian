@@ -185,9 +185,21 @@ def required_text(value: object, field: str) -> str:
     and that exception would leave this adapter as the traceback clause 9
     forbids. Refusing here turns the same fact into a graded envelope with a
     remedy.
+
+    **A value of only whitespace is missing too**, and the test matches the guard
+    it pre-empts rather than a weaker reading of it:
+    :class:`~theurian.domain.review.ReviewSubmission` refuses a ``state`` that
+    fails ``.strip()``, so a ``" "`` passing an emptiness check reached exactly
+    the invariant this function exists to keep out of the adapter. The same test
+    holds for the identifiers this serves -- a record whose id is a space is one
+    no reader can name, whichever check the domain happens to apply to it.
+
+    What comes back is the provider's own spelling, unstripped: a submission
+    state is carried verbatim against no closed set, and normalising it here
+    would make this function decide a value it only screens.
     """
     found = text(value)
-    if not found:
+    if not found.strip():
         raise ReviewIngestRefusedError(
             RefusalGrade.TOOL_FAILED,
             f"GitHub's answer carried no {field}, so this adapter cannot identify the "

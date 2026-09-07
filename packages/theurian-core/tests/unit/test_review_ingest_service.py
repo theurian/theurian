@@ -40,6 +40,7 @@ from theurian.application.review_ingest_service import (
     ReviewIngestReport,
     ReviewIngestRequest,
     ReviewIngestService,
+    _span,
 )
 from theurian.application.review_landing_gate import (
     REDACTED_DISPLAY_NAME,
@@ -49,6 +50,7 @@ from theurian.application.review_landing_gate import (
 )
 from theurian.domain.enums import ReviewThreadState
 from theurian.domain.identifiers import ProjectId
+from theurian.domain.knowledge import SourceAnchor
 from theurian.domain.review import (
     ReviewComment,
     ReviewEvent,
@@ -703,3 +705,70 @@ async def test_every_landed_record_carries_an_anchor_back_to_its_pull_request(
     assert (thread.anchor.line_start, thread.anchor.line_end) == (12, None)
     assert thread.anchor.file_path == "src/order.py"
     assert thread.anchor.external_id == "PRRT_kwDO42"
+
+
+@pytest.mark.parametrize("end", (None, -1, 0, 1, 5))
+@pytest.mark.parametrize("start", (None, -1, 0, 1, 5))
+def test_every_line_pair_a_provider_can_answer_becomes_an_anchor(
+    start: int | None, end: int | None
+) -> None:
+    """``_span`` is total against all three of ``SourceAnchor``'s line guards.
+
+    The domain refuses a number below one, an end without a start, and an end
+    that precedes its start. ``_span`` was written against the last two only, so
+    a ``startLine: 0`` -- a number a JSON response carries and nothing upstream
+    of here rejects -- reached the constructor as an argument it refuses and
+    aborted the run *after* the fetch had been paid for.
+
+    The grid rather than the one case: a guard missed once is missed the same way
+    twice, and the pairs are what the function's contract ranges over. The
+    construction is the assertion -- it raises when the pair is one the domain
+    will not hold -- so this cannot pass by agreeing with ``_span`` about what a
+    good pair is.
+    """
+    first, last = _span(start, end)
+
+    anchor = SourceAnchor(
+        provider=PROVIDER,
+        source_uri=f"https://github.com/{REPOSITORY}/pull/42",
+        line_start=first,
+        line_end=last,
+    )
+
+    assert (anchor.line_start, anchor.line_end) == (first, last)
+
+
+def test_a_single_line_comment_still_anchors_at_the_line_it_names() -> None:
+    """The positive control on the grid: dropping everything would pass it.
+
+    ``_span`` may answer ``(None, None)`` for every input and satisfy every
+    construction above. What it must not lose is the shape GitHub actually sends
+    -- ``startLine: null`` with ``line`` set -- which is an anchor at one line
+    rather than a missing locator.
+    """
+    assert _span(None, 12) == (12, None)
+    assert _span(10, 12) == (10, 12)
+    assert _span(10, None) == (10, None)
+
+
+@pytest.mark.asyncio
+async def test_a_thread_whose_provider_numbered_it_from_zero_still_lands(
+    tmp_path: Path,
+) -> None:
+    """The service-level half: a bad line number costs the locator, not the run.
+
+    Driven through the real service rather than through ``_span`` alone, because
+    what the finding cost was the *run*: the construction raised inside
+    ``_anchor``, after every fetch had happened, so one provider answer withheld
+    the whole repository's evidence -- including the two records that had nothing
+    to do with lines.
+    """
+    event = _event(42)
+    provider = _provider([event], threads={42: (_thread(event, line_start=0, line_end=0),)})
+
+    report, lander, root = await _run(tmp_path, provider)
+
+    assert report.clean
+    assert len(_landed_files(root)) == 3
+    (thread,) = [record for record in lander.handed if isinstance(record.payload, ReviewThread)]
+    assert (thread.anchor.line_start, thread.anchor.line_end) == (None, None)

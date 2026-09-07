@@ -434,20 +434,30 @@ def _anchor(provider: str, event: ReviewEvent, payload: ReviewRecordPayload) -> 
 def _span(start: int | None, end: int | None) -> tuple[int | None, int | None]:
     """A thread's two line numbers as an anchor is allowed to hold them.
 
-    :class:`~theurian.domain.knowledge.SourceAnchor` refuses an end without a
-    start and refuses one that precedes its start, and a provider can answer with
-    either shape. GitHub sends ``startLine: null`` with ``line`` set for a
-    single-line comment, so an end alone is an anchor at that one line rather
-    than a missing value -- which is why it moves into ``start`` instead of being
-    dropped.
+    :class:`~theurian.domain.knowledge.SourceAnchor` puts **three** guards on
+    this pair, and this function answers a pair that satisfies all three: a line
+    number below one is refused because the numbering is 1-based, an end without
+    a start is refused, and an end that precedes its start is refused. A provider
+    can answer with any of those shapes. GitHub sends ``startLine: null`` with
+    ``line`` set for a single-line comment, so an end alone is an anchor at that
+    one line rather than a missing value -- which is why it moves into ``start``
+    instead of being dropped.
 
-    A pair that is not an ordered span keeps the start and drops the end. That
-    loses a locator and no evidence: the comment body is what the record carries,
-    and it lands whole either way. Refusing the record instead would let a
-    provider's bad line number withhold a review conversation.
+    **The 1-based guard is the one this function was written without**, and it
+    was the same fault as the ordering guard rather than a different kind: a
+    ``startLine: 0`` in a GraphQL answer reached ``SourceAnchor`` as an argument
+    the domain refuses, aborting a whole run *after* the fetch it had already
+    paid for. A non-positive number is now dropped exactly the way a non-ordered
+    end already was.
+
+    Dropping loses a locator and no evidence: the comment body is what the record
+    carries, and it lands whole either way. Refusing the record instead would let
+    a provider's bad line number withhold a review conversation.
     """
-    if start is None:
-        return end, None
-    if end is None or end < start:
-        return start, None
-    return start, end
+    first = start if start is not None and start >= 1 else None
+    last = end if end is not None and end >= 1 else None
+    if first is None:
+        return last, None
+    if last is None or last < first:
+        return first, None
+    return first, last
