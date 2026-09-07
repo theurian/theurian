@@ -428,8 +428,17 @@ def probe_data_directory(context: SetupContext) -> SetupStep:
     (such an attacker can rewrite the user's files directly, with no help from
     setup), and the harm is a *restrictive* chmod alone: no disclosure, no
     escalation, at most a contrived denial of service against a directory the
-    user already owns. Nothing in the plan/apply split can close a plant timed
-    between the probe and the apply in general -- the same window
+    user already owns. The plant need not even be *timed* against the apply: a
+    symlink already in place aimed at a *world-accessible* directory takes the
+    ``is_world_accessible`` mode arm below (which reads through the link) and
+    publishes ``MISSING``, so ``apply`` then ``chmod``s the link's target with no
+    window at all -- the same world-accessible-directory arm, and the same
+    accepted harm, that #610 records for a real directory; #610's fix (refusing
+    such a directory rather than tightening it) would close this race-free route
+    and the real-directory case together. The other route -- a symlink at an
+    otherwise-absent path, planted between probe and apply -- is instead a
+    timing window nothing in the plan/apply split can close in general, the same
+    window
     :meth:`SetupService._apply` records for every step (``setup_service.py``,
     the comment above ``before = _snapshot(planned.paths)``) -- so closing this
     one narrow case would not close the class, and (A) bought it only at the
