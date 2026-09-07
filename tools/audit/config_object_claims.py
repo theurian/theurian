@@ -139,15 +139,23 @@ CONFIG_HOMES: Final[tuple[str, ...]] = (
 #: judgement are ``test_config_key_call_sites.py``'s ``CONFIG_KEY_READER_SITES``,
 #: which scans ``src/`` rather than transcribing it. Taken 2026-09-07 with::
 #:
-#:     git grep -n 'secretScan\|secret_scan\|SECRET_SCAN\|repositories\|REPOSITORIES' \
+#:     git grep -n 'secretScan\|secret_scan\|SECRET_SCAN\|repositories\|REPOSITORIES\
+#:     \|redactParticipantNames\|redact_participant_names\|REDACT_PARTICIPANT_NAMES' \
 #:         -- packages/theurian-core/src
 #:
 #: ``security/project_config.py`` is the one module in ``src/`` that opens
-#: ``.theurian/config.yaml``, and it reads these two keys out of it and nothing
+#: ``.theurian/config.yaml``, and it reads these three keys out of it and nothing
 #: else. Every other hit that scan returns is a field, a local or an English
-#: word, judged one by one in that module's own population key.
+#: word, judged one by one in that module's own population key. The third key
+#: joined on 2026-09-07 with ADR-0030 decision 3's ingestion-time redaction; the
+#: key above was re-run with its spellings added on the same date and answers 145
+#: lines.
 KEYS_WITH_A_READER: Final[frozenset[str]] = frozenset(
-    {"providers.review.repositories", "security.secretScan"}
+    {
+        "providers.review.redactParticipantNames",
+        "providers.review.repositories",
+        "security.secretScan",
+    }
 )
 
 _NEGATION: Final = r"(?:nothing|nobody|none|no\s+one|no\s+code|no\s+module)"

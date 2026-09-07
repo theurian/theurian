@@ -20,6 +20,11 @@ opposite states:
   narrowed; this change is the one that made "nothing reads it" false. Both are
   pinned below, the root since #455: a wheel-shipped description with no pin is
   how the false one survived four sweeps.
+- ``providers.review.redactParticipantNames`` — R-12's ingestion-time redaction
+  switch. **In force** since ADR-0030 decision 3, and read by the same module.
+  Its published description says so, which is what makes the *removal* direction
+  worth watching: a reader deleted while the contract still advertises the
+  control is #198 arriving from the other side.
 - **Every key in the ``raptor`` block** — ADR-0008 decision 10's switch. **Still
   reserved.** ``docs/architecture/raptor.md`` and ADR-0008 decision 10 used to
   say nothing in ``src/`` read ``.theurian/config.yaml`` at all; ADR-0027
@@ -198,9 +203,16 @@ def _plausible_spellings(key: str) -> frozenset[str]:
 #: on an unrelated ``enabled``: a read, in the direction that keeps the claim. The
 #: enumeration's failure message therefore reports what was found and what each
 #: possibility would mean, rather than announcing a loader.
+#: ``redactParticipantNames`` takes the three-spelling treatment ``secretScan``
+#: has, derived by :func:`_plausible_spellings` rather than written out, and it is
+#: watched for the *removal* direction: its published description says "In force",
+#: and a reader deleted while that sentence stands is the #198 defect exactly. It
+#: is not an ordinary word in this codebase in any of its three shapes, so it costs
+#: none of the false-RED risk ``enabled`` is kept in spite of.
 _RECORDED_KEYS: Final[dict[str, frozenset[str]]] = {
     "security.secretScan": frozenset({"secretScan", "secret_scan", "SECRET_SCAN"}),
     "providers.review.repositories": frozenset({"repositories", "REPOSITORIES"}),
+    "providers.review.redactParticipantNames": _plausible_spellings("redactParticipantNames"),
 }
 
 #: The ``raptor`` block, derived. Two of these keys already have a snake_case
@@ -220,16 +232,19 @@ _ALL_SPELLINGS = frozenset().union(*WATCHED_SPELLINGS.values())
 #: Every place in the shipped package that names one of the keys above, as
 #: ``(module path under theurian/, the spelling it names)``.
 #:
-#: **Eight entries, and exactly one module reads the file.** The scan matches
+#: **Nine entries, and exactly one module reads the file.** The scan matches
 #: whole names and not semantics -- deliberately, see the population key above --
 #: so it cannot tell a reader from a field named after one, and this list is
 #: therefore the honest output of the scan rather than a curated set of readers:
 #:
-#: * ``security/project_config.py :: secretScan`` and
-#:   ``security/project_config.py :: repositories`` **are** the two readers, and
+#: * ``security/project_config.py :: secretScan``,
+#:   ``security/project_config.py :: repositories`` and
+#:   ``security/project_config.py :: redactParticipantNames`` **are** the three
+#:   readers, and
 #:   that module is the only place in ``src/`` that opens
 #:   ``.theurian/config.yaml``. The second arrived with ADR-0030 decision 2's
-#:   allowlist; ``security/review_allowlist.py`` decides what its values mean and
+#:   allowlist and the third with decision 3's ingestion-time redaction;
+#:   ``security/review_allowlist.py`` decides what the allowlist's values mean and
 #:   names none of the watched spellings, which is why it is absent here and not
 #:   an omission.
 #: * ``application/proposal_service.py :: secret_scan`` and
@@ -251,8 +266,9 @@ _ALL_SPELLINGS = frozenset().union(*WATCHED_SPELLINGS.values())
 #:   -- which is the opposite of reading the file: a default is what applies
 #:   *because* nothing read a value.
 #:
-#: Adding a ninth entry is not a bookkeeping edit. For ``repositories`` it says a
-#: **second** module now names SEC-10's allowlist key, which the schema's "one
+#: Adding a tenth entry is not a bookkeeping edit. For ``repositories`` or
+#: ``redactParticipantNames`` it says a
+#: **second** module now names one of ADR-0030's keys, which the schema's "one
 #: reader" sentence and this module's docstring both deny, so both are false
 #: until they are corrected in the same change. For anything under ``raptor.`` it says
 #: ADR-0008 decision 10's "Nothing in ``src/`` reads ``raptor.enabled``, nor any
@@ -267,6 +283,7 @@ CONFIG_KEY_READER_SITES: frozenset[tuple[str, str]] = frozenset(
         ("application/proposal_service.py", "secret_scan"),
         ("cli/index_commands.py", "secret_scan"),
         ("cli/propose_commands.py", "secret_scan"),
+        ("security/project_config.py", "redactParticipantNames"),
         ("security/project_config.py", "repositories"),
         ("security/project_config.py", "secretScan"),
     }
@@ -612,9 +629,10 @@ def test_the_shipped_modules_that_name_a_watched_config_key_are_the_recorded_one
 SCHEMA_ROOT_DESCRIPTION: Final = (
     "Per-repository configuration, Git-tracked. Contains no secrets: credentials live "
     "in ~/.theurian and the OS secret store (ADR-0011). This file has one reader: "
-    "`security/project_config.py` takes `security.secretScan` and "
-    "`providers.review.repositories` from it and nothing else (ADR-0027 decision 3, "
-    "ADR-0030 decision 2), so those two keys are in force and every other key "
+    "`security/project_config.py` takes `security.secretScan`, "
+    "`providers.review.repositories` and `providers.review.redactParticipantNames` "
+    "from it and nothing else (ADR-0027 decision 3, "
+    "ADR-0030 decisions 2 and 3), so those three keys are in force and every other key "
     "published here is reserved. Setting a reserved key changes nothing, and where a "
     "default below is also honoured by the product the code carries its own copy "
     "rather than reading this file. A published `default` is honest where a named "
@@ -772,10 +790,13 @@ INGEST_CONFIG_BULLET: Final = (
     "enforced (SEC-10, ADR-0030 decision 2): `security/review_allowlist.py` refuses a "
     "repository `providers.review.repositories` does not name, before any process is "
     "spawned. It protects a path no command exposes yet, so do not tell the user that "
-    "listing a repository has turned anything on. That file is read for two keys: "
-    "`security/project_config.py` takes `security.secretScan` and "
-    "`providers.review.repositories` from it and nothing else (ADR-0027 decision 3, "
-    "ADR-0030 decision 2). The first selects a control this command never reaches: it "
+    "listing a repository has turned anything on. That file is read for three keys: "
+    "`security/project_config.py` takes `security.secretScan`, "
+    "`providers.review.repositories` and `providers.review.redactParticipantNames` "
+    "from it and nothing else (ADR-0027 decision 3, ADR-0030 decisions 2 and 3). "
+    "The third is R-12's ingestion-time redaction switch and belongs to the same "
+    "unexposed path as the allowlist: setting it redacts nothing until a command "
+    "reaches review ingestion. The first selects a control this command never reaches: it "
     "covers the approval gate and the index build — `theurian ingest` runs no scan of "
     "its own, and `theurian index build` scans every body it indexes, with the source "
     "anchors and relation notes served beside them, and reports rather than refusing "
@@ -1260,6 +1281,29 @@ WATCHED_KEY_DESCRIPTIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
         "stored here.",
     ),
     (
+        "providers.review.redactParticipantNames",
+        (
+            "properties",
+            "providers",
+            "properties",
+            "review",
+            "properties",
+            "redactParticipantNames",
+        ),
+        "In force. When true, review ingestion replaces every participant's display "
+        "name with a fixed placeholder before a record is written, and keeps that "
+        "participant's provider id unchanged, so redaction does not break the "
+        "identity graph (R-12, ADR-0030 decision 3). `security/project_config.py` "
+        "reads it and the landing gate applies it before the `security.secretScan` "
+        "gate reads the record, so that scan reads the text that would actually be "
+        "written, placeholder included. Off by default: a review record names the "
+        "people who wrote the review, and dropping their names is a decision a "
+        "project makes rather than one an upgrade makes for it. Write it unquoted -- "
+        'a quoted `"true"` is a string and is refused rather than guessed at. No '
+        "command exposes review ingestion yet, so setting this key redacts nothing on "
+        "its own.",
+    ),
+    (
         "providers.review.repositories",
         (
             "properties",
@@ -1276,7 +1320,12 @@ WATCHED_KEY_DESCRIPTIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
         "an empty or absent list allows nothing. A name is matched "
         "case-insensitively, as GitHub resolves it. The pattern rejects a `.` or `..` "
         "segment, so no value here is a path that leaves the project, while "
-        "`owner/.github` stays valid. Review ingestion reads public repositories only "
+        "`owner/.github` stays valid. An entry is at most 200 characters, the bound "
+        "`security/review_allowlist.py` applies before it runs the pattern at all; "
+        "`tests/unit/test_review_allowlist.py` holds both that bound and the pattern "
+        "equal to the ones published here, so an entry this schema accepts is one the "
+        "reader matches rather than refuses unread. Review ingestion reads public "
+        "repositories only "
         "in this version: an allowlisted repository that resolves as private is "
         "refused at ingestion, and ADR-0030 decision 2 records who owns the "
         "private-repository arm. The raw-URL fetch controls -- a scheme "
@@ -1749,10 +1798,11 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             # replaces them is the *reach* -- before any process is spawned, and
             # no command exposes it yet -- because over-reading is now the way a
             # reader of this page gets it wrong.
-            "That file is read for two keys",
+            "That file is read for three keys",
             (
-                "`security/project_config.py` takes `security.secretScan` and "
-                "`providers.review.repositories` from it and nothing else"
+                "`security/project_config.py` takes `security.secretScan`, "
+                "`providers.review.repositories` and "
+                "`providers.review.redactParticipantNames` from it and nothing else"
             ),
             # The bound, and the one fragment here pinned as a **whole
             # sentence** rather than a phrase. Naming `security.secretScan` as

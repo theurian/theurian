@@ -33,6 +33,29 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   envelope carrying a remedy, with the child's stderr contained inside it.
   **Nothing is exposed yet**: no CLI command and no MCP tool reaches this code,
   and `system.capabilities` still reports `reviewIngestion: false`.
+- **`providers.review.redactParticipantNames`, R-12's ingestion-time redaction
+  switch** (ADR-0030 decision 3, part of
+  [#479](https://github.com/theurian/theurian/issues/479)). A boolean, default
+  `false`, read by `security/project_config.py` and applied at landing: it
+  replaces every participant's display name with a fixed placeholder and keeps
+  that participant's provider id, so the identity graph survives the redaction.
+  The switch is refused rather than coerced when it is not a boolean — a quoted
+  `"true"` is a string, and guessing which of two values an operator meant turns
+  a privacy control the wrong way. `.theurian/config.yaml` is therefore read for
+  **three** keys rather than two, which the schema's root description,
+  `plugins/claude-code/commands/ingest.md` and
+  `tools/audit/config_object_claims.py` now say. A reader
+  added for any of the six spellings in `WATCHED_SPELLINGS` — five of them
+  published key blocks, plus `raptor.maxLevels`, which has no block — reddens
+  the call-site scan. **Nothing is exposed yet**: no command reaches review
+  ingestion, so setting the key redacts nothing on its own.
+- **`providers.review.repositories` publishes the length bound its reader
+  enforces.** The `items` subschema gained `maxLength: 200`, equal to
+  `review_allowlist.MAX_REPOSITORY_CHARS`, and
+  `tests/unit/test_review_allowlist.py` now holds that bound equal on both sides
+  as it already held the pattern. Until this, a 4,000-character entry satisfied
+  the published contract and was refused unread by the reader that claims to
+  enforce it.
 
 ### Changed
 
@@ -214,11 +237,14 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   rather than this entry: the rule is what this change owed, not the sweep.
 
   Taking the description rather than a bare `deprecated: true` moves the pin
-  count, and that is the machinery working rather than a cost to route around:
-  the schema publishes **13** descriptions — the root and 12 key blocks — and
-  **13 of the 13** carry a `WATCHED_KEY_DESCRIPTIONS` row in
+  count, and that is the machinery working rather than a cost to route around.
+  The count moved again in the same release with
+  `providers.review.redactParticipantNames` above, so what stands now is:
+  the schema publishes **14** descriptions — the root and 13 key blocks — and
+  **14 of the 14** carry a `WATCHED_KEY_DESCRIPTIONS` row in
   `tests/unit/test_config_key_call_sites.py`: the root, `knowledgeDirectory`,
   `providers`, `providers.embedding.apiKeyEnv`, `providers.embedding.endpointEnv`,
+  `providers.review.redactParticipantNames`,
   `providers.review.repositories`, `raptor.enabled`,
   `raptor.minChildrenPerSummary`, `retrieval.includeStatuses`, `retrieval.rrfK`,
   `security.maxSourceFileBytes`, `security.secretScan` and `traceabilityPolicy`.

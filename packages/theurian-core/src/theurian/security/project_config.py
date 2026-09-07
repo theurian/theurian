@@ -8,7 +8,7 @@ the key was inert. ``tests/unit/test_config_key_call_sites.py`` exists to go RED
 on the diff that changes that, and it is the record of which claims had to be
 corrected alongside.
 
-**Two keys now, and the second arrived with the code that needs it.**
+**Three keys now, and each arrived with the code that needs it.**
 ``providers.review.repositories`` is SEC-10's repository allowlist, and ADR-0030
 decision 2 makes it load-bearing: review ingestion consults it **before any
 process is spawned**. This module reads the key; ``security/review_allowlist.py``
@@ -16,6 +16,11 @@ decides what a value means and refuses what is not listed. The split is the same
 one ``secretScan`` has -- reading the file is one concern, and what a value
 selects is another -- and it keeps the shape rules for a published key in the
 module that also owns the pattern the schema publishes.
+
+``providers.review.redactParticipantNames`` is R-12's ingestion-time redaction
+switch (ADR-0030 decision 3), and it takes the same split: this module answers
+what the file states, and the review-ingestion landing gate decides what a
+``True`` does to a record on its way to disk.
 
 **Absent means ``block``, and unrecognised means refuse.** Those are two rules
 and not one. A project with no configuration file, or one that says nothing
@@ -59,6 +64,12 @@ SECRET_SCAN_KEY: Final = "secretScan"  # noqa: S105 - a published config key, no
 #: place in ``src/`` that names it, which is what
 #: ``test_config_key_call_sites.py``'s reader enumeration records.
 REVIEW_REPOSITORIES_KEY: Final = "repositories"
+
+#: R-12's redaction switch, spelled exactly as the schema publishes it. Named as
+#: a constant for :data:`REVIEW_REPOSITORIES_KEY`'s reason: the one place that has
+#: to match the published contract is visible in a diff, and
+#: ``test_config_key_call_sites.py`` records it as a reader site.
+REVIEW_REDACT_PARTICIPANT_NAMES_KEY: Final = "redactParticipantNames"
 
 _SECURITY_BLOCK: Final = "security"
 _PROVIDERS_BLOCK: Final = "providers"
@@ -115,6 +126,24 @@ _QUOTING_CURE: Final = (
 #: The allowlist key's dotted path, composed from the block constants so the
 #: message and the reader cannot disagree about where the key lives.
 _ALLOWLIST_PATH: Final = f"{_PROVIDERS_BLOCK}.{_REVIEW_BLOCK}.{REVIEW_REPOSITORIES_KEY}"
+
+#: The redaction switch's dotted path, composed the same way and for the same
+#: reason.
+_REDACTION_PATH: Final = f"{_PROVIDERS_BLOCK}.{_REVIEW_BLOCK}.{REVIEW_REDACT_PARTICIPANT_NAMES_KEY}"
+
+#: What a reader does about a redaction switch that is not a boolean. It names the
+#: artefact -- the key, in the file -- the two values it takes, the schema that
+#: publishes the shape, and the one spelling a reader gets wrong: YAML 1.1 reads a
+#: bare ``yes``/``on``/``true`` as the boolean, so the quoted forms are the ones
+#: that arrive here as strings and are refused.
+_REDACTION_CURE: Final = (
+    f"Write `{_REDACTION_PATH}` in {PROJECT_CONFIG_FILE} as an unquoted `true` or "
+    f"`false`, as `schemas/config/project-config.schema.json` publishes it -- a "
+    f'quoted `"true"` is a string, and guessing which of the two it meant would '
+    f"turn a privacy control on or off for somebody who wrote neither. Delete the "
+    f"line to keep the shipped default, which is `false`; "
+    f"`git diff -- .theurian/{PROJECT_CONFIG_FILE}` shows the edit that introduced it."
+)
 
 #: What a reader does about a malformed allowlist. It names the artefact and a
 #: command: the schema is what publishes the shape, and `gh repo view` is what
@@ -252,6 +281,63 @@ def read_review_repositories(root: Path, config_file: Path) -> tuple[str, ...]:
                 remedy=_ALLOWLIST_CURE,
             )
     return tuple(stated)
+
+
+def read_review_participant_redaction(root: Path, config_file: Path) -> bool:
+    """Whether this project redacts participant display names at ingestion (R-12).
+
+    Reads ``providers.review.redactParticipantNames`` and answers what the file
+    states. It does **not** perform the redaction -- that is the landing gate's,
+    which also owns what a redacted name is replaced with. This function's whole
+    job is "what does the file say, and is it the shape the schema publishes",
+    the same split :func:`read_review_repositories` records.
+
+    Args:
+        root: The project root, the containment boundary for the read.
+        config_file: Where the file is, composed by the caller from
+            ``ProjectPaths`` for the reason :func:`read_secret_scan_policy`
+            records.
+
+    Returns:
+        The stated value, or ``False`` when the file, the ``providers`` block, the
+        ``review`` block or the key is absent. **Absent is off**, which is the
+        direction that keeps a record saying what the upstream said: turning a
+        privacy control on by default would silently drop the names a review's
+        evidence is about, and an operator who wants them gone says so.
+
+    Raises:
+        ProjectConfigError: If the file cannot be read or parsed, or the key is
+            present and is not a boolean. Refused rather than coerced: YAML 1.1
+            already reads a bare ``yes``, ``on`` and ``true`` as ``True``, so what
+            reaches here as something else is a *quoted* spelling or another type
+            entirely -- and guessing which of two values such an operator meant
+            would turn a privacy control on or off for somebody who wrote neither.
+    """
+    document = _read_document(root, config_file)
+    if document is None:
+        return False
+
+    providers = _section(document, _PROVIDERS_BLOCK)
+    review = (
+        None if providers is None else _section(providers, _REVIEW_BLOCK, under=_PROVIDERS_BLOCK)
+    )
+    if review is None or REVIEW_REDACT_PARTICIPANT_NAMES_KEY not in review:
+        return False
+
+    stated = review[REVIEW_REDACT_PARTICIPANT_NAMES_KEY]
+    # `isinstance(..., bool)` and not a truthiness test: YAML's `1` is an int and
+    # `"true"` is a string, and reading either as `True` is the coercion the
+    # remedy above says this refuses. The value is never rendered into the
+    # message -- a key pointing at a YAML alias graph re-expands under `repr` to
+    # gigabytes from a few hundred bytes (T-6), the ordering
+    # `read_secret_scan_policy` records -- so the type name is the diagnosis.
+    if not isinstance(stated, bool):
+        raise ProjectConfigError(
+            f"`{_REDACTION_PATH}` in {PROJECT_CONFIG_FILE} is a "
+            f"{type(stated).__name__}, not `true` or `false`.",
+            remedy=_REDACTION_CURE,
+        )
+    return stated
 
 
 def _read_document(root: Path, config_file: Path) -> dict[str, Any] | None:
