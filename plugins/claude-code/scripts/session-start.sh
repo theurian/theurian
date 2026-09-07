@@ -76,6 +76,39 @@ main() {
   status="$(theurian project status --json 2>/dev/null)" || return 0
   if printf '%s' "$status" | grep -q '"registered": *false'; then
     theurian::warn "this repository is not registered. Run /theurian:register-project."
+  elif printf '%s' "$status" | grep -q '"reason": *"'; then
+    # `reason` is Core's field for "part of this status is degraded", and it
+    # reaches `project status --json` from three places in `cli/commands.py`,
+    # not one: `_unresolved_status` on the *unresolved* branch (`resolve_context`
+    # raised -- a broken migration, an unregistered root), and, on the
+    # *resolved* branch -- `resolve_context` having finished successfully --
+    # `_pointer_failure_fields` (a corrupt `.theurian/state/active.json`) and
+    # `_RegistryRead.failure_fields` (the registry re-read failed mid-command).
+    # So `reason` is not evidence that resolution failed: on the resolved
+    # branch it arrives with `registered: true` and can sit right beside
+    # `indexStale` and a `statePointerCorrupt: true` this same payload
+    # publishes -- a healthy-looking index next to a broken state pointer is
+    # exactly the shape a resolved-but-degraded project takes. `registered:
+    # false` already took the branch above and never reaches this one, which
+    # is what keeps the "not registered" advice untouched (issue #381 owns
+    # telling that case apart from a not-in-git repository; nothing here
+    # assumes it is closed).
+    #
+    # This branch is entered by matching the literal `"reason": *"` fragment
+    # above, never by parsing JSON, and `reason` itself is never printed:
+    # Core's own `_unresolved_status` docstring records that a broken
+    # migration's `reason` carries the YAML parser's own source snippet --
+    # project file bytes, not something a session-start hook may echo.
+    # `remedy` is Core's own advisory sentence and holds no such risk by
+    # itself, but a SessionStart warning must stay a fixed literal (see
+    # `test_a_session_start_warning_cannot_execute_anything` and
+    # `test_a_session_start_warning_is_a_terminated_literal` in
+    # test_plugin_boundary.py) -- this hook prints only strings it wrote
+    # itself, never one built from a field that could carry a path with
+    # attacker-influenced components. /theurian:doctor is where Core's own
+    # remedy belongs; it reads `project status` directly and can print
+    # `remedy` in full.
+    theurian::warn "this repository's knowledge context is degraded. Run /theurian:doctor to diagnose."
   elif printf '%s' "$status" | grep -q '"indexStale": *true'; then
     theurian::warn "the knowledge index is stale. Run /theurian:index when convenient."
   fi

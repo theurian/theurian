@@ -23,17 +23,29 @@ What is faked and why:
   Core binary wherever the row allows it, so the exit codes under test are
   Core's own and not this file's guess about them. Only the "older Core, no
   ``compat`` subcommand" row has to be synthesised, because no build in this
-  checkout can produce it.
-* ``curl`` is a stub that always reports a refused connection. The hook's daemon
-  probe must not open a socket from a test, and a refusal is what a machine
-  without a running daemon gives anyway.
+  checkout can produce it. Its ``project status`` answer is parameterized by
+  ``status_payload`` (see :func:`_stub_theurian`) rather than hard-wired, so a
+  row can put any payload Core's ``_unresolved_status`` can produce in front of
+  the hook -- until issue #380, this stub answered the same fixed healthy
+  payload for every row, and every row that reached the daemon probe was
+  refused there by ``curl`` first (below), so nothing here had ever driven the
+  ``project status`` branch of the hook at all.
+* ``curl`` reports a refused connection by default -- exit 7, "failed to
+  connect to host", what a machine without a running daemon gives anyway --
+  but a row that needs to reach the hook's ``project status`` branch installs
+  a ``curl`` that succeeds instead (:func:`_make_sandbox`'s ``daemon_healthy``
+  flag). Either way it never opens a socket: both stubs answer immediately
+  without touching the network.
 * ``HOME`` and ``THEURIAN_DATA_DIR`` point into ``tmp_path`` and the environment
   is built from scratch rather than inherited, so nothing here can reach the
-  developer's own machine.
+  developer's own machine. The real-Core fidelity rows near the bottom of this
+  file are the one exception that talks to a real ``theurian`` process instead
+  of the stub, and they sandbox the same two variables the same way.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -60,11 +72,26 @@ _DECLARATION_RELPATH = Path("compatibility.yaml")
 _EXIT_INCOMPATIBLE = 3
 
 _BASH = shutil.which("bash")
+_GIT = shutil.which("git")
 _REAL_THEURIAN = Path(sys.executable).parent / "theurian"
 
 #: ``curl`` exit 7 is "failed to connect to host", which is what the hook's
-#: health probe sees on a machine with no daemon listening.
+#: health probe sees on a machine with no daemon listening. Every row that does
+#: not ask :func:`_make_sandbox` for ``daemon_healthy=True`` gets this one, and
+#: the hook's own ``if ! theurian::daemon_healthy`` branch answers before
+#: ``project`` is ever invoked -- which is why a row exercising the healthy
+#: ``project status`` path needs the other stub below instead.
 _CURL_STUB = "#!/usr/bin/env bash\nexit 7\n"
+
+#: The health probe succeeding without a real daemon: also exit-code-only, so
+#: this opens no socket either.
+_CURL_HEALTHY_STUB = "#!/usr/bin/env bash\nexit 0\n"
+
+#: ``project status --json`` for a healthy, registered, up-to-date project --
+#: the shape ``_unresolved_status`` never produces, since it never resolved a
+#: project at all. The default for every row that does not care about this
+#: payload.
+_HEALTHY_STATUS_PAYLOAD = '{"registered": true, "indexStale": false}'
 
 
 @dataclass(frozen=True)
@@ -76,14 +103,39 @@ class Sandbox:
     call_log: Path
 
 
-def _stub_theurian(log: Path, compat_branch: str) -> str:
+def _bash_single_quote(value: str) -> str:
+    """Quote *value* as one bash single-quoted word.
+
+    Not ``repr()``: Python switches a repr to double quotes the moment the
+    string holds an apostrophe and no double quote, which is not bash syntax
+    and would hand a stub script's own ``printf`` a broken argument list. This
+    instead closes the quote, emits a literal ``'`` escaped through a
+    double-quoted segment, and reopens it -- the standard bash idiom, and the
+    one thing that stays correct for arbitrary content, apostrophes included.
+    """
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def _stub_theurian(
+    log: Path, compat_branch: str, status_payload: str = _HEALTHY_STATUS_PAYLOAD
+) -> str:
     """A ``theurian`` that records every invocation before answering it.
 
-    ``daemon status`` reports ``not-installed`` and ``project status`` reports a
-    registered, fresh project, so every row below takes the same path *after*
-    the compat check. That is what makes the recorded call sequence a usable
+    ``daemon status`` reports ``not-installed`` and ``project status`` answers
+    with *status_payload* verbatim, so every row below takes the same path
+    *after* the compat check and up to whichever of those two the hook's own
+    branching reaches. That is what makes the recorded call sequence a usable
     statement about how far the hook got.
+
+    ``status_payload`` is single-quoted for bash rather than interpolated
+    through this function's own f-string braces (the way the two fixed
+    payloads below still are): a row's payload carries attacker-shaped content
+    on purpose -- a YAML parser's source snippet, a planted remedy -- and an
+    f-string substitution would have to double every literal ``{`` or ``}``
+    in it to survive, which a caller composing JSON should never have to
+    remember.
     """
+    quoted_status = _bash_single_quote(status_payload)
     return f"""#!/usr/bin/env bash
 printf '%s\\n' "$*" >> {str(log)!r}
 if [ "$1" = "compat" ] && [ "$2" = "check" ]; then
@@ -94,7 +146,7 @@ if [ "$1" = "daemon" ] && [ "$2" = "status" ]; then
   exit 0
 fi
 if [ "$1" = "project" ] && [ "$2" = "status" ]; then
-  printf '{{"registered": true, "indexStale": false}}\\n'
+  printf '%s\\n' {quoted_status}
   exit 0
 fi
 exit 0
@@ -117,6 +169,8 @@ def _make_sandbox(
     *,
     compat_branch: str = _FORWARD_TO_REAL_CORE,
     declaration: str | None = None,
+    status_payload: str = _HEALTHY_STATUS_PAYLOAD,
+    daemon_healthy: bool = False,
 ) -> Sandbox:
     """Assemble a plugin root, a stub PATH, and an environment that reaches nothing real.
 
@@ -124,6 +178,14 @@ def _make_sandbox(
     so a row that says nothing about compatibility gets the healthy case. A row
     that wants no declaration at all deletes the file afterwards, which is what
     the user did.
+
+    ``daemon_healthy`` picks which ``curl`` stub answers the hook's health
+    probe. It defaults to ``False`` -- every row before issue #380 depended on
+    that, since the "daemon not running" branch it produces is what every
+    earlier row's expectations were written against -- and only a row that
+    means to exercise ``project status`` (``status_payload`` is otherwise
+    unreachable: the hook never calls ``theurian project status`` past a
+    failed health probe) sets it ``True``.
     """
     plugin_root = tmp_path / "plugin"
     (plugin_root / "scripts").mkdir(parents=True)
@@ -138,10 +200,10 @@ def _make_sandbox(
     bin_dir.mkdir()
     call_log = tmp_path / "theurian-calls.log"
     stub = bin_dir / "theurian"
-    stub.write_text(_stub_theurian(call_log, compat_branch), encoding="utf-8")
+    stub.write_text(_stub_theurian(call_log, compat_branch, status_payload), encoding="utf-8")
     stub.chmod(0o755)
     curl = bin_dir / "curl"
-    curl.write_text(_CURL_STUB, encoding="utf-8")
+    curl.write_text(_CURL_HEALTHY_STUB if daemon_healthy else _CURL_STUB, encoding="utf-8")
     curl.chmod(0o755)
 
     home = tmp_path / "home"
@@ -383,3 +445,432 @@ def test_an_absent_core_does_not_block_the_session(tmp_path: Path) -> None:
     assert result.returncode == 0
     assert "Core is not installed" in result.stderr
     assert _subcommands(sandbox) == []
+
+
+# -- The `project status` branch, and a broken context inside it (issue #380) -
+
+
+def test_a_healthy_registered_project_stays_silent(tmp_path: Path) -> None:
+    """The control every row below is compared against.
+
+    A silent hook is the correct answer for a project that is registered, has
+    no ``reason`` to report, and whose index is fresh -- and it is the one
+    outcome ``daemon_healthy=True`` was previously never tested for at all
+    (see the module docstring): every existing row above stops at the daemon
+    probe, because ``curl`` always refused. This is the first row to let the
+    probe succeed and reach ``project status``.
+    """
+    sandbox = _make_sandbox(tmp_path, daemon_healthy=True)
+
+    result = _run_hook(sandbox)
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert _subcommands(sandbox) == ["compat check", "project status"]
+
+
+def test_a_broken_migration_warns_and_points_at_doctor(tmp_path: Path) -> None:
+    """A1: registered, but ``resolve_context`` could not load the migrations.
+
+    Measured against the real Core binary (see the fidelity row below): a
+    malformed ``.theurian/migrations/*.yaml`` makes ``project status --json``
+    answer ``registered: true`` -- the registry still holds this root -- with
+    a ``reason`` carrying the YAML parser's own source snippet, and no
+    ``indexStale`` at all, because ``_unresolved_status`` never asks that
+    question. Before this test, the shipped hook's two greps matched neither
+    ``"registered": *false`` nor ``"indexStale": *true`` and fell all the way
+    through in silence -- the defect issue #380 reports.
+    """
+    status_payload = json.dumps(
+        {
+            "registered": True,
+            "reason": (
+                "broken.yaml: mapping values are not allowed here\n"
+                "  in RAW_MIGRATION_BYTES, line 1, column 10"
+            ),
+            "unreadable": [],
+        }
+    )
+    sandbox = _make_sandbox(tmp_path, daemon_healthy=True, status_payload=status_payload)
+
+    result = _run_hook(sandbox)
+
+    assert result.returncode == 0
+    assert result.stderr.strip() != ""
+    assert "degraded" in result.stderr or "broken" in result.stderr
+    assert "doctor" in result.stderr
+
+
+def test_a_resolved_project_with_a_corrupt_pointer_warns_without_claiming_unresolved(
+    tmp_path: Path,
+) -> None:
+    """A2: registered *and* resolved, with ``reason`` from the pointer read instead.
+
+    Measured against the real Core binary (see the fidelity row below): a
+    corrupt ``.theurian/state/active.json`` does not stop ``resolve_context``
+    from finishing -- it makes ``project status --json`` answer on its
+    *resolved* branch, with ``registered: true``, ``statePointerCorrupt:
+    true``, ``indexStale`` present, and a ``reason``/``remedy`` pair from
+    ``_pointer_failure_fields`` rather than from ``_unresolved_status``. Round
+    one (code review HIGH) caught the hook's warning claiming "could not be
+    fully resolved" for exactly this arm, where resolution had succeeded.
+
+    The hook no longer lifts ``remedy`` out of the JSON itself -- a
+    SessionStart warning must stay a fixed literal (the
+    ``test_a_session_start_warning_*`` guards in ``test_plugin_boundary.py``)
+    -- so this row asserts the pointer at ``doctor``, not the planted remedy
+    sentence, which Core's own ``project status``/``doctor`` reads print in
+    full.
+    """
+    status_payload = json.dumps(
+        {
+            "registered": True,
+            "statePointerCorrupt": True,
+            "indexStale": True,
+            "reason": "active.json is unreadable: Expecting value: line 1 column 1 (char 0)",
+            "remedy": "Delete .theurian/state/active.json and run `theurian migrate apply`; "
+            "the index and the registry entry are both still intact.",
+        }
+    )
+    sandbox = _make_sandbox(tmp_path, daemon_healthy=True, status_payload=status_payload)
+
+    result = _run_hook(sandbox)
+
+    assert result.returncode == 0
+    assert "degraded" in result.stderr
+    assert "doctor" in result.stderr
+    assert "Delete .theurian/state/active.json" not in result.stderr
+    assert "could not be fully resolved" not in result.stderr
+
+
+def test_an_unreadable_registry_warns_and_points_at_doctor(tmp_path: Path) -> None:
+    """B1: ``registered: null`` -- the registry itself could not be read.
+
+    Measured against the real Core binary: a ``projects.json`` that is not
+    valid JSON makes ``resolve_context`` fail with a ``ProjectError`` carrying
+    its own ``remedy``, and the same corruption makes
+    ``_RegistryRead.holds_root`` answer ``None`` rather than ``False`` -- so
+    ``registered`` is neither ``true`` nor ``false``, and the shipped hook's
+    ``"registered": *false`` grep does not match it either.
+
+    The hook does not lift ``remedy`` out of the JSON and print it: a
+    SessionStart warning must stay a fixed literal (the
+    ``test_a_session_start_warning_*`` guards in ``test_plugin_boundary.py``),
+    since ``remedy`` can carry a path built from attacker-influenced
+    components. It warns about the degraded context and points at
+    ``/theurian:doctor``, which reads ``project status`` itself and can print
+    ``remedy`` in full.
+    """
+    status_payload = json.dumps(
+        {
+            "registered": None,
+            "reason": "/data/projects.json cannot be read as JSON: PLANTED_PARSE_DETAIL",
+            "remedy": "PLANTED_REMEDY_TEXT: delete it and re-register each project.",
+            "unreadable": [],
+        }
+    )
+    sandbox = _make_sandbox(tmp_path, daemon_healthy=True, status_payload=status_payload)
+
+    result = _run_hook(sandbox)
+
+    assert result.returncode == 0
+    assert "degraded" in result.stderr
+    assert "doctor" in result.stderr
+    assert "PLANTED_REMEDY_TEXT" not in result.stderr
+
+
+def test_the_broken_context_warning_never_echoes_the_raw_reason(tmp_path: Path) -> None:
+    """The DON'T (AC-7): ``reason`` can carry project file bytes.
+
+    ``_unresolved_status``'s own docstring records that a broken migration's
+    ``reason`` is built from a YAML parser's message, which quotes the
+    offending source line back verbatim. A session-start hook prints an error
+    *class* -- "the context is degraded, run doctor" -- never that line, so a
+    marker planted inside ``reason`` here must never reach stderr.
+
+    Round one (adversarial LOW): asserting only ``marker not in stderr`` stays
+    green even if the whole branch were deleted and stderr came back empty.
+    The ``"doctor"`` assertion is what makes this row prove the warning fired
+    *and* that it did not echo the raw reason, from one payload.
+    """
+    marker = "RAW_MIGRATION_BYTES_MUST_NOT_APPEAR_IN_STDERR"
+    status_payload = json.dumps(
+        {"registered": True, "reason": f"broken.yaml: {marker}", "unreadable": []}
+    )
+    sandbox = _make_sandbox(tmp_path, daemon_healthy=True, status_payload=status_payload)
+
+    result = _run_hook(sandbox)
+
+    assert "doctor" in result.stderr
+    assert marker not in result.stderr
+
+
+def test_an_unregistered_repository_with_a_reason_keeps_the_original_advice(
+    tmp_path: Path,
+) -> None:
+    """AC-5, the scope fence: ``registered: false`` still wins its own case.
+
+    A not-in-git repository is ``registered: false`` *and* carries a
+    ``reason`` (issue #381's own face, out of this change's scope) -- and the
+    hook's first check must still catch it before the broken-context branch
+    ever runs, so the "not registered" advice is unchanged.
+    """
+    status_payload = json.dumps(
+        {"registered": False, "reason": "/repo is not inside a Git repository."}
+    )
+    sandbox = _make_sandbox(tmp_path, daemon_healthy=True, status_payload=status_payload)
+
+    result = _run_hook(sandbox)
+
+    assert result.returncode == 0
+    assert "this repository is not registered. Run /theurian:register-project." in result.stderr
+    assert "doctor" not in result.stderr
+
+
+# -- Fidelity: the real Core binary must still produce the payloads above -----
+#
+# Every stubbed row above asserts against a payload this module *chose*. These
+# two rows build it instead, by running the real ``theurian`` binary against a
+# real Git repository -- so a future Core release that stops emitting `reason`
+# here, or starts emitting `indexStale` beside it, fails *these* tests rather
+# than leaving the stubbed rows quietly describing a shape Core no longer
+# produces. Deliberately coupled to Core's payload: that is the whole point of
+# a drift detector, not an accident to fix. When issue #381 changes what
+# `registered: false` carries, it does not touch these two -- both stay on
+# `registered` values #381 does not disambiguate further.
+#
+# `git` is a real requirement of the sandbox these rows build, not of the hook
+# itself, so its absence is a skip and not a failure.
+
+
+def _sandbox_env(tmp_path: Path) -> dict[str, str]:
+    """A minimal environment for driving the real Core binary directly.
+
+    Built from scratch rather than inherited, the same reason
+    :func:`_make_sandbox` does it for the hook's own stub -- plus the
+    directory ``git`` actually resolves to, since ``find_git_root`` and
+    ``resolve_context`` shell out to it.
+    """
+    assert _GIT is not None
+    return {
+        "PATH": f"{Path(_GIT).parent}:/usr/bin:/bin",
+        "HOME": str(tmp_path / "home"),
+        "THEURIAN_DATA_DIR": str(tmp_path / "data"),
+    }
+
+
+def _run_real_cli(
+    args: list[str], *, cwd: Path, env: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    """Run the real Core binary this checkout built, never leaning on an earlier ``cd``."""
+    return subprocess.run(  # noqa: S603 - fixed argv, sandboxed environment
+        [str(_REAL_THEURIAN), *args],
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+
+def _init_git_repo(root: Path, env: dict[str, str]) -> None:
+    for args in (
+        ["init", "-q", "-b", "main"],
+        ["config", "user.email", "test@example.com"],
+        ["config", "user.name", "Test"],
+    ):
+        subprocess.run(  # noqa: S603 - fixed argv, sandboxed environment
+            [str(_GIT), *args], cwd=root, env=env, check=True, capture_output=True, timeout=30
+        )
+
+
+def _register_a_fresh_project(root: Path, env: dict[str, str]) -> None:
+    """``init`` + commit + ``project register``, the shared setup both fidelity rows need."""
+    init_result = _run_real_cli(["init"], cwd=root, env=env)
+    assert init_result.returncode == 0, init_result.stderr
+    subprocess.run(  # noqa: S603 - fixed argv, sandboxed environment
+        [str(_GIT), "add", "-A"], cwd=root, env=env, check=True, capture_output=True, timeout=30
+    )
+    subprocess.run(  # noqa: S603 - fixed argv, sandboxed environment
+        [str(_GIT), "commit", "-q", "-m", "init"],
+        cwd=root,
+        env=env,
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
+    register_result = _run_real_cli(["project", "register", "--json"], cwd=root, env=env)
+    assert register_result.returncode == 0, register_result.stderr
+
+
+@pytest.mark.skipif(_GIT is None, reason="git is required to build this row's sandbox")
+def test_a_broken_migration_produces_the_real_payload_the_a1_row_assumes(tmp_path: Path) -> None:
+    """AC-6, the A1 face: a malformed migration in a *real*, registered project.
+
+    Reproduced end to end and checked in before this test was written (2026-09-07,
+    against this checkout's own Core build): breaking a committed migration's
+    YAML after registration answers ``registered: true`` with a ``reason`` and
+    no ``indexStale`` at all.
+    """
+    env = _sandbox_env(tmp_path)
+    root = tmp_path / "repo"
+    root.mkdir()
+    _init_git_repo(root, env)
+    _register_a_fresh_project(root, env)
+
+    (root / ".theurian" / "migrations" / "broken.yaml").write_text(
+        "not: yaml: [\n", encoding="utf-8"
+    )
+
+    status_result = _run_real_cli(["project", "status", "--json"], cwd=root, env=env)
+
+    assert status_result.returncode == 0, status_result.stderr
+    payload = json.loads(status_result.stdout)
+    assert payload["registered"] is True
+    assert "reason" in payload
+    assert "indexStale" not in payload
+
+
+@pytest.mark.skipif(_GIT is None, reason="git is required to build this row's sandbox")
+def test_a_corrupt_state_pointer_produces_the_real_payload_the_a2_row_assumes(
+    tmp_path: Path,
+) -> None:
+    """AC-6, the A2 face: a corrupt state pointer in an otherwise-resolved project.
+
+    Reproduced end to end and checked in before this test was written
+    (2026-09-07, against this checkout's own Core build): registering a
+    project, running ``migrate apply`` to build its state, and then
+    overwriting ``.theurian/state/active.json`` with non-JSON bytes answers
+    ``project status --json`` on its *resolved* branch -- ``registered:
+    true``, unlike the A1 row above -- with ``statePointerCorrupt: true``,
+    ``indexStale`` present, and a ``reason``. This is the arm round one
+    (code review HIGH) found the hook's warning misdescribing as
+    "could not be fully resolved".
+    """
+    env = _sandbox_env(tmp_path)
+    root = tmp_path / "repo"
+    root.mkdir()
+    _init_git_repo(root, env)
+    _register_a_fresh_project(root, env)
+    apply_result = _run_real_cli(["migrate", "apply"], cwd=root, env=env)
+    assert apply_result.returncode == 0, apply_result.stderr
+
+    (root / ".theurian" / "state" / "active.json").write_text("not json at all", encoding="utf-8")
+
+    status_result = _run_real_cli(["project", "status", "--json"], cwd=root, env=env)
+
+    assert status_result.returncode == 0, status_result.stderr
+    payload = json.loads(status_result.stdout)
+    assert payload["registered"] is True
+    assert payload["statePointerCorrupt"] is True
+    assert "reason" in payload
+    assert "indexStale" in payload
+
+
+@pytest.mark.skipif(_GIT is None, reason="git is required to build this row's sandbox")
+def test_an_unreadable_registry_produces_the_real_payload_the_b1_row_assumes(
+    tmp_path: Path,
+) -> None:
+    """AC-6, the B1 face: a registry that will not parse, after a real registration.
+
+    Reproduced end to end and checked in before this test was written
+    (2026-09-07): overwriting ``THEURIAN_DATA_DIR/projects.json`` with
+    non-JSON text after registration answers ``registered: null`` with a
+    ``reason``.
+    """
+    env = _sandbox_env(tmp_path)
+    root = tmp_path / "repo"
+    root.mkdir()
+    _init_git_repo(root, env)
+    _register_a_fresh_project(root, env)
+
+    registry_path = tmp_path / "data" / "projects.json"
+    registry_path.write_text("{ this is not json", encoding="utf-8")
+
+    status_result = _run_real_cli(["project", "status", "--json"], cwd=root, env=env)
+
+    assert status_result.returncode == 0, status_result.stderr
+    payload = json.loads(status_result.stdout)
+    assert payload["registered"] is None
+    assert "reason" in payload
+
+
+# -- End to end: the shipped hook against the real Core binary (LOW-2, adversarial) -
+#
+# Every row above that exercises the broken-context branch feeds the hook a
+# single compact-JSON line through the ``theurian`` stub. Real Core answers
+# ``--json`` with ``json.dumps(..., indent=2, sort_keys=True)`` -- multi-line,
+# keys sorted -- and nothing before this row ever put that shape in front of
+# the hook's own greps, which match on a fixed key ordering
+# (``'"reason": *"'``) that a multi-line payload still satisfies but that a
+# format change could silently stop matching. This row is the one place that
+# risk is closed: the shipped hook script, run against the real ``theurian``
+# binary this checkout built, over a real broken-migration repository.
+
+
+def _real_core_hook_env(tmp_path: Path, plugin_root: Path) -> dict[str, str]:
+    """The hook's own PATH, pointed at the real Core binary instead of a stub.
+
+    ``curl`` still answers healthy without opening a socket -- the same stub
+    :func:`_make_sandbox` installs for ``daemon_healthy=True`` -- so the hook
+    reaches ``theurian project status --json`` without a running daemon. Real
+    ``git`` has to be on the same ``PATH`` because ``resolve_context`` shells
+    out to it, same as :func:`_sandbox_env` for the CLI-only fidelity rows.
+    """
+    assert _GIT is not None
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    curl = bin_dir / "curl"
+    curl.write_text(_CURL_HEALTHY_STUB, encoding="utf-8")
+    curl.chmod(0o755)
+    return {
+        "PATH": f"{_REAL_THEURIAN.parent}:{bin_dir}:{Path(_GIT).parent}:/usr/bin:/bin",
+        "HOME": str(tmp_path / "home"),
+        "THEURIAN_DATA_DIR": str(tmp_path / "data"),
+        "CLAUDE_PLUGIN_ROOT": str(plugin_root),
+    }
+
+
+@pytest.mark.skipif(_GIT is None, reason="git is required to build this row's sandbox")
+def test_the_shipped_hook_warns_a_real_broken_migration_repository_end_to_end(
+    tmp_path: Path,
+) -> None:
+    """The shipped hook script, the real Core binary, a real broken repo, one call.
+
+    Round one (adversarial LOW): no committed row drove the real hook against
+    real Core's actual multi-line ``--json`` output before this one -- every
+    row exercising this branch fed the hook a payload this module chose. If a
+    future Core release reformats ``--json`` in a way the hook's greps no
+    longer match, this is the row that goes red.
+    """
+    assert _BASH is not None, "bash is required to run the plugin's hooks"
+    plugin_root = tmp_path / "plugin"
+    (plugin_root / "scripts").mkdir(parents=True)
+    shutil.copy2(PLUGIN / _HOOK_RELPATH, plugin_root / _HOOK_RELPATH)
+    shutil.copy2(PLUGIN / _LIB_RELPATH, plugin_root / _LIB_RELPATH)
+    shutil.copy2(PLUGIN / _DECLARATION_RELPATH, plugin_root / _DECLARATION_RELPATH)
+    env = _real_core_hook_env(tmp_path, plugin_root)
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    _init_git_repo(root, env)
+    _register_a_fresh_project(root, env)
+    (root / ".theurian" / "migrations" / "broken.yaml").write_text(
+        "not: yaml: [\n", encoding="utf-8"
+    )
+
+    result = subprocess.run(  # noqa: S603 - fixed argv, sandboxed environment
+        [_BASH, str(plugin_root / _HOOK_RELPATH)],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "degraded" in result.stderr
+    assert "doctor" in result.stderr
+    assert "could not be fully resolved" not in result.stderr
