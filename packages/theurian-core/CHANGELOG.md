@@ -521,6 +521,45 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   The TOCTOU *window* itself is unchanged and recorded on the issue: closing it
   needs the record write to hold a descriptor opened before the build.
 
+- **`theurian setup`'s data-directory probe now reports a dangling or
+  self-referential symbolic link as a conflict, not as missing**
+  ([#362](https://github.com/theurian/theurian/issues/362)). `exists()` and
+  `is_dir()` both catch the `ENOENT`/`ELOOP` a dead or self-referential link
+  raises and answer `False`, so `probe_data_directory` read `missing` over a
+  name that was already occupied, and `apply_data_directory`'s
+  `mkdir(parents=True, exist_ok=True)` then raised a raw `FileExistsError` —
+  `exist_ok` suppresses that error only for a real directory already at the
+  path, not for a link sitting in its place. The new arm —
+  `directory.is_symlink() and not directory.exists()` — catches exactly the
+  two shapes that crash `apply` and nothing wider: a symlink to a real,
+  private directory still falls through to the ordinary arms and reads
+  `satisfied`, equivalent to pointing `THEURIAN_DATA_DIR` at that directory
+  directly, since `default_data_dir` never resolves the variable before using
+  it.
+- **`theurian setup` and `theurian init` stop treating a non-UTF-8
+  `.gitignore` as a fault**
+  ([#367](https://github.com/theurian/theurian/issues/367)). Both read and
+  wrote the file as strict UTF-8, so a single byte outside it raised
+  `UnicodeDecodeError`: `SetupService._probe`'s generic net turned that into
+  `conflicting`, "Could not check gitignore.", demanding
+  `--approve-conflicts` over an encoding artefact the block's own ASCII
+  markers never touch, and `init` surfaced it as a traceback with an empty
+  machine channel. Both readers and the one writer now use
+  `errors="surrogateescape"`, which cannot fail to decode and round-trips
+  every escaped byte back to itself: `init` now succeeds and preserves the
+  file's bytes losslessly, and the setup probe goes back to answering the
+  question it is for — block identity, compared over ASCII marker lines
+  only. Genuine filesystem faults (unreadable/unwritable) still refuse with
+  an accurate remedy.
+
+  **Supersedes this section's earlier statement, in the entry above under
+  #571, that a `.gitignore` that "is **not UTF-8** … now reach\[es] the
+  caller as documents naming the path in the way."** That sentence described
+  #367's own state at the time #571 landed: `init` had already turned the raw
+  traceback into a clean refusal. This change replaces that refusal with
+  success, so `init` run against such a file today writes it rather than
+  reporting a fault.
+
 ## [0.1.0] - 2026-09-05
 
 ### Added
