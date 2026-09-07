@@ -21,8 +21,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and points at `/theurian:doctor` on any degraded context Core reports — not
   only an unregistered project or a stale index, but also a broken
   `.theurian/migrations`, an unreadable registry, or a corrupt state pointer
-  — surfacing Core's `remedy` when present and never the raw `reason`, which
-  can carry project file bytes
+  — printing only a fixed literal, never the raw `reason`, which can carry
+  project file bytes; `/theurian:doctor` shows Core's own `remedy` in full
   ([#380](https://github.com/theurian/theurian/issues/380)).
 - `compatibility.yaml` declaring the supported Core range and protocol version.
 - `mcp/theurian.mcp.json` connection template, installed by `/theurian:setup`,
