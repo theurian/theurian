@@ -35,6 +35,7 @@ from theurian.domain.state import ActiveState, StateHash, compute_state_hash, st
 from theurian.security.no_follow import (
     is_a_symbolic_link_refusal,
     open_for_reading_without_following_a_link,
+    open_without_following_a_link,
     write_text_without_following_a_link,
 )
 from theurian.security.project_config import PROJECT_CONFIG_FILE
@@ -1385,6 +1386,18 @@ def ensure_gitignore(root: Path) -> tuple[bool, str]:
     endings does not come back with every line ending rewritten by a run that
     was supposed to touch Theurian's own lines only.
 
+    **``errors="surrogateescape"`` on both, too (#367).** A non-UTF-8 byte used
+    to raise ``UnicodeDecodeError`` out of the read, ending `theurian init
+    --json` in a traceback with an empty machine channel over a byte the
+    Theurian block's own markers -- pure ASCII -- never touch. Surrogate-
+    escaping decodes every byte, valid or not, into a codepoint the merge above
+    can slice and concatenate like any other; encoding the result back with the
+    same error handler turns each escaped codepoint back into the exact byte it
+    came from, so a file this function never needed to understand round-trips
+    losslessly through it. `probe_gitignore` reads the same way, for the same
+    reason: block identity is a question about the markers, not about whether
+    the rest of the file happens to be valid UTF-8.
+
     **Neither the read nor the write follows a symbolic link at the leaf**
     (#571). ``Path.write_text`` follows one and then writes through it, so a
     clone carrying ``.gitignore -> ../victim`` -- Git tracks a symlinked
@@ -1422,15 +1435,14 @@ def ensure_gitignore(root: Path) -> tuple[bool, str]:
             file, a directory in its place, a full disk. Left as it is and graded
             by the callers, which is the contract
             :mod:`theurian.security.no_follow` records for every user of these
-            openers.
-        UnicodeDecodeError: The file is not UTF-8. **Not an ``OSError``** -- it
-            is a ``ValueError`` -- which is what an earlier version of this
-            section got wrong by folding it into "any other way the read fails":
-            a ``.gitignore`` holding one non-UTF-8 byte ended `theurian init
-            --json` in a traceback with an empty machine channel (measured at
-            ``8f975d50``; #571's own filing note said to check #367 and this is
-            its ``init`` face). ``propose --local`` already caught it beside
-            ``OSError``; ``init`` now does too.
+            openers. No longer raised for a non-UTF-8 byte (#367): that used to
+            surface here as ``UnicodeDecodeError``, a ``ValueError`` an
+            ``except OSError`` does not see, which is what an earlier version of
+            this section got wrong by folding it into "any other way the read
+            fails" -- measured at ``8f975d50``, a ``.gitignore`` holding one such
+            byte ended `theurian init --json` in a traceback with an empty
+            machine channel. Surrogate-escaping the read retires the whole class
+            rather than adding a second caught type.
     """
     block = render_gitignore_block()
     gitignore = root / ".gitignore"
@@ -1447,10 +1459,36 @@ def ensure_gitignore(root: Path) -> tuple[bool, str]:
         updated = f"{existing}{separator}\n{block}\n" if existing else f"{block}\n"
 
     try:
-        write_text_without_following_a_link(gitignore, updated)
+        _write_gitignore(gitignore, updated)
     except OSError as exc:
         raise _gitignore_link_refusal(gitignore, exc) from exc
     return True, block
+
+
+def _write_gitignore(gitignore: Path, text: str) -> None:
+    """The ``.gitignore``-specific twin of ``write_text_without_following_a_link``.
+
+    That helper hardcodes strict UTF-8, which is right for every other caller --
+    JSON documents Theurian itself renders, always valid UTF-8 by construction --
+    and wrong for this one: *text* can carry the surrogate codepoints
+    :func:`_read_authored_file` produced for a byte outside UTF-8, and encoding
+    those in strict mode raises ``UnicodeEncodeError`` ("surrogates not
+    allowed"), the write-side mirror of the read-side defect #367 closes.
+    ``errors="surrogateescape"`` is the same handler the read used, so each
+    escaped codepoint becomes the exact byte it came from rather than being
+    substituted or refused.
+    """
+    descriptor = open_without_following_a_link(gitignore)
+    try:
+        handle = os.fdopen(descriptor, "w", encoding="utf-8", newline="", errors="surrogateescape")
+    except BaseException:
+        # `os.fdopen` takes ownership of the descriptor only once it returns, so
+        # this arm is the one place the descriptor would leak -- the same guard
+        # `write_text_without_following_a_link` carries for its own `fdopen`.
+        os.close(descriptor)
+        raise
+    with handle:
+        handle.write(text)
 
 
 def _read_authored_file(gitignore: Path) -> str:
@@ -1465,10 +1503,13 @@ def _read_authored_file(gitignore: Path) -> str:
     Raises:
         ProjectError: The path is a symbolic link.
         OSError: Anything else the open or the read refuses with.
-        UnicodeDecodeError: The file is not UTF-8 (#367's ``init`` face). A
-            ``ValueError`` and not an ``OSError``, so a caller listing only the
-            latter does not catch it -- which is what
-            :func:`ensure_gitignore`'s ``Raises:`` section now says.
+
+    No longer raises ``UnicodeDecodeError`` for a non-UTF-8 file (#367): the
+    open decodes with ``errors="surrogateescape"``, which cannot fail to
+    decode. What used to be the caller's `except (OSError, UnicodeDecodeError)`
+    arm is no longer reachable through this function for that reason -- the
+    exception type is not removed from those `except` clauses because they are
+    outside this module, but nothing this function does can raise it any more.
     """
     try:
         descriptor = open_for_reading_without_following_a_link(gitignore)
@@ -1477,7 +1518,7 @@ def _read_authored_file(gitignore: Path) -> str:
     except OSError as exc:
         raise _gitignore_link_refusal(gitignore, exc) from exc
     try:
-        handle = os.fdopen(descriptor, encoding="utf-8", newline="")
+        handle = os.fdopen(descriptor, encoding="utf-8", newline="", errors="surrogateescape")
     except BaseException:
         # `os.fdopen` takes ownership of the descriptor only once it returns, so
         # this arm is the one place the descriptor would leak -- the same guard

@@ -32,11 +32,18 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fakes.setup import FakeMcpConfig, FakeService
+from setup_migrations import state_hash_from_the_loader, unchecked_migrations
 from typer.testing import CliRunner
 
 from theurian.application import project_service
+from theurian.application.setup_context import SetupContext
+from theurian.application.setup_steps import probe_gitignore
 from theurian.cli.main import app
 from theurian.domain.project import GITIGNORE_BLOCK_END, GITIGNORE_BLOCK_START
+from theurian.domain.setup import StepStatus
+from theurian.infrastructure.claude.mcp_config import ConnectionSpec
+from theurian.infrastructure.secrets.file_store import FileSecretStore
 
 pytestmark = pytest.mark.integration
 
@@ -481,29 +488,88 @@ def test_init_refuses_a_regular_file_where_a_derived_directory_belongs(
     assert "theurian init" in payload["remedy"]
 
 
-def test_init_answers_a_gitignore_that_is_not_utf_8(project: Path) -> None:
-    """Round one, adversarial M-7: `UnicodeDecodeError` is a `ValueError`, not an `OSError`.
+def test_init_succeeds_on_a_gitignore_that_is_not_utf_8(project: Path) -> None:
+    """#367's `setup` face closes what its `init` face only narrowed.
 
-    The arm added for the filesystem failures listed only ``OSError``, and its
-    ``Raises:`` section said that covered "any other way the read fails" -- false
-    of a decode. One non-UTF-8 byte in ``.gitignore`` went on ending `theurian
-    init --json` in a traceback with an empty machine channel (measured at
-    ``8f975d50``). This is #367's ``init`` face; its ``setup`` face is that
-    issue's own and is untouched here.
-
-    ``propose --local`` has caught the pair together since it was written, which
-    is where the shape is taken from -- so this also pins the two callers of
-    ``ensure_gitignore`` answering the same input the same way.
+    Round one, adversarial M-7 gave the raw ``UnicodeDecodeError`` a clean
+    refusal instead of a traceback -- correct for a decode failure that cannot
+    be repaired without understanding the byte, and this file pinned exactly
+    that refusal (`"UTF-8" in payload["remedy"]`) until this fix. But the
+    refusal was never load-bearing: the block ``ensure_gitignore`` writes and
+    the check ``probe_gitignore`` runs are both pure ASCII, so nothing about
+    *this* file's own job needs the rest of ``.gitignore`` to be valid UTF-8 at
+    all. Surrogate-escaping the read and the write retires the refusal outright
+    rather than translating it: the original bytes -- still not valid UTF-8,
+    still never decoded as such -- round-trip through the merge unexamined.
     """
-    (project / ".gitignore").write_bytes(b"*.log\n\xff\xfe\x00bad\n")
+    original = b"*.log\n\xff\xfe\x00bad\n"
+    (project / ".gitignore").write_bytes(original)
 
     code, payload = _init_json()
 
-    assert code == 1, payload
-    assert payload["error"], "the decode failure is reported rather than swallowed"
-    assert "UTF-8" in payload["remedy"], (
-        f"the cure does not name the encoding that is the actual cause: {payload['remedy']}"
+    assert code == 0, payload
+    assert payload["gitignoreUpdated"] is True
+    on_disk = (project / ".gitignore").read_bytes()
+    assert on_disk.startswith(original), (
+        f"the pre-existing non-UTF-8 bytes did not survive the rewrite: {on_disk!r}"
     )
+    assert GITIGNORE_BLOCK_START.encode("utf-8") in on_disk
+
+
+def test_ensure_gitignore_round_trips_a_non_utf8_byte_through_the_merge(tmp_path: Path) -> None:
+    """AC-4, at the function `init` wraps rather than through the CLI.
+
+    Narrower than the CLI test above: this asserts on ``ensure_gitignore``'s own
+    return value and the bytes it leaves behind, so a future change to how
+    ``init`` reports success cannot hide a regression here.
+    """
+    root = tmp_path / "repo"
+    root.mkdir()
+    original = b"*.log\n\xe9\nnode_modules/\n"
+    (root / ".gitignore").write_bytes(original)
+
+    changed, block = project_service.ensure_gitignore(root)
+
+    assert changed is True
+    on_disk = (root / ".gitignore").read_bytes()
+    assert on_disk == original + b"\n" + block.encode("utf-8") + b"\n"
+
+
+def test_a_non_utf8_gitignore_reaches_satisfied_through_one_real_init_no_loop(
+    project: Path,
+) -> None:
+    """AC-5: the probe's remedy is `theurian init`, and this confirms it is not
+    a loop -- the remedy sends the reader at a command that used to refuse the
+    very file the probe was refusing to check, an unbreakable cycle for a byte
+    neither side needed to look at. One real `init` now converges it.
+    """
+    (project / ".gitignore").write_bytes(b"*.log\n\xe9\n")
+    data_dir = project.parent / "datadir" / ".theurian"
+    context = SetupContext(
+        home=project.parent,
+        data_dir=data_dir,
+        port=7419,
+        project_root=project,
+        connection=ConnectionSpec(port=7419),
+        mcp_config=FakeMcpConfig(),
+        secrets=FileSecretStore(data_dir),
+        health=lambda: None,
+        service=FakeService(),
+        executable="",
+        check_migrations=unchecked_migrations,
+        current_state_hash=state_hash_from_the_loader,
+    )
+
+    before = probe_gitignore(context)
+    assert before.status is StepStatus.MISSING, (
+        f"the probe should read the missing block, not choke on the byte: {before.summary}"
+    )
+
+    code, payload = _init_json()
+    assert code == 0, payload
+
+    after = probe_gitignore(context)
+    assert after.status is StepStatus.SATISFIED, after.summary
 
 
 @_NEEDS_SYMLINKS

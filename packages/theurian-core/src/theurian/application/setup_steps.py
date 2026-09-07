@@ -1424,7 +1424,14 @@ def probe_gitignore(context: SetupContext) -> SetupStep:
             f"{gitignore} does not exist, so nothing ignores the derived artifacts."
         )
 
-    content = gitignore.read_text(encoding="utf-8", newline="")
+    # `errors="surrogateescape"`, or a `.gitignore` holding one non-UTF-8 byte
+    # raises `UnicodeDecodeError` here -- caught only by `SetupService._probe`'s
+    # generic net, which reports `conflicting`, "Could not check gitignore." and
+    # demands consent over an encoding artefact the file's own rules never
+    # touch (#367). Surrogate-escaping never fails to decode, so this step goes
+    # back to answering the question it is about -- block identity -- for a file
+    # `ensure_gitignore` reads and rewrites the same way.
+    content = gitignore.read_text(encoding="utf-8", newline="", errors="surrogateescape")
     try:
         span = locate_gitignore_block(content, gitignore)
     except ProjectError:
