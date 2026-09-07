@@ -35,7 +35,7 @@ at ingestion (decision 3's third *Controlled by* row) and the gate is handed a
 payload, not a record. A change that puts a response's text into that envelope is
 outside what this file would notice.
 
-Marked ``unit``; touches no filesystem at all.
+Marked ``unit``; every fixture is built in memory and no test here opens a file.
 """
 
 from __future__ import annotations
@@ -72,10 +72,11 @@ PROVIDER: Final = "github"
 def _sentinel(name: str) -> str:
     """A string carried by exactly one field, so coverage is decided by value.
 
-    Every fixture string below is distinct. Membership in the scanned set is then
-    an exact answer about *that* field rather than an accident of two fields
-    sharing a value -- which is how a fixture reusing ``"github"`` everywhere
-    would report an unscanned field as covered.
+    Membership in the scanned set is then an exact answer about *that* field
+    rather than an accident of two fields sharing a value -- which is how a
+    fixture reusing ``"github"`` everywhere would report an unscanned field as
+    covered. :func:`test_no_two_fixture_fields_share_a_sentinel` is what holds
+    the distinctness this rests on.
     """
     return f"sentinel-{name}"
 
@@ -171,10 +172,10 @@ _WRITTEN: Final[tuple[tuple[str, gate.ReviewRecordPayload, dict[str, Any]], ...]
 #: this model's own enum, and ``externalId`` at the root names a different record
 #: in each. One reason per entry, so each can be argued with on its own.
 #:
-#: **An entry here is a claim about ADR-0030 decision 3's table**, and the table
-#: has been wrong once: ``participant.external_id`` sat on the provider's side
-#: until PR #596 round 1 measured the adapter writing an author's login into it.
-#: A field whose line cannot be written without hedging belongs in
+#: **An entry here is a claim about ADR-0030 decision 3's table**, and that table
+#: was wrong about ``participant.external_id``: the row sat on the provider's
+#: side until PR #596 round 1 measured the adapter writing an author's login into
+#: it. A field whose line cannot be written without hedging belongs in
 #: ``_scanned_values`` instead.
 _EXEMPT: Final[dict[tuple[str, str], str]] = {
     # -- ids and structure the provider assigns --------------------------------
@@ -323,6 +324,27 @@ def test_a_new_string_leaf_in_a_written_document_is_reported(
     reported = {path for path, _value in _uncovered(kind, planted, _scanned(record))}
 
     assert reported == {"noteToSelf", "author.avatarUrl", "reactions[].emoji"}
+
+
+def test_no_two_fixture_fields_share_a_sentinel() -> None:
+    """Coverage above is decided by value, so two fields sharing one hides a gap.
+
+    Across all three documents, not within one: a value the event writes and the
+    thread also writes would still be an exact answer per record, but the reader
+    of :func:`_sentinel` is told the strings are distinct, and that sentence is
+    the one this holds.
+    """
+    sentinels = [
+        value
+        for _kind, _record, document in _WRITTEN
+        for _path, value in _string_leaves(document)
+        if value.startswith("sentinel-")
+    ]
+
+    assert sentinels, "no fixture string is a sentinel, so the check below proves nothing"
+    assert len(sentinels) == len(set(sentinels)), (
+        f"two fields share a value: {sorted({v for v in sentinels if sentinels.count(v) > 1})}"
+    )
 
 
 def test_no_exemption_names_a_field_no_document_has() -> None:

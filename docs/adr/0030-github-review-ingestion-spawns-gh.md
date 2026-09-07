@@ -625,9 +625,11 @@ both shipped:
 
 - **The scan reads `external_id` in both redaction states** since PR #596 round 1
   ([the round record](https://github.com/theurian/theurian/pull/596#issuecomment-5573725953),
-  adversarial H-D). Reading a real node id costs nothing — no family has ever
-  matched one — so the field is read unconditionally rather than only where it
-  can be author-chosen.
+  adversarial H-D). Which of the two a given id is cannot be decided from the
+  record — a rule recognising node-id shapes would restate the adapter's mapping
+  in a second place, and would be wrong in the direction that skips a login — so
+  the field is read unconditionally rather than only where it can be
+  author-chosen.
 - **Redaction pseudonymises a login-fallback id before the record is written**
   (R-12, decision 3's redaction half). Under
   `providers.review.redactParticipantNames`, a participant whose `external_id`

@@ -462,9 +462,14 @@ def _scanned_values(payload: ReviewRecordPayload) -> Iterator[tuple[str, str | N
     now says so.** The table put ``external_id`` on the provider's side, which
     holds only while a node id exists: the GitHub adapter falls back to the
     author's *login*, and a login is a string its owner chooses and can change.
-    Scanning a real node id costs nothing -- it has never matched a family -- so
-    the id is read in both redaction states rather than only in the state where it
-    can be author-chosen (PR #596 round 1, adversarial H-D).
+    **Which of the two a given id is cannot be decided here.** What reaches this
+    module is a string, and a rule that recognised node-id shapes would be a
+    second copy of the adapter's mapping -- wrong the day GitHub mints ids in
+    another shape, and wrong in the direction that skips a login. So the id is
+    read in both redaction states rather than only in the state where it can be
+    author-chosen; a node id the detector does flag costs one refused record
+    naming ``author.externalId``, which is the cheaper of the two errors
+    (PR #596 round 1, adversarial H-D).
 
     ``milestone`` and ``file_path`` are yielded only when the provider gave one:
     ``None`` is an absence, and scanning the string ``"None"`` would be scanning

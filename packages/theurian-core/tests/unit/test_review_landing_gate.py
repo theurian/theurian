@@ -4,7 +4,7 @@ Five claims, each with its own cases:
 
 * **The scan reads decision 3's untrusted rows, and every participant id
   beside them.** A synthetic credential is planted in every one of them **in
-  turn** -- sixteen positions, one case each -- because a guard no planted input
+  turn**, one case per row of :data:`_PLANTED`, because a guard no planted input
   reaches survives its own deletion. The negative cases plant the same string in
   a structural field and assert the run is clean, which is where the boundary is.
   A participant's ``external_id`` moved onto the planted side in PR #596 round 1:
