@@ -637,6 +637,17 @@ keeps the provider's stable id, so identity graphs survive the redaction. It is
 read at ingestion and applied at landing, so it governs what a run writes rather
 than what is already on disk.
 
+**Where GitHub gives no stable id, the id that lands is a pseudonym rather than
+the login.** The adapter records `external_id` as *node id or login*, so an
+answer that carries no `id` for an author would otherwise put that author's login
+— a name, under a setting turned on to remove names — into the record. Under
+redaction such an id is replaced by `redacted-` and a truncated SHA-256 of it:
+deterministic, so the same person keeps one identity across runs and projects,
+and unsalted for the same reason. Read that as *the login is not in the file*,
+not as *the login cannot be recovered*: the input space is small enough to
+enumerate, so anyone holding a landed record and a list of candidate logins can
+test them. Ids GitHub did answer with are kept verbatim.
+
 If you operate Theurian somewhere with data-protection obligations, treat the
 canonical store as containing personal data and apply your normal retention
 policy to `.theurian/`.

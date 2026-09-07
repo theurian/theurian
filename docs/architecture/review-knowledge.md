@@ -200,10 +200,16 @@ Review data contains author identity and opinions.
   by `security/project_config.py::read_review_participant_redaction` and applied
   by `application/review_landing_gate.py` before a record becomes a file: every
   participant's `display_name` becomes the one fixed `REDACTED_DISPLAY_NAME`
-  placeholder and their `external_id` is left alone.
+  placeholder, and their `external_id` is kept where it is the provider's node id
+  and replaced by a stable pseudonym where it is the author's own login.
   `tests/unit/test_review_landing_gate.py::test_no_participant_reachable_from_a_landed_record_keeps_its_name`
   walks every position a record can hold a participant in, so the claim is over
   the record rather than over the fields someone remembered.
+  The login case is the adapter's fallback — `external_id` is *node id or login*,
+  so an answer carrying no `id` puts author-chosen text there — and leaving it
+  alone made *enabling* this setting publish the name it promised to remove
+  (PR #596 round 1). `...::test_a_login_fallback_id_is_pseudonymised_before_it_can_land`
+  is what fails if the raw login can land again.
 - Ingested review evidence is the **source**, not a cache: upstream comments are
   editable and deletable, so a discarded local copy of a deleted comment is data
   loss and no refetch recovers it. [ADR-0030](../adr/0030-github-review-ingestion-spawns-gh.md)

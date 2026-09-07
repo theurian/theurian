@@ -1826,8 +1826,16 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             ),
             (
                 "every participant's `display_name` becomes the one fixed "
-                "`REDACTED_DISPLAY_NAME` placeholder and their `external_id` is left alone"
+                "`REDACTED_DISPLAY_NAME` placeholder, and their `external_id` is kept "
+                "where it is the provider's node id and replaced by a stable pseudonym "
+                "where it is the author's own login"
             ),
+            # The half PR #596 round 1 added, pinned as its own fragment because it
+            # is droppable on its own: a rewrite that keeps the sentence above and
+            # loses this one leaves a privacy surface describing a control that
+            # once made *enabling* redaction the more dangerous setting, with no
+            # trace of why the id half exists.
+            "made *enabling* this setting publish the name it promised to remove",
             # The header caveat, which is what stops the whole document reading as
             # shipped behaviour. It enumerates the three parts that *are*, so a
             # fourth shipping without moving this sentence leaves a design

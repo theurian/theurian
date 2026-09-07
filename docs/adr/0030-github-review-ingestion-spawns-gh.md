@@ -604,13 +604,43 @@ which side of the trust boundary it is served on:
 | repository `owner/name`, PR number, event key, review / thread / comment ids | the provider | structural | no — no free text |
 | thread state, resolution state, `isResolved` / `isOutdated`, timestamps, diff side, line numbers | the provider | structural | no |
 | head, fix and merge commit shas; linked issue numbers; CI rollup outcome | the provider | structural | no |
-| participant `external_id` | the provider | structural | no |
+| participant `external_id` | the provider | structural | no — **see the correction below** |
 | **comment body, review body, PR title, PR description** | the author | **untrusted** | **yes** |
 | **participant `display_name`** | the author | **untrusted** | **yes** |
 | **file path as received** | the author (whoever named the file in the PR) | **untrusted** | **yes** |
 | **labels, head branch name, milestone name** | the author | **untrusted** | **yes** |
 | `SourceAnchor` (provider, source URI, upstream object id, path) | **Theurian**, at ingestion | structural | no — it is written here, not received |
 | last-seen-run stamp (which run last observed the record upstream) | **Theurian**, at ingestion | structural | no |
+
+**Correction, 2026-09-08: the participant `external_id` row holds only while a
+node id exists.** The row above is left as it was written; this note is what
+amends it. `infrastructure/github/response.optional_participant` reads
+`external_id` as *node id or login*, so an actor GitHub answers with no `id` — an
+`Actor` implementation that is not a `Node`, or a partly-errored response
+carrying `id: null` — arrives with the **author's own login** in that field. A
+login is chosen by its owner and can be changed, which is the untrusted side of
+this very table, and a GitHub login is up to 39 characters of `[A-Za-z0-9-]`,
+so `AKIAIOSFODNN7EXAMPLE` is a login somebody can register. Two consequences,
+both shipped:
+
+- **The scan reads `external_id` in both redaction states** since PR #596 round 1
+  ([the round record](https://github.com/theurian/theurian/pull/596#issuecomment-5573725953),
+  adversarial H-D). Reading a real node id costs nothing — no family has ever
+  matched one — so the field is read unconditionally rather than only where it
+  can be author-chosen.
+- **Redaction pseudonymises a login-fallback id before the record is written**
+  (R-12, decision 3's redaction half). Under
+  `providers.review.redactParticipantNames`, a participant whose `external_id`
+  equals its pre-redaction `display_name` — the adapter's own signature for the
+  fallback — lands under `redacted-<sha256 prefix>` instead, deterministically,
+  so the record keeps a stable identity and the login never becomes a file. A
+  node-id-shaped id is kept verbatim, which is what makes the identity graph
+  survive the redaction.
+
+What the round measured is why both were needed rather than either: with the
+field unscanned and unredacted, turning R-12 **on** turned a `block` refusal into
+a landing that published the login under `externalId` while replacing the
+`displayName` R-12 promises to remove.
 
 **Three values in the *Controlled by* column, not two.** A record carries fields
 Theurian itself writes: the `SourceAnchor` (FR-S3) that names the upstream object,

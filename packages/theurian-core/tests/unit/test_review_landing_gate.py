@@ -2,11 +2,14 @@
 
 Five claims, each with its own cases:
 
-* **The scan reads exactly decision 3's untrusted rows.** A synthetic credential
-  is planted in every one of them **in turn** -- twelve positions, one case each
-  -- because a guard no planted input reaches survives its own deletion. The
-  negative cases plant the same string in a structural field and assert the run
-  is clean, which is where the boundary is.
+* **The scan reads decision 3's untrusted rows, and every participant id
+  beside them.** A synthetic credential is planted in every one of them **in
+  turn** -- sixteen positions, one case each -- because a guard no planted input
+  reaches survives its own deletion. The negative cases plant the same string in
+  a structural field and assert the run is clean, which is where the boundary is.
+  A participant's ``external_id`` moved onto the planted side in PR #596 round 1:
+  the GitHub adapter falls back to the author's own login when the response
+  carries no node id, so it is not the provider's value it was recorded as.
 * **``block`` withholds the record whole, and the file is never created.** The
   assertion is on the filesystem: the gate and
   :class:`~theurian.infrastructure.review_evidence.ReviewEvidenceStore` are
@@ -16,9 +19,11 @@ Five claims, each with its own cases:
 * **``off`` scans nothing**, observed with a counter around the detector rather
   than by an absence of output -- a gate that scanned and discarded the findings
   would produce the same empty report.
-* **Redaction replaces every display name and keeps every provider id**, and the
-  scan reads the *post*-redaction candidate, so a credential that only ever sat
-  in a name this run is about to drop does not refuse the record.
+* **Redaction replaces every display name, keeps every provider node id, and
+  pseudonymises a login-fallback id**, and the scan reads the *post*-redaction
+  candidate, so a credential that only ever sat in a name this run is about to
+  drop does not refuse the record -- while the login-fallback id, which the run
+  *would* have written, is a pseudonym by the time anything reads it.
 
 Marked ``unit`` and writes only under ``tmp_path``.
 """
@@ -36,6 +41,7 @@ import pytest
 from theurian.application.project_service import ProjectPaths
 from theurian.application.review_landing_gate import (
     REDACTED_DISPLAY_NAME,
+    REDACTED_ID_PREFIX,
     LandingCandidate,
     ReviewRecordPayload,
     ReviewScanOutcome,
@@ -58,7 +64,7 @@ from theurian.infrastructure.review_evidence import (
     IngestionRun,
     ReviewEvidenceStore,
 )
-from theurian.security.content_secrets import MAX_FINDINGS
+from theurian.security.content_secrets import MAX_FINDINGS, scan_text
 from theurian.security.project_config import PROJECT_CONFIG_FILE, SecretScanPolicy
 
 pytestmark = pytest.mark.unit
@@ -105,6 +111,30 @@ def _settings(*, policy: str | None = None, redact: bool | None = None) -> str:
 
 def _participant(name: str = "Reviewer One") -> ReviewParticipant:
     return ReviewParticipant(provider=PROVIDER, external_id="U_kwDO1", display_name=name)
+
+
+def _identified(external_id: str) -> ReviewParticipant:
+    """A participant whose *id* is the planted value and whose name is ordinary.
+
+    One field at a time, so a case that refuses says which of the two positions
+    the scan read.
+    """
+    return ReviewParticipant(
+        provider=PROVIDER, external_id=external_id, display_name="Reviewer One"
+    )
+
+
+def _login_only(login: str) -> ReviewParticipant:
+    """The shape the GitHub adapter builds when a response carries no node id.
+
+    ``response.optional_participant`` reads ``external_id`` as *node id or login*
+    and ``display_name`` as *login or external id*, so both fields hold the same
+    author-chosen string. Written out here rather than imported, because what this
+    file drives is the record the gate meets, not the mapper that made it -- the
+    adapter's own side is
+    ``tests/integration/test_gh_review_provider.py::test_an_author_the_response_gave_no_node_id_is_recorded_under_its_login``.
+    """
+    return ReviewParticipant(provider=PROVIDER, external_id=login, display_name=login)
 
 
 def _event(**overrides: object) -> ReviewEvent:
@@ -182,13 +212,17 @@ def _screen(
 
 # -- the scanned population ---------------------------------------------------
 
-#: Every author-controlled field of decision 3's table, as a builder that puts
-#: ``SECRET`` in exactly that field and the literal the report should name.
+#: Every author-controlled field of decision 3's table plus every participant id,
+#: as a builder that puts ``SECRET`` in exactly that field and the literal the
+#: report should name.
 #:
-#: **Twelve positions, one case each**, because a field the guard forgot passes
+#: **Sixteen positions, one case each**, because a field the guard forgot passes
 #: every aggregate assertion: the three that look structural -- a label, the head
 #: branch name, the milestone -- are the row decision 3 says is most easily got
-#: wrong, and each is planted on its own here.
+#: wrong, and each is planted on its own here. The four ``externalId`` rows are
+#: the row the table itself had wrong (PR #596 round 1): they sit here rather than
+#: in :data:`_STRUCTURAL` because the adapter writes a login into that field
+#: whenever GitHub's answer carried no node id.
 _PLANTED: Final[tuple[tuple[str, Callable[[], ReviewRecordPayload], str, str | None], ...]] = (
     ("event title", lambda: _event(title=SECRET), "title", None),
     ("event body", lambda: _event(body=f"see {SECRET}"), "body", None),
@@ -196,6 +230,12 @@ _PLANTED: Final[tuple[tuple[str, Callable[[], ReviewRecordPayload], str, str | N
         "event author display name",
         lambda: _event(author=_participant(SECRET)),
         "author.displayName",
+        None,
+    ),
+    (
+        "event author external id",
+        lambda: _event(author=_identified(SECRET)),
+        "author.externalId",
         None,
     ),
     ("head branch name", lambda: _event(head_ref_name=f"fix/{SECRET}"), "headRefName", None),
@@ -206,6 +246,12 @@ _PLANTED: Final[tuple[tuple[str, Callable[[], ReviewRecordPayload], str, str | N
         "review author display name",
         lambda: _submission(author=_participant(SECRET)),
         "author.displayName",
+        None,
+    ),
+    (
+        "review author external id",
+        lambda: _submission(author=_identified(SECRET)),
+        "author.externalId",
         None,
     ),
     ("thread file path", lambda: _thread(file_path=f"src/{SECRET}.py"), "filePath", None),
@@ -222,6 +268,12 @@ _PLANTED: Final[tuple[tuple[str, Callable[[], ReviewRecordPayload], str, str | N
         "IC_kwDO1",
     ),
     (
+        "comment author external id",
+        lambda: _thread(comments=(_comment(author=_identified(SECRET)),)),
+        "comments[0].author.externalId",
+        "IC_kwDO1",
+    ),
+    (
         "the participant who resolved the thread",
         lambda: _thread(
             resolution=ReviewResolution(
@@ -231,6 +283,18 @@ _PLANTED: Final[tuple[tuple[str, Callable[[], ReviewRecordPayload], str, str | N
             )
         ),
         "resolution.resolvedBy.displayName",
+        None,
+    ),
+    (
+        "the external id of the participant who resolved the thread",
+        lambda: _thread(
+            resolution=ReviewResolution(
+                state=ReviewThreadState.RESOLVED,
+                resolved_by=_identified(SECRET),
+                fix_commit="e" * 40,
+            )
+        ),
+        "resolution.resolvedBy.externalId",
         None,
     ),
 )
@@ -263,6 +327,12 @@ def test_a_secret_planted_in_any_author_controlled_field_refuses_the_record(
 
 #: The same string in a field the table calls structural, with the reason it is
 #: not scanned. A provider chooses these; nobody writes prose into them.
+#:
+#: A participant's ``external_id`` sat here until PR #596 round 1 and is in
+#: :data:`_PLANTED` now: "a provider chooses these" was false of it, because the
+#: adapter writes the author's login into that field whenever GitHub's answer
+#: carried no node id. Nothing else moved -- these eight are record ids, shas, a
+#: URL, a provider's own state vocabulary and a key this product composes.
 _STRUCTURAL: Final[tuple[tuple[str, Callable[[], ReviewRecordPayload]], ...]] = (
     ("the head commit sha", lambda: _event(head_commit=SECRET)),
     ("a linked issue id", lambda: _event(linked_issue_ids=(SECRET,))),
@@ -658,6 +728,166 @@ def test_a_redacted_record_reads_back_from_disk_with_the_placeholder(tmp_path: P
         REDACTED_DISPLAY_NAME,
         REDACTED_DISPLAY_NAME,
     ]
+
+
+# -- a login-fallback participant id (PR #596 round 1, adversarial H-D) --------
+
+
+def test_a_secret_in_a_login_fallback_participant_id_refuses_the_record(tmp_path: Path) -> None:
+    """Redaction off: the id the run would write is the id the scan reads.
+
+    A GitHub login is up to 39 characters of ``[A-Za-z0-9-]``, so
+    :data:`SECRET` -- twenty alphanumerics -- is a login somebody can register.
+    With no node id in the answer, that string is what the adapter puts in
+    ``external_id`` as well as in ``display_name``, and both positions report.
+    """
+    outcome = _screen(tmp_path, _submission(author=_login_only(SECRET)))
+
+    (verdict,) = outcome.verdicts
+    assert verdict.refused
+    assert [finding.field for finding in verdict.findings] == [
+        "author.displayName",
+        "author.externalId",
+    ]
+
+
+def test_a_login_fallback_id_is_pseudonymised_before_it_can_land(tmp_path: Path) -> None:
+    """AC-7, the half that made turning redaction *on* the more dangerous setting.
+
+    Before this fix the same record refused under the default and **landed** under
+    ``redactParticipantNames: true``, carrying the login in ``externalId`` while
+    the ``displayName`` R-12 promised to remove was replaced. The assertion is on
+    the bytes of every file the store wrote, not on the returned object: what R-12
+    promises is about a file.
+    """
+    root, config = _project(tmp_path, _settings(redact=True))
+    store = ReviewEvidenceStore(ProjectPaths.of(root).review)
+
+    outcome = screen_landing_candidates(
+        [_candidate(_submission(author=_login_only(SECRET)))], root=root, config_file=config
+    )
+    store.write(_records(outcome), run=RUN)
+
+    (landed,) = outcome.landing
+    assert not outcome.refusals
+    (person,) = _participants(landed)
+    assert person.display_name == REDACTED_DISPLAY_NAME
+    assert person.external_id.startswith(REDACTED_ID_PREFIX)
+    written = list(ProjectPaths.of(root).review.rglob("*.json"))
+    assert written, "the record was supposed to land, so there is something to sweep"
+    for path in written:
+        assert SECRET.encode("utf-8") not in path.read_bytes(), f"{path.name} carries the login"
+    assert person.external_id in "\n".join(path.read_text(encoding="utf-8") for path in written), (
+        "the pseudonym is what the record is identified by now"
+    )
+
+
+def test_a_node_id_participant_keeps_its_external_id_under_redaction(tmp_path: Path) -> None:
+    """The other direction, in one record: a real identity graph survives R-12.
+
+    Both participants of this thread are redacted in the same pass -- the comment's
+    author arrives with a node id and keeps it verbatim, the resolver arrives as a
+    login fallback and is pseudonymised. A redaction that replaced every id would
+    pass the test above and disconnect every record ever ingested.
+    """
+    thread = _thread(
+        comments=(_comment(author=_participant()),),
+        resolution=ReviewResolution(
+            state=ReviewThreadState.RESOLVED,
+            resolved_by=_login_only("octocat"),
+            fix_commit="e" * 40,
+        ),
+    )
+
+    outcome = _screen(tmp_path, thread, config=_settings(redact=True))
+
+    (landed,) = outcome.landing
+    author, resolver = _participants(landed)
+    assert author.external_id == "U_kwDO1"
+    assert resolver.external_id.startswith(REDACTED_ID_PREFIX)
+    assert resolver.external_id != "octocat"
+
+
+def test_the_same_login_pseudonymises_the_same_way_in_two_separate_runs(tmp_path: Path) -> None:
+    """AC-7: a pseudonym is a record identity, so it may not move between runs.
+
+    Two screenings under two project roots, each landing its own file, and the
+    ``externalId`` on disk compared byte for byte. A pseudonym seeded with
+    anything a run chooses -- a token, the clock, ``hash()`` -- passes every
+    single-run assertion above and makes the same person a new participant on
+    every ingest.
+    """
+    stored: list[str] = []
+    for name in ("first", "second"):
+        root, config = _project(tmp_path / name, _settings(redact=True))
+        store = ReviewEvidenceStore(ProjectPaths.of(root).review)
+        outcome = screen_landing_candidates(
+            [_candidate(_submission(author=_login_only("octocat")))],
+            root=root,
+            config_file=config,
+        )
+        store.write(_records(outcome), run=RUN)
+        (record,) = store.read_all()
+        (person,) = _participants(record.record.payload)
+        stored.append(person.external_id)
+
+    assert stored[0] == stored[1]
+    assert stored[0].startswith(REDACTED_ID_PREFIX)
+
+
+def test_two_different_logins_do_not_pseudonymise_onto_one_participant(tmp_path: Path) -> None:
+    """The positive control on determinism: a constant is stable too.
+
+    Without this, a pseudonym that ignored its input entirely would satisfy the
+    test above and collapse every author in the project onto one identity.
+    """
+    first = _screen(
+        tmp_path / "a", _submission(author=_login_only("octocat")), config=_settings(redact=True)
+    )
+    second = _screen(
+        tmp_path / "b", _submission(author=_login_only("hubot")), config=_settings(redact=True)
+    )
+
+    (one,) = _participants(first.landing[0])
+    (other,) = _participants(second.landing[0])
+    assert one.external_id != other.external_id
+
+
+def test_a_pseudonymous_id_is_not_itself_reported_as_a_secret() -> None:
+    """The pseudonym is scanned like every other field, so it must not read as one.
+
+    A substitution the detector flags would make ``block`` refuse every record it
+    redacted -- turning R-12 on would stop ingestion altogether. Two independent
+    properties keep it out: the value is 25 characters, under the detector's
+    32-character candidate floor, and lowercase hex carries no upper-case
+    character for its class gate. Both are asserted, because either alone would
+    let a change to :data:`_PSEUDONYM_DIGITS` pass unnoticed.
+    """
+    import theurian.application.review_landing_gate as gate
+
+    logins = [f"user-{index}" for index in range(200)] + [SECRET, "ghost", "octocat"]
+    for login in logins:
+        pseudonym = gate._pseudonym(login)
+        assert len(pseudonym) < 32
+        assert pseudonym == pseudonym.lower()
+        assert scan_text(pseudonym) == ()
+
+
+def test_a_login_carrying_a_lone_surrogate_is_pseudonymised_rather_than_raising() -> None:
+    """``json.loads`` decodes ``\\ud800`` into a string plain UTF-8 cannot encode.
+
+    That value reaches ``ReviewParticipant`` through the adapter's ``text``
+    reader, so a hash that encoded strictly would raise a ``UnicodeEncodeError``
+    out of the gate -- a traceback at an operator, over a document GitHub sent.
+    """
+    import theurian.application.review_landing_gate as gate
+
+    hostile = "oct\ud800cat"
+
+    pseudonym = gate._pseudonym(hostile)
+
+    assert pseudonym.startswith(REDACTED_ID_PREFIX)
+    assert pseudonym == gate._pseudonym(hostile)
 
 
 def _records(outcome: ReviewScanOutcome) -> list[EvidenceRecord]:

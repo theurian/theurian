@@ -29,6 +29,26 @@ arrived. Two consequences follow and both are deliberate:
 ``tests/unit/test_review_landing_gate.py::test_a_secret_only_in_a_display_name_redaction_removes_does_not_refuse``
 is what fails if the order is reversed.
 
+**A participant id is read in both redaction states, and under redaction the raw
+one no longer exists to read.** ``external_id`` is the provider's node id when the
+response carried one and *the author's own login* when it did not
+(:func:`~theurian.infrastructure.github.response.optional_participant`), so it is
+not reliably structural and this module treats it as text a person may have
+chosen. The two states close differently, and each has its own driving case:
+
+* **redaction off** -- the value that would be written is the value scanned, so a
+  credential-shaped login refuses the record under ``block``
+  (``test_review_landing_gate.py::test_a_secret_in_a_login_fallback_participant_id_refuses_the_record``);
+* **redaction on** -- :func:`redacted` runs first and replaces a login-fallback id
+  with a deterministic pseudonym, so the raw login is gone before the scan and
+  gone before the write; what the scan then reads is the pseudonym
+  (``test_review_landing_gate.py::test_a_login_fallback_id_is_pseudonymised_before_it_can_land``).
+
+Neither state writes the raw login while the other refuses it, which is the hole
+this pair closes: with ``external_id`` unscanned and unredacted, *enabling* R-12
+turned a refusal into a landing that published the very name R-12 promised to
+replace (PR #596 round 1, adversarial H-D).
+
 **The report names the record, never the matched bytes** -- repository, pull
 request number, record id and, for a finding inside a comment, that comment's id.
 ``index_secret_scan.py``'s reason applies unchanged: a report that quotes the
@@ -46,6 +66,7 @@ question asked of a comment body.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -70,11 +91,27 @@ from theurian.security.project_config import (
 #: What a redacted display name is replaced with (R-12).
 #:
 #: One constant for every participant rather than a per-person pseudonym: the
-#: identity graph survives on ``external_id``, which redaction leaves alone, so a
-#: distinguishable placeholder would carry back exactly the linkage the setting
-#: was turned on to remove. It is scanned like any other field -- a placeholder
-#: is not trusted input, it is simply input this module wrote.
+#: identity graph survives on ``external_id``, which redaction keeps -- verbatim
+#: where it is the provider's node id, and as :func:`_pseudonym` of itself where
+#: it is a login the adapter fell back to -- so a distinguishable placeholder
+#: here would carry back exactly the linkage the setting was turned on to remove.
+#: It is scanned like any other field -- a placeholder is not trusted input, it
+#: is simply input this module wrote.
 REDACTED_DISPLAY_NAME: Final = "[redacted]"
+
+#: What a pseudonymised participant id starts with, so a reader meeting one in a
+#: landed record can tell Theurian's substitution from the provider's own id.
+REDACTED_ID_PREFIX: Final = "redacted-"
+
+#: How many hex digits of the digest a pseudonym carries. Sixteen is 64 bits,
+#: which is more than enough to keep one project's participants distinct, and it
+#: keeps the whole value at 25 characters -- under ``content_secrets``'
+#: 32-character candidate floor, and with no upper-case character to clear its
+#: class gate with. Both are why the substitution this module writes is not then
+#: reported as a credential by the scan that runs immediately after it;
+#: ``test_review_landing_gate.py::test_a_pseudonymous_id_is_not_itself_reported_as_a_secret``
+#: is what fails if either stops holding.
+_PSEUDONYM_DIGITS: Final = 16
 
 #: The payload types one landing candidate may carry.
 ReviewRecordPayload = ReviewEvent | ReviewSubmission | ReviewThread
@@ -84,16 +121,20 @@ ReviewRecordPayload = ReviewEvent | ReviewSubmission | ReviewThread
 #: **Fixed literals, never a value that was scanned.** A location derived from
 #: the text would republish the match whenever the match *is* the location -- a
 #: file path that is itself credential-shaped is exactly that case, and it is one
-#: of the fields decision 3's table puts on the untrusted side. The two indexed
-#: forms take an integer this module counts, not a value the provider sent.
+#: of the fields decision 3's table puts on the untrusted side. The spellings that
+#: carry an index -- ``labels[i]`` and the ``comments[i]`` family, built inline
+#: rather than kept here -- take an integer this module counts, not a value the
+#: provider sent.
 _FIELD_LITERALS: Final = {
     "title": "title",
     "body": "body",
     "head_ref_name": "headRefName",
     "milestone": "milestone",
     "author": "author.displayName",
+    "author_id": "author.externalId",
     "file_path": "filePath",
     "resolved_by": "resolution.resolvedBy.displayName",
+    "resolved_by_id": "resolution.resolvedBy.externalId",
 }
 
 
@@ -313,10 +354,28 @@ def _verdict(
 def redacted(payload: ReviewRecordPayload) -> ReviewRecordPayload:
     """``payload`` with every participant's display name replaced (R-12).
 
-    ``external_id`` is untouched on purpose: it is what the identity graph is
-    built on, so redaction that dropped it would not anonymise the record, it
+    A provider's node id is untouched on purpose: it is what the identity graph
+    is built on, so redaction that dropped it would not anonymise the record, it
     would disconnect it. :class:`~theurian.domain.review.ReviewParticipant`
     records the same contract on the type.
+
+    **An id that is the author's own login is replaced too, and the record itself
+    is what says which one it is.** The GitHub adapter builds ``external_id`` as
+    *node id or login* and ``display_name`` as *login or external id*, so an
+    actor whose node id the response did not carry arrives here with the two
+    fields holding the same author-chosen string. That equality is the signature
+    this function keys on, and the substitution is :func:`_pseudonym` of the value
+    -- deterministic, so the record keeps a stable identity across runs, while
+    the login itself never reaches a file (PR #596 round 1, adversarial H-D).
+
+    **The signature is deliberately conservative in one direction.** An actor with
+    a node id and *no* login has the same two fields equal as well, so its node id
+    is pseudonymised too. That trade is chosen: the cost is one project-local
+    identifier where correlating back to GitHub needs the pseudonym's own mapping,
+    against the cost of the other error, which is landing a raw login under a
+    setting whose whole promise is that names do not land. A deleted account
+    (``response.GHOST_LOGIN``) matches for the same reason and collapses onto one
+    pseudonym -- which is the collapse ``ghost`` already is.
 
     **The population is every participant a record can reach**, which is four
     positions and not one: an event's author, a submission's author, each of a
@@ -342,7 +401,37 @@ def redacted(payload: ReviewRecordPayload) -> ReviewRecordPayload:
 
 
 def _redacted_participant(participant: ReviewParticipant) -> ReviewParticipant:
-    return replace(participant, display_name=REDACTED_DISPLAY_NAME)
+    identified = participant.external_id != participant.display_name
+    return replace(
+        participant,
+        external_id=(
+            participant.external_id if identified else _pseudonym(participant.external_id)
+        ),
+        display_name=REDACTED_DISPLAY_NAME,
+    )
+
+
+def _pseudonym(external_id: str) -> str:
+    """A stable stand-in for ``external_id``, carrying none of its characters.
+
+    SHA-256 rather than anything cheaper because the property wanted is
+    determinism *and* one-wayness: a run next month must produce the same
+    pseudonym for the same person, and a reader holding a landed record must not
+    be able to run the mapping backwards over the small space of plausible
+    logins any faster than by guessing them. Guessing them is not prevented --
+    the input space is small and unsalted by design, since a salt no run shares
+    would give the same person a different id in every project and break exactly
+    the linkage R-12 keeps. What this buys is that the raw string is not *in* the
+    file; SECURITY.md states the control at that strength and not higher.
+
+    ``surrogatepass`` because the value arrives from ``json.loads``, which
+    decodes ``\\ud800`` into a lone surrogate that plain UTF-8 encoding refuses --
+    and a ``UnicodeEncodeError`` raised here would be a traceback at an operator
+    over a document GitHub sent, in a module whose whole job is to decide what a
+    file may contain.
+    """
+    digest = hashlib.sha256(external_id.encode("utf-8", "surrogatepass")).hexdigest()
+    return f"{REDACTED_ID_PREFIX}{digest[:_PSEUDONYM_DIGITS]}"
 
 
 def _redacted_resolution(resolution: ReviewResolution | None) -> ReviewResolution | None:
@@ -354,11 +443,19 @@ def _redacted_resolution(resolution: ReviewResolution | None) -> ReviewResolutio
 def _scanned_values(payload: ReviewRecordPayload) -> Iterator[tuple[str, str | None, str]]:
     """Every author-controlled value in a record, as ``(field, comment id, text)``.
 
-    Exactly decision 3's untrusted rows, and nothing else. **Structural fields are
-    not here**: ids, timestamps, shas, states, line numbers, the pull-request
-    number, the linked issue ids and the ``event_key`` are the provider's, and the
-    ``SourceAnchor`` and the run stamp are Theurian's own writes -- three
-    *Controlled by* values, and only one of them is scanned.
+    Decision 3's untrusted rows, **and every participant's** ``external_id``.
+    A *record's* ids, its timestamps, shas, states, line numbers, the
+    pull-request number, the linked issue ids and the ``event_key`` are the
+    provider's and are not here; the ``SourceAnchor`` and the run stamp are
+    Theurian's own writes and are not here either.
+
+    **A participant id is the row decision 3's table got wrong, and its own note
+    now says so.** The table put ``external_id`` on the provider's side, which
+    holds only while a node id exists: the GitHub adapter falls back to the
+    author's *login*, and a login is a string its owner chooses and can change.
+    Scanning a real node id costs nothing -- it has never matched a family -- so
+    the id is read in both redaction states rather than only in the state where it
+    can be author-chosen (PR #596 round 1, adversarial H-D).
 
     ``milestone`` and ``file_path`` are yielded only when the provider gave one:
     ``None`` is an absence, and scanning the string ``"None"`` would be scanning
@@ -370,20 +467,24 @@ def _scanned_values(payload: ReviewRecordPayload) -> Iterator[tuple[str, str | N
         case ReviewSubmission():
             yield _FIELD_LITERALS["body"], None, payload.body
             yield _FIELD_LITERALS["author"], None, payload.author.display_name
+            yield _FIELD_LITERALS["author_id"], None, payload.author.external_id
         case ReviewThread():
             yield from _thread_values(payload)
 
 
 def _event_values(event: ReviewEvent) -> Iterator[tuple[str, str | None, str]]:
-    """The six author-controlled positions on a pull-request event.
+    """The seven author-controlled positions on a pull-request event.
 
-    Three of them look structural and are not (decision 3's most easily mistaken
-    row): anyone who can open a pull request chooses its labels, its head branch
-    name and its milestone, so each carries text a person wrote.
+    Four of them look structural and are not: anyone who can open a pull request
+    chooses its labels, its head branch name and its milestone (decision 3's most
+    easily mistaken row), so each carries text a person wrote -- and the author's
+    ``external_id`` is a login whenever the response carried no node id, which is
+    the row the table itself had wrong.
     """
     yield _FIELD_LITERALS["title"], None, event.title
     yield _FIELD_LITERALS["body"], None, event.body
     yield _FIELD_LITERALS["author"], None, event.author.display_name
+    yield _FIELD_LITERALS["author_id"], None, event.author.external_id
     yield _FIELD_LITERALS["head_ref_name"], None, event.head_ref_name
     for index, label in enumerate(event.labels):
         yield f"labels[{index}]", None, label
@@ -408,6 +509,11 @@ def _thread_values(thread: ReviewThread) -> Iterator[tuple[str, str | None, str]
             None,
             thread.resolution.resolved_by.display_name,
         )
+        yield (
+            _FIELD_LITERALS["resolved_by_id"],
+            None,
+            thread.resolution.resolved_by.external_id,
+        )
 
 
 def _comment_values(index: int, comment: ReviewComment) -> Iterator[tuple[str, str | None, str]]:
@@ -416,4 +522,9 @@ def _comment_values(index: int, comment: ReviewComment) -> Iterator[tuple[str, s
         f"comments[{index}].author.displayName",
         comment.external_id,
         comment.author.display_name,
+    )
+    yield (
+        f"comments[{index}].author.externalId",
+        comment.external_id,
+        comment.author.external_id,
     )

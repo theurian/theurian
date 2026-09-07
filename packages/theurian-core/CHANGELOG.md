@@ -160,7 +160,21 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   [#479](https://github.com/theurian/theurian/issues/479)). A boolean, default
   `false`, read by `security/project_config.py` and applied at landing: it
   replaces every participant's display name with a fixed placeholder and keeps
-  that participant's provider id, so the identity graph survives the redaction.
+  that participant's provider node id, so the identity graph survives the
+  redaction.
+
+  **Where the answer carried no node id, the id that lands is a pseudonym.** The
+  adapter records `external_id` as *node id or login*, so an author GitHub
+  answers with no `id` would otherwise land under a login — a name, under the
+  setting that exists to remove names. Such an id (the adapter's own signature
+  for it: `external_id` equals the pre-redaction `display_name`) becomes
+  `redacted-` and a truncated SHA-256 of itself, deterministically, so the record
+  keeps one identity across runs while the login never becomes a file. The same
+  field is now read by the ingestion secret scan in **both** redaction states,
+  which is what makes the two states agree: before this, turning the switch on
+  turned a `block` refusal into a landing that published the login under
+  `externalId`.
+
   The switch is refused rather than coerced when it is not a boolean — a quoted
   `"true"` is a string, and guessing which of two values an operator meant turns
   a privacy control the wrong way. `.theurian/config.yaml` is therefore read for

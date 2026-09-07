@@ -1165,6 +1165,39 @@ async def test_a_deleted_author_is_recorded_under_githubs_own_name_for_one(
     assert event.author.display_name == "ghost"
 
 
+@pytest.mark.parametrize(
+    "author",
+    ({"login": "utchy"}, {"login": "utchy", "id": None}),
+    ids=("no id key at all", "an explicit null id"),
+)
+@pytest.mark.asyncio
+async def test_an_author_the_response_gave_no_node_id_is_recorded_under_its_login(
+    tmp_path: pathlib.Path, fake_gh: FakeGh, author: dict[str, Any]
+) -> None:
+    """``external_id`` is *node id or login*, and the fallback half is driven here.
+
+    Two documents GitHub can send: an ``Actor`` implementation that is not a
+    ``Node``, so the inline fragment contributes no ``id`` at all, and a
+    partly-errored response that carries the key set to ``null`` beside a ``data``
+    that otherwise looks ordinary -- the same shape ``response.boolean``'s
+    docstring describes. Both leave the record identified by a string its owner
+    chose and can change.
+
+    **This case is why the ingestion gate scans ``external_id``.** Without a
+    fixture whose author has no node id, the fallback is unreached by every
+    adapter test: replacing the expression with ``node_id`` alone left 226 tests
+    green in PR #596 round 1, while the login it dropped was the value that
+    reached a landed file.
+    """
+    fake_gh.answer("prs", 1, _pull_requests(author=author))
+    provider = _provider(tmp_path, fake_gh)
+
+    (event,) = await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert event.author.external_id == "utchy"
+    assert event.author.display_name == "utchy"
+
+
 @pytest.mark.asyncio
 async def test_a_merged_pull_request_with_no_merge_commit_is_refused(
     tmp_path: pathlib.Path, fake_gh: FakeGh
