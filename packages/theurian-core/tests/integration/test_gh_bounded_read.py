@@ -149,6 +149,17 @@ _ANSWER_LEAVE_STDERR_HELD_THEN_SLEEP = (
 #: learn something a fraction of a second demonstrates just as well.
 _PATCHED_REAP_SECONDS: Final = 0.5
 
+#: How long a test waits for a child it has to catch **running** before it acts.
+#:
+#: Its own constant, and generous against :data:`_BOUNDED_WAIT_SECONDS`, because
+#: it bounds something different: not the behaviour under test but two cold
+#: CPython start-ups on whatever machine is running the suite. A GitHub macOS
+#: runner is slower than any developer's, and it is the machine that decides --
+#: ``test_a_cancelled_call_waits_for_the_reap_it_is_bounded_by`` failed there and
+#: nowhere else. It stays well under :data:`_CHILD_SLEEP_SECONDS` so the child is
+#: still alive when the wait ends.
+_START_UP_SECONDS: Final = 10.0
+
 
 def _reap_descendant(pidfile: pathlib.Path) -> None:
     """Kill the grandchild a child left holding the stderr pipe.
@@ -351,7 +362,17 @@ async def test_a_descendant_that_holds_stderr_open_is_refused_at_the_deadline(
     ``run_bounded`` returns and CPython's refcounting closes the transport
     immediately -- the collector answering the question the assertion is asking,
     and answering it the same way whether or not ``_release`` did anything.
+
+    **The reap is patched down because this shape can reach the whole of it.**
+    The elapsed budget here is the deadline plus whatever ``_end`` spends, and
+    ``_end``'s reap only returns early when the child's exit has already been
+    observed. That is a race with a callback, not a guarantee: lose it on a
+    loaded machine and the call takes the deadline plus the shipped five seconds,
+    which the outer ``wait_for`` cuts off as a ``TimeoutError`` -- a red test
+    about scheduling rather than about the drain. Nothing under test depends on
+    the reap's length here; the descendant does the holding either way.
     """
+    monkeypatch.setattr(gh_cli, "REAP_SECONDS", _PATCHED_REAP_SECONDS)
     spawned: list[asyncio.subprocess.Process] = []
     real_exec = asyncio.create_subprocess_exec
 
@@ -435,9 +456,47 @@ async def test_a_cancelled_call_waits_for_the_reap_it_is_bounded_by(
     The trade is deliberate and it replaced a worse one: the same cancellation
     used to return at once and leave a live child and a pending drain task
     behind.
+
+    **The cancellation may not be issued until the call is provably past the
+    spawn, and "provably" is doing work there.** ``run_bounded`` awaits
+    ``_start`` *outside* its own ``try``, so a cancellation delivered while
+    ``create_subprocess_exec`` is in flight raises there and ``_end`` never runs
+    at all -- the call unwinds in a millisecond and the elapsed floor below reads
+    it as the false semantic it exists to disprove. That is what failed on the
+    macOS runner and passed everywhere else.
+
+    Two conditions gate the cancel, and they are different facts:
+
+    * **the recorded spawn returned**, which says the *parent* is past ``_start``
+      and inside the ``try``. Nothing else says it: the marker file below is
+      written by the child, and a child can be running while the parent's
+      coroutine has not yet resumed;
+    * **the descendant is up**, which is what holds the stderr pipe open past the
+      kill so ``wait()`` is held for the whole reap.
+
+    Waiting on the second alone is what this did, under a timer that let it
+    proceed anyway when the wait expired -- so on a slow enough machine it
+    cancelled a call it had no evidence about and measured nothing. The wait is
+    now bounded by :data:`_START_UP_SECONDS` and its expiry is an **assertion**:
+    a runner too slow to start a child says so, rather than failing on a
+    measurement it never took.
     """
     monkeypatch.setattr(gh_cli, "REAP_SECONDS", _PATCHED_REAP_SECONDS)
     pidfile = tmp_path / "grandchild.pid"
+    spawn_returned = asyncio.Event()
+    real_exec = asyncio.create_subprocess_exec
+
+    # `Any` at the `**kwargs` edge, which is where this project admits it: the
+    # keywords are `create_subprocess_exec`'s own and are forwarded untouched.
+    async def recording(*args: str, **keywords: Any) -> asyncio.subprocess.Process:
+        child = await real_exec(*args, **keywords)
+        # Set before returning, so a waiter that observes it can only be resumed
+        # on a later loop iteration -- by which time `_start` has returned and
+        # `run_bounded` is suspended inside its `try`.
+        spawn_returned.set()
+        return child
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", recording)
     call = asyncio.ensure_future(
         run_bounded(
             [
@@ -453,18 +512,31 @@ async def test_a_cancelled_call_waits_for_the_reap_it_is_bounded_by(
     )
 
     try:
-        # Wait for the grandchild to exist rather than sleeping a guessed amount:
-        # what this measures is the unwind, and a cancel that arrives before the
-        # child has spawned would measure the spawn instead.
-        deadline = time.monotonic() + _BOUNDED_WAIT_SECONDS
-        while not pidfile.exists() and time.monotonic() < deadline:
+        deadline = time.monotonic() + _START_UP_SECONDS
+        while not (spawn_returned.is_set() and pidfile.exists()) and time.monotonic() < deadline:
             await asyncio.sleep(0.01)
+
+        assert spawn_returned.is_set() and pidfile.exists(), (
+            f"the call was not past its spawn with a descendant running "
+            f"{_START_UP_SECONDS:g}s after it began (spawn returned: "
+            f"{spawn_returned.is_set()}, descendant up: {pidfile.exists()}). Cancelling "
+            f"anyway measures a cancellation that never reached `_end`, which is a "
+            f"machine too slow to start two interpreters -- not the behaviour under "
+            f"test."
+        )
+
         started = time.monotonic()
         call.cancel()
         with pytest.raises(asyncio.CancelledError):
             await call
         elapsed = time.monotonic() - started
     finally:
+        # Reached by the readiness assertion as well as by the happy path, and
+        # the call is still running on that route: cancelling twice is free, and
+        # leaving it would carry a live child into the next test.
+        call.cancel()
+        with contextlib.suppress(asyncio.CancelledError, ReviewIngestRefusedError):
+            await call
         _reap_descendant(pidfile)
 
     assert elapsed >= _PATCHED_REAP_SECONDS, (
