@@ -217,9 +217,22 @@ def review_ingest(
     no refetch recovers a comment that is gone. Theurian does not git-ignore it;
     whether the project commits its review evidence is the project's decision.
 
-    Exit codes: 0 when the run was clean, 1 when any record was withheld or any
-    pull request could not be read, 4 when a path under .theurian/ could not be
-    proved to stay inside the working tree.
+    Exit codes: 0 when the run was clean -- which **includes** a run whose scan
+    found a secret under the `warn` policy, because `warn` is the project
+    recording that a finding is reported and the record lands anyway; the
+    published document sets `secretsWarned` to true there, so `clean` alone is
+    not what a caller has to notice it by. 1 carries **either of two documents**:
+    the run document, when the run happened and was not clean -- a record `block`
+    withheld, or a pull request the listing or a fetch could not read; or
+    `{error, remedy}`, when the command refused before any report existed --
+    the repository is not in the allowlist, resolves as private, resolves to a
+    different name, the `gh` configuration carries a transport override, `gh` is
+    missing, below the recorded version floor or unauthenticated, a recorded
+    bound was reached, `.theurian/config.yaml` cannot be read or names a value
+    this build does not recognise, or a file already under `.theurian/review/`
+    cannot be read or written. The second shape carries no `clean` field at all,
+    so a caller scripting `--json | jq .clean` has to allow for both. 4 when a
+    path under `.theurian/` could not be proved to stay inside the working tree.
     """
     from theurian.cli.commands import (  # noqa: PLC0415 - cycle
         _emit,
@@ -277,11 +290,18 @@ def _payload(report: ReviewIngestReport) -> dict[str, object]:
     family it matched, through
     :meth:`~theurian.security.content_secrets.SecretFinding.describe`, whose
     redacted prefix is bounded on the type rather than here.
+
+    ``secretsWarned`` is the third boolean, and it is published because the
+    other two are silent about the one state that matters most: a ``warn`` run
+    that found a secret is ``clean``, refuses nothing and exits zero, having
+    written that finding into a file. See
+    :attr:`~theurian.application.review_ingest_service.ReviewIngestReport.secrets_warned`.
     """
     return {
         "repository": report.repository,
         "clean": report.clean,
         "secretScanPolicy": report.policy,
+        "secretsWarned": report.secrets_warned,
         "participantNamesRedacted": report.redacted,
         "landed": {
             "pullRequests": report.pull_requests,

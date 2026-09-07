@@ -242,6 +242,7 @@ def test_a_clean_run_reports_counts_and_exits_zero(
     assert payload["clean"] is True
     assert payload["repository"] == REPOSITORY
     assert payload["secretScanPolicy"] == "block"
+    assert payload["secretsWarned"] is False
     assert payload["participantNamesRedacted"] is False
     assert payload["landed"] == {
         "pullRequests": 1,
@@ -434,6 +435,10 @@ def test_block_exits_one_and_the_flagged_unit_is_absent_on_disk(
     assert payload["landed"]["pullRequests"] == 1
     assert payload["refused"] == ["'acme/order-service'#42 record 'PRRT_kwDO42'"]
     assert len(payload["findings"]) == 1
+    assert payload["secretsWarned"] is False, (
+        "`block` withheld the record, so nothing was warned about and landed; "
+        "`refused` is the field that carries this run"
+    )
     assert not any("PRRT" in name for name in _landed(project))
 
 
@@ -455,6 +460,11 @@ def test_warn_exits_zero_and_still_reports_the_finding(
     assert payload["landed"]["reviewThreads"] == 1
     assert payload["refused"] == []
     assert len(payload["findings"]) == 1
+    assert payload["secretsWarned"] is True, (
+        "the run is clean, refuses nothing and exits zero, and it has just "
+        "written a credential into `.theurian/review/`. `secretsWarned` is the "
+        "only published field that says so"
+    )
     assert len(_landed(project)) == 3
 
 
@@ -473,6 +483,7 @@ def test_off_scans_nothing_and_lands_everything(
     assert code == 0
     assert payload["secretScanPolicy"] == "off"
     assert payload["findings"] == []
+    assert payload["secretsWarned"] is False
     assert len(_landed(project)) == 3
 
 
@@ -624,6 +635,33 @@ def test_the_help_says_the_evidence_is_source_and_whose_decision_committing_it_i
     assert "source" in collapsed and "not a cache" in collapsed
     assert "data loss rather than a rebuild" in collapsed
     assert "the project's decision" in collapsed
+
+
+def test_the_help_says_exit_one_carries_two_documents(project: Path) -> None:
+    """A caller scripting ``--json | jq .clean`` gets one of two shapes at exit 1.
+
+    `propose accept`'s help enumerates its exit-1 population; this one did not,
+    and understated it: the run document is what a *non-clean run* publishes,
+    while a refusal before any run has a report -- an unallowlisted repository,
+    a missing `gh`, an unreadable `.theurian/config.yaml`, an evidence file this
+    build cannot read -- publishes `{error, remedy}` and no `clean` field at all.
+    A script keyed on `clean` reads the second as *absent* rather than as
+    *refused*.
+
+    The `warn` half is here for the same reason: exit 0 covers a run that landed
+    a credential, and the help is where an operator who reads nothing else would
+    have to be told which field says so.
+    """
+    result = runner.invoke(app, ["review", "ingest", "--help"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    collapsed = " ".join(result.stdout.split())
+    assert "either of two documents" in collapsed
+    assert "no `clean` field" in collapsed
+    assert "`{error, remedy}`" in collapsed
+    assert "`secretsWarned`" in collapsed
+    for refusal in ("allowlist", "private", "transport override", "version floor"):
+        assert refusal in collapsed, f"the exit-1 population does not name {refusal!r}"
 
 
 def _redacting(root: Path) -> None:

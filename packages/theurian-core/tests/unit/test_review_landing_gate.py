@@ -487,6 +487,34 @@ def test_under_warn_the_record_lands_and_every_finding_is_reported(tmp_path: Pat
     assert finding.comment_id == "IC_kwDO1"
 
 
+def test_warned_is_true_only_where_a_finding_was_reported_and_its_record_landed(
+    tmp_path: Path,
+) -> None:
+    """The third signal, driven across all three policies from one input.
+
+    One flagged thread, screened under each policy in turn. ``warned`` has to
+    distinguish the state where the finding is real *and* the file was written
+    -- which is ``warn`` alone -- from ``block``, where the same finding
+    withheld the record, and from ``off``, where nothing was looked for.
+
+    Measured beside the two fields it is not: a field that merely tracked
+    "findings exist" would agree with ``warn`` and disagree with nothing, and
+    the ``block`` row is what tells the two apart.
+    """
+    flagged = _thread(comments=(_comment(body=f"token {SECRET}"),))
+    measured = {}
+    for policy in ("block", "warn", "off"):
+        root, config = _project(tmp_path / policy, _settings(policy=policy))
+        outcome = screen_landing_candidates([_candidate(flagged)], root=root, config_file=config)
+        measured[policy] = (outcome.warned, bool(outcome.findings), bool(outcome.refusals))
+
+    assert measured == {
+        "block": (False, True, True),
+        "warn": (True, True, False),
+        "off": (False, False, False),
+    }
+
+
 def test_under_off_the_detector_is_never_called(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

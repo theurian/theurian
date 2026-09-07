@@ -228,6 +228,12 @@ class ReviewIngestReport:
     which answers "found nothing and withheld nothing" and therefore reads
     ``False`` on a warned run that landed everything it fetched. Two questions,
     two answers, and the one an exit code wants is this one.
+
+    **The warned run needs a third answer, and :attr:`secrets_warned` is it.**
+    Under ``warn`` a run that found a secret is clean, refuses nothing and exits
+    zero -- correct, and silent about the file it just wrote. Neither of the two
+    booleans above can carry that, so it is published rather than left to a
+    caller who would have to join ``policy`` against a finding count to see it.
     """
 
     #: The repository this run was asked for, as the caller spelled it.
@@ -241,6 +247,17 @@ class ReviewIngestReport:
     #: Whether participant display names were replaced before anything was
     #: written (R-12).
     redacted: bool
+    #: Whether a secret-shaped string was found **and its record landed anyway**
+    #: -- true exactly when the policy is ``warn`` and this run found something.
+    #:
+    #: The **third** signal, beside :attr:`clean` and :attr:`refused`, and it is
+    #: here because those two are both honest and both silent about this state: a
+    #: warned run is clean, refuses nothing, exits zero, and has just written a
+    #: file carrying a credential into a directory ``theurian init`` does not
+    #: git-ignore. Nothing about that is a change of behaviour -- ``warn`` is the
+    #: project recording that choice -- but a caller had to know the joining rule
+    #: to see it, and a rule each reader re-derives is one some reader will not.
+    secrets_warned: bool
     pull_requests: int
     review_submissions: int
     review_threads: int
@@ -365,6 +382,7 @@ class ReviewIngestService:
             repository=request.repository,
             policy=scan.policy.value,
             redacted=scan.redacted,
+            secrets_warned=scan.warned,
             pull_requests=_count(records, ReviewEvent),
             review_submissions=_count(records, ReviewSubmission),
             review_threads=_count(records, ReviewThread),

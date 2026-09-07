@@ -744,7 +744,11 @@ SECRET_SCAN_DESCRIPTION: Final = (
     "index build` scans every "
     "body it indexes, with the source anchors and relation notes served beside them, and "
     "reports rather than refusing "
-    "(https://github.com/theurian/theurian/issues/329)."
+    "(https://github.com/theurian/theurian/issues/329). "
+    "Under `warn`, `theurian review ingest` writes the findings-bearing record into "
+    "`.theurian/review/`, which `theurian init` does not add to the managed `.gitignore` "
+    "block: the file lands, the run exits 0, and the report's `secretsWarned` field is "
+    "what says so."
 )
 
 #: The JSON pointer to that description, so the pin and the fragment row read one

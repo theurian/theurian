@@ -283,6 +283,23 @@ class ReviewScanOutcome:
         """
         return not self.findings and not self.refusals
 
+    @property
+    def warned(self) -> bool:
+        """Whether a finding was reported **and the record carrying it landed**.
+
+        The one state neither :attr:`clean` nor :attr:`refusals` expresses, and
+        the reason it is asked here rather than joined together by a reader:
+        under ``warn`` a run that finds a secret lands the file anyway, reports
+        the run as clean and exits zero. That is the project's own recorded
+        choice (SEC-11) and not a defect -- but a caller reading ``clean`` alone
+        cannot see it, and the join that would reveal it (``policy == "warn"``
+        and a non-empty finding list) is a rule each reader would have to know.
+
+        ``False`` under ``block`` however many findings there are: there the
+        finding withheld the record, which is what :attr:`refusals` says.
+        """
+        return self.policy is SecretScanPolicy.WARN and bool(self.findings)
+
 
 def screen_landing_candidates(
     candidates: Iterable[LandingCandidate], *, root: Path, config_file: Path
