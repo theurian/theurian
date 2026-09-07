@@ -57,12 +57,20 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   set of records being iterated can still be trusted.** A repository-scope
   failure — the allowlist, a repository that resolves private, a rename
   redirect, a transport override, a `gh` that is missing, too old or
-  unauthenticated, the pull-request listing's own
-  page cap — halts the run: nothing is fetched afterwards and nothing is
-  written, because the set itself could not be established. A record-scope
-  failure withholds **that pull request's records whole**, reports it by
-  identity with its grade, and lets the run continue; the run then does not read
-  as clean. The split is by call site and never by grade — both scopes can raise
+  unauthenticated, an answer whose envelope cannot be read, the pull-request
+  listing's own page cap — halts the run: nothing is fetched afterwards and
+  nothing is written, because the set itself could not be established. A
+  record-scope failure withholds **that pull request's records whole**, reports
+  it by identity with its grade, and lets the run continue; the run then does not
+  read as clean. Record scope covers **both** the seam where one pull request's
+  threads or reviews refuse and the seam **inside the listing** where one pull
+  request's own data cannot be built into a record — an unreadable field of it,
+  its labels or closing issues past their cap. `list_pull_requests` answers those
+  as skipped pull requests rather than raising, so one pathological pull request
+  cannot deny a caller the rest of the repository; and the window is applied to a
+  pull request's number *before* its record is built, so `--since` steps over a
+  known-bad one. The split is by where the fault was and never by grade — a
+  node's label cap, a thread's comment cap and the listing's page cap all carry
   `LIMIT_EXCEEDED`, and reading the grade would halt on an over-long thread and
   skip a repository the project may not contact.
 
