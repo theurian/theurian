@@ -573,6 +573,11 @@ def test_the_broken_context_warning_never_echoes_the_raw_reason(tmp_path: Path) 
     offending source line back verbatim. A session-start hook prints an error
     *class* -- "the context is degraded, run doctor" -- never that line, so a
     marker planted inside ``reason`` here must never reach stderr.
+
+    Round one (adversarial LOW): asserting only ``marker not in stderr`` stays
+    green even if the whole branch were deleted and stderr came back empty.
+    The ``"doctor"`` assertion is what makes this row prove the warning fired
+    *and* that it did not echo the raw reason, from one payload.
     """
     marker = "RAW_MIGRATION_BYTES_MUST_NOT_APPEAR_IN_STDERR"
     status_payload = json.dumps(
@@ -582,6 +587,7 @@ def test_the_broken_context_warning_never_echoes_the_raw_reason(tmp_path: Path) 
 
     result = _run_hook(sandbox)
 
+    assert "doctor" in result.stderr
     assert marker not in result.stderr
 
 
@@ -774,3 +780,83 @@ def test_an_unreadable_registry_produces_the_real_payload_the_b1_row_assumes(
     payload = json.loads(status_result.stdout)
     assert payload["registered"] is None
     assert "reason" in payload
+
+
+# -- End to end: the shipped hook against the real Core binary (LOW-2, adversarial) -
+#
+# Every row above that exercises the broken-context branch feeds the hook a
+# single compact-JSON line through the ``theurian`` stub. Real Core answers
+# ``--json`` with ``json.dumps(..., indent=2, sort_keys=True)`` -- multi-line,
+# keys sorted -- and nothing before this row ever put that shape in front of
+# the hook's own greps, which match on a fixed key ordering
+# (``'"reason": *"'``) that a multi-line payload still satisfies but that a
+# format change could silently stop matching. This row is the one place that
+# risk is closed: the shipped hook script, run against the real ``theurian``
+# binary this checkout built, over a real broken-migration repository.
+
+
+def _real_core_hook_env(tmp_path: Path, plugin_root: Path) -> dict[str, str]:
+    """The hook's own PATH, pointed at the real Core binary instead of a stub.
+
+    ``curl`` still answers healthy without opening a socket -- the same stub
+    :func:`_make_sandbox` installs for ``daemon_healthy=True`` -- so the hook
+    reaches ``theurian project status --json`` without a running daemon. Real
+    ``git`` has to be on the same ``PATH`` because ``resolve_context`` shells
+    out to it, same as :func:`_sandbox_env` for the CLI-only fidelity rows.
+    """
+    assert _GIT is not None
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    curl = bin_dir / "curl"
+    curl.write_text(_CURL_HEALTHY_STUB, encoding="utf-8")
+    curl.chmod(0o755)
+    return {
+        "PATH": f"{_REAL_THEURIAN.parent}:{bin_dir}:{Path(_GIT).parent}:/usr/bin:/bin",
+        "HOME": str(tmp_path / "home"),
+        "THEURIAN_DATA_DIR": str(tmp_path / "data"),
+        "CLAUDE_PLUGIN_ROOT": str(plugin_root),
+    }
+
+
+@pytest.mark.skipif(_GIT is None, reason="git is required to build this row's sandbox")
+def test_the_shipped_hook_warns_a_real_broken_migration_repository_end_to_end(
+    tmp_path: Path,
+) -> None:
+    """The shipped hook script, the real Core binary, a real broken repo, one call.
+
+    Round one (adversarial LOW): no committed row drove the real hook against
+    real Core's actual multi-line ``--json`` output before this one -- every
+    row exercising this branch fed the hook a payload this module chose. If a
+    future Core release reformats ``--json`` in a way the hook's greps no
+    longer match, this is the row that goes red.
+    """
+    assert _BASH is not None, "bash is required to run the plugin's hooks"
+    plugin_root = tmp_path / "plugin"
+    (plugin_root / "scripts").mkdir(parents=True)
+    shutil.copy2(PLUGIN / _HOOK_RELPATH, plugin_root / _HOOK_RELPATH)
+    shutil.copy2(PLUGIN / _LIB_RELPATH, plugin_root / _LIB_RELPATH)
+    shutil.copy2(PLUGIN / _DECLARATION_RELPATH, plugin_root / _DECLARATION_RELPATH)
+    env = _real_core_hook_env(tmp_path, plugin_root)
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    _init_git_repo(root, env)
+    _register_a_fresh_project(root, env)
+    (root / ".theurian" / "migrations" / "broken.yaml").write_text(
+        "not: yaml: [\n", encoding="utf-8"
+    )
+
+    result = subprocess.run(  # noqa: S603 - fixed argv, sandboxed environment
+        [_BASH, str(plugin_root / _HOOK_RELPATH)],
+        cwd=root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "degraded" in result.stderr
+    assert "doctor" in result.stderr
+    assert "could not be fully resolved" not in result.stderr
