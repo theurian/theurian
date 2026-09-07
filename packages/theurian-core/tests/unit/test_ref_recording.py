@@ -7,8 +7,11 @@ file, because a document that reaches no network while quietly dropping its
 references is exactly as silent as one that has none.
 
 Fidelity matters here for a reason that has not arrived yet: the scheme allowlist
-T-7 owes (#429, against the first external fetch path) will key on the recorded
-``scheme``. Every defect
+T-7 still owes on this path (#429, against this ``$ref`` fetcher) will key on the
+recorded ``scheme``. "The first external fetch path" was its owner-position
+phrase until ADR-0030's ``gh`` adapter became that path and carried neither of
+the two controls left here -- it has no URL in its argument vector, so a scheme
+allowlist has nothing to read there. Every defect
 below was measured against ``_external_refs`` before it was fixed, and the first
 two are the ones that would have made that future gate fail *open* --
 
@@ -159,9 +162,10 @@ def test_a_ref_records_the_scheme_a_fetcher_would_use(ref: str, expected: str) -
     """The recorded ``scheme`` is what T-7's future allowlist will read (#429)."""
     assert _record(ref)["scheme"] == expected, (
         f"{ref!r} recorded scheme {_record(ref)['scheme']!r}, expected {expected!r}. "
-        f"This field is what the Milestone 7 scheme allowlist keys on: a target "
-        f"destined for a host recorded under a local-file label is that gate "
-        f"failing open, which is why #203 was fixed before the gate was built."
+        f"This field is what T-7's owed scheme allowlist keys on (#429, against "
+        f"this `$ref` fetcher): a target destined for a host recorded under a "
+        f"local-file label is that gate failing open, which is why #203 was fixed "
+        f"before the gate was built."
     )
 
 

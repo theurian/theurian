@@ -90,13 +90,25 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   before Theurian contacts it, then "nothing reads that file today, so do not
   tell the user the allowlist is protecting them". The file has been read since
   ADR-0027 decision 3 shipped `security/project_config.py`, which takes
-  `security.secretScan` from it. The warning it supports is still correct, so it
-  is re-derived on the fact that is true rather than dropped: the paragraph now
-  names the one reader and the one key, then narrows the negation to
-  `providers.review.repositories`, which nothing reads — so the allowlist
-  protects nobody and the agent must still not say otherwise
+  `security.secretScan` from it. The warning it supports was still correct, so
+  it was re-derived on the fact that held rather than dropped: the paragraph
+  named the one reader and the one key, then narrowed the negation to
+  `providers.review.repositories`, which nothing read at that commit — so the
+  allowlist protected nobody and the agent was still not to say otherwise
   ([#461](https://github.com/theurian/theurian/issues/461),
   [#501](https://github.com/theurian/theurian/pull/501)).
+
+  **The narrowed negation has since gone stale the same way the wide one did**,
+  which is the cost of re-deriving a warning on a live fact: the sentence is
+  true about a smaller object, and stale as soon as that object moves.
+  [ADR-0030](../../docs/adr/0030-github-review-ingestion-spawns-gh.md) slice 1
+  shipped `security/review_allowlist.py`, which enforces
+  `providers.review.repositories` — read by `security/project_config.py`, the
+  file's one reader — and refuses a repository the list does not
+  name before any process is spawned. The key is read and enforced; what it
+  protects is the review-ingestion path, which no command reaches yet, and that
+  — rather than "it protects no one" — is the sentence `ingest.md` now carries.
+  The file is read for two keys, not one.
 
   Naming `security.secretScan` as in force left a second gap in the same
   paragraph: a scanning control announced, in a document about `theurian
@@ -278,11 +290,14 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   visible in Claude Code's command list — said "Ingest sources — docs, specs,
   and Git review history", as did the command's row in the plugin README, and
   the Rules illustrated evidence with an ingested review comment. No review
-  history is ingested: `system.capabilities` reports `reviewIngestion: false`
-  and `infrastructure/github/` holds no adapter, so an agent reading the old
-  description would have offered a source Core cannot read. The Rules also told
-  the user that "Theurian will not contact a repository that is not listed" in
-  `.theurian/config.yaml`, which reads as a control in force. It is not one:
+  history was ingested at that change's commit: `system.capabilities` reported
+  `reviewIngestion: false` and `infrastructure/github/` held no adapter, so an
+  agent reading the old description would have offered a source Core could not
+  read. The Rules also told the user that "Theurian will not contact a
+  repository that is not listed" in `.theurian/config.yaml`, which read as a
+  control in force. **What this entry said next was true when it was written and
+  is not true now — the correction below says what turned over. The entry's own
+  words about that control follow.** It is not one:
   **nothing reads the `providers.review.repositories` allowlist**, so it protects
   no one yet. That file itself *is* read, for one key — `security.secretScan`,
   by `security/project_config.py` and nothing else (ADR-0027 decision 3) — and
@@ -290,12 +305,29 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the same correction #461 made to `ingest.md` itself
   ([#501](https://github.com/theurian/theurian/pull/501)).
 
-  The document now says review ingestion is owed with Milestone 7, says the
-  allowlist is not protecting the user, and enumerates what `theurian ingest`
-  actually reads: files under `.theurian/`, plus three `git` reads —
-  `rev-parse --show-toplevel`, `rev-parse HEAD` and `remote get-url origin`.
-  Measured by running the command against a `git` shim that logs every
-  invocation.
+  The document now enumerates what `theurian ingest` actually reads: files under
+  `.theurian/`, plus three `git` reads — `rev-parse --show-toplevel`,
+  `rev-parse HEAD` and `remote get-url origin`. Measured by running the command
+  against a `git` shim that logs every invocation.
+
+  **Three of this entry's premises have since turned over, and the entry is
+  corrected here rather than left to read as current** — an `[Unreleased]`
+  section describes the tree a reader has checked out.
+  [ADR-0030](../../docs/adr/0030-github-review-ingestion-spawns-gh.md) slice 1
+  landed the adapter, so `infrastructure/github/` **holds** one;
+  `providers.review.repositories` **is** read, and enforced before any process
+  is spawned, so the allowlist protects the review-ingestion path — which no
+  command reaches yet, which is the sentence `ingest.md` now carries in place of
+  "it protects no one"; and `.theurian/config.yaml` is read for **two** keys,
+  `security.secretScan` and the allowlist. `reviewIngestion: false` is still
+  what `system.capabilities` reports, and it now means "no ingestion call
+  surface is callable" rather than "nothing reaches GitHub". The rationale above
+  is in the past tense for the same reason. The two sentences beginning "It is
+  not one" and "That file itself *is* read" are the exception and keep their
+  published wording:
+  `test_census_record_claims.py` holds them whole as what the #461 family was
+  corrected *to*, so the turn-over is recorded here rather than written over
+  them.
 - `/theurian:ingest` no longer says it stores anything. It opened with "Read
   source material into the canonical store as evidence" and its first Rule said
   "Ingestion stores **evidence**", both of which describe a write that does not

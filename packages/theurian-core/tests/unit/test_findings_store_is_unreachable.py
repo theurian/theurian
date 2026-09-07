@@ -403,7 +403,18 @@ _INFRASTRUCTURE_NON_SERVING_MODULES: frozenset[str] = frozenset(
         "filesystem/parsers/structured.py",
         "git/__init__.py",
         "git/trailer_source.py",
+        # The `gh` review-ingestion adapter (ADR-0030). It reads GitHub and
+        # returns `ReviewEvent`/`ReviewThread` evidence; the findings store is a
+        # different arm entirely -- `Review-Finding:` trailers out of local git
+        # history (ADR-0029) -- and nothing here reaches it. The two share the
+        # FR-V family and the safety triple, not a source.
         "github/__init__.py",
+        "github/environment.py",
+        "github/gh_cli.py",
+        "github/limits.py",
+        "github/queries.py",
+        "github/review_provider.py",
+        "github/transport_guard.py",
         "raptor/__init__.py",
         "raptor/extractive.py",
         "secrets/__init__.py",

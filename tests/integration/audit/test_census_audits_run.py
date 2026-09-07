@@ -147,7 +147,7 @@ REQUIRED_BY_RUNNER: Final[dict[str, str]] = {
 #: reviewer reading a diff that lowers one is reading the finding.
 CONTROL_TALLIES: Final[dict[str, dict[str, int]]] = {
     "config_object_claims": {
-        "POSITIVE_CONTROLS": 21,
+        "POSITIVE_CONTROLS": 22,
         "MEASURED_ESCAPES": 12,
         "LEDGER_CONTROLS": 6,
     },

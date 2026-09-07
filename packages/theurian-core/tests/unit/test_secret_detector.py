@@ -101,7 +101,7 @@ def _secrets_in(tree: pathlib.Path) -> list[str]:
     ``main``, when this section still lived in ``test_plugin_boundary.py``,
     replacing its body with ``assert True`` and making it skip every file both left
     that file green, because no file in the plugin tree holds a candidate that
-    reaches the detector's positive path. The eight it does hold are
+    reaches the detector's positive path. The nine it does hold are
     :data:`_TREE_CANDIDATES`, and not one carries an upper-case letter.
     """
     violations: list[str] = []
@@ -283,15 +283,16 @@ _UNDER_THE_FLOOR: Final = (string.ascii_uppercase[:6] + string.ascii_lowercase[:
 
 #: Every candidate the scan actually meets in the plugin tree -- measured rather
 #: than remembered, and re-measured at ``0af1568``, a commit on #501's branch and
-#: not on ``main``. There are eight, and an earlier version of this file claimed
-#: two, one of which the scan never sees at all. Three are ADR filenames quoted in
+#: not on ``main``. There are nine, and an earlier version of this file claimed
+#: two, one of which the scan never sees at all. Four are ADR filenames quoted in
 #: documents (``0002-`` and ``0012-`` in ``README.md``, ``0013-`` in ``README.md``,
-#: ``CHANGELOG.md`` and ``commands/propose.md``); two are the names of tests in
-#: ``test_plugin_boundary.py``, quoted by ``/theurian:upgrade``'s document; and
-#: three are the names of tests in ``test_config_key_call_sites.py``, quoted by the
-#: plugin ``CHANGELOG.md``'s mutation record. The count was five until that record
-#: named its three tests, which is how a measurement moves without anything being
-#: wrong.
+#: ``CHANGELOG.md`` and ``commands/propose.md``, and ``0030-`` in
+#: ``CHANGELOG.md``); two are the names of tests in ``test_plugin_boundary.py``,
+#: quoted by ``/theurian:upgrade``'s document; and three are the names of tests in
+#: ``test_config_key_call_sites.py``, quoted by the plugin ``CHANGELOG.md``'s
+#: mutation record. The count was five until that record named its three tests, and
+#: eight until the same file's ``[Unreleased]`` correction linked ADR-0030 -- which
+#: is how a measurement moves without anything being wrong.
 #:
 #: Not one carries an upper-case letter, so the detector's positive path never
 #: executes against the real tree. That is why the scan needs
@@ -305,6 +306,7 @@ _TREE_CANDIDATES: Final = (
     "0002-single-local-daemon-over-streamable-http",
     "0012-plugin-does-not-autoregister-mcp-server",
     "0013-ai-writes-produce-proposals",
+    "0030-github-review-ingestion-spawns-gh",
     "test_upgrade_command_names_the_same_flags_as_lib_sh",
     "test_upgrade_command_placeholders_name_keys_the_schema_declares",
     "test_the_ingest_command_states_the_config_bound_and_nothing_beside_it",
@@ -452,8 +454,9 @@ def test_this_file_still_knows_what_the_scan_meets() -> None:
     The population above decides what the test before it proves; if an ADR is
     renamed or a document quotes a new long identifier, the negative cases silently
     stop describing the tree. Compared as a set rather than as a count, because
-    "eight" is the part a reader can check and the part that rots first -- it was
-    "five" until the plugin changelog quoted three more test names.
+    "nine" is the part a reader can check and the part that rots first -- it was
+    "five" until the plugin changelog quoted three more test names, and "eight"
+    until the same file linked ADR-0030.
 
     This walk is deliberately its own rather than :func:`_secrets_in`'s. A shared
     walker would be a shared blind spot, and the one piece of state the two did
@@ -461,7 +464,7 @@ def test_this_file_still_knows_what_the_scan_meets() -> None:
     once: adding ``.yaml`` to it hid a token in the real ``compatibility.yaml`` from
     the scan *and* from this test together. So this reads every file in the tree
     with no skip list at all, which is measured to change nothing today: ``LICENSE``
-    and the skipped suffixes contribute no candidates, and the set is the same eight
+    and the skipped suffixes contribute no candidates, and the set is the same nine
     either way. What the two walks do share is :func:`_readable_text`, which is a
     rule about how one file is decoded rather than about which files exist.
     """

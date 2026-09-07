@@ -125,6 +125,31 @@ CONFIG_HOMES: Final[tuple[str, ...]] = (
     "examples/sample-project/.theurian/config.yaml",
 )
 
+#: The published keys ``src/`` **reads**, and why this list has to exist.
+#:
+#: The key-scoped clearing rule below rests on a premise: that a sentence naming
+#: a key and denying it a reader is the *correction* #426 landed, not the
+#: universal it retracted. That is true of a key nothing reads, and false of a
+#: key something does -- and until ADR-0030 shipped an allowlist reader, no key
+#: was in the second group, so the distinction did not exist and the rule cleared
+#: every key-scoped claim without one.
+#:
+#: A **measurement, not a derivation**: which module reads which key is a
+#: semantic fact a grep cannot answer, and the population and its per-site
+#: judgement are ``test_config_key_call_sites.py``'s ``CONFIG_KEY_READER_SITES``,
+#: which scans ``src/`` rather than transcribing it. Taken 2026-09-07 with::
+#:
+#:     git grep -n 'secretScan\|secret_scan\|SECRET_SCAN\|repositories\|REPOSITORIES' \
+#:         -- packages/theurian-core/src
+#:
+#: ``security/project_config.py`` is the one module in ``src/`` that opens
+#: ``.theurian/config.yaml``, and it reads these two keys out of it and nothing
+#: else. Every other hit that scan returns is a field, a local or an English
+#: word, judged one by one in that module's own population key.
+KEYS_WITH_A_READER: Final[frozenset[str]] = frozenset(
+    {"providers.review.repositories", "security.secretScan"}
+)
+
 _NEGATION: Final = r"(?:nothing|nobody|none|no\s+one|no\s+code|no\s+module)"
 _LIVENESS: Final = r"(?:reads?|opens?|loads?|consumes?|honours?|honors?|acts\s+on|consults?)"
 
@@ -317,6 +342,16 @@ def _schema_key_objects(root: Path) -> list[WatchedObject]:
                 # `repositories` are ordinary English words, and admitting them
                 # made every sentence carrying one refer to a schema key.
                 leaf = re.escape(dotted[-1])
+                # Wrapped in a non-capturing group, and that is load-bearing
+                # rather than tidy: a grammatical object carrying a bare `|` is
+                # substituted into a four-alternative template and splits it, so
+                # every alternative after the substitution point becomes reachable
+                # with no negation and no verb in front of it. Measured ungrouped:
+                # nine sentences matched on the object's spelling alone.
+                spellings = (
+                    rf"(?:{_DELIMITER_RUN}{re.escape('.'.join(dotted))}{_DELIMITER_RUN}"
+                    rf"|{_REQUIRED_DELIMITER_RUN}{leaf}{_REQUIRED_DELIMITER_RUN})"
+                )
                 reference = re.compile(
                     rf"{re.escape('.'.join(dotted))}"
                     rf"|{_REQUIRED_DELIMITER_RUN}{leaf}{_REQUIRED_DELIMITER_RUN}",
@@ -327,13 +362,29 @@ def _schema_key_objects(root: Path) -> list[WatchedObject]:
                 # homes alone -- which is exactly why every path-bearing key ever
                 # written for this class missed it (#455).
                 reference = re.compile(r"(?!x)x")
+            name = ".".join(dotted) if dotted else "(schema root)"
             found.append(
                 WatchedObject(
-                    name=".".join(dotted) if dotted else "(schema root)",
+                    name=name,
                     source="schema key surface (json parse)",
-                    kind="key" if dotted else "file",
+                    # A key `src/` reads is its own kind, because the clearing
+                    # rule in `_classify` is exactly wrong about it: "nothing in
+                    # `src/` reads this key" was #426's *correction* while no key
+                    # had a reader, and ADR-0030 gave two of them one.
+                    kind=("read key" if name in KEYS_WITH_A_READER else "key")
+                    if dotted
+                    else "file",
                     reference=reference,
-                    grammatical_object=_PRONOUN_KEY if dotted else _PRONOUN_FILE,
+                    # And it is claimed about by **name**, where an unread key is
+                    # reached only through "this key". A named claim about a key
+                    # something reads is unambiguous and false; the pronoun form
+                    # inside a block about several keys is neither, and stays the
+                    # sibling objects' to answer.
+                    grammatical_object=(
+                        spellings
+                        if dotted and name in KEYS_WITH_A_READER
+                        else (_PRONOUN_KEY if dotted else _PRONOUN_FILE)
+                    ),
                     homes=() if dotted else CONFIG_HOMES,
                 )
             )
@@ -421,8 +472,17 @@ def _keys_for(member: WatchedObject) -> tuple[tuple[str, re.Pattern[str]], ...]:
         "live": _LIVENESS,
         "obj": member.grammatical_object,
     }
+    named = ("named", re.compile(_NEGATED_LIVENESS_TEMPLATE.format(**substitution), re.IGNORECASE))
+    if member.kind == "read key":
+        # The named shape alone. "Nothing reads it" inside a block that mentions
+        # four keys resolves to no particular one, and the sibling key objects
+        # already carry that sentence and clear it; "nothing in `src/` reads
+        # `providers.review.repositories`" resolves to exactly this key, and it
+        # is false. Admitting the pronoun here would turn every multi-key
+        # paragraph into a suspect about a key it never named.
+        return (named,)
     return (
-        ("named", re.compile(_NEGATED_LIVENESS_TEMPLATE.format(**substitution), re.IGNORECASE)),
+        named,
         ("pronoun", re.compile(_PRONOUN_TEMPLATE.format(**substitution), re.IGNORECASE)),
         ("unscoped", re.compile(_UNSCOPED_TEMPLATE, re.IGNORECASE)),
     )
@@ -444,6 +504,14 @@ def _classify(
     the first rule clears a sentence only where a release states it. A sentence in
     ``[Unreleased]``, or anywhere in a changelog that has no dated sections at
     all, is not a record of anything: it describes the tree.
+
+    The key-scoped rule reads ``{"key"}`` and not "every kind that is a key",
+    which is what :data:`KEYS_WITH_A_READER` turns into a verdict: a key
+    ``src/`` reads carries the kind ``read key``, so a claim naming it falls
+    through to ``SUSPECT`` while the same shape about an unread key still
+    clears. The rule's premise was always "this key has no reader"; ADR-0030
+    made that premise false for two members, and the premise is now checked
+    rather than assumed.
     """
     if sentence.path.endswith(_RELEASE_RECORDS) and sentence.line in dated:
         return "record (release note)"
@@ -593,14 +661,47 @@ def sweep(root: Path) -> list[Row]:
 #: Every fragment below is therefore chosen to identify exactly one sentence, and
 #: :data:`LEDGER_CONTROLS`' last row is what holds that.
 SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
+    # `test_census_record_claims.py`'s two rows -- "reader scan, and which
+    # tracker issue owns" and "reader scan; which issue owns FR-V5" -- stood here
+    # as `DEFECT, outside this change's fix set` for one commit. Both docstrings
+    # said that "nothing reads `providers.review.repositories`" was the fact
+    # `test_config_key_call_sites.py`'s reader scan held; ADR-0030 slice 1 gave
+    # the key a reader -- `security/project_config.read_review_repositories`,
+    # enforced from `security/review_allowlist.py` before any spawn -- and that
+    # scan now records the site rather than its absence. Both passages say
+    # *which* modules read the key, and both name the turn-over rather than
+    # deleting the sentence that carried it. The sweep produces no row for
+    # either, so the ledger carries none. A passage returning to "nothing reads"
+    # is an unrecorded suspect again, which is the direction that has to stay RED.
+    (
+        "packages/theurian-core/tests/unit/test_raptor_config_claims.py",
+        "RAPTOR_MD_SENTENCES: Final",
+        "true, and a measured false positive of the read-key shape",
+        "Every sentence in this tuple is true: `security/project_config.py` does open the "
+        "file for `security.secretScan`, and what is unread is the `raptor` block. The "
+        "row exists because a tuple of quoted strings is one *sentence* to "
+        "`claim_surfaces.sentences`, so the `{obj} ... is unread` alternative sees "
+        "`security.secretScan` in one element and `is unread` in the next. Recorded "
+        "rather than patched: narrowing the alternative to close it would also close the "
+        "real shape `security.maxSourceFileBytes` is caught by.",
+    ),
     (
         "docs/adr/0027-accept-validates-before-it-moves.md",
         "Nothing reads it today",
-        "DEFECT, outside this unit's fix set",
-        "ADR-0027's own decision 3 shipped the reader this sentence denies. The paragraph "
-        "was written while the diff was in flight and reads as the present tense now that "
-        "it has landed -- the prose-written-at-RED-time family. Recorded for filing; the "
-        "ADR is not in #199 unit B's measured file set.",
+        "record (amended in place)",
+        "ADR-0027's own decision 3 shipped the reader this sentence denies, and the "
+        "paragraph was written while that diff was in flight -- the prose-written-at-RED-"
+        "time family. It stood here as `DEFECT, outside this unit's fix set` while the ADR "
+        "sat outside #199 unit B's measured file set. ADR-0030 slice 1 gave the file its "
+        "second key and put the allowlist in force before any spawn, and the ADR was "
+        "amended on 2026-09-07 rather than rewritten: an accepted ADR retracts by "
+        "amendment (ADR-0004's precedent), so the paragraph stays as the record of this "
+        "ADR's date and the block directly under it names both keys and both modules. The "
+        "row stays because the sweep still produces the sentence, and it must -- this "
+        "ledger is where the judgement that it is a record lives. What the row cannot see "
+        "is the amendment being deleted underneath it: the fact side is "
+        "`test_config_key_call_sites.py`'s reader scan, which is derived from `src/`, and "
+        "the ADR's prose side is unpinned.",
     ),
     (
         "packages/theurian-core/src/theurian/application/forest_builder.py",
@@ -612,22 +713,15 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
         "names no verb and no object, so it is in this sweep as its own shape and is "
         "cleared by hand rather than by a pattern.",
     ),
-    (
-        "packages/theurian-core/tests/unit/test_config_key_call_sites.py",
-        "Nothing reads it, its description says so",
-        "true",
-        "`it` is `providers.review.repositories`, named in the sentence before. A "
-        "key-scoped claim, and the correct one.",
-    ),
-    (
-        "packages/theurian-core/tests/unit/test_config_key_call_sites.py",
-        "those documents say so",
-        "true",
-        "The same key-scoped claim inside the pin's own failure message, explaining why "
-        "six documents describe `providers.review.repositories` as reserved. `it` is that "
-        "key, named in the clause before. It reached the ledger when `_RECORD_MARKERS` "
-        "stopped clearing a sentence for carrying the bare verb `read` (round one's M-i).",
-    ),
+    # `test_config_key_call_sites.py`'s two rows -- "Nothing reads it, its
+    # description says so" and "those documents say so" -- stood here as `true`
+    # while `providers.review.repositories` had no reader. ADR-0030 decision 2
+    # shipped one, so both sentences went false and the same commit rewrote them:
+    # the module docstring now says the key is in force and names the two modules
+    # that carry it, and the pin's failure message names the *new*-site and
+    # *missing*-site directions. The sweep produces no row for either, so the
+    # ledger carries none. A sentence returning to "nothing reads it" is an
+    # unrecorded suspect again, which is the direction that has to stay RED.
     # `plugins/claude-code/CHANGELOG.md`'s "nothing reads that file, so the
     # allowlist protects no one yet" stood here as a `DEFECT` until #199 unit B's
     # prose assignment corrected it. It was the first row this ledger ever
@@ -638,6 +732,11 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
     # the #461 treatment one surface over -- so the sweep produces no row for it
     # and the ledger carries none. A file-wide claim returning to that entry is
     # an unrecorded suspect again, which is the direction that has to stay RED.
+    # Both of those sentences went false with ADR-0030 slice 1 and are now marked
+    # in the entry as what it said when it was written, with the current fact --
+    # two keys, the allowlist enforced before any spawn -- in the correction
+    # paragraph below them. They keep their published wording because
+    # `test_census_record_claims.py` holds the pair whole.
     # The rows below arrived with two round-one fixes and are the evidence that
     # both reach the tree rather than only the controls. The delimiter run (H-F)
     # brought in every quotation written in the RST house style, which a single
@@ -753,18 +852,13 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
     # `providers.review.repositories`, so the sweep produces no row for it and
     # the ledger carries none: a file-wide claim returning to that paragraph is
     # an unrecorded suspect again, which is the direction that has to stay RED.
-    (
-        "schemas/config/project-config.schema.json",
-        "Nothing reads it today; owed with",
-        "true",
-        "`providers.review.repositories`' own description, and the claim is key-scoped "
-        "and correct. It is a suspect only because the JSON reader's block is one source "
-        "line, so the enclosing key name is not in the block and the home rule supplies "
-        "the file object instead -- a limitation whose direction is a false RED, never a "
-        "false clear. Its owner cite was repointed #129 -> #429 in the same commit that "
-        "rewrote the root description, because class 2's open-owner rule is what "
-        "`controls_discharge.py` reported dead here.",
-    ),
+    # `project-config.schema.json`'s "Nothing reads it today; owed with" stood
+    # here as `true` -- a key-scoped claim about `providers.review.repositories`,
+    # correct while nothing read the key. ADR-0030 decision 2's reader made it
+    # false, and the same commit rewrote the description to say the key is in
+    # force, who reads it, and that the refusal happens before a spawn. The sweep
+    # produces no row for it and the ledger carries none; a description returning
+    # to "nothing reads it" is an unrecorded suspect again.
 )
 
 #: Planted sentences, one per shape, run instead of the tree under
@@ -906,11 +1000,23 @@ POSITIVE_CONTROLS: Final[tuple[tuple[str, str, str, bool, str], ...]] = (
         "none",
     ),
     (
-        "the narrowed key-scoped sentence in a home, which the additive rule must still let past",
+        "ADR-0030 gave `providers.review.repositories` a reader, so the narrowed sentence "
+        "this row once required the audit to CLEAR is the claim it now has to catch",
         "examples/sample-project/.theurian/config.yaml",
         "This file is read -- `security/project_config.py` opens it for "
         "`security.secretScan` alone -- but nothing in `src/` reads "
         "`providers.review.repositories`, so the allowlist is not in force.",
+        True,
+        "none",
+    ),
+    (
+        "the same narrowed shape about a key nothing reads, which the key-scoped rule must "
+        "still let past -- the half that keeps the row above from widening into every "
+        "key-scoped sentence in a home",
+        "examples/sample-project/.theurian/config.yaml",
+        "This file is read -- `security/project_config.py` opens it for "
+        "`security.secretScan` alone -- but nothing in `src/` reads this key, so "
+        "`raptor.enabled` is not in force.",
         False,
         "none",
     ),

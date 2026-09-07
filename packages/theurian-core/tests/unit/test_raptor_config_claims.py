@@ -675,8 +675,9 @@ PRONOUN_CASES: Final[tuple[tuple[str, bool], ...]] = (
     # -- the descriptions the schema carries now, which must keep passing ----
     (
         "This file has one reader: `security/project_config.py` takes `security.secretScan` "
-        "from it and nothing else (ADR-0027 decision 3), so that one key is in force and "
-        "every other key published here is reserved.",
+        "and `providers.review.repositories` from it and nothing else (ADR-0027 decision 3, "
+        "ADR-0030 decision 2), so those two keys are in force and every other key published "
+        "here is reserved.",
         False,
     ),
     (
@@ -686,14 +687,15 @@ PRONOUN_CASES: Final[tuple[tuple[str, bool], ...]] = (
     ),
     # -- the annotation the example carries now, which must keep passing -----
     (
-        "This file is read -- `security/project_config.py` opens it for "
-        "`security.secretScan` alone -- but nothing in `src/` reads "
-        "`providers.review.repositories`, so the allowlist is not in force.",
+        "`security/project_config.py` reads `providers.review.repositories` and "
+        "`security/review_allowlist.py` refuses a repository this list does not name, "
+        "before the process that reaches GitHub is started -- an empty or absent list "
+        "allows nothing.",
         False,
     ),
     (
-        "It is owed with the first external fetch path (#429 owns it; #129 was closed on "
-        "the wording rather than the control).",
+        "No command exposes review ingestion yet, so listing a repository here starts "
+        "nothing on its own.",
         False,
     ),
     ("Every provider defaults to a deterministic in-tree implementation.", False),

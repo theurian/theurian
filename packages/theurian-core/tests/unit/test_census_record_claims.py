@@ -24,12 +24,23 @@ with a different key.
   false, in the direction that reads as a *strengthening* — which is why it
   needs a pin rather than a reviewer.
 - The **plugin changelog corrections** are pinned as whole sentences. Their fact
-  sides live elsewhere and are not duplicated here: that nothing reads
+  sides live elsewhere and are not duplicated here: **which** modules read
   ``providers.review.repositories`` is held by
   ``test_config_key_call_sites.py``'s reader scan, and which tracker issue owns
   FR-V5 is not a property of this tree at all. What these hold is the wording,
   which is what a reader gets, and the census holds only the reversion direction
   — a reword that never returns to the retracted universal moves nothing there.
+
+  **One of those fact sides has since turned over, which is the case this
+  arrangement exists for.** ADR-0030 slice 1 gave the allowlist a reader:
+  ``security/project_config.py`` takes it out of the file and
+  ``security/review_allowlist.py`` enforces it before any process is spawned, and
+  the reader scan records that one site. The pinned sentences still say the
+  allowlist protected nobody, because they are a **record of what was true when
+  the entry was written** — and the entry now carries its own paragraph saying
+  its premises turned over. These pins are what made that correction land in the
+  changelog rather than in the sentences: the wording is held, so a reword that
+  dropped the history would be RED here.
 
 The audit modules are read as **text and parsed**, never imported: they are not
 part of the distribution, they sit outside ``mypy``'s package graph for the
@@ -384,11 +395,19 @@ def test_each_plugin_changelog_correction_still_says_what_it_was_corrected_to_sa
     asserted whole, so a sentence that keeps the object spelled and loses what it
     says about the object is RED here.
 
-    Spelling, and only spelling. That nothing reads
+    Spelling, and only spelling. **Which** modules read
     ``providers.review.repositories`` is held by ``test_config_key_call_sites``'s
     reader scan; which issue owns FR-V5 is not a property of this tree. If either
     of those changes, the entry is what gets corrected, and this pin is what makes
     the correction land in the same commit.
+
+    **The first of those has changed, and that is what happened.** ADR-0030 slice
+    1 gave the allowlist a reader and put it in force before any spawn, so the
+    sentences below became a record of the tree as it was rather than a
+    description of the tree as it is. The entry gained a paragraph naming the
+    premises that turned over; the sentences themselves were left standing,
+    because a changelog entry that is silently rewritten past its own history is
+    the failure this file is about. Both are the case this pin is for.
     """
     normalized = " ".join((REPO_ROOT / relative_path).read_text(encoding="utf-8").split())
 

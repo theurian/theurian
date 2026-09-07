@@ -67,24 +67,23 @@ def test_the_example_does_not_switch_the_raptor_forest_on() -> None:
 
 # -- Keys whose reach the example has to state ------------------------------
 #
-# Two keys in the sample config are a trap for a reader who copies the file, for
-# opposite reasons.
+# Two keys in the sample config are a trap for a reader who copies the file, and
+# since ADR-0030 decision 2 both traps are over-reading rather than under.
 #
-# `providers.review.repositories` (SEC-10's allowlist, #429) selects a control
-# that does not exist. It is kept as data on purpose -- the example teaches the
-# shape a reader will need once the control ships -- and a reader who copies it
-# reasonably concludes that repositories are allowlisted. They are not.
+# `providers.review.repositories` (SEC-10's allowlist) now selects a real
+# control: `security/project_config.py` reads the key and
+# `security/review_allowlist.py` refuses a repository the list does not name,
+# before any process is spawned. What a copying reader over-reads is the reach --
+# that listing a repository here turns ingestion *on*. It does not: no command
+# exposes review ingestion yet, and an empty or absent list allows nothing.
 #
-# Its annotation used to reach that conclusion through a false premise: "Nothing
-# in `src/` reads this file". The file *is* read -- `security/project_config.py`
-# opens it for `security.secretScan` (ADR-0027 decision 3) -- and the true fact
-# is narrower and key-scoped, so the annotation now names the reader module, what
-# the file is read for, and the key that has none. #429 owns the allowlist
-# against the first external fetch path; #129, the owner the annotation used to
-# name, closed on the wording rather than on the control. The retracted sentence
-# is refused by `test_raptor_config_claims.py`, which scans this file's comment
-# blocks; the rows below are the positive half and cannot see a sentence coming
-# back beside them.
+# Its annotation has been wrong in both directions, which is why the rows below
+# pin the reach rather than a verdict. It first said "Nothing in `src/` reads
+# this file", which ADR-0027 decision 3 falsified; the narrowed replacement said
+# the allowlist "is not in force", which this change falsifies. The retracted
+# file-wide universal is refused by `test_raptor_config_claims.py`, which scans
+# this file's comment blocks; the rows below are the positive half and cannot see
+# a sentence coming back beside them.
 #
 # `security.secretScan` (SEC-11's policy, #198 and #329) is the mirror image
 # since ADR-0027 decision 3: it now selects real behaviour, and the trap is
@@ -208,22 +207,26 @@ def _cites_said_to_be_closed(annotation: str, required: tuple[str, ...]) -> dict
 #: Dropping the key would also be dishonest -- it would hide a published part of
 #: the contract rather than annotate it -- so both halves fail here.
 #:
-#: The two rows require different sentences because the two keys are wrong in
-#: opposite directions. ``repositories`` still reads nowhere, so its annotation
-#: has to say so. ``secretScan`` now reads somewhere, so its annotation has to
-#: say *how far* -- the approval gate, where it refuses, and the index build,
-#: where it only signals.
+#: Both rows now require the annotation to say *how far* its key reaches, and
+#: that is the change ADR-0030 decision 2 made to the first of them.
+#: ``repositories`` used to read nowhere, so its annotation had to say so; the
+#: allowlist is read and enforced now, so what a copying reader must not
+#: over-read is the **reach**: it refuses before a spawn, an empty list allows
+#: nothing, and no command exposes review ingestion yet -- so listing a
+#: repository here starts nothing on its own. ``secretScan`` has had that shape
+#: since ADR-0027 decision 3 -- the approval gate, where it refuses, and the
+#: index build, where it only signals.
 #:
-#: ``repositories``' four sentences are one claim in four parts, and the first two
-#: are there because the annotation used to get this wrong (#426). It said
-#: "Nothing in ``src/`` reads this file", which was true until ADR-0027 decision
-#: 3 and is now false: ``security/project_config.py`` opens the file for
-#: ``security.secretScan``. So the row pins **the reader by module**
-#: (``security/project_config.py``), **what the file is read for**
-#: (``security.secretScan``), **the key that has none** -- spelled in full,
-#: because the file-level sentence does not contain it and cannot satisfy this --
-#: and **the live owner**. #129 closed on the wording rather than on the control,
-#: which is why naming it is no longer enough to make the annotation somebody's.
+#: ``repositories``' four sentences are one claim in four parts, and the last two
+#: are there because the annotation has been wrong in both directions. It said
+#: "Nothing in ``src/`` reads this file" (#426), which ADR-0027 decision 3
+#: falsified; the narrowed replacement said the allowlist "is not in force",
+#: which this change falsifies. So the row pins **the reader by module**
+#: (``security/review_allowlist.py`` is what refuses), **when the refusal
+#: happens** -- before a process is spawned, which is the property that makes it
+#: a control rather than a filter -- **that an empty list allows nothing**, and
+#: **that no command reaches it yet**, which is the sentence that keeps a reader
+#: from believing they have turned something on.
 #:
 #: ``secretScan``'s third sentence is the same requirement on the other key, and
 #: it has now moved twice for the same reason (#428, then #329). It required
@@ -249,10 +252,10 @@ ANNOTATED_KEYS: tuple[tuple[str, Any, tuple[str, ...]], ...] = (
         "repositories",
         ["acme/order-service"],
         (
-            "`security/project_config.py`",
-            "security.secretScan",
-            "nothing in `src/` reads `providers.review.repositories`",
-            "#429",
+            "`security/review_allowlist.py`",
+            "before the process that reaches GitHub is started",
+            "an empty or absent list allows nothing",
+            "No command exposes review ingestion yet",
         ),
     ),
 )
@@ -266,15 +269,15 @@ def test_a_key_the_example_sets_still_states_how_far_it_reaches(
 ) -> None:
     """The example is what a reader copies, so each key must state its own reach.
 
-    `providers.review.repositories` selects nothing: SEC-10's allowlist is still
-    owed against the first external fetch path (#429), so a reader who copies it
-    and believes repositories are allowlisted is wrong, and the annotation is
-    what tells them. It has to say that with the *key* named, because the file
-    itself is read -- for `security.secretScan` and nothing else -- and the
-    file-level sentence the annotation used to carry was false (#426). The
-    reader's *module* is required with the key: "read for `security.secretScan`"
-    says what, `security/project_config.py` says where, and a reader who has to
-    grep for the second is back in the habit #426 was opened to break.
+    `providers.review.repositories` now selects a real control (ADR-0030 decision
+    2): `security/review_allowlist.py` refuses a repository the list does not
+    name, before any process is spawned. A reader who copies the key and believes
+    they have turned review ingestion on is wrong -- no command reaches it yet --
+    and the annotation is what tells them. The reader's *module* is required
+    because a sentence naming only the behaviour leaves nowhere to check it, and
+    the *before a spawn* clause is required because that is the difference
+    between a control and a filter: an allowlist consulted after the fetch would
+    satisfy any sentence that omits it.
 
     **The retracted sentence is refused, not merely superseded.**
     `tests/unit/test_raptor_config_claims.py::test_no_scanned_surface_reasserts_that_nothing_in_src_reads_the_config_file`
