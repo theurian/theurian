@@ -20,8 +20,9 @@ caught, with no per-command patch needed. Its siblings
 on the same load path. All are members of the same class for the purposes of
 this file: what it pins is the *reaching* commands, not which subclass the
 loader happens to raise -- so what neither fix alone closes is a *new*
-command reaching ``resolve_context`` (or ``_require_project``, which wraps
-it) without going through one of the two guarded shapes below, the
+command reaching ``resolve_context`` (or ``_require_project`` and
+``_resolve_or_refuse``, which wrap it) without going through one of the three
+guarded shapes below, the
 ``_reclaim`` docstring's CP-2 precedent for this shape (``cli/index_commands.py``).
 
 Two things are pinned, because they are two separate ways the class could
@@ -82,10 +83,19 @@ pytestmark = pytest.mark.unit
 #: sites in it at all.
 SRC = pathlib.Path(theurian.__file__).resolve().parent
 
-#: The two names that reach the migration loader. ``_require_project`` wraps
-#: ``resolve_context``, so a command that calls either is a member of the
-#: class this file is about.
-CALLEES = {"resolve_context", "_require_project"}
+#: The three names that reach the migration loader. ``_require_project`` and
+#: ``_resolve_or_refuse`` both wrap ``resolve_context``, so a command that calls
+#: any of them is a member of the class this file is about.
+#:
+#: **A wrapper must be added here in the same change that introduces it**, and
+#: the failure mode is silence rather than a red test. ``_resolve_or_refuse`` was
+#: extracted for #550 to hold ``init`` and ``project register``'s shared
+#: escape/generic arms in one place; while it was absent from this set, the two
+#: commands stopped being visible to the scan at all -- not because they had
+#: stopped reaching the loader, but because one hop of indirection is all this
+#: key can lose. The population test still failed, which is what sent someone
+#: here; what it reported was three moved triples, not "two commands went dark".
+CALLEES = {"resolve_context", "_require_project", "_resolve_or_refuse"}
 
 
 def _iter_nodes_with_scope(tree: ast.AST) -> Iterator[tuple[ast.AST, tuple[str, ...]]]:
@@ -131,18 +141,19 @@ def _call_sites(path: pathlib.Path) -> list[tuple[str, str, str]]:
 
 
 #: Every ``(module path under theurian/, enclosing function, callee)`` triple
-#: that calls ``resolve_context`` or ``_require_project``, read off the
-#: shipped source with:
-#: ``grep -rn "resolve_context(\\|_require_project(" src/theurian/``
-#: on 2026-08-17 against ``fix/205-json-crash-on-unresolvable-content-file``.
+#: that calls one of :data:`CALLEES`, read off the shipped source with:
+#: ``grep -rn "resolve_context(\\|_require_project(\\|_resolve_or_refuse(" src/theurian/``
+#: on 2026-09-07 against ``fix/escaping-knowledge-dir-grading``; first pinned
+#: 2026-08-17 for issue #205.
 #: Recursive over the whole package, not scoped to ``cli/`` -- matching
 #: :data:`_LIVE_SITES`'s own ``SRC.rglob("*.py")`` below, so a future call
 #: site under ``mcp/`` or ``daemon/`` is caught by regenerating this set the
 #: same way the live scan already finds it, rather than by a narrower grep
 #: that would silently miss it.
 RESOLVE_CONTEXT_CALL_SITES = {
-    ("cli/commands.py", "init_command", "resolve_context"),
-    ("cli/commands.py", "project_register", "resolve_context"),
+    ("cli/commands.py", "init_command", "_resolve_or_refuse"),
+    ("cli/commands.py", "project_register", "_resolve_or_refuse"),
+    ("cli/commands.py", "_resolve_or_refuse", "resolve_context"),
     ("cli/commands.py", "project_status", "resolve_context"),
     ("cli/commands.py", "_require_project", "resolve_context"),
     ("cli/commands.py", "migrate_status", "_require_project"),
@@ -201,6 +212,11 @@ def test_the_scanner_looks_for_names_the_product_actually_calls() -> None:
     )
     assert hasattr(commands, "_require_project"), (
         "`_require_project` no longer exists in `theurian.cli.commands`; rename "
+        "CALLEES and the pinned sets together, or this scan silently protects "
+        "nothing"
+    )
+    assert hasattr(commands, "_resolve_or_refuse"), (
+        "`_resolve_or_refuse` no longer exists in `theurian.cli.commands`; rename "
         "CALLEES and the pinned sets together, or this scan silently protects "
         "nothing"
     )
