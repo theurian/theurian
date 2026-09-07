@@ -85,6 +85,21 @@ MAX_PULL_REQUESTS: Final = 500
 #: which would be a silent loss inside a record that looks complete.
 MAX_COMMENTS_PER_THREAD: Final = 100
 
+#: The most labels one pull request may carry before the read stops and reports.
+#: A label is **author-controlled text** the ingestion scan reads (ADR-0030
+#: decision 3's table), and the ``labels`` connection paginates like every other,
+#: so without a check a pull request carrying sixty of them arrives with fifty
+#: recorded and nothing saying the other ten -- or what they say -- exist.
+#:
+#: **A chosen ceiling rather than a measured distribution**, said plainly because
+#: every other number in this file that looks like a measurement is one: this
+#: adapter has ingested no repository, so there is nothing here to cite. It is set
+#: above :data:`MAX_LINKED_ISSUES` because a label set is not a hand-written list
+#: the way a closing-issue list is -- automation applies labels too -- and the
+#: overflow is meant to read as an anomaly worth reporting rather than as an
+#: ordinary busy pull request.
+MAX_LABELS_PER_PULL_REQUEST: Final = 50
+
 #: The most issues one pull request may close before the read stops and reports.
 #: The ``closingIssuesReferences`` connection paginates like every other, and the
 #: adapter asks for one page of it and follows no cursor -- so without a check a

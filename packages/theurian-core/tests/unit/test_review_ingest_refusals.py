@@ -308,6 +308,8 @@ _THIS_PACKAGES_OWN: Final[dict[str, str]] = {
     "GITHUB_HOSTNAME": "a module constant",
     "GH_CONFIG_FILE": "a module constant",
     "byte_cap": "a parameter; both production call sites pass a module constant",
+    "cap": "a loop variable over two module constants, MAX_LINKED_ISSUES and MAX_LABELS_*",
+    "members": "one of two literals naming a capped connection's members",
     "timeout": "a parameter; production passes REQUEST_TIMEOUT_SECONDS",
     "entry": "the allowlist entry, so the operator's own config and pattern-bounded",
     "field": "this adapter's own literal naming a response field",

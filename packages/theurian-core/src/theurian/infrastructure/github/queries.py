@@ -32,14 +32,23 @@ VARIABLE_NAMES: Final[frozenset[str]] = frozenset(
 #: ``Node``, so one inline fragment covers them all rather than five. Verified
 #: against the live schema rather than assumed.
 #:
-#: ``closingIssuesReferences`` asks for ``pageInfo { hasNextPage }`` because its
-#: page size is a **cap the adapter reports** rather than a truncation it
-#: swallows: without the flag, a pull request closing forty issues and one
-#: closing twenty arrive identical. The number is
-#: :data:`~theurian.infrastructure.github.limits.MAX_LINKED_ISSUES` and it is
-#: spelled here as a literal, because this document is a literal (clause 2) and
+#: ``closingIssuesReferences`` and ``labels`` ask for ``pageInfo { hasNextPage }``
+#: because their page sizes are **caps the adapter reports** rather than
+#: truncations it swallows: without the flag, a pull request closing forty issues
+#: and one closing twenty arrive identical. The numbers are
+#: :data:`~theurian.infrastructure.github.limits.MAX_LINKED_ISSUES` and
+#: :data:`~theurian.infrastructure.github.limits.MAX_LABELS_PER_PULL_REQUEST`,
+#: spelled here as literals because this document is a literal (clause 2) and
 #: formatting a constant into it is the string building clause 2 exists to keep
-#: out.
+#: out. ``test_a_page_size_the_document_spells_is_the_constant_that_names_the_cap``
+#: is what holds each literal to its constant from outside.
+#:
+#: ``body``, ``labels``, ``headRefName`` and ``milestone`` are here because
+#: ADR-0030 decision 3's table puts all four on the **author-controlled** side:
+#: a description, a label, a branch name and a milestone name are chosen by
+#: whoever opened the pull request, so they are content the ingestion scan reads
+#: rather than provider structure. ``milestone`` is nullable upstream and maps to
+#: ``None``, never to a fabricated name (decision 5).
 PULL_REQUESTS: Final = """\
 query($owner: String!, $name: String!, $first: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
@@ -50,14 +59,18 @@ query($owner: String!, $name: String!, $first: Int!, $after: String) {
       nodes {
         number
         title
+        body
         url
         createdAt
         merged
         mergedAt
         headRefOid
         baseRefOid
+        headRefName
+        milestone { title }
         author { login ... on Node { id } }
         mergeCommit { oid }
+        labels(first: 50) { pageInfo { hasNextPage } nodes { name } }
         closingIssuesReferences(first: 20) { pageInfo { hasNextPage } nodes { number } }
         commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
       }

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import re
 from typing import Final
 
 import pytest
@@ -72,6 +73,26 @@ _NAMING_NODES: Final = (
 #: What ``gh`` would be told to do if this adapter ever followed a next-page
 #: reference the *response* supplies rather than a cursor of its own choosing.
 PAGINATE_FLAG: Final = "--paginate"
+
+
+def _documents() -> dict[str, str]:
+    """Every GraphQL document ``queries.py`` declares, read off the module itself.
+
+    The population is the module rather than a pair of names written here. A
+    third document -- one with a ``first:`` literal nobody pinned, or one reaching
+    ``gh`` without the pinned hostname -- is precisely what a transcription cannot
+    see, and this file makes four separate claims about "the documents".
+
+    The key is a module-level ``str`` whose text opens a GraphQL operation.
+    :func:`test_the_document_scan_finds_the_documents_and_nothing_else` is its
+    can-fail companion: it holds the key to the documents that exist and to the
+    module constants it must not sweep up.
+    """
+    return {
+        name: value
+        for name, value in vars(queries).items()
+        if isinstance(value, str) and value.startswith("query(")
+    }
 
 
 def _vector(document: str, variables: dict[str, str | int]) -> tuple[str, ...]:
@@ -218,7 +239,7 @@ def test_the_hostname_is_pinned_in_every_vector_that_makes_a_request() -> None:
         assert "--hostname" in arguments, arguments
         assert arguments[arguments.index("--hostname") + 1] == gh_cli.GITHUB_HOSTNAME, arguments
 
-    for document in (queries.PULL_REQUESTS, queries.REVIEW_THREADS):
+    for document in _documents().values():
         vector = _vector(document, {"owner": "acme", "name": "order-service"})
         assert "--hostname" in vector
         assert vector[vector.index("--hostname") + 1] == "github.com"
@@ -231,7 +252,7 @@ def test_paginate_is_absent_from_every_vector() -> None:
     exactly what it follows is behaviour of a binary this design pins only the
     version of. A cursor in a typed variable cannot become a destination.
     """
-    for document in (queries.PULL_REQUESTS, queries.REVIEW_THREADS):
+    for document in _documents().values():
         vector = _vector(document, {"owner": "acme", "name": "order-service"})
         assert PAGINATE_FLAG not in vector
 
@@ -322,9 +343,11 @@ def test_the_spawn_module_reaches_no_shell() -> None:
 def test_the_documents_interpolate_nothing() -> None:
     """A GraphQL document built by formatting is a document a name can be injected into.
 
-    The two documents are module constants with no ``{`` placeholders and no
-    f-string anywhere in their module, so the only thing that varies between two
-    requests is the value of a declared variable.
+    Every document is a module constant with no ``{`` placeholders and no f-string
+    anywhere in its module, so the only thing that varies between two requests is
+    the value of a declared variable. The ``%s`` half runs over
+    :func:`_documents` rather than over two names, so a document added later is
+    covered by the same sentence.
     """
     tree = ast.parse(
         pathlib.Path(queries.__file__).read_text(encoding="utf-8"),
@@ -333,19 +356,30 @@ def test_the_documents_interpolate_nothing() -> None:
     formatted = [node for node in ast.walk(tree) if isinstance(node, ast.JoinedStr)]
 
     assert not formatted, "a GraphQL document module builds a string by interpolation"
-    assert "%s" not in queries.PULL_REQUESTS
-    assert "%s" not in queries.REVIEW_THREADS
+    for name, document in _documents().items():
+        assert "%s" not in document, f"`queries.{name}` carries a printf placeholder"
 
 
 #: Every page size a document spells as a literal, with the constant whose value
 #: it must be, as ``(the connection's field name, the constant's name)``.
 #:
-#: Two connections, because both are read against a cap the *provider* enforces
+#: Three connections, because each is read against a cap the *provider* enforces
 #: while the number that actually reaches GitHub is the literal here.
+#:
+#: **Membership is checked, not just each row.**
+#: :func:`test_every_first_literal_in_a_document_is_pinned_to_a_constant` reads
+#: the ``first:`` literals out of the documents themselves, so a connection added
+#: with a page size and no row here reddens rather than passing unexamined --
+#: which is what a transcribed table cannot do for itself.
 _PAGE_SIZE_LITERALS: Final[tuple[tuple[str, str, str], ...]] = (
     ("comments", "MAX_COMMENTS_PER_THREAD", "REVIEW_THREADS"),
     ("closingIssuesReferences", "MAX_LINKED_ISSUES", "PULL_REQUESTS"),
+    ("labels", "MAX_LABELS_PER_PULL_REQUEST", "PULL_REQUESTS"),
 )
+
+#: How a document spells a page size it fixes in the literal rather than binding
+#: to the ``$first`` variable: ``<connection>(first: <number>)``.
+_FIRST_LITERAL: Final = re.compile(r"(\w+)\(first: (\d+)\)")
 
 
 @pytest.mark.parametrize(
@@ -384,6 +418,55 @@ def test_a_page_size_the_document_spells_is_the_constant_that_names_the_cap(
     )
 
 
+def test_the_document_scan_finds_the_documents_and_nothing_else() -> None:
+    """The can-fail companion for :func:`_documents`, in both directions.
+
+    A scan that found nothing would make every loop over it vacuously green, and a
+    scan that swept up the module's other string constants would report a
+    ``%s``-free frozenset as a document. So the key is held to the documents that
+    exist *and* to the names it must not collect.
+    """
+    found = _documents()
+
+    assert set(found) >= {"PULL_REQUESTS", "REVIEW_THREADS"}, (
+        f"the document scan found {sorted(found)}, which does not include the "
+        "documents `queries.py` declares. Every loop over `_documents()` is then "
+        "watching a smaller population than it claims."
+    )
+    assert not {"VARIABLE_NAMES", "STATUS_ROLLUP_STATES"} & set(found), (
+        "the scan collected a module constant that is not a GraphQL document"
+    )
+
+
+def test_every_first_literal_in_a_document_is_pinned_to_a_constant() -> None:
+    """Membership, so :data:`_PAGE_SIZE_LITERALS` cannot become a stale subset.
+
+    The row-by-row test above holds each pinned literal to its constant. It says
+    nothing about a connection nobody pinned: a document gaining
+    ``reviews(first: 30)`` with no row here leaves that page size a number in a
+    string, unnamed by any constant, unreported when it overflows -- the silent
+    truncation ADR-0030 clause 7's caps exist to replace with a report.
+
+    The population is therefore read out of the documents, not out of the table.
+    ``first: $first`` is deliberately invisible to the key: a bound variable is
+    already ``PAGE_SIZE`` at the call site and is followed by a cursor.
+    """
+    pinned = {(connection, document) for connection, _, document in _PAGE_SIZE_LITERALS}
+    spelled = {
+        (connection, name)
+        for name, document in _documents().items()
+        for connection, _ in _FIRST_LITERAL.findall(document)
+    }
+
+    assert spelled, "no document spells a `first:` literal, so this asserts nothing"
+    assert spelled == pinned, (
+        f"the documents spell {sorted(spelled)} and `_PAGE_SIZE_LITERALS` pins "
+        f"{sorted(pinned)}. A `first:` literal with no row is a page size no "
+        f"constant names and no refusal reports; a row with no literal pins a "
+        f"connection the documents no longer ask for."
+    )
+
+
 #: The bounds whose test-side restatement lives **here**, with the value.
 #:
 #: **The admission rule, so the next constant does not have to be argued about.**
@@ -416,6 +499,7 @@ RECORDED_BOUNDS: Final[tuple[tuple[str, object], ...]] = (
     ("MAX_PULL_REQUESTS", 500),
     ("MAX_COMMENTS_PER_THREAD", 100),
     ("MAX_LINKED_ISSUES", 20),
+    ("MAX_LABELS_PER_PULL_REQUEST", 50),
     ("MAX_RESPONSE_BYTES", 8 * 1024 * 1024),
     ("GH_VERSION_FLOOR", (2, 86, 0)),
 )

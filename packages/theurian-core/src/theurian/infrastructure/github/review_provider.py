@@ -32,9 +32,11 @@ happen before a single record is built:
   to, and an id read out of the same response it would validate proves nothing.
 
 **Bodies are carried, never interpreted.** Every author-controlled string -- a
-comment body, a title, a display name, a file path as received -- is copied into
-the domain record as data. In particular a received ``path`` is never joined into
-a filesystem path here, and this slice writes no file at all.
+comment body, a pull request title and description, a label, a head branch name,
+a milestone name, a display name, a file path as received -- is copied into the
+domain record as data. In particular a received ``path`` is never joined into
+a filesystem path here, a label's value decides nothing (ADR-0019, discharged by
+ADR-0030 decision 3), and this slice writes no file at all.
 
 **What an answer may be read as lives next door**, in ``response.py``: every
 field below goes through one of its helpers rather than being indexed, so a
@@ -70,6 +72,7 @@ from theurian.infrastructure.github.environment import child_environment
 from theurian.infrastructure.github.gh_cli import GhCli, locate_binary
 from theurian.infrastructure.github.limits import (
     MAX_COMMENTS_PER_THREAD,
+    MAX_LABELS_PER_PULL_REQUEST,
     MAX_LINKED_ISSUES,
     MAX_PAGES,
     MAX_PULL_REQUESTS,
@@ -354,15 +357,19 @@ class GitHubReviewProvider:
         and using the configured one keeps a project's own records in one
         spelling however GitHub happens to case its answer.
 
-        Two graded stops of its own fire before any record exists -- beside the
-        shape checks each field read carries, :func:`response.boolean` among them -- and
-        both are there for the reason :meth:`_comments_of` has its own: a record
-        that *looks* whole and is not is worse than a refusal naming what could
-        not be read. A merged pull request must carry its merge commit, and a
-        pull request may not close more issues than
-        :data:`~theurian.infrastructure.github.limits.MAX_LINKED_ISSUES` -- the
-        ``closingIssuesReferences`` connection paginates, and this adapter
-        follows no cursor into it.
+        Two graded stops fire before any record exists -- beside the shape checks
+        each field read carries, :func:`response.boolean` among them -- and both are there
+        for the reason :meth:`_comments_of` has its own: a record that *looks*
+        whole and is not is worse than a refusal naming what could not be read. A
+        merged pull request must carry its merge commit, and neither of the two
+        single-page connections may overflow its cap
+        (:meth:`_refuse_a_capped_overflow`).
+
+        ``milestone`` is the one field here the provider may answer with nothing,
+        and it maps to ``None`` rather than to a name nobody chose (ADR-0030
+        decision 5). ``body``, ``labels`` and ``head_ref_name`` are read as the
+        author-controlled content they are: carried verbatim, interpreted by
+        nothing.
         """
         merged = response.boolean(node.get("merged"), "`merged`")
         merge_commit = response.mapping(node.get("mergeCommit")).get("oid")
@@ -373,20 +380,7 @@ class GitHubReviewProvider:
                 f"as merged with no merge commit, which is not a pull request this "
                 f"adapter can record honestly.",
             )
-        linked = response.mapping(node.get("closingIssuesReferences"))
-        if (
-            response.boolean(
-                response.mapping(linked.get("pageInfo")).get("hasNextPage"),
-                "`hasNextPage` on a pull request's linked issues",
-            )
-            or len(response.nodes(linked)) > MAX_LINKED_ISSUES
-        ):
-            raise ReviewIngestRefusedError(
-                RefusalGrade.LIMIT_EXCEEDED,
-                f"Pull request {entry}#{bounded_echo(node.get('number'))} closes more than the "
-                f"recorded {MAX_LINKED_ISSUES}-issue cap. The read stopped rather than "
-                f"recording an event that looks whole and is not.",
-            )
+        self._refuse_a_capped_overflow(entry, node)
         rollup = response.nodes(response.mapping(node.get("commits")))
         state = None
         if rollup:
@@ -399,11 +393,17 @@ class GitHubReviewProvider:
             repository=entry,
             number=response.positive_integer(node.get("number"), "pull request number"),
             title=response.text(node.get("title")),
+            body=response.text(node.get("body")),
             author=response.participant(node.get("author")),
             created_at=response.instant(node.get("createdAt"), "createdAt"),
             url=response.text(node.get("url")),
             head_commit=response.text(node.get("headRefOid")),
             base_commit=response.text(node.get("baseRefOid")),
+            head_ref_name=response.text(node.get("headRefName")),
+            labels=tuple(
+                response.required_text(label.get("name"), "label name")
+                for label in response.nodes(response.mapping(node.get("labels")))
+            ),
             merged=merged,
             merge_commit=merge_commit if isinstance(merge_commit, str) else None,
             merged_at=response.optional_instant(node.get("mergedAt")),
@@ -412,7 +412,46 @@ class GitHubReviewProvider:
                 str(response.positive_integer(issue.get("number"), "linked issue number"))
                 for issue in response.nodes(response.mapping(node.get("closingIssuesReferences")))
             ),
+            milestone=response.optional_text(response.mapping(node.get("milestone")).get("title")),
         )
+
+    def _refuse_a_capped_overflow(self, entry: str, node: Mapping[str, Any]) -> None:
+        """The two connections a pull request node carries one page of, each capped.
+
+        ``closingIssuesReferences`` and ``labels`` are asked for a single page and
+        this adapter follows no cursor into either, so an overflow is **reported**
+        rather than recorded: an event naming half a pull request's closing
+        issues, or carrying half its labels past the ingestion scan that reads
+        them, looks whole and is not.
+
+        Each is checked two ways, because either arm alone leaves the truncation
+        reachable. ``hasNextPage`` is the provider saying there is more -- read
+        through :func:`response.boolean`, so an unreadable flag refuses instead of
+        folding into "there is no more" -- and a node count past the cap is what
+        arrives if the ``first:`` literal in the document and the constant here
+        ever drift apart.
+        """
+        for connection, cap, members in (
+            (
+                response.mapping(node.get("closingIssuesReferences")),
+                MAX_LINKED_ISSUES,
+                "closing issue",
+            ),
+            (response.mapping(node.get("labels")), MAX_LABELS_PER_PULL_REQUEST, "label"),
+        ):
+            if (
+                response.boolean(
+                    response.mapping(connection.get("pageInfo")).get("hasNextPage"),
+                    f"`hasNextPage` on a pull request's {members}s",
+                )
+                or len(response.nodes(connection)) > cap
+            ):
+                raise ReviewIngestRefusedError(
+                    RefusalGrade.LIMIT_EXCEEDED,
+                    f"Pull request {entry}#{bounded_echo(node.get('number'))} carries more "
+                    f"than the recorded {cap}-{members} cap. The read stopped rather than "
+                    f"recording an event that looks whole and is not.",
+                )
 
     def _thread(
         self, project_id: ProjectId, event: ReviewEvent, node: Mapping[str, Any]

@@ -120,6 +120,53 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   inside `domain/review.py`: no consumer exists to migrate. That answers the
   migration cost and not whether the record is honest, which is why the break is
   named here rather than waved through.
+- **BREAKING — `ReviewEvent` carries the four author-controlled pull-request
+  fields, and three of them are required** (ADR-0030 decision 3, part of
+  [#479](https://github.com/theurian/theurian/issues/479)). Was
+  `ReviewEvent(project_id, provider, repository, number, title, author,
+  created_at, url, head_commit, base_commit, merged=False, merge_commit=None,
+  merged_at=None, ci_successful=None, linked_issue_ids=())`; is now the same with
+  `body: str` after `title`, `head_ref_name: str` and `labels: tuple[str, ...]`
+  after `base_commit`, and `milestone: str | None = None` last. A **positional**
+  construction therefore moves, and keyword construction gains three required
+  arguments. The adapter fetches all four: `PULL_REQUESTS` now asks for `body`,
+  `headRefName`, `milestone { title }` and a capped `labels` connection.
+
+  **Why three are required and one is not.** ADR-0030 decision 3's field table
+  puts the description, the labels, the head branch name and the milestone name
+  on the **author-controlled** side — they look like provider structure and are
+  not — so they are what the ingestion secret scan reads. A default on any of the
+  first three would let a record claim an empty description, an empty branch name
+  or no labels that nobody supplied: content the scan would then pass without
+  ever seeing it. `milestone` keeps a default because *no milestone* is an answer
+  the provider gives, the shape `ReviewResolution`'s optional fields already hold.
+
+  **The label connection is capped and the cap reports.** `labels` paginates and
+  this adapter follows no cursor into it, so `MAX_LABELS_PER_PULL_REQUEST` (50)
+  is read two ways — the provider's own `hasNextPage` and a node count — and an
+  overflow is a `limit-exceeded` refusal naming the number, never fifty of sixty
+  labels recorded as the whole set. A label whose `name` arrives as something
+  other than text refuses as `tool-failed` rather than folding to the empty
+  string. **A label is data and governs nothing** (ADR-0019, discharged rather
+  than cited): nothing reads a label's value to decide anything, and fetching
+  them as scannable content is the whole of their role.
+
+  Measured at `7c486588`, `git grep -n "ReviewEvent(" -- packages plugins tools
+  docs` returned two hits — `infrastructure/github/review_provider.py` and
+  `tests/unit/test_project_and_traceability.py` — so no consumer exists to
+  migrate. That answers the migration cost and not whether the record is honest,
+  the same distinction its sibling above draws.
+- **`ReviewSubmission` joins the review model**: a top-level review on a pull
+  request — the approval or the change request itself, not a line comment — as
+  `ReviewSubmission(external_id, project_id, event_key, author, body, state,
+  submitted_at=None)`. FR-V1 names *reviews* beside *threads* because they are
+  different records carrying different evidence. `state` is carried as the
+  provider's own spelling, validated non-empty and mapped onto no closed set of
+  the domain's: a provider's review vocabulary belongs to the provider, and a
+  closed set would have to answer for a member it has never heard of by losing
+  the record or by renaming it. `submitted_at` is optional for
+  `ReviewResolution`'s reason — a review that was never submitted has no
+  submission time, and the ingestion time is not it.
 
 ### Fixed
 

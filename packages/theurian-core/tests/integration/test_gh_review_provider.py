@@ -24,6 +24,7 @@ would need an interpreter that literal does not promise.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import pathlib
@@ -35,7 +36,6 @@ import pytest
 
 from theurian.domain.enums import ReviewThreadState
 from theurian.domain.identifiers import ProjectId
-from theurian.domain.review import ReviewEvent
 from theurian.domain.review_ingest import (
     MAX_REFUSAL_SUMMARY_CHARS,
     RefusalGrade,
@@ -245,17 +245,24 @@ def _pull_requests(
     node = {
         "number": 12,
         "title": "Refuse a symbolic link at every derived write target",
+        "body": "The join check refused the leaf and not the directory itself.",
         "url": "https://github.com/acme/order-service/pull/12",
         "createdAt": "2026-09-01T10:00:00Z",
         "merged": True,
         "mergedAt": "2026-09-02T11:00:00Z",
         "headRefOid": "a" * 40,
         "baseRefOid": "b" * 40,
+        "headRefName": "fix/refuse-an-escaping-knowledge-dir",
+        "milestone": {"title": "Milestone 8"},
         "author": {"login": "utchy", "id": "MDQ6VXNlcjE="},
         "mergeCommit": {"oid": "c" * 40},
         # `pageInfo` is here because the document asks for it: an answer without
         # it is one this adapter refuses, so a fixture without it would be
         # driving a response GitHub does not send.
+        "labels": {
+            "pageInfo": {"hasNextPage": False},
+            "nodes": [{"name": "security"}, {"name": "area/paths"}],
+        },
         "closingIssuesReferences": {"pageInfo": {"hasNextPage": False}, "nodes": [{"number": 523}]},
         "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]},
     }
@@ -766,18 +773,7 @@ async def test_a_variable_too_large_to_render_refuses_instead_of_raising(
     fake_gh.answer("prs", 1, _pull_requests())
     provider = _provider(tmp_path, fake_gh)
     (event,) = await provider.list_pull_requests(PROJECT, REPOSITORY)
-    unrenderable = ReviewEvent(
-        project_id=PROJECT,
-        provider="github",
-        repository=REPOSITORY,
-        number=10**5000,
-        title=event.title,
-        author=event.author,
-        created_at=event.created_at,
-        url=event.url,
-        head_commit=event.head_commit,
-        base_commit=event.base_commit,
-    )
+    unrenderable = dataclasses.replace(event, number=10**5000)
 
     with pytest.raises(ReviewIngestRefusedError) as raised:
         await provider.get_threads(PROJECT, unrenderable)
@@ -1214,6 +1210,133 @@ async def test_more_linked_issues_than_the_cap_is_refused_without_the_flag_sayin
 
 
 @pytest.mark.asyncio
+async def test_a_pull_request_past_the_label_cap_is_reported_not_truncated(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """The linked-issue treatment on the connection ADR-0030 puts author text in.
+
+    ``labels`` paginates like every other connection and this adapter follows no
+    cursor into it, so a pull request carrying sixty labels would arrive with
+    fifty recorded and nothing saying the other ten exist. That is worse here than
+    for a structural connection: a label is content the ingestion scan reads, so
+    a silently dropped one is content nothing looked at.
+
+    The payload carries a full page **and** ``hasNextPage``, which is what GitHub
+    sends for the fifty-first label.
+    """
+    over = _pull_requests(
+        labels={
+            "pageInfo": {"hasNextPage": True},
+            "nodes": [
+                {"name": f"area/{index}"} for index in range(limits.MAX_LABELS_PER_PULL_REQUEST)
+            ],
+        }
+    )
+    fake_gh.answer("prs", 1, over)
+    provider = _provider(tmp_path, fake_gh)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert raised.value.grade is RefusalGrade.LIMIT_EXCEEDED
+    assert f"{REPOSITORY}#12" in str(raised.value)
+    assert str(limits.MAX_LABELS_PER_PULL_REQUEST) in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_more_labels_than_the_cap_is_refused_without_the_flag_saying_so(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """The other arm, for the reason its linked-issue twin has one.
+
+    A page one longer than the cap with ``hasNextPage`` false is what an answer
+    looks like if the ``first:`` literal in the document and the constant ever
+    disagree. Without this case, deleting the node-count clause is a change no
+    test notices and the effective cap becomes whatever the document says.
+    """
+    over = _pull_requests(
+        labels={
+            "pageInfo": {"hasNextPage": False},
+            "nodes": [
+                {"name": f"area/{index}"} for index in range(limits.MAX_LABELS_PER_PULL_REQUEST + 1)
+            ],
+        }
+    )
+    fake_gh.answer("prs", 1, over)
+    provider = _provider(tmp_path, fake_gh)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert raised.value.grade is RefusalGrade.LIMIT_EXCEEDED
+    assert str(limits.MAX_LABELS_PER_PULL_REQUEST) in str(raised.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "name",
+    (None, 12, _ABSENT, ""),
+    ids=("a null name", "a numeric name", "no name field", "an empty name"),
+)
+async def test_a_label_whose_name_is_not_text_is_refused_rather_than_recorded(
+    tmp_path: pathlib.Path, fake_gh: FakeGh, name: object
+) -> None:
+    """A label reaches the record as a string or the answer is refused.
+
+    ``labels`` is untrusted content the scan reads, and every shape here is one a
+    partly-errored GraphQL response can be -- the errored field comes back
+    ``null`` beside a ``data`` that otherwise looks ordinary. Folding any of them
+    into the empty string would put a label in the record that nobody wrote, and
+    into the scan a value that came from this adapter rather than from GitHub.
+    """
+    label: dict[str, object] = {} if name is _ABSENT else {"name": name}
+    fake_gh.answer(
+        "prs", 1, _pull_requests(labels={"pageInfo": {"hasNextPage": False}, "nodes": [label]})
+    )
+    provider = _provider(tmp_path, fake_gh)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert raised.value.grade is RefusalGrade.TOOL_FAILED
+    assert "label name" in str(raised.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "page_info",
+    (_ABSENT, None, {"hasNextPage": "true"}, {}),
+    ids=(
+        "no pageInfo at all",
+        "a null pageInfo",
+        "hasNextPage as the string true",
+        "a pageInfo with no hasNextPage",
+    ),
+)
+async def test_a_label_paging_flag_that_is_not_a_boolean_is_refused_not_read_as_false(
+    tmp_path: pathlib.Path, fake_gh: FakeGh, page_info: object
+) -> None:
+    """AC-3 on the connection whose overflow costs content rather than structure.
+
+    Every shape here reads as *there is no next page* under a comparison against
+    ``is True``, so the cap never fires and a truncated label set is recorded as
+    a whole one. The nodes are inside the cap, so a refusal cannot be the count
+    arm firing instead of the flag arm.
+    """
+    labels: dict[str, object] = {"nodes": [{"name": "security"}]}
+    if page_info is not _ABSENT:
+        labels["pageInfo"] = page_info
+    fake_gh.answer("prs", 1, _pull_requests(labels=labels))
+    provider = _provider(tmp_path, fake_gh)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert raised.value.grade is RefusalGrade.TOOL_FAILED
+    assert "labels" in str(raised.value)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "page_info",
     (_ABSENT, None, {"hasNextPage": "true", "endCursor": "CURSOR-1"}, {"endCursor": "CURSOR-1"}),
@@ -1605,6 +1728,81 @@ async def test_a_pull_request_maps_onto_the_domain_record(
 
 
 @pytest.mark.asyncio
+async def test_the_author_controlled_pull_request_fields_arrive_verbatim(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """ADR-0030 decision 3's untrusted row, on the fields that look structural.
+
+    A description, a label, a head branch name and a milestone name are chosen by
+    whoever opened the pull request. They are what slice 2's secret scan reads, so
+    a record that dropped them would leave the scan reading nothing and passing --
+    the shape a guard no input reaches always has.
+
+    Every value is asserted **verbatim**, because the record's contract is that
+    they are carried rather than interpreted: a normalisation here is content the
+    scan would never see in the form it was written.
+    """
+    fake_gh.answer("prs", 1, _pull_requests())
+    provider = _provider(tmp_path, fake_gh)
+
+    (event,) = await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert event.body == "The join check refused the leaf and not the directory itself."
+    assert event.labels == ("security", "area/paths")
+    assert event.head_ref_name == "fix/refuse-an-escaping-knowledge-dir"
+    assert event.milestone == "Milestone 8"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "milestone", (None, _ABSENT), ids=("a null milestone", "no milestone field at all")
+)
+async def test_a_pull_request_in_no_milestone_records_none_rather_than_a_name(
+    tmp_path: pathlib.Path, fake_gh: FakeGh, milestone: object
+) -> None:
+    """ADR-0030 decision 5: the honest value for what the provider does not record.
+
+    ``milestone`` is the one author-controlled field on a pull request that
+    GitHub answers with nothing, and both shapes of nothing are answers it gives:
+    a ``null`` beside the other fields, and -- on a partly-errored response -- the
+    key absent altogether. Neither may become a name, because a fabricated
+    milestone is a value every consumer downstream reads as one somebody chose.
+    """
+    payload = _pull_requests()
+    node = payload["data"]["repository"]["pullRequests"]["nodes"][0]
+    if milestone is _ABSENT:
+        del node["milestone"]
+    else:
+        node["milestone"] = milestone
+    fake_gh.answer("prs", 1, payload)
+    provider = _provider(tmp_path, fake_gh)
+
+    (event,) = await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert event.milestone is None
+
+
+@pytest.mark.asyncio
+async def test_a_pull_request_with_no_labels_records_an_empty_set_not_a_refusal(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """The ordinary case the cap must not swallow: a connection with nothing in it.
+
+    An empty ``labels`` connection is what most pull requests answer with, and it
+    is not an overflow: a cap that refused it would refuse the common case, and a
+    cap that read it as unreadable would refuse every unlabelled pull request.
+    """
+    fake_gh.answer(
+        "prs", 1, _pull_requests(labels={"pageInfo": {"hasNextPage": False}, "nodes": []})
+    )
+    provider = _provider(tmp_path, fake_gh)
+
+    (event,) = await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert event.labels == ()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("state", "expected"),
     (
@@ -1718,26 +1916,17 @@ async def test_since_number_stops_the_read_where_the_caller_asked(
 async def test_a_repository_reached_through_an_event_is_re_checked_against_the_allowlist(
     tmp_path: pathlib.Path, fake_gh: FakeGh
 ) -> None:
-    """A ``ReviewEvent`` is an ordinary value a caller can build, so it is not evidence.
+    """A ``ReviewEvent`` is an ordinary value a caller can build or alter, so it is not evidence.
 
     Taking ``event.repository`` on faith would make the control depend on where
-    the value came from, which is the shape a later caller gets wrong.
+    the value came from, which is the shape a later caller gets wrong. The forged
+    value is an adapter-returned record with one field replaced, which is the
+    cheapest form the mistake takes: everything else about it is genuine.
     """
     fake_gh.answer("prs", 1, _pull_requests())
     provider = _provider(tmp_path, fake_gh)
     (event,) = await provider.list_pull_requests(PROJECT, REPOSITORY)
-    forged = ReviewEvent(
-        project_id=PROJECT,
-        provider="github",
-        repository="acme/billing",
-        number=event.number,
-        title=event.title,
-        author=event.author,
-        created_at=event.created_at,
-        url=event.url,
-        head_commit=event.head_commit,
-        base_commit=event.base_commit,
-    )
+    forged = dataclasses.replace(event, repository="acme/billing")
     before = fake_gh.invocations
 
     with pytest.raises(ReviewIngestRefusedError) as raised:

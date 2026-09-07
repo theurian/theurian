@@ -53,6 +53,7 @@ from theurian.domain.review import (
     ReviewEvent,
     ReviewParticipant,
     ReviewResolution,
+    ReviewSubmission,
     ReviewThread,
 )
 from theurian.domain.specification import (
@@ -336,39 +337,133 @@ def test_invalid_token_budgets_are_rejected(max_tokens: int, reserved: int) -> N
 
 REVIEWER = ReviewParticipant(provider="github", external_id="U123", display_name="reviewer")
 
+#: The author-controlled fields ADR-0030 decision 3's table names on a pull
+#: request, each of which :class:`ReviewEvent` requires at construction. Written
+#: out here rather than derived from the dataclass, so a field silently gaining a
+#: default is a red test rather than a shrinking population.
+_AUTHOR_CONTROLLED = ("title", "body", "head_ref_name", "labels")
+
+
+def _event_arguments() -> dict[str, object]:
+    """Every argument a whole :class:`ReviewEvent` needs, so one can be withheld by name."""
+    return {
+        "project_id": PROJECT,
+        "provider": "github",
+        "repository": "acme/backend-service",
+        "number": 431,
+        "title": "Add cancellation guard",
+        "body": "The deadline is read after the mutation, so a cancelled call still writes.",
+        "author": REVIEWER,
+        "created_at": NOW,
+        "url": "https://github.com/acme/backend-service/pull/431",
+        "head_commit": "a" * 40,
+        "base_commit": "b" * 40,
+        "head_ref_name": "fix/cancellation-guard",
+        "labels": ("reliability",),
+    }
+
+
+def _event(**overrides: object) -> ReviewEvent:
+    return ReviewEvent(**{**_event_arguments(), **overrides})  # type: ignore[arg-type]
+
 
 def test_merged_pull_request_must_record_a_merge_commit() -> None:
     """Without it, "was this actually shipped?" is unanswerable."""
     with pytest.raises(InvariantViolationError, match="merge commit"):
-        ReviewEvent(
-            project_id=PROJECT,
-            provider="github",
-            repository="acme/backend-service",
-            number=431,
-            title="Add cancellation guard",
-            author=REVIEWER,
-            created_at=NOW,
-            url="https://github.com/acme/backend-service/pull/431",
-            head_commit="a" * 40,
-            base_commit="b" * 40,
-            merged=True,
-        )
+        _event(merged=True)
 
 
 def test_review_event_key_is_stable_across_reingestion() -> None:
-    event = ReviewEvent(
+    assert _event().external_key == "github:acme/backend-service#431"
+
+
+@pytest.mark.parametrize("field", _AUTHOR_CONTROLLED, ids=_AUTHOR_CONTROLLED)
+def test_the_author_controlled_fields_are_not_defaulted_away(field: str) -> None:
+    """RED means a record can claim author content nobody supplied.
+
+    ``ReviewEvent``'s docstring states which of its author-controlled fields carry
+    a default and why the rest do not, and this is what makes that sentence fail
+    when it stops being true. The three added by ADR-0030 decision 3 -- the
+    description, the head branch name and the label set -- are the fields the
+    ingestion secret scan reads, so a default there is a record that passes the
+    scan on content it was never given.
+
+    ``milestone`` is deliberately outside this population: *no milestone* is an
+    answer the provider gives, so ``None`` is a value rather than an absence, and
+    :func:`test_a_pull_request_with_no_milestone_is_a_record_not_an_omission`
+    holds the other direction.
+    """
+    supplied = {name: value for name, value in _event_arguments().items() if name != field}
+
+    with pytest.raises(TypeError, match=field):
+        ReviewEvent(**supplied)  # type: ignore[arg-type]
+
+
+def test_a_pull_request_with_no_milestone_is_a_record_not_an_omission() -> None:
+    """The one author-controlled field the provider may answer with nothing."""
+    assert _event().milestone is None
+    assert _event(milestone="Milestone 8").milestone == "Milestone 8"
+
+
+def test_a_review_submission_records_the_providers_own_verdict() -> None:
+    """FR-V1's *reviews*: the whole-pull-request act, carried as data.
+
+    ``state`` is the provider's spelling and reaches the record unchanged --
+    including a member this model has never heard of, which is the case a closed
+    set would have had to answer for by losing the record or by renaming it.
+    """
+    submission = ReviewSubmission(
+        external_id="PRR_1",
         project_id=PROJECT,
-        provider="github",
-        repository="acme/backend-service",
-        number=431,
-        title="Add cancellation guard",
+        event_key="github:acme/backend-service#431",
         author=REVIEWER,
-        created_at=NOW,
-        url="https://github.com/acme/backend-service/pull/431",
-        head_commit="a" * 40,
-        base_commit="b" * 40,
+        body="The guard is right; the reason it gives is not.",
+        state="A_STATE_THIS_MODEL_HAS_NEVER_HEARD_OF",
+        submitted_at=NOW,
     )
-    assert event.external_key == "github:acme/backend-service#431"
+
+    assert submission.state == "A_STATE_THIS_MODEL_HAS_NEVER_HEARD_OF"
+    assert submission.event_key == "github:acme/backend-service#431"
+
+
+def test_a_review_submission_that_was_never_submitted_records_no_time() -> None:
+    """``ReviewResolution``'s rule one record over: never the ingestion time."""
+    submission = ReviewSubmission(
+        external_id="PRR_2",
+        project_id=PROJECT,
+        event_key="github:acme/backend-service#431",
+        author=REVIEWER,
+        body="",
+        state="PENDING",
+    )
+
+    assert submission.submitted_at is None
+
+
+@pytest.mark.parametrize("state", ("", "   "), ids=("empty", "blank"))
+def test_a_review_submission_without_a_state_is_rejected(state: str) -> None:
+    """A submission that cannot say what its author decided is a bug at construction."""
+    with pytest.raises(InvariantViolationError, match="records no state"):
+        ReviewSubmission(
+            external_id="PRR_3",
+            project_id=PROJECT,
+            event_key="github:acme/backend-service#431",
+            author=REVIEWER,
+            body="",
+            state=state,
+        )
+
+
+def test_a_review_submission_without_an_identifier_is_rejected() -> None:
+    with pytest.raises(InvariantViolationError, match="external_id must not be empty"):
+        ReviewSubmission(
+            external_id="",
+            project_id=PROJECT,
+            event_key="github:acme/backend-service#431",
+            author=REVIEWER,
+            body="",
+            state="APPROVED",
+        )
 
 
 def test_thread_without_comments_is_rejected() -> None:

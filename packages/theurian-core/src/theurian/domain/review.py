@@ -43,23 +43,47 @@ class ReviewParticipant:
 
 @dataclass(frozen=True, slots=True)
 class ReviewEvent:
-    """A pull request together with its outcome."""
+    """A pull request together with its outcome.
+
+    **Four fields here are author-controlled, and three of them look structural**
+    (ADR-0030 decision 3's table). The description (``body``), the ``labels``, the
+    head branch name and the ``milestone`` name are chosen by whoever opened the
+    pull request, so they carry text a person wrote and ride under the same
+    safety triple as a comment body -- which is why the ingestion secret scan
+    reads them. They are held here as **data**: nothing in this model reads a
+    label's value to decide anything, which is where ADR-0019 is discharged
+    rather than cited.
+
+    **Which of the four carries a default is a decision, not a style choice.**
+    ``milestone`` defaults to ``None`` because *no milestone* is an answer the
+    provider gives, the same shape :class:`ReviewResolution`'s optional fields
+    hold. The other three carry no default: an empty description, an empty branch
+    name and an empty label set are each a value an adapter **maps**, not an
+    absence, so a default would let a record claim one that nobody supplied --
+    and those are three of the fields the scan reads.
+    ``tests/unit/test_project_and_traceability.py::test_the_author_controlled_fields_are_not_defaulted_away``
+    is what makes that sentence fail when it stops being true.
+    """
 
     project_id: ProjectId
     provider: str
     repository: str
     number: int
     title: str
+    body: str
     author: ReviewParticipant
     created_at: datetime
     url: str
     head_commit: str
     base_commit: str
+    head_ref_name: str
+    labels: tuple[str, ...]
     merged: bool = False
     merge_commit: str | None = None
     merged_at: datetime | None = None
     ci_successful: bool | None = None
     linked_issue_ids: tuple[str, ...] = ()
+    milestone: str | None = None
 
     def __post_init__(self) -> None:
         if self.number < 1:
@@ -154,6 +178,59 @@ class ReviewThread:
     @property
     def categories(self) -> frozenset[ReviewCommentCategory]:
         return frozenset(c.category for c in self.comments if c.category is not None)
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewSubmission:
+    """A top-level review on a pull request: the verdict, not a line comment.
+
+    FR-V1 names *reviews* beside *threads* because they are different records
+    carrying different evidence. A :class:`ReviewThread` is a conversation
+    anchored to a file and a line range; a submission is the whole-pull-request
+    act -- an approval, a request for changes, a comment with no verdict -- and
+    its ``body`` is where a reviewer writes the reasoning that never fits beside
+    a line. It attaches through ``event_key`` for :class:`ReviewThread`'s reason:
+    the key is stable across re-ingestion, so a record survives a refetch that
+    renumbers nothing.
+
+    ``state`` is carried as **the provider's own spelling**, validated non-empty
+    and mapped onto no closed set of this model's own. Two reasons, and the
+    second is the load-bearing one:
+
+    * a provider's review vocabulary is the provider's. ``ReviewThreadState`` is
+      this model's word for a state it derives from two Booleans; a submission's
+      state arrives already named, and an enum spelled after one provider's
+      schema would put that provider's vocabulary in the layer that depends on
+      nothing (ADR-0003).
+    * a closed set has to answer for a member it has never heard of, and both
+      answers are wrong here. Refusing the record loses evidence over a schema
+      addition; folding it into a default records a verdict nobody gave. That is
+      ``queries.ci_outcome``'s lesson one field over -- where the *direction* of
+      the default was the whole decision -- and unlike that mapping, nothing
+      reads ``state`` to decide anything, so a normalisation would have no
+      reader to serve.
+
+    ``submitted_at`` is optional for :class:`ReviewResolution`'s reason: a review
+    that has been started and not submitted has no submission time, and ``None``
+    is the honest value for a time nobody recorded.
+    """
+
+    external_id: str
+    project_id: ProjectId
+    event_key: str
+    author: ReviewParticipant
+    body: str
+    state: str
+    submitted_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if not self.external_id:
+            raise InvariantViolationError("ReviewSubmission.external_id must not be empty")
+        if not self.state.strip():
+            raise InvariantViolationError(
+                f"Review submission {self.external_id} records no state, so nothing "
+                "says what its author decided"
+            )
 
 
 @dataclass(frozen=True, slots=True)
