@@ -526,13 +526,14 @@ class ProjectError(TheurianError):
 class ProjectPathEscapeError(ProjectError):
     """A path under ``.theurian/`` could not be proved to stay inside the tree.
 
-    The refusal :func:`_contain` raises, given a name so the CLI can grade it
-    without asking *which helper* raised (#525). Reproduce the population with
+    The refusal :func:`_contain` and :meth:`ProjectPaths.of` raise, given a name
+    so the CLI can grade it without asking *which* guard raised (#525, #550).
+    Reproduce the population with
     ``git grep -n 'raise ProjectPathEscapeError' -- packages/theurian-core/src``.
-    Run 2026-09-04 it returned three lines: this sentence quoting the key, and two
-    ``raise`` statements, both inside :func:`_contain`. The self-hit is why the
-    count is stated rather than the command's output pasted -- the claimant reads
-    itself, the trap
+    Run 2026-09-07 it returned five lines: this sentence quoting the key, two
+    ``raise`` statements inside :func:`_contain`, and two inside
+    :meth:`ProjectPaths.of`. The self-hit is why the count is stated rather than
+    the command's output pasted -- the claimant reads itself, the trap
     ``test_connection_claims.py::test_the_only_test_that_constructs_the_write_lock_runs_in_one_process``
     records for its own key.
 
@@ -559,23 +560,21 @@ class ProjectPathEscapeError(ProjectError):
     Carries no fields of its own: the message and the remedy :class:`ProjectError`
     already holds are the whole payload, and the type is what the CLI grades on.
 
-    **The join check in :meth:`ProjectPaths.of` is deliberately not this type**,
-    and that is a bound on the class rather than an oversight. It guards
+    **The join check in :meth:`ProjectPaths.of` raises it too, since #550**, and
+    that is the second half of one grading rather than a widening. It guards
     ``knowledge_dir`` itself -- ``.theurian`` shipped as a symbolic link to
     somewhere outside the tree -- with its own anchor, and it fires while the
-    command context is still resolving, so its refusal is graded by whatever its
-    caller already assigns to "could not resolve a project". That is a recorded
-    per-command decision, not one grading: ``_require_project``'s own comment
-    says so, and the four ``resolve_context()`` call sites in ``cli/commands.py``
-    handle it three different ways. Its callers are wider still --
-    ``git grep -n 'ProjectPaths.of(' -- packages/theurian-core/src`` returned
-    ten lines on 2026-09-04: eight call sites, reaching ``setup_steps``,
-    ``setup_commands``, ``migration_pipeline`` and ``mcp/tools`` as well as
-    ``cli/context``, plus a comment in the migration loader and this sentence.
-    None of the eight was measured for #525. What *was* measured is that the outermost escaping link
-    still reports ``1``:
-    ``test_cli_commands.py::test_status_over_an_escaping_theurian_symlink_reads_nothing_from_outside_the_tree``
-    asserts it and stayed green through this change. Recorded, not closed.
+    command context is still resolving, before a single helper derives a path.
+    While it raised the bare base class its refusal fell past every handler keyed
+    on the escape into whatever each caller assigns to "could not resolve a
+    project", so *which level of the tree the delivered link sat at* decided the
+    exit code. Its callers are wide: ``git grep -n 'ProjectPaths.of(' --
+    packages/theurian-core/src`` returned ten lines on 2026-09-07, eight of them
+    calls, reaching ``setup_steps``, ``setup_commands``, ``migration_pipeline``
+    and ``mcp/tools`` as well as ``cli/context``. That population is derived from
+    the source and classified -- graded, or absorbed into a diagnostic verdict --
+    by ``test_escaping_knowledge_dir_grading.py``, which drives each graded member
+    and fails when a new call site appears unclassified.
     """
 
 
@@ -1114,6 +1113,18 @@ class ProjectPaths:
         # Resolving the whole join (not just its last component) also follows a
         # symlinked ancestor of `.theurian`, so a link anywhere on its path is
         # caught the same way.
+        #
+        # `ProjectPathEscapeError` and not the bare `ProjectError` this raised
+        # until #550. The type is what the CLI grades on, and while this check
+        # raised the base class its refusal fell through every handler keyed on
+        # the escape and landed in whatever each caller assigns to "could not
+        # resolve a project" -- so one root cause answered two codes depending on
+        # *which level* of the tree the delivered link sat at. Measured at
+        # `8372cc8c` against the real CLI, `.theurian/state` escaping against
+        # `.theurian` escaping: `migrate status`, `migrate validate`, `migrate
+        # apply`, `index build`, `index status`, `index gc` and `project status`
+        # each answered 4 for the leaf and 1 -- 0, for `project status`, with a
+        # payload calling the project registered -- for the directory above it.
         try:
             escapes = not knowledge_dir.resolve().is_relative_to(resolved)
         except (OSError, ValueError) as exc:
@@ -1122,12 +1133,12 @@ class ProjectPaths:
             # `TheurianError`, and a join that will not resolve to a place inside
             # the project is refused for the same reason one that resolves
             # outside is: nothing derived from it can be trusted to stay inside.
-            raise ProjectError(
+            raise ProjectPathEscapeError(
                 f"{directory} does not resolve to a location inside {resolved}: {exc}",
                 remedy=KNOWLEDGE_DIR_ESCAPE_REMEDY,
             ) from exc
         if escapes:
-            raise ProjectError(
+            raise ProjectPathEscapeError(
                 f"{directory} resolves outside the project root {resolved}, so every file "
                 f"Theurian would read or write under it is outside the working tree.",
                 remedy=KNOWLEDGE_DIR_ESCAPE_REMEDY,

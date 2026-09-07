@@ -145,8 +145,12 @@ is driven; nothing in this file plants one. The ``mkdir``
 that runs before that open *was* on this list and is not any more -- it converts
 its own refusal, and ``test_migrate_apply_lock_confinement.py`` drives it. An escaping
 ``.theurian`` *itself* is refused a level earlier, by the join check in
-``ProjectPaths.of`` rather than by ``_contained``, and keeps each command's own
-resolve-time grading -- the bound recorded on ``ProjectPathEscapeError``.
+``ProjectPaths.of`` rather than by ``_contained``, so this file's key cannot see
+it: its population is that guard's own call sites, derived and driven by
+``test_escaping_knowledge_dir_grading.py`` (#550). The two now agree on the code
+they publish -- both raise ``ProjectPathEscapeError`` and both grade
+``EXIT_STATE_ERROR`` -- and that agreement is a property of the product, not of
+this file, so neither file asserts it about the other's plants.
 """
 
 from __future__ import annotations

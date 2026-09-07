@@ -204,6 +204,15 @@ def _fail_a_path_escape(exc: ProjectPathEscapeError, *, as_json: bool) -> None:
     the option the message names" over the escape's own cure). Anything reached
     by neither route is unmeasured, and this docstring does not speak for it.
 
+    **A second guard reaches here since #550**, and it arrives from a different
+    place in the run: :meth:`ProjectPaths.of`'s join check, which refuses
+    ``.theurian`` *itself* while the command context is still resolving, before
+    any helper derives a path. Its callers are the thirteen commands that resolve
+    a project, and they were measured the same way -- twelve at 1 and ``project
+    status`` at **0** with a payload calling the project registered, against 4
+    from the identical link one level deeper. ``test_escaping_knowledge_dir_grading.py``
+    derives that population from the source and drives every graded member of it.
+
     ``exc.remedy`` bare rather than through :func:`_context_remedy`: both of
     ``_contain``'s raise sites pass a ``remedy``, and ``_contained`` supplies it
     from ``ProjectPaths._escape_remedy``, keyed on the refused path -- so there
@@ -925,13 +934,34 @@ def _layout_refusal(exc: OSError) -> str:
     )
 
 
-def init_command(as_json: JsonOption = False) -> None:
-    """Create ``.theurian/`` in the current repository.
+def _resolve_or_refuse(
+    as_json: bool, *, start: Path | None = None, project_id: ProjectId | None = None
+) -> CommandContext:
+    """Resolve a context for the two commands that run *before* a project exists.
 
-    Never overwrites an existing file. Re-running reports an empty change set.
+    ``init`` and ``project register`` cannot go through :func:`_require_project`:
+    it loads the migration set and opens the previously active state database, and
+    neither is there yet at ``init`` time. What they do share is this pair of
+    arms, and the pair is the point -- keeping them in one place is what stopped
+    them drifting the first time. The default remedy is "run this inside a Git
+    repository" because that is the failure both of them actually meet.
+
+    The escape arm goes first, and has to: ``ProjectPathEscapeError`` is a
+    ``ProjectError`` and so a ``TheurianError``, so a ``.theurian`` a clone
+    delivered as a link out of the working tree used to fall into the generic
+    branch and exit 1 -- publishing "Run this inside a Git repository." to
+    somebody standing in one, while the same clone's link one level deeper at
+    ``.theurian/state`` answered ``EXIT_STATE_ERROR`` (#550).
+
+    Never returns on the failure paths -- :func:`_fail` raises ``typer.Exit`` --
+    and the trailing ``raise`` is what says so to a type checker, the shape
+    :func:`_require_project` already takes.
     """
     try:
-        context = resolve_context()
+        return resolve_context(start, project_id)
+    except ProjectPathEscapeError as exc:
+        _fail_a_path_escape(exc, as_json=as_json)
+        raise
     except TheurianError as exc:
         _fail(
             str(exc),
@@ -939,7 +969,15 @@ def init_command(as_json: JsonOption = False) -> None:
             as_json=as_json,
             code=1,
         )
-        return
+        raise
+
+
+def init_command(as_json: JsonOption = False) -> None:
+    """Create ``.theurian/`` in the current repository.
+
+    Never overwrites an existing file. Re-running reports an empty change set.
+    """
+    context = _resolve_or_refuse(as_json)
 
     try:
         created = initialize_project(context.paths)
@@ -1112,16 +1150,11 @@ def project_register(
             )
             return
 
-    try:
-        context = resolve_context(path, parsed_id)
-    except TheurianError as exc:
-        _fail(
-            str(exc),
-            remedy=_context_remedy(exc, default="Run this inside a Git repository."),
-            as_json=as_json,
-            code=1,
-        )
-        return
+    # Through the shared resolver, so this command and `init` cannot disagree
+    # about a doctored clone. Registering would record `rootPath` for a project
+    # whose whole layout resolves outside the working tree, and every daemon
+    # reading that entry would follow the link (#550).
+    context = _resolve_or_refuse(as_json, start=path, project_id=parsed_id)
 
     project = Project(
         project_id=context.project_id,
@@ -1472,6 +1505,20 @@ def project_status(as_json: JsonOption = False) -> None:
     """Report registration, state hash, and index freshness for this repository."""
     try:
         context = resolve_context()
+    # A refusal, not a degradation, and this is the arm that tells them apart at
+    # the *resolve* -- the same distinction the two handlers below draw at the
+    # pointer and at the state database. `_unresolved_status` degrades to exit 0
+    # because "this directory is not a project" is an ordinary answer for a
+    # command that runs anywhere; a `.theurian` a clone delivered as a link out of
+    # the tree is not that. Measured at `8372cc8c`, this command answered exit 0
+    # with `registered: true` over exactly that plant, while the identical link one
+    # level deeper at `.theurian/state` answered 4 (#550). Reporting a registered
+    # project on the strength of a layout that is not in the working tree is a
+    # claim, and no partial answer about a tree in that condition is worth
+    # publishing.
+    except ProjectPathEscapeError as exc:
+        _fail_a_path_escape(exc, as_json=as_json)
+        return
     except TheurianError as exc:
         _emit(_unresolved_status(exc), as_json=as_json)
         return
@@ -3043,6 +3090,15 @@ def _require_project(as_json: bool) -> tuple[CommandContext, Path]:
     # since this class always sets one.
     except PathEscapeError as exc:
         _fail(str(exc), remedy=exc.remedy, as_json=as_json, code=EXIT_STATE_ERROR)
+        raise
+    # Ahead of the generic branch, and it has to be: `ProjectPathEscapeError` is a
+    # `ProjectError` and so a `TheurianError`, so before this arm existed the join
+    # check in `ProjectPaths.of` -- an escaping `.theurian` *itself* -- exited 1
+    # here with "Run this inside an initialised Theurian project.", printed to
+    # somebody standing in one. The same doctored clone one level deeper, at
+    # `.theurian/state`, already answered 4 through `_fail_a_path_escape` (#550).
+    except ProjectPathEscapeError as exc:
+        _fail_a_path_escape(exc, as_json=as_json)
         raise
     except TheurianError as exc:
         _fail(
