@@ -41,7 +41,12 @@ from theurian.application.review_ingest_service import (
     ReviewIngestRequest,
     ReviewIngestService,
 )
-from theurian.application.review_landing_gate import REDACTED_DISPLAY_NAME
+from theurian.application.review_landing_gate import (
+    REDACTED_DISPLAY_NAME,
+    LandingCandidate,
+    ReviewScanOutcome,
+    screen_landing_candidates,
+)
 from theurian.domain.enums import ReviewThreadState
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.review import (
@@ -438,6 +443,55 @@ async def test_one_grade_halts_at_the_listing_and_skips_at_a_fetch(tmp_path: Pat
     with pytest.raises(ReviewIngestRefusedError):
         await _run(tmp_path / "listing", halting)
     assert halting.reads == []
+
+
+@pytest.mark.asyncio
+async def test_a_gate_answering_fewer_verdicts_than_candidates_lands_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A short verdict list stops the run rather than shifting it (#605 item 2).
+
+    ``_screen`` pairs candidates with verdicts **positionally**, so a gate that
+    answered one verdict fewer gives every remaining candidate the verdict of the
+    record after it -- a payload paired with an anchor composed from the event
+    standing beside it in the candidate list, and with two pull requests in the
+    window the shift crosses the boundary between them.
+    ``zip(..., strict=True)`` is the whole of what refuses that, and relaxing it
+    over this fixture was measured landing **five records where the run fetched
+    six**: pull request 42's own event record disappears with nothing reporting a
+    corpus smaller than the one screened.
+
+    **What escapes is a bare ``ValueError`` from ``zip`` itself**, carrying no
+    grade and no remedy, unlike every other refusal this service surfaces. That
+    is asserted here as the contract that ships rather than endorsed as the right
+    one: whether this belongs in the graded envelope is the open half of #605
+    item 2, and answering it is a production change this test does not make.
+
+    The stub cannot pass for the wrong reason. It calls the real gate and drops
+    one verdict from the answer, so a ``monkeypatch`` that missed its target
+    would let the run finish and this would fail at the ``raises`` instead.
+    """
+    import theurian.application.review_ingest_service as service
+
+    def _one_verdict_short(
+        candidates: Sequence[LandingCandidate], *, root: Path, config_file: Path
+    ) -> ReviewScanOutcome:
+        outcome = screen_landing_candidates(candidates, root=root, config_file=config_file)
+        return replace(outcome, verdicts=outcome.verdicts[1:])
+
+    monkeypatch.setattr(service, "screen_landing_candidates", _one_verdict_short)
+    root, config_file = _project(tmp_path)
+    store = _store(root)
+    lander = _Lander(store, RUN_ONE)
+
+    with pytest.raises(ValueError) as raised:
+        await _service(root, config_file, _provider([_event(42), _event(41)]), lander, store).run(
+            _request()
+        )
+
+    assert type(raised.value) is ValueError, "a graded refusal now reaches here; re-read #605"
+    assert lander.handed == []
+    assert _landed_files(root) == set()
 
 
 @pytest.mark.asyncio

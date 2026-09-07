@@ -57,6 +57,7 @@ from theurian.infrastructure.review_evidence import (
     record_leaf,
     repository_directory,
 )
+from theurian.infrastructure.review_evidence.layout import EVIDENCE_SUFFIX
 
 pytestmark = pytest.mark.unit
 
@@ -399,6 +400,40 @@ def test_a_provider_id_that_is_already_a_name_is_spelled_out_rather_than_hashed(
     assert record_leaf("sha256-anything").startswith("sha256-")
 
 
+def test_no_provider_id_can_be_made_to_name_another_ids_file() -> None:
+    """``layout.py``'s disjointness claim, driven from the impostor's side.
+
+    The module records that the verbatim and the hashed leaf names are disjoint
+    sets "by construction rather than by improbability", so that "no id can be
+    made to name another id's file". Every other case here drives one id at a
+    time and so holds only one half of that: they say a hostile id is hashed,
+    never that a second id cannot be spelled to land on the first one's file.
+
+    The attack the claim forbids is exactly that. Read the leaf a hashed id
+    landed under, hand that leaf back to the store as some other record's
+    provider id, and see where it goes: it is inside the verbatim arm's charset
+    and length, so the **escape prefix alone** is what sends it to be hashed. The
+    control below is the same string with the prefix spelled one digit off, which
+    the verbatim arm accepts -- so a failure here is the prefix rule and not the
+    charset.
+
+    Two ids naming one file is not caught downstream: the store refuses a
+    collision only *within* one run, and these two arrive in different ones.
+    """
+    victim = record_leaf("../../etc/passwd")
+    impostor = victim.removesuffix(EVIDENCE_SUFFIX)
+    lookalike = f"sha257-{impostor.removeprefix('sha256-')}"
+
+    landed = record_leaf(impostor)
+
+    assert landed != victim, "an id spelled as another id's leaf named that id's file"
+    assert landed.startswith("sha256-"), "the impostor was not sent down the hashing arm"
+    assert record_leaf(lookalike) == f"{lookalike}{EVIDENCE_SUFFIX}", (
+        "the control: this shape is one the verbatim arm accepts, so what sent the "
+        "impostor to be hashed was the prefix rather than its charset or its length"
+    )
+
+
 def test_two_repositories_never_share_a_directory() -> None:
     """The identity hash separates repositories, which is what keeps keys unique.
 
@@ -407,6 +442,29 @@ def test_two_repositories_never_share_a_directory() -> None:
     """
     assert repository_directory(PROVIDER, "acme/one") != repository_directory(PROVIDER, "acme/two")
     assert repository_directory("github", REPOSITORY) != repository_directory("gitlab", REPOSITORY)
+
+
+def test_two_identity_pairs_that_split_one_string_land_in_different_directories() -> None:
+    """The join takes a separator neither argument can carry (#605 item 1).
+
+    ``repository_directory`` joins its two arguments with a NUL for one stated
+    reason: a separator either side could carry would let two different pairs
+    hash to one directory, and a shared directory is one repository's pull
+    request 1 sitting where another's belongs.
+
+    The pairs here are the **ambiguous splits** of a single string, which is the
+    shape the test above cannot reach -- it varies one argument at a time, so it
+    holds just as well for a scheme that joins with ``/``.
+
+    ``ReviewIngestService`` composes ``provider="github"`` and nothing else
+    today, so the first argument is not a value a caller chooses; what this pins
+    is the **function's** contract, which is what the second provider is built
+    against.
+    """
+    assert repository_directory("github/acme", "one") != repository_directory("github", "acme/one")
+    assert repository_directory("github", "acme/order-service") != repository_directory(
+        "github/acme", "order-service"
+    )
 
 
 @_NEEDS_SYMLINKS
@@ -433,6 +491,49 @@ def test_a_repository_directory_symlinked_out_of_the_project_is_refused(tmp_path
         store.write([_event(number=2)], run=RUN_TWO)
 
     assert list(outside.iterdir()) == []
+
+
+@_NEEDS_SYMLINKS
+def test_a_repository_directory_reached_by_leaving_the_tree_and_returning_is_refused(
+    tmp_path: Path,
+) -> None:
+    """The route walk's own half of the pair, with the destination contained.
+
+    ``_write_one`` proves two different things and the store's own docstring says
+    neither implies the other: ``resolve_within_root`` answers *where* the path
+    points and ``assert_no_symlink_escape`` answers *how it got there*. The plant
+    above cannot tell them apart -- it lands outside the review directory, so the
+    first check refuses it whether or not the second one runs.
+
+    This plant can. The repository directory is a link whose target climbs out of
+    the project and comes back to a directory **inside** the review directory, so
+    the resolution is contained and only the route walk objects. That shape is
+    never legitimate: it makes the set of writable paths depend on symlink
+    topology rather than on the tree.
+
+    The assertion that carries it is the destination, not the exception: without
+    the route check the write succeeds *through* the link, so an empty
+    destination is what says nothing was written.
+    """
+    store = _store(tmp_path)
+    store.write([_event(number=1)], run=RUN_ONE)
+    review = _review_root(tmp_path)
+    (planted,) = list(review.iterdir())
+    destination = review / "returned-to"
+    destination.mkdir()
+    for path in sorted(planted.rglob("*"), reverse=True):
+        path.unlink() if path.is_file() else path.rmdir()
+    planted.rmdir()
+    # Read from the link's own directory: three steps up stands on `tmp_path`,
+    # outside the review root, and the rest walks back down into it.
+    planted.symlink_to(
+        f"../../../repo/.theurian/review/{destination.name}", target_is_directory=True
+    )
+
+    with pytest.raises(PathEscapeError):
+        store.write([_event(number=2)], run=RUN_TWO)
+
+    assert list(destination.rglob("*")) == [], "the write followed a route that left the project"
 
 
 @_NEEDS_SYMLINKS

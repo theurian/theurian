@@ -58,6 +58,7 @@ from theurian.infrastructure.review_evidence import (
     IngestionRun,
     ReviewEvidenceStore,
 )
+from theurian.security.content_secrets import MAX_FINDINGS
 from theurian.security.project_config import PROJECT_CONFIG_FILE, SecretScanPolicy
 
 pytestmark = pytest.mark.unit
@@ -308,6 +309,44 @@ def test_the_url_is_structural_even_though_a_person_can_choose_a_branch_in_it(
     outcome = _screen(tmp_path, _event(url=f"https://example.invalid/{SECRET}"))
 
     assert outcome.clean
+
+
+#: More distinct credentials than one record's whole budget, in a single value.
+#:
+#: AWS's ``AKIA`` shape with a distinct sixteen-character suffix each, so the
+#: detector reports them as separate findings rather than as repetitions of one
+#: value, and the margin above :data:`MAX_FINDINGS` is what makes the **cap**
+#: rather than the supply the thing that ends the scan.
+_MORE_SECRETS_THAN_THE_BUDGET: Final = " ".join(
+    f"AKIAEXAMPLEKEY{index:06d}" for index in range(MAX_FINDINGS + 5)
+)
+
+
+def test_the_finding_budget_is_spent_once_across_a_records_fields(tmp_path: Path) -> None:
+    """A field that fills the budget does not buy the next field a fresh one.
+
+    ``screen_landing_candidates`` records the budget as *per record*, and the
+    number it caps is one that leaves the process: every finding becomes an entry
+    in a refusal message and in the report the CLI publishes. A gate that handed
+    each scanned value its own
+    :data:`~theurian.security.content_secrets.MAX_FINDINGS` would publish as many
+    times that number as the record has fields -- which for a thread is two per
+    comment, so the ceiling would be set by the provider's answer rather than by
+    this constant.
+
+    The title alone carries more than the budget, so the count is settled there
+    and the body's own credential is never reached. Both halves are asserted,
+    because either alone is weak: the exact count, and that every finding names
+    the field the budget was spent in. ``MAX_FINDINGS`` is imported rather than
+    restated, so a change to the constant moves this expectation with it.
+    """
+    outcome = _screen(
+        tmp_path, _event(title=_MORE_SECRETS_THAN_THE_BUDGET, body=f"and also {SECRET}")
+    )
+
+    (verdict,) = outcome.verdicts
+    assert len(verdict.findings) == MAX_FINDINGS
+    assert {finding.field for finding in verdict.findings} == {"title"}
 
 
 # -- the three policies -------------------------------------------------------
