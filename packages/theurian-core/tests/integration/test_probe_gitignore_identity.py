@@ -314,6 +314,65 @@ def test_an_entry_outside_the_block_does_not_complete_the_block(tmp_path: Path) 
     assert f"does not ignore {absent}." in summary
 
 
+# -- Bytes that are not valid UTF-8 (#367) -----------------------------------
+
+
+def test_a_non_utf8_gitignore_with_no_block_is_missing_not_uncheckable(tmp_path: Path) -> None:
+    """A stray byte outside UTF-8 used to raise inside the read.
+
+    `SetupService._probe`'s generic net caught that `UnicodeDecodeError` and
+    reported ``conflicting``, "Could not check gitignore." -- demanding consent
+    over an encoding artefact the block's own ASCII markers never touch.
+    Measured against the unfixed probe (@ c7992354): exactly that summary, for
+    a file whose real answer -- no block at all -- the reader could otherwise
+    have been told outright.
+    """
+    root = _repository(tmp_path)
+    (root / ".gitignore").write_bytes(b"*.log\n\xe9\n")
+
+    status, summary, _ = _probe(tmp_path, root)
+
+    assert status is StepStatus.MISSING
+    assert "Could not check" not in summary, f"still the generic net's summary: {summary}"
+
+
+def test_a_non_utf8_byte_outside_the_current_block_still_reads_satisfied(
+    tmp_path: Path,
+) -> None:
+    """The positive twin: the block is current, and a byte outside it is noise.
+
+    Built with :func:`ensure_gitignore` so the span the step actually checks is
+    real, current output -- the stray byte lives below the end marker, which is
+    the region this step has never read for any other input either.
+    """
+    root = _repository(tmp_path)
+    ensure_gitignore(root)
+    gitignore = root / ".gitignore"
+    gitignore.write_bytes(gitignore.read_bytes() + b"\n# caf\xe9\n")
+
+    status, summary, _ = _probe(tmp_path, root)
+
+    assert status is StepStatus.SATISFIED, f"the block is current; a stray byte is not: {summary}"
+
+
+def test_a_multibyte_non_utf8_sequence_does_not_defeat_the_probe_either(tmp_path: Path) -> None:
+    """Not only the single Latin-1 byte the issue was filed against.
+
+    A Shift-JIS-encoded run is invalid UTF-8 across several consecutive bytes
+    at once (measured: ``b'# \\x95\\x9f\\x89\\xaa\\n'`` from ``"# 福岡\\n"``,
+    decoding under strict UTF-8 fails at the first of them) -- surrogate-escaping
+    decodes each byte independently regardless of how many are invalid in a row.
+    """
+    root = _repository(tmp_path)
+    ensure_gitignore(root)
+    gitignore = root / ".gitignore"
+    gitignore.write_bytes(gitignore.read_bytes() + "# 福岡\n".encode("shift_jis"))
+
+    status, _, _ = _probe(tmp_path, root)
+
+    assert status is StepStatus.SATISFIED
+
+
 # -- Markers Theurian cannot act on ------------------------------------------
 
 

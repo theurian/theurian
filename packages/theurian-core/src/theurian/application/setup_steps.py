@@ -381,8 +381,82 @@ def probe_data_directory(context: SetupContext) -> SetupStep:
     CONFLICTING rather than MISSING, because setup replaces nothing it did not
     create (SEC-18): what is there is somebody's file, and ``missing`` is the
     status that would have setup act on it.
+
+    **The symlink arm goes ahead of ``exists()``, scoped to the two shapes that
+    crash ``apply`` (#362, round-one adjudication (A) -> (B)).** A dangling link
+    and a self-referential one both make ``exists()`` and ``is_dir()`` catch
+    ``OSError`` (``ENOENT``/``ELOOP``) and answer ``False`` -- measured -- so
+    without this arm the step would report ``missing`` over a name that is very
+    much occupied, and ``apply_data_directory``'s ``mkdir(parents=True,
+    exist_ok=True)`` would then raise ``FileExistsError``: ``exist_ok``
+    suppresses the error only for a real directory already at the path, not for
+    a link sitting in its place. ``directory.is_symlink() and not
+    directory.exists()`` is exactly those two shapes and nothing wider.
+
+    **A symlink to a real directory falls through on purpose.** The
+    ``is_symlink()`` arms :func:`probe_token` and :func:`probe_token_storage`
+    carry guard a *leaf*: a link at the token's own name is write-through onto
+    whatever it names, and refusing to mint or read through it is the whole
+    fix. A symlinked *data directory* is a different root cause -- dir-
+    indirection, not leaf-write-through -- because every later step still
+    writes *inside* whatever directory the link names, never over the link's
+    own bytes. And :func:`~theurian.infrastructure.secrets.file_store.default_data_dir`
+    never calls ``.resolve()`` on ``THEURIAN_DATA_DIR`` -- the only
+    ``.resolve()`` in that module is an unrelated running-directory comparison
+    -- so a symlinked ``THEURIAN_DATA_DIR`` reaches this probe, and every step
+    after it, exactly as ``THEURIAN_DATA_DIR`` set to the link's target
+    directly would. Setup also writes at the invoking user's own privilege
+    only, with no setuid path anywhere in this flow. So a symlink to a real,
+    private directory gets the identical verdict a direct env-var set to that
+    same directory gets, and it falls through to the ordinary arms below:
+    ``satisfied`` for a private real directory, the mode arm for a
+    world-accessible one, "not a directory" for a symlink to a file.
+
+    **Recorded decision (round one, (A) -> (B)):** an earlier version of this
+    arm refused every symlink shape, including one pointing at a real, private
+    directory, for consistency with the token precedent above. The security
+    round measured the two as different root causes -- the two paragraphs
+    above -- and narrowed the refusal to the shapes that crash ``apply``.
+
+    **A residual (A) would have closed, accepted here as LOW.** An attacker
+    with write access to the data directory's *parent* can still plant a
+    symlink at the data-dir path aimed at a directory the user owns, so that
+    ``apply_data_directory``'s ``chmod 0700`` lands on that victim rather than
+    on anything Theurian created. That is not quite the equivalence above --
+    the direct-env-var route needs control of the environment, this one needs
+    only parent-write -- but the foothold it needs is already catastrophic
+    (such an attacker can rewrite the user's files directly, with no help from
+    setup), and the harm is a *restrictive* chmod alone: no disclosure, no
+    escalation, at most a contrived denial of service against a directory the
+    user already owns. The plant need not even be *timed* against the apply: a
+    symlink already in place aimed at a *world-accessible* directory takes the
+    ``is_world_accessible`` mode arm below (which reads through the link) and
+    publishes ``MISSING``, so ``apply`` then ``chmod``s the link's target with no
+    window at all -- the same world-accessible-directory arm, and the same
+    accepted harm, that #610 records for a real directory; #610's fix (refusing
+    such a directory rather than tightening it) would close this race-free route
+    and the real-directory case together. The other route -- a symlink at an
+    otherwise-absent path, planted between probe and apply -- is instead a
+    timing window nothing in the plan/apply split can close in general, the same
+    window
+    :meth:`SetupService._apply` records for every step (``setup_service.py``,
+    the comment above ``before = _snapshot(planned.paths)``) -- so closing this
+    one narrow case would not close the class, and (A) bought it only at the
+    cost of refusing the legitimate symlinked-data-dir configuration this
+    change restores.
     """
     directory = context.data_dir
+    if directory.is_symlink() and not directory.exists():
+        return SetupStep(
+            step_id=StepId.DATA_DIRECTORY,
+            status=StepStatus.CONFLICTING,
+            summary=f"{directory} is a symbolic link.",
+            detail=(
+                f"{directory} is a symbolic link, not the data directory Theurian "
+                f"created. Setup never replaces a file it did not create -- move it "
+                f"aside; setup then creates the directory with mode 0700."
+            ),
+        )
     if not directory.exists():
         return SetupStep(
             step_id=StepId.DATA_DIRECTORY,
@@ -1391,7 +1465,14 @@ def probe_gitignore(context: SetupContext) -> SetupStep:
             f"{gitignore} does not exist, so nothing ignores the derived artifacts."
         )
 
-    content = gitignore.read_text(encoding="utf-8", newline="")
+    # `errors="surrogateescape"`, or a `.gitignore` holding one non-UTF-8 byte
+    # raises `UnicodeDecodeError` here -- caught only by `SetupService._probe`'s
+    # generic net, which reports `conflicting`, "Could not check gitignore." and
+    # demands consent over an encoding artefact the file's own rules never
+    # touch (#367). Surrogate-escaping never fails to decode, so this step goes
+    # back to answering the question it is about -- block identity -- for a file
+    # `ensure_gitignore` reads and rewrites the same way.
+    content = gitignore.read_text(encoding="utf-8", newline="", errors="surrogateescape")
     try:
         span = locate_gitignore_block(content, gitignore)
     except ProjectError:
