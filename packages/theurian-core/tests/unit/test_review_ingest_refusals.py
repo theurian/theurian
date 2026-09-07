@@ -32,6 +32,7 @@ from theurian.domain.review_ingest import (
     RefusalGrade,
     ReviewIngestRefusedError,
     bounded_echo,
+    bounded_quote,
 )
 
 pytestmark = pytest.mark.unit
@@ -226,6 +227,40 @@ def test_bounded_echo_cuts_a_long_value_and_says_by_how_much() -> None:
 
     assert echoed.startswith("R" * MAX_SUMMARY_ECHO_CHARS)
     assert "cut from 1000000 characters" in echoed
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    ("\x00", "\\", "\n", "\x1b"),
+    ids=("a NUL", "a backslash", "a newline", "an escape"),
+)
+def test_a_quoted_echo_is_bounded_after_quoting_not_before(hostile: str) -> None:
+    """Quoting is not length-preserving, so a bound taken before it is not a bound.
+
+    ``repr`` expands one NUL into the four characters ``\\x00``. A producer
+    writing ``{bounded_echo(x)!r}`` therefore bounds the *plain* text and then
+    quadruples it, and the summary that carries it runs past the type's cut --
+    which takes the sentence's tail, the outcome cutting the value exists to
+    prevent. Every character here expands under ``repr``; the NUL is the one that
+    was reproduced end to end.
+
+    The assertion is on the **rendered** length, because that is what the sentence
+    pays for. The old ordering is measured beside it so the test cannot pass by
+    the two being equal.
+    """
+    value = hostile * 100_000
+
+    quoted = bounded_quote(value)
+    old_ordering = repr(bounded_echo(value))
+
+    assert len(quoted) <= MAX_SUMMARY_ECHO_CHARS + len(" (cut from 100000 characters)"), (
+        f"a quoted echo is {len(quoted)} characters, past what a bound applied to the "
+        f"rendered form allows. A summary carries the rendering, not the value."
+    )
+    assert len(old_ordering) > len(quoted), (
+        "quoting the value did not expand it, so this parametrisation cannot tell "
+        "the two orderings apart and proves nothing about either"
+    )
 
 
 def test_bounded_echo_renders_a_value_str_itself_refuses() -> None:

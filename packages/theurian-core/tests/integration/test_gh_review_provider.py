@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 from collections.abc import Iterator
 from typing import Any, Final
 
@@ -1350,9 +1351,56 @@ async def test_a_megabyte_of_answer_does_not_become_a_megabyte_of_summary(
         f"and it is bounded on the type so that no producer has to remember it."
     )
     assert len(str(raised.value)) <= MAX_REFUSAL_SUMMARY_CHARS
-    assert "cut from 1000000 characters" in summary, (
+    cut = re.search(r"cut from (\d+) characters", summary)
+    assert cut is not None, (
         "the megabyte was shortened without saying so; a value silently cut to look "
         "plausible is worse for a reader than one that is visibly incomplete"
+    )
+    # The number is the length of what was cut, which at a site that quotes is the
+    # *rendering* rather than the raw value -- `repr` of a megabyte string is two
+    # characters longer, and more than that once anything in it needs escaping.
+    assert int(cut[1]) >= 1_000_000
+
+
+@pytest.mark.asyncio
+async def test_a_hostile_resolved_name_leaves_the_refusal_sentence_intact(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """The rename refusal quotes what GitHub answered, and quoting has to fit the bound.
+
+    ``repr`` turns one NUL into four characters, so a value cut to the echo bound
+    and quoted *afterwards* came back four times that long: the summary ran past
+    :data:`MAX_REFUSAL_SUMMARY_CHARS`, the type's cut took its tail, and the
+    sentence lost the part that tells the operator nothing was read. Cutting the
+    value is supposed to be what keeps the sentence -- so a value chosen to
+    expand under quoting is where that claim is actually tested.
+
+    A megabyte of NULs is the shape reproduced; the assertions are that the
+    refusal is still the rename one, that the summary is inside the bound without
+    the type having to cut it, and that its last sentence survived.
+    """
+    fake_gh.answer("prs", 1, _pull_requests(resolved_name="\x00" * 1_000_000))
+    provider = _provider(tmp_path, fake_gh)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    summary = raised.value.envelope.summary
+    assert raised.value.grade is RefusalGrade.REPOSITORY_RESOLVED_ELSEWHERE
+    assert len(summary) <= MAX_REFUSAL_SUMMARY_CHARS
+    assert summary.endswith("Nothing was read from the answer."), (
+        f"the summary lost its own tail to the type's cut, so the reader is told a "
+        f"name did not match and not that nothing was read from the answer. It ends "
+        f"{summary[-60:]!r}."
+    )
+    assert "\\x00" in summary, (
+        "the summary does not carry the NULs in their escaped form, so either the "
+        "quoting was dropped or the echo was cut before it could show one"
+    )
+    assert "\x00" not in summary, (
+        "a raw NUL from a response reached the published sentence: quoting is what "
+        "keeps a control character from arriving as punctuation in a document "
+        "somebody prints"
     )
 
 

@@ -58,6 +58,7 @@ from theurian.domain.review_ingest import (
     RefusalGrade,
     ReviewIngestRefusedError,
     bounded_echo,
+    bounded_quote,
 )
 from theurian.infrastructure.github import queries
 from theurian.infrastructure.github.environment import child_environment
@@ -314,7 +315,7 @@ class GitHubReviewProvider:
             raise ReviewIngestRefusedError(
                 RefusalGrade.REPOSITORY_RESOLVED_ELSEWHERE,
                 f"Review ingestion asked GitHub for {entry!r} and GitHub answered for "
-                f"{bounded_echo(resolved)!r}. A rename redirect is followed by nobody "
+                f"{bounded_quote(resolved)}. A rename redirect is followed by nobody "
                 f"here: the allowlist names a repository, not wherever that name now "
                 f"points. Nothing was read from the answer.",
             )

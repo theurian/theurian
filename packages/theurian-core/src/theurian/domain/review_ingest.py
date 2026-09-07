@@ -41,9 +41,12 @@ is the key, and its sibling holds the same for the ``str()`` a caller prints.
 that is not redundant with the bound above. The type's cut takes the *end* of a
 sentence, so a summary whose echoed value ran long would lose the cap it was
 reporting and the remedy's context with it; cutting the value instead keeps the
-sentence. :func:`bounded_echo` is where a producer does it, and
-``security/review_allowlist.py``'s ``_rendered`` is the same shape against its
-own bound.
+sentence. :func:`bounded_echo` is where a producer does it, :func:`bounded_quote`
+where the site wants the value quoted, and ``security/review_allowlist.py``'s
+``_rendered`` is the same shape against its own bound. **A producer picks the
+one that matches how it renders**: applying ``!r`` to a ``bounded_echo`` result
+bounds the wrong string, because quoting expands control characters and the
+sentence pays for the expansion afterwards.
 
 **What needs routing is a value from outside this package, and only that.** A
 summary also names this package's own numbers -- a page cap, a version floor,
@@ -202,10 +205,15 @@ MAX_REFUSAL_DETAIL_CHARS: Final = 2_000
 MAX_REFUSAL_SUMMARY_CHARS: Final = 1_000
 
 #: How much of one value from outside this package a summary may echo before
-#: :func:`bounded_echo` cuts it and says by how much. Generous against every
-#: identifier this adapter names -- a ``owner/name``, a GraphQL node id, a pull
-#: request number -- and small enough that several in one sentence still leave it
-#: inside :data:`MAX_REFUSAL_SUMMARY_CHARS`.
+#: :func:`bounded_echo` or :func:`bounded_quote` cuts it and says by how much.
+#: Generous against every identifier this adapter names -- an ``owner/name``, a
+#: GraphQL node id, a pull request number -- and small enough that several in one
+#: sentence still leave it inside :data:`MAX_REFUSAL_SUMMARY_CHARS`.
+#:
+#: **That last clause holds because the cut is applied to the rendered form.** A
+#: bound taken before quoting is not a bound on what the sentence carries: the
+#: site that quoted afterwards turned a cut value back into four times this many
+#: characters, which is what :func:`bounded_quote` exists to stop.
 MAX_SUMMARY_ECHO_CHARS: Final = 200
 
 #: What the type's own cut appends, counted **inside**
@@ -236,10 +244,49 @@ def bounded_echo(value: object) -> str:
         # `int.__str__` past the interpreter's digit limit is the measured member
         # (`sys.set_int_max_str_digits`); the type name locates it without
         # rendering it.
-        return f"a value of type {type(value).__name__} this adapter cannot render"
+        return _unrenderable(value)
+    return _cut(text)
+
+
+def bounded_quote(value: object) -> str:
+    """``value`` **quoted** for a summary, bounded *after* quoting rather than before.
+
+    The order is the whole of it, and getting it the other way round is a defect
+    with no symptom until the value is hostile. A producer that writes
+    ``{bounded_echo(x)!r}`` bounds the *plain* text and then quotes it, and
+    quoting is not length-preserving: ``repr`` expands one NUL into the four
+    characters ``\x00``. So a megabyte of NULs cut to
+    :data:`MAX_SUMMARY_ECHO_CHARS` came back four times that long, the summary ran
+    past :data:`MAX_REFUSAL_SUMMARY_CHARS`, and the type's cut took the sentence's
+    tail -- the exact outcome cutting the value is supposed to prevent.
+
+    Quoting is worth having at a site that has it: a repository name arrives from
+    a response, and a raw control character in a published sentence is a value
+    pretending to be punctuation. This keeps that and pays for it inside the
+    bound. What it costs is that a cut can land mid-escape, which is why the
+    marker says the value was cut rather than leaving the reader to wonder --
+    and the number it reports is the length of the **rendering**, because the
+    rendering is what was cut. For a value that escapes badly the two differ by a
+    lot, and the larger of them is the honest answer to "how much is missing from
+    this sentence".
+    """
+    try:
+        text = repr(value)
+    except ValueError:
+        return _unrenderable(value)
+    return _cut(text)
+
+
+def _cut(text: str) -> str:
+    """``text`` at :data:`MAX_SUMMARY_ECHO_CHARS`, saying by how much it was cut."""
     if len(text) <= MAX_SUMMARY_ECHO_CHARS:
         return text
     return f"{text[:MAX_SUMMARY_ECHO_CHARS]} (cut from {len(text)} characters)"
+
+
+def _unrenderable(value: object) -> str:
+    """What a summary says about a value that cannot be rendered at all."""
+    return f"a value of type {type(value).__name__} this adapter cannot render"
 
 
 @dataclass(frozen=True, slots=True)
