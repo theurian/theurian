@@ -137,7 +137,7 @@ CONFIG_HOMES: Final[tuple[str, ...]] = (
 #: A **measurement, not a derivation**: which module reads which key is a
 #: semantic fact a grep cannot answer, and the population and its per-site
 #: judgement are ``test_config_key_call_sites.py``'s ``CONFIG_KEY_READER_SITES``,
-#: which scans ``src/`` rather than transcribing it. Taken 2026-09-07 with::
+#: which scans ``src/`` rather than transcribing it. The key::
 #:
 #:     git grep -n 'secretScan\|secret_scan\|SECRET_SCAN\|repositories\|REPOSITORIES\
 #:     \|redactParticipantNames\|redact_participant_names\|REDACT_PARTICIPANT_NAMES' \
@@ -147,9 +147,15 @@ CONFIG_HOMES: Final[tuple[str, ...]] = (
 #: ``.theurian/config.yaml``, and it reads these three keys out of it and nothing
 #: else. Every other hit that scan returns is a field, a local or an English
 #: word, judged one by one in that module's own population key. The third key
-#: joined on 2026-09-07 with ADR-0030 decision 3's ingestion-time redaction; the
-#: key above was re-run with its spellings added on the same date and answers 145
-#: lines.
+#: joined on 2026-09-07 with ADR-0030 decision 3's ingestion-time redaction.
+#:
+#: **The count is anchored to a commit and not to a date**, because it moves with
+#: every commit that adds a line mentioning any of those spellings and a date
+#: names no tree anybody can re-run the key against. At ``dc433df1`` the key
+#: answers **160** lines. It answered 145 when this was first written, which is
+#: what a date-anchored number looks like once four commits have landed: the
+#: figure is a historical measurement, not a live claim, and the live claim is
+#: ``CONFIG_KEY_READER_SITES``.
 KEYS_WITH_A_READER: Final[frozenset[str]] = frozenset(
     {
         "providers.review.redactParticipantNames",
