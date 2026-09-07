@@ -49,6 +49,15 @@ this pair closes: with ``external_id`` unscanned and unredacted, *enabling* R-12
 turned a refusal into a landing that published the very name R-12 promised to
 replace (PR #596 round 1, adversarial H-D).
 
+**The scanned population is derived from what the codec writes, not remembered.**
+A hand-written field list has one failure mode and H-D was it, so
+``tests/unit/test_review_scan_population.py`` walks every string leaf of the
+three documents ``infrastructure/review_evidence/codec.py`` writes and requires
+each to be either a value :func:`_scanned_values` yields or an entry on that
+file's exemption list, each entry carrying the line that says who chooses the
+value. Measured 2026-09-08 with the ``externalId`` rows filtered back out of
+:func:`_scanned_values`: all three payload kinds report.
+
 **The report names the record, never the matched bytes** -- repository, pull
 request number, record id and, for a finding inside a comment, that comment's id.
 ``index_secret_scan.py``'s reason applies unchanged: a report that quotes the
@@ -460,6 +469,11 @@ def _scanned_values(payload: ReviewRecordPayload) -> Iterator[tuple[str, str | N
     ``milestone`` and ``file_path`` are yielded only when the provider gave one:
     ``None`` is an absence, and scanning the string ``"None"`` would be scanning
     this module's own rendering.
+
+    ``tests/unit/test_review_scan_population.py`` is what keeps this list level
+    with the codec's: every string a landed record carries is yielded here or
+    named on that file's exemption list, and every value yielded here is one the
+    codec writes.
     """
     match payload:
         case ReviewEvent():
