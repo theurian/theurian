@@ -613,7 +613,11 @@ durability. A comment edited or deleted on GitHub therefore stays in
 what upstream still returns and **never deletes** what it no longer does — the
 vanished record keeps its file and its stamp saying which run last saw it.
 Nothing else revisits a landed file, so a record no later run fetches does not
-change.
+change. A record the run *does* fetch is refreshed by writing a sibling
+temporary and renaming it over the file, never by truncating the file in place —
+so a run interrupted mid-write costs that refresh and not the copy already on
+disk, which for an artefact with no rebuild is the difference between a stale
+record and none.
 
 **Removing an ingested comment is a manual operation.** Today it is one step:
 delete that record's file under `.theurian/review/`. The file *is* the record,

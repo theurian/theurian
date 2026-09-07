@@ -43,6 +43,7 @@ no database, no socket and no temporary directory.
 from __future__ import annotations
 
 import ast
+import collections
 import pathlib
 import re
 from collections.abc import Iterator
@@ -440,11 +441,41 @@ REVIEW_PATH_SITES: Final[tuple[tuple[str, str], ...]] = (
 #:
 #: Read as **names in any position**, not as resolved calls, so ``path.unlink``
 #: passed as a callable counts as much as ``path.unlink()``. Over-broad in the RED
-#: direction on purpose: the claim is that this package contains no such code at
-#: all, and a false RED on an innocent identifier costs a read while a false green
-#: costs the claim.
+#: direction on purpose: every use has to be explained below, and a false RED on
+#: an innocent identifier costs a read while a false green costs the claim.
 _REMOVAL_NAMES: Final = frozenset(
     {"unlink", "rmdir", "rmtree", "remove", "removedirs", "rename", "replace", "truncate"}
+)
+
+#: The removal-shaped names the evidence package uses, and what each one moves.
+#:
+#: **The list was empty until the write became atomic**, and the change that made
+#: it non-empty is the one that had to fill it in: the scan's own failure message
+#: says so, because a rename that publishes a record is still a second way a
+#: landed file changes and SECURITY.md's retention paragraph has to describe it.
+#:
+#: **Counted rather than listed.** A second ``unlink`` in the same module is a
+#: second place a landed file can go, and a table keyed on the name alone would
+#: carry it silently -- which is the whole failure mode this scan exists to catch.
+PUBLISH_NAMES: Final[tuple[tuple[str, str, int, str], ...]] = (
+    (
+        "infrastructure/review_evidence/store.py",
+        "replace",
+        1,
+        "`os.replace` publishes the temporary over the record. A rename onto the "
+        "record's own path, which is decision 3's best-effort refresh and not a "
+        "removal: nothing the run did not fetch is touched, and the previous copy "
+        "survives an interrupted run because it is never truncated.",
+    ),
+    (
+        "infrastructure/review_evidence/store.py",
+        "unlink",
+        1,
+        "the `.writing` temporary is discarded when the write it belongs to does "
+        "not publish. It removes the writer's own litter and never a record: the "
+        "path is the one the write was handed, and it carries `_WRITING_SUFFIX` "
+        "rather than `EVIDENCE_SUFFIX`.",
+    ),
 )
 
 
@@ -535,14 +566,13 @@ def test_the_review_directory_is_reached_from_the_recorded_modules_only() -> Non
     )
 
 
-def test_the_evidence_package_contains_nothing_that_removes_or_moves_a_file() -> None:
-    """Decision 3's *refetch never deletes*, as the absence it actually is.
+def test_the_evidence_package_moves_a_file_only_where_the_publish_records_it() -> None:
+    """Decision 3's *refetch never deletes*, as the near-absence it actually is.
 
-    ``ReviewEvidenceStore.write`` writes the records it is given and touches
-    nothing else -- it never enumerates a repository's landed files to diff them,
-    and it never unlinks. Its own docstring says the property holds because there
-    is no code that could do otherwise, which is a claim about the package's
-    contents and therefore checkable.
+    ``ReviewEvidenceStore.write`` writes the records it is given and touches no
+    record it was not given -- it never enumerates a repository's landed files to
+    diff them, and it unlinks nothing but the temporary its own write opened.
+    That is a claim about the package's contents and therefore checkable.
 
     It is the mechanism under a promise made to a person. SECURITY.md tells an
     operator that a comment edited or deleted on GitHub stays as it landed, and
@@ -551,29 +581,35 @@ def test_the_evidence_package_contains_nothing_that_removes_or_moves_a_file() ->
     of a review that a person is entitled to have kept -- data loss no refetch
     recovers, since the file *is* the record.
 
-    Names in any position, so a removal handed round as a callable counts. The
-    write itself is not a removal: ``write_text_without_following_a_link``
-    replaces the contents of the record's *own* path, which is decision 3's
-    best-effort refresh and is what :attr:`ReviewIngestReport.updated` counts.
+    Names in any position, so a removal handed round as a callable counts.
+    :data:`PUBLISH_NAMES` carries the two the atomic publish needs and what each
+    moves; an equality against it, so a **third** name and a **second** use of
+    either recorded one both fail, and so does a recorded one that disappears.
     """
     package = SRC / EVIDENCE_PACKAGE
-    found = tuple(
-        site
+    found = collections.Counter(
+        (module, name)
         for path in sorted(package.rglob("*.py"))
-        for site in _removal_names(
+        for module, name, _line in _removal_names(
             path.read_text(encoding="utf-8"), path.relative_to(SRC).as_posix()
         )
     )
+    recorded = collections.Counter(
+        {(module, name): count for module, name, count, _why in PUBLISH_NAMES}
+    )
 
-    assert found == (), (
-        f"`{EVIDENCE_PACKAGE}` names something that removes or moves a file:\n"
-        + "\n".join(f"  {module}:{line} -- {name}" for module, name, line in found)
+    assert found == recorded, (
+        f"`{EVIDENCE_PACKAGE}` moves or removes a file somewhere the publish does "
+        f"not record. Found {dict(found)} against:\n"
+        + "\n".join(
+            f"  {module} -- {name} x{count}: {why}" for module, name, count, why in PUBLISH_NAMES
+        )
         + "\n\nADR-0030 decision 3 is that a refetch updates what upstream still "
         "returns and never deletes what it no longer does, and SECURITY.md tells "
         "an operator so. If this is a rename used to publish a record atomically "
-        "rather than a deletion, it is still a second way a landed file changes "
-        "and the retention paragraph has to describe it -- record the name here "
-        "with what it does, in the change that adds it."
+        "rather than a deletion, it is still a way a landed file changes and the "
+        "retention paragraph has to describe it -- record the name in "
+        "`PUBLISH_NAMES` with what it does, in the change that adds it."
     )
 
 
@@ -607,7 +643,7 @@ def test_the_removal_scan_sees_a_deletion_however_it_is_spelled() -> None:
     }, (
         f"the removal scan read the planted sources as {seen}. Fix `_removal_names` "
         f"before trusting a green result from "
-        f"`test_the_evidence_package_contains_nothing_that_removes_or_moves_a_file`."
+        f"`test_the_evidence_package_moves_a_file_only_where_the_publish_records_it`."
     )
 
 

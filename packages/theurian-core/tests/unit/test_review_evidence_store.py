@@ -57,6 +57,7 @@ from theurian.infrastructure.review_evidence import (
     record_leaf,
     repository_directory,
 )
+from theurian.infrastructure.review_evidence import store as store_module
 from theurian.infrastructure.review_evidence.layout import EVIDENCE_SUFFIX
 from theurian.security.paths import MAX_SOURCE_FILE_BYTES
 
@@ -539,13 +540,21 @@ def test_a_repository_directory_reached_by_leaving_the_tree_and_returning_is_ref
 
 @_NEEDS_SYMLINKS
 def test_a_leaf_symlinked_at_a_file_inside_the_project_is_refused(tmp_path: Path) -> None:
-    """Containment passes an in-review link; ``O_NOFOLLOW`` is what refuses it.
+    """Containment passes an in-review link; the publish step is what refuses it.
 
     The plant resolves *inside the review directory*, so both path guards are
     satisfied by construction -- a decoy one level higher, in the project root,
     is refused by ``resolve_within_root`` instead and would drive the wrong
-    guard. This is the half only the write's own flags catch, and the assertion
-    is that the decoy still holds its own bytes.
+    guard. This is the half neither path guard catches, and the assertion is that
+    the decoy still holds its own bytes.
+
+    **The mechanism moved when the write became a rename.** ``O_NOFOLLOW`` used
+    to answer this because the record's own name was what got opened; the bytes
+    now go to a ``.writing`` sibling and ``os.replace`` publishes them, and
+    ``rename(2)`` never follows a link at its destination. So the decoy is safe
+    by construction here and the refusal comes from the ``lstat`` in
+    ``_publish`` -- which is what keeps an operator told, rather than having the
+    planted link quietly replaced.
     """
     store = _store(tmp_path)
     (landed,) = store.write([_event(number=1)], run=RUN_ONE)
@@ -565,6 +574,93 @@ def test_a_leaf_symlinked_at_a_file_inside_the_project_is_refused(tmp_path: Path
         "the refusal reuses `no_follow.symbolic_link_remedy`, whose text says the "
         "artefact is rebuilt -- which is exactly what review evidence is not"
     )
+    assert leaf.is_symlink(), "the refusal replaced the link instead of reporting it"
+
+
+@_NEEDS_SYMLINKS
+def test_a_directory_link_inside_the_review_root_does_not_relocate_the_write(
+    tmp_path: Path,
+) -> None:
+    """The shape both path guards wave through: a link whose target is in-tree.
+
+    ``O_NOFOLLOW`` constrains the final component, so an ordinary directory link
+    in the *prefix* is followed -- the bound recorded as #577, measured there
+    relocating the ingestion manifest at exit 0. Everything that issue enumerates
+    is derived state a later run rebuilds; an evidence file is the source, so a
+    relocated write files a record under a directory that is not the one its
+    repository hashes to.
+
+    The plant is the in-root shape on purpose. A link that leaves the tree is
+    refused by ``resolve_within_root`` and one that leaves and returns by
+    ``assert_no_symlink_escape`` -- the two tests above -- so only a target
+    *inside* the review directory reaches the guard this drives, which is why the
+    exception type is asserted: a ``PathEscapeError`` here would mean one of the
+    other two fired and this plant proved nothing new.
+
+    The directory name comes off the disk after a first successful run rather
+    than out of a hash this test recomputed, for the reason its neighbours give.
+    """
+    store = _store(tmp_path)
+    store.write([_event(number=1)], run=RUN_ONE)
+    review = _review_root(tmp_path)
+    (planted,) = [path for path in review.iterdir() if path.is_dir()]
+    elsewhere = review / "elsewhere"
+    elsewhere.mkdir()
+    decoy = elsewhere / "keep.txt"
+    decoy.write_text("not evidence", encoding="utf-8")
+    for path in sorted(planted.rglob("*"), reverse=True):
+        path.unlink() if path.is_file() else path.rmdir()
+    planted.rmdir()
+    # A *relative* target, next to the link. An absolute one would be spelled
+    # against however the machine gives out temporary directories, and on a
+    # platform where that path is itself a link (macOS gives `/var` for
+    # `/private/var`) the route walk refuses it as unanchored -- which is a
+    # different guard, and would make this test pass while driving nothing.
+    planted.symlink_to(elsewhere.name, target_is_directory=True)
+
+    with pytest.raises(ReviewEvidenceError) as raised:
+        store.write([_event(number=2)], run=RUN_TWO)
+
+    assert not isinstance(raised.value, PathEscapeError)
+    assert list(elsewhere.iterdir()) == [decoy], "the write followed the link"
+    assert decoy.read_text(encoding="utf-8") == "not evidence"
+    assert "ls -l" in raised.value.remedy
+
+
+def test_an_interrupted_write_leaves_the_previous_record_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refetch that dies mid-write costs the refresh, never the record.
+
+    The truncating open was the fault: it emptied the record's own file and then
+    the process had to survive long enough to fill it again. An evidence file has
+    no rebuild -- the upstream comment may already be edited or deleted -- so the
+    window was one where a crash destroyed the only copy.
+
+    Modelled by replacing the write with one that truncates its target and then
+    dies, which is what an ``O_TRUNC`` open followed by an interrupt does. The
+    assertion is on the *bytes*: the previous copy is byte-identical and still
+    carries run one's stamp, and the temporary the interrupted run opened is not
+    left behind to be read as a record.
+    """
+    store = _store(tmp_path)
+    (landed,) = store.write([_event(number=42)], run=RUN_ONE)
+    path = _review_root(tmp_path) / landed
+    before = path.read_bytes()
+
+    def _truncate_then_die(target: Path, text: str, **_: object) -> None:
+        target.write_text("", encoding="utf-8")
+        raise KeyboardInterrupt("interrupted between the open and the write")
+
+    monkeypatch.setattr(store_module, "write_text_without_following_a_link", _truncate_then_die)
+
+    with pytest.raises(KeyboardInterrupt):
+        store.write([_event(number=42)], run=RUN_TWO)
+
+    assert path.read_bytes() == before
+    assert list(_review_root(tmp_path).rglob("*.writing")) == []
+    monkeypatch.undo()
+    assert store.read_all()[0].last_seen == RUN_ONE
 
 
 # -- refusals -----------------------------------------------------------------
@@ -726,6 +822,49 @@ def test_a_landed_file_the_domain_refuses_is_graded_and_names_the_file(
     )
     assert landed in str(raised.value), label
     assert "git log -p" in raised.value.remedy
+
+
+def test_an_unreadable_record_names_the_repository_its_own_file_claims(tmp_path: Path) -> None:
+    """The directory is a hash, so the refusal has to say which repository it is.
+
+    One unreadable file stops every repository's ingest -- ``read_all`` reads the
+    whole directory and refuses rather than skipping -- so an operator with
+    several repositories landed is sent to a ``sha256-...`` directory that
+    identifies the file without identifying what it is about. The repository is
+    inside the file, and for a record the *domain* refuses the file still parses.
+    """
+    store = _store(tmp_path)
+    (landed,) = store.write([_event(number=42)], run=RUN_ONE)
+    path = _review_root(tmp_path) / landed
+    path.write_text(
+        json.dumps(_in_record(json.loads(path.read_text(encoding="utf-8")), number=0)), "utf-8"
+    )
+
+    with pytest.raises(ReviewEvidenceError) as raised:
+        store.read_all()
+
+    assert REPOSITORY in str(raised.value)
+    assert REPOSITORY not in landed, "the directory named the repository, so this proved nothing"
+
+
+def test_a_file_too_broken_to_name_its_repository_says_so_rather_than_guessing(
+    tmp_path: Path,
+) -> None:
+    """The honest half of the same message: bytes nothing can read name nothing.
+
+    Without it the hint could be filled from the record the store was *asked* to
+    write, or from the last one it read, and a refusal that names a repository it
+    did not read out of the failing file is worse than one that names none.
+    """
+    store = _store(tmp_path)
+    (landed,) = store.write([_event(number=42)], run=RUN_ONE)
+    (_review_root(tmp_path) / landed).write_text("{", encoding="utf-8")
+
+    with pytest.raises(ReviewEvidenceError) as raised:
+        store.read_all()
+
+    assert REPOSITORY not in str(raised.value)
+    assert "repository could not be read" in str(raised.value)
 
 
 def test_a_landed_file_whose_bytes_are_not_utf8_is_graded_and_names_the_file(

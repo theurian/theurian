@@ -103,6 +103,21 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   hashed prefix is sent down the hashing arm — so no id can be made to name
   another id's file, and every write and every read resolves through
   `security/paths.py`'s containment on top of that.
+
+  **A record is published by rename, and a directory that is a symbolic link is
+  refused.** The bytes go to a sibling `.writing` file inside the same proved
+  directory and `os.replace` moves it over the record, so a run interrupted
+  mid-write costs that refresh rather than the copy already on disk — an
+  evidence file has no rebuild, and the truncating write it replaces left an
+  empty file where the only copy had been. Separately, containment and the route
+  walk both wave through a directory link whose target is *inside* the tree
+  ([#577](https://github.com/theurian/theurian/issues/577)'s recorded bound,
+  measured there relocating the ingestion manifest at exit 0); review evidence is
+  the first artefact behind that bound that is not rebuildable, so the writer
+  compares where the record's directory resolves against where it was joined and
+  refuses when a link moved it. A record is also refused before the write when it
+  would land larger than `MAX_SOURCE_FILE_BYTES`, which is the cap the reader
+  enforces: a file above it is one no later run could read back.
 - **`security.secretScan` gains a third point: at ingestion, per record, before
   the record becomes a file** (ADR-0030 decision 4, SEC-11, part of
   [#479](https://github.com/theurian/theurian/issues/479)). `block` — the
