@@ -382,30 +382,62 @@ def probe_data_directory(context: SetupContext) -> SetupStep:
     create (SEC-18): what is there is somebody's file, and ``missing`` is the
     status that would have setup act on it.
 
-    **The symlink arm goes ahead of everything, including ``exists()`` (#362).**
-    A dangling link and a self-referential one both make ``exists()`` and
-    ``is_dir()`` catch ``OSError`` (``ENOENT``/``ELOOP``) and answer ``False`` --
-    measured -- so this step reported ``missing`` over a name that is very much
-    occupied, and ``apply_data_directory``'s ``mkdir(parents=True,
-    exist_ok=True)`` then raised ``FileExistsError``: ``exist_ok`` suppresses the
-    error only for a real directory already at the path, not for a link sitting
-    in its place. A link to a real directory fares no better the other way --
-    ``exists()`` and ``is_dir()`` both answer ``True`` through it, so that shape
-    read ``satisfied`` (or the mode arm, reading the *target*'s bits) with
-    nothing said about the link at all. Mirrors the ``is_symlink()`` arm
-    :func:`probe_token` and :func:`probe_token_storage` already carry, for the
-    same SEC-18 reason: ``missing`` is the status that makes setup act, and
-    acting on a link means writing through whatever it names.
+    **The symlink arm goes ahead of ``exists()``, scoped to the two shapes that
+    crash ``apply`` (#362, round-one adjudication (A) -> (B)).** A dangling link
+    and a self-referential one both make ``exists()`` and ``is_dir()`` catch
+    ``OSError`` (``ENOENT``/``ELOOP``) and answer ``False`` -- measured -- so
+    without this arm the step would report ``missing`` over a name that is very
+    much occupied, and ``apply_data_directory``'s ``mkdir(parents=True,
+    exist_ok=True)`` would then raise ``FileExistsError``: ``exist_ok``
+    suppresses the error only for a real directory already at the path, not for
+    a link sitting in its place. ``directory.is_symlink() and not
+    directory.exists()`` is exactly those two shapes and nothing wider.
 
-    **Recorded decision:** this turns a symlink pointing at a real, private
-    directory from ``satisfied`` into ``conflicting`` -- a behaviour change from
-    the token-precedent consistency above, accepted because no documented
-    configuration points ``THEURIAN_DATA_DIR`` through a symlink. The remedy is
-    the same as the not-a-directory arm's: setup replaces nothing it did not
-    create.
+    **A symlink to a real directory falls through on purpose.** The
+    ``is_symlink()`` arms :func:`probe_token` and :func:`probe_token_storage`
+    carry guard a *leaf*: a link at the token's own name is write-through onto
+    whatever it names, and refusing to mint or read through it is the whole
+    fix. A symlinked *data directory* is a different root cause -- dir-
+    indirection, not leaf-write-through -- because every later step still
+    writes *inside* whatever directory the link names, never over the link's
+    own bytes. And :func:`~theurian.infrastructure.secrets.file_store.default_data_dir`
+    never calls ``.resolve()`` on ``THEURIAN_DATA_DIR`` -- the only
+    ``.resolve()`` in that module is an unrelated running-directory comparison
+    -- so a symlinked ``THEURIAN_DATA_DIR`` reaches this probe, and every step
+    after it, exactly as ``THEURIAN_DATA_DIR`` set to the link's target
+    directly would. Setup also writes at the invoking user's own privilege
+    only, with no setuid path anywhere in this flow. So a symlink to a real,
+    private directory gets the identical verdict a direct env-var set to that
+    same directory gets, and it falls through to the ordinary arms below:
+    ``satisfied`` for a private real directory, the mode arm for a
+    world-accessible one, "not a directory" for a symlink to a file.
+
+    **Recorded decision (round one, (A) -> (B)):** an earlier version of this
+    arm refused every symlink shape, including one pointing at a real, private
+    directory, for consistency with the token precedent above. The security
+    round measured the two as different root causes -- the two paragraphs
+    above -- and narrowed the refusal to the shapes that crash ``apply``.
+
+    **A residual (A) would have closed, accepted here as LOW.** An attacker
+    with write access to the data directory's *parent* can still plant a
+    symlink at the data-dir path aimed at a directory the user owns, so that
+    ``apply_data_directory``'s ``chmod 0700`` lands on that victim rather than
+    on anything Theurian created. That is not quite the equivalence above --
+    the direct-env-var route needs control of the environment, this one needs
+    only parent-write -- but the foothold it needs is already catastrophic
+    (such an attacker can rewrite the user's files directly, with no help from
+    setup), and the harm is a *restrictive* chmod alone: no disclosure, no
+    escalation, at most a contrived denial of service against a directory the
+    user already owns. Nothing in the plan/apply split can close a plant timed
+    between the probe and the apply in general -- the same window
+    :meth:`SetupService._apply` records for every step (``setup_service.py``,
+    the comment above ``before = _snapshot(planned.paths)``) -- so closing this
+    one narrow case would not close the class, and (A) bought it only at the
+    cost of refusing the legitimate symlinked-data-dir configuration this
+    change restores.
     """
     directory = context.data_dir
-    if directory.is_symlink():
+    if directory.is_symlink() and not directory.exists():
         return SetupStep(
             step_id=StepId.DATA_DIRECTORY,
             status=StepStatus.CONFLICTING,

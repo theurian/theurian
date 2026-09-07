@@ -50,6 +50,7 @@ from theurian.application.setup_steps import (
 from theurian.domain.setup import StepStatus
 from theurian.infrastructure.claude.mcp_config import ConnectionSpec
 from theurian.infrastructure.secrets.file_store import FileSecretStore
+from theurian.security.paths import is_world_accessible
 
 
 def _context(
@@ -299,10 +300,13 @@ def test_a_file_is_not_a_directory_for_the_purpose_of_the_layout(tmp_path: Path)
 
 # -- data-directory -----------------------------------------------------------
 
-#: Every shape a symlink can take at the data-dir path, none of them a real
-#: directory Theurian created. Parametrised so a fix that catches only the
-#: dangling face -- the one #362 was filed against -- still leaves the other
-#: three green against the unfixed probe.
+#: Every shape a symlink can take at the data-dir path, none of them a
+#: directory Theurian itself created at that name. Two of them
+#: (``to-a-real-directory-elsewhere``, ``into-the-containment-root``) do name a
+#: real directory somebody else created, which is exactly the shape (B) lets
+#: through -- see the tests below the crashing-shapes block for those two.
+#: Shared by every test in this section, not only the parametrised one, so a
+#: fixture change is felt everywhere its shape matters.
 _SYMLINK_SHAPES: Final = (
     "dangling",
     "to-a-real-directory-elsewhere",
@@ -337,21 +341,26 @@ def _symlinked_data_dir(tmp_path: Path, shape: str) -> Path:
     return data_dir
 
 
-@pytest.mark.parametrize("shape", _SYMLINK_SHAPES)
-def test_a_symlink_at_the_data_directory_is_a_conflict_whatever_it_names(
-    tmp_path: Path, shape: str
-) -> None:
-    """#362: every symlink shape is CONFLICTING, checked before `exists()` at all.
+#: The two shapes ``exists()`` answers ``False`` for through a symlink --
+#: `ENOENT` for a dangling link, `ELOOP` for a self-referential one -- which is
+#: exactly what would crash `apply_data_directory`'s `mkdir` if this step ever
+#: reported them `missing`. The other two shapes in `_SYMLINK_SHAPES` are a
+#: symlink to a real directory, and (B) lets those fall through instead of
+#: refusing them here (see the tests below).
+_CRASHING_SYMLINK_SHAPES: Final = ("dangling", "self-referential")
 
-    Measured against the unfixed probe (@ c7992354): "dangling" and
-    "self-referential" both read ``missing`` -- `exists()` catches `ENOENT`/
-    `ELOOP` and answers `False` -- and `apply_data_directory`'s
-    `mkdir(parents=True, exist_ok=True)` then raises `FileExistsError` for a
-    name a link already occupies. "to-a-real-directory-elsewhere" and
-    "into-the-containment-root" both read ``satisfied`` (or the mode arm, over
-    the *target*'s bits), reporting a converged private directory that is not
-    the one Theurian created. All four are one class: setup acting on a name
-    that does not point at a directory it made (SEC-18).
+
+@pytest.mark.parametrize("shape", _CRASHING_SYMLINK_SHAPES)
+def test_a_symlink_that_would_crash_apply_is_still_a_conflict(tmp_path: Path, shape: str) -> None:
+    """#362, scoped to (B): only the shapes that crash `apply` are refused here.
+
+    Measured against the unfixed probe (@ c7992354): both shapes read
+    ``missing`` -- `exists()` catches `ENOENT`/`ELOOP` and answers `False` --
+    and `apply_data_directory`'s `mkdir(parents=True, exist_ok=True)` then
+    raises `FileExistsError` for a name a link already occupies. That is the
+    arm this pins; the other two shapes in `_SYMLINK_SHAPES` -- a symlink to a
+    real directory, wherever it points -- are covered separately below, where
+    (B) lets them fall through instead of refusing them here.
     """
     data_dir = _symlinked_data_dir(tmp_path, shape)
 
@@ -362,6 +371,77 @@ def test_a_symlink_at_the_data_directory_is_a_conflict_whatever_it_names(
     )
     assert "symbolic link" in step.summary
     assert data_dir.is_symlink(), "a probe reports; it does not touch what it found"
+
+
+def test_a_symlink_to_a_real_private_directory_is_satisfied(tmp_path: Path) -> None:
+    """(B): a symlink to a real, private directory is no longer refused.
+
+    Was CONFLICTING under (A) -- refuse every symlink shape, for consistency
+    with the token precedent. The round measured the two as different root
+    causes (`setup_steps.probe_data_directory`'s own docstring carries the
+    argument): a symlinked data directory is dir-indirection, not the token
+    arm's leaf-write-through, and `default_data_dir` never resolves
+    `THEURIAN_DATA_DIR` before using it, so this shape reaches the probe -- and
+    every step after it -- exactly as the direct env-var set would. RED against
+    the unfixed (A) probe, which answered CONFLICTING here.
+    """
+    data_dir = _symlinked_data_dir(tmp_path, "to-a-real-directory-elsewhere")
+
+    step = probe_data_directory(_context(tmp_path, data_dir=data_dir))
+
+    assert step.status is StepStatus.SATISFIED, (
+        f"a symlink to a real private directory is equivalent to pointing "
+        f"THEURIAN_DATA_DIR at it directly: got {step.status} ({step.summary!r})"
+    )
+
+
+def test_a_symlinked_data_directory_gets_the_same_verdict_as_its_target_set_directly(
+    tmp_path: Path,
+) -> None:
+    """The (B) equivalence, as a test: a symlink adds no write capability.
+
+    `default_data_dir` never calls `.resolve()` on `THEURIAN_DATA_DIR`
+    (`infrastructure/secrets/file_store.py`), so a symlinked data directory
+    reaches this probe exactly as a direct-set one would, and setup writes at
+    the invoking user's own privilege either way. This checks that equivalence
+    where it is observable -- the probe reaches the identical arm, wording and
+    all, for the symlink and for its resolved target passed directly -- rather
+    than re-asserting the mechanism the docstring already argues.
+    """
+    symlinked = _symlinked_data_dir(tmp_path, "to-a-real-directory-elsewhere")
+    target = symlinked.resolve()
+    assert symlinked.is_symlink(), "the shape under test is the symlink, not its target"
+
+    via_symlink = probe_data_directory(_context(tmp_path, data_dir=symlinked))
+    via_direct_env_var = probe_data_directory(_context(tmp_path, data_dir=target))
+
+    assert via_symlink.status is via_direct_env_var.status is StepStatus.SATISFIED
+    assert via_symlink.summary == f"{symlinked} exists with private permissions."
+    assert via_direct_env_var.summary == f"{target} exists with private permissions."
+
+
+def test_a_symlink_into_the_containment_root_follows_the_targets_own_mode(
+    tmp_path: Path,
+) -> None:
+    """(B): this shape is a symlink to a real directory too, so its own mode decides.
+
+    `home` already exists to hold the link, so once the crashing shapes are
+    carved out this one is the same case as the test above -- a symlink to a
+    real directory -- just aimed at a directory the fixture also uses as
+    `home`. Nothing about `home`'s mode is asserted here: whichever arm the
+    *target's own bits* select is correct, so this reads the mode with
+    `is_world_accessible`, the same predicate the probe consults, rather than
+    assuming a particular umask.
+    """
+    data_dir = _symlinked_data_dir(tmp_path, "into-the-containment-root")
+
+    step = probe_data_directory(_context(tmp_path, data_dir=data_dir))
+
+    if is_world_accessible(data_dir):
+        assert step.status is StepStatus.MISSING
+        assert "readable by other users" in step.summary
+    else:
+        assert step.status is StepStatus.SATISFIED
 
 
 def test_a_symlinked_data_directory_never_reaches_apply(tmp_path: Path) -> None:
