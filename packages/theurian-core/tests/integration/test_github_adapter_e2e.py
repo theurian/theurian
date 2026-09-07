@@ -300,11 +300,14 @@ def _event_for(number: int) -> ReviewEvent:
         repository=_REPOSITORY,
         number=number,
         title=f"pull request #{number}",
+        body="",
         author=ReviewParticipant(provider="github", external_id="x", display_name="x"),
         created_at=datetime(2026, 1, 1, tzinfo=UTC),
         url=f"https://github.com/{_REPOSITORY}/pull/{number}",
         head_commit="0" * 40,
         base_commit="0" * 40,
+        head_ref_name="placeholder",
+        labels=(),
     )
 
 

@@ -281,11 +281,26 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   than cited): nothing reads a label's value to decide anything, and fetching
   them as scannable content is the whole of their role.
 
-  Measured at `7c486588`, `git grep -n "ReviewEvent(" -- packages plugins tools
-  docs` returned two hits — `infrastructure/github/review_provider.py` and
-  `tests/unit/test_project_and_traceability.py` — so no consumer exists to
-  migrate. That answers the migration cost and not whether the record is honest,
-  the same distinction its sibling above draws.
+  **The migration cost, pasted rather than summarised.** Every construction the
+  three new required arguments reach, at this entry's own base `c7992354`:
+
+  ```sh
+  git grep -n "ReviewEvent(" c7992354 -- packages plugins tools docs
+  # c7992354:packages/theurian-core/src/theurian/infrastructure/github/review_provider.py:395:        return ReviewEvent(
+  # c7992354:packages/theurian-core/tests/integration/test_gh_review_provider.py:769:    unrenderable = ReviewEvent(
+  # c7992354:packages/theurian-core/tests/integration/test_gh_review_provider.py:1729:    forged = ReviewEvent(
+  # c7992354:packages/theurian-core/tests/integration/test_github_adapter_e2e.py:297:    return ReviewEvent(
+  # c7992354:packages/theurian-core/tests/unit/test_project_and_traceability.py:343:        ReviewEvent(
+  # c7992354:packages/theurian-core/tests/unit/test_project_and_traceability.py:359:    event = ReviewEvent(
+  ```
+
+  Six lines across four files — one production constructor and three test files
+  — and this change migrates all six. The cost is therefore *in* this release
+  rather than absent: an in-repository population is not the same fact as no
+  consumer at all, and the same command run at another commit answers another
+  number (at `7c486588` it is five lines across three files, the e2e harness
+  having arrived after it). That answers the migration cost and not whether the
+  record is honest, the same distinction its sibling above draws.
 - **`ReviewSubmission` joins the review model**: a top-level review on a pull
   request — the approval or the change request itself, not a line comment — as
   `ReviewSubmission(external_id, project_id, event_key, author, body, state,
