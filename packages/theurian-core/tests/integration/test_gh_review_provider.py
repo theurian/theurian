@@ -696,6 +696,93 @@ async def test_a_limit_below_one_is_refused_with_a_summary_that_is_true(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "limit",
+    (10**4300, 10**4301, -(10**4301)),
+    ids=(
+        "the most digits str() will render",
+        "one digit past what str() will render",
+        "the same, below one",
+    ),
+)
+async def test_a_limit_too_large_to_render_is_still_a_summary_a_reader_can_act_on(
+    tmp_path: pathlib.Path, fake_gh: FakeGh, limit: int
+) -> None:
+    """A caller's own argument is a value from outside, and it was interpolated raw.
+
+    Two failures, one line apart, and the parameters are chosen to separate them.
+    Past ``sys.get_int_max_str_digits()`` -- 4300 by default -- ``str()`` of an
+    integer **raises**, so the f-string that built this summary put a
+    ``ValueError`` out of the refusal path: the one path ADR-0030 clause 9 says
+    must answer with an envelope. At exactly 4300 digits it rendered, and then
+    the summary ran past the type's cut and lost its own tail -- so the operator
+    was told a number was refused and not what the cap was.
+
+    Both are asserted here: a graded envelope for every value, and a summary that
+    still names ``MAX_PULL_REQUESTS`` in the over-the-cap cases. Nothing is
+    spawned either way, so the recorder stays empty.
+    """
+    provider = _provider(tmp_path, fake_gh)
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.list_pull_requests(PROJECT, REPOSITORY, limit=limit)
+
+    assert raised.value.grade is RefusalGrade.LIMIT_EXCEEDED
+    assert raised.value.remedy
+    assert len(raised.value.envelope.summary) <= MAX_REFUSAL_SUMMARY_CHARS
+    if limit > 0:
+        assert str(limits.MAX_PULL_REQUESTS) in str(raised.value), (
+            "the summary was cut by the type before it reached the cap it was "
+            "reporting, so the reader is told a number was refused and not what "
+            "the bound is. Cutting the value is what keeps the sentence."
+        )
+    assert fake_gh.invocations == 0
+
+
+@pytest.mark.asyncio
+async def test_a_variable_too_large_to_render_refuses_instead_of_raising(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """The construction seam: an argv element that cannot be *built* never reaches a spawn.
+
+    ``_start``'s ``(OSError, ValueError)`` catch closes what ``execve`` declines,
+    and a review round credited it with closing "a value some later caller
+    builds". It cannot: ``graphql_vector`` renders each element with an f-string,
+    and ``str()`` of a large enough integer raises there -- a whole stage before
+    any process exists. ``get_threads`` left that as a traceback, after its two
+    probes had already been spawned.
+
+    The event is built with a number the domain accepts and the interpreter will
+    not render, which is the shape a caller can hand this adapter directly. The
+    probes still run, because they are the adapter's one-time setup and the check
+    belongs where every element is built rather than at each caller that might
+    reach it -- but the answer is an envelope.
+    """
+    fake_gh.answer("prs", 1, _pull_requests())
+    provider = _provider(tmp_path, fake_gh)
+    (event,) = await provider.list_pull_requests(PROJECT, REPOSITORY)
+    unrenderable = ReviewEvent(
+        project_id=PROJECT,
+        provider="github",
+        repository=REPOSITORY,
+        number=10**5000,
+        title=event.title,
+        author=event.author,
+        created_at=event.created_at,
+        url=event.url,
+        head_commit=event.head_commit,
+        base_commit=event.base_commit,
+    )
+
+    with pytest.raises(ReviewIngestRefusedError) as raised:
+        await provider.get_threads(PROJECT, unrenderable)
+
+    assert raised.value.grade is RefusalGrade.TOOL_FAILED
+    assert "number" in str(raised.value), "the refusal does not name the variable it refused"
+    assert raised.value.remedy
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "limit",
     (1, limits.MAX_PULL_REQUESTS),
     ids=("the smallest read there is", "the recorded cap exactly"),
 )

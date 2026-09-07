@@ -45,6 +45,16 @@ sentence. :func:`bounded_echo` is where a producer does it, and
 ``security/review_allowlist.py``'s ``_rendered`` is the same shape against its
 own bound.
 
+**What needs routing is a value from outside this package, and only that.** A
+summary also names this package's own numbers -- a page cap, a version floor,
+``run_bounded``'s ``byte_cap`` (a parameter, but every production call site
+passes a module constant) -- and those need no cut, because nothing outside
+chooses them. The two populations are walked by
+``tests/unit/test_review_ingest_refusals.py::test_every_summary_interpolation_is_routed_or_this_packages_own``,
+which reads the package's own syntax rather than a list somebody keeps in step:
+a producer that interpolates an outside value raw reddens there, which is the
+check the caller-supplied ``limit`` escaped.
+
 **The redirect target is the echo worth naming**, because it is the one that is
 neither the caller's own nor an identifier: ``REPOSITORY_RESOLVED_ELSEWHERE``
 echoes the ``owner/name`` GitHub answered with, and an operator cannot correct
@@ -177,12 +187,18 @@ MAX_REFUSAL_DETAIL_CHARS: Final = 2_000
 
 #: How long a whole summary may be, **cut** at construction rather than refused.
 #: A summary is a sentence or two this package wrote plus the values those
-#: sentences name, and each of those is already cut at
-#: :data:`MAX_SUMMARY_ECHO_CHARS` where it is built -- so this is room for that
-#: shape rather than a measurement of it, and a backstop for a producer that
-#: interpolates something raw. What it is *not* is a number a response can reach:
-#: a megabyte of pull-request number arrives here and leaves as this many
-#: characters.
+#: sentences name, and a producer cuts each of those at
+#: :data:`MAX_SUMMARY_ECHO_CHARS` where it builds it -- so this is room for that
+#: shape rather than a measurement of it. What it is *not* is a number a response
+#: can reach: a megabyte of pull-request number arrives here and leaves as this
+#: many characters.
+#:
+#: **The backstop is not decorative, and what it costs is why the value-side cut
+#: exists.** A producer that interpolated a caller's own ``limit`` raw reached
+#: this cut for real, and the summary it published was the sentence with its tail
+#: removed -- so the reader lost "the recorded cap is 500", which is the number
+#: they had to act on. Cutting the value keeps the sentence; cutting the sentence
+#: is what happens when nobody cut the value.
 MAX_REFUSAL_SUMMARY_CHARS: Final = 1_000
 
 #: How much of one value from outside this package a summary may echo before

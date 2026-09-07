@@ -14,11 +14,14 @@ can be raised anywhere.
 
 from __future__ import annotations
 
+import ast
+import pathlib
 import re
 from typing import Final
 
 import pytest
 
+from theurian.domain import review_ingest
 from theurian.domain.errors import InvariantViolationError
 from theurian.domain.review_ingest import (
     MAX_REFUSAL_DETAIL_CHARS,
@@ -229,12 +232,144 @@ def test_bounded_echo_renders_a_value_str_itself_refuses() -> None:
     """The rendering is total, because a refusal path may not raise.
 
     ``str()`` of an integer is not total: CPython refuses past
-    ``sys.get_int_max_str_digits()`` -- 4300 by default -- and a JSON number can
-    carry more digits than that. Everything upstream of *this adapter* happens to
-    guard it (``json.loads`` applies the same limit), but ``bounded_echo`` is a
-    domain helper any producer may reach for, and one that raised here would turn
-    a refusal into the traceback the refusal exists to replace.
+    ``sys.get_int_max_str_digits()`` -- 4300 by default -- and **both** halves of
+    what a summary names can carry more digits than that. Only one of them is
+    guarded upstream. A number out of a *response* is bounded by ``json.loads``,
+    which applies the same interpreter limit while parsing; a number out of a
+    *caller* is bounded by nothing, and was not -- ``list_pull_requests``
+    interpolated a caller's own ``limit`` raw, and a 4301-digit one left the
+    refusal path as the ``ValueError`` a refusal exists to replace. That producer
+    routes through here now. The totality is the property, not a convenience:
+    this helper is reached from paths where raising is the one thing forbidden.
     """
     echoed = bounded_echo(-(10**5000))
 
     assert echoed == "a value of type int this adapter cannot render"
+
+
+#: Where a refusal summary may take a value from without routing it through a
+#: bounding helper: names this package chooses the value of.
+#:
+#: Every member carries the reason it is safe, because the list is the *only*
+#: thing standing between a raw interpolation and a published megabyte -- and a
+#: name added here without a reason is how the caller-supplied `limit` sat
+#: unnoticed. A new name reddens the walk below until somebody either routes it
+#: or writes down why it needs no routing.
+_THIS_PACKAGES_OWN: Final[dict[str, str]] = {
+    "MAX_PULL_REQUESTS": "a module constant",
+    "MAX_PAGES": "a module constant",
+    "MAX_LINKED_ISSUES": "a module constant",
+    "MAX_COMMENTS_PER_THREAD": "a module constant",
+    "MAX_PROBE_STDOUT_BYTES": "a module constant",
+    "MAX_REFUSAL_DETAIL_CHARS": "a module constant",
+    "MAX_REPOSITORY_CHARS": "a module constant",
+    "GITHUB_HOSTNAME": "a module constant",
+    "GH_CONFIG_FILE": "a module constant",
+    "byte_cap": "a parameter; both production call sites pass a module constant",
+    "timeout": "a parameter; production passes REQUEST_TIMEOUT_SECONDS",
+    "entry": "the allowlist entry, so the operator's own config and pattern-bounded",
+    "repository": "an allowlisted name, so pattern-bounded before it reaches a summary",
+    "field": "this adapter's own literal naming a response field",
+    "what": "this adapter's own literal naming a read",
+    "name": "a GraphQL variable name from a closed set",
+    "selected_by": "one of three literals naming the variable that chose a directory",
+    "key": "a member of TRANSPORT_OVERRIDE_KEYS",
+    "named": "an OSError's strerror, the operating system's own short message",
+    "arguments": "a probe's vector, which is this adapter's own literals",
+    "exc": "reached only as type(exc).__name__ -- a class name, not a value",
+    "value": "reached only as type(value).__name__ -- a class name, not a value",
+    "__name__": "a class name: bounded by being an identifier, and not the value",
+    "type": "the builtin, reached only to take a class name",
+    "event": "reached only as event.repository, which is the allowlisted name",
+}
+
+#: The helpers that bound a value on its way into a summary.
+_ROUTERS: Final[frozenset[str]] = frozenset(
+    {"bounded_echo", "bounded_quote", "_rendered", "rendered_version"}
+)
+
+
+def _interpolations() -> list[tuple[str, str]]:
+    """Every interpolated expression in every refusal summary the package builds.
+
+    The population key, stated so it can be attacked: the **first positional
+    argument** of every ``ReviewIngestRefusedError(...)`` call in
+    ``packages/theurian-core/src``, which is the summary. ``detail`` is excluded
+    deliberately -- it has a bound of its own, enforced by refusing at
+    construction rather than by its producers.
+    """
+    source_root = pathlib.Path(review_ingest.__file__).parents[2]
+    found: list[tuple[str, str]] = []
+    for path in sorted(source_root.rglob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        if "ReviewIngestRefusedError(" not in source:
+            continue
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, ast.Call):
+                continue
+            if getattr(node.func, "id", "") != "ReviewIngestRefusedError" or len(node.args) < 2:
+                continue
+            for piece in ast.walk(node.args[1]):
+                if isinstance(piece, ast.FormattedValue):
+                    found.append((f"{path.name}:{piece.lineno}", ast.unparse(piece.value)))
+    return found
+
+
+def test_the_summary_walk_finds_the_interpolations_it_is_meant_to_judge() -> None:
+    """The can-fail companion: an empty walk would make the row below always green.
+
+    A structural check that finds nothing passes for the same reason a correct
+    one does. This asserts the walk reaches a population at all, and that it
+    reaches the two shapes the next test classifies -- so a rename of
+    ``ReviewIngestRefusedError`` or a move of the package turns into a red test
+    here rather than a silent all-clear there.
+    """
+    found = _interpolations()
+
+    assert len(found) > 20, (
+        f"the walk found {len(found)} interpolations across the package, which is "
+        "too few to be the real population -- the refusal class or the source root "
+        "has moved and this check is now watching nothing."
+    )
+    rendered = {text for _, text in found}
+    assert any("bounded_echo" in text for text in rendered), "no routed member found"
+    assert any(text in _THIS_PACKAGES_OWN for text in rendered), "no own-value member found"
+
+
+def test_every_summary_interpolation_is_routed_or_this_packages_own() -> None:
+    """RED means a producer can publish a value nothing bounded.
+
+    A summary is a published document and the values it names come from two
+    places. One is **outside** this package -- a GraphQL response, a caller's own
+    argument -- and every one of those goes through a bounding helper, because
+    either can be a megabyte and ``str()`` of a large enough integer does not
+    return at all. The other is this package's own numbers and literals, which
+    need no cut because nothing outside chooses them.
+
+    This walks the package's syntax rather than a list somebody keeps in step,
+    which is the point: the defect it exists to catch was a caller's ``limit``
+    interpolated raw into two summaries, sitting beside fifteen echoes that were
+    routed correctly. Reading the call sites did not find it; three review rounds
+    did not find it either.
+    """
+    unrouted = [
+        f"  {where}  {text}"
+        for where, text in _interpolations()
+        if not any(router in text for router in _ROUTERS)
+        and not all(
+            part in _THIS_PACKAGES_OWN
+            for part in [n.id for n in ast.walk(ast.parse(text)) if isinstance(n, ast.Name)]
+            + [n.attr for n in ast.walk(ast.parse(text)) if isinstance(n, ast.Attribute)]
+        )
+    ]
+
+    assert not unrouted, (
+        "a refusal summary interpolates a value that is neither routed through a "
+        "bounding helper nor this package's own:\n"
+        + "\n".join(unrouted)
+        + "\n\nRoute it through `bounded_echo` (or `bounded_quote` where the site "
+        "quotes), or add the name to `_THIS_PACKAGES_OWN` with the reason it needs "
+        "no bound. A summary is published; an unbounded value in one is a megabyte "
+        "in somebody's terminal, or a `ValueError` out of the one path that may "
+        "not raise."
+    )

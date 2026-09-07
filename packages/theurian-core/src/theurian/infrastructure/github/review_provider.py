@@ -139,6 +139,14 @@ class GitHubReviewProvider:
                 carrying its own grade and the recorded remedy for it.
         """
         entry = self._allowlisted(repository)
+        # `limit` is the caller's own integer and it is echoed through
+        # `bounded_echo` for both reasons that helper exists: `str()` of an
+        # integer is not total past the interpreter's digit limit -- a raw
+        # f-string here raised `ValueError` out of a refusal path -- and a 4300
+        # digit one rendered fine and then pushed the sentence past the type's
+        # cut, so the summary lost "the recorded cap is 500" and the reader lost
+        # the number to act on.
+        #
         # Two summaries, one grade. An operator does the same thing about either
         # -- change `limit` -- and `RefusalGrade`'s membership is coarse on
         # purpose, but "the recorded cap is 500, so the run stopped rather than
@@ -146,15 +154,16 @@ class GitHubReviewProvider:
         if limit < 1:
             raise ReviewIngestRefusedError(
                 RefusalGrade.LIMIT_EXCEEDED,
-                f"Review ingestion was asked for {limit} pull requests, and there is no "
-                f"read of fewer than one to perform. Nothing was spawned.",
+                f"Review ingestion was asked for {bounded_echo(limit)} pull requests, "
+                f"and there is no read of fewer than one to perform. Nothing was "
+                f"spawned.",
             )
         if limit > MAX_PULL_REQUESTS:
             raise ReviewIngestRefusedError(
                 RefusalGrade.LIMIT_EXCEEDED,
-                f"Review ingestion was asked for {limit} pull requests and the recorded "
-                f"cap is {MAX_PULL_REQUESTS}. The run stopped rather than quietly "
-                f"returning fewer than were asked for.",
+                f"Review ingestion was asked for {bounded_echo(limit)} pull requests "
+                f"and the recorded cap is {MAX_PULL_REQUESTS}. The run stopped rather "
+                f"than quietly returning fewer than were asked for.",
             )
         cli = await self._ready()
         owner, name = entry.split("/", 1)
@@ -550,12 +559,19 @@ def _next_cursor(connection: Mapping[str, Any], what: str) -> str | None:
     query with, and ``application/proposal_service.py`` a resolved path; this is
     the third boundary in the repository where the same two arrive together.
 
-    **The closure is the seam, not this function.** ``gh_cli._start`` catches
-    ``(OSError, ValueError)`` around the spawn, so *any* unspawnable argv element
-    -- this cursor, or a value some later caller builds -- leaves as a graded
-    envelope rather than as the traceback clause 9 forbids. What the checks here
-    add is a refusal that names the cursor and the read it stopped, raised before
-    a process exists at all rather than after one failed to start.
+    **The closure is two seams, and neither of them is this function.** An argv
+    element can fail at two stages, and they are caught in different places
+    because one happens a whole stage before the other:
+    :func:`~theurian.infrastructure.github.gh_cli._binding` catches what
+    *rendering* declines, so an element that cannot be built refuses before any
+    vector exists; ``gh_cli._start`` catches what ``execve`` declines --
+    ``(OSError, ValueError)`` around the spawn -- so an element that was built
+    and cannot be run refuses there. An earlier version of this paragraph
+    credited the spawn's catch with "a value some later caller builds", which it
+    cannot see: a construction failure never reaches a spawn, and ``get_threads``
+    demonstrated it by leaving a ``ValueError`` as a traceback after its two
+    probes had already run. What the checks here add is a refusal that names the
+    cursor and the read it stopped, raised before either seam is reached.
 
     **A page this adapter cannot ask for is a refusal, not a last page.**
     ``hasNextPage`` true with no usable ``endCursor`` says the answer in hand is

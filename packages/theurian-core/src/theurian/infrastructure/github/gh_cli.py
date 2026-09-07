@@ -422,6 +422,38 @@ def _release(child: asyncio.subprocess.Process) -> None:
         transport.close()
 
 
+def _binding(name: str, value: str | int) -> str:
+    """One ``name=value`` vector element, or a graded refusal if it cannot be built.
+
+    **The construction seam, and the sibling of the one in :func:`_start`.** That
+    one catches what ``execve`` declines; this one catches what *rendering*
+    declines, and the two failures are a whole stage apart. An element that
+    cannot be built never reaches a spawn at all, so the spawn's catch cannot
+    see it: ``str()`` of an integer past ``sys.get_int_max_str_digits()`` -- 4300
+    by default -- raises ``ValueError`` here, inside the f-string, and
+    ``get_threads`` used to leave that as a traceback after its two probes had
+    already run.
+
+    It is a catch on the **exception type at the one place every element is
+    built**, deliberately, and not a digit bound at the call sites. A bound
+    checked per caller is an enumeration the next caller escapes; this holds for
+    every variable of every vector, including ones a later change adds. Size is a
+    separate question with a separate seam -- an element too long for ``execve``
+    is ``E2BIG``, an ``OSError``, which :func:`_start` already grades.
+    """
+    try:
+        return f"{name}={value}"
+    except ValueError as exc:
+        # The value is not echoed, because the reason it is refused is that it
+        # cannot be rendered. The variable name is this adapter's own literal.
+        raise ReviewIngestRefusedError(
+            RefusalGrade.TOOL_FAILED,
+            f"Review ingestion could not build the `{name}` argument for a GitHub "
+            f"request: the value cannot be rendered as text, so no vector was "
+            f"assembled and nothing was spawned with it.",
+        ) from exc
+
+
 @final
 class GhCli:
     """A resolved ``gh`` binary, the environment it runs under, and the two probes.
@@ -585,7 +617,7 @@ class GhCli:
         for name in sorted(variables):
             value = variables[name]
             flag = "-F" if isinstance(value, int) and not isinstance(value, bool) else "-f"
-            arguments += [flag, f"{name}={value}"]
+            arguments += [flag, _binding(name, value)]
         return self.vector(*arguments)
 
     async def graphql(self, *, document: str, variables: Mapping[str, str | int]) -> ChildOutcome:
