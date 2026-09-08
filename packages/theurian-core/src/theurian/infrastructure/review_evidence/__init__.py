@@ -10,7 +10,10 @@ Git-tracked* list and why nothing here deletes.
 
 Slice 3 builds the SQLite serving store from these files. :class:`ReviewEvidenceStore`
 therefore ships both halves now: the writer that lands them, and the reader that
-store will consume.
+store will consume -- the writer in
+:mod:`theurian.infrastructure.review_evidence.store` and the reader in
+:mod:`theurian.infrastructure.review_evidence.reader`, which the store's
+``read_all`` delegates to.
 
 **The file grain is the thread, the submission and the pull-request event -- one
 file each.** Four constraints decide it, and the third is the one that rules out
@@ -54,11 +57,9 @@ from theurian.infrastructure.review_evidence.layout import (
     record_path,
     repository_directory,
 )
+from theurian.infrastructure.review_evidence.records import EvidenceRecord
 from theurian.infrastructure.review_evidence.run import IngestionRun, new_ingestion_run
-from theurian.infrastructure.review_evidence.store import (
-    EvidenceRecord,
-    ReviewEvidenceStore,
-)
+from theurian.infrastructure.review_evidence.store import ReviewEvidenceStore
 
 __all__ = [
     "EVIDENCE_FORMAT_VERSION",

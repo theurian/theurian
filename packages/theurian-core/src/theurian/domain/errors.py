@@ -1043,7 +1043,7 @@ class IrregularSourceFileError(SecurityError):
       unreached, because ``_discover``'s ``is_file()`` drops a non-regular file
       before ``_ingest_one`` runs (a narrow TOCTOU aside) -- silently, which is
       issue #327's own subject and not this class's.
-    * ``infrastructure/review_evidence/store.py::_read_one`` -- catches
+    * ``infrastructure/review_evidence/reader.py::_read_one`` -- catches
       :class:`SecurityError`, this class included, and re-raises as a
       ``ReviewEvidenceError`` naming the path **its own walk built** from
       ``iterdir()``, never a value read out of the file. Reachable: the walk

@@ -437,7 +437,8 @@ _INFRASTRUCTURE_NON_SERVING_MODULES: frozenset[str] = frozenset(
         "github/transport_guard.py",
         "raptor/__init__.py",
         # Review evidence on disk (ADR-0030 decision 3): the writer an ingestion
-        # run calls and the reader slice 3's serving store will be built from.
+        # run calls, the reader slice 3's serving store will be built from, and
+        # the record types and case-fold helpers the two share.
         # It reads and writes `.theurian/review/`, which is a different store
         # from the findings one in every sense -- different source, different
         # schema, different arm of FR-V.
@@ -446,7 +447,10 @@ _INFRASTRUCTURE_NON_SERVING_MODULES: frozenset[str] = frozenset(
         "review_evidence/cures.py",
         "review_evidence/errors.py",
         "review_evidence/layout.py",
+        "review_evidence/reader.py",
+        "review_evidence/records.py",
         "review_evidence/run.py",
+        "review_evidence/spellings.py",
         "review_evidence/store.py",
         "raptor/extractive.py",
         "secrets/__init__.py",

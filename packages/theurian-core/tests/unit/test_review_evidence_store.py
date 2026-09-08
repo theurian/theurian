@@ -63,6 +63,7 @@ from theurian.infrastructure.review_evidence import (
     record_leaf,
     repository_directory,
 )
+from theurian.infrastructure.review_evidence import records as records_module
 from theurian.infrastructure.review_evidence import store as store_module
 from theurian.infrastructure.review_evidence.layout import (
     _FILESYSTEM_SAFE,
@@ -904,7 +905,7 @@ def test_two_records_a_folding_filesystem_would_merge_are_refused(
     second one would go looking for a file that is on disk under the first.
     """
     store = _store(tmp_path)
-    monkeypatch.setattr(store_module, "record_path", _colliding_record_path)
+    monkeypatch.setattr(records_module, "record_path", _colliding_record_path)
 
     with pytest.raises(ReviewEvidenceError) as raised:
         store.write([_thread("PRRT_kwDOAbc"), _thread("prrt_kwdoabc")], run=RUN_ONE)
@@ -1220,7 +1221,7 @@ def test_a_folded_read_names_a_rename_that_is_not_a_no_op(tmp_path: Path) -> Non
     read side handed it the two **whole paths**: on a filesystem that folds case
     ``mv sha256-abc/Pull-Request/42.json sha256-abc/pull-request/42.json`` renames
     a file onto itself. The write side has always passed a component, because
-    ``_OnDiskSpellings`` finds one; this is the read side reaching the same shape.
+    ``OnDiskSpellings`` finds one; this is the read side reaching the same shape.
 
     Runs on every filesystem: the plant is created under the variant spelling and
     the refusal keys on casefold equality, not on what the disk does.

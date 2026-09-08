@@ -41,11 +41,13 @@ still cannot see:
   ``getattr``; and being keyed on spelling it also collects false positives --
   ``record.anchor`` is not a ``Path``, and its row says so.
 * :func:`test_the_guard_covers_every_path_the_write_builds_under_the_root`
-  recomputes both sides of the guard's coverage from ``store.py``'s own syntax:
+  recomputes both sides of the guard's coverage from the package's own syntax:
   the derived path expressions ``_write_one`` constructs against the two
   ``_refuse_a_folded_spelling`` checks. That is the check the ``.writing``
   temporary needed -- a fourth derived name the walk above sees only as an
-  ``open``, and one the six-name key never described.
+  ``open``, and one the six-name key never described. It reads the package
+  rather than ``store.py`` because the store was split at the 800-line ceiling
+  and either function could be the next to move.
 
 Neither of them replaces :func:`store._refuse_a_folded_spelling`: that guard runs
 at run time against whatever the disk holds and does not depend on either walk
@@ -77,6 +79,7 @@ from theurian.infrastructure.review_evidence import (
     ReviewEvidenceError,
     ReviewEvidenceStore,
 )
+from theurian.infrastructure.review_evidence import spellings as spellings_module
 from theurian.infrastructure.review_evidence import store as store_module
 
 pytestmark = pytest.mark.unit
@@ -202,37 +205,62 @@ _ACCOUNTED: Final[dict[str, str]] = {
         "all, and matching the `sha256-` escape prefix against the folded id so "
         "`SHA256-...` cannot be spelled out to name a hashed leaf"
     ),
+    "reader.py:kind_directory.is_dir": (
+        "a shape question, not a name one. It swallows its own `OSError`, so an "
+        "`ELOOP` directory reads as absent -- recorded at `_relative_paths`"
+    ),
+    "reader.py:kind_directory.iterdir": "the read walk's third level; folds to find, below",
+    "reader.py:kind_directory.name": "folded before the membership test, so a variant is found",
+    "reader.py:kind_directory.name.casefold": "the folded membership test itself -- the fix",
+    "reader.py:leaf.name": "folded before the suffix test, so a variant is found",
+    "reader.py:leaf.name.casefold": "the folded suffix test itself -- the fix",
+    "reader.py:record.relative_path.casefold": (
+        "`_stored` telling a case difference apart from a genuinely misfiled record, "
+        "so the two get different cures. The byte comparison one line above it is "
+        "the accept half: deliberately unfolded, because the path is an opaque key "
+        "two layers up"
+    ),
+    "reader.py:relative.casefold": (
+        "the other side of the comparison one row above: `_stored` folds the path a "
+        "file was found under against the path the record derives, and only to tell a "
+        "case difference apart from a misfiling. It had no row of its own while the "
+        "write's own `relative.casefold` shared a file with it and so shared a key"
+    ),
+    "reader.py:repository.is_dir": "a shape question at the walk's second level, as above",
+    "reader.py:repository.iterdir": "the read walk's second level",
+    "reader.py:repository.name": (
+        "carried into the path verbatim and compared by `_stored` against the derived "
+        "one, which refuses a case difference by name"
+    ),
+    "reader.py:self._root.is_dir": (
+        "whether there is a review directory to walk at all; an absent one reads as "
+        "an empty corpus, which is the honest answer before a first run"
+    ),
+    "reader.py:self._root.iterdir": "the read walk's first level",
+    "records.py:self.anchor": ("not a `Path`: `EvidenceRecord.anchor` again, in `__post_init__`"),
+    "spellings.py:PurePosixPath(derived).parts": "the same split over the path this build derives",
+    "spellings.py:PurePosixPath(on_disk).parts": (
+        "`first_differing_component` splitting the path a file was found under, so "
+        "the read-side cure names a component pair rather than two whole paths -- the "
+        "byte comparison that follows is deliberately unfolded"
+    ),
+    "spellings.py:PurePosixPath(relative).parts": (
+        "the guard's own component split, which is why it covers the repository "
+        "hash, the kind directory and the leaf with one rule"
+    ),
+    "spellings.py:component.casefold": "the guard's lookup of a derived component in the index",
+    "spellings.py:entry.name": (
+        "`OnDiskSpellings` reading what the disk actually holds, which is the only "
+        "place in the package that wants the on-disk spelling for its own sake"
+    ),
+    "spellings.py:entry.name.casefold": (
+        "the index's key, so a lookup by a derived name finds a variant"
+    ),
+    "spellings.py:os.scandir": "`OnDiskSpellings` itself, which is the guard",
     "store.py:PurePosixPath(relative).parent": (
         "`_refuse_a_relocated_directory` taking the record's directory off a "
         "derived path; no filesystem name is read"
     ),
-    "store.py:PurePosixPath(relative).parts": (
-        "the guard's own component split, which is why it covers the repository "
-        "hash, the kind directory and the leaf with one rule"
-    ),
-    "store.py:PurePosixPath(on_disk).parts": (
-        "`_first_differing_component` splitting the path a file was found under, so "
-        "the read-side cure names a component pair rather than two whole paths -- the "
-        "byte comparison that follows is deliberately unfolded"
-    ),
-    "store.py:PurePosixPath(derived).parts": "the same split over the path this build derives",
-    "store.py:component.casefold": "the guard's lookup of a derived component in the index",
-    "store.py:entry.name": (
-        "`_OnDiskSpellings` reading what the disk actually holds, which is the only "
-        "place in the package that wants the on-disk spelling for its own sake"
-    ),
-    "store.py:entry.name.casefold": (
-        "the index's key, so a lookup by a derived name finds a variant"
-    ),
-    "store.py:kind_directory.is_dir": (
-        "a shape question, not a name one. It swallows its own `OSError`, so an "
-        "`ELOOP` directory reads as absent -- recorded at `_relative_paths`"
-    ),
-    "store.py:kind_directory.iterdir": "the read walk's third level; folds to find, below",
-    "store.py:kind_directory.name": "folded before the membership test, so a variant is found",
-    "store.py:kind_directory.name.casefold": "the folded membership test itself -- the fix",
-    "store.py:leaf.name": "folded before the suffix test, so a variant is found",
-    "store.py:leaf.name.casefold": "the folded suffix test itself -- the fix",
     "store.py:os.lstat": (
         "asks the kernel about a derived path; the filesystem folds and the answer "
         "is about whatever object that name reaches, which is what the caller wants"
@@ -242,35 +270,16 @@ _ACCOUNTED: Final[dict[str, str]] = {
         "beside an existing `42.JSON` lands the bytes and keeps `42.JSON`. Refused "
         "before it runs, by `_refuse_a_folded_spelling`"
     ),
-    "store.py:os.scandir": "`_OnDiskSpellings` itself, which is the guard",
     "store.py:record.anchor": (
         "not a `Path`: `EvidenceRecord.anchor`, a `SourceAnchor`. `PurePath.anchor` "
         "shares the spelling, which is what this key matches on"
     ),
-    "store.py:record.relative_path.casefold": (
-        "`_stored` telling a case difference apart from a genuinely misfiled record, "
-        "so the two get different cures. The byte comparison one line above it is "
-        "the accept half: deliberately unfolded, because the path is an opaque key "
-        "two layers up"
-    ),
     "store.py:relative.casefold": "the within-run collision guard, folded since round one",
-    "store.py:repository.is_dir": "a shape question at the walk's second level, as above",
-    "store.py:repository.iterdir": "the read walk's second level",
-    "store.py:repository.name": (
-        "carried into the path verbatim and compared by `_stored` against the derived "
-        "one, which refuses a case difference by name"
-    ),
-    "store.py:self._root.is_dir": (
-        "whether there is a review directory to walk at all; an absent one reads as "
-        "an empty corpus, which is the honest answer before a first run"
-    ),
-    "store.py:self._root.iterdir": "the read walk's first level",
     "store.py:self._root.resolve": (
         "`_refuse_a_relocated_directory` compares two *derived* paths. Measured on "
         "APFS: `resolve()` does not canonicalise case, so it neither false-refuses a "
         "case-variant nor detects one -- it answers a different question"
     ),
-    "store.py:self.anchor": ("not a `Path`: `EvidenceRecord.anchor` again, in `__post_init__`"),
     "store.py:target.is_symlink": (
         "a shape question about the record's own leaf immediately before the rename; "
         "a case variant is already refused by `_refuse_a_folded_spelling`"
@@ -363,6 +372,29 @@ def test_no_verdict_outlives_the_site_it_was_written_about() -> None:
     )
 
 
+def _function_named(function: str) -> ast.FunctionDef:
+    """The one definition of ``function`` in the evidence package, wherever it sits.
+
+    Keyed on the name across every module rather than on ``store.py``, so the
+    two readers below survive the next move: the store was split at the 800-line
+    ceiling while ``_write_one`` and ``_refuse_a_folded_spelling`` happened to
+    stay together, and a reader pinned to one file would have gone quiet instead
+    of red if either had gone with the reader half. Refuses a second definition
+    of the name rather than taking the first, since two would make which one is
+    measured depend on the glob's order.
+    """
+    package = Path(store_module.__file__).parent
+    found = [
+        node
+        for path in sorted(package.glob("*.py"))
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        if isinstance(node, ast.FunctionDef) and node.name == function
+    ]
+
+    assert len(found) == 1, f"{function} is defined {len(found)} times in the evidence package"
+    return found[0]
+
+
 def _derived_paths_built_by(function: str) -> set[str]:
     """Every path expression ``function`` hands to ``PurePosixPath``, unparsed.
 
@@ -373,12 +405,7 @@ def _derived_paths_built_by(function: str) -> set[str]:
     rather than the value is what lets the guard's coverage be compared against
     it without running anything.
     """
-    tree = ast.parse(Path(store_module.__file__).read_text(encoding="utf-8"))
-    body = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == function
-    )
+    body = _function_named(function)
     return {
         ast.unparse(call.args[0])
         for call in ast.walk(body)
@@ -395,12 +422,7 @@ def _spellings_the_guard_checks() -> set[str]:
     sides of the comparison below come from the same file and neither is a list
     kept in step by hand.
     """
-    tree = ast.parse(Path(store_module.__file__).read_text(encoding="utf-8"))
-    body = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "_refuse_a_folded_spelling"
-    )
+    body = _function_named("_refuse_a_folded_spelling")
     return {
         ast.unparse(element)
         for loop in ast.walk(body)
@@ -546,14 +568,14 @@ def test_a_case_variant_of_the_temporary_is_refused_rather_than_truncated(
 def test_the_guard_scans_each_directory_once_per_call(review_root: Path) -> None:
     """The cost claim, measured rather than asserted in a docstring.
 
-    ``_OnDiskSpellings`` says it scans at most five directories however many
+    ``OnDiskSpellings`` says it scans at most five directories however many
     records a run lands, and the alternative -- a scan per component per record
     -- is quadratic in the number of records, which for a 500-pull-request window
     is millions of directory entries. A cost claim nobody measures is how the
     cheap version gets replaced by the expensive one in a later edit.
     """
     scans: list[str] = []
-    spellings = store_module._OnDiskSpellings(review_root)
+    spellings = spellings_module.OnDiskSpellings(review_root)
     original = spellings._folded
 
     def counted(parent: Path) -> dict[str, str]:

@@ -92,7 +92,7 @@ UNWRITABLE_CURE: Final = (
 
 #: What a refusal says about a record whose repository could not be read out of
 #: its own file. Written once because both halves of
-#: ``ReviewEvidenceStore._read_one`` publish it and the two must not drift into
+#: ``EvidenceReader._read_one`` publish it and the two must not drift into
 #: two different sentences.
 UNNAMED_REPOSITORY: Final = "whose own repository could not be read"
 
@@ -414,7 +414,7 @@ def repository_named_in(raw: bytes) -> str:
 
     **This parse is the one that already failed, run again inside the handler
     grading it**, which is why ``RecursionError`` is caught here and not only at
-    ``store._stored``'s own ``json.loads``. Both calls decode the same bytes at
+    ``reader._stored``'s own ``json.loads``. Both calls decode the same bytes at
     the same depth, so a landed file of 20,000 nested arrays raised a second
     ``RecursionError`` out of the arm that was composing the refusal about the
     first -- measured, and the reason a fix applied only at ``_stored`` leaves

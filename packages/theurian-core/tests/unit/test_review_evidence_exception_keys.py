@@ -3,7 +3,7 @@
 The class the verdict pass named is *an exception arm keyed on an enumeration
 rather than on the complement*, and its measured member was a
 ``RecursionError``: a landed file of 20,000 nested arrays came out of
-``store._stored``'s ``json.loads`` as a ``RuntimeError`` subclass, outside
+``reader._stored``'s ``json.loads`` as a ``RuntimeError`` subclass, outside
 ``_read_one``'s ``(ValueError, DomainError)`` **and** outside the CLI's own
 ``except TheurianError``, so ``theurian review ingest`` published no document at
 all. A second face sat inside the handler grading the first:
@@ -54,9 +54,11 @@ pytestmark = pytest.mark.unit
 #: The seams whose arm must be the **complement** of ``TheurianError`` rather
 #: than a list of families: the two places one record crosses between what a
 #: provider or a disk supplied and what ``review ingest`` publishes.
-_SEAMS: Final[frozenset[str]] = frozenset(
-    {"ReviewEvidenceStore.write", "ReviewEvidenceStore._read_one"}
-)
+#:
+#: One per module since the store was split at the 800-line ceiling -- the write
+#: seam in ``store.py``, the read seam in ``reader.py`` -- which is why
+#: :func:`_seam_try_blocks` walks the package rather than one file.
+_SEAMS: Final[frozenset[str]] = frozenset({"ReviewEvidenceStore.write", "EvidenceReader._read_one"})
 
 #: One verdict per exception arm on this path, keyed by
 #: ``<file>:<qualified function>:<the type expression as written>``. The key is
@@ -74,6 +76,41 @@ _ACCOUNTED: Final[dict[str, str]] = {
         "raising -- and `RecursionError` is the fix: this parse is the failed one "
         "repeated inside the arm composing the refusal about it"
     ),
+    "reader.py:EvidenceReader._read_one:(ValueError, DomainError)": (
+        "the codec's shape faults and the domain's invariants, whose messages name a "
+        "field and a type. Kept for the *sentence*; the complement below is what "
+        "keeps the observable"
+    ),
+    "reader.py:EvidenceReader._read_one:Exception": (
+        "the read seam's complement key -- `_ungraded_read`, which names the class "
+        "and never the text"
+    ),
+    "reader.py:EvidenceReader._read_one:OSError": "the filesystem's own refusal, by `strerror`",
+    "reader.py:EvidenceReader._read_one:PathEscapeError": (
+        "re-raised ahead of the `SecurityError` clause it would otherwise reach "
+        "first, so a containment refusal is not re-labelled as unreadable bytes"
+    ),
+    "reader.py:EvidenceReader._read_one:SecurityError": (
+        "SEC-8's size cap and the irregular-file refusal, whose own remedy is about "
+        "an input an author can edit and would mislead about a record"
+    ),
+    "reader.py:EvidenceReader._read_one:TheurianError": (
+        "a graded refusal that is not this store's, re-raised whole"
+    ),
+    "reader.py:EvidenceReader._read_one:_FoldedPathError": (
+        "a `ValueError` caught ahead of its own base, and only to change the cure"
+    ),
+    "reader.py:EvidenceReader._relative_paths:OSError": (
+        "the walk's only calls that are not total are `Path.iterdir` and "
+        "`Path.is_dir`, and `OSError` is both contracts -- `is_dir` swallows its own "
+        "internally, which is the recorded residual: a directory that is really an "
+        "`ELOOP` reads as absent"
+    ),
+    "reader.py:_stored:RecursionError": (
+        "the fix. A `RuntimeError`, so outside every family the caller names and "
+        "outside `TheurianError`; raised as the `ValueError` this function's other "
+        "shape faults already are, which buys the cure the complement arm cannot"
+    ),
     "review_commands.py:review_ingest:ProjectPathEscapeError": (
         "narrows the arm below it to exit code 4, a containment refusal carrying its "
         "own remedy about where a path points"
@@ -90,6 +127,11 @@ _ACCOUNTED: Final[dict[str, str]] = {
         "every remaining record to a skip, and `test_review_ingest_service.py` drives "
         "both outcomes"
     ),
+    "spellings.py:OnDiskSpellings._folded:OSError": (
+        "a directory that cannot be listed is the caller's next refusal with a better "
+        "message; grading it here would publish a cure about a spelling over a "
+        "permission fault"
+    ),
     "store.py:ReviewEvidenceStore._discard_the_temporary:suppress(OSError)": (
         "removing litter must not change what the caller is told; the faults that "
         "reach this arm make the `lstat` and the `unlink` fail too"
@@ -98,39 +140,12 @@ _ACCOUNTED: Final[dict[str, str]] = {
         "the one errno that means `nothing is in the way`. Every other one falls to "
         "`_write_one`'s `BaseException` arm below"
     ),
-    "store.py:ReviewEvidenceStore._read_one:PathEscapeError": (
-        "re-raised ahead of the `SecurityError` clause it would otherwise reach "
-        "first, so a containment refusal is not re-labelled as unreadable bytes"
-    ),
-    "store.py:ReviewEvidenceStore._read_one:OSError": "the filesystem's own refusal, by `strerror`",
-    "store.py:ReviewEvidenceStore._read_one:SecurityError": (
-        "SEC-8's size cap and the irregular-file refusal, whose own remedy is about "
-        "an input an author can edit and would mislead about a record"
-    ),
-    "store.py:ReviewEvidenceStore._read_one:_FoldedPathError": (
-        "a `ValueError` caught ahead of its own base, and only to change the cure"
-    ),
-    "store.py:ReviewEvidenceStore._read_one:(ValueError, DomainError)": (
-        "the codec's shape faults and the domain's invariants, whose messages name a "
-        "field and a type. Kept for the *sentence*; the complement below is what "
-        "keeps the observable"
-    ),
-    "store.py:ReviewEvidenceStore._read_one:TheurianError": (
-        "a graded refusal that is not this store's, re-raised whole"
-    ),
-    "store.py:ReviewEvidenceStore._read_one:Exception": (
-        "the read seam's complement key -- `_ungraded_read`, which names the class "
-        "and never the text"
-    ),
-    "store.py:ReviewEvidenceStore._relative_paths:OSError": (
-        "the walk's only calls that are not total are `Path.iterdir` and "
-        "`Path.is_dir`, and `OSError` is both contracts -- `is_dir` swallows its own "
-        "internally, which is the recorded residual: a directory that is really an "
-        "`ELOOP` reads as absent"
-    ),
     "store.py:ReviewEvidenceStore._write_one:BaseException": (
         "wider than the complement on purpose: an interrupt between the open and the "
         "return leaves the same litter an error does"
+    ),
+    "store.py:ReviewEvidenceStore.write:Exception": (
+        "the landing seam's complement key, and the one this class was named after"
     ),
     "store.py:ReviewEvidenceStore.write:ReviewEvidenceError": (
         "this store's own refusal, re-raised with the run's partial-landing count "
@@ -139,22 +154,9 @@ _ACCOUNTED: Final[dict[str, str]] = {
     "store.py:ReviewEvidenceStore.write:TheurianError": (
         "a graded refusal that is not this store's -- containment's -- re-raised whole"
     ),
-    "store.py:ReviewEvidenceStore.write:Exception": (
-        "the landing seam's complement key, and the one this class was named after"
-    ),
-    "store.py:_OnDiskSpellings._folded:OSError": (
-        "a directory that cannot be listed is the caller's next refusal with a better "
-        "message; grading it here would publish a cure about a spelling over a "
-        "permission fault"
-    ),
     "store.py:_planted_shape:OSError": (
         "the path is gone or unreachable for the reason the open was, and the caller "
         "falls back to the errno sentence rather than guessing a shape"
-    ),
-    "store.py:_stored:RecursionError": (
-        "the fix. A `RuntimeError`, so outside every family the caller names and "
-        "outside `TheurianError`; raised as the `ValueError` this function's other "
-        "shape faults already are, which buys the cure the complement arm cannot"
     ),
 }
 
@@ -256,6 +258,12 @@ def _seam_try_blocks() -> list[tuple[str, list[str]]]:
     complement-keyed while only one of them is -- deleting the parse block's
     complement arm left this file green, because the read block above it still
     had one.
+
+    **Over the package rather than one file**, which is the correction the split
+    forced: this walked ``store.py`` alone while both seams lived there, and the
+    read seam moved to ``reader.py``.
+    :func:`test_the_seam_walk_finds_both_seams_and_all_their_blocks` is what
+    fails when the walk stops reaching one of them.
     """
     blocks: list[tuple[str, list[str]]] = []
     package = pathlib.Path(store_module.__file__).parent
@@ -277,7 +285,8 @@ def _seam_try_blocks() -> list[tuple[str, list[str]]]:
                 )
             walk(child, prefix)
 
-    walk(ast.parse((package / "store.py").read_text(encoding="utf-8")), "")
+    for path in sorted(package.glob("*.py")):
+        walk(ast.parse(path.read_text(encoding="utf-8")), "")
     return blocks
 
 

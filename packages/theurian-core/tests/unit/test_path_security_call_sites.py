@@ -155,8 +155,8 @@ _CALL_SITES: Final = (
         ),
     ),
     _CallSite(
-        module="infrastructure/review_evidence/store.py",
-        function="ReviewEvidenceStore._read_one",
+        module="infrastructure/review_evidence/reader.py",
+        function="EvidenceReader._read_one",
         form=REQUESTED,
         guarded_at="",
         why=(

@@ -672,7 +672,7 @@ def _interpolations() -> list[tuple[str, str]]:
     3. every ``remedy=`` argument, and the whole of
        ``review_evidence/cures.py``, which is where the rest of them interpolate;
     4. every ``raise <Class>(<message>)`` under ``review_evidence/``, because
-       ``ReviewEvidenceStore._read_one`` republishes ``{exc}``.
+       ``EvidenceReader._read_one`` republishes ``{exc}``.
 
     ``detail`` is excluded deliberately: it has a bound of its own, enforced by
     refusing at construction rather than by its producers.
