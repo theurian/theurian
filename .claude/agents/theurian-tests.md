@@ -100,3 +100,13 @@ report. Report: what you added, which mutation you used to prove each new test
 can fail, and any coverage gap you found but did not close.
 
 Report in the caller's language.
+
+## A costless-removal claim is a shape claim
+
+A cure/remedy that says removal "loses nothing" may only render for shapes
+holding no bytes and no names (pipe/socket/device — never a directory or a
+regular file). Test it REFLECTIVELY: render every cure over every shape and
+assert the claim appears only under the guard (PR #596's
+`test_no_cure_claims_a_costless_removal_outside_the_shape_guard` is the
+pattern) — a table-driven check agrees with the routing it checks; the
+rendered-text walk does not. Burned in after four cross-seam recurrences.

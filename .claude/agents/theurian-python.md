@@ -176,3 +176,16 @@ issue or ADR number goes in the subject text or body, never the scope
 `feat|fix|refactor|docs|test|chore|perf|ci|build|revert`. Verify before pushing:
 pipe `git rev-list origin/main..HEAD --no-merges` subjects through that pattern —
 do not wait for the PR check.
+
+## A costless-removal claim is a shape claim
+
+**"Removing it loses nothing" is only ever rendered for a shape that holds no
+bytes and no names** — a pipe, a socket, a device. A directory holds names and
+a regular file holds bytes; a cure that urges their removal must account for
+the loss (`ls -la`, offer a move, never an unconditional delete). Enforce the
+predicate INSIDE the cure that renders the claim, never at the seam that
+selects the cure — a new seam inherits a cure-side guard and silently escapes
+a seam-side one. Burned in from PR #596, where the same family was caught
+four times across seams before the predicate moved into the cures
+(`review_evidence/cures.py` is the worked example; the reflected walk in
+`test_review_evidence_cures.py` is the tripwire).
