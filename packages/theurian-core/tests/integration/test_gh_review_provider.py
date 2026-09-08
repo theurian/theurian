@@ -43,15 +43,16 @@ from typing import Any, Final
 import pytest
 
 from theurian.domain.enums import ReviewThreadState
+from theurian.domain.errors import InvariantViolationError
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.ports.review_provider import SkippedPullRequest
-from theurian.domain.review import ReviewEvent
+from theurian.domain.review import ReviewEvent, ReviewParticipant
 from theurian.domain.review_ingest import (
     MAX_REFUSAL_SUMMARY_CHARS,
     RefusalGrade,
     ReviewIngestRefusedError,
 )
-from theurian.infrastructure.github import environment, limits
+from theurian.infrastructure.github import environment, limits, response
 from theurian.infrastructure.github.review_provider import GitHubReviewProvider
 from theurian.infrastructure.github.transport_guard import GH_CONFIG_FILE
 
@@ -2448,6 +2449,150 @@ async def test_an_unreadable_pull_request_number_denies_the_window_rather_than_b
         "denied every window would pass both"
     )
     assert [skip.number for skip in listing.skipped] == [12]
+
+
+#: The login the injected defect below is aimed at, and a value no other fixture
+#: carries.
+#:
+#: Keyed on one node so exactly one of a page's pull requests is built by broken
+#: code: a fault that fired on every node could not say what happened to the
+#: **neighbour**, and the neighbour is half of what a halt means.
+_AN_AUTHOR_THIS_ADAPTER_MAPS_WITH_A_DEFECT: Final = "an-actor-mapped-by-a-defect"
+
+#: ``response.participant`` as production defines it, bound at import so the
+#: stand-in below can delegate to it. Reading it through the module at call time
+#: would find the stand-in itself, since that is what the stand-in is installed
+#: as.
+_REAL_PARTICIPANT: Final = response.participant
+
+
+def _participant_without_its_empty_id_guard(actor: object) -> ReviewParticipant:
+    """``response.participant`` with one guard deleted: a fault of ours, not a bad answer.
+
+    ``optional_participant`` answers ``None`` for an actor it can read no id out
+    of, and ``participant`` substitutes GitHub's ``ghost`` for it. Remove that one
+    step and the domain type is handed the empty ``external_id`` its
+    ``__post_init__`` screens for, so ``InvariantViolationError`` is raised in the
+    middle of one node's record build -- and the exception the caller meets is the
+    domain's own, raised by the real ``ReviewParticipant``, not a stand-in for one.
+
+    **The defect is injected because no response can send it.** Every reader
+    ``_event`` calls is either total (:func:`response.text`,
+    :func:`response.mapping`, :func:`queries.ci_outcome`) or refuses with a grade,
+    and :func:`response.required_text` and :func:`response.positive_integer` say
+    in their own docstrings that pre-empting exactly this exception is why they
+    exist -- ``ReviewEvent``'s two invariants are both checked, with a grade,
+    before the record is constructed. That is the adapter working, and it is
+    precisely why the per-node catch's *type* has no natural driver.
+    """
+    if response.mapping(actor).get("login") == _AN_AUTHOR_THIS_ADAPTER_MAPS_WITH_A_DEFECT:
+        return ReviewParticipant(provider=response.PROVIDER_ID, external_id="", display_name="")
+    return _REAL_PARTICIPANT(actor)
+
+
+@pytest.mark.asyncio
+async def test_a_defect_in_this_adapters_own_record_build_halts_the_listing_rather_than_skipping(
+    tmp_path: pathlib.Path, fake_gh: FakeGh, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The per-node catch names a type, and the type is the whole guard.
+
+    ``_listed`` wraps one node's record build in ``except
+    ReviewIngestRefusedError``: the graded, envelope-carrying family this adapter
+    raises **about the provider's data**, which is the population its docstring
+    puts in the ``skipped`` channel. Anything else reaching that handler is a
+    fault of *ours*, and both things a wider catch could do with one are wrong.
+    ``SkippedPullRequest`` is built from ``exc.envelope``, which a domain error
+    does not carry; and a version that reached for it more carefully would report
+    a broken record builder as one pathological pull request -- a run answering
+    "one record, one skip, here is the remedy for it" when the true answer is that
+    the code which built the other record is broken too.
+
+    The fix-diff mutation batch at 857fc717 recorded this as a survivor: widening
+    the catch to ``except Exception`` passed the suite, because before this test
+    every driver of that handler arrived at it carrying a refusal.
+
+    The poison node is **second**, so the pull request above it has already been
+    built and appended when the defect fires. What the caller must not receive is
+    that half-window presented as an answer.
+    """
+    page = _pull_requests()
+    nodes = page["data"]["repository"]["pullRequests"]["nodes"]
+    nodes[:] = [
+        {**nodes[0], "number": 13},
+        {
+            **nodes[0],
+            "number": 12,
+            "author": {"login": _AN_AUTHOR_THIS_ADAPTER_MAPS_WITH_A_DEFECT},
+        },
+    ]
+    fake_gh.answer("prs", 1, page)
+    monkeypatch.setattr(response, "participant", _participant_without_its_empty_id_guard)
+    provider = _provider(tmp_path, fake_gh)
+
+    try:
+        answered = await provider.list_pull_requests(PROJECT, REPOSITORY)
+    except InvariantViolationError as defect:
+        assert "external_id" in str(defect), (
+            f"the defect reached the caller with its own report rewritten: {defect}"
+        )
+    else:
+        pytest.fail(
+            f"a fault in this adapter's own record build was answered as though it were "
+            f"the provider's data: pull requests "
+            f"{[event.number for event in answered.events]} came back beside skips "
+            f"{[skip.number for skip in answered.skipped]}. `_listed` catches "
+            f"`ReviewIngestRefusedError` per node because that is the graded family this "
+            f"adapter raises about a response; a defect of ours has no envelope to "
+            f"publish and must crash loudly, or a run reports one pathological pull "
+            f"request while every record in it was built by the same broken code."
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_skipped_pull_request_spends_its_slot_in_the_window(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """``limit`` bounds the window read, not how many records were built out of it.
+
+    ``_listed`` records the decision in those words: the window is the newest
+    ``limit`` pull requests, and a member of it that could not be built is still a
+    member. Counting only the built ones reaches further back into history than
+    the caller asked for and spends more requests doing it -- on a repository with
+    a run of bad nodes, a ``--limit 2`` would walk pages looking for two it can
+    build.
+
+    No existing driver can see the difference, which is why the fix-diff mutation
+    batch at 857fc717 recorded ``len(events) + len(skipped) >= limit`` narrowing
+    to ``len(events) >= limit`` as a survivor:
+    ``test_a_read_stops_at_the_limit_rather_than_one_past_it`` plants no skip, so
+    the two expressions are the same number there, and every driver that does
+    plant one asks for more pull requests than its page carries.
+
+    **The third node is poison too, and that is what makes "never reached"
+    observable.** A well-formed one would only prove it was not *built*; this one
+    reports itself the moment the loop reads it, so ``skipped`` holding #14 alone
+    is the assertion that the read stopped at the window's edge.
+    """
+    page = _pull_requests()
+    nodes = page["data"]["repository"]["pullRequests"]["nodes"]
+    nodes[:] = [
+        _over_the_label_cap(nodes[0], 14),
+        {**nodes[0], "number": 13},
+        _over_the_label_cap(nodes[0], 12),
+    ]
+    fake_gh.answer("prs", 1, page)
+    provider = _provider(tmp_path, fake_gh)
+
+    listing = await provider.list_pull_requests(PROJECT, REPOSITORY, limit=2)
+
+    assert [event.number for event in listing.events] == [13]
+    assert [skip.number for skip in listing.skipped] == [14], (
+        f"the window was two pull requests -- #14, which could not be built, and #13, "
+        f"which could -- and the read went on to a third: skips "
+        f"{[skip.number for skip in listing.skipped]}. A skipped pull request spends "
+        f"its slot, so a read that steps past it reaches further back into history than "
+        f"the caller asked for and spends more requests getting there."
+    )
 
 
 @pytest.mark.asyncio
