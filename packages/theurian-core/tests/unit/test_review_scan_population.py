@@ -27,19 +27,24 @@ Two things make the walk mean something rather than pass vacuously:
   positive control, planting a leaf at three depths and requiring each to be
   reported.
 
-**What this file does not cover, said rather than implied.** The walk is over the
-*payload* documents the gate screens. The envelope
-``review_evidence/store.py::_document`` writes around one -- the ``sourceAnchor``
-and the run stamp -- is not walked here, because those are values Theurian writes
-at ingestion (decision 3's third *Controlled by* row) and the gate is handed a
-payload, not a record. A change that puts a response's text into that envelope is
-outside what this file would notice.
+**The envelope is walked too, since round two.** ``store._document`` wraps each
+payload in a document of its own -- ``kind``, ``provider``, ``repository``,
+``recordKey``, the ``sourceAnchor`` and the run stamp -- and every one of those
+strings lands in the file the gate is deciding about. Until round two this file
+said the envelope was outside its subject because those are values Theurian
+writes (decision 3's third *Controlled by* row), which was **true and not
+checkable**: a field added to ``_document`` tomorrow was scanned by nobody and
+walked by nobody, so the argument would have gone on reading correctly while
+having stopped applying. :data:`_ENVELOPE_EXEMPT` is that argument written as a
+table with a line per field, and :func:`test_every_string_the_envelope_carries_is_scanned_or_exempt`
+is what fails when a field arrives without one.
 
 Marked ``unit``; every fixture is built in memory and no test here opens a file.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from dataclasses import fields, is_dataclass, replace
 from datetime import UTC, datetime
@@ -50,6 +55,7 @@ import pytest
 from theurian.application import review_landing_gate as gate
 from theurian.domain.enums import ReviewCommentCategory, ReviewThreadState
 from theurian.domain.identifiers import ProjectId
+from theurian.domain.knowledge import SourceAnchor
 from theurian.domain.review import (
     ReviewComment,
     ReviewEvent,
@@ -58,6 +64,7 @@ from theurian.domain.review import (
     ReviewSubmission,
     ReviewThread,
 )
+from theurian.infrastructure.review_evidence import EvidenceRecord, IngestionRun, store
 from theurian.infrastructure.review_evidence.codec import (
     event_to_json,
     submission_to_json,
@@ -218,6 +225,49 @@ _EXEMPT: Final[dict[tuple[str, str], str]] = {
     ("submission", "submittedAt"): "an instant, rendered by `datetime.isoformat`",
     ("thread", "comments[].createdAt"): "an instant, rendered by `datetime.isoformat`",
     ("thread", "resolution.resolvedAt"): "an instant, rendered by `datetime.isoformat`",
+}
+
+
+#: Every string the **envelope** carries that the ingestion scan does not read,
+#: with the one line saying who chooses the value.
+#:
+#: These are the seven fields ``store._document`` adds around a payload. The
+#: argument they share -- that each is a value Theurian composed rather than one
+#: a person wrote -- is decision 3's third *Controlled by* row, and it is written
+#: per field rather than once because two of them are only *derived* from
+#: provider values and a reader has to be able to argue with each on its own.
+#:
+#: The paths under ``record.`` are the payload's, walked and judged by
+#: :data:`_EXEMPT` above; this table covers what sits beside it.
+_ENVELOPE_EXEMPT: Final[dict[str, str]] = {
+    "kind": "an `EvidenceKind` member, derived from the payload's own type",
+    "provider": "`response.PROVIDER_ID`, a constant of the adapter",
+    "repository": (
+        "the `owner/name` the operator allowlisted, matched against "
+        "`security/review_allowlist.py`'s pattern before any fetch"
+    ),
+    "recordKey": (
+        "the record's own identifier -- a pull request's number, or a submission's or "
+        "thread's node id. Provider-chosen, and **the same string** the payload walk "
+        "already judges as `externalId`, so it is exempt for that entry's reason and "
+        "not for a new one"
+    ),
+    "sourceAnchor.provider": "`response.PROVIDER_ID`, a constant of the adapter",
+    "sourceAnchor.sourceUri": (
+        "the pull request's `url`, GitHub's own rendering of an address; the payload "
+        "walk exempts the same value under `event.url`"
+    ),
+    "sourceAnchor.repository": "the allowlisted `owner/name`, as above",
+    "sourceAnchor.commitSha": "a git object id GitHub resolved",
+    "sourceAnchor.filePath": (
+        "the thread's `file_path`, which the gate **does** scan -- listed here because "
+        "the anchor is a second copy of it and this walk keys on paths"
+    ),
+    "sourceAnchor.externalId": (
+        "the record's own node id or event key, composed from provider, repository and number"
+    ),
+    "lastSeenRun.runId": "this run's own id, minted by `new_ingestion_run`",
+    "lastSeenRun.observedAt": "an instant, rendered by `datetime.isoformat`",
 }
 
 
@@ -418,3 +468,117 @@ def test_an_absent_field_is_what_the_populated_check_reports() -> None:
         "merge_commit",
         "milestone",
     ]
+
+
+def _envelope(record: gate.ReviewRecordPayload) -> dict[str, Any]:
+    """One record as ``store._document`` writes it, payload and envelope together."""
+    stored = EvidenceRecord(
+        provider=PROVIDER,
+        repository=_sentinel("repository"),
+        anchor=SourceAnchor(
+            provider=PROVIDER,
+            source_uri=_sentinel("url"),
+            repository=_sentinel("repository"),
+            commit_sha=_sentinel("anchor-commit-sha"),
+            file_path=_sentinel("file-path"),
+            external_id=_sentinel("anchor-external-id"),
+        ),
+        payload=record,
+    )
+    document = store._document(
+        stored,
+        IngestionRun(run_id=_sentinel("run-id"), observed_at=datetime(2026, 8, 4, tzinfo=UTC)),
+    )
+    parsed: dict[str, Any] = json.loads(document)
+    return parsed
+
+
+@pytest.mark.parametrize(
+    ("kind", "record", "_document"), _WRITTEN, ids=[row[0] for row in _WRITTEN]
+)
+def test_every_string_the_envelope_carries_is_scanned_or_exempt(
+    kind: str, record: gate.ReviewRecordPayload, _document: dict[str, Any]
+) -> None:
+    """RED means a field added to ``store._document`` is read by nobody.
+
+    The payload walk above stops at what the codec writes, and the *file* is
+    wider than that: ``_document`` wraps every payload in an envelope that lands
+    in the same bytes the gate decided about. Round two's argument for leaving it
+    out -- those are values Theurian composes -- was true and unchecked, which is
+    the shape this whole file exists to replace: an argument that goes on reading
+    correctly after it has stopped applying.
+
+    So the envelope's own leaves are walked and each must be scanned or carry a
+    line in :data:`_ENVELOPE_EXEMPT`. The paths under ``record.`` are the
+    payload's and are judged by the rows above, so they are stripped rather than
+    re-judged here -- a second verdict on one field is a second place for the two
+    to disagree.
+    """
+    document = _envelope(record)
+    scanned = _scanned(record)
+    uncovered = [
+        (path, value)
+        for path, value in _string_leaves(document)
+        if not path.startswith("record.")
+        if value not in scanned and path not in _ENVELOPE_EXEMPT
+    ]
+
+    assert not uncovered, (
+        f"the envelope around a {kind} carries "
+        + ", ".join(f"`{path}`" for path, _value in uncovered)
+        + " and the ingestion scan never reads them.\nEither yield the value from "
+        "`_scanned_values` -- do that if any part of it is chosen by a person -- or add "
+        "a row to `_ENVELOPE_EXEMPT` in this file with the one line saying who does "
+        "choose it. That line has to agree with decision 3's table in "
+        "`docs/adr/0030-github-review-ingestion-spawns-gh.md`."
+    )
+
+
+def test_the_envelope_walk_reaches_the_envelope_at_all() -> None:
+    """The can-fail companion: an empty walk makes the row above vacuous.
+
+    A walk that found no envelope leaf would pass exactly as a covered one does.
+    This asserts the envelope is reached, that the payload really sits under
+    ``record.``, and that a planted field is reported -- so a rename of
+    ``_document`` or a change to the document's shape reddens here rather than
+    quietly turning the check off.
+    """
+    document = _envelope(_event())
+    outside = {path for path, _value in _string_leaves(document) if not path.startswith("record.")}
+    inside = {path for path, _value in _string_leaves(document) if path.startswith("record.")}
+
+    assert outside >= {"kind", "provider", "repository", "recordKey", "lastSeenRun.runId"}, (
+        f"the envelope walk reached only {sorted(outside)}"
+    )
+    assert inside, "the payload is not under `record.`, so the strip above hides it"
+
+    planted = {**document, "operatorNote": "a field somebody added"}
+    reported = [
+        path
+        for path, _value in _string_leaves(planted)
+        if not path.startswith("record.")
+        if path not in _ENVELOPE_EXEMPT
+    ]
+
+    assert reported == ["operatorNote"], f"a planted envelope field was not reported: {reported}"
+
+
+def test_no_envelope_exemption_names_a_field_the_document_has_not() -> None:
+    """RED means a row outlived the field it excused.
+
+    :data:`_ENVELOPE_EXEMPT` narrows a derived population, so a stale row is an
+    exemption matching nothing today that would excuse whatever takes that path
+    next -- the same failure ``test_no_exemption_names_a_field_no_document_has``
+    holds for the payload table.
+    """
+    present = {
+        path
+        for _kind, record, _document in _WRITTEN
+        for path, _value in _string_leaves(_envelope(record))
+    }
+    stale = sorted(path for path in _ENVELOPE_EXEMPT if path not in present)
+
+    assert not stale, (
+        f"{stale} are exempted from the envelope walk and no document carries them. "
+        "Remove the row, or correct it to the field's new path."
+    )

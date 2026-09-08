@@ -30,6 +30,7 @@ Marked ``unit`` and writes only under ``tmp_path``.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterator
 from dataclasses import fields, is_dataclass, replace
 from datetime import UTC, datetime
@@ -919,6 +920,71 @@ def test_a_login_carrying_a_lone_surrogate_is_pseudonymised_rather_than_raising(
 
     assert pseudonym.startswith(REDACTED_ID_PREFIX)
     assert pseudonym == gate._pseudonym(hostile)
+
+
+def test_the_pseudonym_prefix_is_a_shape_no_provider_login_can_take() -> None:
+    """RED means the prefix's distinguishability claim is false again (round two).
+
+    ``REDACTED_ID_PREFIX`` promises that a reader meeting a pseudonym in a landed
+    record can tell Theurian's substitution from the provider's own id. With a
+    hyphen that was a hope about who registers what: a GitHub login is
+    alphanumerics and interior hyphens, so ``redacted-<16 hex>`` is a name
+    somebody can hold -- and under ``redactParticipantNames: false`` a real
+    account of that shape lands verbatim beside Theurian's own substitutions.
+
+    So the claim is checked against the **charset**, not against a list of names
+    that happen to be taken. The positive control is in the same assertion: the
+    old prefix has to pass the login pattern, or this row would hold for any
+    string at all.
+    """
+    login = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}\Z")
+
+    assert login.match("redacted-0123456789abcdef"), (
+        "the login pattern rejects the prefix this fix replaced, so it cannot tell a "
+        "distinguishable prefix from an indistinguishable one and proves nothing"
+    )
+    assert not login.match(f"{REDACTED_ID_PREFIX}0123456789abcdef"), (
+        f"{REDACTED_ID_PREFIX!r} is a legal provider login, so a real account of that "
+        "shape is indistinguishable from Theurian's own substitution in a landed record"
+    )
+
+
+def test_a_pseudonym_never_reaches_a_filename() -> None:
+    """The one thing the new prefix character could have broken, checked.
+
+    ``~`` is the layout's case-tag separator, so a *leaf* carrying one is read as
+    ``<id>~<case tag>``. Nothing routes a participant there, and this is that
+    claim rather than a sentence about it: a record whose author, comment author
+    and resolver are all pseudonymised derives exactly the path it would have
+    derived without redaction, because ``record_key`` reads the record's own
+    identifier and never a participant's.
+    """
+    import theurian.application.review_landing_gate as gate
+
+    thread = _thread()
+    redacted = gate.redacted(thread)
+    assert isinstance(redacted, ReviewThread)
+
+    before = EvidenceRecord(
+        provider=PROVIDER,
+        repository=REPOSITORY,
+        anchor=SourceAnchor(provider=PROVIDER, source_uri="https://x/1"),
+        payload=thread,
+    )
+    after = EvidenceRecord(
+        provider=PROVIDER,
+        repository=REPOSITORY,
+        anchor=SourceAnchor(provider=PROVIDER, source_uri="https://x/1"),
+        payload=redacted,
+    )
+
+    assert redacted.comments[0].author.external_id.startswith(REDACTED_ID_PREFIX) or (
+        redacted.comments[0].author.external_id == thread.comments[0].author.external_id
+    )
+    assert after.relative_path == before.relative_path, (
+        "redaction moved the record's path, so a participant id is reaching the layout"
+    )
+    assert REDACTED_ID_PREFIX not in after.relative_path
 
 
 def _records(outcome: ReviewScanOutcome) -> list[EvidenceRecord]:

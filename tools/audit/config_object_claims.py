@@ -149,13 +149,20 @@ CONFIG_HOMES: Final[tuple[str, ...]] = (
 #: word, judged one by one in that module's own population key. The third key
 #: joined on 2026-09-07 with ADR-0030 decision 3's ingestion-time redaction.
 #:
-#: **The count is anchored to a commit and not to a date**, because it moves with
-#: every commit that adds a line mentioning any of those spellings and a date
-#: names no tree anybody can re-run the key against. At ``dc433df1`` the key
-#: answers **160** lines. It answered 145 when this was first written, which is
-#: what a date-anchored number looks like once four commits have landed: the
-#: figure is a historical measurement, not a live claim, and the live claim is
-#: ``CONFIG_KEY_READER_SITES``.
+#: **The count is anchored to a commit, and to one a clone can resolve**, because
+#: it moves with every commit that adds a line mentioning any of those spellings
+#: and a date names no tree anybody can re-run the key against. That is two
+#: requirements and the first version met only the first: it named a commit on
+#: the branch that wrote it, and a squash merge orphans every one of those -- a
+#: fresh clone answers ``fatal: bad object``, which is worse than no anchor
+#: because it reads like one.
+#:
+#: So the anchor is this branch's **base**, ``8d444bd6``, where the key answers
+#: **135** lines, and the number is re-measured there rather than carried over.
+#: The figure is a historical measurement and not a live claim -- the live claim
+#: is ``CONFIG_KEY_READER_SITES``, which scans ``src/`` -- and it will move again:
+#: on the branch that adds ADR-0030's ingestion reader the same key answers 160,
+#: which is what an anchored number is *for*.
 KEYS_WITH_A_READER: Final[frozenset[str]] = frozenset(
     {
         "providers.review.redactParticipantNames",

@@ -443,6 +443,7 @@ _INFRASTRUCTURE_NON_SERVING_MODULES: frozenset[str] = frozenset(
         # schema, different arm of FR-V.
         "review_evidence/__init__.py",
         "review_evidence/codec.py",
+        "review_evidence/cures.py",
         "review_evidence/errors.py",
         "review_evidence/layout.py",
         "review_evidence/run.py",

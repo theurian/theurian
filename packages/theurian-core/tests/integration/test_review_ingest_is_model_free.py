@@ -303,7 +303,11 @@ def test_the_walk_reaches_the_pipeline_it_claims_to_inspect(
     """
     seen = walk(service)
 
-    # 38 callables at `e2691683`, 2026-09-07. The floor is well below the
+    # The walk answered 38 callables when this floor was chosen (2026-09-07, on
+    # this branch); `seen.callables` below recomputes it on every run, so the
+    # figure is context and the assertion is the claim. Deliberately not anchored
+    # to a branch commit: a squash merge orphans one, and a citation that answers
+    # `fatal: bad object` is worse than none. The floor is well below the
     # measurement rather than equal to it: this guards a walk that collapsed to
     # the service's own handful of methods, and a floor pinned to the exact
     # number would redden on every ordinary addition without saying anything.

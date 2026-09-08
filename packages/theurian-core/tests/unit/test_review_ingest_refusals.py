@@ -327,6 +327,30 @@ _THIS_PACKAGES_OWN: Final[dict[str, str]] = {
     "key": "a member of TRANSPORT_OVERRIDE_KEYS",
     "named": "an OSError's strerror, the operating system's own short message",
     "arguments": "a probe's vector, which is this adapter's own literals",
+    # -- the review-evidence store's own derived values (round two's widening) --
+    "relative": (
+        "a path this build derived, bounded by the layout: a hashed directory of 71 "
+        "characters, a kind value from the enum, and a leaf `_FILESYSTEM_SAFE` bounds "
+        "at 156 bytes"
+    ),
+    "opened": "the same derived path plus `_WRITING_SUFFIX`, so bounded the same way",
+    "earlier": "an earlier record's derived path, from the same layout",
+    "on_disk": (
+        "a directory entry the review root already holds, bounded by the filesystem's "
+        "own 255-byte component limit"
+    ),
+    "derived": "one component of a derived path, bounded by the layout",
+    "shape": "one of `unbounded_shape`'s own literals naming a file type",
+    "landing": "this store's own count of the bytes a record would land as",
+    "MAX_SOURCE_FILE_BYTES": "a module constant",
+    "UNNAMED_REPOSITORY": "a module constant naming the clause, not a value",
+    "EVIDENCE_FORMAT_VERSION": "a module constant",
+    # -- the published `describe` lines ---------------------------------------
+    "inside": "a local composed from `bounded_quote(self.comment_id)` two lines up",
+    "at": (
+        "the caller's own location string; `ReviewSecretFinding.describe` composes it "
+        "from `identity.describe()`, which routes both of its outside values"
+    ),
 }
 
 #: Expressions that are safe **in this exact shape and not otherwise**.
@@ -358,11 +382,86 @@ _EXEMPT_EXPRESSIONS: Final[dict[str, str]] = {
         "`get_reviews` run first; `{event}` would publish the whole record, "
         "response title and url included"
     ),
+    # -- expressions safe in this shape only, from round two's widened key -----
+    "record.kind.value": "an `EvidenceKind` member, so one of three module literals",
+    "self.grade.value": "a `RefusalGrade` member, so one of the enum's own literals",
+    "self.summary": "already cut by `RefusalEnvelope.__post_init__` at construction",
+    "self.field": "a value of `_FIELD_LITERALS`, this module's own table",
+    "self.line": "a line number this scanner counted",
+    "self.column": "a column this scanner counted",
+    "self.family": "a detector name from `content_secrets`' own table",
+    "self.redacted": "bounded on `SecretFinding` itself, at four characters",
+    "self.identity.describe()": (
+        "another `describe` in this same walked population, which routes its own values"
+    ),
+    "_partial_landing(len(landed))": "this store's own sentence over its own count",
+    "_partial_landing(landed)": "this store's own sentence over its own count",
+    "repository_named_in(raw)": "routes the repository it reads through `bounded_echo`",
+    "exc.derived": "a path this build derived, carried on `_FoldedPathError`",
+    "exc.strerror or 'the read was refused'": (
+        "the operating system's own short message, or this module's literal"
+    ),
+    "exc.strerror or 'the write was refused'": (
+        "the operating system's own short message, or this module's literal"
+    ),
+    "exc.strerror or 'the rename was refused'": (
+        "the operating system's own short message, or this module's literal"
+    ),
+    "exc": (
+        "a `ReviewEvidenceError` this store built and this file already walks, or a "
+        "`SecurityError`/`ValueError` from the codec whose messages name a field and a "
+        "type rather than a value -- the two that did name a value, `formatVersion` and "
+        "`kind`, route through `bounded_quote` at their raise sites"
+    ),
+}
+#: The refusal classes whose published sentence this file walks, mapped to
+#: **which argument** carries that sentence.
+#:
+#: Two entries rather than one since round two. The walk was keyed on
+#: ``ReviewIngestRefusedError`` alone, and the review-evidence store publishes
+#: its refusals through a different class -- so ``{record.record_key!r}``
+#: interpolated a provider node id raw and a 2,000,468-character one reached an
+#: operator's terminal, sitting outside a population whose whole purpose is to
+#: catch exactly that. The lesson is the ratchet rather than the fix: a *second*
+#: published-sentence type is the shape this walk will meet again, so the key is
+#: a table and the count check below ranges over it.
+_REFUSAL_CLASSES: Final[dict[str, tuple[int, str]]] = {
+    "ReviewIngestRefusedError": (1, "summary"),
+    "ReviewEvidenceError": (0, "message"),
 }
 
-#: How the source text mentions the refusal as a call, for the count that keeps
+#: How the source text mentions either class as a call, for the count that keeps
 #: the syntax walk honest about its own population.
-_MENTIONS_THE_REFUSAL: Final = re.compile(r"\bReviewIngestRefusedError\(")
+_MENTIONS_THE_REFUSAL: Final = re.compile("|".join(rf"\b{name}\(" for name in _REFUSAL_CLASSES))
+
+#: Where a *published* sentence is composed outside a refusal constructor.
+#:
+#: ``describe()`` is the shape: a report's own one-line rendering, published by
+#: ``cli/review_commands.py::_payload`` into ``refused``, ``findings`` and
+#: ``skipped``. It is not a refusal and carries no remedy, so the walk above
+#: cannot see it -- and a raw ``pull_request_number`` in one is 4,300 digits
+#: times a 500-slot window, which is 2.17 MB of published document.
+_DESCRIBE_METHOD: Final = "describe"
+
+#: Which modules' ``describe`` methods this file's bound applies to.
+#:
+#: **Scoped to the review-ingestion publish path, and the scope is derived
+#: rather than chosen.** ``_payload`` publishes three lists of ``describe()``
+#: lines, and the types behind them are ``ReviewRecordIdentity`` and
+#: ``ReviewSecretFinding`` (``application/review_landing_gate.py``),
+#: ``FetchRefusal`` (``application/review_ingest_service.py``), and
+#: ``SecretFinding`` (``security/content_secrets.py``), which the second of those
+#: delegates to. :func:`test_the_describe_scope_covers_every_type_the_command_publishes`
+#: is what fails when a fourth type joins that document.
+#:
+#: The package has ``describe`` methods elsewhere -- ``application/index_builder.py``
+#: and ``security/tokens.py`` -- and they are deliberately outside this file's
+#: subject rather than exempted inside it: writing a "why this value is bounded"
+#: line about a subsystem nobody analysed here is how an exemption table stops
+#: meaning anything.
+_DESCRIBE_MODULES: Final[frozenset[str]] = frozenset(
+    {"review_landing_gate.py", "review_ingest_service.py", "content_secrets.py"}
+)
 
 #: The helpers that bound a value on its way into a summary.
 _ROUTERS: Final[frozenset[str]] = frozenset(
@@ -376,49 +475,99 @@ def _source_files() -> list[pathlib.Path]:
 
 
 def _refusal_calls() -> list[tuple[pathlib.Path, ast.Call]]:
-    """Every ``ReviewIngestRefusedError(...)`` construction the package makes."""
+    """Every construction of a class in :data:`_REFUSAL_CLASSES` the package makes."""
     found: list[tuple[pathlib.Path, ast.Call]] = []
     for path in _source_files():
         source = path.read_text(encoding="utf-8")
-        if "ReviewIngestRefusedError(" not in source:
+        if not any(f"{name}(" in source for name in _REFUSAL_CLASSES):
             continue
         for node in ast.walk(ast.parse(source)):
-            if isinstance(node, ast.Call) and getattr(node.func, "id", "") == (
-                "ReviewIngestRefusedError"
-            ):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", "") in _REFUSAL_CLASSES:
                 found.append((path, node))
     return found
 
 
 def _summary_of(call: ast.Call) -> ast.expr | None:
-    """The summary argument, however it was passed.
+    """The published-sentence argument, however it was passed.
 
-    Positionally it is the **second** -- ``(grade, summary)`` -- and by keyword it
-    is ``summary=``. Reading only the positional form is not a stylistic
-    limitation: a producer that passed it by keyword would have every
-    interpolation in it go unexamined, and the walk would report the same clean
-    result it reports now.
+    Its position differs per class -- ``ReviewIngestRefusedError(grade, summary)``
+    puts it second, ``ReviewEvidenceError(message, *, remedy)`` first -- so
+    :data:`_REFUSAL_CLASSES` carries the index and the keyword together. Reading
+    only the positional form is not a stylistic limitation: a producer that
+    passed it by keyword would have every interpolation in it go unexamined, and
+    the walk would report the same clean result it reports now.
     """
-    if len(call.args) >= 2:
-        return call.args[1]
+    index, keyword_name = _REFUSAL_CLASSES[getattr(call.func, "id", "")]
+    if len(call.args) > index:
+        return call.args[index]
     for keyword in call.keywords:
-        if keyword.arg == "summary":
+        if keyword.arg == keyword_name:
             return keyword.value
     return None
 
 
-def _interpolations() -> list[tuple[str, str]]:
-    """Every interpolated expression in every refusal summary the package builds.
+def _describe_methods() -> list[tuple[pathlib.Path, ast.FunctionDef]]:
+    """Every ``describe`` method the package defines.
 
-    The population key, stated so it can be attacked: the **summary argument** --
-    the second positional, or ``summary=`` -- of every
-    ``ReviewIngestRefusedError(...)`` call under
-    ``packages/theurian-core/src``. ``detail`` is excluded deliberately: it has a
-    bound of its own, enforced by refusing at construction rather than by its
-    producers.
+    The second half of the population, and a genuinely different shape: a
+    ``describe`` composes a **published** line -- ``cli/review_commands.py``
+    emits three lists of them -- while carrying no remedy and constructing no
+    refusal, so a walk keyed on a refusal class cannot see one.
+    """
+    return [
+        (path, node)
+        for path in _source_files()
+        if path.name in _DESCRIBE_MODULES
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        if isinstance(node, ast.FunctionDef) and node.name == _DESCRIBE_METHOD
+    ]
+
+
+def test_the_describe_scope_covers_every_type_the_command_publishes() -> None:
+    """RED means a fourth published list escapes this file's bound.
+
+    :data:`_DESCRIBE_MODULES` is a scope, and a scope narrows a population --
+    the one thing a derived population must not do by hand. So the derivation is
+    checked: every type whose ``describe()`` ``cli/review_commands.py::_payload``
+    publishes must be **defined** in one of the scoped modules, and each of those
+    modules must actually contain a ``describe``.
+    """
+    published = {"ReviewRecordIdentity", "ReviewSecretFinding", "FetchRefusal", "SecretFinding"}
+    defined: set[str] = set()
+    scoped: set[str] = set()
+    for path, method in _describe_methods():
+        scoped.add(path.name)
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.ClassDef) and any(
+                isinstance(body, ast.FunctionDef) and body.name == _DESCRIBE_METHOD
+                for body in node.body
+            ):
+                defined.add(node.name)
+        assert method.name == _DESCRIBE_METHOD
+
+    assert scoped == _DESCRIBE_MODULES, (
+        f"{sorted(_DESCRIBE_MODULES - scoped)} are scoped in and define no `describe`, so "
+        "the scope names a file that has moved or been renamed."
+    )
+    assert published <= defined, (
+        f"{sorted(published - defined)} are published by `review ingest` as `describe()` "
+        f"lines and are defined outside `_DESCRIBE_MODULES`. Widen the scope -- a "
+        f"published line whose values nothing bounds is a megabyte in somebody's "
+        f"terminal."
+    )
+
+
+def _interpolations() -> list[tuple[str, str]]:
+    """Every interpolated expression in every sentence this package publishes.
+
+    The population key, stated so it can be attacked: the **sentence argument**
+    of every call to a class in :data:`_REFUSAL_CLASSES`, plus every f-string
+    inside a ``describe`` method, under ``packages/theurian-core/src``.
+    ``detail`` is excluded deliberately: it has a bound of its own, enforced by
+    refusing at construction rather than by its producers.
 
     **What this key cannot see, said here rather than discovered later.** It
-    matches the class by *name* at the call, so a qualified call
+    matches a class by *name* at the call, so a qualified call
     (``review_ingest.ReviewIngestRefusedError(...)``) is invisible to it -- that
     one is caught, because
     :func:`test_the_walk_matches_every_call_the_source_text_mentions` counts the
@@ -427,13 +576,19 @@ def _interpolations() -> list[tuple[str, str]]:
     and passed in as a variable: the interpolation happens somewhere this does
     not look, and the variable itself reads as a bare name. The last is why
     :data:`_THIS_PACKAGES_OWN` is a table of *reasons* and not a list of names.
+    And a published line composed in a method **not** called ``describe`` is
+    outside it too -- which is the shape round two met twice, so the key is the
+    thing to widen rather than the exemption list.
     """
     found: list[tuple[str, str]] = []
-    for path, call in _refusal_calls():
-        summary = _summary_of(call)
-        if summary is None:
-            continue
-        for piece in ast.walk(summary):
+    sentences: list[tuple[pathlib.Path, ast.AST]] = [
+        (path, summary)
+        for path, call in _refusal_calls()
+        if (summary := _summary_of(call)) is not None
+    ]
+    sentences += list(_describe_methods())
+    for path, sentence in sentences:
+        for piece in ast.walk(sentence):
             if isinstance(piece, ast.FormattedValue):
                 found.append((f"{path.name}:{piece.lineno}", ast.unparse(piece.value)))
     return found
@@ -481,14 +636,15 @@ def test_the_walk_matches_every_call_the_source_text_mentions() -> None:
         for line in path.read_text(encoding="utf-8").splitlines():
             if not _MENTIONS_THE_REFUSAL.search(line):
                 continue
-            if line.lstrip().startswith("class ReviewIngestRefusedError("):
+            if any(line.lstrip().startswith(f"class {name}(") for name in _REFUSAL_CLASSES):
                 definitions += 1
             else:
                 mentions += 1
 
-    assert definitions == 1, (
-        f"the refusal class is defined {definitions} times, so the subtraction below "
-        "is measuring something other than what it was written for"
+    assert definitions == len(_REFUSAL_CLASSES), (
+        f"{definitions} of the {len(_REFUSAL_CLASSES)} refusal classes are defined in the "
+        "package, so the subtraction below is measuring something other than what it was "
+        "written for"
     )
     assert len(_refusal_calls()) == mentions, (
         f"the source text mentions the refusal as a call {mentions} times and the "

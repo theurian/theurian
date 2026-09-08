@@ -176,7 +176,7 @@ def _case_tag(provider_id: str) -> str:
 
 
 def repository_directory(provider: str, identity: str) -> str:
-    """The directory name one repository's records live under.
+    r"""The directory name one repository's records live under.
 
     Args:
         provider: The provider that answered, ``"github"`` today.
@@ -193,9 +193,19 @@ def repository_directory(provider: str, identity: str) -> str:
         (see the module docstring) and this one does not.
         ``test_two_repositories_never_share_a_directory`` holds both halves.
 
-    The two arguments are joined by a NUL, which neither can contain: a separator
-    that either side could carry would let two different pairs hash to one
-    directory.
+    The two arguments are joined by a NUL. **That is a property of the arguments
+    rather than of this function, and it is stated with what enforces it** (round
+    two): a separator either side could carry would let two different pairs hash
+    to one directory, and nothing here checks for one.
+
+    What holds it is the two call sites. ``provider`` is
+    ``response.PROVIDER_ID``, a module literal. ``identity`` is the repository as
+    the adapter resolved it, and ``security/review_allowlist.py`` has already
+    matched it against the schema's published ``[\w.-]+/[\w.-]+`` under
+    ``re.ASCII`` -- a pattern with no NUL in its character classes -- before any
+    record exists. A third caller passing an unvalidated identity would break the
+    premise silently, which is why it is written as a claim about *callers* and
+    not as one about the string.
     """
     return _hashed(f"{provider}\x00{identity}")
 

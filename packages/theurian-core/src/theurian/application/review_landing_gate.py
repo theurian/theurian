@@ -89,7 +89,7 @@ from theurian.domain.review import (
     ReviewSubmission,
     ReviewThread,
 )
-from theurian.domain.review_ingest import bounded_quote
+from theurian.domain.review_ingest import bounded_echo, bounded_quote
 from theurian.security.content_secrets import MAX_FINDINGS, SecretFinding, scan_text
 from theurian.security.project_config import (
     SecretScanPolicy,
@@ -110,7 +110,31 @@ REDACTED_DISPLAY_NAME: Final = "[redacted]"
 
 #: What a pseudonymised participant id starts with, so a reader meeting one in a
 #: landed record can tell Theurian's substitution from the provider's own id.
-REDACTED_ID_PREFIX: Final = "redacted-"
+#:
+#: **``~`` and not ``-``, because with a hyphen the sentence above was false**
+#: (round two). A GitHub login is alphanumerics and interior hyphens, up to 39
+#: characters, so ``redacted-<16 hex>`` is a login somebody can register -- and
+#: under ``redactParticipantNames: false`` a real account of that shape lands
+#: verbatim beside Theurian's own substitutions with nothing telling a reader
+#: which is which. ``~`` is outside that charset, so the claim is now a property
+#: of the value rather than a hope about who registers what.
+#:
+#: **The value never becomes a filename**, which is the one thing this character
+#: could otherwise have broken: ``~`` is ``layout._CASE_TAG_SEPARATOR``, and a
+#: leaf carrying one is read as ``<id>~<case tag>``. Nothing routes a participant
+#: there -- ``EvidenceRecord.record_key`` is a
+#: :class:`~theurian.domain.review.ReviewEvent`'s number or a submission's or
+#: thread's own ``external_id``, and ``git grep -n 'external_id' --
+#: packages/theurian-core/src/theurian/infrastructure/review_evidence/`` answers
+#: twelve lines on 2026-09-08, eleven of them the codec's field names and the
+#: twelfth that ``record_key``.
+#: ``test_review_landing_gate.py::test_a_pseudonym_never_reaches_a_filename`` is
+#: what fails if a participant id ever does become a path.
+#:
+#: Determinism is untouched: the prefix is a constant and the digest is over the
+#: id alone, so the same person is the same pseudonym in every run and every
+#: process.
+REDACTED_ID_PREFIX: Final = "redacted~"
 
 #: How many hex digits of the digest a pseudonym carries. Sixteen is 64 bits,
 #: which is more than enough to keep one project's participants distinct, and it
@@ -166,14 +190,23 @@ class ReviewRecordIdentity:
     def describe(self) -> str:
         """One line naming this record and nothing that was scanned.
 
-        Both outside values are routed through
+        **All three** outside values are routed, and the number was the one that
+        was not (round two). A repository name and a node id go through
         :func:`~theurian.domain.review_ingest.bounded_quote` -- rendered and then
-        cut, in that order. A repository name and a node id both arrive from a
-        response, either can be a megabyte, and either can carry a control
-        character that reorders the sentence printed around it.
+        cut, in that order -- because either can be a megabyte and either can
+        carry a control character that reorders the sentence printed around it.
+
+        The number goes through :func:`~theurian.domain.review_ingest.bounded_echo`
+        rather than raw, and an integer being "just a number" is exactly the
+        reasoning that left it raw: ``json.loads`` bounds one at the interpreter's
+        4,300-digit limit, this line is published once per report entry, and a
+        500-slot window of them is 2.17 MB of document. ``bounded_echo`` also
+        makes the rendering total, which a raw f-string is not -- ``str()`` of a
+        large enough integer raises, on a path that publishes rather than one that
+        may fail.
         """
         named = "" if self.record_id is None else f" record {bounded_quote(self.record_id)}"
-        return f"{bounded_quote(self.repository)}#{self.pull_request_number}{named}"
+        return f"{bounded_quote(self.repository)}#{bounded_echo(self.pull_request_number)}{named}"
 
 
 @dataclass(frozen=True, slots=True)

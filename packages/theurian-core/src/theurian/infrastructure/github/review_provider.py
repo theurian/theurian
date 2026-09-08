@@ -239,12 +239,20 @@ class GitHubReviewProvider:
         grade decides nothing.** The two populations, each named by where its
         refusal is raised:
 
-        * **One node's own data** -- everything :meth:`_event` raises, which is
-          every field read of that pull request, the merged-guard, and the two
-          single-page connections :meth:`_refuse_a_capped_overflow` caps. Caught
-          per node and answered as a
-          :class:`~theurian.domain.ports.review_provider.SkippedPullRequest`, so
-          the rest of the window still arrives.
+        * **One node's own data** -- every **graded refusal** :meth:`_event`
+          raises, which is every field read of that pull request, the
+          merged-guard, and the two single-page connections
+          :meth:`_refuse_a_capped_overflow` caps. Caught per node and answered as
+          a :class:`~theurian.domain.ports.review_provider.SkippedPullRequest`, so
+          the rest of the window still arrives. **Graded** is the whole of the
+          catch and not a qualifier on it: the clause is ``except
+          ReviewIngestRefusedError``, so anything else :meth:`_event` raises is a
+          fault of *ours* and propagates -- a broken record builder reported as
+          one pathological pull request would be a run answering "here is the
+          remedy for it" when the true answer is that every other record was
+          built by the same broken code.
+          ``test_gh_review_provider.py::test_a_defect_in_this_adapters_own_record_build_halts_the_listing_rather_than_skipping``
+          is what fails when the catch widens.
         * **This listing's own machinery** -- the allowlist and the transport
           check (already passed by the time this is reached), the response
           envelope :meth:`_request` reads, the resolved name and visibility

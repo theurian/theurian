@@ -615,9 +615,13 @@ vanished record keeps its file and its stamp saying which run last saw it.
 Nothing else revisits a landed file, so a record no later run fetches does not
 change. A record the run *does* fetch is refreshed by writing a sibling
 temporary and renaming it over the file, never by truncating the file in place —
-so a run interrupted mid-write costs that refresh and not the copy already on
-disk, which for an artefact with no rebuild is the difference between a stale
-record and none.
+so a run **interrupted** mid-write costs that refresh and not the copy already
+on disk, which for an artefact with no rebuild is the difference between a stale
+record and none. Interrupted is the word: nothing `fsync`s the temporary before
+the rename, so a power loss can still leave the rename without the bytes. That
+residual is recorded in `ReviewEvidenceStore._write_one` rather than closed —
+closing it means measuring two `fsync` calls per record on a path that writes
+one file per thread, per submission and per pull request.
 
 **Removing an ingested comment is a manual operation.** Today it is one step:
 delete that record's file under `.theurian/review/`. The file *is* the record,
@@ -641,9 +645,11 @@ than what is already on disk.
 the login.** The adapter records `external_id` as *node id or login*, so an
 answer that carries no `id` for an author would otherwise put that author's login
 — a name, under a setting turned on to remove names — into the record. Under
-redaction such an id is replaced by `redacted-` and a truncated SHA-256 of it:
+redaction such an id is replaced by `redacted~` and a truncated SHA-256 of it:
 deterministic, so the same person keeps one identity across runs and projects,
-and unsalted for the same reason. Read that as *the login is not in the file*,
+and unsalted for the same reason. The `~` is deliberate — it is outside GitHub's
+login charset, so a landed `redacted~…` is a substitution Theurian wrote and can
+never be an account somebody registered. Read that as *the login is not in the file*,
 not as *the login cannot be recovered*: the input space is small enough to
 enumerate, so anyone holding a landed record and a list of candidate logins can
 test them. Ids GitHub did answer with are kept verbatim.

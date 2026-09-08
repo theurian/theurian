@@ -84,6 +84,40 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `tests/unit/test_review_ingest_service.py` drives that one grade through all
   three and asserts three different outcomes.
 
+  **The landing is a third scope, and it halts.** Writing runs after every fetch,
+  so a refusal there is neither a repository the run could not establish nor a
+  pull request it could not build: it is a record the run already had and could
+  not make durable — a record too large for the reader that has to read it back,
+  a planted artefact where a record or its temporary belongs, a path a case-only
+  spelling difference makes ambiguous, or an answer this build cannot turn into
+  bytes at all. It halts, and it leaves a **partial landing**: the write is
+  atomic per record via `os.replace` and not across a run, so the records written
+  before the refused one are on disk and nothing rolls them back. Every refusal
+  from that seam says so, naming this record as the one that was not written and
+  counting the ones that were — the sentence they carried before said "nothing
+  was written", which sent an operator whose evidence has no rebuild looking for
+  a rollback that never happened.
+
+  **The two record-scope seams catch a refusal *family*; the promise a caller
+  gets is about an *observable*.** Whatever the provider answers with, a run ends
+  with one of the two documents above and never with a traceback. The seams catch
+  `ReviewIngestRefusedError`, so the population that can break that promise is
+  everything *outside* it, and two stages reached it: a pull request whose `url`
+  a partly-errored answer nulled built a record carrying no refusal and detonated
+  two stages later in the anchor, taking the whole window with it; and a lone
+  surrogate anywhere in a record — legal on the wire, undecodable to UTF-8 — left
+  the write as a bare `UnicodeEncodeError`, so the command published no document
+  at all. The `url` now reads through the same refusing helper every other
+  identity field does, so it is one skipped pull request; and the landing seam
+  grades the whole complement of `TheurianError` rather than a list of the two
+  that were found.
+
+  **`ReviewProvider` gains two published shapes.** `list_pull_requests` answers a
+  `PullRequestListing` — `events` beside `skipped` — and each member of the
+  second is a `SkippedPullRequest` carrying the repository, the number and the
+  refusal envelope. A breaking change to the port's return type, which no adapter
+  outside this repository implements yet.
+
   **No advance marker, and that is a decision rather than an omission.** Nothing
   on disk records a pull request as seen, so a skipped record is re-attempted by
   the next run whose window covers it. A marker invented now would have to decide
@@ -139,6 +173,28 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   refuses when a link moved it. A record is also refused before the write when it
   would land larger than `MAX_SOURCE_FILE_BYTES`, which is the cap the reader
   enforces: a file above it is one no later run could read back.
+
+  **One spelling on disk, at every path component and not only at the leaf.** The
+  leaf's case tag keeps two ids' files apart; the *directories* fold too, and
+  `mkdir` and `os.replace` let the filesystem resolve a name rather than
+  comparing one. Measured: a hand-made `Pull-Request/` beside the derived
+  `pull-request/` is one directory to macOS, so a record written into it landed
+  and was then invisible to every later read — a run reporting it as new on every
+  invocation for ever. The rule is now *fold to find, byte-compare to accept*:
+  the reader's walk folds, so a case variant is never invisible, and the writer
+  refuses before it creates a directory or renames into a name the disk already
+  spells otherwise, naming both spellings and the rename that fixes it.
+
+  **A refusal names the artefact it is actually about.** The atomic publish
+  writes to a sibling `<record>.writing` temporary, and the messages around it
+  had stayed with the record: a link planted at the temporary published the
+  record's cure, which instructs deleting a landed evidence file — the one
+  instruction this path must never publish — while the cleanup had already
+  removed the plant. The cleanup now removes only a regular file, so a planted
+  link, pipe or socket survives the refusal that describes it; the temporary's
+  refusals name the temporary; a named pipe or socket there names its shape
+  instead of a permission; and a named pipe at the record's own path is refused
+  again rather than replaced at exit 0.
 - **`security.secretScan` gains a third point: at ingestion, per record, before
   the record becomes a file** (ADR-0030 decision 4, SEC-11, part of
   [#479](https://github.com/theurian/theurian/issues/479)). `block` — the
@@ -201,8 +257,10 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   answers with no `id` would otherwise land under a login — a name, under the
   setting that exists to remove names. Such an id (the adapter's own signature
   for it: `external_id` equals the pre-redaction `display_name`) becomes
-  `redacted-` and a truncated SHA-256 of itself, deterministically, so the record
-  keeps one identity across runs while the login never becomes a file. The same
+  `redacted~` and a truncated SHA-256 of itself, deterministically, so the record
+  keeps one identity across runs while the login never becomes a file. The `~` is
+  outside GitHub's login charset, so a reader meeting one in a landed record knows
+  it is Theurian's substitution rather than an account of that shape. The same
   field is now read by the ingestion secret scan in **both** redaction states,
   which is what makes the two states agree: before this, turning the switch on
   turned a `block` refusal into a landing that published the login under

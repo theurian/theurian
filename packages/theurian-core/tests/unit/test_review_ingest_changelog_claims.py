@@ -8,9 +8,11 @@ say something the tree can be asked about:
   ``{error, remedy}`` when the command refused before any report existed. The
   second shape has no ``clean`` field, so a caller scripting ``--json | jq
   .clean`` reads a refusal as *absent* rather than as *refused*. Until
-  ``da7fe9c5`` the entry read *"1 when any record was withheld or any pull
-  request could not be read"* — one document where there are two — and the
-  command's own ``--help`` was understating it the same way.
+  this branch corrected it the entry read *"1 when any record was withheld or
+  any pull request could not be read"* — one document where there are two — and
+  the command's own ``--help`` was understating it the same way. **The quoted
+  before-text is the citation**: a branch commit's sha is orphaned by the squash
+  that merges it, and a quotation survives.
 - **A pull-request number that cannot be read is repository scope.** It sits in
   the halting enumeration, and the entry states the reason: ``--since`` is
   applied to a number, so a pull request whose number cannot be read is one no
@@ -225,14 +227,20 @@ def test_the_changelog_entry_still_states_the_claim(
     reader has no reason to believe the property holds at all. The change after
     that removes the property, and nothing objects.
 
-    Every fragment held here entered the changelog at ``da7fe9c5``, the commit
-    before this one, and two of the three replaced a sentence that had been
-    wrong rather than merely absent: the exit-code population named one document
-    where there are two, and the containment paragraph called the split "by call
-    site" and put record scope at the per-pull-request fetch alone, which left
-    the listing seam — and with it the number — described nowhere
-    (``59ecc9eb``). Newly corrected wording is the wording most easily lost in
-    the next rewrite, because nobody rereads what was just written.
+    Every fragment held here entered the changelog on **this branch**, and two of
+    the three replaced a sentence that had been wrong rather than merely absent:
+    the exit-code population named one document where there are two, and the
+    containment paragraph called the split *"by call site"* and put record scope
+    at the per-pull-request fetch alone, which left the listing seam — and with
+    it the number — described nowhere. Newly corrected wording is the wording
+    most easily lost in the next rewrite, because nobody rereads what was just
+    written.
+
+    **Each correction is cited by the text it replaced rather than by a commit**
+    (round two). "The commit before this one" is an ambiguous referent as soon as
+    a rebase reorders anything, and a branch sha is orphaned outright by the
+    squash that merges it -- a fresh clone answers ``fatal: bad object`` over a
+    citation that reads like a working one. A quotation survives both.
 
     ``drift`` is unused by this test and is the subject of its positive control
     below; it is carried in the same row so that the claim, the reversion it

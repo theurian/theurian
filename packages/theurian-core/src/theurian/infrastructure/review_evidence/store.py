@@ -617,6 +617,19 @@ class ReviewEvidenceStore:
         selects on :data:`EVIDENCE_SUFFIX`, so an interruption cannot make a
         half-written document read back as a record either.
 
+        **What the rename survives is a process death, not a power loss**, and
+        the difference is recorded here rather than closed (round two). Nothing
+        ``fsync``s the temporary before the rename or the directory after it, so
+        on a crash or a power cut the filesystem may have the rename and not the
+        bytes -- a zero-length or truncated record where the previous copy had
+        been, which is exactly the outcome the rename was adopted to prevent, one
+        failure mode further out. It is recorded rather than fixed because the
+        cure is two ``fsync`` calls *per record* on a path that writes one file
+        per thread, per submission and per pull request, and nobody has measured
+        what that costs on a 500-pull-request window. Closing it means measuring
+        first; claiming it is closed without measuring is what this paragraph
+        exists to stop.
+
         **``O_NOFOLLOW`` now guards the temporary, so the record's own leaf gets
         its own check.** ``rename(2)`` operates on the link rather than through
         it, so a link planted at the record's name is *replaced* and whatever it
@@ -1039,6 +1052,14 @@ def _stored(text: str, relative: str) -> StoredRecord:
     perform; the difference is only ever *reported* differently, which is what
     :class:`_FoldedPathError` is for.
 
+    **Two of these messages name a value out of the file, and both are bounded**
+    (round two). ``formatVersion`` and ``kind`` are the only fields whose *value*
+    is worth printing -- every other message names the field and the type it
+    found -- and each arrives from a document whose only bound is
+    ``MAX_SOURCE_FILE_BYTES``, so an 8 MiB ``kind`` string in a landed file
+    became an 8 MiB refusal. ``ReviewEvidenceError`` has no cut of its own the way
+    ``RefusalEnvelope`` does, so the cut has to happen here.
+
     Raises:
         _FoldedPathError: If the two paths differ by case alone. A ``ValueError``,
             so a caller that does not distinguish it still grades it.
@@ -1054,11 +1075,14 @@ def _stored(text: str, relative: str) -> StoredRecord:
     version = document.get("formatVersion")
     if version != EVIDENCE_FORMAT_VERSION:
         raise ValueError(
-            f"formatVersion is {version!r} and this build writes {EVIDENCE_FORMAT_VERSION}"
+            f"formatVersion is {bounded_quote(version)} and this build writes "
+            f"{EVIDENCE_FORMAT_VERSION}"
         )
     kind_value = document.get("kind")
     if not isinstance(kind_value, str) or kind_value not in _KIND_DIRECTORIES:
-        raise ValueError(f"kind is {kind_value!r}, which is not a record kind this build writes")
+        raise ValueError(
+            f"kind is {bounded_quote(kind_value)}, which is not a record kind this build writes"
+        )
 
     stamp = document.get("lastSeenRun")
     if not isinstance(stamp, dict):

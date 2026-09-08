@@ -634,7 +634,7 @@ both shipped:
   (R-12, decision 3's redaction half). Under
   `providers.review.redactParticipantNames`, a participant whose `external_id`
   equals its pre-redaction `display_name` — the adapter's own signature for the
-  fallback — lands under `redacted-<sha256 prefix>` instead, deterministically,
+  fallback — lands under `redacted~<sha256 prefix>` instead, deterministically,
   so the record keeps a stable identity and the login never becomes a file. A
   node-id-shaped id is kept verbatim, which is what makes the identity graph
   survive the redaction.

@@ -2510,9 +2510,13 @@ async def test_a_defect_in_this_adapters_own_record_build_halts_the_listing_rath
     "one record, one skip, here is the remedy for it" when the true answer is that
     the code which built the other record is broken too.
 
-    The fix-diff mutation batch at 857fc717 recorded this as a survivor: widening
+    This branch's pre-round mutation sweep recorded it as a survivor: widening
     the catch to ``except Exception`` passed the suite, because before this test
-    every driver of that handler arrived at it carrying a refusal.
+    every driver of that handler arrived at it carrying a refusal. The mutation
+    is the citation and the sha is not -- a branch commit is orphaned by the
+    squash that merges it, so a reader who wanted the evidence would get
+    ``fatal: bad object`` where the mutation itself is reproducible from this
+    sentence.
 
     The poison node is **second**, so the pull request above it has already been
     built and appended when the defect fires. What the caller must not receive is
@@ -2564,9 +2568,9 @@ async def test_a_skipped_pull_request_spends_its_slot_in_the_window(
     a run of bad nodes, a ``--limit 2`` would walk pages looking for two it can
     build.
 
-    No existing driver can see the difference, which is why the fix-diff mutation
-    batch at 857fc717 recorded ``len(events) + len(skipped) >= limit`` narrowing
-    to ``len(events) >= limit`` as a survivor:
+    No existing driver can see the difference, which is why this branch's
+    pre-round mutation sweep recorded ``len(events) + len(skipped) >= limit``
+    narrowing to ``len(events) >= limit`` as a survivor:
     ``test_a_read_stops_at_the_limit_rather_than_one_past_it`` plants no skip, so
     the two expressions are the same number there, and every driver that does
     plant one asks for more pull requests than its page carries.

@@ -197,14 +197,22 @@ def oversized_record_cure(source_uri: str) -> str:
     store that imports it. Echoed through
     :func:`~theurian.domain.review_ingest.bounded_echo`, because a source URI is
     a value the provider chose and a refusal must not carry a megabyte of it.
+
+    **"Nothing was written" is what this said until round two**, and it was false
+    of the run: ``store.write`` is atomic per record and not across a call, so the
+    records ahead of this one are on disk. The cure now scopes the claim to the
+    record and leaves the run-level count to the refusal, which is the one place
+    that knows it.
     """
     return (
         f"Look at the review this record came from -- `{bounded_echo(source_uri)}` "
         f"is the pull request, and `gh api graphql --hostname github.com` re-runs the "
-        f"read by hand -- then shorten or split the conversation there. Nothing was "
-        f"written: the size this refuses at is the one the reader enforces, so landing "
-        f"the file would have produced a record every later run refuses to read, and "
-        f"review evidence has no rebuild that could clear it (ADR-0030 decision 3)."
+        f"read by hand -- then shorten or split the conversation there. **This record** "
+        f"was not written -- the refusal that carries this cure says what the run had "
+        f"already landed -- because the size this refuses at is the one the reader "
+        f"enforces: landing the file would have produced a record every later run "
+        f"refuses to read, and review evidence has no rebuild that could clear it "
+        f"(ADR-0030 decision 3)."
     )
 
 
