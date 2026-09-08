@@ -7,9 +7,10 @@ say something the tree can be asked about:
 - **Exit 1 carries either of two documents** — the run document, and
   ``{error, remedy}`` when the command refused before any report existed. The
   second shape has no ``clean`` field, so a caller scripting ``--json | jq
-  .clean`` reads a refusal as *absent* rather than as *refused*. The entry named
-  only one of the two until this branch, and the command's own ``--help`` was
-  understating it the same way.
+  .clean`` reads a refusal as *absent* rather than as *refused*. Until
+  ``da7fe9c5`` the entry read *"1 when any record was withheld or any pull
+  request could not be read"* — one document where there are two — and the
+  command's own ``--help`` was understating it the same way.
 - **A pull-request number that cannot be read is repository scope.** It sits in
   the halting enumeration, and the entry states the reason: ``--since`` is
   applied to a number, so a pull request whose number cannot be read is one no
@@ -224,11 +225,14 @@ def test_the_changelog_entry_still_states_the_claim(
     reader has no reason to believe the property holds at all. The change after
     that removes the property, and nothing objects.
 
-    Three claims are held here and each one has already gone wrong once in this
-    project's history in the direction this row watches: an exit-code population
-    that named one document where there are two, a scope argument that a
-    convenient refactor could quietly invert, and a state a caller had to know a
-    joining rule to see.
+    Every fragment held here entered the changelog at ``da7fe9c5``, the commit
+    before this one, and two of the three replaced a sentence that had been
+    wrong rather than merely absent: the exit-code population named one document
+    where there are two, and the containment paragraph called the split "by call
+    site" and put record scope at the per-pull-request fetch alone, which left
+    the listing seam — and with it the number — described nowhere
+    (``59ecc9eb``). Newly corrected wording is the wording most easily lost in
+    the next rewrite, because nobody rereads what was just written.
 
     ``drift`` is unused by this test and is the subject of its positive control
     below; it is carried in the same row so that the claim, the reversion it
