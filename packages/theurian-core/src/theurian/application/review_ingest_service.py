@@ -81,9 +81,17 @@ at with that key rather than with a list of what raises. Reproduce the surface::
 The first says which classes are inside ``TheurianError`` -- every error in
 ``domain/errors.py`` is, ``DomainError`` and ``SecurityError`` included. The
 second says which of them this path raises, and answers **nothing at all** in
-this module and in the gate: the raises are the evidence store's, and they are
-``ReviewEvidenceError`` (graded, with a cure) on the write side and ``ValueError``
-on the read side, where ``_read_one`` translates them. What neither grep can see
+this module and in the gate: every raise it finds is the evidence package's.
+Those are ``ReviewEvidenceError`` (graded, with a cure) on the write side and,
+on the read side, ``ValueError`` **and five ``InvariantViolationError`` sites**
+-- ``EvidenceRecord``'s three and ``IngestionRun``'s two -- which the sentence
+here omitted. A ``DomainError`` is not a ``ValueError``, so naming only the
+latter understated what the read seam has to grade. Measured against landed
+files: four of the five are reachable and each is published as a graded refusal
+naming the file; the fifth, ``IngestionRun``'s naive-``observed_at`` sentence,
+is not reached at all, because ``_stored``'s own ``_moment`` refuses a naive
+``observedAt`` before the stamp is constructed and publishes its own message
+instead. What neither grep can see
 is the population that actually broke the observable, because its members are
 not ``raise`` statements at all -- they are calls that are not total over their
 own arguments, and ``ReviewEvidenceStore.write``'s own docstring carries the

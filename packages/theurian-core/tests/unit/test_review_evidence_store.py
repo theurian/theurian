@@ -1279,6 +1279,58 @@ def test_a_landed_provider_name_is_bounded_in_the_identity_refusal(tmp_path: Pat
     )
 
 
+@pytest.mark.parametrize(
+    ("digits", "reads_back"),
+    [(401, True), (4_301, False)],
+    ids=["401-digits", "4301-digits"],
+)
+def test_what_bounds_a_line_number_read_out_of_a_landed_file(
+    tmp_path: Path, digits: int, reads_back: bool
+) -> None:
+    """The read side's bound on ``lineStart``, recorded rather than assumed.
+
+    A verdict pass expected a 401-digit line number to be refused as not a
+    record. It is not: ``SourceAnchor``'s three guards are about ordering and
+    1-basedness, not magnitude, so it reads back at whatever size the file
+    carries. What does bound it is one level down -- ``json.loads`` applies the
+    interpreter's own 4,300-digit limit while parsing, and the ``ValueError``
+    that raises is graded by ``_read_one`` into a refusal naming the file.
+
+    Both rows are here because either alone would be a claim about the wrong
+    thing: the first says the domain does not bound this, the second says
+    something does and where. Nothing this slice publishes renders the value --
+    ``landed_keys`` reads a path and a repository -- so the bound that matters
+    today is the one that keeps ``str()`` total; slice 3's store is where the
+    magnitude becomes a question of its own.
+    """
+    store = _store(tmp_path)
+    (landed,) = store.write([_thread()], run=RUN_ONE)
+    path = _review_root(tmp_path) / landed
+    document = json.loads(path.read_text(encoding="utf-8"))
+    anchor = {**document["sourceAnchor"], "lineStart": None, "lineEnd": None}
+    path.write_text(
+        json.dumps({**document, "sourceAnchor": anchor}).replace(
+            '"lineStart": null', f'"lineStart": {"1" + "0" * (digits - 1)}'
+        ),
+        encoding="utf-8",
+    )
+
+    if reads_back:
+        (stored,) = store.read_all()
+        assert stored.record.anchor.line_start == 10 ** (digits - 1), (
+            "a line number the domain does not bound came back changed"
+        )
+        return
+
+    with pytest.raises(ReviewEvidenceError) as raised:
+        store.read_all()
+
+    assert landed in str(raised.value)
+    assert "4300 digits" in str(raised.value), (
+        f"the refusal does not name the limit that refused it: {raised.value}"
+    )
+
+
 def test_a_landed_file_whose_bytes_are_not_utf8_is_graded_and_names_the_file(
     tmp_path: Path,
 ) -> None:

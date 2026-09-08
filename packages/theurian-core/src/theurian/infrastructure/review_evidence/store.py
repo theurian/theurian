@@ -386,10 +386,15 @@ class ReviewEvidenceStore:
             git grep -n -P '\\.encode\\(|json\\.dumps\\(|os\\.replace\\(' -- \\
                 packages/theurian-core/src/theurian/infrastructure/review_evidence/
 
-            layout.py:134:    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
-            store.py:389:        landing = len(document.encode("utf-8"))
-            store.py:441:        os.replace(writing, target)  # noqa: PTH105 ...
-            store.py:590:    return json.dumps(document, indent=2, ensure_ascii=False) + "\\n"
+        It answers **six** lines: the four calls, and two inside this
+        paragraph -- the pattern is line-shaped and cannot tell prose from code,
+        so a paragraph naming the calls matches itself. Its output used to be
+        pasted here whole, which made the answer eight and put four line numbers
+        in a docstring: they read 134, 389, 441 and 590, and every one of them
+        had since moved. So the *call* is what is recorded and never the line.
+        ``layout._hashed`` writes ``value.encode("utf-8")``, :meth:`_write_one`
+        writes ``document.encode("utf-8")``, :meth:`_publish` renames through
+        ``os.replace``, and :func:`_document` serialises through ``json.dumps``.
 
         ``json.loads`` decodes ``\\ud800`` into a lone surrogate, which UTF-8
         cannot encode: one anywhere in a record -- a thread id, a comment body --

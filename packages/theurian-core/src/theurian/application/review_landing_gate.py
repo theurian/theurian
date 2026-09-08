@@ -126,8 +126,9 @@ REDACTED_DISPLAY_NAME: Final = "[redacted]"
 #: :class:`~theurian.domain.review.ReviewEvent`'s number or a submission's or
 #: thread's own ``external_id``, and ``git grep -n 'external_id' --
 #: packages/theurian-core/src/theurian/infrastructure/review_evidence/`` answers
-#: twelve lines on 2026-09-08, eleven of them the codec's field names and the
-#: twelfth that ``record_key``.
+#: **eleven** lines on 2026-09-08, ten of them the codec's field names and the
+#: eleventh that ``record_key``. It said twelve and eleven, which was a count
+#: taken by reading rather than by running the key written beside it.
 #: ``test_review_landing_gate.py::test_a_pseudonym_never_reaches_a_filename`` is
 #: what fails if a participant id ever does become a path.
 #:

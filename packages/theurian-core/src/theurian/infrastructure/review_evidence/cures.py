@@ -57,11 +57,20 @@ COLLISION_CURE: Final = (
     "returned."
 )
 
-#: What a reader does about a directory it cannot write or list. The write is the
-#: last step of an ingestion run, so the run is what gets repeated.
+#: What a reader does about a path under the review directory the filesystem
+#: refused. The write is the last step of an ingestion run, so the run is what
+#: gets repeated.
+#:
+#: **"the directory the message names" is what this said, and two of its three
+#: sites name a file.** ``_relative_paths`` publishes it over a directory that
+#: could not be listed; ``_temporary_refusal``'s errno fallback names
+#: ``<record>.writing`` and :meth:`~..store.ReviewEvidenceStore._write_one`'s
+#: rename arm names the record -- and for either of those the mode to look at is
+#: the *parent's*. The sentence now covers both rather than describing one.
 UNWRITABLE_CURE: Final = (
-    "Make `.theurian/review/` and the directory the message names readable and "
-    "writable -- `ls -ld .theurian/review` prints the mode and the owner -- then run "
+    "Make `.theurian/review/` readable and writable, and the same for the path the "
+    "message names -- if that path is a file, it is the directory holding it whose "
+    "mode decides. `ls -ld .theurian/review` prints the mode and the owner. Then run "
     "the ingestion again."
 )
 
