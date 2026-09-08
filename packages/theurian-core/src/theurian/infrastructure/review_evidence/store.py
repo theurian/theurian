@@ -511,6 +511,37 @@ class ReviewEvidenceStore:
         repository the file itself claims**, because the directory is a hash and
         says neither.
 
+        **This is the read seam, and it is keyed the way :meth:`write` is: on the
+        complement of ``TheurianError``, not on a list of families.** The two
+        arms below used to name ``(ValueError, DomainError)`` and
+        ``(OSError, SecurityError)``, and a ``RecursionError`` -- a
+        ``RuntimeError``, so outside both lists *and* outside the CLI's own
+        ``except TheurianError`` -- came out of ``json.loads`` on a landed file of
+        20,000 nested arrays and ended ``review ingest`` with a traceback and no
+        document (measured). :meth:`_ungraded_read` is that key.
+
+        The **class** is *an exception arm keyed on an enumeration rather than on
+        the complement*, and its population was searched rather than reasoned
+        about. The key, over this package and the two application modules and the
+        command that consume it::
+
+            git grep -n -P '^\\s+except ' -- \\
+                packages/theurian-core/src/theurian/infrastructure/review_evidence/ \\
+                packages/theurian-core/src/theurian/application/review_ingest_service.py \\
+                packages/theurian-core/src/theurian/application/review_landing_gate.py \\
+                packages/theurian-core/src/theurian/cli/review_commands.py
+
+        That key is line-shaped, so this docstring's own mention of it is a
+        self-hit and ``layout.py`` carries one more in prose; the count is
+        therefore not pasted here. What is pasted is the *verdict per handler*,
+        and it is pasted where it can fail:
+        ``tests/unit/test_review_evidence_exception_keys.py`` re-runs the same
+        population as an AST walk and reddens on a handler with no recorded
+        verdict. Two members of that search were fixed rather than justified --
+        this seam, and ``cures.repository_named_in``, whose parse is the failed
+        one **repeated inside the arm grading it**, so the same plant raised a
+        second ``RecursionError`` out of the refusal being composed.
+
         Raises:
             ReviewEvidenceError: If a file under the review directory is not a
                 record this build can read: the wrong format version, not JSON, a
@@ -519,12 +550,18 @@ class ReviewEvidenceStore:
                 identifier of the wrong form), a record whose own identity does
                 not match where it sits, a file above the reader's own size limit
                 or one that is not a regular file, or a file the filesystem
-                refuses to hand over. Refused rather than skipped -- a run that
-                ignored a file it could not parse would report a corpus smaller
-                than the one on disk and give no reason.
+                refuses to hand over, a document nested past the decoder's own
+                recursion limit, **or a fault this build does not recognise at
+                all** -- the last named by class rather than by message, since
+                nothing graded it and so nothing bounded its text. Refused rather
+                than skipped -- a run that ignored a file it could not parse would
+                report a corpus smaller than the one on disk and give no reason.
             PathEscapeError: If a file's path leaves the review directory. Passed
                 through rather than translated: it carries its own remedy about
                 *where the path points*, which is not a fault in the bytes.
+                :meth:`_read_one`'s ``except TheurianError`` arm re-raises on the
+                same grounds, after the ``SecurityError`` and ``DomainError`` arms
+                above it have taken their own members.
         """
         return tuple(self._read_one(relative) for relative in sorted(self._relative_paths()))
 
@@ -920,10 +957,21 @@ class ReviewEvidenceStore:
         raises ``UnicodeDecodeError``, which *is* a ``ValueError``, and listing it
         would suggest the tuple were an enumeration of members.
 
-        ``PathEscapeError`` is the one member deliberately re-raised. It already
-        carries its own remedy, and it is not a fault in the bytes at all:
-        re-labelling a containment refusal as an unreadable record would send
-        the operator to inspect a file whose problem is where it points.
+        **Three families are still three names, and a name is an enumeration.**
+        Each block therefore ends on the pair :meth:`write` ends on: a
+        ``TheurianError`` arm that re-raises what something else already graded,
+        and an ``Exception`` arm -- :meth:`_ungraded_read` -- that is the
+        complement carrying the observable. The measured escape was a
+        ``RecursionError`` from ``json.loads``, which none of the three names
+        covers; the arms above buy the better *sentence* for their own members,
+        and the complement is what buys the document.
+
+        ``PathEscapeError`` is named ahead of them all rather than left to the
+        ``TheurianError`` arm, because it must not be re-labelled by the
+        ``SecurityError`` clause it would otherwise reach first: it carries its
+        own remedy, and it is not a fault in the bytes at all, so grading it as
+        an unreadable record would send the operator to inspect a file whose
+        problem is where it points.
 
         **Every message names the repository the file claims**, or says it could
         not be read. The path alone is a hash of provider and repository, so on a
@@ -957,6 +1005,13 @@ class ReviewEvidenceStore:
                 f"directory and this build refused to read it: {exc}",
                 remedy=UNREADABLE_CURE,
             ) from exc
+        except TheurianError:
+            # A graded refusal that is not this store's, re-raised whole for the
+            # reason `PathEscapeError` above is: it carries its own remedy about
+            # something other than these bytes.
+            raise
+        except Exception as exc:
+            raise self._ungraded_read(relative, exc, None) from exc
 
         try:
             return _stored(raw.decode("utf-8"), relative)
@@ -974,6 +1029,46 @@ class ReviewEvidenceStore:
                 f"record this build can read: {exc}",
                 remedy=UNREADABLE_CURE,
             ) from exc
+        except TheurianError:
+            raise
+        except Exception as exc:
+            raise self._ungraded_read(relative, exc, raw) from exc
+
+    def _ungraded_read(
+        self, relative: str, exc: Exception, raw: bytes | None
+    ) -> ReviewEvidenceError:
+        """Grade whatever a read of one landed file raised that nothing else did.
+
+        :meth:`_landing_refusal`'s twin on the read side, and it exists for the
+        same reason: the CLI's catch is ``except TheurianError``, so the
+        population that ends a run with no document at all is precisely **the
+        complement of that class**, and an arm keyed on a list of families cannot
+        be that population. The measured member was a ``RecursionError`` out of
+        ``json.loads`` -- a ``RuntimeError``, outside both ``ValueError`` and
+        ``TheurianError`` -- but the arm is deliberately not written for it:
+        :func:`_stored` catches that one at its own call for the *cure*, and this
+        stays the key.
+
+        **The class name and never the exception's own text**, exactly as
+        :meth:`_landing_refusal` argues: what reaches here was not graded by
+        anything, so nothing bounds its ``str()`` and a landed file is up to
+        ``MAX_SOURCE_FILE_BYTES`` of material this store may not publish.
+
+        ``raw`` is the file's bytes where the read got that far and ``None``
+        where it did not -- the bytes rather than a rendered clause, so the one
+        interpolation here is an expression
+        ``tests/unit/test_review_ingest_refusals.py`` can hold a *shape* against.
+        Handing this method the clause instead put a bare ``repository`` name in
+        front of that walk, which is the shape it caught a caller's ``limit``
+        under.
+        """
+        return ReviewEvidenceError(
+            f"`{relative}`, "
+            f"{UNNAMED_REPOSITORY if raw is None else repository_named_in(raw)}, "
+            f"was listed under the review directory and reading it back failed in a "
+            f"way this build does not recognise: {type(exc).__name__}.",
+            remedy=UNREADABLE_CURE,
+        )
 
 
 def _payload_to_json(payload: EvidencePayload) -> dict[str, Any]:
@@ -1063,11 +1158,25 @@ def _stored(text: str, relative: str) -> StoredRecord:
     Raises:
         _FoldedPathError: If the two paths differ by case alone. A ``ValueError``,
             so a caller that does not distinguish it still grades it.
-        ValueError: For every other way the document can be the wrong shape. The
-            caller turns these into a refusal naming the file, so no message here
-            repeats the path.
+        ValueError: For every other way the document can be the wrong shape,
+            **including a document nested past the decoder's own recursion
+            limit**. The caller turns these into a refusal naming the file, so no
+            message here repeats the path.
     """
-    parsed = json.loads(text)
+    try:
+        parsed = json.loads(text)
+    except RecursionError as exc:
+        # `RecursionError` is a `RuntimeError` and so outside both `ValueError`
+        # and `TheurianError`: a landed file of 20,000 nested arrays left
+        # `read_all` uncaught and ended `review ingest` with a traceback and no
+        # document at all (measured). Raised as the `ValueError` every other
+        # shape fault here already is, which is the shape
+        # `security/yaml_loading.py` and `parsers/openapi.py` already chose for
+        # the identical call -- the caller's own key is the complement of
+        # `TheurianError` now, so this arm buys the *cure* rather than the
+        # grading: without it the refusal names a class instead of saying the
+        # document is unreadably deep.
+        raise ValueError("the document is nested too deeply to parse") from exc
     if not isinstance(parsed, dict):
         raise ValueError(f"the document is a {type(parsed).__name__}, not an object")
     document: dict[str, Any] = parsed

@@ -1146,6 +1146,42 @@ def test_a_file_too_broken_to_name_its_repository_says_so_rather_than_guessing(
     assert "repository could not be read" in str(raised.value)
 
 
+def test_a_landed_file_nested_past_the_decoder_is_graded_and_names_the_file(
+    tmp_path: Path,
+) -> None:
+    """RED means one landed file ends every repository's ingest with no document.
+
+    ``json.loads`` answers a document nested past the decoder's own limit with
+    ``RecursionError`` -- a ``RuntimeError`` subclass, so outside ``_read_one``'s
+    ``(ValueError, DomainError)`` **and** outside the ``except TheurianError``
+    ``review ingest`` publishes through. Measured before the fix: this plant left
+    ``read_all`` as a bare ``RecursionError``.
+
+    The second half is what a fix at ``_stored`` alone does not buy.
+    ``repository_named_in`` re-parses the same bytes to say which repository the
+    file claims, from **inside** the arm composing this refusal, so it met the
+    identical limit a second time. Asserting the refusal carries the
+    could-not-be-read clause is what drives that: an ungraded escape there never
+    reaches this line.
+    """
+    store = _store(tmp_path)
+    (landed,) = store.write([_event(number=42)], run=RUN_ONE)
+    (_review_root(tmp_path) / landed).write_text("[" * 20_000 + "]" * 20_000, encoding="utf-8")
+
+    with pytest.raises(ReviewEvidenceError) as raised:
+        store.read_all()
+
+    assert landed in str(raised.value)
+    assert "nested too deeply" in str(raised.value), (
+        f"the refusal names the fault by class rather than by cause: {raised.value}"
+    )
+    assert "repository could not be read" in str(raised.value), (
+        "the repository clause is missing, so composing it raised rather than "
+        "answering -- the second face of the same limit"
+    )
+    assert "git log -p" in raised.value.remedy
+
+
 def test_a_landed_file_whose_bytes_are_not_utf8_is_graded_and_names_the_file(
     tmp_path: Path,
 ) -> None:

@@ -144,8 +144,9 @@ def _hashed(value: str) -> str:
     is not something production does: ``git grep -n 'record_leaf(\\|record_path('
     -- packages/theurian-core/src`` answers five lines, all inside this module
     except ``EvidenceRecord.relative_path``, whose own two call sites are that
-    seam and ``_stored`` -- and ``_stored``'s caller catches ``ValueError``,
-    which a ``UnicodeEncodeError`` is.
+    seam and ``_stored`` -- and ``_stored``'s caller ends on that same key, so a
+    ``UnicodeEncodeError`` raised here on the read side is graded whether or not
+    it is the ``ValueError`` it happens to be.
     """
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
     return f"{_HASHED_PREFIX}{digest}"

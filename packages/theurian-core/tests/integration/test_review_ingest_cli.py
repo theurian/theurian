@@ -601,6 +601,44 @@ def test_an_escaping_review_directory_is_refused_before_anything_is_fetched(
     assert list(outside.iterdir()) == []
 
 
+def test_a_landed_file_nested_past_the_decoder_publishes_a_document(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RED means one file under ``.theurian/review/`` ends the run with a traceback.
+
+    The observable ``application/review_ingest_service.py`` states is that a run
+    publishes one of two documents and never a traceback, and it rests on the
+    CLI's ``except TheurianError``. ``json.loads`` answers a document nested past
+    the decoder's own limit with ``RecursionError`` -- a ``RuntimeError``, so
+    outside that class -- and this plant walked through the read seam's
+    ``(ValueError, DomainError)`` arm and out of the command.
+
+    ``catch_exceptions=True`` and a hand-rolled invocation rather than
+    :func:`_invoke`: the claim is about what an operator's terminal receives, and
+    an escape re-raised into the test reads as a broken test rather than as the
+    product publishing nothing.
+    """
+    review = project / ".theurian" / "review" / "sha256-decoy" / "pull-request"
+    review.mkdir(parents=True)
+    (review / "42.json").write_text("[" * 20_000 + "]" * 20_000, encoding="utf-8")
+    _settings(project)
+    provider = _canned((_event(42),))
+    _install(monkeypatch, provider)
+
+    result = runner.invoke(app, ["review", "ingest", REPOSITORY, "--json"], catch_exceptions=True)
+    published = result.stdout + result.stderr
+
+    assert "Traceback (most recent call last)" not in published, (
+        f"the run published a traceback rather than a document:\n{published}"
+    )
+    payload = json.loads(result.stdout or result.stderr)
+    assert result.exit_code == 1
+    assert set(payload) == {"error", "remedy"}, f"the run published {sorted(payload)}"
+    assert "42.json" in payload["error"], f"the refusal names no file: {payload['error']}"
+    assert payload["remedy"]
+    assert provider.reads == [], "the corpus is read before a provider call, and was not"
+
+
 def test_an_unloadable_migration_is_reported_as_a_document(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

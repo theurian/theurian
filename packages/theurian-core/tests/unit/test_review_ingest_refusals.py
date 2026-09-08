@@ -397,6 +397,12 @@ _EXEMPT_EXPRESSIONS: Final[dict[str, str]] = {
     "_partial_landing(len(landed))": "this store's own sentence over its own count",
     "_partial_landing(landed)": "this store's own sentence over its own count",
     "repository_named_in(raw)": "routes the repository it reads through `bounded_echo`",
+    "UNNAMED_REPOSITORY if raw is None else repository_named_in(raw)": (
+        "the same two members as a ternary, on the read arm that has the file's bytes "
+        "only when the read got that far. Exempt as this whole expression rather than "
+        "as a `repository` parameter: a bare name would let any later caller pass an "
+        "unrouted clause, which is the shape a caller's `limit` sat unnoticed under"
+    ),
     "exc.derived": "a path this build derived, carried on `_FoldedPathError`",
     "exc.strerror or 'the read was refused'": (
         "the operating system's own short message, or this module's literal"

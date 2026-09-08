@@ -195,6 +195,22 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   refusals name the temporary; a named pipe or socket there names its shape
   instead of a permission; and a named pipe at the record's own path is refused
   again rather than replaced at exit 0.
+
+  **Both store seams are keyed on the complement of `TheurianError`, not on a
+  list of families.** The write seam already was; the read seam named
+  `(ValueError, DomainError)` and met a third thing — `json.loads` answers a
+  document nested past its own decoder limit with `RecursionError`, a
+  `RuntimeError` subclass outside both that tuple and the `except TheurianError`
+  the command publishes through, so one landed file of 20,000 nested arrays
+  ended `review ingest` with a traceback and no document at all. The parse now
+  raises the `ValueError` its other shape faults already are — the shape
+  `security/yaml_loading.py` and the OpenAPI parser already use for the identical
+  call — and each read block ends on the complement, so a fault outside every
+  family is graded by class rather than escaping. A second face sat *inside* the
+  handler: the clause naming which repository a failing file claims re-parses the
+  same bytes, so composing the refusal met the identical limit again.
+  `tests/unit/test_review_evidence_exception_keys.py` walks this path's exception
+  arms as syntax and reddens on one with no recorded verdict.
 - **`security.secretScan` gains a third point: at ingestion, per record, before
   the record becomes a file** (ADR-0030 decision 4, SEC-11, part of
   [#479](https://github.com/theurian/theurian/issues/479)). `block` — the

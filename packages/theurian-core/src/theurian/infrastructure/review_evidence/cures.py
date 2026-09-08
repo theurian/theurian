@@ -256,10 +256,18 @@ def repository_named_in(raw: bytes) -> str:
     the ones where nothing could read it (bytes that are not UTF-8, a document
     that is not JSON, a file too large or too irregular to open at all), and the
     caller says so rather than guessing.
+
+    **This parse is the one that already failed, run again inside the handler
+    grading it**, which is why ``RecursionError`` is caught here and not only at
+    ``store._stored``'s own ``json.loads``. Both calls decode the same bytes at
+    the same depth, so a landed file of 20,000 nested arrays raised a second
+    ``RecursionError`` out of the arm that was composing the refusal about the
+    first -- measured, and the reason a fix applied only at ``_stored`` leaves
+    the run publishing nothing.
     """
     try:
         parsed = json.loads(raw.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError, RecursionError):
         return UNNAMED_REPOSITORY
     if not isinstance(parsed, dict):
         return UNNAMED_REPOSITORY

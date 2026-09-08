@@ -85,10 +85,15 @@ this module and in the gate: the raises are the evidence store's, and they are
 ``ReviewEvidenceError`` (graded, with a cure) on the write side and ``ValueError``
 on the read side, where ``_read_one`` translates them. What neither grep can see
 is the population that actually broke the observable, because its members are
-not ``raise`` statements at all -- they are calls that are not total over a
-Python ``str``, and ``ReviewEvidenceStore.write``'s own docstring carries the
-third key that finds those. That is why the guard there is keyed on the
-complement of ``TheurianError`` and not on any of these lists.
+not ``raise`` statements at all -- they are calls that are not total over their
+own arguments, and ``ReviewEvidenceStore.write``'s own docstring carries the
+third key that finds those. That is why **both** store seams are keyed on the
+complement of ``TheurianError`` and not on any of these lists: the read seam was
+keyed on ``(ValueError, DomainError)`` until a ``RecursionError`` out of
+``json.loads`` on a 20,000-deep landed file walked through the gap and ended a
+run with no document at all, and
+``tests/unit/test_review_evidence_exception_keys.py`` now holds a verdict for
+every handler in this path.
 
 Three stages, and each is closed by *its own* mechanism rather than by this
 paragraph:
