@@ -1,15 +1,19 @@
 """SEC-10's allowlist, driven with synthetic input (ADR-0030 decision 2).
 
-Four properties, each with its own test because each can break on its own: the
-pattern this module enforces is the one the schema publishes; a repository the
-list does not name is refused; a case difference still matches; and a `.`/`..`
-segment is refused on either side of the slash.
+Five properties, each with its own test because each can break on its own: the
+pattern this module enforces is the one the schema publishes; so is the length
+bound it applies before the pattern runs; a repository the list does not name is
+refused; a case difference still matches; and a `.`/`..` segment is refused on
+either side of the slash.
 
-**The pattern pin is a derivation, not a transcription.** Nothing validates
+**Both contract pins are derivations, not transcriptions.** Nothing validates
 ``.theurian/config.yaml`` against ``project-config.schema.json`` at run time, so
 a schema that rejects ``..`` and a reader that accepts it would leave the
-tightening inert -- documentation with no enforcement behind it. The test reads
-the schema file.
+tightening inert -- documentation with no enforcement behind it. The same holds
+in the other direction for the length bound, which is where the two sides
+actually disagreed: the reader refused at 200 characters and the schema
+published no ``maxLength`` at all, so an entry the contract accepted was thrown
+out unread. Both tests read the schema file.
 
 That "no process was spawned" is the *shape* of this refusal is held one layer
 up, where a process could be spawned at all:
@@ -127,6 +131,32 @@ def test_the_pattern_this_module_enforces_is_the_one_the_schema_publishes() -> N
         "Nothing validates a project's config.yaml against the schema at run time, so "
         "a pattern tightened in only one of the two places enforces nothing. Move both "
         "in the same change."
+    )
+
+
+def test_the_length_bound_this_module_enforces_is_the_one_the_schema_publishes() -> None:
+    """RED means a schema-valid entry can still be refused unread on its length.
+
+    The pattern was held equal to the schema's from the start; the *length* bound
+    was not, and the asymmetry was real: ``is_well_formed`` refuses at
+    :data:`MAX_REPOSITORY_CHARS` before the pattern runs, while the published
+    ``items`` had no ``maxLength`` at all -- so a 4,000-character entry satisfied
+    the contract and was rejected by the reader that claims to enforce it. Both
+    halves of that claim are read out of their own sources here, so a bound moved
+    on one side alone fails rather than drifting.
+    """
+    schema = json.loads(PROJECT_CONFIG_SCHEMA.read_text(encoding="utf-8"))
+    items = schema["properties"]["providers"]["properties"]["review"]["properties"]["repositories"][
+        "items"
+    ]
+
+    assert items.get("maxLength") == MAX_REPOSITORY_CHARS, (
+        f"the schema publishes maxLength {items.get('maxLength')!r} and this module "
+        f"refuses a name past {MAX_REPOSITORY_CHARS} characters.\n\n"
+        "Nothing validates a project's config.yaml against the schema at run time, so "
+        "the two bounds enforce nothing together unless they are the same number: a "
+        "schema-valid entry that the reader refuses on length is a line an operator "
+        "reads in their own file that has no effect. Move both in the same change."
     )
 
 

@@ -212,10 +212,11 @@ def _cites_said_to_be_closed(annotation: str, required: tuple[str, ...]) -> dict
 #: ``repositories`` used to read nowhere, so its annotation had to say so; the
 #: allowlist is read and enforced now, so what a copying reader must not
 #: over-read is the **reach**: it refuses before a spawn, an empty list allows
-#: nothing, and no command exposes review ingestion yet -- so listing a
-#: repository here starts nothing on its own. ``secretScan`` has had that shape
-#: since ADR-0027 decision 3 -- the approval gate, where it refuses, and the
-#: index build, where it only signals.
+#: nothing, and the one command that reads it is ``theurian review ingest`` -- so
+#: listing a repository here starts nothing until that command runs.
+#: ``secretScan`` reaches three surfaces since ADR-0030 slice 2 -- the approval
+#: gate and review ingestion, where it refuses, and the index build, where it
+#: only signals.
 #:
 #: ``repositories``' four sentences are one claim in four parts, and the last two
 #: are there because the annotation has been wrong in both directions. It said
@@ -225,8 +226,10 @@ def _cites_said_to_be_closed(annotation: str, required: tuple[str, ...]) -> dict
 #: (``security/review_allowlist.py`` is what refuses), **when the refusal
 #: happens** -- before a process is spawned, which is the property that makes it
 #: a control rather than a filter -- **that an empty list allows nothing**, and
-#: **that no command reaches it yet**, which is the sentence that keeps a reader
-#: from believing they have turned something on.
+#: **which command reads it**, which is the sentence that keeps a reader from
+#: believing that listing a repository has turned something on. That last
+#: fragment moved with ADR-0030 slice 2: it used to say no command reached the
+#: path at all, and ``theurian review ingest`` is what falsified it.
 #:
 #: ``secretScan``'s third sentence is the same requirement on the other key, and
 #: it has now moved twice for the same reason (#428, then #329). It required
@@ -255,7 +258,7 @@ ANNOTATED_KEYS: tuple[tuple[str, Any, tuple[str, ...]], ...] = (
             "`security/review_allowlist.py`",
             "before the process that reaches GitHub is started",
             "an empty or absent list allows nothing",
-            "No command exposes review ingestion yet",
+            "`theurian review ingest` is the command that reads it",
         ),
     ),
 )
@@ -272,8 +275,12 @@ def test_a_key_the_example_sets_still_states_how_far_it_reaches(
     `providers.review.repositories` now selects a real control (ADR-0030 decision
     2): `security/review_allowlist.py` refuses a repository the list does not
     name, before any process is spawned. A reader who copies the key and believes
-    they have turned review ingestion on is wrong -- no command reaches it yet --
-    and the annotation is what tells them. The reader's *module* is required
+    they have turned review ingestion on is still wrong -- ADR-0030 slice 2 gave
+    that path a command, `theurian review ingest`, and listing a repository does
+    not run it -- and the annotation is what tells them. The required fragment
+    moved with the slice, from "no command exposes review ingestion yet" to which
+    command reads the key, because the over-reading is unchanged while the fact
+    under it is not. The reader's *module* is required
     because a sentence naming only the behaviour leaves nowhere to check it, and
     the *before a spawn* clause is required because that is the difference
     between a control and a filter: an allowlist consulted after the fetch would
@@ -356,13 +363,18 @@ def test_a_key_the_example_sets_still_states_how_far_it_reaches(
             f"the annotation above `{key}` in {CONFIG.relative_to(REPO_ROOT)} no "
             f"longer says {sentence!r}. It reads:\n  {annotation!r}\n\n"
             f"A reader copies this file, and without that sentence `{key}` reads "
-            f"as something it is not. `secretScan` is in force at `theurian "
-            f"propose accept` and nowhere else, with a best-effort detector "
-            f"(#198); `providers.review.repositories` is read by nothing, though "
-            f"the file it sits in is read for `security.secretScan` -- say the "
-            f"key, not the file, or the annotation is the false claim #426 "
-            f"corrected -- and #429 owns the allowlist against the first "
-            f"external fetch path. `tests/unit/test_config_key_call_sites.py` is the pin that "
+            f"as something it is not. `security.secretScan` is in force at three "
+            f"points -- it refuses at `theurian propose accept` (#198) and at "
+            f"`theurian review ingest` (ADR-0030 decision 4) and only reports at "
+            f"`theurian index build` (#329) -- with a best-effort detector; "
+            f"`providers.review.repositories` is read by "
+            f"`security/project_config.py` and enforced by "
+            f"`security/review_allowlist.py` before any process is spawned, and "
+            f"`theurian review ingest` is the command that reaches it. Say the "
+            f"key and the command, not the file: the first way of getting this "
+            f"wrong is the false claim #426 corrected, and the second is telling "
+            f"a reader that listing a repository has turned something on. "
+            f"`tests/unit/test_config_key_call_sites.py` is the pin that "
             f"records which keys have readers, and the schema descriptions are "
             f"what change with them."
         )

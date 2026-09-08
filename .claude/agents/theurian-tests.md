@@ -21,7 +21,17 @@ subject being broken, the test is wrong, not the mutation.
 
 **Mutation runs get their own tree.** `tools/mutate.py` copies the checkout;
 never break-and-revert inside a tree another agent is editing, and never clean a
-mutation up with `git checkout --` in a tree holding uncommitted work.
+mutation up with `git checkout --` in a tree holding uncommitted work — restore
+a perturbed file by COPY (`cp` to scratch, `cp` back) whenever it carries
+uncommitted edits; the checkout discards them (CLAUDE.md's dev-machine section;
+PR #596's fix arc hit it live).
+
+**`tools/mutate.py`'s verdict path IS a full-suite run**, control included —
+never start it inside an assignment: full-suite and batch runs are serialized
+across lanes by the orchestrator. The in-assignment mode is `--prepare-tree`
+plus a scoped `pytest` selection in your own clone (with
+`git remote set-branches --add origin main && git fetch origin main` first, or
+the control is red). PR #596's arc measured the cost of this twice.
 
 Watch for assertions that hold regardless of the implementation:
 
@@ -90,3 +100,13 @@ report. Report: what you added, which mutation you used to prove each new test
 can fail, and any coverage gap you found but did not close.
 
 Report in the caller's language.
+
+## A costless-removal claim is a shape claim
+
+A cure/remedy that says removal "loses nothing" may only render for shapes
+holding no bytes and no names (pipe/socket/device — never a directory or a
+regular file). Test it REFLECTIVELY: render every cure over every shape and
+assert the claim appears only under the guard (PR #596's
+`test_no_cure_claims_a_costless_removal_outside_the_shape_guard` is the
+pattern) — a table-driven check agrees with the routing it checks; the
+rendered-text walk does not. Burned in after four cross-seam recurrences.

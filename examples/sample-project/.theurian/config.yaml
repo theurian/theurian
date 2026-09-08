@@ -23,8 +23,8 @@ providers:
     # segment is refused so no value here is a path out of the project. Public
     # repositories only in this version: an allowlisted repository that resolves
     # as private is refused at ingestion (#575 owns private-repository
-    # ingestion). No command exposes review ingestion yet, so listing a
-    # repository here starts nothing on its own.
+    # ingestion). `theurian review ingest` is the command that reads it, so
+    # listing a repository here starts nothing until you run that.
     repositories:
       - acme/order-service
 

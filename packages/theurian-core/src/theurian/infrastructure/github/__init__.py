@@ -25,9 +25,13 @@ docstrings carry them one by one; the shape is:
   never merely scrubbed;
 * the binary is resolved to an absolute path and no shell is used anywhere;
 * no ``--paginate``: every page is a cursor this adapter hands back;
-* a request timeout, a page cap, a pull-request cap, a per-thread comment cap
-  and a per-response byte cap, each a named constant in
-  :mod:`~theurian.infrastructure.github.limits`;
+* a request timeout, a page cap, a pull-request cap and a per-response byte cap,
+  each a named constant in :mod:`~theurian.infrastructure.github.limits` -- and
+  **no bound lives as a number inside a query string**: every ``first:`` literal a
+  document spells is pinned to a constant there, which
+  ``test_every_first_literal_in_a_document_is_pinned_to_a_constant`` reddens when
+  one is not. The list above is deliberately not the list of caps, because the
+  per-connection ones grow with the documents;
 * a version floor, expressed as a constant with a refusal rather than as prose;
 * ``gh`` absent or unauthenticated is a graded refusal envelope with a remedy,
   and the child's stderr surfaces only inside it.
@@ -47,12 +51,14 @@ or call a model -- that separation is what lets raw ingestion succeed when
 candidate generation fails (FR-V5), and here it holds structurally: no model
 exists anywhere in this path.
 
-**What is not here yet**, so no reader infers a capability from an adapter:
-nothing lands on disk (ADR-0030 slice 2 owns the evidence files and the
-ingestion-time secret scan), no CLI command reaches this code, and no MCP tool
-exposes it -- ``system.capabilities`` reports ``reviewIngestion: false``, which
-from slice 3 will mean *an ingestion call surface exists that a client may call*
-rather than *this build cannot reach GitHub*.
+**What reaches this code, and what does not.** ``theurian review ingest`` does,
+as of ADR-0030 slice 2: it composes this adapter, screens every record through
+the ingestion secret gate, and lands what the gate cleared as evidence files
+under ``.theurian/review/``. **No MCP tool exposes it**, so
+``system.capabilities`` still reports ``reviewIngestion: false`` -- read that
+narrowly, as the flag's own pin in ``tests/integration/test_mcp_tools.py`` says:
+it means *no ingestion call surface is callable by a client*, never *this build
+cannot reach GitHub*. Slice 3 adds the tool and flips it.
 """
 
 from __future__ import annotations

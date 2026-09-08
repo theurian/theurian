@@ -2154,6 +2154,13 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 # cannot reach GitHub". The serve slice flips it beside a scope
                 # field recording that ingestion covers public allowlisted
                 # repositories only.
+                #
+                # Slice 2 narrowed it again in the same direction: evidence now
+                # *lands*, as files under `.theurian/review/`, through the CLI
+                # verb `theurian review ingest`. An operator runs that verb; no
+                # tool here starts it and no tool here reads what it wrote. The
+                # flag still speaks only about the MCP-callable surface, which is
+                # why landing a corpus did not move it.
                 "reviewFindings": True,
                 "reviewIngestion": False,
                 "traceability": False,

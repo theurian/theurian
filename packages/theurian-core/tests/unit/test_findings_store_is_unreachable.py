@@ -351,6 +351,19 @@ _APPLICATION_NON_SERVING_MODULES: frozenset[str] = frozenset(
         "migration_engine.py",
         "project_service.py",
         "proposal_service.py",
+        # One review-ingestion run (ADR-0030 decisions 3 and 4): it fetches
+        # through the provider port, screens through the gate below, and lands
+        # what the gate cleared through an injected callable. It names no store
+        # at all -- the evidence files it produces are a different artifact from
+        # the findings one in every sense, and this module could not reach either
+        # without a composition root handing it one.
+        "review_ingest_service.py",
+        # The ingestion secret gate (ADR-0030 decision 4). It decides whether a
+        # review *evidence* record may become a file and returns the payload that
+        # may be written; it serves nothing and reaches no store, and the
+        # findings store is a different arm entirely -- `Review-Finding:` trailers
+        # out of local git history (ADR-0029).
+        "review_landing_gate.py",
         "setup_context.py",
         "setup_service.py",
         "setup_steps.py",
@@ -372,6 +385,12 @@ _CLI_NON_SERVING_MODULES: frozenset[str] = frozenset(
         "migration_pipeline.py",
         "output.py",
         "propose_commands.py",
+        # `theurian review ingest` (ADR-0030): the composition root that lands
+        # review *evidence* files. It is a write path -- but not the findings
+        # write path this module's buckets are about, and it names no store at
+        # all: `Review-Finding:` trailers out of local git history are a
+        # different arm entirely (ADR-0029).
+        "review_commands.py",
         "setup_commands.py",
     }
 )
@@ -404,18 +423,35 @@ _INFRASTRUCTURE_NON_SERVING_MODULES: frozenset[str] = frozenset(
         "git/__init__.py",
         "git/trailer_source.py",
         # The `gh` review-ingestion adapter (ADR-0030). It reads GitHub and
-        # returns `ReviewEvent`/`ReviewThread` evidence; the findings store is a
-        # different arm entirely -- `Review-Finding:` trailers out of local git
-        # history (ADR-0029) -- and nothing here reaches it. The two share the
-        # FR-V family and the safety triple, not a source.
+        # returns `ReviewEvent`/`ReviewThread`/`ReviewSubmission` evidence; the
+        # findings store is a different arm entirely -- `Review-Finding:` trailers
+        # out of local git history (ADR-0029) -- and nothing here reaches it. The
+        # two share the FR-V family and the safety triple, not a source.
         "github/__init__.py",
         "github/environment.py",
         "github/gh_cli.py",
         "github/limits.py",
         "github/queries.py",
+        "github/response.py",
         "github/review_provider.py",
         "github/transport_guard.py",
         "raptor/__init__.py",
+        # Review evidence on disk (ADR-0030 decision 3): the writer an ingestion
+        # run calls, the reader slice 3's serving store will be built from, and
+        # the record types and case-fold helpers the two share.
+        # It reads and writes `.theurian/review/`, which is a different store
+        # from the findings one in every sense -- different source, different
+        # schema, different arm of FR-V.
+        "review_evidence/__init__.py",
+        "review_evidence/codec.py",
+        "review_evidence/cures.py",
+        "review_evidence/errors.py",
+        "review_evidence/layout.py",
+        "review_evidence/reader.py",
+        "review_evidence/records.py",
+        "review_evidence/run.py",
+        "review_evidence/spellings.py",
+        "review_evidence/store.py",
         "raptor/extractive.py",
         "secrets/__init__.py",
         "secrets/file_store.py",

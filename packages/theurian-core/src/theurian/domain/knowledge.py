@@ -72,15 +72,22 @@ AUTHORED_IN_THEURIAN = "authored-in-theurian"
 #: published as. The whole set, because an anchor has no Theurian-derived field at
 #: all, so there is nothing here to leave out.
 #:
-#: **One tuple for both SEC-11 controls, and it lives here because they meet
-#: nowhere else.** ``propose accept`` scans a *parsed migration mapping* by key
-#: (``proposal_service._metadata_strings``); ``index build`` scans the
-#: :class:`SourceAnchor` objects the canonical store hands back
-#: (:func:`authored_anchor_strings`). Two enumerations would be a security rule
-#: written twice at two layers, which is how a field joins one control and not the
-#: other -- the shape round 1 found, with ``sourceUri`` served verbatim by
-#: ``knowledge.search`` and ``knowledge.get`` and scanned by the approval gate
-#: alone.
+#: **One tuple for the two SEC-11 controls that scan a source anchor, and it
+#: lives here because they meet nowhere else.** ``propose accept`` scans a
+#: *parsed migration mapping* by key (``proposal_service._metadata_strings``);
+#: ``index build`` scans the :class:`SourceAnchor` objects the canonical store
+#: hands back (:func:`authored_anchor_strings`). Two enumerations would be a
+#: security rule written twice at two layers, which is how a field joins one
+#: control and not the other -- the shape round 1 found, with ``sourceUri``
+#: served verbatim by ``knowledge.search`` and ``knowledge.get`` and scanned by
+#: the approval gate alone.
+#:
+#: SEC-11's third control, the review-ingestion gate (ADR-0030 decision 4), is
+#: deliberately not a consumer: it screens a review record's author-controlled
+#: fields against decision 3's own table, and a :class:`SourceAnchor` on an
+#: evidence record is written by Theurian rather than by an author, so it is
+#: outside what that gate scans. ``git grep -n "AUTHORED_ANCHOR_FIELDS" --
+#: packages/theurian-core/src`` is the key that answers who consumes this tuple.
 #:
 #: ``commitSha`` and ``blobSha`` are enumerated for that uniformity rather than
 #: because they can carry anything: the detector's class gate cannot fire on

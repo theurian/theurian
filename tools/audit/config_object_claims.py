@@ -137,17 +137,38 @@ CONFIG_HOMES: Final[tuple[str, ...]] = (
 #: A **measurement, not a derivation**: which module reads which key is a
 #: semantic fact a grep cannot answer, and the population and its per-site
 #: judgement are ``test_config_key_call_sites.py``'s ``CONFIG_KEY_READER_SITES``,
-#: which scans ``src/`` rather than transcribing it. Taken 2026-09-07 with::
+#: which scans ``src/`` rather than transcribing it. The key::
 #:
-#:     git grep -n 'secretScan\|secret_scan\|SECRET_SCAN\|repositories\|REPOSITORIES' \
+#:     git grep -n 'secretScan\|secret_scan\|SECRET_SCAN\|repositories\|REPOSITORIES\
+#:     \|redactParticipantNames\|redact_participant_names\|REDACT_PARTICIPANT_NAMES' \
 #:         -- packages/theurian-core/src
 #:
 #: ``security/project_config.py`` is the one module in ``src/`` that opens
-#: ``.theurian/config.yaml``, and it reads these two keys out of it and nothing
+#: ``.theurian/config.yaml``, and it reads these three keys out of it and nothing
 #: else. Every other hit that scan returns is a field, a local or an English
-#: word, judged one by one in that module's own population key.
+#: word, judged one by one in that module's own population key. The third key
+#: joined on 2026-09-07 with ADR-0030 decision 3's ingestion-time redaction.
+#:
+#: **The count is anchored to a commit, and to one a clone can resolve**, because
+#: it moves with every commit that adds a line mentioning any of those spellings
+#: and a date names no tree anybody can re-run the key against. That is two
+#: requirements and the first version met only the first: it named a commit on
+#: the branch that wrote it, and a squash merge orphans every one of those -- a
+#: fresh clone answers ``fatal: bad object``, which is worse than no anchor
+#: because it reads like one.
+#:
+#: So the anchor is this branch's **base**, ``8d444bd6``, where the key answers
+#: **135** lines, and the number is re-measured there rather than carried over.
+#: The figure is a historical measurement and not a live claim -- the live claim
+#: is ``CONFIG_KEY_READER_SITES``, which scans ``src/`` -- and it will move again:
+#: on the branch that adds ADR-0030's ingestion reader the same key answers 160,
+#: which is what an anchored number is *for*.
 KEYS_WITH_A_READER: Final[frozenset[str]] = frozenset(
-    {"providers.review.repositories", "security.secretScan"}
+    {
+        "providers.review.redactParticipantNames",
+        "providers.review.repositories",
+        "security.secretScan",
+    }
 )
 
 _NEGATION: Final = r"(?:nothing|nobody|none|no\s+one|no\s+code|no\s+module)"

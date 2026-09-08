@@ -32,14 +32,23 @@ VARIABLE_NAMES: Final[frozenset[str]] = frozenset(
 #: ``Node``, so one inline fragment covers them all rather than five. Verified
 #: against the live schema rather than assumed.
 #:
-#: ``closingIssuesReferences`` asks for ``pageInfo { hasNextPage }`` because its
-#: page size is a **cap the adapter reports** rather than a truncation it
-#: swallows: without the flag, a pull request closing forty issues and one
-#: closing twenty arrive identical. The number is
-#: :data:`~theurian.infrastructure.github.limits.MAX_LINKED_ISSUES` and it is
-#: spelled here as a literal, because this document is a literal (clause 2) and
+#: ``closingIssuesReferences`` and ``labels`` ask for ``pageInfo { hasNextPage }``
+#: because their page sizes are **caps the adapter reports** rather than
+#: truncations it swallows: without the flag, a pull request closing forty issues
+#: and one closing twenty arrive identical. The numbers are
+#: :data:`~theurian.infrastructure.github.limits.MAX_LINKED_ISSUES` and
+#: :data:`~theurian.infrastructure.github.limits.MAX_LABELS_PER_PULL_REQUEST`,
+#: spelled here as literals because this document is a literal (clause 2) and
 #: formatting a constant into it is the string building clause 2 exists to keep
-#: out.
+#: out. ``test_a_page_size_the_document_spells_is_the_constant_that_names_the_cap``
+#: is what holds each literal to its constant from outside.
+#:
+#: ``body``, ``labels``, ``headRefName`` and ``milestone`` are here because
+#: ADR-0030 decision 3's table puts all four on the **author-controlled** side:
+#: a description, a label, a branch name and a milestone name are chosen by
+#: whoever opened the pull request, so they are content the ingestion scan reads
+#: rather than provider structure. ``milestone`` is nullable upstream and maps to
+#: ``None``, never to a fabricated name (decision 5).
 PULL_REQUESTS: Final = """\
 query($owner: String!, $name: String!, $first: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
@@ -50,14 +59,18 @@ query($owner: String!, $name: String!, $first: Int!, $after: String) {
       nodes {
         number
         title
+        body
         url
         createdAt
         merged
         mergedAt
         headRefOid
         baseRefOid
+        headRefName
+        milestone { title }
         author { login ... on Node { id } }
         mergeCommit { oid }
+        labels(first: 50) { pageInfo { hasNextPage } nodes { name } }
         closingIssuesReferences(first: 20) { pageInfo { hasNextPage } nodes { number } }
         commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
       }
@@ -98,6 +111,45 @@ query($owner: String!, $name: String!, $number: Int!, $first: Int!, $after: Stri
               author { login ... on Node { id } }
             }
           }
+        }
+      }
+    }
+  }
+}
+"""
+
+#: One pull request's **top-level reviews**: the verdicts, not the line comments.
+#:
+#: Its own document and its own request rather than a connection nested inside
+#: :data:`PULL_REQUESTS`, and the reason is the cost shape. A nested
+#: ``reviews(first: n)`` is asked for once per pull request in a page of fifty,
+#: and it carries no cursor this adapter could follow -- a truncation with
+#: nothing to report it. Here the connection is the top-level one, bound to
+#: ``$first`` and ``$after`` like every other paginated read, so it is bounded by
+#: :data:`~theurian.infrastructure.github.limits.MAX_PAGES` and stops with a
+#: graded refusal rather than silently. It declares the same five variables
+#: ``REVIEW_THREADS`` does, so :data:`VARIABLE_NAMES` does not move.
+#:
+#: ``submittedAt`` is nullable and stays that way in the record (decision 5): a
+#: review that was never submitted has no submission time, and the ingestion time
+#: is not it. ``state`` is carried as the spelling GitHub sends -- see
+#: :class:`~theurian.domain.review.ReviewSubmission` for why this model maps it
+#: onto nothing of its own.
+PULL_REQUEST_REVIEWS: Final = """\
+query($owner: String!, $name: String!, $number: Int!, $first: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    nameWithOwner
+    isPrivate
+    pullRequest(number: $number) {
+      number
+      reviews(first: $first, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          body
+          state
+          submittedAt
+          author { login ... on Node { id } }
         }
       }
     }

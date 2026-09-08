@@ -176,6 +176,11 @@ RESOLVE_CONTEXT_CALL_SITES = {
     ("cli/findings_commands.py", "findings_build", "_require_project"),
     ("cli/propose_commands.py", "propose_accept", "_require_project"),
     ("cli/propose_commands.py", "_draft", "_require_project"),
+    # ADR-0030 slice 2. It reaches `resolve_context` only through
+    # `_require_project`, so obligation 1 is discharged by the parametrised scan
+    # below; obligation 2 is
+    # `test_review_ingest_cli.py::test_an_unloadable_migration_is_reported_as_a_document`.
+    ("cli/review_commands.py", "review_ingest", "_require_project"),
 }
 
 #: The live scan, computed once at collection time rather than pinned by

@@ -604,13 +604,45 @@ which side of the trust boundary it is served on:
 | repository `owner/name`, PR number, event key, review / thread / comment ids | the provider | structural | no — no free text |
 | thread state, resolution state, `isResolved` / `isOutdated`, timestamps, diff side, line numbers | the provider | structural | no |
 | head, fix and merge commit shas; linked issue numbers; CI rollup outcome | the provider | structural | no |
-| participant `external_id` | the provider | structural | no |
+| participant `external_id` | the provider | structural | no — **see the correction below** |
 | **comment body, review body, PR title, PR description** | the author | **untrusted** | **yes** |
 | **participant `display_name`** | the author | **untrusted** | **yes** |
 | **file path as received** | the author (whoever named the file in the PR) | **untrusted** | **yes** |
 | **labels, head branch name, milestone name** | the author | **untrusted** | **yes** |
 | `SourceAnchor` (provider, source URI, upstream object id, path) | **Theurian**, at ingestion | structural | no — it is written here, not received |
 | last-seen-run stamp (which run last observed the record upstream) | **Theurian**, at ingestion | structural | no |
+
+**Correction, 2026-09-08: the participant `external_id` row holds only while a
+node id exists.** The row above is left as it was written; this note is what
+amends it. `infrastructure/github/response.optional_participant` reads
+`external_id` as *node id or login*, so an actor GitHub answers with no `id` — an
+`Actor` implementation that is not a `Node`, or a partly-errored response
+carrying `id: null` — arrives with the **author's own login** in that field. A
+login is chosen by its owner and can be changed, which is the untrusted side of
+this very table, and a GitHub login is up to 39 characters of `[A-Za-z0-9-]`,
+so `AKIAIOSFODNN7EXAMPLE` is a login somebody can register. Two consequences,
+both shipped:
+
+- **The scan reads `external_id` in both redaction states** since PR #596 round 1
+  ([the round record](https://github.com/theurian/theurian/pull/596#issuecomment-5573725953),
+  adversarial H-D). Which of the two a given id is cannot be decided from the
+  record — a rule recognising node-id shapes would restate the adapter's mapping
+  in a second place, and would be wrong in the direction that skips a login — so
+  the field is read unconditionally rather than only where it can be
+  author-chosen.
+- **Redaction pseudonymises a login-fallback id before the record is written**
+  (R-12, decision 3's redaction half). Under
+  `providers.review.redactParticipantNames`, a participant whose `external_id`
+  equals its pre-redaction `display_name` — the adapter's own signature for the
+  fallback — lands under `redacted~<sha256 prefix>` instead, deterministically,
+  so the record keeps a stable identity and the login never becomes a file. A
+  node-id-shaped id is kept verbatim, which is what makes the identity graph
+  survive the redaction.
+
+What the round measured is why both were needed rather than either: with the
+field unscanned and unredacted, turning R-12 **on** turned a `block` refusal into
+a landing that published the login under `externalId` while replacing the
+`displayName` R-12 promises to remove.
 
 **Three values in the *Controlled by* column, not two.** A record carries fields
 Theurian itself writes: the `SourceAnchor` (FR-S3) that names the upstream object,
@@ -1120,7 +1152,7 @@ and a moving window cannot be re-checked later:
 | Measurement | Population, bounded | Result |
 | :-- | :-- | :-- |
 | Design consult, 2026-09-05 (`gh api graphql`, `pullRequests(last: 40, states: MERGED)`) | a moving window, bounded by naming the **merge list** it covered rather than a range: the last 40 commits on `origin/main` at `1fe3302b` carry **38** trailing pull-request refs — 440, 446, 448, 460, 466, 467, 470, 471, 474, 475, 478, 482, 486, 487, 488, 489, 490, 492, 498, 500, 501, 504, 513, 514, 518, 519, 524, 525, 534, 536, 541, 545, 552, 554, 556, 557, 560, 563 (`git log origin/main --format='%s' -40 \| sed -n 's/.*(\(#[0-9 #]*\))$/\1/p' \| awk '{print $NF}'`, taking the **trailing** ref per ADR-0029's rule, so `(#520 #525)` contributes 525 and not 520; two of the forty commits carry no ref) | **0** inline review threads, **0** top-level reviews |
-| Adversarial review, 2026-09-05 (REST `pulls` / `comments`), re-run by the orchestrator | keyed by PR number, not by a window: **#12, #132, #224, #352, #569** | **11** inline review threads (#352 ×5, #12 ×2, #224 ×2, #132, #569) and **5** `COMMENTED` top-level reviews — every root comment authored by `github-advanced-security[bot]`, one dated 2026-09-05 on the still-open #569 |
+| Adversarial review, 2026-09-05 (REST `pulls` / `comments`), re-run by the orchestrator | keyed by PR number, not by a window: **#12, #132, #224, #352, #569** | **11** inline review threads (#352 ×5, #12 ×2, #224 ×2, #132, #569 ×1 — open at measurement, so a floor rather than a pin; 2 as of 2026-09-07) and **5** `COMMENTED` top-level reviews — every root comment authored by `github-advanced-security[bot]`, one dated 2026-09-05 on the still-open #569 |
 
 **Both figures are dated snapshots, and the thread count moved while this PR was
 under review**: a further bot thread landed on the open #569 six minutes after this PR's
@@ -1128,6 +1160,20 @@ round-one fix commit, taking 11 to **12**. The number is therefore written as *1
 round-two measurement, 12 shortly after* rather than as a property of the
 repository — and the movement is not a nuisance, it is the evidence for the
 fixture decision below.
+
+**Re-measured 2026-09-07, and the row's `#569 ×1` is annotated rather than
+corrected.** Mend's harness re-ran the by-PR-number population and found #569
+carrying **2** inline threads — both authored by `github-advanced-security`, both
+dated 2026-09-05 — where the member list reads it as one. The 2026-09-05 figures
+stay exactly as they were taken: #569 was **open** when they were, so its member
+count was a floor from the moment it was written, and a snapshot that a later
+snapshot exceeds is not a snapshot that was wrong. The second thread is
+consistent with the one this paragraph already records as arriving mid-round; no
+comment id was compared across the two runs, so they are recorded as agreeing
+rather than as identified. Discovering record: [PR #595](https://github.com/theurian/theurian/pull/595)'s
+body. What this adds to the argument below is a second independent observation of
+the same property — the population moves, on an open PR, between one round and
+the next — rather than a new number for it.
 
 **The second measurement falsifies the universal an earlier draft of this section
 drew from the first**, which said this repository "cannot exercise thread
@@ -1297,9 +1343,15 @@ outbound request to `api.github.com` or a hostile host, which no suite here make
 They stay quoted, and they are re-taken **by hand** when clause 8's version floor
 moves, since what they measure is a property of the binary.
 
-Owed at implementation, each tied to the slice that discharges it:
+Owed at implementation, each tied to the slice that discharges it. A slice that
+lands moves its own items from *owed* to *landed* here and names the test that
+discharges each; an item a slice did **not** reach stays on the list with the
+slice that will, and is never quietly dropped.
 
-**Slice 1 — ingest**
+**Slice 1 — ingest** *(shipped at `7c486588`; the list below is still written as
+owed. Recording which test discharges each item is owed to slice 1's own record
+and has not been done — that is a gap in this section, not a claim that the tests
+are missing.)*
 
 - **Ten clause tests**, one per row of decision 1's table: the single spawn site
   (equality-pinned), the literal `graphql` endpoint with identity in variables,
@@ -1357,24 +1409,56 @@ Owed at implementation, each tied to the slice that discharges it:
 
 **Slice 2 — land**
 
-- **A flagged record under `block` never becomes a file** — a test with a
-  synthetic secret-bearing comment asserting that no file is written, that the
-  report names the record and not the matched bytes, and that the run does not
-  read as clean.
-- **`warn` lands and reports; `off` scans nothing** — one test each.
-- **The scan reads exactly the author-controlled fields** of decision 3's table —
-  a record whose secret sits in a label or a branch name is caught, not only one
-  whose secret sits in a body.
-- **Evidence files are the source** — a test that deleting the derived store and
-  rebuilding from the files reproduces the served content, and that a record whose
-  upstream has vanished survives a refetch.
-- **FR-V5, made checkable** — a walk of the ingest path's modules asserting that
-  none reaches an embedding, summarization or reranking provider, in the shape of
-  `test_no_registered_tool_can_reach_a_canonical_write`
-  (`tests/integration/test_mcp_tools.py:2357`): bytecode, not source, because a
-  provider resolved through a factory is invisible to a name scan. Until it lands,
-  decision 5's "no model exists anywhere in the ingest path" is design intent with
-  a named owner, not a measured property.
+Four of the five landed in slice 2 and each names the test that discharges it;
+the fifth is **half** discharged, and the half that is not says which slice
+takes it. Paths are `packages/theurian-core/tests/`.
+
+- **Landed in slice 2 — a flagged record under `block` never becomes a file.**
+  `unit/test_review_landing_gate.py::test_under_block_the_flagged_record_never_becomes_a_file`
+  plants a synthetic secret and asserts the file is absent;
+  `::test_no_report_line_carries_the_matched_bytes` holds the report to
+  identities and a bounded family prefix; and
+  `::test_under_block_a_flagged_record_does_not_stop_another_pull_request_landing`
+  holds the refusal to one record. That the run *does not read as clean* is the
+  CLI's half:
+  `integration/test_review_ingest_cli.py::test_block_exits_one_and_the_flagged_unit_is_absent_on_disk`.
+- **Landed in slice 2 — `warn` lands and reports; `off` scans nothing.**
+  `unit/test_review_landing_gate.py::test_under_warn_the_record_lands_and_every_finding_is_reported`
+  and `::test_under_off_the_detector_is_never_called`, the second with its own
+  positive control
+  (`::test_the_counter_would_have_seen_a_scan_under_the_default_policy`) so that
+  "never called" is not satisfied by a detector nothing reaches. The CLI's exit
+  codes are `integration/test_review_ingest_cli.py::test_warn_exits_zero_and_still_reports_the_finding`
+  and `::test_off_scans_nothing_and_lands_everything`.
+- **Landed in slice 2 — the scan reads exactly the author-controlled fields** of
+  decision 3's table.
+  `unit/test_review_landing_gate.py::test_a_secret_planted_in_any_author_controlled_field_refuses_the_record`
+  is parametrised one case per field, so a label and a head branch name are
+  driving inputs rather than an argument; the boundary is held from the other
+  side by `::test_a_secret_shaped_value_in_a_structural_field_does_not_refuse`
+  and `::test_the_url_is_structural_even_though_a_person_can_choose_a_branch_in_it`,
+  without which a gate that scanned every string on the object would pass every
+  positive case.
+- **Half landed in slice 2 — evidence files are the source.** The write→read-back
+  half is `unit/test_review_evidence_store.py::test_every_record_kind_reads_back_as_the_object_that_was_written`,
+  and the survival half is `::test_a_record_upstream_no_longer_returns_survives_the_refetch`
+  with `::test_a_refetch_rewrites_a_record_whose_content_changed_upstream` as the
+  positive control that keeps a store writing nothing at all from passing it.
+  **Still owed, and it belongs to slice 3:** *deleting the derived store,
+  rebuilding from the files, and reproducing the served content.* There is no
+  derived store to delete until slice 3 builds one, so this half cannot be
+  written earlier — it is not deferred, it is not yet expressible.
+- **Landed in slice 2 — FR-V5, made checkable.**
+  `integration/test_review_ingest_is_model_free.py::test_no_callable_in_the_built_pipeline_reaches_a_model`
+  walks the built ingest pipeline's object graph in the shape of
+  `test_no_registered_tool_can_reach_a_canonical_write`, with
+  `::test_the_walk_reaches_the_pipeline_it_claims_to_inspect` proving the walk is
+  not vacuous and three planted-model cases
+  (`::test_a_model_planted_on_a_service_method_reddens_the_walk` and its two
+  siblings) proving it can go RED. Decision 5's "no model exists anywhere in the
+  ingest path" is therefore a measured property rather than design intent — with
+  the bound that module's docstring states: a provider resolved through a factory
+  one level down is invisible to it.
 
 **Slice 3 — serve**
 

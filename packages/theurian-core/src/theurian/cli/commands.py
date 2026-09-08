@@ -195,23 +195,31 @@ def _fail_a_path_escape(exc: ProjectPathEscapeError, *, as_json: bool) -> None:
     repair, which is what 4 means.
 
     **The commands that call this are the claim, and they were counted by running
-    them.** The sweep covers nine; four more grade the class through their own
-    handlers and are outside it, each measured 2026-09-05 against the real CLI
-    over an escaping artefact and each answering ``4`` since this arm reached it:
-    ``init`` (was 1, over ``.theurian/knowledge`` at init time), ``findings
-    build`` (was 1, over ``.theurian/runtime``), ``propose accept`` (was 1, over
-    ``.theurian/proposals``) and ``propose`` (was **2**, and publishing "Correct
-    the option the message names" over the escape's own cure). Anything reached
-    by neither route is unmeasured, and this docstring does not speak for it.
+    them.** The sweep covers nine; five more grade the class through their own
+    handlers and are outside it, each measured against the real CLI over an
+    escaping artefact and each answering ``4`` since this arm reached it. Four
+    were measured 2026-09-05: ``init`` (was 1, over ``.theurian/knowledge`` at
+    init time), ``findings build`` (was 1, over ``.theurian/runtime``), ``propose
+    accept`` (was 1, over ``.theurian/proposals``) and ``propose`` (was **2**,
+    and publishing "Correct the option the message names" over the escape's own
+    cure). The fifth is ``review ingest``, measured 2026-09-07 over an escaping
+    ``.theurian/review``: it is outside the sweep because a run that lands
+    anything writes evidence files into the corpus the next plant would be
+    measured against. Anything reached by neither route is unmeasured, and this
+    docstring does not speak for it.
 
     **A second guard reaches here since #550**, and it arrives from a different
     place in the run: :meth:`ProjectPaths.of`'s join check, which refuses
     ``.theurian`` *itself* while the command context is still resolving, before
-    any helper derives a path. Its callers are the thirteen commands that resolve
-    a project, and they were measured the same way -- twelve at 1 and ``project
-    status`` at **0** with a payload calling the project registered, against 4
-    from the identical link one level deeper. ``test_escaping_knowledge_dir_grading.py``
-    derives that population from the source and drives every graded member of it.
+    any helper derives a path. Its callers are the fourteen commands that resolve
+    a project. Thirteen of them were measured together -- twelve at 1 and
+    ``project status`` at **0** with a payload calling the project registered,
+    against 4 from the identical link one level deeper; ``review ingest`` is the
+    fourteenth and joined afterwards.
+    ``test_escaping_knowledge_dir_grading.py``
+    derives that population from the source and drives every graded member of it,
+    so the number above is a reading of that file's ``REACHED_BY`` rather than a
+    count anybody keeps in step by hand.
 
     ``exc.remedy`` bare rather than through :func:`_context_remedy`: all four
     ``raise ProjectPathEscapeError`` sites pass a ``remedy`` -- the two in
@@ -3111,7 +3119,8 @@ def _require_project(as_json: bool) -> tuple[CommandContext, Path]:
     # `EXIT_STATE_ERROR` exactly as this function does, kept identical by
     # `test_every_cli_resolver_grades_the_same_escape_types`. An unreadable
     # migration is a knowledge-state problem the user must fix in
-    # `_require_project`'s callers -- ten as of 22ce405b, 2026-09-07; re-count with
+    # `_require_project`'s callers -- eleven since `review ingest` joined them,
+    # counted 2026-09-07 by the command below and not by reading; re-count with
     # `grep -rn '_require_project(as_json)$' packages/theurian-core/src/theurian/cli/`
     # rather than trusting this number -- the same family as a checksum
     # mismatch or a dependency cycle above -- what varies between commands is

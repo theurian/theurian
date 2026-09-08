@@ -68,9 +68,17 @@ their own allowlist without seeing it. What makes it safe is the surface rather
 than the ordering -- the rename check runs *before* the private check, so the
 echoed name has not been shown to be public when it is printed: the name comes
 from the operator's own authenticated ``gh`` resolving a repository their own
-``.theurian/config.yaml`` lists, and no CLI command, MCP tool or application
-service reaches the adapter that raises it. A version that publishes these
-envelopes to somebody who is not the operator has to re-take this decision.
+``.theurian/config.yaml`` lists.
+
+**That decision has been re-taken once, and the surface it rests on is named
+rather than assumed.** ``theurian review ingest`` publishes these envelopes as
+of ADR-0030 slice 2, so "nothing reaches the adapter" is no longer what makes
+the echo safe. What makes it safe now is *who* reads it: a CLI command is an
+operator surface, and every input to the sentence is that same operator's --
+their ``gh``, their configuration file, their terminal. They are being shown
+where their own allowlist entry now points. **The MCP tool slice 3 adds is not
+that surface**, and it must re-take this decision on its own terms: a tool
+answers an agent, and an agent is not the person whose ``gh`` resolved the name.
 """
 
 from __future__ import annotations
@@ -363,10 +371,20 @@ class RefusalEnvelope:
 class ReviewIngestRefusedError(TheurianError):
     """A review-ingestion run declined, carrying its whole envelope.
 
-    Raised rather than returned because every refusal aborts the run that met it,
-    and a caller that wants the envelope reads :attr:`envelope` instead of
-    re-parsing a message. ``remedy`` is set from :data:`REMEDIES` by grade, so no
-    call site can raise one without a cure.
+    Raised rather than returned because a refusal aborts the operation that
+    raised it, and a caller that wants the envelope reads :attr:`envelope`
+    instead of re-parsing a message. ``remedy`` is set from :data:`REMEDIES` by
+    grade, so no call site can raise one without a cure.
+
+    **The operation, not the run**, and the narrowing is a correction rather
+    than a hedge. This said "every refusal aborts the run that met it", which was
+    true when nothing caught one and is false now that two seams do: a listing
+    converts a single pull request's refusal into a
+    :class:`~theurian.domain.ports.review_provider.SkippedPullRequest` it
+    *returns*, and an ingestion run converts a per-pull-request fetch's refusal
+    into a reported skip. Whether a given refusal ends a run is therefore the
+    catching seam's decision, recorded on the port and on
+    ``application/review_ingest_service.py``, and not a property of this class.
     """
 
     def __init__(self, grade: RefusalGrade, summary: str, *, detail: str = "") -> None:

@@ -141,6 +141,14 @@ had enumerated. Three bars:
   `mkdir(parents=True, exist_ok=True)`s the parent before the open" was true
   when written and false by the end of the branch that wrote it — the read
   opener that branch added does not.
+- **A pasted command output is the verbatim bytes of a run you just made —
+  never reconstructed, never composed from memory.** Burned in from PR #596
+  round 1 (H-A): a CHANGELOG "pasted" zero-consumer grep whose output matched
+  no measurable state — the real command answered 5 lines / 3 files, and the
+  false paste hid an un-migrated construction site until a rebase turned it
+  red. Before committing any command+output pair, run the command one final
+  time against the text as committed and copy what it printed; if that differs
+  from what you meant to claim, the claim changes — the paste never does.
 
 ## Before you report done
 
@@ -153,6 +161,14 @@ built state" for a project that had one. Reading is not verification.
 Never leave the working tree modified beyond the change you were asked for, and
 never commit unless asked.
 
+Two perturbation rules, burned in from PR #596's fix arc: **restore a perturbed
+file by COPY, never `git checkout --` on a file carrying uncommitted work**
+(the checkout discards the edits — CLAUDE.md's dev-machine section, hit live);
+and **`tools/mutate.py`'s verdict path is a FULL-SUITE run** — inside an
+assignment use `--prepare-tree` + a scoped `pytest` selection in your own clone
+(fetch `origin/main` into it first), and leave batch verdicts to the
+orchestrator's serialized slot.
+
 When you do commit, the scope is `[a-z-]+` — lowercase letters and hyphens only.
 The CI Conventional-Commits gate rejects a digit or `#` in the scope, so an
 issue or ADR number goes in the subject text or body, never the scope
@@ -160,3 +176,16 @@ issue or ADR number goes in the subject text or body, never the scope
 `feat|fix|refactor|docs|test|chore|perf|ci|build|revert`. Verify before pushing:
 pipe `git rev-list origin/main..HEAD --no-merges` subjects through that pattern —
 do not wait for the PR check.
+
+## A costless-removal claim is a shape claim
+
+**"Removing it loses nothing" is only ever rendered for a shape that holds no
+bytes and no names** — a pipe, a socket, a device. A directory holds names and
+a regular file holds bytes; a cure that urges their removal must account for
+the loss (`ls -la`, offer a move, never an unconditional delete). Enforce the
+predicate INSIDE the cure that renders the claim, never at the seam that
+selects the cure — a new seam inherits a cure-side guard and silently escapes
+a seam-side one. Burned in from PR #596, where the same family was caught
+four times across seams before the predicate moved into the cures
+(`review_evidence/cures.py` is the worked example; the reflected walk in
+`test_review_evidence_cures.py` is the tripwire).

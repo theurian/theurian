@@ -31,8 +31,324 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   per-response byte cap are named constants with graded stops. A `gh` that is
   absent, below the 2.86.0 version floor, or unauthenticated is a refusal
   envelope carrying a remedy, with the child's stderr contained inside it.
-  **Nothing is exposed yet**: no CLI command and no MCP tool reaches this code,
-  and `system.capabilities` still reports `reviewIngestion: false`.
+  `theurian review ingest` is what reaches this code; **no MCP tool does**, so
+  `system.capabilities` still reports `reviewIngestion: false`.
+- **`theurian review ingest OWNER/REPO`, the command that reaches it** (ADR-0030
+  decisions 3 and 4, part of
+  [#479](https://github.com/theurian/theurian/issues/479)). A new `review` Typer
+  group beside `findings`; `theurian ingest` — local sources, stores no content —
+  is untouched and unrelated. One run lists a repository's pull requests, fetches
+  each one's threads and top-level reviews, screens every record and writes what
+  the gate cleared. `--limit` bounds how many pull requests are read (default one
+  adapter page, capped at `MAX_PULL_REQUESTS`), `--since` stops at a
+  pull-request number, `--json` emits the run as a document. It exits 0 on a
+  clean run — **which includes a `warn` run that found a secret and landed the
+  record anyway**; **1 on either of two documents**, the run document when the
+  run happened and was not clean (a record `block` withheld, or a pull request
+  the listing or a fetch could not read) and `{error, remedy}` when the command
+  refused before any report existed, which carries no `clean` field at all; and 4
+  when a path under `.theurian/` could not be proved to stay inside the working
+  tree.
+
+  **It is an operator surface and reports identities, not content.** A
+  repository, a pull-request number, a provider node id, a field name and a
+  refusal grade reach stdout; no title, body, comment text or participant name
+  does, and a secret-scan finding carries only the four-character redacted
+  prefix `SecretFinding` bounds it to. Serving review evidence is slice 3, with
+  its own disclosure round.
+
+  **Failure containment is matched to scope, because the question is whether the
+  set of records being iterated can still be trusted.** A repository-scope
+  failure — everything `list_pull_requests` *raises*: the allowlist, a repository
+  that resolves private, a rename redirect, a transport override, a `gh` that is
+  missing, too old or unauthenticated, an answer whose envelope cannot be read, a
+  pagination cursor it cannot use, a pull-request number it cannot read, the
+  pull-request listing's own page cap — halts the run: nothing is fetched
+  afterwards and nothing is written, because the set itself could not be
+  established. A record-scope failure withholds **that pull request's records
+  whole**, reports it by identity with its grade, and lets the run continue; the
+  run then does not read as clean. Record scope covers **both** the seam where
+  one pull request's threads or reviews refuse and the seam **inside the
+  listing** where one pull request's own data cannot be built into a record — a
+  field the record build reads, its labels or closing issues past their cap.
+  `list_pull_requests` answers those as skipped pull requests rather than
+  raising, so one pathological pull request cannot deny a caller the rest of the
+  repository; and the window is applied to a pull request's number *before* its
+  record is built, so `--since` steps over a known-bad one. That ordering is also
+  why the **number** is on the repository side above and not here: a pull request
+  whose number cannot be read is one no window can place. The split is by where
+  the fault was and never by grade — a node's label cap, a thread's comment cap
+  and the listing's page cap all carry `LIMIT_EXCEEDED`, and reading the grade
+  would halt on an over-long thread and skip a repository the project may not
+  contact; `test_one_grade_halts_at_the_listing_and_skips_at_both_seams` in
+  `tests/unit/test_review_ingest_service.py` drives that one grade through all
+  three and asserts three different outcomes.
+
+  **The landing is a third scope, and it halts.** Writing runs after every fetch,
+  so a refusal there is neither a repository the run could not establish nor a
+  pull request it could not build: it is a record the run already had and could
+  not make durable — a record too large for the reader that has to read it back,
+  a planted artefact where a record or its temporary belongs, a path a case-only
+  spelling difference makes ambiguous, or an answer this build cannot turn into
+  bytes at all. It halts, and it leaves a **partial landing**: the write is
+  atomic per record via `os.replace` and not across a run, so the records written
+  before the refused one are on disk and nothing rolls them back. Every refusal
+  from that seam says so, naming this record as the one that was not written and
+  counting the ones that were — the sentence they carried before said "nothing
+  was written", which sent an operator whose evidence has no rebuild looking for
+  a rollback that never happened.
+
+  **The two record-scope seams catch a refusal *family*; the promise a caller
+  gets is about an *observable*.** Whatever the provider answers with, a run ends
+  with one of the two documents above and never with a traceback. The seams catch
+  `ReviewIngestRefusedError`, so the population that can break that promise is
+  everything *outside* it, and two stages reached it: a pull request whose `url`
+  a partly-errored answer nulled built a record carrying no refusal and detonated
+  two stages later in the anchor, taking the whole window with it; and a lone
+  surrogate anywhere in a record — legal on the wire, undecodable to UTF-8 — left
+  the write as a bare `UnicodeEncodeError`, so the command published no document
+  at all. The `url` now reads through the same refusing helper every other
+  identity field does, so it is one skipped pull request; and the landing seam
+  grades the whole complement of `TheurianError` rather than a list of the two
+  that were found.
+
+  **`ReviewProvider` gains two published shapes.** `list_pull_requests` answers a
+  `PullRequestListing` — `events` beside `skipped` — and each member of the
+  second is a `SkippedPullRequest` carrying the repository, the number and the
+  refusal envelope. A breaking change to the port's return type, which no adapter
+  outside this repository implements yet.
+
+  **No advance marker, and that is a decision rather than an omission.** Nothing
+  on disk records a pull request as seen, so a skipped record is re-attempted by
+  the next run whose window covers it. A marker invented now would have to decide
+  whether a *skipped* record counts as seen, and answering yes would turn a skip
+  into permanent data loss; slice 3's store derives the marker from the evidence
+  files' own last-seen-run stamps.
+- **Review evidence lands as durable files under `.theurian/review/`** (ADR-0030
+  decision 3, part of [#479](https://github.com/theurian/theurian/issues/479)).
+  Structured JSON, one record per file, stamped with `formatVersion` 1 and
+  refused when read back at any other value — slice 3 builds the SQLite serving
+  store from these files, so the number is the contract between the two halves.
+  The grain is the pull-request event, the top-level review submission and the
+  review thread, one file each: a record is what the scan gate refuses whole, so
+  one file per pull request would discard a whole pull request's threads over a
+  single flagged comment.
+
+  **These files are the source, not a cache, and the difference is somebody's
+  data.** Upstream comments are editable and deletable, so a discarded local copy
+  of a deleted comment is data loss that no refetch recovers. Nothing here
+  deletes: a refetch updates what upstream still returns and leaves a vanished
+  record's file in place with the stamp saying which run last saw it.
+  `theurian init` therefore does **not** write `.theurian/review/` into the
+  managed `.gitignore` block, and whether a project commits its review evidence
+  is the project's decision — the command's help says both, because the operator
+  who reads only `--help` is the one who would otherwise delete it to "clear the
+  cache".
+
+  **No path is built from the configured `owner/repo`.** The published pattern
+  for `providers.review.repositories` accepts `../..`, so joining a configured
+  string into a filesystem path escapes the directory while satisfying the
+  contract. A repository becomes a hashed directory name; a record becomes a leaf
+  named after its provider id when that id is a name a filesystem should carry,
+  and after its `sha256-` hash otherwise. **Two ids that differ get two files on
+  a filesystem that folds case as well as on one that does not** — macOS and
+  Windows fold by default, so byte-distinct names were not enough: an id that is
+  not already its own casefold keeps its spelling and carries a short hex tag
+  naming the positions the fold changes, and the `sha256-` escape prefix is
+  matched against the id's casefold so `SHA256-…` cannot be spelled out to name a
+  hashed leaf. Every write and every read resolves through `security/paths.py`'s
+  containment on top of that.
+
+  **A record is published by rename, and a directory that is a symbolic link is
+  refused.** The bytes go to a sibling `.writing` file inside the same proved
+  directory and `os.replace` moves it over the record, so a run interrupted
+  mid-write costs that refresh rather than the copy already on disk — an
+  evidence file has no rebuild, and the truncating write it replaces left an
+  empty file where the only copy had been. Separately, containment and the route
+  walk both wave through a directory link whose target is *inside* the tree
+  ([#577](https://github.com/theurian/theurian/issues/577)'s recorded bound,
+  measured there relocating the ingestion manifest at exit 0); review evidence is
+  the first artefact behind that bound that is not rebuildable, so the writer
+  compares where the record's directory resolves against where it was joined and
+  refuses when a link moved it. A record is also refused before the write when it
+  would land larger than `MAX_SOURCE_FILE_BYTES`, which is the cap the reader
+  enforces: a file above it is one no later run could read back.
+
+  **One spelling on disk, for both paths a write builds and not only for the
+  leaf.** The leaf's case tag keeps two ids' files apart; the *directories* fold
+  too, and `mkdir` and `os.replace` let the filesystem resolve a name rather than
+  comparing one. Measured: a hand-made `Pull-Request/` beside the derived
+  `pull-request/` is one directory to macOS, so a record written into it landed
+  and was then invisible to every later read — a run reporting it as new on every
+  invocation for ever. The rule is now *fold to find, byte-compare to accept*:
+  the reader's walk folds, so a case variant is never invisible, and the writer
+  refuses before it creates a directory or renames into a name the disk already
+  spells otherwise, naming both spellings and the rename that fixes it.
+
+  A write builds **two** names under the root — the record and its `.writing`
+  sibling — and the guard checked one. Measured on APFS with a regular
+  `42.json.WRITING` planted beside the derived temporary: the open resolved to
+  the operator's own file, truncated it, wrote the record into it and renamed it
+  away, at exit 0, with nothing said. The guard now ranges over both, and
+  `tests/unit/test_review_evidence_path_case.py` recomputes both sides of that
+  coverage from `store.py`'s own syntax so a fifth derived name reddens. The same
+  file's site table stopped being a watch-list of six calls — a verdict pass
+  planted `exists()`, `glob()` and `Path.rename` in the package and all three
+  went unnoticed — and now derives what it watches from `dir(pathlib.Path)` and
+  the `str` methods that change case.
+
+  **A refusal names the artefact it is actually about.** The atomic publish
+  writes to a sibling `<record>.writing` temporary, and the messages around it
+  had stayed with the record: a link planted at the temporary published the
+  record's cure, which instructs deleting a landed evidence file — the one
+  instruction this path must never publish — while the cleanup had already
+  removed the plant. The cleanup now removes only a regular file, so a planted
+  link, pipe or socket survives the refusal that describes it; the temporary's
+  refusals name the temporary; a named pipe or socket there names its shape
+  instead of a permission; and a named pipe at the record's own path is refused
+  again rather than replaced at exit 0.
+
+  **Both store seams are keyed on the complement of `TheurianError`, not on a
+  list of families.** The write seam already was; the read seam named
+  `(ValueError, DomainError)` and met a third thing — `json.loads` answers a
+  document nested past its own decoder limit with `RecursionError`, a
+  `RuntimeError` subclass outside both that tuple and the `except TheurianError`
+  the command publishes through, so one landed file of 20,000 nested arrays
+  ended `review ingest` with a traceback and no document at all. The parse now
+  raises the `ValueError` its other shape faults already are — the shape
+  `security/yaml_loading.py` and the OpenAPI parser already use for the identical
+  call — and each read block ends on the complement, so a fault outside every
+  family is graded by class rather than escaping. A second face sat *inside* the
+  handler: the clause naming which repository a failing file claims re-parses the
+  same bytes, so composing the refusal met the identical limit again.
+  `tests/unit/test_review_evidence_exception_keys.py` walks this path's exception
+  arms as syntax and reddens on one with no recorded verdict.
+
+  **Each refusal's cure is about the artefact it is actually standing over.** A
+  **directory** where a record belongs was published with the cure written for a
+  pipe or a socket, whose closing clause reads "which holds no bytes, so removing
+  it loses nothing" — true of a device node and false of a container of other
+  names, and measured over a directory holding a file somebody wrote. A directory
+  now gets its own cure: it prints what is *inside* with `ls -la`, offers a move,
+  and says plainly that the entries may be an operator's own. **The same claim
+  shipped one seam over**, because the first fix put the split in the store: a
+  directory planted at `<record>.writing` drew the temporary's cure, "it holds no
+  review evidence and removing it loses nothing", from the one arm that had no
+  `S_ISDIR` branch. Both costless-claiming cures now take the shape and route a
+  container of other names to a move-style sibling **themselves**, so a seam that
+  never heard of the split still gets it right; the cure tests derive "may claim
+  a costless removal" from the rendered text instead of from a flag beside a
+  table row, which is what let the temporary's cure sit outside the map while
+  making the claim. The read side's
+  case-variant cure now names the first differing **component pair** rather than
+  the two whole paths, because `mv sha256-…/Pull-Request/42.json
+  sha256-…/pull-request/42.json` is the no-op that same cure warns about. And two
+  provider-chosen values that reached a printed remedy through `bounded_echo` —
+  a pull-request URL and a repository read out of a failing file — are quoted
+  instead: `bounded_echo` bounds a length and renders nothing, so a U+202E in
+  either rode into the terminal raw and reversed every line around it.
+  `escape_terminal_controls` does not stop one either; it covers C0, C1 and DEL.
+
+  The published-sentence walk that was supposed to catch all of that could not
+  see any of it, and its key is widened rather than its exemptions: it now covers
+  every `remedy=` argument and the whole of `review_evidence/cures.py`, where the
+  remedies actually interpolate, and every `raise` under `review_evidence/`,
+  whose message `_read_one` republishes verbatim. That last part immediately
+  surfaced a live member of the same class round two closed for `formatVersion`
+  and `kind`: `EvidenceRecord`'s provider-mismatch invariant rendered two values
+  out of a landed file with `!r` alone, so a 2,000,000-character `provider`
+  produced a 2,000,394-character refusal. Both are bounded now.
+  `security/regular_file.py`'s shape vocabulary is recomputed from `stat`'s own
+  file-type constants in the cure tests, so a seventh shape added there reddens
+  until somebody says which cure it gets.
+- **`security.secretScan` gains a third point: at ingestion, per record, before
+  the record becomes a file** (ADR-0030 decision 4, SEC-11, part of
+  [#479](https://github.com/theurian/theurian/issues/479)). `block` — the
+  default — withholds the flagged record whole so it is never written, not even
+  partially; `warn` lands it and reports every finding; `off` scans nothing. The
+  refusal is per record, so a flagged record in one pull request does not stop
+  another pull request landing, and a run that withheld one exits non-zero.
+
+  **A `warn` run exits 0, and `secretsWarned` is the published field that says a
+  secret landed anyway.** `clean` reads `true` there and `refused` is empty —
+  both honest, and both silent about a credential the run has just written into
+  `.theurian/review/`, a directory `theurian init` does not add to the managed
+  `.gitignore` block. The exit code is the project's own recorded choice and is
+  unchanged; what is new is a third boolean beside those two, so seeing the state
+  no longer means joining `secretScanPolicy` against a finding count and knowing
+  the rule. The schema's `security.secretScan` description names the same field,
+  and `test_warn_exits_zero_and_still_reports_the_finding` in
+  `tests/integration/test_review_ingest_cli.py` is what fails if it stops being
+  published.
+
+  **This takes `propose accept`'s posture rather than `index build`'s, for the
+  accept-time reason and not by analogy.** The build reports rather than refuses
+  because its content is already readable through `knowledge.search` and
+  `knowledge.get`, so refusing would deny ranking without un-disclosing anything.
+  That premise is false here: ingestion runs before the content exists anywhere
+  in Theurian, so refusing genuinely un-discloses.
+
+  **Redaction runs first and the scan then reads the landing candidate** — the
+  bytes that would be written, not the bytes that arrived. Two consequences,
+  both deliberate: a secret sitting *only* in a display name the redaction
+  removes does not refuse the record, because after redaction it is not in the
+  candidate at all; and the placeholder that replaced the name is scanned like
+  any other field rather than trusted.
+
+  **The report names the record; it never reproduces the match** — repository,
+  pull
+  request number, record id and, for a finding inside a comment, that comment's
+  id. Every finding's *location* is a fixed literal of the gate's own, never a
+  value that was scanned, which is the treatment a body whose own path was the
+  credential forced on `propose accept` ([#360](https://github.com/theurian/theurian/issues/360)).
+  What travels with it is the family name and the four-character redacted prefix
+  `SecretFinding` bounds on the type, so raising that bound is one edit in one
+  place. The finding budget is per record rather than per run, because a budget
+  shared across records would decide record N's fate with what records 1 to N−1
+  spent.
+
+  **A label is data and governs nothing** (ADR-0019, discharged rather than
+  cited): labels, the head branch name and the milestone are read as content to
+  scan and by nothing that decides anything.
+- **`providers.review.redactParticipantNames`, R-12's ingestion-time redaction
+  switch** (ADR-0030 decision 3, part of
+  [#479](https://github.com/theurian/theurian/issues/479)). A boolean, default
+  `false`, read by `security/project_config.py` and applied at landing: it
+  replaces every participant's display name with a fixed placeholder and keeps
+  that participant's provider node id, so the identity graph survives the
+  redaction.
+
+  **Where the answer carried no node id, the id that lands is a pseudonym.** The
+  adapter records `external_id` as *node id or login*, so an author GitHub
+  answers with no `id` would otherwise land under a login — a name, under the
+  setting that exists to remove names. Such an id (the adapter's own signature
+  for it: `external_id` equals the pre-redaction `display_name`) becomes
+  `redacted~` and a truncated SHA-256 of itself, deterministically, so the record
+  keeps one identity across runs while the login never becomes a file. The `~` is
+  outside GitHub's login charset, so a reader meeting one in a landed record knows
+  it is Theurian's substitution rather than an account of that shape. The same
+  field is now read by the ingestion secret scan in **both** redaction states,
+  which is what makes the two states agree: before this, turning the switch on
+  turned a `block` refusal into a landing that published the login under
+  `externalId`.
+
+  The switch is refused rather than coerced when it is not a boolean — a quoted
+  `"true"` is a string, and guessing which of two values an operator meant turns
+  a privacy control the wrong way. `.theurian/config.yaml` is therefore read for
+  **three** keys rather than two, which the schema's root description,
+  `plugins/claude-code/commands/ingest.md` and
+  `tools/audit/config_object_claims.py` now say. A reader
+  added for any of the six spellings in `WATCHED_SPELLINGS` — five of them
+  published key blocks, plus `raptor.maxLevels`, which has no block — reddens
+  the call-site scan. `theurian review ingest` is the one command that applies
+  it, so setting the key redacts nothing until that command runs.
+- **`providers.review.repositories` publishes the length bound its reader
+  enforces.** The `items` subschema gained `maxLength: 200`, equal to
+  `review_allowlist.MAX_REPOSITORY_CHARS`, and
+  `tests/unit/test_review_allowlist.py` now holds that bound equal on both sides
+  as it already held the pattern. Until this, a 4,000-character entry satisfied
+  the published contract and was refused unread by the reader that claims to
+  enforce it.
 
 ### Changed
 
@@ -120,6 +436,77 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   inside `domain/review.py`: no consumer exists to migrate. That answers the
   migration cost and not whether the record is honest, which is why the break is
   named here rather than waved through.
+- **BREAKING — `ReviewEvent` carries the four author-controlled pull-request
+  fields, and three of them are required** (ADR-0030 decision 3, part of
+  [#479](https://github.com/theurian/theurian/issues/479)). Was
+  `ReviewEvent(project_id, provider, repository, number, title, author,
+  created_at, url, head_commit, base_commit, merged=False, merge_commit=None,
+  merged_at=None, ci_successful=None, linked_issue_ids=())`; is now the same with
+  `body: str` after `title`, `head_ref_name: str` and `labels: tuple[str, ...]`
+  after `base_commit`, and `milestone: str | None = None` last. A **positional**
+  construction therefore moves, and keyword construction gains three required
+  arguments. The adapter fetches all four: `PULL_REQUESTS` now asks for `body`,
+  `headRefName`, `milestone { title }` and a capped `labels` connection.
+
+  **Why three are required and one is not.** ADR-0030 decision 3's field table
+  puts the description, the labels, the head branch name and the milestone name
+  on the **author-controlled** side — they look like provider structure and are
+  not — so they are what the ingestion secret scan reads. A default on any of the
+  first three would let a record claim an empty description, an empty branch name
+  or no labels that nobody supplied: content the scan would then pass without
+  ever seeing it. `milestone` keeps a default because *no milestone* is an answer
+  the provider gives, the shape `ReviewResolution`'s optional fields already hold.
+
+  **The label connection is capped and the cap reports.** `labels` paginates and
+  this adapter follows no cursor into it, so `MAX_LABELS_PER_PULL_REQUEST` (50)
+  is read two ways — the provider's own `hasNextPage` and a node count — and an
+  overflow is a `limit-exceeded` refusal naming the number, never fifty of sixty
+  labels recorded as the whole set. A label whose `name` arrives as something
+  other than text refuses as `tool-failed` rather than folding to the empty
+  string. **A label is data and governs nothing** (ADR-0019, discharged rather
+  than cited): nothing reads a label's value to decide anything, and fetching
+  them as scannable content is the whole of their role.
+
+  **The migration cost, pasted rather than summarised.** Every construction the
+  three new required arguments reach, at this entry's own base `c7992354`:
+
+  ```sh
+  git grep -n "ReviewEvent(" c7992354 -- packages plugins tools docs
+  # c7992354:packages/theurian-core/src/theurian/infrastructure/github/review_provider.py:395:        return ReviewEvent(
+  # c7992354:packages/theurian-core/tests/integration/test_gh_review_provider.py:769:    unrenderable = ReviewEvent(
+  # c7992354:packages/theurian-core/tests/integration/test_gh_review_provider.py:1729:    forged = ReviewEvent(
+  # c7992354:packages/theurian-core/tests/integration/test_github_adapter_e2e.py:297:    return ReviewEvent(
+  # c7992354:packages/theurian-core/tests/unit/test_project_and_traceability.py:343:        ReviewEvent(
+  # c7992354:packages/theurian-core/tests/unit/test_project_and_traceability.py:359:    event = ReviewEvent(
+  ```
+
+  Six lines across four files — one production constructor and three test files
+  — and this change migrates all six. The cost is therefore *in* this release
+  rather than absent: an in-repository population is not the same fact as no
+  consumer at all, and the same command run at another commit answers another
+  number (at `7c486588` it is five lines across three files, the e2e harness
+  having arrived after it). That answers the migration cost and not whether the
+  record is honest, the same distinction its sibling above draws.
+- **`ReviewSubmission` joins the review model**: a top-level review on a pull
+  request — the approval or the change request itself, not a line comment — as
+  `ReviewSubmission(external_id, project_id, event_key, author, body, state,
+  submitted_at=None)`. FR-V1 names *reviews* beside *threads* because they are
+  different records carrying different evidence. `state` is carried as the
+  provider's own spelling, validated non-empty and mapped onto no closed set of
+  the domain's: a provider's review vocabulary belongs to the provider, and a
+  closed set would have to answer for a member it has never heard of by losing
+  the record or by renaming it. `submitted_at` is optional for
+  `ReviewResolution`'s reason — a review that was never submitted has no
+  submission time, and the ingestion time is not it.
+
+  The adapter reads them through a new `ReviewProvider.get_reviews`, sending its
+  own per-pull-request document. A connection nested in the pull-request listing
+  would be asked for once per pull request in a page of fifty and would carry no
+  cursor to follow, so what overflowed there would be lost with nothing to
+  report it; the top-level connection paginates under the same `MAX_PAGES` stop
+  `get_threads` already had, and both reads now go through one page walker
+  rather than two copies of it. A review whose `id` or `state` cannot be read as
+  text is a `tool-failed` refusal, not a record with a blank verdict.
 
 ### Fixed
 
@@ -158,11 +545,14 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   rather than this entry: the rule is what this change owed, not the sweep.
 
   Taking the description rather than a bare `deprecated: true` moves the pin
-  count, and that is the machinery working rather than a cost to route around:
-  the schema publishes **13** descriptions — the root and 12 key blocks — and
-  **13 of the 13** carry a `WATCHED_KEY_DESCRIPTIONS` row in
+  count, and that is the machinery working rather than a cost to route around.
+  The count moved again in the same release with
+  `providers.review.redactParticipantNames` above, so what stands now is:
+  the schema publishes **14** descriptions — the root and 13 key blocks — and
+  **14 of the 14** carry a `WATCHED_KEY_DESCRIPTIONS` row in
   `tests/unit/test_config_key_call_sites.py`: the root, `knowledgeDirectory`,
   `providers`, `providers.embedding.apiKeyEnv`, `providers.embedding.endpointEnv`,
+  `providers.review.redactParticipantNames`,
   `providers.review.repositories`, `raptor.enabled`,
   `raptor.minChildrenPerSummary`, `retrieval.includeStatuses`, `retrieval.rrfK`,
   `security.maxSourceFileBytes`, `security.secretScan` and `traceabilityPolicy`.

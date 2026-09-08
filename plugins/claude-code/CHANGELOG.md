@@ -112,22 +112,38 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `providers.review.repositories` — read by `security/project_config.py`, the
   file's one reader — and refuses a repository the list does not
   name before any process is spawned. The key is read and enforced; what it
-  protects is the review-ingestion path, which no command reaches yet, and that
-  — rather than "it protects no one" — is the sentence `ingest.md` now carries.
-  The file is read for two keys, not one.
+  protects is the review-ingestion path, reached by `theurian review ingest` and
+  not by this command — and that, rather than "it protects no one", is the
+  sentence `ingest.md` now carries.
+
+  **Slice 2 moved the same paragraph twice more, and the entry records where it
+  ended rather than where it passed through.** The file is now read for **three**
+  keys: `providers.review.redactParticipantNames` joined with ADR-0030 decision
+  3's ingestion-time redaction, and it belongs to the same other command, so the
+  page says that setting it redacts nothing `theurian ingest` writes. And
+  `theurian review ingest` now exists, so the warning is no longer "nothing is
+  on" but "a *different command* is what these two keys reach" — the
+  over-reading the paragraph guards against is unchanged, which is why the pinned
+  fragments did not have to move with it. The page also stops offering
+  `reviewIngestion: false` as evidence about a CLI command: the flag is a
+  statement about MCP tools, and the page now says so and names the serve slice
+  as what moves it.
 
   Naming `security.secretScan` as in force left a second gap in the same
   paragraph: a scanning control announced, in a document about `theurian
   ingest`, with nothing saying where it runs. The paragraph now carries the
-  bound — the scan covers the approval gate and the index build, `theurian
+  bound — the scan covers the approval gate, the index build and review
+  ingestion, `theurian
   ingest` runs no scan of its own, and `theurian index build` scans every body it
   indexes, with the source anchors and relation notes served beside them, and
   reports rather than refusing — worded verbatim from the schema's
   own `security.secretScan` description (SEC-11,
   [#198](https://github.com/theurian/theurian/issues/198),
-  [#329](https://github.com/theurian/theurian/issues/329)). The bound widened
-  before this entry shipped: #329 made the index build SEC-11's second control,
-  and both surfaces moved together because the clause is derived from the schema
+  [#329](https://github.com/theurian/theurian/issues/329),
+  [#479](https://github.com/theurian/theurian/issues/479)). The bound widened
+  twice before this entry shipped: #329 made the index build SEC-11's second
+  control and ADR-0030 decision 4 made review ingestion its third, and both
+  surfaces moved together each time because the clause is derived from the schema
   and matched byte for byte in the document.
 
   **What holds the two surfaces together is four pins, and the reach is the
@@ -322,12 +338,14 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   [ADR-0030](../../docs/adr/0030-github-review-ingestion-spawns-gh.md) slice 1
   landed the adapter, so `infrastructure/github/` **holds** one;
   `providers.review.repositories` **is** read, and enforced before any process
-  is spawned, so the allowlist protects the review-ingestion path — which no
-  command reaches yet, which is the sentence `ingest.md` now carries in place of
-  "it protects no one"; and `.theurian/config.yaml` is read for **two** keys,
-  `security.secretScan` and the allowlist. `reviewIngestion: false` is still
+  is spawned, so the allowlist protects the review-ingestion path — reached by
+  `theurian review ingest` since slice 2, which is the sentence `ingest.md` now
+  carries in place of "it protects no one"; and `.theurian/config.yaml` is read
+  for **three** keys, `security.secretScan`, the allowlist and
+  `providers.review.redactParticipantNames`. `reviewIngestion: false` is still
   what `system.capabilities` reports, and it now means "no ingestion call
-  surface is callable" rather than "nothing reaches GitHub". The rationale above
+  surface is callable" rather than "nothing reaches GitHub" — and not "nothing
+  lands on disk" either, which the CLI verb does. The rationale above
   is in the past tense for the same reason. The two sentences beginning "It is
   not one" and "That file itself *is* read" are the exception and keep their
   published wording:

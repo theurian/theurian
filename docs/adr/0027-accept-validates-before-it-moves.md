@@ -662,6 +662,16 @@ commit updates it rather than silencing it.
 > two keys, and `test_config_key_call_sites.py`'s reader scan records those
 > sites rather than their absence. The paragraph above stays as the state this decision was
 > taken against, which is what an amendment keeps and a rewrite loses.
+>
+> **Amended again 2026-09-07, by ADR-0030 slice 2, and the count is why this
+> note exists rather than an edit above it.** A third key joined the same day:
+> `providers.review.redactParticipantNames`, R-12's ingestion-time redaction
+> switch (decision 3), read by the same module and applied by the review landing
+> gate. Slice 1's "two keys" therefore stands as slice 1's measurement and not as
+> today's. The live count is not a sentence in this ADR at all — it is
+> `test_config_key_call_sites.py`'s `WATCHED_SPELLINGS` reader scan and
+> `tools/audit/config_object_claims.py`'s `KEYS_WITH_A_READER`, both of which go
+> RED when a fourth arrives.
 
 ## Consequences
 

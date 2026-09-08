@@ -605,6 +605,55 @@ Ingested review history contains author identity and opinions.
   The SQLite serving store built from it is the deletable, derived half, and it
   rebuilds from those files.
 
+**Retention: an upstream deletion does not propagate, and that is the trade this
+design makes.** Durability and propagation are the same switch, and
+[ADR-0030](docs/adr/0030-github-review-ingestion-spawns-gh.md) decision 3 chose
+durability. A comment edited or deleted on GitHub therefore stays in
+`.theurian/review/` as the run that fetched it landed it: a later run refreshes
+what upstream still returns and **never deletes** what it no longer does — the
+vanished record keeps its file and its stamp saying which run last saw it.
+Nothing else revisits a landed file, so a record no later run fetches does not
+change. A record the run *does* fetch is refreshed by writing a sibling
+temporary and renaming it over the file, never by truncating the file in place —
+so a run **interrupted** mid-write costs that refresh and not the copy already
+on disk, which for an artefact with no rebuild is the difference between a stale
+record and none. Interrupted is the word: nothing `fsync`s the temporary before
+the rename, so a power loss can still leave the rename without the bytes. That
+residual is recorded in `ReviewEvidenceStore._write_one` rather than closed —
+closing it means measuring two `fsync` calls per record on a path that writes
+one file per thread, per submission and per pull request.
+
+**Removing an ingested comment is a manual operation.** Today it is one step:
+delete that record's file under `.theurian/review/`. The file *is* the record,
+and no other copy exists — there is no serving store to reconcile yet. When
+ADR-0030's serve slice lands the SQLite store built from these files, the
+remediation becomes two steps: delete the file, then rebuild the derived store,
+which is the deletable half by construction. If the project commits
+`.theurian/review/` — Theurian does not git-ignore it, and whether to commit it
+is the project's decision — then deleting the file is a Git history question as
+well, on the same terms as any other committed content.
+
+**Display names are the part you can decide before ingestion, not after.**
+`providers.review.redactParticipantNames` in `.theurian/config.yaml` is `false`
+by default; set to `true`, `theurian review ingest` replaces every participant's
+display name with one fixed placeholder before the record becomes a file, and
+keeps the provider's stable id, so identity graphs survive the redaction. It is
+read at ingestion and applied at landing, so it governs what a run writes rather
+than what is already on disk.
+
+**Where GitHub gives no stable id, the id that lands is a pseudonym rather than
+the login.** The adapter records `external_id` as *node id or login*, so an
+answer that carries no `id` for an author would otherwise put that author's login
+— a name, under a setting turned on to remove names — into the record. Under
+redaction such an id is replaced by `redacted~` and a truncated SHA-256 of it:
+deterministic, so the same person keeps one identity across runs and projects,
+and unsalted for the same reason. The `~` is deliberate — it is outside GitHub's
+login charset, so a landed `redacted~…` is a substitution Theurian wrote and can
+never be an account somebody registered. Read that as *the login is not in the file*,
+not as *the login cannot be recovered*: the input space is small enough to
+enumerate, so anyone holding a landed record and a list of candidate logins can
+test them. Ids GitHub did answer with are kept verbatim.
+
 If you operate Theurian somewhere with data-protection obligations, treat the
 canonical store as containing personal data and apply your normal retention
 policy to `.theurian/`.

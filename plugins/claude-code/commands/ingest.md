@@ -26,20 +26,29 @@ Report what was ingested by source type and how many documents changed.
 - Ingestion never creates approved knowledge. Promotion requires
   `/theurian:propose` followed by human review and a merged pull request.
 - Review history from GitHub is **not ingested by this command**:
-  `system.capabilities` reports `reviewIngestion: false`, and `theurian ingest`
+  `theurian ingest`
   reads only local data: files under `.theurian/`, plus three `git` reads — the
   repository root (`rev-parse --show-toplevel`), HEAD (`rev-parse HEAD`), and
   the `origin` URL (`remote get-url origin`). The allowlist in
   `.theurian/config.yaml` is read and enforced (SEC-10, ADR-0030 decision 2):
   `security/review_allowlist.py` refuses a repository
   `providers.review.repositories` does not name, before any process is spawned.
-  It protects a path no command exposes yet, so do not tell the user that
-  listing a repository has turned anything on. That file is read for two keys:
-  `security/project_config.py` takes `security.secretScan` and
-  `providers.review.repositories` from it and nothing else (ADR-0027 decision 3,
-  ADR-0030 decision 2). The first selects a control this command never reaches:
-  it covers the approval gate and the index build — `theurian ingest` runs no
-  scan of its own, and
+  It protects a different command — `theurian review ingest`, which does fetch
+  review history and lands it as durable files under `.theurian/review/` — so do
+  not tell the user that listing a repository has turned anything on here.
+  `system.capabilities` reports `reviewIngestion: false`, and that flag is a
+  statement about **MCP tools**: no tool exposes review ingestion, which is why
+  it is a separate CLI verb the operator runs, and ADR-0030's serve slice is what
+  moves the flag. That file is
+  read for three keys:
+  `security/project_config.py` takes `security.secretScan`,
+  `providers.review.repositories` and `providers.review.redactParticipantNames`
+  from it and nothing else (ADR-0027 decision 3, ADR-0030 decisions 2 and 3).
+  The third is R-12's ingestion-time redaction switch and belongs to that same
+  other command: setting it redacts nothing `theurian ingest` writes. The first
+  selects a control this command never reaches:
+  it covers the approval gate, the index build and review ingestion —
+  `theurian ingest` runs no scan of its own, and
   `theurian index build` scans every body it indexes, with the source anchors
   and relation notes served beside them, and reports rather than refusing
   (SEC-11,

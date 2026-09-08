@@ -26,15 +26,17 @@ much. `infrastructure/github/` **holds the adapter now**
 ([ADR-0030](../adr/0030-github-review-ingestion-spawns-gh.md) slice 1): it
 fetches pull requests, review threads, inline comments and resolution state by
 spawning the operator's `gh`, over public repositories the project has
-allowlisted. What is still missing is everything after the fetch — nothing lands
-on disk, `theurian ingest` reads local files only, no code path generates a
-candidate, and no CLI command or MCP tool reaches the adapter, so
-`system.capabilities` reports `reviewIngestion: false`, pinned by
+allowlisted. Slice 2 added the landing half: `theurian review ingest` screens
+each fetched record and writes what the gate clears under `.theurian/review/`.
+What is still missing is everything after that — `theurian ingest` reads local
+files only, no code path generates a candidate, and **no MCP tool** reaches any
+of it, so `system.capabilities` reports `reviewIngestion: false`, pinned by
 `test_capabilities_report_what_is_and_is_not_built`. So the sections below that
 describe *collection* — the landing stages, classification, candidate
 generation, provider access and privacy handling — describe a **design**, not
-what runs today; the fetch half of the first stage is the exception, and it is
-named as such where it appears. Collection is
+what runs today. Three parts of it are the exception and are named as such where
+they appear: the fetch half of the first stage, the landing half beside it, and
+the ingestion-time privacy control the landing gate applies. Collection is
 [#479](https://github.com/theurian/theurian/issues/479)'s, designed in
 [ADR-0030](../adr/0030-github-review-ingestion-spawns-gh.md) and sliced there;
 [#368](https://github.com/theurian/theurian/issues/368) is the other arm of FR-V
@@ -192,14 +194,32 @@ Review data contains author identity and opinions.
 
 - Identity is the provider's stable ID plus a display name, so redacting the name
   does not break the identity graph.
-- Redaction at ingestion is configurable.
+- Redaction at ingestion is configurable, and **this half is shipped rather than
+  designed** (R-12, ADR-0030 decision 3).
+  `providers.review.redactParticipantNames` is a boolean, default `false`, read
+  by `security/project_config.py::read_review_participant_redaction` and applied
+  by `application/review_landing_gate.py` before a record becomes a file: every
+  participant's `display_name` becomes the one fixed `REDACTED_DISPLAY_NAME`
+  placeholder, and their `external_id` is kept where it is the provider's node id
+  and replaced by a stable pseudonym where it is the author's own login.
+  `tests/unit/test_review_landing_gate.py::test_no_participant_reachable_from_a_landed_record_keeps_its_name`
+  walks every position a record can hold a participant in, so the claim is over
+  the record rather than over the fields someone remembered.
+  The login case is the adapter's fallback — `external_id` is *node id or login*,
+  so an answer carrying no `id` puts author-chosen text there — and leaving it
+  alone made *enabling* this setting publish the name it promised to remove
+  (PR #596 round 1). `...::test_a_login_fallback_id_is_pseudonymised_before_it_can_land`
+  is what fails if the raw login can land again.
 - Ingested review evidence is the **source**, not a cache: upstream comments are
   editable and deletable, so a discarded local copy of a deleted comment is data
   loss and no refetch recovers it. [ADR-0030](../adr/0030-github-review-ingestion-spawns-gh.md)
   decision 3 lands it as durable files under `.theurian/review/` and makes the
-  SQLite serving store the derived, deletable half. Nothing in `src/` names that
-  path yet, so this sentence has no fact-side constant to be pinned against until
-  ADR-0030's slice 2 introduces one.
+  SQLite serving store the derived, deletable half. Slice 2 gave that path a
+  fact-side constant: `ProjectPaths.review` composes it, so it joins the
+  containment sweep in
+  `tests/unit/test_project_paths_containment.py`, and it is deliberately not a
+  member of `DERIVED_SUBDIRECTORIES` — the property this bullet asserts is the
+  reason it must not be.
 - The approved knowledge that results is a *rule*, not a quotation — attributed
   to evidence rather than to a person's opinion.
 
@@ -212,9 +232,35 @@ domain change. The port returns evidence only: it never classifies, generalizes,
 or calls a model, so a provider adapter stays a thin, testable mapping.
 
 Repositories must be allowlisted in `.theurian/config.yaml` before one is
-contacted (SEC-10). That is the design obligation on the adapter, not current
-behaviour. `security/project_config.py` reads that file for `security.secretScan`
-alone, and nothing in `src/` reads `providers.review.repositories`, so building
-the allowlist reader is the first thing an external fetch path owes
-([#429](https://github.com/theurian/theurian/issues/429) owns it; #129 was closed
-on the wording rather than the control).
+contacted (SEC-10). That is shipped behaviour on the `gh` path now, not a design
+obligation on the adapter. `security/project_config.py` is the one module in
+`src/` that opens that file, and it reads **three** keys out of it and nothing
+else: `security.secretScan`, `providers.review.repositories` and
+`providers.review.redactParticipantNames` (ADR-0027 decision 3, ADR-0030
+decisions 2 and 3). `security/review_allowlist.py` is what the second key
+reaches, and it refuses a repository the list does not name **before any process
+is spawned** — an unallowlisted repository produces no spawn at all rather than a
+filtered result, which
+`tests/integration/test_gh_review_provider.py::test_an_unallowlisted_repository_starts_no_process`
+asserts by requiring the spawn recorder to be *empty*.
+[#129](https://github.com/theurian/theurian/issues/129) was closed on the
+wording rather than on the control, so ADR-0030 decision 2 is what actually
+built it.
+
+**That reader population is a measurement, not a sentence in this file.** Its key
+is
+
+```console
+$ git grep -n "read_secret_scan_policy\|read_review_repositories\|read_review_participant_redaction" -- packages/theurian-core/src
+```
+
+and what recomputes it are `tests/unit/test_config_key_call_sites.py`'s
+`CONFIG_KEY_READER_SITES` and `WATCHED_SPELLINGS`, plus
+`tools/audit/config_object_claims.py`'s `KEYS_WITH_A_READER`. A fourth key, or a
+second module opening the file, reddens those rather than leaving this paragraph
+quietly wrong.
+
+What is still owed on the fetch side is the raw-URL controls — a scheme allowlist
+and private-network rejection — against the OpenAPI `$ref` fetcher, which is a
+different code path from `gh` and is not covered by anything above
+([#429](https://github.com/theurian/theurian/issues/429) owns it).

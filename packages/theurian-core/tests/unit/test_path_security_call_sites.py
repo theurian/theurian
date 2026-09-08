@@ -155,6 +155,19 @@ _CALL_SITES: Final = (
         ),
     ),
     _CallSite(
+        module="infrastructure/review_evidence/reader.py",
+        function="EvidenceReader._read_one",
+        form=REQUESTED,
+        guarded_at="",
+        why=(
+            "the relative path is three `iterdir()` entry names joined by `/`, "
+            "unresolved -- `migration_loader._load_one`'s shape, over "
+            "`.theurian/review/` rather than `.theurian/migrations/`. Nothing "
+            "`resolve()`s on the way, so the route walk inside `read_source_file` "
+            "is live here and needs no upstream of its own"
+        ),
+    ),
+    _CallSite(
         module="security/project_config.py",
         function="_read_document",
         form=REQUESTED,

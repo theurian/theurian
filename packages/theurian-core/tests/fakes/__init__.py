@@ -9,15 +9,18 @@ from fakes.clock import FrozenClock
 from fakes.finding_source import FakeReviewFindingSource
 from fakes.ids import SeededIdGenerator
 from fakes.pages import truncating, whole
+from fakes.review_provider import CannedReviewProvider, ReadKey
 from fakes.setup import FakeMcpConfig, FakeService
 from fakes.store import InMemoryWriter
 
 __all__ = [
+    "CannedReviewProvider",
     "FakeMcpConfig",
     "FakeReviewFindingSource",
     "FakeService",
     "FrozenClock",
     "InMemoryWriter",
+    "ReadKey",
     "SeededIdGenerator",
     "truncating",
     "whole",

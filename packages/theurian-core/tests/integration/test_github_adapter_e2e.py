@@ -54,6 +54,7 @@ import pytest
 
 from theurian.domain.enums import ReviewThreadState
 from theurian.domain.identifiers import ProjectId
+from theurian.domain.ports.review_provider import PullRequestListing
 from theurian.domain.review import ReviewComment, ReviewEvent, ReviewParticipant, ReviewThread
 from theurian.domain.review_ingest import RefusalGrade, ReviewIngestRefusedError
 from theurian.infrastructure.github.environment import FORWARDED_BY_VALUE
@@ -170,8 +171,24 @@ def provider(tmp_path: Path, _skip_reason: str | None) -> GitHubReviewProvider:
 
 
 async def _some_events(provider: GitHubReviewProvider, limit: int = 20) -> tuple[ReviewEvent, ...]:
+    """The window's built events, refusing to hide a pull request it could not build.
+
+    A skip is a **finding** here rather than an environment condition, which is
+    why it asserts instead of joining ``_read_or_skip``'s degradation: this reads
+    a live repository whose pull requests all sit inside the adapter's recorded
+    caps, so one the adapter cannot build means the shape GitHub answers with has
+    moved. Returning ``listing.events`` alone would let exactly that disappear.
+    """
     result = await _read_or_skip(provider.list_pull_requests(_PROJECT, _REPOSITORY, limit=limit))
-    return cast("tuple[ReviewEvent, ...]", result)
+    listing = cast("PullRequestListing", result)
+
+    assert listing.skipped == (), (
+        f"the adapter could not build a record for pull requests "
+        f"{[skip.number for skip in listing.skipped]} of {_REPOSITORY}: "
+        f"{[skip.envelope.summary for skip in listing.skipped]}"
+    )
+
+    return listing.events
 
 
 async def _threads_of(
@@ -300,11 +317,14 @@ def _event_for(number: int) -> ReviewEvent:
         repository=_REPOSITORY,
         number=number,
         title=f"pull request #{number}",
+        body="",
         author=ReviewParticipant(provider="github", external_id="x", display_name="x"),
         created_at=datetime(2026, 1, 1, tzinfo=UTC),
         url=f"https://github.com/{_REPOSITORY}/pull/{number}",
         head_commit="0" * 40,
         base_commit="0" * 40,
+        head_ref_name="placeholder",
+        labels=(),
     )
 
 

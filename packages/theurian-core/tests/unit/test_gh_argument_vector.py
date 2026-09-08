@@ -15,16 +15,24 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import re
 from typing import Final
 
 import pytest
 
 import theurian
-from theurian.infrastructure.github import gh_cli, limits, queries
+from theurian.infrastructure.github import gh_cli, limits, queries, response, review_provider
 
 pytestmark = pytest.mark.unit
 
 GH_CLI_SOURCE: Final = pathlib.Path(gh_cli.__file__)
+
+#: The two modules that read a GraphQL answer: the adapter and the helpers it
+#: reads every field through.
+READING_SOURCES: Final[tuple[pathlib.Path, ...]] = (
+    pathlib.Path(review_provider.__file__),
+    pathlib.Path(response.__file__),
+)
 
 #: The package as *imported*, the reckoning ``test_network_call_sites.py`` uses:
 #: a hand-built relative path can drift from the installed package and would then
@@ -72,6 +80,26 @@ _NAMING_NODES: Final = (
 #: What ``gh`` would be told to do if this adapter ever followed a next-page
 #: reference the *response* supplies rather than a cursor of its own choosing.
 PAGINATE_FLAG: Final = "--paginate"
+
+
+def _documents() -> dict[str, str]:
+    """Every GraphQL document ``queries.py`` declares, read off the module itself.
+
+    The population is the module rather than a pair of names written here. A
+    third document -- one with a ``first:`` literal nobody pinned, or one reaching
+    ``gh`` without the pinned hostname -- is precisely what a transcription cannot
+    see, and this file makes four separate claims about "the documents".
+
+    The key is a module-level ``str`` whose text opens a GraphQL operation.
+    :func:`test_the_document_scan_finds_the_documents_and_nothing_else` is its
+    can-fail companion: it holds the key to the documents that exist and to the
+    module constants it must not sweep up.
+    """
+    return {
+        name: value
+        for name, value in vars(queries).items()
+        if isinstance(value, str) and value.startswith("query(")
+    }
 
 
 def _vector(document: str, variables: dict[str, str | int]) -> tuple[str, ...]:
@@ -218,7 +246,7 @@ def test_the_hostname_is_pinned_in_every_vector_that_makes_a_request() -> None:
         assert "--hostname" in arguments, arguments
         assert arguments[arguments.index("--hostname") + 1] == gh_cli.GITHUB_HOSTNAME, arguments
 
-    for document in (queries.PULL_REQUESTS, queries.REVIEW_THREADS):
+    for document in _documents().values():
         vector = _vector(document, {"owner": "acme", "name": "order-service"})
         assert "--hostname" in vector
         assert vector[vector.index("--hostname") + 1] == "github.com"
@@ -231,7 +259,7 @@ def test_paginate_is_absent_from_every_vector() -> None:
     exactly what it follows is behaviour of a binary this design pins only the
     version of. A cursor in a typed variable cannot become a destination.
     """
-    for document in (queries.PULL_REQUESTS, queries.REVIEW_THREADS):
+    for document in _documents().values():
         vector = _vector(document, {"owner": "acme", "name": "order-service"})
         assert PAGINATE_FLAG not in vector
 
@@ -322,9 +350,11 @@ def test_the_spawn_module_reaches_no_shell() -> None:
 def test_the_documents_interpolate_nothing() -> None:
     """A GraphQL document built by formatting is a document a name can be injected into.
 
-    The two documents are module constants with no ``{`` placeholders and no
-    f-string anywhere in their module, so the only thing that varies between two
-    requests is the value of a declared variable.
+    Every document is a module constant with no ``{`` placeholders and no f-string
+    anywhere in its module, so the only thing that varies between two requests is
+    the value of a declared variable. The ``%s`` half runs over
+    :func:`_documents` rather than over two names, so a document added later is
+    covered by the same sentence.
     """
     tree = ast.parse(
         pathlib.Path(queries.__file__).read_text(encoding="utf-8"),
@@ -333,19 +363,30 @@ def test_the_documents_interpolate_nothing() -> None:
     formatted = [node for node in ast.walk(tree) if isinstance(node, ast.JoinedStr)]
 
     assert not formatted, "a GraphQL document module builds a string by interpolation"
-    assert "%s" not in queries.PULL_REQUESTS
-    assert "%s" not in queries.REVIEW_THREADS
+    for name, document in _documents().items():
+        assert "%s" not in document, f"`queries.{name}` carries a printf placeholder"
 
 
 #: Every page size a document spells as a literal, with the constant whose value
 #: it must be, as ``(the connection's field name, the constant's name)``.
 #:
-#: Two connections, because both are read against a cap the *provider* enforces
+#: Three connections, because each is read against a cap the *provider* enforces
 #: while the number that actually reaches GitHub is the literal here.
+#:
+#: **Membership is checked, not just each row.**
+#: :func:`test_every_first_literal_in_a_document_is_pinned_to_a_constant` reads
+#: the ``first:`` literals out of the documents themselves, so a connection added
+#: with a page size and no row here reddens rather than passing unexamined --
+#: which is what a transcribed table cannot do for itself.
 _PAGE_SIZE_LITERALS: Final[tuple[tuple[str, str, str], ...]] = (
     ("comments", "MAX_COMMENTS_PER_THREAD", "REVIEW_THREADS"),
     ("closingIssuesReferences", "MAX_LINKED_ISSUES", "PULL_REQUESTS"),
+    ("labels", "MAX_LABELS_PER_PULL_REQUEST", "PULL_REQUESTS"),
 )
+
+#: How a document spells a page size it fixes in the literal rather than binding
+#: to the ``$first`` variable: ``<connection>(first: <number>)``.
+_FIRST_LITERAL: Final = re.compile(r"(\w+)\(first: (\d+)\)")
 
 
 @pytest.mark.parametrize(
@@ -384,30 +425,159 @@ def test_a_page_size_the_document_spells_is_the_constant_that_names_the_cap(
     )
 
 
+#: The one key the adapter reads that no document selects, with the reason:
+#: ``data`` is the envelope every GraphQL answer arrives wrapped in, not a field
+#: a document can ask for. An exemption with a reason rather than a filter,
+#: because the next name added here is meant to have to justify itself.
+_NOT_A_SELECTED_FIELD: Final[frozenset[str]] = frozenset({"data"})
+
+
+def _keys_read_from_a_response() -> set[str]:
+    """Every literal key the ``gh`` adapter reads out of an answer, from its syntax.
+
+    The population is ``.get("<name>")`` across :data:`READING_SOURCES`, read off
+    the source rather than transcribed. That is the direction that matters: a
+    mapping is driven by canned payloads a test writes, so a field the adapter
+    reads and no document selects stays green against the stand-in child and
+    arrives absent from a real ``gh`` -- which is the read producing an empty
+    string, a ``None``, or a refusal, for ever, with every test still passing.
+    """
+    keys: set[str] = set()
+    for source in READING_SOURCES:
+        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+            if not (isinstance(node, ast.Call) and len(node.args) == 1):
+                continue
+            function, argument = node.func, node.args[0]
+            if (
+                isinstance(function, ast.Attribute)
+                and function.attr == "get"
+                and isinstance(argument, ast.Constant)
+                and isinstance(argument.value, str)
+            ):
+                keys.add(argument.value)
+    return keys
+
+
+def test_every_field_the_adapter_reads_is_one_a_document_asks_for() -> None:
+    """RED means a read whose field no query selects, which is a read of nothing.
+
+    The other direction from :func:`test_every_first_literal_in_a_document_is_pinned_to_a_constant`
+    and the one a canned-payload suite cannot take by itself: those tests answer
+    with whatever the fixture wrote, so a mapping added without its selection is
+    green here and empty in production. `body`, `headRefName`, `milestone`,
+    `labels`, `state` and `submittedAt` all arrived that way and are held by this.
+    """
+    selected = "\n".join(_documents().values())
+    read = _keys_read_from_a_response()
+
+    assert len(read) > 20, (
+        f"the syntax scan found {len(read)} keys, too few to be the real population "
+        "-- the adapter has moved and this check is watching nothing."
+    )
+    unselected = sorted(
+        key
+        for key in read - _NOT_A_SELECTED_FIELD
+        if not re.search(rf"\b{re.escape(key)}\b", selected)
+    )
+
+    assert not unselected, (
+        f"the adapter reads {unselected} out of an answer and no document asks for "
+        f"any of them. Add the selection to the document in the same change as the "
+        f"read, or -- if the key is part of the response envelope rather than a "
+        f"field -- record it in `_NOT_A_SELECTED_FIELD` with the reason."
+    )
+
+
+def test_the_field_coverage_check_notices_a_read_with_no_selection() -> None:
+    """The can-fail companion: the check above passes trivially if its key is blind.
+
+    The planted key is a field name no document carries, matched the same way the
+    real ones are. Without this, a regex that never matches and a scan that finds
+    nothing both report the same clean result a correct check does.
+    """
+    selected = "\n".join(_documents().values())
+
+    assert not re.search(r"\bviewerCanDelete\b", selected), (
+        "a document now selects the planted field, so this control no longer "
+        "demonstrates that an unselected key would be caught"
+    )
+
+
+def test_the_document_scan_finds_the_documents_and_nothing_else() -> None:
+    """The can-fail companion for :func:`_documents`, in both directions.
+
+    A scan that found nothing would make every loop over it vacuously green, and a
+    scan that swept up the module's other string constants would report a
+    ``%s``-free frozenset as a document. So the key is held to the documents that
+    exist *and* to the names it must not collect.
+    """
+    found = _documents()
+
+    assert set(found) >= {"PULL_REQUESTS", "REVIEW_THREADS"}, (
+        f"the document scan found {sorted(found)}, which does not include the "
+        "documents `queries.py` declares. Every loop over `_documents()` is then "
+        "watching a smaller population than it claims."
+    )
+    assert not {"VARIABLE_NAMES", "STATUS_ROLLUP_STATES"} & set(found), (
+        "the scan collected a module constant that is not a GraphQL document"
+    )
+
+
+def test_every_first_literal_in_a_document_is_pinned_to_a_constant() -> None:
+    """Membership, so :data:`_PAGE_SIZE_LITERALS` cannot become a stale subset.
+
+    The row-by-row test above holds each pinned literal to its constant. It says
+    nothing about a connection nobody pinned: a document gaining
+    ``reviews(first: 30)`` with no row here leaves that page size a number in a
+    string, unnamed by any constant, unreported when it overflows -- the silent
+    truncation ADR-0030 clause 7's caps exist to replace with a report.
+
+    The population is therefore read out of the documents, not out of the table.
+    ``first: $first`` is deliberately invisible to the key: a bound variable is
+    already ``PAGE_SIZE`` at the call site and is followed by a cursor.
+    """
+    pinned = {(connection, document) for connection, _, document in _PAGE_SIZE_LITERALS}
+    spelled = {
+        (connection, name)
+        for name, document in _documents().items()
+        for connection, _ in _FIRST_LITERAL.findall(document)
+    }
+
+    assert spelled, "no document spells a `first:` literal, so this asserts nothing"
+    assert spelled == pinned, (
+        f"the documents spell {sorted(spelled)} and `_PAGE_SIZE_LITERALS` pins "
+        f"{sorted(pinned)}. A `first:` literal with no row is a page size no "
+        f"constant names and no refusal reports; a row with no literal pins a "
+        f"connection the documents no longer ask for."
+    )
+
+
 #: The bounds whose test-side restatement lives **here**, with the value.
 #:
 #: **The admission rule, so the next constant does not have to be argued about.**
 #: A bound belongs in this table when nothing else restates it test-side. A
 #: second restatement in a second file is a second copy free to drift from the
 #: first, which is the failure this whole table exists to prevent one level up.
-#: So four of ``limits.py``'s constants are deliberately absent, each restated by
-#: the file that *drives* it:
+#: So two of ``limits.py``'s constants are deliberately absent, each restated by
+#: the file that *drives* it -- :data:`_RESTATED_BY_THE_FILE_THAT_DRIVES_IT`,
+#: which is also where the pointer to each lives.
 #:
-#: * ``MAX_PROBE_STDOUT_BYTES`` -- ``test_gh_review_provider.py``'s
-#:   ``RECORDED_PROBE_STDOUT_BYTES``, which sizes a probe's stdout to the
-#:   boundary and one byte past it;
-#: * ``MAX_CHILD_STDERR_BYTES`` -- ``test_gh_bounded_read.py``'s
-#:   ``RECORDED_STDERR_BYTES``, where it is observed as a memory bound;
-#: * ``MAX_GH_CONFIG_BYTES`` and ``MAX_REPOSITORY_CHARS`` -- the two
-#:   fixture-independence rebuilds, in their own files.
+#: (A sentence here used to name ``MAX_GH_CONFIG_BYTES`` and
+#: ``MAX_REPOSITORY_CHARS`` in that group as well. Neither is a constant of
+#: ``limits.py``: they live in ``transport_guard.py`` and
+#: ``security/review_allowlist.py``, so this table was never the place they were
+#: absent from. Measured while adding the run-level ceilings below.)
 #:
-#: Three more are absent for a different reason: ``MAX_READ_BYTES_PER_CALL``,
-#: ``MAX_SPAWNS_PER_CALL`` and ``MAX_SECONDS_PER_CALL`` are *derived*, so
-#: restating a value here would pin a product rather than the derivation.
-#: :func:`test_the_derived_per_call_ceiling_is_still_the_product_of_its_factors`
-#: and :func:`test_the_derived_spawn_and_time_ceilings_are_still_their_derivations`
-#: are their pins, and the figures ``limits.py``'s prose names are entailed by
-#: those plus the factors below.
+#: The rest are absent for a different reason: they are *derived*, so restating a
+#: value here would pin a product rather than the derivation --
+#: :data:`_PINNED_AS_A_DERIVATION` names them beside the test that pins each, and
+#: the figures ``limits.py``'s prose names are entailed by those plus the factors
+#: below.
+#:
+#: **The three-way split is exhaustive, and that is measured rather than stated**
+#: -- :func:`test_every_recorded_limit_has_a_test_side_home` walks the module's
+#: own annotated assignments, so a constant added with no home reddens there
+#: instead of being priced by nobody.
 RECORDED_BOUNDS: Final[tuple[tuple[str, object], ...]] = (
     ("REQUEST_TIMEOUT_SECONDS", 30.0),
     ("REAP_SECONDS", 5.0),
@@ -416,9 +586,93 @@ RECORDED_BOUNDS: Final[tuple[tuple[str, object], ...]] = (
     ("MAX_PULL_REQUESTS", 500),
     ("MAX_COMMENTS_PER_THREAD", 100),
     ("MAX_LINKED_ISSUES", 20),
+    ("MAX_LABELS_PER_PULL_REQUEST", 50),
     ("MAX_RESPONSE_BYTES", 8 * 1024 * 1024),
     ("GH_VERSION_FLOOR", (2, 86, 0)),
 )
+
+#: The bounds a **driving** file restates, keyed to where that restatement is.
+#: Each is observed at its own boundary there, which is a stronger pin than an
+#: equality here and is why a second one here would only be a copy to drift.
+_RESTATED_BY_THE_FILE_THAT_DRIVES_IT: Final[dict[str, str]] = {
+    "MAX_PROBE_STDOUT_BYTES": (
+        "test_gh_review_provider.py's RECORDED_PROBE_STDOUT_BYTES, which sizes a "
+        "probe's stdout to the boundary and one byte past it"
+    ),
+    "MAX_CHILD_STDERR_BYTES": (
+        "test_gh_bounded_read.py's RECORDED_STDERR_BYTES, where it is observed as a memory bound"
+    ),
+}
+
+#: The **derived** bounds, keyed to the test that holds each one's derivation.
+#: A value written out here would pin the product and let the derivation become a
+#: literal, which is the drift these constants exist to prevent.
+_PER_CALL_BYTES_PIN: Final = "test_the_derived_per_call_ceiling_is_still_the_product_of_its_factors"
+_PER_CALL_PIN: Final = "test_the_derived_spawn_and_time_ceilings_are_still_their_derivations"
+_PER_RUN_PIN: Final = "test_the_run_level_ceilings_are_still_their_derivations"
+
+_PINNED_AS_A_DERIVATION: Final[dict[str, str]] = {
+    "MAX_READ_BYTES_PER_CALL": _PER_CALL_BYTES_PIN,
+    "MAX_SPAWNS_PER_CALL": _PER_CALL_PIN,
+    "MAX_SECONDS_PER_CALL": _PER_CALL_PIN,
+    "MAX_PORT_CALLS_PER_RUN": _PER_RUN_PIN,
+    "MAX_SPAWNS_PER_RUN": _PER_RUN_PIN,
+    "MAX_SECONDS_PER_RUN": _PER_RUN_PIN,
+    "MAX_READ_BYTES_PER_RUN": _PER_RUN_PIN,
+}
+
+
+def _limits_constants() -> set[str]:
+    """Every public module-level constant ``limits.py`` declares, from its source.
+
+    Read as annotated assignments rather than from ``dir(limits)``, which would
+    also answer with everything the module imported. Private names are excluded
+    because they are factors rather than published bounds -- ``_PROBE_SPAWNS`` is
+    the one, and it is restated as ``_RECORDED_PROBE_SPAWNS`` beside the test
+    that needs it not to be an identity.
+    """
+    source = pathlib.Path(limits.__file__).read_text(encoding="utf-8")
+    return {
+        node.target.id
+        for node in ast.parse(source).body
+        if isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+        and not node.target.id.startswith("_")
+    }
+
+
+def test_every_recorded_limit_has_a_test_side_home() -> None:
+    """The admission rule made exhaustive: a new cap cannot arrive unpriced.
+
+    ``RECORDED_BOUNDS``' own prose enumerated which constants sit elsewhere and
+    why, and an enumeration in prose is a list that goes stale silently -- it
+    already had, naming two constants that are not ``limits.py``'s at all. The
+    three homes are tables now and this walks the module against their union.
+
+    RED here means a bound was added and nothing test-side prices it: put its
+    value in :data:`RECORDED_BOUNDS`, point at the file that drives it in
+    :data:`_RESTATED_BY_THE_FILE_THAT_DRIVES_IT`, or -- if it is a product of
+    other constants -- give it a derivation pin and a row in
+    :data:`_PINNED_AS_A_DERIVATION`.
+    """
+    declared = _limits_constants()
+    homed = (
+        {name for name, _ in RECORDED_BOUNDS}
+        | set(_RESTATED_BY_THE_FILE_THAT_DRIVES_IT)
+        | set(_PINNED_AS_A_DERIVATION)
+    )
+
+    assert declared, "no annotated constant found in `limits.py`, so this walk sees nothing"
+    assert declared - homed == set(), (
+        f"`limits.py` declares {sorted(declared - homed)} and no table here prices "
+        f"them. A cap with no test-side home is a number the prose can move without "
+        f"anything noticing."
+    )
+    assert homed - declared == set(), (
+        f"{sorted(homed - declared)} is priced here and is not a constant of "
+        f"`limits.py`. A row for a name that moved to another module reads as "
+        f"coverage this file does not have."
+    )
 
 
 @pytest.mark.parametrize(
@@ -508,6 +762,54 @@ def test_the_derived_spawn_and_time_ceilings_are_still_their_derivations() -> No
         f"{limits.MAX_SPAWNS_PER_CALL * (limits.REQUEST_TIMEOUT_SECONDS + limits.REAP_SECONDS)}. "
         f"The wall-clock ceiling is recorded as a derivation so it cannot drift; if it "
         f"has become a literal, the prose beside it names a figure nothing computes."
+    )
+
+
+def test_the_run_level_ceilings_are_still_their_derivations() -> None:
+    """The same argument one grain up: what a whole ``review ingest`` run may spend.
+
+    The per-call ceilings above price one port call; a run makes ``1 + 2N`` of
+    them, so the products a caller has to price against are these. They are the
+    numbers the severity table's "work no recorded limit bounds" row is answered
+    with, and none of them is stated by any single constant.
+
+    **The ``1 + 2N`` shape is not asserted here**, because it is not this
+    module's to hold: it is a property of ``ReviewIngestService``, and
+    ``tests/unit/test_review_ingest_service.py::test_a_run_makes_one_listing_call_and_two_per_pull_request``
+    drives it against the real service. What is held here is that the constants
+    remain the products of their factors rather than becoming literals.
+
+    ``MAX_SPAWNS_PER_RUN`` counts the probes **once**, not once per call, which
+    is the one place the run-level derivation is not a multiple of the per-call
+    one: ``_ready`` memoises the probed ``gh`` per adapter instance.
+    """
+    assert limits.MAX_PORT_CALLS_PER_RUN == 1 + 2 * limits.MAX_PULL_REQUESTS, (
+        f"`MAX_PORT_CALLS_PER_RUN` is {limits.MAX_PORT_CALLS_PER_RUN} and one listing "
+        f"plus two reads per {limits.MAX_PULL_REQUESTS} pull requests is "
+        f"{1 + 2 * limits.MAX_PULL_REQUESTS}. A per-record read added or removed moves "
+        f"every product below with it."
+    )
+    assert (
+        limits.MAX_SPAWNS_PER_RUN
+        == _RECORDED_PROBE_SPAWNS + limits.MAX_PORT_CALLS_PER_RUN * limits.MAX_PAGES
+    ), (
+        f"`MAX_SPAWNS_PER_RUN` is {limits.MAX_SPAWNS_PER_RUN} and the two probes plus "
+        f"{limits.MAX_PORT_CALLS_PER_RUN} calls of {limits.MAX_PAGES} pages is "
+        f"{_RECORDED_PROBE_SPAWNS + limits.MAX_PORT_CALLS_PER_RUN * limits.MAX_PAGES}. The "
+        f"probes are counted once per run because the adapter memoises them."
+    )
+    assert limits.MAX_SECONDS_PER_RUN == limits.MAX_SPAWNS_PER_RUN * (
+        limits.REQUEST_TIMEOUT_SECONDS + limits.REAP_SECONDS
+    ), (
+        f"`MAX_SECONDS_PER_RUN` is {limits.MAX_SECONDS_PER_RUN} and its factors give "
+        f"{limits.MAX_SPAWNS_PER_RUN * (limits.REQUEST_TIMEOUT_SECONDS + limits.REAP_SECONDS)}."
+    )
+    assert (
+        limits.MAX_READ_BYTES_PER_RUN
+        == limits.MAX_PORT_CALLS_PER_RUN * limits.MAX_READ_BYTES_PER_CALL
+    ), (
+        f"`MAX_READ_BYTES_PER_RUN` is {limits.MAX_READ_BYTES_PER_RUN} and its factors "
+        f"give {limits.MAX_PORT_CALLS_PER_RUN * limits.MAX_READ_BYTES_PER_CALL}."
     )
 
 

@@ -52,11 +52,16 @@ allowlist, and an offline trailer read owes none.
 [ADR-0030](adr/0030-github-review-ingestion-spawns-gh.md) slice 1 shipped the
 adapter that does — `infrastructure/github/` spawns the operator's `gh` — and
 with it SEC-10's repository allowlist, which is now read and enforced before any
-process is spawned. The flag stayed `false` because no CLI command and no MCP
-tool reaches that code, so there is nothing for a client to call; from slice 3 it
-means *an ingestion call surface exists*, published beside a scope field. The
-window in between is a recorded residual: for two slices the machine-readable
-answer reads `false` while a fetch path ships. The raw-URL fetch controls — a
+process is spawned. Slice 2 added `theurian review ingest`, which reaches that
+code and lands evidence files under `.theurian/review/`, screened by an
+ingestion-time secret gate. The flag still reads `false`, because it speaks about
+the **MCP-client-callable surface** and nothing wider: `theurian review ingest`
+is an operator command, run by the operator in their own terminal, and **no MCP
+tool** reaches any of it — so there is still nothing here for a client to call.
+From slice 3 the flag means *an ingestion call surface exists*, published beside
+a scope field. The window in between is a recorded residual: for two slices the
+machine-readable answer reads `false` while a fetch path, and then a landing
+path, ships. The raw-URL fetch controls — a
 scheme allowlist and private-network rejection — stay owed against the OpenAPI
 `$ref` fetcher ([#429](https://github.com/theurian/theurian/issues/429)).
 
@@ -256,8 +261,12 @@ not; **absent** — effectively nothing.
   `domain/review.py`) is built, and since
   [ADR-0030](adr/0030-github-review-ingestion-spawns-gh.md) slice 1 so is the
   collection adapter: `infrastructure/github/` fetches pull requests, threads,
-  comments and resolution state over the operator's `gh`. Nothing lands on disk
-  and nothing exposes it — no CLI command, no MCP tool — so
+  comments and resolution state over the operator's `gh`. Slice 2 lands that
+  evidence on disk behind `theurian review ingest` — durable files under
+  `.theurian/review/`, each record screened by the ingestion-time secret gate and
+  optionally redacted of participant display names before it becomes a file. What
+  is still absent is the serving half: no SQLite store is built from those files,
+  no `review.search` exists, and no MCP tool exposes any of it, so
   `reviewIngestion` stays `false` until the serve slice.
 - **Multi-vendor integration** — neutral wire, Claude-only bootstrap (§0).
 
