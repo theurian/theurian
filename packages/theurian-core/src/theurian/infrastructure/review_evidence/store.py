@@ -67,6 +67,7 @@ from theurian.infrastructure.review_evidence.cures import (
     UNREADABLE_CURE,
     UNWRITABLE_CURE,
     folded_component_cure,
+    occupied_directory_cure,
     oversized_record_cure,
     planted_artefact_cure,
     planted_link_cure,
@@ -272,11 +273,18 @@ class EvidenceRecord:
         if not self.repository:
             raise InvariantViolationError("EvidenceRecord.repository must not be empty")
         if self.anchor.provider != self.provider:
+            # Both values come out of a landed file on the read path -- `_stored`
+            # builds this object from the document -- so `!r` alone bounded
+            # nothing: a 2,000,000-character `provider` produced a
+            # 2,000,394-character refusal (measured). The same class round two
+            # closed for `formatVersion` and `kind` one function over; this is
+            # the member the published-sentence walk did not reach until it was
+            # widened to the raise sites `_read_one` republishes.
             raise InvariantViolationError(
-                f"EvidenceRecord names provider {self.provider!r} and carries an anchor "
-                f"from {self.anchor.provider!r}. The anchor is the only pointer back to "
-                "material Theurian cannot re-fetch, so one that names another provider "
-                "is a record that cannot be traced."
+                f"EvidenceRecord names provider {bounded_quote(self.provider)} and carries "
+                f"an anchor from {bounded_quote(self.anchor.provider)}. The anchor is the "
+                "only pointer back to material Theurian cannot re-fetch, so one that names "
+                "another provider is a record that cannot be traced."
             )
 
     @property
@@ -471,15 +479,21 @@ class ReviewEvidenceStore:
         ``_EXEMPT_EXPRESSIONS`` in ``tests/unit/test_review_ingest_refusals.py``
         already records for the same shape one package over.
 
-        **The identity is quoted rather than echoed, and that is load-bearing
-        here of all places.** The value that reaches this method may be exactly
-        the one nothing can encode, and the non-JSON branch of ``cli.commands._fail``
-        writes its message to a UTF-8 stderr: an echoed lone surrogate would
-        raise a second ``UnicodeEncodeError`` out of the refusal path itself.
-        ``repr`` escapes every code point UTF-8 declines -- the surrogate range is
-        non-printable, so it comes back as ``\\ud800`` -- which makes
-        :func:`~theurian.domain.review_ingest.bounded_quote` the total renderer
-        at this site and ``bounded_echo`` the unsafe one.
+        **The identity is quoted rather than echoed, and the reason written here
+        for two rounds was false.** It said an echoed lone surrogate would raise
+        a second ``UnicodeEncodeError`` out of ``cli.commands._fail``'s non-JSON
+        branch. It would not: ``sys.stderr`` has carried
+        ``errors="backslashreplace"`` since CPython 3.5, so that write cannot
+        raise and renders a lone surrogate as ``\\ud800`` whichever helper
+        produced it -- which is also why a test asserting ``\\ud800`` in the
+        published text passed for ``bounded_echo`` too, and proved nothing.
+
+        What :func:`~theurian.domain.review_ingest.bounded_quote` actually buys
+        is the class ``cli/output.escape_terminal_controls`` does **not** cover.
+        That function escapes C0, C1 and DEL; U+202E is none of the three, so an
+        echoed one reaches the terminal raw and reorders every line printed
+        around it. ``repr`` renders it as ``\\u202e``. A record key and a
+        repository are both provider-chosen, so both are quoted.
         """
         return ReviewEvidenceError(
             f"{record.kind.value} {bounded_quote(record.record_key)} of "
@@ -848,6 +862,15 @@ class ReviewEvidenceStore:
         shape, and the cure names it back -- so nothing is lost but the
         ungraded type.
 
+        **A directory gets a different cure from the other shapes**, and the
+        split is on ``stat.S_ISDIR`` rather than on the shape's own wording.
+        ``planted_artefact_cure`` closes with "removing it loses nothing", which
+        is true of a pipe, a socket and a device node and false of a directory:
+        that one holds other names, and the ones under it may be an operator's
+        own files. Measured before the split: a directory holding a file was
+        published with an instruction to remove it and an assurance that nothing
+        would be lost.
+
         Raises:
             ReviewEvidenceError: If a symbolic link sits at the record's own
                 path, or a named pipe, socket, device or directory does.
@@ -868,7 +891,16 @@ class ReviewEvidenceStore:
             raise ReviewEvidenceError(
                 f"`{relative}` is {shape} rather than a regular file, so the record was "
                 f"not published over it.",
-                remedy=planted_artefact_cure(relative, shape),
+                remedy=(
+                    # Keyed on the mode rather than on the shape *string*, so the
+                    # split does not rest on a sentence matching. A directory is
+                    # the one member of `shape_that_is_not_a_regular_file`'s range
+                    # that holds other names, and `planted_artefact_cure`'s
+                    # "removing it loses nothing" is false of exactly that one.
+                    occupied_directory_cure(relative)
+                    if stat.S_ISDIR(mode)
+                    else planted_artefact_cure(relative, shape)
+                ),
             )
         os.replace(writing, target)  # noqa: PTH105 - os.replace is the atomic primitive
 
@@ -1004,6 +1036,15 @@ class ReviewEvidenceStore:
         that is perfectly correct. What they have to act on is a directory name,
         and :func:`folded_component_cure` names both spellings because on a
         folding filesystem they reach one object.
+
+        **The cure is handed a component pair, not the two whole paths.** It
+        composes ``mv <on disk> <derived>``, and on a folding filesystem
+        ``mv sha256-abc/Pull-Request/42.json sha256-abc/pull-request/42.json``
+        renames a file onto itself -- the no-op the cure's own two-step note
+        exists to warn about, published as the instruction. The write side has
+        always passed a component, because :class:`_OnDiskSpellings` finds one;
+        :func:`_first_differing_component` is what gives the read side the same
+        shape.
         """
         try:
             raw = read_source_file(self._root, PurePosixPath(relative))
@@ -1033,12 +1074,13 @@ class ReviewEvidenceStore:
         try:
             return _stored(raw.decode("utf-8"), relative)
         except _FoldedPathError as exc:
+            on_disk, derived = _first_differing_component(relative, exc.derived)
             raise ReviewEvidenceError(
                 f"`{relative}`, {repository_named_in(raw)}, sits under a name that "
                 f"differs only in case from the one this build derives, `{exc.derived}`. "
                 f"On a filesystem that folds case those are one file, so the record is "
                 f"reachable under a spelling nothing looks for.",
-                remedy=folded_component_cure(relative, exc.derived),
+                remedy=folded_component_cure(on_disk, derived),
             ) from exc
         except (ValueError, DomainError) as exc:
             raise ReviewEvidenceError(
@@ -1086,6 +1128,23 @@ class ReviewEvidenceStore:
             f"way this build does not recognise: {type(exc).__name__}.",
             remedy=UNREADABLE_CURE,
         )
+
+
+def _first_differing_component(on_disk: str, derived: str) -> tuple[str, str]:
+    """The first component pair the two paths spell differently.
+
+    Both are the same layout's three components, so the two agree up to the one
+    the filesystem folded and the pair returned is the rename an operator can
+    actually perform. The whole-path fallback is for a shape this layout does not
+    emit -- paths of different depth, or two that differ nowhere -- where naming
+    the pair given is better than naming nothing.
+    """
+    here = PurePosixPath(on_disk).parts
+    there = PurePosixPath(derived).parts
+    for found, wanted in zip(here, there, strict=False):
+        if found != wanted:
+            return found, wanted
+    return on_disk, derived
 
 
 def _payload_to_json(payload: EvidencePayload) -> dict[str, Any]:

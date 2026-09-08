@@ -17,11 +17,13 @@ from __future__ import annotations
 
 import inspect
 import re
+import stat
 from typing import Any, Final
 
 import pytest
 
 from theurian.infrastructure.review_evidence import cures
+from theurian.security.regular_file import shape_that_is_not_a_regular_file
 
 pytestmark = pytest.mark.unit
 
@@ -54,6 +56,43 @@ _ACCOUNTS_FOR_THE_LOSS: Final = re.compile(
     r"|Do not delete it|data loss)",
     re.IGNORECASE,
 )
+
+#: What a cure that offers a removal may **not** claim about a shape holding
+#: other names. True of a pipe, a socket and a device node; false of a directory,
+#: whose entries may be an operator's own files.
+_CLAIMS_NOTHING_IS_LOST: Final = re.compile(r"loses nothing|holds no bytes", re.IGNORECASE)
+
+#: Every shape ``security/regular_file.shape_that_is_not_a_regular_file`` can
+#: answer, recomputed by running it over ``stat``'s **own** file-type constants
+#: rather than by listing the shapes somebody has met.
+#:
+#: The hand-extended list is what this replaces. ``_PROBES`` carried one shape --
+#: ``"a named pipe (FIFO)"`` -- so the walked population never rendered
+#: ``planted_artefact_cure`` for ``"a directory"``, and the sentence "which holds
+#: no bytes, so removing it loses nothing" shipped over a directory holding an
+#: operator's file. A shape added to that function now reddens
+#: :func:`test_every_shape_the_prober_can_answer_has_a_cure` until somebody says
+#: which cure the store publishes for it.
+#: ``isinstance(..., int)`` is not decoration: ``stat.S_IFMT`` shares the prefix
+#: and is the *function* that extracts a type from a mode.
+_SHAPES: Final[frozenset[str]] = frozenset(
+    shape
+    for name in dir(stat)
+    if name.startswith("S_IF") and isinstance(mode := getattr(stat, name), int)
+    for shape in [shape_that_is_not_a_regular_file(mode)]
+    if shape is not None
+)
+
+#: Which cure the store publishes for each shape, and whether that cure may say
+#: the removal costs nothing.
+_CURE_FOR_SHAPE: Final[dict[str, tuple[str, bool]]] = {
+    "a directory": ("occupied_directory_cure", False),
+    "a named pipe (FIFO)": ("planted_artefact_cure", True),
+    "a socket": ("planted_artefact_cure", True),
+    "a character device": ("planted_artefact_cure", True),
+    "a block device": ("planted_artefact_cure", True),
+    "a special file": ("planted_artefact_cure", True),
+}
 
 #: One probe value per parameter name a cure takes. Keyed by name rather than by
 #: position so a cure taking ``relative`` gets the same probe wherever it sits in
@@ -176,22 +215,37 @@ def test_every_cure_parameter_has_a_probe() -> None:
     )
 
 
-def _call(function: Any) -> str:
-    """One cure's text, built from the probe table."""
-    rendered = function(
-        **{
-            parameter: _PROBES[parameter]
-            for parameter in inspect.signature(function).parameters
-            if parameter in _PROBES
-        }
-    )
+def _call(function: Any, **overrides: object) -> str:
+    """One cure's text, built from the probe table with ``overrides`` applied."""
+    arguments = {
+        parameter: _PROBES[parameter]
+        for parameter in inspect.signature(function).parameters
+        if parameter in _PROBES
+    }
+    rendered = function(**{**arguments, **overrides})
     assert isinstance(rendered, str)
     return rendered
 
 
 def _every_cure() -> list[tuple[str, str]]:
-    """Every cure this module publishes, constant or rendered, as ``(name, text)``."""
-    return _cure_constants() + [(name, _call(function)) for name, function in _cure_callables()]
+    """Every cure this module publishes, constant or rendered, as ``(name, text)``.
+
+    A cure taking a ``shape`` is rendered **once per shape the prober can
+    answer**, rather than once with whichever shape the probe table happened to
+    carry: the two module rules are held per rendering, and the rendering is what
+    an operator reads.
+    """
+    rendered: list[tuple[str, str]] = []
+    for name, function in _cure_callables():
+        if "shape" not in inspect.signature(function).parameters:
+            rendered.append((name, _call(function)))
+            continue
+        rendered += [
+            (f"{name}[{shape}]", _call(function, shape=shape))
+            for shape in sorted(_SHAPES)
+            if _CURE_FOR_SHAPE.get(shape, ("", False))[0] == name
+        ]
+    return _cure_constants() + rendered
 
 
 @pytest.mark.parametrize(("name", "text"), _every_cure(), ids=[name for name, _ in _every_cure()])
@@ -268,6 +322,77 @@ def test_a_cure_that_takes_a_path_spells_it_under_the_review_directory(
     assert f".theurian/review/{_RELATIVE}" in text, (
         f"{name} names `{_RELATIVE}` without the `.theurian/review/` prefix, so a "
         f"reader cannot tell where it sits:\n{text}"
+    )
+
+
+def test_the_shape_range_is_recomputed_and_reaches_more_than_one_member() -> None:
+    """The can-fail companion for the derivation the two rows below range over.
+
+    ``_SHAPES`` is computed by running the prober over ``stat``'s own file-type
+    constants, so a shape added to it arrives here without anybody transcribing
+    one. A derivation that quietly answered nothing -- or answered only the shape
+    the probe table already carried -- would make the coverage row vacuous, which
+    is exactly the state that let a directory reach the wrong cure.
+    """
+    assert "a directory" in _SHAPES, (
+        "the prober no longer names a directory, so the split this file exists to hold "
+        "has nothing to be about"
+    )
+    assert len(_SHAPES) >= 5, f"the prober answered only {sorted(_SHAPES)}"
+    assert shape_that_is_not_a_regular_file(stat.S_IFREG) is None, (
+        "a regular file is named as a wrong shape, so every row here is about the ordinary case"
+    )
+
+
+def test_every_shape_the_prober_can_answer_has_a_cure() -> None:
+    """RED means a shape reaches ``_publish`` and nobody chose its cure.
+
+    The population is recomputed, so a seventh shape added to
+    ``shape_that_is_not_a_regular_file`` lands here rather than silently
+    inheriting ``planted_artefact_cure`` -- which is how ``"a directory"``
+    inherited "removing it loses nothing" over a directory holding a file.
+    """
+    assert set(_CURE_FOR_SHAPE) == _SHAPES, (
+        f"{sorted(_SHAPES ^ set(_CURE_FOR_SHAPE))} are named on one side of the shape "
+        "table and not the other. Say which cure the store publishes for the shape, and "
+        "whether that cure may claim the removal costs nothing -- a shape that holds "
+        "other names may not."
+    )
+    for shape, (cure, _) in _CURE_FOR_SHAPE.items():
+        assert hasattr(cures, cure), f"{shape} names a cure `{cure}` this module does not define"
+
+
+@pytest.mark.parametrize("shape", sorted(_SHAPES), ids=sorted(_SHAPES))
+def test_only_a_shape_holding_no_other_names_says_the_removal_costs_nothing(shape: str) -> None:
+    """RED means an operator is told deleting their own files loses nothing.
+
+    Measured before the split: a directory at a record's path was published with
+    ``planted_artefact_cure``, whose closing clause reads "It is a directory,
+    which holds no bytes, so removing it loses nothing" -- over a directory
+    holding a file somebody wrote. The claim is true of a pipe, a socket and a
+    device node, which hold no bytes of their own, and false of the one shape in
+    this range that is a container of other names.
+    """
+    cure, may_claim = _CURE_FOR_SHAPE[shape]
+    function = getattr(cures, cure)
+    # A cure that does not take a `shape` is one written for a single shape --
+    # `occupied_directory_cure` is -- so the probe table alone renders it.
+    named = {"shape": shape} if "shape" in inspect.signature(function).parameters else {}
+    text = _call(function, **named)
+    claimed = _CLAIMS_NOTHING_IS_LOST.search(text)
+
+    if may_claim:
+        assert claimed is not None, f"{cure} no longer says what removing {shape} costs:\n{text}"
+        return
+    assert claimed is None, (
+        f"{cure} tells an operator that removing {shape} costs nothing, at "
+        f"{text[claimed.start() : claimed.start() + 60]!r}:\n{text}\n\n"
+        f"A directory holds other names, and nothing at this seam can tell whose they "
+        f"are."
+    )
+    assert "ls -la" in text, (
+        f"{cure} does not print what is *inside* the artefact, which is the question "
+        f"that decides whether removing it is safe:\n{text}"
     )
 
 

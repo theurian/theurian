@@ -121,6 +121,27 @@ any of the three stops holding: it drives the observable itself -- a hostile
 value at each stage, through the real CLI, asserting a JSON document and no
 traceback -- rather than asserting that a particular exception type is raised.
 
+**One premise the observable rests on is a producer's habit, not a type**, and
+it is written here as a premise rather than as a property. The key, and its
+answer at this commit::
+
+    git grep -n -P 'bounded_echo\\(' -- packages/theurian-core/src
+
+Twelve lines: the definition in ``domain/review_ingest.py`` and one docstring
+line beside it, and ten calls. Every one of the ten renders an **integer** -- a
+run's landed count, a caller's ``limit``, a pull-request number, a number out of
+a response -- and an integer carries no code point a stream could decline. A
+response-chosen **string** routed through the same helper would keep whatever
+the provider sent and reach a ``surrogateescape`` stdout as those bytes.
+
+Nothing type-checks that. ``bounded_echo`` takes ``object``, and what holds the
+distinction is which helper each producer reaches for.
+``tests/unit/test_review_ingest_refusals.py`` walks the summaries, the remedies
+and the raises this package republishes, and asks each interpolation for **a**
+router; it does not decide *which* router, and no check on this path does. That
+walk is the instrument, this paragraph is its blind spot said out loud, and the
+count above is what a reader should re-run rather than trust.
+
 **A configuration edited while a run is in flight has three outcomes, not
 one.** ``get_threads`` and ``get_reviews`` re-check the allowlist and the
 transport override themselves, so an edit to ``.theurian/config.yaml`` -- or to

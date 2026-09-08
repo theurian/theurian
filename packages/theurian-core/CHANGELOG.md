@@ -223,6 +223,35 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   same bytes, so composing the refusal met the identical limit again.
   `tests/unit/test_review_evidence_exception_keys.py` walks this path's exception
   arms as syntax and reddens on one with no recorded verdict.
+
+  **Each refusal's cure is about the artefact it is actually standing over.** A
+  **directory** where a record belongs was published with the cure written for a
+  pipe or a socket, whose closing clause reads "which holds no bytes, so removing
+  it loses nothing" — true of a device node and false of a container of other
+  names, and measured over a directory holding a file somebody wrote. A directory
+  now gets its own cure: it prints what is *inside* with `ls -la`, offers a move,
+  and says plainly that the entries may be an operator's own. The read side's
+  case-variant cure now names the first differing **component pair** rather than
+  the two whole paths, because `mv sha256-…/Pull-Request/42.json
+  sha256-…/pull-request/42.json` is the no-op that same cure warns about. And two
+  provider-chosen values that reached a printed remedy through `bounded_echo` —
+  a pull-request URL and a repository read out of a failing file — are quoted
+  instead: `bounded_echo` bounds a length and renders nothing, so a U+202E in
+  either rode into the terminal raw and reversed every line around it.
+  `escape_terminal_controls` does not stop one either; it covers C0, C1 and DEL.
+
+  The published-sentence walk that was supposed to catch all of that could not
+  see any of it, and its key is widened rather than its exemptions: it now covers
+  every `remedy=` argument and the whole of `review_evidence/cures.py`, where the
+  remedies actually interpolate, and every `raise` under `review_evidence/`,
+  whose message `_read_one` republishes verbatim. That last part immediately
+  surfaced a live member of the same class round two closed for `formatVersion`
+  and `kind`: `EvidenceRecord`'s provider-mismatch invariant rendered two values
+  out of a landed file with `!r` alone, so a 2,000,000-character `provider`
+  produced a 2,000,394-character refusal. Both are bounded now.
+  `security/regular_file.py`'s shape vocabulary is recomputed from `stat`'s own
+  file-type constants in the cure tests, so a seventh shape added there reddens
+  until somebody says which cure it gets.
 - **`security.secretScan` gains a third point: at ingestion, per record, before
   the record becomes a file** (ADR-0030 decision 4, SEC-11, part of
   [#479](https://github.com/theurian/theurian/issues/479)). `block` — the

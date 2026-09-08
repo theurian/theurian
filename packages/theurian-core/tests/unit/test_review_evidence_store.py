@@ -1182,6 +1182,103 @@ def test_a_landed_file_nested_past_the_decoder_is_graded_and_names_the_file(
     assert "git log -p" in raised.value.remedy
 
 
+def test_a_directory_where_a_record_belongs_is_not_told_to_be_deleted(tmp_path: Path) -> None:
+    """RED means an operator is told that deleting their own files loses nothing.
+
+    ``shape_that_is_not_a_regular_file`` answers ``"a directory"``, and the
+    refusal published ``planted_artefact_cure`` over it -- whose closing clause
+    reads "which holds no bytes, so removing it loses nothing". True of a pipe, a
+    socket and a device node; false of a directory, which is a container of other
+    names, and nothing at this seam can tell whose they are.
+
+    The plant carries a file for exactly that reason: a directory that could be
+    removed harmlessly would make the wrong cure look right.
+    """
+    store = _store(tmp_path)
+    record = _event(number=42)
+    planted = _review_root(tmp_path) / record.relative_path
+    planted.mkdir(parents=True)
+    (planted / "notes.md").write_text("bytes an operator wrote\n", encoding="utf-8")
+
+    with pytest.raises(ReviewEvidenceError) as raised:
+        store.write([record], run=RUN_ONE)
+
+    remedy = raised.value.remedy
+    assert "a directory" in str(raised.value), (
+        f"the refusal does not name the shape: {raised.value}"
+    )
+    assert "loses nothing" not in remedy, f"the cure says the removal costs nothing: {remedy}"
+    assert "holds no bytes" not in remedy, f"the cure says the artefact holds no bytes: {remedy}"
+    assert "ls -la" in remedy, f"the cure does not print what is inside it: {remedy}"
+    assert (planted / "notes.md").is_file(), "the write reached inside the planted directory"
+
+
+def test_a_folded_read_names_a_rename_that_is_not_a_no_op(tmp_path: Path) -> None:
+    """RED means the cure's own instruction is the no-op it warns about.
+
+    ``folded_component_cure`` composes ``Rename <on disk> to <derived>``, and the
+    read side handed it the two **whole paths**: on a filesystem that folds case
+    ``mv sha256-abc/Pull-Request/42.json sha256-abc/pull-request/42.json`` renames
+    a file onto itself. The write side has always passed a component, because
+    ``_OnDiskSpellings`` finds one; this is the read side reaching the same shape.
+
+    Runs on every filesystem: the plant is created under the variant spelling and
+    the refusal keys on casefold equality, not on what the disk does.
+    """
+    store = _store(tmp_path)
+    record = _event(number=42)
+    repository, _kind, leaf = record.relative_path.split("/")
+    directory = _review_root(tmp_path) / repository / "Pull-Request"
+    directory.mkdir(parents=True)
+    (directory / leaf).write_text(store_module._document(record, RUN_ONE), encoding="utf-8")
+
+    with pytest.raises(ReviewEvidenceError) as raised:
+        store.read_all()
+
+    remedy = raised.value.remedy
+    assert "Rename `Pull-Request` to `pull-request`" in remedy, (
+        f"the cure does not name the component pair that differs: {remedy}"
+    )
+    assert repository not in remedy, (
+        f"the cure names the whole path, so the rename it composes is a no-op on the "
+        f"filesystem it is written for: {remedy}"
+    )
+
+
+def test_a_landed_provider_name_is_bounded_in_the_identity_refusal(tmp_path: Path) -> None:
+    """RED means one landed file can publish megabytes of its own bytes.
+
+    ``EvidenceRecord.__post_init__`` names both providers when they disagree, and
+    ``_stored`` builds that object out of a document -- so the value is a landed
+    file's, bounded only by ``MAX_SOURCE_FILE_BYTES``. Measured with ``!r`` alone:
+    a 2,000,000-character ``provider`` produced a 2,000,394-character refusal.
+
+    The same class round two closed for ``formatVersion`` and ``kind`` one
+    function over. It stayed open here because the published-sentence walk did
+    not reach a ``raise`` outside a refusal constructor;
+    ``test_review_ingest_refusals.py``'s key now does.
+    """
+    store = _store(tmp_path)
+    (landed,) = store.write([_event(number=42)], run=RUN_ONE)
+    path = _review_root(tmp_path) / landed
+    document = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps({**document, "provider": "P" * 2_000_000}), encoding="utf-8")
+
+    with pytest.raises(ReviewEvidenceError) as raised:
+        store.read_all()
+
+    assert len(str(raised.value)) < 4_000, (
+        f"the refusal is {len(str(raised.value)):,} characters, so a landed file chooses "
+        f"how much of itself reaches an operator's terminal"
+    )
+    # 2,000,002 and not 2,000,000: the marker reports the length of the
+    # *rendering*, which is what the sentence pays for, and `repr` adds the two
+    # quotes -- `bounded_quote`'s own recorded behaviour.
+    assert "cut from 2000002 characters" in str(raised.value), (
+        f"the value was shortened without saying so: {str(raised.value)[:300]}"
+    )
+
+
 def test_a_landed_file_whose_bytes_are_not_utf8_is_graded_and_names_the_file(
     tmp_path: Path,
 ) -> None:

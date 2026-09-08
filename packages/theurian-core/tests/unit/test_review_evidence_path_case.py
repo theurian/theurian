@@ -210,6 +210,12 @@ _ACCOUNTED: Final[dict[str, str]] = {
         "the guard's own component split, which is why it covers the repository "
         "hash, the kind directory and the leaf with one rule"
     ),
+    "store.py:PurePosixPath(on_disk).parts": (
+        "`_first_differing_component` splitting the path a file was found under, so "
+        "the read-side cure names a component pair rather than two whole paths -- the "
+        "byte comparison that follows is deliberately unfolded"
+    ),
+    "store.py:PurePosixPath(derived).parts": "the same split over the path this build derives",
     "store.py:component.casefold": "the guard's lookup of a derived component in the index",
     "store.py:entry.name": (
         "`_OnDiskSpellings` reading what the disk actually holds, which is the only "

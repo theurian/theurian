@@ -30,7 +30,7 @@ from __future__ import annotations
 import json
 from typing import Any, Final
 
-from theurian.domain.review_ingest import bounded_echo, bounded_quote
+from theurian.domain.review_ingest import bounded_quote
 
 #: What a reader does about a file under ``.theurian/review/`` that this build
 #: cannot read. It names the artefact -- the file, by its path relative to the
@@ -130,16 +130,50 @@ def planted_artefact_cure(relative: str, shape: str) -> str:
     lost" -- is false of everything under this directory.
 
     What makes the removal safe here is a property of the *shape* rather than of
-    the directory: a pipe, a socket and a device hold no bytes to lose. That is
-    why this may say "remove it" where :func:`relocated_directory_cure`, over a
-    link that may already have records behind it, must not.
+    the directory: a pipe, a socket and a device node hold no bytes of their own
+    to lose. That is why this may say "remove it" where
+    :func:`relocated_directory_cure`, over a link that may already have records
+    behind it, must not.
+
+    **A directory is the shape that claim is false of**, and it used to arrive
+    here: ``shape_that_is_not_a_regular_file`` answers ``"a directory"`` and the
+    ``_publish`` refusal published this sentence over one, telling an operator
+    that removing a directory holding their own files "loses nothing".
+    :func:`occupied_directory_cure` is where that shape goes now, and
+    ``tests/unit/test_review_evidence_cures.py`` recomputes the prober's range
+    from ``stat``'s own file-type constants so a shape added to it without a
+    cure of its own reddens.
     """
     return (
         f"Remove `.theurian/review/{relative}` and run the ingestion again -- "
         f"`ls -l .theurian/review/{relative}` shows what is at the path now. It is "
-        f"{shape}, which holds no bytes, so removing it loses nothing; what it is "
-        f"standing in the way of is a review evidence record, which is the source and "
-        f"has no rebuild (ADR-0030 decision 3), so nothing was written over it."
+        f"{shape}, which holds no bytes of its own, so removing it loses nothing; what "
+        f"it is standing in the way of is a review evidence record, which is the source "
+        f"and has no rebuild (ADR-0030 decision 3), so nothing was written over it."
+    )
+
+
+def occupied_directory_cure(relative: str) -> str:
+    """The cure for a **directory** where an evidence record belongs.
+
+    :func:`planted_artefact_cure`'s sibling, split off because the one sentence
+    that makes that cure safe is false here. A pipe, a socket and a device node
+    hold no bytes of their own; a directory is a container of other names, and
+    the ones under it may be an operator's own files -- nothing at this seam can
+    tell whose they are.
+
+    So this offers a **move** and never an unqualified removal, and it asks for
+    ``ls -la`` rather than ``ls -l``: what the reader has to see is what is
+    *inside*, which is the question that decides whether the removal is safe.
+    """
+    return (
+        f"`ls -la .theurian/review/{relative}` prints what is inside it: a directory "
+        f"sits where a review evidence record belongs, and a directory holds other "
+        f"names. Move whatever is under it somewhere outside `.theurian/review/`, "
+        f"remove the directory once it is empty, and run the ingestion again. Do not "
+        f"delete it as it stands -- unlike a pipe or a socket at this path it may hold "
+        f"an operator's own files, and nothing here can tell whose they are. The record "
+        f"it is standing in the way of was not written over it."
     )
 
 
@@ -194,9 +228,14 @@ def oversized_record_cure(source_uri: str) -> str:
 
     **The URI and not the record**, which is what the move out of ``store.py``
     changed: taking an ``EvidenceRecord`` here would make this module import the
-    store that imports it. Echoed through
-    :func:`~theurian.domain.review_ingest.bounded_echo`, because a source URI is
-    a value the provider chose and a refusal must not carry a megabyte of it.
+    store that imports it.
+
+    **Quoted rather than echoed**, matching :func:`unwritable_record_cure` over
+    the same value. ``bounded_echo`` bounds the length and renders nothing, so a
+    U+202E in a pull-request URL reached the terminal raw and reordered every
+    line printed around it -- measured, and ``cli/output.escape_terminal_controls``
+    does not catch it either, since that function escapes C0, C1 and DEL and
+    U+202E is none of those. ``repr`` escapes it to ``\\u202e``.
 
     **"Nothing was written" is what this said until round two**, and it was false
     of the run: ``store.write`` is atomic per record and not across a call, so the
@@ -205,7 +244,7 @@ def oversized_record_cure(source_uri: str) -> str:
     that knows it.
     """
     return (
-        f"Look at the review this record came from -- `{bounded_echo(source_uri)}` "
+        f"Look at the review this record came from -- {bounded_quote(source_uri)} "
         f"is the pull request, and `gh api graphql --hostname github.com` re-runs the "
         f"read by hand -- then shorten or split the conversation there. **This record** "
         f"was not written -- the refusal that carries this cure says what the run had "
@@ -226,11 +265,20 @@ def unwritable_record_cure(source_uri: str) -> str:
     What the operator can act on is the upstream conversation, and what they can
     run is the query that shows what came back.
 
-    :func:`bounded_quote` rather than :func:`bounded_echo`, unlike every other
-    cure here: the URI is one of the values that may itself carry the code point
-    nothing can encode, and ``cli.commands._fail``'s non-JSON branch writes this
-    text to a UTF-8 stderr. ``repr`` escapes exactly the range UTF-8 declines, so
-    quoting is what keeps a refusal path from raising a second time.
+    :func:`bounded_quote` rather than :func:`bounded_echo`, and **the reason
+    written here for two rounds was wrong**. It said an echoed lone surrogate
+    would raise a second ``UnicodeEncodeError`` out of ``cli.commands._fail``'s
+    non-JSON branch. It cannot: ``sys.stderr`` has carried
+    ``errors="backslashreplace"`` since CPython 3.5, so that write is total and
+    renders a lone surrogate as ``\\ud800`` whichever helper produced it --
+    measured, and it is why a test asserting ``\\ud800`` in the published text
+    could not tell the two apart.
+
+    What ``repr`` actually buys is the class ``escape_terminal_controls`` does
+    **not** cover. That function escapes C0, C1 and DEL; U+202E is none of those
+    and rides through it, reordering every line printed around it. ``repr``
+    escapes it to ``\\u202e``, which is why quoting is right at a site handed a
+    provider-chosen URL.
     """
     return (
         f"Look at the review this record came from -- {bounded_quote(source_uri)} is the "
@@ -257,6 +305,11 @@ def repository_named_in(raw: bytes) -> str:
     that is not JSON, a file too large or too irregular to open at all), and the
     caller says so rather than guessing.
 
+    **Quoted rather than echoed**, for :func:`oversized_record_cure`'s reason:
+    the repository is a string out of a landed file, so it may carry a U+202E,
+    which ``bounded_echo`` bounds and does not render -- measured reaching the
+    terminal raw through this clause.
+
     **This parse is the one that already failed, run again inside the handler
     grading it**, which is why ``RecursionError`` is caught here and not only at
     ``store._stored``'s own ``json.loads``. Both calls decode the same bytes at
@@ -275,4 +328,4 @@ def repository_named_in(raw: bytes) -> str:
     repository = document.get("repository")
     if not isinstance(repository, str) or not repository.strip():
         return UNNAMED_REPOSITORY
-    return f"which names {bounded_echo(repository)}"
+    return f"which names {bounded_quote(repository)}"

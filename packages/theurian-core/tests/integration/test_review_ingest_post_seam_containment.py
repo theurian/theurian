@@ -36,6 +36,7 @@ import json
 import os
 import subprocess
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
@@ -46,6 +47,7 @@ from typer.testing import CliRunner
 
 from theurian.cli import review_commands
 from theurian.cli.main import app
+from theurian.cli.output import escape_terminal_controls
 from theurian.domain.enums import ReviewThreadState
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.review import (
@@ -55,6 +57,7 @@ from theurian.domain.review import (
     ReviewSubmission,
     ReviewThread,
 )
+from theurian.domain.review_ingest import bounded_echo, bounded_quote
 
 pytestmark = pytest.mark.integration
 
@@ -78,6 +81,13 @@ REPOSITORY: Final = "acme/order-service"
 #: back to the wire -- without it every row below could be testing an input
 #: nothing can send.
 LONE_SURROGATE: Final = chr(0xD800)
+
+#: U+202E, spelled by code point because a literal one is invisible in a diff and
+#: reorders every line it sits on. It is the code point that separates the two
+#: renderers -- ``bounded_echo`` leaves it, ``bounded_quote``'s ``repr`` escapes
+#: it, and ``cli/output.escape_terminal_controls`` covers neither, since it
+#: escapes C0, C1 and DEL and U+202E is none of the three.
+RIGHT_TO_LEFT_OVERRIDE: Final = chr(0x202E)
 
 
 def _participant() -> ReviewParticipant:
@@ -310,24 +320,69 @@ def test_a_landing_refusal_says_what_already_landed_rather_than_nothing_was_writ
     )
 
 
+def test_the_two_renderers_differ_on_exactly_the_class_the_row_below_drives() -> None:
+    """The can-fail companion, and the correction of a reason that stood for two rounds.
+
+    The row below used to assert ``\\ud800`` in the published text and called
+    that the surrogate-safety of the refusal path. It distinguished nothing.
+    ``sys.stderr`` has carried ``errors="backslashreplace"`` since CPython 3.5,
+    so the non-JSON branch cannot raise on a lone surrogate and renders one as
+    ``\\ud800`` *whichever* helper produced it -- ``bounded_echo`` included. The
+    assertion was true of the fix and of its own reversal.
+
+    What separates the two renderers is U+202E, and it is measured here rather
+    than argued: ``escape_terminal_controls`` escapes C0, C1 and DEL and leaves
+    it raw, ``bounded_echo`` bounds the length and renders nothing, and only
+    ``bounded_quote``'s ``repr`` turns it into ``\\u202e``.
+    """
+    assert RIGHT_TO_LEFT_OVERRIDE in escape_terminal_controls(RIGHT_TO_LEFT_OVERRIDE), (
+        "the CLI's own escaper covers U+202E, so the row below would pass without the "
+        "store quoting anything and this parametrisation proves nothing"
+    )
+    assert RIGHT_TO_LEFT_OVERRIDE in bounded_echo(f"PRRT{RIGHT_TO_LEFT_OVERRIDE}"), (
+        "`bounded_echo` no longer leaves U+202E raw, so the row below cannot tell the "
+        "two renderers apart"
+    )
+    assert "\\u202e" in bounded_quote(f"PRRT{RIGHT_TO_LEFT_OVERRIDE}")
+    assert RIGHT_TO_LEFT_OVERRIDE not in bounded_quote(f"PRRT{RIGHT_TO_LEFT_OVERRIDE}")
+    # The other direction, which is why the old assertion was unfailable: both
+    # helpers answer the same thing once a lone surrogate reaches a
+    # `backslashreplace` stream.
+    assert LONE_SURROGATE.encode("utf-8", "backslashreplace") == b"\\ud800"
+
+
 def test_a_refusal_over_an_unencodable_record_is_itself_publishable(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """RED means the refusal path raises the very error it was written to grade.
+    """RED means a provider-chosen code point reorders the operator's terminal.
 
-    The non-JSON branch of ``cli.commands._fail`` writes its message to a UTF-8
-    stderr, and the value that reaches the refusal *is* the one nothing can
-    encode. Echoing it would raise a second ``UnicodeEncodeError`` out of the one
-    path that may not raise; ``bounded_quote``'s ``repr`` escapes exactly the
-    range UTF-8 declines, which is why the store quotes rather than echoes here.
+    The refusal names two provider-chosen values -- the record key and the
+    repository -- and its remedy names a third, the pull request's URL. All three
+    are quoted rather than echoed, and what that buys is the class
+    ``cli/output.escape_terminal_controls`` does not cover: U+202E rides through
+    that function and reverses every line printed around it.
+
+    The driver carries **both** code points on the record key, because they do
+    different jobs: the lone surrogate is what makes the landing refuse at all
+    (UTF-8 declines it), and the override is what tells the two renderers apart.
+    The URL carries the override too, so the remedy's own routing is driven
+    rather than assumed.
 
     Driven without ``--json`` on purpose: the JSON branch escapes to ASCII on its
     own, so it would pass whichever renderer the store used and prove nothing.
     """
-    event = _event()
+    hostile_url = f"https://github.com/{REPOSITORY}/pull/42#{RIGHT_TO_LEFT_OVERRIDE}gnp.eliforp/"
+    event = replace(_event(), url=hostile_url)
     provider = CannedReviewProvider(
         (event,),
-        threads={42: (_thread(event, external_id=f"PRRT_kwDO{LONE_SURROGATE}"),)},
+        threads={
+            42: (
+                _thread(
+                    event,
+                    external_id=f"PRRT_kwDO{RIGHT_TO_LEFT_OVERRIDE}{LONE_SURROGATE}",
+                ),
+            )
+        },
         submissions={42: (_submission(event),)},
     )
     monkeypatch.setattr(review_commands, "GitHubReviewProvider", lambda **_kwargs: provider)
@@ -339,7 +394,15 @@ def test_a_refusal_over_an_unencodable_record_is_itself_publishable(
         f"the human-readable branch published a traceback:\n{published}"
     )
     assert result.exit_code == 1
+    assert "\\u202e" in published, (
+        f"the refusal does not carry the escaped override, so either the identity is "
+        f"missing or it was echoed:\n{published!r}"
+    )
+    assert RIGHT_TO_LEFT_OVERRIDE not in published, (
+        f"a provider-chosen U+202E reached the terminal raw, where it reverses every "
+        f"line printed around it:\n{published!r}"
+    )
     assert "\\ud800" in published, (
-        f"the refusal names the record without the escaped code point, so either the "
-        f"identity is missing or it was echoed raw:\n{published}"
+        f"the refusal names the record without the escaped code point, so the identity "
+        f"is missing:\n{published}"
     )
