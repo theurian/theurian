@@ -11,21 +11,29 @@ one: write, read back, and get the same records.
 
 **Refetch never deletes** (decision 3). :meth:`ReviewEvidenceStore.write` writes
 the records it is given and touches no record it was not given: it never
-enumerates, never diffs, and the only path it unlinks is the ``.writing``
-temporary its own write opened, so a record whose upstream comment has been
-deleted keeps its file and keeps the stamp of the last run that saw it. That is
-the absence of any code that could do otherwise rather than a policy this class
-applies, which is why the property survives an edit that adds a record kind.
-``tests/unit/test_review_evidence_store.py::test_a_record_upstream_no_longer_returns_survives_the_refetch``
-is what fails when it stops holding, and
+enumerates, never diffs, and the one path it unlinks is a **regular file** at
+the ``.writing`` name its own write opens, so a record whose upstream comment
+has been deleted keeps its file and keeps the stamp of the last run that saw it.
+
+That sentence used to say "the temporary its own write opened", which was the
+claim and not the behaviour: the cleanup ran on every failure including the ones
+where the open had refused *because* something else was at that name, so a
+symbolic link an operator planted was silently removed before the refusal
+describing it was published (round two, R2-B).
+:meth:`ReviewEvidenceStore._discard_the_temporary` is where the ``lstat`` that
+makes it true now lives, and three things fail when it stops holding:
+``tests/unit/test_review_evidence_store.py::test_a_record_upstream_no_longer_returns_survives_the_refetch``,
+``tests/unit/test_review_evidence_writing_temporary.py::test_a_planted_link_at_the_temporary_survives_the_refusal_that_names_it``,
+and
 ``tests/unit/test_adr_0030_claims.py::test_the_evidence_package_moves_a_file_only_where_the_publish_records_it``
-is what fails when a second removal appears in this package.
+when a second removal appears in this package.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import stat
 from collections.abc import Iterable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -59,7 +67,9 @@ from theurian.infrastructure.review_evidence.cures import (
     UNREADABLE_CURE,
     UNWRITABLE_CURE,
     oversized_record_cure,
+    planted_artefact_cure,
     planted_link_cure,
+    planted_temporary_cure,
     relocated_directory_cure,
     repository_named_in,
     unwritable_record_cure,
@@ -82,6 +92,10 @@ from theurian.security.paths import (
     read_source_file,
     resolve_within_root,
 )
+from theurian.security.regular_file import (
+    IrregularArtefactError,
+    shape_that_is_not_a_regular_file,
+)
 
 #: What the bytes are written to before ``os.replace`` publishes them over the
 #: record. It deliberately does **not** end in :data:`EVIDENCE_SUFFIX`, so a file
@@ -98,6 +112,54 @@ EvidencePayload = ReviewEvent | ReviewSubmission | ReviewThread
 #: from the enum rather than listed, so a fourth kind is walked by the change that
 #: adds it.
 _KIND_DIRECTORIES: Final = frozenset(kind.value for kind in EvidenceKind)
+
+
+def _partial_landing(landed: int) -> str:
+    """What a write-side refusal says about the run it interrupted.
+
+    One spelling, appended by :meth:`ReviewEvidenceStore.write` to every refusal
+    this store raises rather than written at each site, because a per-record
+    guard does not know the run's count and a sentence copied into eight places
+    is eight places for it to drift.
+
+    **"Nothing was written" is what these said until round two, and it was
+    false.** ``os.replace`` publishes each record whole or not at all, so the
+    write is atomic *per record* and not across a run: the records before the
+    refused one are on disk and nothing rolls them back. An operator whose
+    evidence has no rebuild reading "nothing was written" goes looking for a
+    rollback that never happened, and may re-run against a directory they
+    believe is empty.
+    """
+    return (
+        f"This record was not written; the {bounded_echo(landed)} record(s) this run "
+        f"wrote before it stay on disk."
+    )
+
+
+def _planted_shape(exc: OSError, writing: Path) -> str | None:
+    """What is standing at ``writing``, when something is; ``None`` otherwise.
+
+    Two sources, in the order of how much they can be trusted. An
+    ``IrregularArtefactError`` was measured from the **descriptor** the open
+    returned, so it describes the object this call actually got and there is no
+    window between the answer and the thing it is about. Everything else has to
+    be asked of the name afterwards, because those shapes refuse the open before
+    a descriptor exists.
+
+    ``lstat`` rather than ``stat``: a symbolic link is one of the shapes being
+    named, and following it would report whatever it points at instead.
+    """
+    if isinstance(exc, IrregularArtefactError):
+        return exc.shape
+    try:
+        mode = os.lstat(writing).st_mode
+    except OSError:
+        # The path is gone, or unreachable for the same reason the open was. The
+        # caller falls back to the errno sentence rather than guessing a shape.
+        return None
+    if stat.S_ISLNK(mode):
+        return "a symbolic link"
+    return shape_that_is_not_a_regular_file(mode)
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,9 +327,19 @@ class ReviewEvidenceStore:
                 land larger than :meth:`read_all` will read back, if a symbolic
                 link or another planted artefact sits where a record or its
                 temporary belongs, if the directory cannot be written, or if the
-                record cannot be turned into bytes at all.
+                record cannot be turned into bytes at all. **Every one of them
+                carries** :func:`_partial_landing`, appended here rather than
+                written per site: a refusal knows what happened to *its* record
+                and only this loop knows what happened to the run.
             PathEscapeError: If a record's derived path resolves outside the
                 review directory, or reaches it through a route that leaves.
+                Deliberately the one write-side refusal that does **not** gain
+                that sentence: it is a containment refusal carrying its own
+                remedy about where a path points, its own exit code, and no claim
+                about a record at all, so rewording it here would relabel it as
+                this store's. The residual is recorded rather than hidden -- an
+                operator who plants an escaping link mid-run is told about the
+                link and not about the records already landed.
         """
         landed: list[str] = []
         # Keyed by the folded path and valued by the spelling that claimed it, so
@@ -283,18 +355,19 @@ class ReviewEvidenceStore:
                         f"Two records in one ingestion run name one file: "
                         f"{record.kind.value} {bounded_quote(record.record_key)} of "
                         f"{bounded_quote(record.repository)} claims `{relative}`, and "
-                        f"`{earlier}` was already written by this run. This record was "
-                        f"not written; the {bounded_echo(len(landed))} record(s) this run "
-                        f"wrote before it stay on disk.",
+                        f"`{earlier}` was already written by this run.",
                         remedy=COLLISION_CURE,
                     )
                 claimed[relative.casefold()] = relative
                 self._write_one(record, relative, run)
+            except ReviewEvidenceError as exc:
+                raise ReviewEvidenceError(
+                    f"{exc} {_partial_landing(len(landed))}", remedy=exc.remedy
+                ) from exc
             except TheurianError:
-                # Already graded, already carrying a cure the CLI publishes as
-                # `{error, remedy}`. Re-raised whole rather than wrapped: the
-                # sentence a guard below wrote about *this* record is better than
-                # anything this seam could say about it second-hand.
+                # A graded refusal that is not this store's -- containment's --
+                # and it is re-raised whole for the reason the `Raises:` clause
+                # above gives.
                 raise
             except Exception as exc:
                 raise self._landing_refusal(record, exc, landed=len(landed)) from exc
@@ -328,8 +401,7 @@ class ReviewEvidenceStore:
         return ReviewEvidenceError(
             f"{record.kind.value} {bounded_quote(record.record_key)} of "
             f"{bounded_quote(record.repository)} could not be turned into the bytes of a "
-            f"file: {type(exc).__name__}. This record was not written; the "
-            f"{bounded_echo(landed)} record(s) this run wrote before it stay on disk.",
+            f"file: {type(exc).__name__}. {_partial_landing(landed)}",
             remedy=unwritable_record_cure(record.anchor.source_uri),
         )
 
@@ -448,6 +520,32 @@ class ReviewEvidenceStore:
         that race costs the report and destroys nothing, which is the opposite of
         the truncation the same race used to cost.
 
+        **Moving the open moved which artefact each refusal is about, and the
+        sentences stayed behind** (round two, R2-B). Two paths are now touched
+        here and they are two different things to an operator: the temporary,
+        which this store creates and renames away inside this call and which
+        holds no evidence, and the record, which is the source and has no
+        rebuild. So the failure handling is split by *which step failed* rather
+        than left as one arm reading the errno:
+
+        * ``mkdir`` and the temporary's own open are :meth:`_temporary_refusal`'s,
+          and it names ``<record>.writing``. Publishing the record's cure here
+          told an operator to delete a **landed** evidence file over a link
+          planted at the temporary beside it -- the one instruction this package
+          must never publish, and it did so while having already removed the
+          plant it was describing.
+        * the rename is :meth:`_publish`'s, and its refusals name the record.
+
+        **The cleanup removes a regular file and nothing else.** The plants that
+        make the open refuse -- a symbolic link, a named pipe, a socket, a device
+        -- are exactly the shapes that are not regular files, and the open
+        declines *before* creating anything when it meets one, so an unlink there
+        deletes the operator's own artefact and hides the plant the refusal is
+        about. An ``lstat`` in front of it is what tells the two apart; what it
+        still cannot tell apart is a regular file somebody planted at that name
+        from litter an interrupted run left, and the second is what the name is
+        for.
+
         **The writer's cap is the reader's cap, imported rather than restated.**
         :meth:`read_all` reads through ``read_source_file``, which refuses a file
         above ``MAX_SOURCE_FILE_BYTES`` (SEC-8), and an unbounded writer in front
@@ -457,6 +555,11 @@ class ReviewEvidenceStore:
         allows 100 comments of GitHub's own 65,536-character limit, which in
         CJK is roughly 19 MB in one thread -- so the size is measured on the
         bytes that would land and refused before the ``open``.
+
+        Raises:
+            ReviewEvidenceError: For every fault at this seam, naming the path
+                that was actually opened.
+            PathEscapeError: If the derived path leaves the review directory.
         """
         resolve_within_root(self._root, PurePosixPath(relative))
         assert_no_symlink_escape(self._root, base=self._root, requested=PurePosixPath(relative))
@@ -467,54 +570,147 @@ class ReviewEvidenceStore:
         landing = len(document.encode("utf-8"))
         if landing > MAX_SOURCE_FILE_BYTES:
             raise ReviewEvidenceError(
-                f"{record.kind.value} {bounded_echo(record.record_key)} of "
-                f"{bounded_echo(record.repository)} would land as {landing} bytes, and "
+                f"{record.kind.value} {bounded_quote(record.record_key)} of "
+                f"{bounded_quote(record.repository)} would land as {landing} bytes, and "
                 f"a review evidence file is read back through a {MAX_SOURCE_FILE_BYTES}-byte "
-                "limit, so it was not written.",
+                "limit, so it was refused before the write.",
                 remedy=oversized_record_cure(record.anchor.source_uri),
             )
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             write_text_without_following_a_link(writing, document)
+        except BaseException as exc:
+            # `BaseException`, because an interrupt between the open and the
+            # return leaves the same litter an error does.
+            self._discard_the_temporary(writing)
+            if isinstance(exc, OSError):
+                raise self._temporary_refusal(relative, writing, exc) from exc
+            raise
+        try:
             self._publish(writing, target, relative)
         except BaseException as exc:
-            # The temporary is this method's own litter and never a record, so
-            # removing it must not change what the caller is told: `suppress`,
-            # because the arm that discards it is reached by faults that make the
-            # unlink fail too -- an ordinary file where the kind directory belongs
-            # answers `ENOTDIR` to the `mkdir` and to the `unlink` alike.
-            # `BaseException`, because an interrupt between the write and the
-            # rename leaves the same litter an error does.
-            with suppress(OSError):
-                writing.unlink()
+            self._discard_the_temporary(writing)
             if isinstance(exc, OSError):
-                if is_a_symbolic_link_refusal(exc):
-                    raise ReviewEvidenceError(
-                        f"A symbolic link sits where `{relative}` belongs, so the record "
-                        "was not written.",
-                        remedy=planted_link_cure(relative),
-                    ) from exc
                 raise ReviewEvidenceError(
-                    f"`{relative}` could not be written under the review directory: "
-                    f"{exc.strerror or 'the write was refused'}.",
+                    f"`{relative}` could not be published under the review directory: "
+                    f"{exc.strerror or 'the rename was refused'}. Whatever was already at that "
+                    f"path is unchanged.",
                     remedy=UNWRITABLE_CURE,
                 ) from exc
             raise
 
-    def _publish(self, writing: Path, target: Path, relative: str) -> None:
-        """Move the written temporary over the record, refusing a link at its name.
+    def _discard_the_temporary(self, writing: Path) -> None:
+        """Remove the temporary this write opened, and never something else.
 
-        The rename is what makes the write atomic; the check in front of it is
-        what keeps the refusal an operator used to get from the ``O_NOFOLLOW``
-        open. They answer different questions, so both are here: ``os.replace``
-        would silently replace a planted link (destroying nothing -- it never
-        follows one), and a store that silently repaired a planted evidence path
-        would leave the operator with no reason to look at how it got there.
+        The ``lstat`` is the whole of it. Every refusal that brings us here may
+        be *about* the path being something this store did not create -- a
+        symbolic link, a named pipe, a socket -- and the open declines those
+        before it creates anything, so an unlink would delete an operator's
+        artefact and leave the refusal describing something that is no longer
+        there. Only a regular file is discarded, which is the only shape this
+        store's own open leaves behind.
+
+        ``suppress(OSError)``, because the faults that reach this arm make the
+        ``lstat`` and the ``unlink`` fail too: an ordinary file where the kind
+        directory belongs answers ``ENOTDIR`` to the ``mkdir``, the ``lstat`` and
+        the ``unlink`` alike. Removing litter must not change what the caller is
+        told.
+        """
+        with suppress(OSError):
+            if stat.S_ISREG(os.lstat(writing).st_mode):
+                writing.unlink()
+
+    def _temporary_refusal(self, relative: str, writing: Path, exc: OSError) -> ReviewEvidenceError:
+        """Grade a fault at the record's ``.writing`` temporary, naming that path.
+
+        **Keyed on what is at the path, not on the errno or the exception class**,
+        and that is the correction round two forced. Keying on
+        ``IrregularArtefactError`` is keying on the *descriptor's* answer, which
+        exists only where the open succeeded -- true of a named pipe with a
+        reader attached and false of every other planted shape: a socket refuses
+        the open outright with ``ENOTSUP`` (measured on macOS 26.6), a
+        reader-less pipe with ``ENXIO``, a directory with ``EISDIR``. All of
+        those fell into the general arm and published ``UNWRITABLE_CURE``, which
+        tells an operator to check a **permission** over an artefact no
+        permission explains.
+
+        So :func:`_planted_shape` is asked directly, and the errno is used for
+        the one answer it gives without a race: ``O_NOFOLLOW``'s ``ELOOP`` is the
+        kernel's verdict about *this* call, while an ``lstat`` afterwards
+        describes whatever is there now. The residual is that a plant removed
+        between the two falls back to the errno sentence -- correct about the
+        failure, silent about the cause -- which costs a better sentence rather
+        than a guarantee.
+        """
+        opened = f"{relative}{_WRITING_SUFFIX}"
+        shape = (
+            "a symbolic link" if is_a_symbolic_link_refusal(exc) else _planted_shape(exc, writing)
+        )
+        if shape is not None:
+            return ReviewEvidenceError(
+                f"`{opened}`, the temporary this write opens before it publishes "
+                f"`{relative}`, is {shape} rather than a regular file.",
+                remedy=planted_temporary_cure(opened),
+            )
+        return ReviewEvidenceError(
+            f"`{opened}`, the temporary this write opens before it publishes "
+            f"`{relative}`, could not be written under the review directory: "
+            f"{exc.strerror or 'the write was refused'}.",
+            remedy=UNWRITABLE_CURE,
+        )
+
+    def _publish(self, writing: Path, target: Path, relative: str) -> None:
+        """Move the written temporary over the record, refusing a planted leaf.
+
+        The rename is what makes the write atomic; the two checks in front of it
+        are what keep the refusals an operator used to get from the
+        ``O_NOFOLLOW`` open, which now guards the temporary instead. They answer
+        different questions from the rename, so they are here: ``os.replace``
+        would silently replace a planted link or a planted pipe -- destroying
+        nothing, since it follows neither -- and a store that silently repaired a
+        planted evidence path would leave the operator with no reason to look at
+        how it got there.
+
+        **The shape check is a restoration rather than an addition** (round two,
+        R2-B). Moving the open to the temporary took ``O_NOFOLLOW``'s and
+        ``assert_a_regular_file``'s answers off the *leaf* with it, so a named
+        pipe planted at a record's own path stopped being refused and was
+        replaced at exit 0 -- while the ``Raises:`` clause on :meth:`write` went
+        on promising a refusal there. One ``lstat`` answers both questions, and
+        it is taken immediately before the rename for the reason the link check
+        is: losing that race costs the report and destroys nothing.
+
+        **Graded here rather than raised as an ``IrregularArtefactError``**, and
+        the clause that said otherwise is gone with the behaviour it described.
+        That class is an ``OSError`` and deliberately not a ``TheurianError``,
+        which is exactly the family ``theurian review ingest``'s handler does not
+        catch: raising one from this seam would end the run with a traceback and
+        break the observable ``review_ingest_service.py`` states. Its own
+        vocabulary is kept -- :func:`shape_that_is_not_a_regular_file` names the
+        shape, and the cure names it back -- so nothing is lost but the
+        ungraded type.
+
+        Raises:
+            ReviewEvidenceError: If a symbolic link sits at the record's own
+                path, or a named pipe, socket, device or directory does.
         """
         if target.is_symlink():
             raise ReviewEvidenceError(
-                f"A symbolic link sits where `{relative}` belongs, so the record was not written.",
+                f"A symbolic link sits where `{relative}` belongs.",
                 remedy=planted_link_cure(relative),
+            )
+        try:
+            mode = os.lstat(target).st_mode
+        except FileNotFoundError:
+            # The ordinary case -- a record landing for the first time -- and the
+            # only errno that means "nothing is in the way". Every other one is a
+            # fault the caller's own `OSError` arm grades.
+            mode = None
+        if mode is not None and (shape := shape_that_is_not_a_regular_file(mode)) is not None:
+            raise ReviewEvidenceError(
+                f"`{relative}` is {shape} rather than a regular file, so the record was "
+                f"not published over it.",
+                remedy=planted_artefact_cure(relative, shape),
             )
         os.replace(writing, target)  # noqa: PTH105 - os.replace is the atomic primitive
 

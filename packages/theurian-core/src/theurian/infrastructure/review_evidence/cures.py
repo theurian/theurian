@@ -92,6 +92,57 @@ def planted_link_cure(relative: str) -> str:
     )
 
 
+def planted_temporary_cure(opened: str) -> str:
+    """The cure for a planted artefact at a record's ``.writing`` **temporary**.
+
+    :func:`planted_link_cure`'s sibling, and the difference between them is why
+    it exists at all (round two, R2-B). The temporary is not the record: this
+    store creates it, writes it and renames it away inside one call, so removing
+    whatever sits in its place costs nothing and is the actual cure. Publishing
+    the record's cure here named the **landed** evidence file instead and
+    instructed its deletion -- the one instruction this package must never
+    publish -- over a link planted at the temporary beside it.
+
+    ``opened`` is the temporary's own path, ``<record>.writing``, and naming it
+    rather than the record is the whole correction: told the record's path, an
+    operator runs ``ls -l`` on a file that is perfectly fine and finds nothing
+    wrong with it.
+    """
+    return (
+        f"`ls -l .theurian/review/{opened}` prints what is at that path. Remove it and "
+        f"run the ingestion again: that name is a temporary this store creates and "
+        f"renames away within a single write, so it holds no review evidence and "
+        f"removing it loses nothing. The record beside it -- the same path without the "
+        f"`.writing` suffix -- is the source and has no rebuild (ADR-0030 decision 3), "
+        f"so do not remove that one."
+    )
+
+
+def planted_artefact_cure(relative: str, shape: str) -> str:
+    """The cure for a named pipe, socket or device at a record's **own** path.
+
+    Distinct from :func:`planted_link_cure` because the danger is different and
+    so is the sentence: a symbolic link is followed and a write through one
+    truncates whatever it names, while these shapes destroy nothing and simply
+    cannot be what was asked for. Distinct from
+    ``no_follow.irregular_artefact_remedy``, whose closing clause -- "it is
+    derived state (ADR-0004) that Theurian recreates, so nothing authored is
+    lost" -- is false of everything under this directory.
+
+    What makes the removal safe here is a property of the *shape* rather than of
+    the directory: a pipe, a socket and a device hold no bytes to lose. That is
+    why this may say "remove it" where :func:`relocated_directory_cure`, over a
+    link that may already have records behind it, must not.
+    """
+    return (
+        f"Remove `.theurian/review/{relative}` and run the ingestion again -- "
+        f"`ls -l .theurian/review/{relative}` shows what is at the path now. It is "
+        f"{shape}, which holds no bytes, so removing it loses nothing; what it is "
+        f"standing in the way of is a review evidence record, which is the source and "
+        f"has no rebuild (ADR-0030 decision 3), so nothing was written over it."
+    )
+
+
 def relocated_directory_cure(relative: str) -> str:
     """The cure for a symbolic link standing in for a directory of records.
 

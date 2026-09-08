@@ -64,7 +64,8 @@ _PROBES: Final[dict[str, object]] = {
     "source_uri": "https://github.com/acme/order-service/pull/42",
     "on_disk": "Pull-Request",
     "derived": "pull-request",
-    "landed": 3,
+    "opened": "sha256-abc/pull-request/42.json.writing",
+    "shape": "a named pipe (FIFO)",
 }
 
 #: The relative path probe, named separately because two tests assert about the

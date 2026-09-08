@@ -473,8 +473,12 @@ PUBLISH_NAMES: Final[tuple[tuple[str, str, int, str], ...]] = (
         1,
         "the `.writing` temporary is discarded when the write it belongs to does "
         "not publish. It removes the writer's own litter and never a record: the "
-        "path is the one the write was handed, and it carries `_WRITING_SUFFIX` "
-        "rather than `EVIDENCE_SUFFIX`.",
+        "path is the one the write was handed and carries `_WRITING_SUFFIX` "
+        "rather than `EVIDENCE_SUFFIX`, and since round two's R2-B an `lstat` in "
+        "`_discard_the_temporary` narrows it further to a **regular file** -- so "
+        "a link, pipe or socket somebody planted at that name survives the "
+        "refusal that is about it instead of being removed before the operator "
+        "can look at it.",
     ),
 )
 
