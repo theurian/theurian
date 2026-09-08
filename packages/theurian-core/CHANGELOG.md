@@ -174,9 +174,9 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   would land larger than `MAX_SOURCE_FILE_BYTES`, which is the cap the reader
   enforces: a file above it is one no later run could read back.
 
-  **One spelling on disk, at every path component and not only at the leaf.** The
-  leaf's case tag keeps two ids' files apart; the *directories* fold too, and
-  `mkdir` and `os.replace` let the filesystem resolve a name rather than
+  **One spelling on disk, for both paths a write builds and not only for the
+  leaf.** The leaf's case tag keeps two ids' files apart; the *directories* fold
+  too, and `mkdir` and `os.replace` let the filesystem resolve a name rather than
   comparing one. Measured: a hand-made `Pull-Request/` beside the derived
   `pull-request/` is one directory to macOS, so a record written into it landed
   and was then invisible to every later read — a run reporting it as new on every
@@ -184,6 +184,18 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   the reader's walk folds, so a case variant is never invisible, and the writer
   refuses before it creates a directory or renames into a name the disk already
   spells otherwise, naming both spellings and the rename that fixes it.
+
+  A write builds **two** names under the root — the record and its `.writing`
+  sibling — and the guard checked one. Measured on APFS with a regular
+  `42.json.WRITING` planted beside the derived temporary: the open resolved to
+  the operator's own file, truncated it, wrote the record into it and renamed it
+  away, at exit 0, with nothing said. The guard now ranges over both, and
+  `tests/unit/test_review_evidence_path_case.py` recomputes both sides of that
+  coverage from `store.py`'s own syntax so a fifth derived name reddens. The same
+  file's site table stopped being a watch-list of six calls — a verdict pass
+  planted `exists()`, `glob()` and `Path.rename` in the package and all three
+  went unnoticed — and now derives what it watches from `dir(pathlib.Path)` and
+  the `str` methods that change case.
 
   **A refusal names the artefact it is actually about.** The atomic publish
   writes to a sibling `<record>.writing` temporary, and the messages around it

@@ -916,24 +916,41 @@ class ReviewEvidenceStore:
         name this build did not choose and every later read is looking somewhere
         else.
 
-        It covers all three components with one rule, because the population is
-        *every* derived path component and not the two a reviewer happened to
-        plant: the repository hash, the kind directory and the leaf all reach the
-        filesystem through calls that resolve a name, and a rule written for the
-        two directories would have left ``42.JSON`` -- measured swallowing a
-        record's bytes and keeping its own spelling -- outside it.
+        It covers the record's three components with one rule, because the
+        population is *every* component of that path and not the two a reviewer
+        happened to plant: the repository hash, the kind directory and the leaf
+        all reach the filesystem through calls that resolve a name, and a rule
+        written for the two directories would have left ``42.JSON`` -- measured
+        swallowing a record's bytes and keeping its own spelling -- outside it.
+
+        **The temporary is a fourth derived name, and it was outside the rule.**
+        :meth:`_write_one` builds two paths under the root, not one, and the
+        ``.writing`` sibling reaches the filesystem through an ``open`` that
+        creates and truncates. Measured on APFS with a regular
+        ``42.json.WRITING`` planted beside the derived name: the open resolved to
+        the operator's file, truncated it, wrote the record into it and renamed
+        it away, at exit 0, with nothing said. So the loop below ranges over the
+        derived names ``_write_one`` actually constructs, and
+        ``tests/unit/test_review_evidence_path_case.py::test_the_guard_covers_every_path_the_write_builds_under_the_root``
+        recomputes both sides from this file's own syntax rather than comparing
+        against a list somebody keeps in step.
+
+        The record's own path is checked first, so a run that would collide on
+        both is told about the record rather than about a temporary the operator
+        has never seen.
         """
-        found = spellings.differently_spelled(relative)
-        if found is None:
-            return
-        on_disk, derived = found
-        raise ReviewEvidenceError(
-            f"`{relative}` cannot be written: `{on_disk}` is already on disk where this "
-            f"build derives `{derived}`, and the two differ only in case. On a filesystem "
-            f"that folds case they are one name, so the record would land under a "
-            f"spelling nothing later looks for.",
-            remedy=folded_component_cure(on_disk, derived),
-        )
+        for spelling in (relative, f"{relative}{_WRITING_SUFFIX}"):
+            found = spellings.differently_spelled(spelling)
+            if found is None:
+                continue
+            on_disk, derived = found
+            raise ReviewEvidenceError(
+                f"`{spelling}` cannot be written: `{on_disk}` is already on disk where "
+                f"this build derives `{derived}`, and the two differ only in case. On a "
+                f"filesystem that folds case they are one name, so the write would open "
+                f"the file that is there rather than the one it derived.",
+                remedy=folded_component_cure(on_disk, derived),
+            )
 
     def _read_one(self, relative: str) -> StoredRecord:
         """Read one record back, translating every way its bytes can be wrong.
