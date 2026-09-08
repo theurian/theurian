@@ -66,6 +66,7 @@ from theurian.infrastructure.review_evidence.cures import (
     UNNAMED_REPOSITORY,
     UNREADABLE_CURE,
     UNWRITABLE_CURE,
+    folded_component_cure,
     oversized_record_cure,
     planted_artefact_cure,
     planted_link_cure,
@@ -134,6 +135,86 @@ def _partial_landing(landed: int) -> str:
         f"This record was not written; the {bounded_echo(landed)} record(s) this run "
         f"wrote before it stay on disk."
     )
+
+
+class _FoldedPathError(ValueError):
+    """A file sits under a name that folds to the one this build derives.
+
+    A ``ValueError`` so it stays inside the family
+    :meth:`ReviewEvidenceStore._read_one` already grades: a caller that does not
+    know about this class still publishes a refusal rather than a traceback. What
+    knowing about it buys is the **cure** -- the fault is a directory name and
+    not the bytes, so "open the file and compare it against what this build
+    writes" would send the reader to inspect a document that is entirely correct.
+
+    ``derived`` is the spelling this build would have written, carried on the
+    exception because the caller has the on-disk one and needs both to name a
+    rename.
+    """
+
+    def __init__(self, derived: str) -> None:
+        self.derived = derived
+        super().__init__(f"the record inside names `{derived}`, which differs only in case")
+
+
+@final
+class _OnDiskSpellings:
+    """Which spelling of each derived path component the filesystem already holds.
+
+    The write half of round two's R2-C. ``mkdir(exist_ok=True)`` and
+    ``os.replace`` both let the *filesystem* resolve a name, and a filesystem
+    that folds case resolves ``pull-request`` to a ``Pull-Request`` that is
+    already there -- measured on APFS: the ``mkdir`` succeeds silently, the entry
+    keeps its original spelling, and a rename onto ``42.json`` beside an existing
+    ``42.JSON`` lands the bytes under ``42.JSON``. So the record is written and
+    then sits under a name this build never chose.
+
+    The answer is a refusal rather than a fold, for the reason :func:`_stored`
+    records: the derived path is an opaque key two layers above, and accepting a
+    second spelling for one record is what makes their arithmetic wrong.
+
+    **Scanned once per parent per ``write`` call**, which is where the cost is:
+    a run touches the root, one repository directory and at most three kind
+    directories, so this is at most five ``scandir`` calls however many records
+    it lands. A directory the run itself creates after its parent was scanned
+    reads as absent, and that under-reports on purpose -- the only entries a run
+    adds are the byte-exact derived spellings, so a name it created can never be
+    the variant this looks for.
+
+    ``OSError`` is swallowed per parent, because a directory that cannot be
+    listed is the caller's next refusal with a better message: ``mkdir`` and the
+    open both meet it a line later, and grading it here would publish a cure
+    about a *spelling* over a permission fault.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self._root = root
+        self._entries: dict[Path, dict[str, str]] = {}
+
+    def differently_spelled(self, relative: str) -> tuple[str, str] | None:
+        """The first component of ``relative`` the disk spells another way.
+
+        Returns the on-disk spelling and the derived one, or ``None`` when every
+        component either matches byte for byte or is not there at all.
+        """
+        here = self._root
+        for component in PurePosixPath(relative).parts:
+            existing = self._folded(here).get(component.casefold())
+            if existing is not None and existing != component:
+                return existing, component
+            here = here / component
+        return None
+
+    def _folded(self, parent: Path) -> dict[str, str]:
+        """``{casefolded name: on-disk name}`` for one directory, scanned once."""
+        if parent not in self._entries:
+            try:
+                self._entries[parent] = {
+                    entry.name.casefold(): entry.name for entry in os.scandir(parent)
+                }
+            except OSError:
+                self._entries[parent] = {}
+        return self._entries[parent]
 
 
 def _planted_shape(exc: OSError, writing: Path) -> str | None:
@@ -346,6 +427,8 @@ class ReviewEvidenceStore:
         # the refusal can name both: told only its own path, an operator on a
         # folding filesystem would go looking for a file spelled the other way.
         claimed: dict[str, str] = {}
+        # One index per call rather than per record: see `_OnDiskSpellings`.
+        spellings = _OnDiskSpellings(self._root)
         for record in records:
             try:
                 relative = record.relative_path
@@ -359,7 +442,7 @@ class ReviewEvidenceStore:
                         remedy=COLLISION_CURE,
                     )
                 claimed[relative.casefold()] = relative
-                self._write_one(record, relative, run)
+                self._write_one(record, relative, run, spellings)
             except ReviewEvidenceError as exc:
                 raise ReviewEvidenceError(
                     f"{exc} {_partial_landing(len(landed))}", remedy=exc.remedy
@@ -454,6 +537,24 @@ class ReviewEvidenceStore:
         directory that is not one of the record kinds, is left alone rather than
         read -- a project may keep a ``README`` beside its evidence, and refusing
         one would make the directory this product's rather than the project's.
+
+        **Finding folds; accepting does not** (round two, R2-C). Both selections
+        here used to be byte comparisons against a filesystem that folds case, so
+        a hand-made ``Pull-Request/`` beside the derived ``pull-request/`` was
+        one directory to the disk and two names to this walk: every record the
+        store wrote into it landed and then was **invisible** to every later
+        read. A run reported ``new=1, kept=0`` on every invocation for ever, and
+        slice 3's derived store would have been built from a corpus quietly
+        smaller than the disk.
+
+        Folding the two selections is deliberately *only* half the answer: it
+        makes the file visible, and :func:`_stored` then refuses it by name
+        because the spelling on disk is not the spelling this build derives. That
+        split -- fold to find, byte-compare to accept -- is what keeps one
+        spelling on disk without making this store accept a name it did not
+        choose. The other half of the same rule is at the write, where
+        :class:`_OnDiskSpellings` refuses before a record can land into such a
+        directory at all.
         """
         if not self._root.is_dir():
             return []
@@ -467,9 +568,9 @@ class ReviewEvidenceStore:
                 for repository in self._root.iterdir()
                 if repository.is_dir()
                 for kind_directory in repository.iterdir()
-                if kind_directory.is_dir() and kind_directory.name in _KIND_DIRECTORIES
+                if kind_directory.is_dir() and kind_directory.name.casefold() in _KIND_DIRECTORIES
                 for leaf in kind_directory.iterdir()
-                if leaf.name.endswith(EVIDENCE_SUFFIX)
+                if leaf.name.casefold().endswith(EVIDENCE_SUFFIX)
             ]
         except OSError as exc:
             raise ReviewEvidenceError(
@@ -478,7 +579,13 @@ class ReviewEvidenceStore:
                 remedy=UNWRITABLE_CURE,
             ) from exc
 
-    def _write_one(self, record: EvidenceRecord, relative: str, run: IngestionRun) -> None:
+    def _write_one(
+        self,
+        record: EvidenceRecord,
+        relative: str,
+        run: IngestionRun,
+        spellings: _OnDiskSpellings,
+    ) -> None:
         """Write one record, having proved its path first.
 
         The order is the guard: containment runs before the directory is created,
@@ -564,6 +671,7 @@ class ReviewEvidenceStore:
         resolve_within_root(self._root, PurePosixPath(relative))
         assert_no_symlink_escape(self._root, base=self._root, requested=PurePosixPath(relative))
         self._refuse_a_relocated_directory(relative)
+        self._refuse_a_folded_spelling(relative, spellings)
         target = self._root / PurePosixPath(relative)
         writing = self._root / PurePosixPath(f"{relative}{_WRITING_SUFFIX}")
         document = _document(record, run)
@@ -749,6 +857,34 @@ class ReviewEvidenceStore:
                 remedy=relocated_directory_cure(str(parent)),
             )
 
+    def _refuse_a_folded_spelling(self, relative: str, spellings: _OnDiskSpellings) -> None:
+        """Refuse a record whose path the disk already spells another way.
+
+        The write half of round two's R2-C, and it runs **before** the ``mkdir``
+        for the reason the containment guards run before it: once a directory has
+        been created into, or a rename has landed, the record is already under a
+        name this build did not choose and every later read is looking somewhere
+        else.
+
+        It covers all three components with one rule, because the population is
+        *every* derived path component and not the two a reviewer happened to
+        plant: the repository hash, the kind directory and the leaf all reach the
+        filesystem through calls that resolve a name, and a rule written for the
+        two directories would have left ``42.JSON`` -- measured swallowing a
+        record's bytes and keeping its own spelling -- outside it.
+        """
+        found = spellings.differently_spelled(relative)
+        if found is None:
+            return
+        on_disk, derived = found
+        raise ReviewEvidenceError(
+            f"`{relative}` cannot be written: `{on_disk}` is already on disk where this "
+            f"build derives `{derived}`, and the two differ only in case. On a filesystem "
+            f"that folds case they are one name, so the record would land under a "
+            f"spelling nothing later looks for.",
+            remedy=folded_component_cure(on_disk, derived),
+        )
+
     def _read_one(self, relative: str) -> StoredRecord:
         """Read one record back, translating every way its bytes can be wrong.
 
@@ -781,6 +917,15 @@ class ReviewEvidenceStore:
         project ingesting several it identifies the file without identifying what
         the file is about -- and this refusal is the one that stops every
         repository's run (:meth:`read_all`).
+
+        :class:`_FoldedPathError` is caught **before** its own ``ValueError``
+        base, and only to change the cure. It is not a fault in the bytes at all:
+        the file parses, the record inside is whole, and the two paths differ by
+        case alone -- so ``UNREADABLE_CURE``'s "open the file and compare it
+        against what this build writes" sends the reader to inspect a document
+        that is perfectly correct. What they have to act on is a directory name,
+        and :func:`folded_component_cure` names both spellings because on a
+        folding filesystem they reach one object.
         """
         try:
             raw = read_source_file(self._root, PurePosixPath(relative))
@@ -802,6 +947,14 @@ class ReviewEvidenceStore:
 
         try:
             return _stored(raw.decode("utf-8"), relative)
+        except _FoldedPathError as exc:
+            raise ReviewEvidenceError(
+                f"`{relative}`, {repository_named_in(raw)}, sits under a name that "
+                f"differs only in case from the one this build derives, `{exc.derived}`. "
+                f"On a filesystem that folds case those are one file, so the record is "
+                f"reachable under a spelling nothing looks for.",
+                remedy=folded_component_cure(relative, exc.derived),
+            ) from exc
         except (ValueError, DomainError) as exc:
             raise ReviewEvidenceError(
                 f"`{relative}`, {repository_named_in(raw)}, is not a review evidence "
@@ -868,15 +1021,29 @@ def _stored(text: str, relative: str) -> StoredRecord:
     """One record read back out of its own bytes.
 
     The last check is the one worth naming: the record's *derived* path is
-    compared against where the file actually sits. A record moved between
-    directories -- by hand, or by a build that keyed paths differently -- would
-    otherwise read back as a record about a repository the directory does not
-    name, and the derived store slice 3 builds would carry it under the wrong
+    compared against where the file actually sits, **as bytes**. A record moved
+    between directories -- by hand, or by a build that keyed paths differently --
+    would otherwise read back as a record about a repository the directory does
+    not name, and the derived store slice 3 builds would carry it under the wrong
     identity.
 
+    **The comparison stays byte-wise on a filesystem that folds case, and that
+    is the decision rather than the oversight it looks like** (round two, R2-C).
+    Folding it would make this function *accept* a spelling this build did not
+    derive, and the path it returns is an opaque key: ``ReviewIngestService``
+    compares what :meth:`ReviewEvidenceStore.read_all` answers against what
+    :meth:`ReviewEvidenceStore.write` answers to compute ``new``, ``updated`` and
+    ``kept``, and slice 3's store is keyed on the same string. Two spellings for
+    one record would make that arithmetic wrong wherever it was not folded too.
+    Refusing keeps one spelling on disk and gives the operator a rename to
+    perform; the difference is only ever *reported* differently, which is what
+    :class:`_FoldedPathError` is for.
+
     Raises:
-        ValueError: For every way the document can be the wrong shape. The caller
-            turns these into a refusal naming the file, so no message here
+        _FoldedPathError: If the two paths differ by case alone. A ``ValueError``,
+            so a caller that does not distinguish it still grades it.
+        ValueError: For every other way the document can be the wrong shape. The
+            caller turns these into a refusal naming the file, so no message here
             repeats the path.
     """
     parsed = json.loads(text)
@@ -905,6 +1072,8 @@ def _stored(text: str, relative: str) -> StoredRecord:
         payload=_payload_from_json(EvidenceKind(kind_value), document.get("record"), "record"),
     )
     if record.relative_path != relative:
+        if record.relative_path.casefold() == relative.casefold():
+            raise _FoldedPathError(record.relative_path)
         raise ValueError(
             f"the record inside names `{record.relative_path}` and the file sits at "
             f"`{relative}`, so one of the two is not what this build wrote"

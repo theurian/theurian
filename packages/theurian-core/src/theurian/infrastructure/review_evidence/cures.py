@@ -160,6 +160,30 @@ def relocated_directory_cure(relative: str) -> str:
     )
 
 
+def folded_component_cure(on_disk: str, derived: str) -> str:
+    """The cure for a path component the disk spells otherwise than this build derives.
+
+    Names **both** spellings, because on a filesystem that folds case the two
+    reach one object: an operator told only the derived one lists the directory,
+    sees the name they already have, and concludes the message is wrong.
+
+    A rename and never a deletion. On a folding filesystem the differently-spelt
+    directory *is* the one this store has been writing into, so it may already
+    hold every record an earlier run landed -- and review evidence is the source
+    rather than derived state (ADR-0030 decision 3). The two-step note is not
+    padding: ``mv Pull-Request pull-request`` is a no-op on such a filesystem,
+    which is exactly the shape an operator would try first.
+    """
+    return (
+        f"`ls -l .theurian/review/` and its subdirectories print what is there. Rename "
+        f"`{on_disk}` to `{derived}` -- on a filesystem that folds case that needs two "
+        f"steps, through a third name, because the shell sees the two as one. Do not "
+        f"delete it: it may already hold records an earlier run wrote, and review "
+        f"evidence is the source rather than derived state (ADR-0030 decision 3), so "
+        f"nothing rebuilds them."
+    )
+
+
 def oversized_record_cure(source_uri: str) -> str:
     """The cure for a record larger than the reader that has to read it back.
 
