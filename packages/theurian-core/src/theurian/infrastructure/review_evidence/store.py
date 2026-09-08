@@ -38,10 +38,11 @@ from theurian.domain.errors import (
     InvariantViolationError,
     PathEscapeError,
     SecurityError,
+    TheurianError,
 )
 from theurian.domain.knowledge import SourceAnchor
 from theurian.domain.review import ReviewEvent, ReviewSubmission, ReviewThread
-from theurian.domain.review_ingest import bounded_echo
+from theurian.domain.review_ingest import bounded_echo, bounded_quote
 from theurian.infrastructure.review_evidence.codec import (
     anchor_from_json,
     anchor_to_json,
@@ -61,6 +62,7 @@ from theurian.infrastructure.review_evidence.cures import (
     planted_link_cure,
     relocated_directory_cure,
     repository_named_in,
+    unwritable_record_cure,
 )
 from theurian.infrastructure.review_evidence.errors import ReviewEvidenceError
 from theurian.infrastructure.review_evidence.layout import (
@@ -218,6 +220,41 @@ class ReviewEvidenceStore:
         guard with a deliberately colliding layout because the shipped one has no
         input that reaches it.
 
+        **This is the landing seam, and what it holds is stated over an
+        observable rather than over an exception family** (round two, R2-A). The
+        observable: *whatever a provider answered with, a run ends with one of
+        the two documents ``theurian review ingest`` publishes -- never a
+        traceback.* The CLI's catch is ``except TheurianError``, so the
+        population that breaks it is precisely **the complement of that class**,
+        and :meth:`_landing_refusal` keys on exactly that complement rather than
+        on a list of members. An enumeration would be the wrong key here and the
+        reason is measurable: the members are not raise sites. Two of them are
+        ordinary calls that are not total over a Python ``str``, and this key
+        finds them where a ``raise``-grep cannot::
+
+            git grep -n -P '\\.encode\\(|json\\.dumps\\(|os\\.replace\\(' -- \\
+                packages/theurian-core/src/theurian/infrastructure/review_evidence/
+
+            layout.py:134:    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+            store.py:389:        landing = len(document.encode("utf-8"))
+            store.py:441:        os.replace(writing, target)  # noqa: PTH105 ...
+            store.py:590:    return json.dumps(document, indent=2, ensure_ascii=False) + "\\n"
+
+        ``json.loads`` decodes ``\\ud800`` into a lone surrogate, which UTF-8
+        cannot encode: one anywhere in a record -- a thread id, a comment body --
+        left the first two of those as a bare ``UnicodeEncodeError``, so
+        ``review ingest`` published **no document at all** while the records
+        before it had already landed. The third is guarded by
+        :meth:`_write_one`'s own ``OSError`` arms; the fourth cannot raise on
+        input this store can hold, and is covered anyway by keying on the
+        complement rather than on the list.
+
+        **Atomic per record, not across a run**, and every refusal here says so.
+        :meth:`_write_one` publishes by rename, so a record is on disk whole or
+        not at all; the records *before* the refused one are on disk and stay
+        there, which is what the caller must be told rather than left to infer
+        from a sentence that says "nothing was written".
+
         Returns:
             Each record's path relative to the review directory, in the order the
             records were given.
@@ -226,14 +263,11 @@ class ReviewEvidenceStore:
             ReviewEvidenceError: If two records in one call name one file -- a
                 silently overwritten record is a lost one -- if a record would
                 land larger than :meth:`read_all` will read back, if a symbolic
-                link sits where a record belongs, or if the directory cannot be
-                written.
+                link or another planted artefact sits where a record or its
+                temporary belongs, if the directory cannot be written, or if the
+                record cannot be turned into bytes at all.
             PathEscapeError: If a record's derived path resolves outside the
                 review directory, or reaches it through a route that leaves.
-            IrregularArtefactError: If a named pipe, socket or device sits at the
-                leaf. Not translated: it names the artefact and its shape, and
-                re-labelling it as a write fault would send the operator to look
-                at a permission.
         """
         landed: list[str] = []
         # Keyed by the folded path and valued by the spelling that claimed it, so
@@ -241,19 +275,63 @@ class ReviewEvidenceStore:
         # folding filesystem would go looking for a file spelled the other way.
         claimed: dict[str, str] = {}
         for record in records:
-            relative = record.relative_path
-            earlier = claimed.get(relative.casefold())
-            if earlier is not None:
-                raise ReviewEvidenceError(
-                    f"Two records in one ingestion run name one file: "
-                    f"{record.kind.value} {record.record_key!r} of {record.repository!r} "
-                    f"claims `{relative}`, and `{earlier}` was already written by this run.",
-                    remedy=COLLISION_CURE,
-                )
-            claimed[relative.casefold()] = relative
-            self._write_one(record, relative, run)
+            try:
+                relative = record.relative_path
+                earlier = claimed.get(relative.casefold())
+                if earlier is not None:
+                    raise ReviewEvidenceError(
+                        f"Two records in one ingestion run name one file: "
+                        f"{record.kind.value} {bounded_quote(record.record_key)} of "
+                        f"{bounded_quote(record.repository)} claims `{relative}`, and "
+                        f"`{earlier}` was already written by this run. This record was "
+                        f"not written; the {bounded_echo(len(landed))} record(s) this run "
+                        f"wrote before it stay on disk.",
+                        remedy=COLLISION_CURE,
+                    )
+                claimed[relative.casefold()] = relative
+                self._write_one(record, relative, run)
+            except TheurianError:
+                # Already graded, already carrying a cure the CLI publishes as
+                # `{error, remedy}`. Re-raised whole rather than wrapped: the
+                # sentence a guard below wrote about *this* record is better than
+                # anything this seam could say about it second-hand.
+                raise
+            except Exception as exc:
+                raise self._landing_refusal(record, exc, landed=len(landed)) from exc
             landed.append(relative)
         return tuple(landed)
+
+    def _landing_refusal(
+        self, record: EvidenceRecord, exc: Exception, *, landed: int
+    ) -> ReviewEvidenceError:
+        """Grade whatever the landing of one record raised that was not graded.
+
+        **The class name and never the exception's own text.** ``review ingest``
+        is an operator surface that reports identities and counts and no evidence
+        content, and ``repr`` of the measured member carries the *whole* string
+        that failed to encode -- for a comment body that is the record's entire
+        JSON document. ``type(exc).__name__`` locates the fault without
+        publishing what the fault was in, which is the division
+        ``_EXEMPT_EXPRESSIONS`` in ``tests/unit/test_review_ingest_refusals.py``
+        already records for the same shape one package over.
+
+        **The identity is quoted rather than echoed, and that is load-bearing
+        here of all places.** The value that reaches this method may be exactly
+        the one nothing can encode, and the non-JSON branch of ``cli.commands._fail``
+        writes its message to a UTF-8 stderr: an echoed lone surrogate would
+        raise a second ``UnicodeEncodeError`` out of the refusal path itself.
+        ``repr`` escapes every code point UTF-8 declines -- the surrogate range is
+        non-printable, so it comes back as ``\\ud800`` -- which makes
+        :func:`~theurian.domain.review_ingest.bounded_quote` the total renderer
+        at this site and ``bounded_echo`` the unsafe one.
+        """
+        return ReviewEvidenceError(
+            f"{record.kind.value} {bounded_quote(record.record_key)} of "
+            f"{bounded_quote(record.repository)} could not be turned into the bytes of a "
+            f"file: {type(exc).__name__}. This record was not written; the "
+            f"{bounded_echo(landed)} record(s) this run wrote before it stay on disk.",
+            remedy=unwritable_record_cure(record.anchor.source_uri),
+        )
 
     def read_all(self) -> tuple[StoredRecord, ...]:
         """Every record on disk, in a total order.

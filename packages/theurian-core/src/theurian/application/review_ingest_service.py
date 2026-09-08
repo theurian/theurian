@@ -46,6 +46,76 @@ contact. The key is
 ``tests/unit/test_review_ingest_service.py``: it drives that one grade through
 all three and asserts three different outcomes.
 
+**The landing is a third scope and it halts, which the two above do not say**
+(round two, R2-A/R2-B). ``self._land`` runs after every fetch, so a refusal
+there is neither a repository the run could not establish nor a pull request it
+could not build: it is a record the run already had and could not make durable.
+It halts, because a store that could not write one record cannot be assumed able
+to write the next, and it leaves a **partial landing** -- the records written
+before it are on disk and are not rolled back. Whether a caller is told so is
+therefore the refusal sentence's job, and
+``ReviewEvidenceStore.write`` states it in every one of them.
+
+**The containment claim is stated over an observable, not over an exception
+family, and the difference is what round two found.** The two seams above catch
+``ReviewIngestRefusedError``; the promise this module makes to a caller is
+different and wider:
+
+    Whatever the provider answers with, a run ends with one of the two documents
+    ``theurian review ingest`` publishes -- the run document, or
+    ``{error, remedy}`` -- and never with a traceback.
+
+A claim about a *family* does not imply that one, because a family is closed by
+its name and the observable is broken by anything outside it. The mechanism that
+carries the observable is the CLI's ``except TheurianError``, so the population
+that can break it is **the complement of ``TheurianError``**, and every stage a
+provider-chosen value reaches after the two record-scope seams has to be looked
+at with that key rather than with a list of what raises. Reproduce the surface::
+
+    git grep -n -P '^class \\w+\\(' -- packages/theurian-core/src/theurian/domain/errors.py
+    git grep -n -P '^\\s+raise ' -- \\
+        packages/theurian-core/src/theurian/application/review_ingest_service.py \\
+        packages/theurian-core/src/theurian/application/review_landing_gate.py \\
+        packages/theurian-core/src/theurian/infrastructure/review_evidence/
+
+The first says which classes are inside ``TheurianError`` -- every error in
+``domain/errors.py`` is, ``DomainError`` and ``SecurityError`` included. The
+second says which of them this path raises, and answers **nothing at all** in
+this module and in the gate: the raises are the evidence store's, and they are
+``ReviewEvidenceError`` (graded, with a cure) on the write side and ``ValueError``
+on the read side, where ``_read_one`` translates them. What neither grep can see
+is the population that actually broke the observable, because its members are
+not ``raise`` statements at all -- they are calls that are not total over a
+Python ``str``, and ``ReviewEvidenceStore.write``'s own docstring carries the
+third key that finds those. That is why the guard there is keyed on the
+complement of ``TheurianError`` and not on any of these lists.
+
+Three stages, and each is closed by *its own* mechanism rather than by this
+paragraph:
+
+============================= ================================================
+Post-seam stage               What keeps the observable
+============================= ================================================
+the record build (adapter)    every field a domain type refuses is read through
+                              a refusing reader, so the refusal is graded and
+                              lands in the skip channel. ``url`` was the one
+                              that was not, and
+                              ``GitHubReviewProvider._event`` records the key
+                              that decides the set.
+the gate (``_screen``)        raises nothing of its own; ``_anchor``'s
+                              ``SourceAnchor`` arguments are the build's, and
+                              ``_span`` is total over the three line-number
+                              guards.
+the landing (``self._land``)  ``ReviewEvidenceStore.write`` catches the
+                              complement of ``TheurianError`` and re-raises it
+                              graded, naming the record and what already landed.
+============================= ================================================
+
+``tests/unit/test_review_ingest_post_seam_containment.py`` is what fails when
+any of the three stops holding: it drives the observable itself -- a hostile
+value at each stage, through the real CLI, asserting a JSON document and no
+traceback -- rather than asserting that a particular exception type is raised.
+
 **A configuration edited while a run is in flight has three outcomes, not
 one.** ``get_threads`` and ``get_reviews`` re-check the allowlist and the
 transport override themselves, so an edit to ``.theurian/config.yaml`` -- or to

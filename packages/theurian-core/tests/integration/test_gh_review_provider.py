@@ -31,7 +31,9 @@ which order ``graphql_vector`` happens to emit the query and the variables in.
 
 from __future__ import annotations
 
+import ast
 import dataclasses
+import inspect
 import json
 import os
 import pathlib
@@ -45,6 +47,7 @@ import pytest
 from theurian.domain.enums import ReviewThreadState
 from theurian.domain.errors import InvariantViolationError
 from theurian.domain.identifiers import ProjectId
+from theurian.domain.knowledge import SourceAnchor
 from theurian.domain.ports.review_provider import SkippedPullRequest
 from theurian.domain.review import ReviewEvent, ReviewParticipant
 from theurian.domain.review_ingest import (
@@ -2859,3 +2862,100 @@ async def test_a_private_repository_is_refused_on_the_reviews_read_too(
         await provider.get_reviews(PROJECT, event)
 
     assert raised.value.grade is RefusalGrade.REPOSITORY_IS_PRIVATE
+
+
+@pytest.mark.parametrize(
+    ("label", "poison"),
+    [("null", {"url": None}), ("absent", {"url": _ABSENT})],
+    ids=["url-null", "url-absent"],
+)
+@pytest.mark.asyncio
+async def test_a_pull_request_whose_url_cannot_be_read_is_skipped_by_number(
+    label: str, poison: dict[str, Any], tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """RED means a partly-errored answer takes a whole window down (round two, R2-A).
+
+    A GraphQL answer that errored on one field carries that field as ``null``
+    beside a ``data`` that otherwise looks whole -- the shape ``response.boolean``
+    already refuses for the Booleans. ``url`` was read through the *total*
+    ``response.text``, so it folded to ``""``, the record build raised nothing,
+    and two stages later ``SourceAnchor`` refused the empty ``source_uri`` with an
+    ``InvariantViolationError``. That is past both record-scope seams: the whole
+    window was lost, nothing landed, no skip named the pull request, and the
+    published cure was ``Run theurian doctor``.
+
+    The poison node is **second**, so the well-formed pull request above it is
+    already built when the fault fires: what the assertions below say is that the
+    neighbour still arrives *and* that the loss is reported by number, which is
+    the pair a halt cannot produce.
+
+    Both spellings are driven because they are different documents -- ``"url":
+    null`` is a field GitHub answered with nothing, an absent ``url`` is a field
+    it did not answer at all -- and a guard keyed on presence would pass one.
+    """
+    page = _pull_requests()
+    nodes = page["data"]["repository"]["pullRequests"]["nodes"]
+    healthy = {**nodes[0], "number": 13}
+    broken = {**nodes[0], "number": 12}
+    for field, value in poison.items():
+        if value is _ABSENT:
+            broken.pop(field)
+        else:
+            broken[field] = value
+    nodes[:] = [healthy, broken]
+    fake_gh.answer("prs", 1, page)
+    provider = _provider(tmp_path, fake_gh)
+
+    listing = await provider.list_pull_requests(PROJECT, REPOSITORY)
+
+    assert [event.number for event in listing.events] == [13], (
+        f"the healthy neighbour was lost with the poison node: "
+        f"{[event.number for event in listing.events]}"
+    )
+    (skip,) = listing.skipped
+    assert skip.number == 12
+    assert skip.repository == REPOSITORY
+    assert skip.envelope.grade is RefusalGrade.TOOL_FAILED
+    assert "pull request url" in skip.envelope.summary, (
+        f"the skip does not say which field could not be read: {skip.envelope.summary}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_only_anchor_field_the_adapter_can_leave_empty_is_the_one_it_now_refuses(
+    tmp_path: pathlib.Path, fake_gh: FakeGh
+) -> None:
+    """The population key behind the row above, checked rather than asserted.
+
+    ``_event``'s docstring says ``url`` is the single string it reads that a
+    domain type downstream refuses when empty, and derives that from
+    ``SourceAnchor``'s own guards. A sentence naming one member of a population
+    is worth exactly as much as the derivation behind it, so this walks
+    ``SourceAnchor.__post_init__`` for the attributes it refuses on and requires
+    each to be accounted for -- a guard added on a fourth field reddens here
+    rather than becoming the next round's finding.
+
+    The line-number pair is accounted for by ``_span`` rather than by a reading
+    helper, which is why the table carries a reason per field instead of a rule.
+    """
+    guarded = {
+        node.attr
+        for node in ast.walk(ast.parse(inspect.getsource(SourceAnchor.__post_init__).lstrip()))
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+        if node.value.id == "self"
+    }
+    accounted = {
+        "provider": "`response.PROVIDER_ID`, this adapter's own constant",
+        "source_uri": "the pull request's `url`, read through `response.required_text`",
+        "line_start": "reaches the anchor only through `_span`, which is total over it",
+        "line_end": "reaches the anchor only through `_span`, which is total over it",
+    }
+
+    assert guarded, "the walk found no guarded field, so this check proves nothing"
+    assert guarded == set(accounted), (
+        f"`SourceAnchor.__post_init__` refuses on {sorted(guarded)} and this table "
+        f"accounts for {sorted(accounted)}. A field the anchor refuses and the record "
+        f"build reads through a *total* helper is the R2-A shape: read it through "
+        f"`response.required_text` so the refusal is graded and lands in the skip "
+        f"channel, then add the row here with the reason."
+    )

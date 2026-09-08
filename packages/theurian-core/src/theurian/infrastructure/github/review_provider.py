@@ -525,6 +525,29 @@ class GitHubReviewProvider:
         decision 5). ``body``, ``labels`` and ``head_ref_name`` are read as the
         author-controlled content they are: carried verbatim, interpreted by
         nothing.
+
+        **``url`` goes through :func:`response.required_text` and the other four
+        string reads do not, and the key that decides which is which is the
+        domain's own refusals rather than a judgement about importance** (round
+        two, R2-A). A field folded to ``""`` by :func:`response.text` is safe
+        exactly while nothing downstream refuses an empty one; ``url`` is the
+        single field of this record that something does. The key::
+
+            git grep -n 'raise InvariantViolationError' -A1 -- \\
+                packages/theurian-core/src/theurian/domain/knowledge.py
+
+        answers five guards on :class:`~theurian.domain.knowledge.SourceAnchor`,
+        which ``review_ingest_service._anchor`` builds from every landing record:
+        ``provider`` (this adapter's own constant), ``source_uri`` (**this
+        field**), and three on the ``line_start``/``line_end`` pair, which reach
+        the anchor only through ``_span`` and are total there. So a nulled
+        ``url`` -- an ordinary shape for a partly-errored GraphQL answer, where
+        the errored field arrives ``null`` beside a ``data`` that otherwise looks
+        whole -- used to build an event carrying no refusal and detonate two
+        stages later as an ungraded ``InvariantViolationError``, past both
+        record-scope seams, with the whole window lost and ``Run theurian
+        doctor`` as the cure. Refusing it here makes it one skipped pull request
+        at the seam :meth:`_listed` already has.
         """
         merged = response.boolean(node.get("merged"), "`merged`")
         merge_commit = response.mapping(node.get("mergeCommit")).get("oid")
@@ -551,7 +574,7 @@ class GitHubReviewProvider:
             body=response.text(node.get("body")),
             author=response.participant(node.get("author")),
             created_at=response.instant(node.get("createdAt"), "createdAt"),
-            url=response.text(node.get("url")),
+            url=response.required_text(node.get("url"), "pull request url"),
             head_commit=response.text(node.get("headRefOid")),
             base_commit=response.text(node.get("baseRefOid")),
             head_ref_name=response.text(node.get("headRefName")),

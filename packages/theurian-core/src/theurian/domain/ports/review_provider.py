@@ -88,6 +88,22 @@ class ReviewProvider(Protocol):
         established, so there is no window left to answer. The two can carry the
         same grade, which is why a reader of the grade cannot tell them apart.
 
+        **Both channels are :class:`~theurian.domain.review_ingest.RefusalEnvelope`-shaped,
+        and that is an obligation on the implementation rather than a
+        description of one** (round two, R2-A). A caller catches the graded
+        family and reads the skipped channel; anything else an implementation
+        lets out reaches that caller as neither -- past the skip channel, past
+        the ``except``, and out of whatever composition root is above it as a
+        traceback. So a value a *record build* reads and a domain type then
+        refuses must be refused **here**, by this method, with a grade: the
+        shipped adapter reads every such field through a helper that answers with
+        a value or a graded refusal, and
+        ``GitHubReviewProvider._event`` records the key that decides which fields
+        those are. An implementation that let a constructor's own
+        ``InvariantViolationError`` out instead would satisfy the type signature
+        and break this contract, which is exactly what the GitHub adapter did
+        with a nulled ``url`` until round two measured it.
+
         Implementations must apply a request timeout (SEC-19), respect rate
         limits, and validate ``repository`` against an allowlist **before any
         request** (SEC-10) -- which is not the same as "before building a URL",

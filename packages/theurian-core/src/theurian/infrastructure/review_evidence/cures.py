@@ -30,7 +30,7 @@ from __future__ import annotations
 import json
 from typing import Any, Final
 
-from theurian.domain.review_ingest import bounded_echo
+from theurian.domain.review_ingest import bounded_echo, bounded_quote
 
 #: What a reader does about a file under ``.theurian/review/`` that this build
 #: cannot read. It names the artefact -- the file, by its path relative to the
@@ -130,6 +130,32 @@ def oversized_record_cure(source_uri: str) -> str:
         f"written: the size this refuses at is the one the reader enforces, so landing "
         f"the file would have produced a record every later run refuses to read, and "
         f"review evidence has no rebuild that could clear it (ADR-0030 decision 3)."
+    )
+
+
+def unwritable_record_cure(source_uri: str) -> str:
+    """The cure for a record this build could not turn into bytes at all.
+
+    The landing seam's residual (round two, R2-A): something the provider
+    answered with reached an operation that is not total over a Python ``str``
+    -- a lone surrogate, which ``json.loads`` decodes and UTF-8 cannot encode, is
+    the measured member -- so there is no file to open and no size to shrink.
+    What the operator can act on is the upstream conversation, and what they can
+    run is the query that shows what came back.
+
+    :func:`bounded_quote` rather than :func:`bounded_echo`, unlike every other
+    cure here: the URI is one of the values that may itself carry the code point
+    nothing can encode, and ``cli.commands._fail``'s non-JSON branch writes this
+    text to a UTF-8 stderr. ``repr`` escapes exactly the range UTF-8 declines, so
+    quoting is what keeps a refusal path from raising a second time.
+    """
+    return (
+        f"Look at the review this record came from -- {bounded_quote(source_uri)} is the "
+        f"pull request -- and re-run the read by hand with `gh api graphql --hostname "
+        f"github.com` to see what the provider answered with. Report it against the "
+        f"provider adapter: a record this build cannot render is an answer it does not "
+        f"know how to store, not something an operator can correct under "
+        f"`.theurian/review/`."
     )
 
 

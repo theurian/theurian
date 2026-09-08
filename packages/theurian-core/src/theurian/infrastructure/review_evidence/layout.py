@@ -128,8 +128,24 @@ def _hashed(value: str) -> str:
     """``value`` as a name that is a hash, and says so.
 
     SHA-256 over the UTF-8 bytes. Not a security boundary -- what makes the write
-    safe is ``security/paths.py``'s containment on top of this -- but a total
-    function from any string to a name, which is what the caller needs.
+    safe is ``security/paths.py``'s containment on top of this.
+
+    **Not total over ``str``, which this said until round two measured it.**
+    ``json.loads`` decodes ``\\ud800`` into a lone surrogate and ``str.encode``
+    declines one, so a provider id carrying one leaves here as a
+    ``UnicodeEncodeError``. That is *not* fixed by encoding with
+    ``surrogatepass``: the same code point in the same record still has no
+    encoding when ``store._document`` writes the file, so a total leaf would buy
+    a name for a record that cannot be written anyway. What holds the observable
+    -- a run publishes a document rather than a traceback -- is
+    ``ReviewEvidenceStore.write``'s landing seam, which is keyed on the
+    complement of ``TheurianError`` and therefore covers this call and the
+    encode a stage later with one guard. Reaching this function outside that seam
+    is not something production does: ``git grep -n 'record_leaf(\\|record_path('
+    -- packages/theurian-core/src`` answers five lines, all inside this module
+    except ``EvidenceRecord.relative_path``, whose own two call sites are that
+    seam and ``_stored`` -- and ``_stored``'s caller catches ``ValueError``,
+    which a ``UnicodeEncodeError`` is.
     """
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
     return f"{_HASHED_PREFIX}{digest}"
