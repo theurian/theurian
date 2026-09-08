@@ -230,7 +230,16 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   it loses nothing" — true of a device node and false of a container of other
   names, and measured over a directory holding a file somebody wrote. A directory
   now gets its own cure: it prints what is *inside* with `ls -la`, offers a move,
-  and says plainly that the entries may be an operator's own. The read side's
+  and says plainly that the entries may be an operator's own. **The same claim
+  shipped one seam over**, because the first fix put the split in the store: a
+  directory planted at `<record>.writing` drew the temporary's cure, "it holds no
+  review evidence and removing it loses nothing", from the one arm that had no
+  `S_ISDIR` branch. Both costless-claiming cures now take the shape and route a
+  container of other names to a move-style sibling **themselves**, so a seam that
+  never heard of the split still gets it right; the cure tests derive "may claim
+  a costless removal" from the rendered text instead of from a flag beside a
+  table row, which is what let the temporary's cure sit outside the map while
+  making the claim. The read side's
   case-variant cure now names the first differing **component pair** rather than
   the two whole paths, because `mv sha256-…/Pull-Request/42.json
   sha256-…/pull-request/42.json` is the no-op that same cure warns about. And two
