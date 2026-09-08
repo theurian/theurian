@@ -5,8 +5,8 @@ reached the file-size limit with the cures occupying its first two hundred
 lines. The seam is a real one rather than a place to cut: nothing here opens,
 reads or writes anything, every function is total over its arguments, and each
 returns a **string a caller may paste into a terminal**. That last property is
-what these share and what the store does not have, and it is why the two rules
-below can be stated once for the module instead of per site.
+what these share and what the store does not have, and it is why the rules below
+can be stated once for the module instead of per site.
 
 **Every path is named relative to the review directory, never absolutely.** A
 remedy is text a caller may paste and quote elsewhere -- into an issue, into a
@@ -23,14 +23,30 @@ Both rules are checked rather than asserted --
 ``tests/unit/test_review_evidence_cures.py`` walks every public callable and
 constant of this module and holds them over it, so a cure added later inherits
 the check instead of needing its own.
+
+**A cure that says a removal costs nothing takes the shape and does not say it
+over a directory.** That is a safety predicate rather than a third house rule,
+and it is enforced *here* rather than at the seams because a seam is where it
+was missed. The first fix put the split in the store:
+``ReviewEvidenceStore._publish`` grew a ``stat.S_ISDIR`` branch, and
+``_temporary_refusal`` -- one seam over, and given a shape rather than a mode --
+kept publishing :func:`planted_temporary_cure`'s "removing it loses nothing"
+over a directory holding an operator's file. So both costless-claiming cures now
+take the shape and route a container of other names to a move-style sibling
+themselves, and a caller that never heard of the split inherits the guard.
+``test_review_evidence_cures.py``'s
+``test_no_cure_claims_a_costless_removal_outside_the_shape_guard`` renders every
+cure this module publishes and reddens on one that makes the claim without it.
 """
 
 from __future__ import annotations
 
 import json
+import stat
 from typing import Any, Final
 
 from theurian.domain.review_ingest import bounded_quote
+from theurian.security.regular_file import shape_that_is_not_a_regular_file
 
 #: What a reader does about a file under ``.theurian/review/`` that this build
 #: cannot read. It names the artefact -- the file, by its path relative to the
@@ -101,22 +117,64 @@ def planted_link_cure(relative: str) -> str:
     )
 
 
-def planted_temporary_cure(opened: str) -> str:
+def _shape_holds_other_names(shape: str) -> bool:
+    """Whether ``shape`` names a container whose entries somebody else may own.
+
+    The question the two costless-claiming cures below ask before they say a
+    removal costs nothing, and the answer is ``stat.S_ISDIR`` asked one layer up.
+    What a cure is handed is the *word*
+    :func:`~theurian.security.regular_file.shape_that_is_not_a_regular_file`
+    produced, so the word to compare against is recomputed by calling that same
+    function on ``stat``'s own directory constant rather than spelt out here: a
+    literal ``"a directory"`` would silently stop matching the day the prober
+    reworded its answer, and a guard that stops matching is a guard that is off.
+
+    ``S_IFDIR`` rather than a walk over every constant, because the property is
+    about *this* type: a pipe, a socket and a device node hold no entries, and a
+    symbolic link -- which the store's temporary seam also names, outside the
+    prober's own range -- holds only itself, so removing one loses the link and
+    not what it points at.
+
+    **This is a shape comparison where ``ReviewEvidenceStore._publish`` had a
+    ``stat.S_ISDIR`` branch, and the trade was taken deliberately.** That branch
+    read the mode "so the split does not rest on a sentence matching", and it was
+    right about literals -- but it was also unreachable from
+    ``_temporary_refusal``, whose own value is a shape *string*: one of its two
+    sources is an ``IrregularArtefactError`` measured from a descriptor, which
+    carries no mode at all. That is the seam where the claim shipped over an
+    operator's directory. What is compared here is not a sentence somebody typed:
+    it is the prober's own answer, recomputed, so the two sides move together and
+    a cure that a fifth seam calls carries the guard with it.
+    """
+    return shape == shape_that_is_not_a_regular_file(stat.S_IFDIR)
+
+
+def planted_temporary_cure(opened: str, shape: str) -> str:
     """The cure for a planted artefact at a record's ``.writing`` **temporary**.
 
     :func:`planted_link_cure`'s sibling, and the difference between them is why
     it exists at all (round two, R2-B). The temporary is not the record: this
     store creates it, writes it and renames it away inside one call, so removing
-    whatever sits in its place costs nothing and is the actual cure. Publishing
-    the record's cure here named the **landed** evidence file instead and
-    instructed its deletion -- the one instruction this package must never
-    publish -- over a link planted at the temporary beside it.
+    a link, a pipe, a socket or a device node sitting in its place costs nothing
+    and is the actual cure. Publishing the record's cure here named the
+    **landed** evidence file instead and instructed its deletion -- the one
+    instruction this package must never publish -- over a link planted at the
+    temporary beside it.
 
     ``opened`` is the temporary's own path, ``<record>.writing``, and naming it
     rather than the record is the whole correction: told the record's path, an
     operator runs ``ls -l`` on a file that is perfectly fine and finds nothing
     wrong with it.
+
+    **``shape`` is taken so the costless clause can be withheld**, and a
+    directory is the shape it is withheld for. The name being Theurian's
+    temporary says nothing about what is standing at it: a directory there holds
+    other names, and the measured plant was a directory carrying a file somebody
+    wrote, published with "removing it loses nothing".
+    :func:`occupied_temporary_cure` is where that shape goes.
     """
+    if _shape_holds_other_names(shape):
+        return occupied_temporary_cure(opened)
     return (
         f"`ls -l .theurian/review/{opened}` prints what is at that path. Remove it and "
         f"run the ingestion again: that name is a temporary this store creates and "
@@ -124,6 +182,33 @@ def planted_temporary_cure(opened: str) -> str:
         f"removing it loses nothing. The record beside it -- the same path without the "
         f"`.writing` suffix -- is the source and has no rebuild (ADR-0030 decision 3), "
         f"so do not remove that one."
+    )
+
+
+def occupied_temporary_cure(opened: str) -> str:
+    """The cure for a **directory** at a record's ``.writing`` temporary.
+
+    :func:`occupied_directory_cure`'s discipline over the other seam, and the two
+    are separate because the true half of each sentence is different. There the
+    artefact stands where the *record* belongs; here it stands where a temporary
+    this store creates and renames away belongs -- which stays true and stays
+    worth saying, because it is what tells the operator the record beside it was
+    not written over.
+
+    What does *not* follow from it is that removing the artefact is free. A
+    directory holds other names whatever the name it sits under means to
+    Theurian, so this asks for ``ls -la`` and offers a move, exactly as the
+    record-path sibling does.
+    """
+    return (
+        f"`ls -la .theurian/review/{opened}` prints what is inside it. That name is a "
+        f"temporary this store creates and renames away within a single write, but what "
+        f"is standing at it is a directory, and a directory holds other names. Move "
+        f"whatever is under it somewhere outside `.theurian/review/`, remove the "
+        f"directory once it is empty, and run the ingestion again. Do not delete it as "
+        f"it stands -- the entries may be an operator's own files, and nothing here can "
+        f"tell whose they are. The record beside it -- the same path without the "
+        f"`.writing` suffix -- was not written over."
     )
 
 
@@ -148,11 +233,16 @@ def planted_artefact_cure(relative: str, shape: str) -> str:
     here: ``shape_that_is_not_a_regular_file`` answers ``"a directory"`` and the
     ``_publish`` refusal published this sentence over one, telling an operator
     that removing a directory holding their own files "loses nothing".
-    :func:`occupied_directory_cure` is where that shape goes now, and
+    :func:`occupied_directory_cure` is where that shape goes, and the routing is
+    **here rather than at the caller**, which is the correction the temporary
+    seam forced: ``_publish`` had its own ``stat.S_ISDIR`` branch and
+    ``_temporary_refusal`` did not, so the same claim shipped one path over.
     ``tests/unit/test_review_evidence_cures.py`` recomputes the prober's range
     from ``stat``'s own file-type constants so a shape added to it without a
     cure of its own reddens.
     """
+    if _shape_holds_other_names(shape):
+        return occupied_directory_cure(relative)
     return (
         f"Remove `.theurian/review/{relative}` and run the ingestion again -- "
         f"`ls -l .theurian/review/{relative}` shows what is at the path now. It is "
@@ -174,6 +264,9 @@ def occupied_directory_cure(relative: str) -> str:
     So this offers a **move** and never an unqualified removal, and it asks for
     ``ls -la`` rather than ``ls -l``: what the reader has to see is what is
     *inside*, which is the question that decides whether the removal is safe.
+
+    Reached through :func:`planted_artefact_cure`'s own guard rather than chosen
+    by the store, so a caller that only knows the one entry point still gets it.
     """
     return (
         f"`ls -la .theurian/review/{relative}` prints what is inside it: a directory "

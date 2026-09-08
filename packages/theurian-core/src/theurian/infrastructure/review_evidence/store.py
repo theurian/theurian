@@ -67,7 +67,6 @@ from theurian.infrastructure.review_evidence.cures import (
     UNREADABLE_CURE,
     UNWRITABLE_CURE,
     folded_component_cure,
-    occupied_directory_cure,
     oversized_record_cure,
     planted_artefact_cure,
     planted_link_cure,
@@ -818,6 +817,14 @@ class ReviewEvidenceStore:
         between the two falls back to the errno sentence -- correct about the
         failure, silent about the cause -- which costs a better sentence rather
         than a guarantee.
+
+        **The shape reaches the cure and not only the message**, which is the
+        defect this seam carried on its own. ``planted_temporary_cure`` closes
+        with "removing it loses nothing" -- true of the link, the pipe and the
+        socket this arm was written for, false of a **directory** holding an
+        operator's files, and a directory is one of the shapes
+        :func:`_planted_shape` answers. The routing lives in the cure rather than
+        here, so this site chooses no sentence at all.
         """
         opened = f"{relative}{_WRITING_SUFFIX}"
         shape = (
@@ -827,7 +834,7 @@ class ReviewEvidenceStore:
             return ReviewEvidenceError(
                 f"`{opened}`, the temporary this write opens before it publishes "
                 f"`{relative}`, is {shape} rather than a regular file.",
-                remedy=planted_temporary_cure(opened),
+                remedy=planted_temporary_cure(opened, shape),
             )
         return ReviewEvidenceError(
             f"`{opened}`, the temporary this write opens before it publishes "
@@ -867,14 +874,15 @@ class ReviewEvidenceStore:
         shape, and the cure names it back -- so nothing is lost but the
         ungraded type.
 
-        **A directory gets a different cure from the other shapes**, and the
-        split is on ``stat.S_ISDIR`` rather than on the shape's own wording.
-        ``planted_artefact_cure`` closes with "removing it loses nothing", which
-        is true of a pipe, a socket and a device node and false of a directory:
-        that one holds other names, and the ones under it may be an operator's
-        own files. Measured before the split: a directory holding a file was
-        published with an instruction to remove it and an assurance that nothing
-        would be lost.
+        **A directory gets a different cure from the other shapes, and this site
+        no longer decides that.** ``planted_artefact_cure`` closes with "removing
+        it loses nothing", which is true of a pipe, a socket and a device node
+        and false of a directory: that one holds other names, and the ones under
+        it may be an operator's own files. The split used to be a ``S_ISDIR``
+        branch *here*, and one seam over -- ``_temporary_refusal``, which has no
+        such branch -- the same sentence shipped over a directory holding a file
+        somebody wrote. The shape now goes to the cure and the cure routes it,
+        so a seam that never heard of the split still gets it right.
 
         Raises:
             ReviewEvidenceError: If a symbolic link sits at the record's own
@@ -896,16 +904,7 @@ class ReviewEvidenceStore:
             raise ReviewEvidenceError(
                 f"`{relative}` is {shape} rather than a regular file, so the record was "
                 f"not published over it.",
-                remedy=(
-                    # Keyed on the mode rather than on the shape *string*, so the
-                    # split does not rest on a sentence matching. A directory is
-                    # the one member of `shape_that_is_not_a_regular_file`'s range
-                    # that holds other names, and `planted_artefact_cure`'s
-                    # "removing it loses nothing" is false of exactly that one.
-                    occupied_directory_cure(relative)
-                    if stat.S_ISDIR(mode)
-                    else planted_artefact_cure(relative, shape)
-                ),
+                remedy=planted_artefact_cure(relative, shape),
             )
         os.replace(writing, target)  # noqa: PTH105 - os.replace is the atomic primitive
 

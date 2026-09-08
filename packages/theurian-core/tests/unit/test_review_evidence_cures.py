@@ -10,6 +10,14 @@ argument supplied per parameter *name*. A cure added later inherits every check,
 and one that takes a parameter this file has never seen reddens in
 :func:`test_every_cure_parameter_has_a_probe` rather than being skipped.
 
+The module carries one **safety predicate** besides those two rules: a cure that
+says a removal costs nothing may say it only where the shape holds no data of
+its own. :func:`test_no_cure_claims_a_costless_removal_outside_the_shape_guard`
+is where that is enforced, over the same reflected population and over every
+shape the prober can answer, because the seam table below is now descriptive:
+the store hands a shape to a cure and the cure routes it, so a table of
+(seam, shape) pairs records where a reader ends up rather than deciding it.
+
 Marked ``unit``; nothing here opens a file.
 """
 
@@ -60,7 +68,16 @@ _ACCOUNTS_FOR_THE_LOSS: Final = re.compile(
 #: What a cure that offers a removal may **not** claim about a shape holding
 #: other names. True of a pipe, a socket and a device node; false of a directory,
 #: whose entries may be an operator's own files.
-_CLAIMS_NOTHING_IS_LOST: Final = re.compile(r"loses nothing|holds no bytes", re.IGNORECASE)
+#:
+#: **Three spellings rather than two, because a cure says it in its own words.**
+#: ``planted_artefact_cure`` says "holds no bytes of its own, so removing it
+#: loses nothing"; ``planted_temporary_cure`` says "it holds no review evidence
+#: and removing it loses nothing". This pattern is what the safety predicate is
+#: *derived from* -- no row below carries a hand-set "may claim" flag -- so a
+#: spelling it cannot see is a claim nothing here guards.
+_CLAIMS_NOTHING_IS_LOST: Final = re.compile(
+    r"loses nothing|holds no bytes|holds no review evidence", re.IGNORECASE
+)
 
 #: Every shape ``security/regular_file.shape_that_is_not_a_regular_file`` can
 #: answer, recomputed by running it over ``stat``'s **own** file-type constants
@@ -71,8 +88,8 @@ _CLAIMS_NOTHING_IS_LOST: Final = re.compile(r"loses nothing|holds no bytes", re.
 #: ``planted_artefact_cure`` for ``"a directory"``, and the sentence "which holds
 #: no bytes, so removing it loses nothing" shipped over a directory holding an
 #: operator's file. A shape added to that function now reddens
-#: :func:`test_every_shape_the_prober_can_answer_has_a_cure` until somebody says
-#: which cure the store publishes for it.
+#: :func:`test_every_seam_and_shape_the_prober_can_answer_names_a_cure` until
+#: somebody says which cure a reader gets for it.
 #: ``isinstance(..., int)`` is not decoration: ``stat.S_IFMT`` shares the prefix
 #: and is the *function* that extracts a type from a mode.
 _SHAPES: Final[frozenset[str]] = frozenset(
@@ -83,16 +100,58 @@ _SHAPES: Final[frozenset[str]] = frozenset(
     if shape is not None
 )
 
-#: Which cure the store publishes for each shape, and whether that cure may say
-#: the removal costs nothing.
-_CURE_FOR_SHAPE: Final[dict[str, tuple[str, bool]]] = {
-    "a directory": ("occupied_directory_cure", False),
-    "a named pipe (FIFO)": ("planted_artefact_cure", True),
-    "a socket": ("planted_artefact_cure", True),
-    "a character device": ("planted_artefact_cure", True),
-    "a block device": ("planted_artefact_cure", True),
-    "a special file": ("planted_artefact_cure", True),
+#: The one shape in the prober's range that is a container of other names,
+#: spelled here because a ``str`` is what the guard takes and pinned to the
+#: prober's own answer by
+#: :func:`test_the_guard_names_the_one_shape_that_holds_other_names`.
+_A_CONTAINER_OF_OTHER_NAMES: Final = "a directory"
+
+#: The cure each store seam calls. Both take a shape and route it themselves, so
+#: these two are the whole of what a seam chooses; which sentence a reader ends
+#: up with is :data:`_CURE_FOR_SEAM_AND_SHAPE`.
+_ENTRY_CURE_FOR_SEAM: Final[dict[str, str]] = {
+    "the record's own path": "planted_artefact_cure",
+    "the record's temporary": "planted_temporary_cure",
 }
+
+#: Which cure a reader ends up with per seam and shape. **Descriptive, and that
+#: is the change**: the boolean that used to sit beside each cell said whether
+#: the cure might claim a costless removal, and a hand-set boolean beside a cell
+#: is exactly how ``planted_temporary_cure`` stayed out of the map while
+#: publishing "removing it loses nothing" over a directory. The claim is now
+#: derived from the rendered text
+#: (:func:`test_no_cure_claims_a_costless_removal_outside_the_shape_guard`), and
+#: this table is checked by *reaching* each destination through its seam's entry
+#: cure rather than by being believed.
+#:
+#: Keyed on the prober's range. The temporary seam also names ``"a symbolic
+#: link"``, which that function never answers -- ``_planted_shape`` adds it from
+#: the errno and from ``lstat`` -- so this table does not claim to cover it;
+#: ``test_review_evidence_writing_temporary.py`` drives that one.
+_CURE_FOR_SEAM_AND_SHAPE: Final[dict[tuple[str, str], str]] = {
+    ("the record's own path", "a directory"): "occupied_directory_cure",
+    ("the record's own path", "a named pipe (FIFO)"): "planted_artefact_cure",
+    ("the record's own path", "a socket"): "planted_artefact_cure",
+    ("the record's own path", "a character device"): "planted_artefact_cure",
+    ("the record's own path", "a block device"): "planted_artefact_cure",
+    ("the record's own path", "a special file"): "planted_artefact_cure",
+    ("the record's temporary", "a directory"): "occupied_temporary_cure",
+    ("the record's temporary", "a named pipe (FIFO)"): "planted_temporary_cure",
+    ("the record's temporary", "a socket"): "planted_temporary_cure",
+    ("the record's temporary", "a character device"): "planted_temporary_cure",
+    ("the record's temporary", "a block device"): "planted_temporary_cure",
+    ("the record's temporary", "a special file"): "planted_temporary_cure",
+}
+
+#: The cures that carry the shape guard inside them, and so are the only ones
+#: allowed to render a costless claim at all. Each is held to *both* halves by
+#: :func:`test_each_guarded_cure_withholds_its_costless_claim_over_a_container`:
+#: it withholds the claim over a container, and it still makes it over a shape
+#: that holds nothing -- an exemption for a cure that no longer claims anything
+#: would silently cover whatever took its name next.
+_GUARDED_COSTLESS_CURES: Final[frozenset[str]] = frozenset(
+    {"planted_artefact_cure", "planted_temporary_cure"}
+)
 
 #: One probe value per parameter name a cure takes. Keyed by name rather than by
 #: position so a cure taking ``relative`` gets the same probe wherever it sits in
@@ -227,29 +286,47 @@ def _call(function: Any, **overrides: object) -> str:
     return rendered
 
 
-def _every_cure() -> list[tuple[str, str]]:
-    """Every cure this module publishes, constant or rendered, as ``(name, text)``.
+def _render(function: Any, shape: str) -> str:
+    """One cure's text for ``shape``, or its only text when it takes no shape.
+
+    ``_call`` applies its overrides blindly, so handing ``shape=`` to a cure
+    written for a single shape -- ``occupied_directory_cure`` is one -- would be
+    a ``TypeError`` rather than a rendering.
+    """
+    if "shape" in inspect.signature(function).parameters:
+        return _call(function, shape=shape)
+    return _call(function)
+
+
+def _every_cure() -> list[tuple[str, str, str]]:
+    """Every rendering this module publishes, as ``(label, cure name, text)``.
 
     A cure taking a ``shape`` is rendered **once per shape the prober can
     answer**, rather than once with whichever shape the probe table happened to
     carry: the two module rules are held per rendering, and the rendering is what
-    an operator reads.
+    an operator reads. Every shape rather than the ones a table maps to that
+    cure, because the routing now lives *inside* the cure -- a lookup here would
+    be the walk agreeing with the thing it is checking.
+
+    The cure's own name travels beside the label so a row can ask which member
+    produced a rendering; the label is what a shape-taking cure is identified by
+    in the report, and it carries the shape.
     """
-    rendered: list[tuple[str, str]] = []
+    rendered: list[tuple[str, str, str]] = []
     for name, function in _cure_callables():
         if "shape" not in inspect.signature(function).parameters:
-            rendered.append((name, _call(function)))
+            rendered.append((name, name, _call(function)))
             continue
         rendered += [
-            (f"{name}[{shape}]", _call(function, shape=shape))
-            for shape in sorted(_SHAPES)
-            if _CURE_FOR_SHAPE.get(shape, ("", False))[0] == name
+            (f"{name}[{shape}]", name, _call(function, shape=shape)) for shape in sorted(_SHAPES)
         ]
-    return _cure_constants() + rendered
+    return [(name, name, text) for name, text in _cure_constants()] + rendered
 
 
-@pytest.mark.parametrize(("name", "text"), _every_cure(), ids=[name for name, _ in _every_cure()])
-def test_every_cure_names_a_command_and_an_artefact(name: str, text: str) -> None:
+@pytest.mark.parametrize(
+    ("name", "cure", "text"), _every_cure(), ids=[label for label, _, _ in _every_cure()]
+)
+def test_every_cure_names_a_command_and_an_artefact(name: str, cure: str, text: str) -> None:
     """RED means a cure sends the reader back into the source.
 
     The same shape ``test_review_ingest_refusals.py`` holds the graded remedies
@@ -261,8 +338,10 @@ def test_every_cure_names_a_command_and_an_artefact(name: str, text: str) -> Non
     assert _ARTEFACT.search(text) is not None, f"{name} names no artefact to act on:\n{text}"
 
 
-@pytest.mark.parametrize(("name", "text"), _every_cure(), ids=[name for name, _ in _every_cure()])
-def test_a_cure_that_offers_a_removal_says_what_it_costs(name: str, text: str) -> None:
+@pytest.mark.parametrize(
+    ("name", "cure", "text"), _every_cure(), ids=[label for label, _, _ in _every_cure()]
+)
+def test_a_cure_that_offers_a_removal_says_what_it_costs(name: str, cure: str, text: str) -> None:
     """RED means a cure tells an operator to delete something and does not say what.
 
     The module's second rule, and the one with teeth: review evidence is the
@@ -281,8 +360,10 @@ def test_a_cure_that_offers_a_removal_says_what_it_costs(name: str, text: str) -
     )
 
 
-@pytest.mark.parametrize(("name", "text"), _every_cure(), ids=[name for name, _ in _every_cure()])
-def test_no_cure_publishes_a_path_spelled_from_the_root(name: str, text: str) -> None:
+@pytest.mark.parametrize(
+    ("name", "cure", "text"), _every_cure(), ids=[label for label, _, _ in _every_cure()]
+)
+def test_no_cure_publishes_a_path_spelled_from_the_root(name: str, cure: str, text: str) -> None:
     """RED means a cure could carry the operator's machine layout into a paste.
 
     A remedy is text a caller may paste into an issue or a chat, and an absolute
@@ -344,55 +425,174 @@ def test_the_shape_range_is_recomputed_and_reaches_more_than_one_member() -> Non
     )
 
 
-def test_every_shape_the_prober_can_answer_has_a_cure() -> None:
-    """RED means a shape reaches ``_publish`` and nobody chose its cure.
+def test_the_guard_names_the_one_shape_that_holds_other_names() -> None:
+    """The can-fail companion for the predicate every row below rests on.
 
-    The population is recomputed, so a seventh shape added to
-    ``shape_that_is_not_a_regular_file`` lands here rather than silently
-    inheriting ``planted_artefact_cure`` -- which is how ``"a directory"``
-    inherited "removing it loses nothing" over a directory holding a file.
+    ``cures._shape_holds_other_names`` compares against the word the prober
+    answers for ``stat.S_IFDIR`` rather than a literal, so a guard that stopped
+    matching would be a guard that is off and every row below would pass. Both
+    directions are asserted: the word is the one this file spells, and no other
+    shape the store can hand a cure is treated as a container.
     """
-    assert set(_CURE_FOR_SHAPE) == _SHAPES, (
-        f"{sorted(_SHAPES ^ set(_CURE_FOR_SHAPE))} are named on one side of the shape "
-        "table and not the other. Say which cure the store publishes for the shape, and "
-        "whether that cure may claim the removal costs nothing -- a shape that holds "
-        "other names may not."
+    assert shape_that_is_not_a_regular_file(stat.S_IFDIR) == _A_CONTAINER_OF_OTHER_NAMES, (
+        "the prober no longer answers the word this file spells, so the guard compares "
+        "against something no seam produces"
     )
-    for shape, (cure, _) in _CURE_FOR_SHAPE.items():
-        assert hasattr(cures, cure), f"{shape} names a cure `{cure}` this module does not define"
+    assert cures._shape_holds_other_names(_A_CONTAINER_OF_OTHER_NAMES)
+    held = sorted(shape for shape in _SHAPES if cures._shape_holds_other_names(shape))
+    assert held == [_A_CONTAINER_OF_OTHER_NAMES], f"the guard now covers {held}"
+    assert not cures._shape_holds_other_names("a symbolic link"), (
+        "a symbolic link holds only itself, so removing one loses the link and not what "
+        "it points at -- treating it as a container would withhold a true sentence"
+    )
 
 
-@pytest.mark.parametrize("shape", sorted(_SHAPES), ids=sorted(_SHAPES))
-def test_only_a_shape_holding_no_other_names_says_the_removal_costs_nothing(shape: str) -> None:
-    """RED means an operator is told deleting their own files loses nothing.
+def test_every_seam_and_shape_the_prober_can_answer_names_a_cure() -> None:
+    """RED means a shape reaches a store seam and nobody said what a reader gets.
 
-    Measured before the split: a directory at a record's path was published with
-    ``planted_artefact_cure``, whose closing clause reads "It is a directory,
-    which holds no bytes, so removing it loses nothing" -- over a directory
-    holding a file somebody wrote. The claim is true of a pipe, a socket and a
-    device node, which hold no bytes of their own, and false of the one shape in
-    this range that is a container of other names.
+    The population is recomputed and taken over **both** seams, so a seventh
+    shape added to ``shape_that_is_not_a_regular_file`` lands here twice rather
+    than silently inheriting a costless claim -- which is how ``"a directory"``
+    inherited "removing it loses nothing" at the record's own path, and then
+    again at the temporary after the first seam was fixed alone.
     """
-    cure, may_claim = _CURE_FOR_SHAPE[shape]
-    function = getattr(cures, cure)
-    # A cure that does not take a `shape` is one written for a single shape --
-    # `occupied_directory_cure` is -- so the probe table alone renders it.
-    named = {"shape": shape} if "shape" in inspect.signature(function).parameters else {}
-    text = _call(function, **named)
-    claimed = _CLAIMS_NOTHING_IS_LOST.search(text)
+    expected = {(seam, shape) for seam in _ENTRY_CURE_FOR_SEAM for shape in _SHAPES}
 
-    if may_claim:
-        assert claimed is not None, f"{cure} no longer says what removing {shape} costs:\n{text}"
+    assert set(_CURE_FOR_SEAM_AND_SHAPE) == expected, (
+        f"{sorted(expected ^ set(_CURE_FOR_SEAM_AND_SHAPE))} are named on one side of the "
+        "seam-and-shape table and not the other. Say which cure a reader ends up with "
+        "there; whether it may claim the removal costs nothing is derived from the text."
+    )
+    for (seam, shape), cure in _CURE_FOR_SEAM_AND_SHAPE.items():
+        assert hasattr(cures, cure), (
+            f"{shape} at {seam} names a cure `{cure}` this module does not define"
+        )
+
+
+@pytest.mark.parametrize(
+    ("seam", "shape"),
+    sorted(_CURE_FOR_SEAM_AND_SHAPE),
+    ids=[f"{seam}-{shape}" for seam, shape in sorted(_CURE_FOR_SEAM_AND_SHAPE)],
+)
+def test_each_seam_and_shape_reaches_the_cure_the_table_names(seam: str, shape: str) -> None:
+    """RED means the descriptive table describes a route nothing takes.
+
+    A table that is not decided by the code has to be *reached* by it or it is a
+    comment: the seam's entry cure is rendered for the shape and compared against
+    the destination cure's own rendering, so a routing change that stops going
+    where this says reddens instead of leaving the table quietly wrong.
+    """
+    entry = getattr(cures, _ENTRY_CURE_FOR_SEAM[seam])
+    destination = getattr(cures, _CURE_FOR_SEAM_AND_SHAPE[(seam, shape)])
+
+    assert _render(entry, shape) == _render(destination, shape), (
+        f"{_ENTRY_CURE_FOR_SEAM[seam]} does not answer "
+        f"`{_CURE_FOR_SEAM_AND_SHAPE[(seam, shape)]}` for {shape} at {seam}:\n"
+        f"{_render(entry, shape)}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "cure", "text"), _every_cure(), ids=[label for label, _, _ in _every_cure()]
+)
+def test_no_cure_claims_a_costless_removal_outside_the_shape_guard(
+    name: str, cure: str, text: str
+) -> None:
+    """RED means a cure can tell an operator that deleting their own files is free.
+
+    **The safety predicate, and it is the enforcement the seam tables are not.**
+    Measured twice, one seam apart: ``planted_artefact_cure``'s "which holds no
+    bytes, so removing it loses nothing" was published over a directory holding a
+    file somebody wrote, the store's ``_publish`` gained a ``S_ISDIR`` branch,
+    and ``_temporary_refusal`` -- which had no such branch -- went on publishing
+    ``planted_temporary_cure``'s "it holds no review evidence and removing it
+    loses nothing" over the same plant at ``<record>.writing``.
+
+    So the claim is allowed only from a cure that takes the shape and withholds
+    it itself. A third cure that makes the claim reddens here whatever seam calls
+    it and whatever a table says, which is what
+    :func:`test_the_walk_reddens_on_a_cure_that_claims_without_the_guard` drives
+    with a planted member.
+    """
+    claimed = _CLAIMS_NOTHING_IS_LOST.search(text)
+    if claimed is None:
         return
+
+    assert cure in _GUARDED_COSTLESS_CURES, (
+        f"{name} says a removal costs nothing, at "
+        f"{text[claimed.start() : claimed.start() + 60]!r}, and carries no shape guard:\n"
+        f"{text}\n\n"
+        f"Take the shape and route a container of other names to a move-style cure, as "
+        f"{sorted(_GUARDED_COSTLESS_CURES)} do. A seam that never heard of the split "
+        f"still gets it right that way; a guard at the seam does not."
+    )
+
+
+def test_the_walk_reddens_on_a_cure_that_claims_without_the_guard() -> None:
+    """The positive control: the row above is not passing over nothing.
+
+    A structural walk that found no claim passes exactly as a correct one does,
+    and the claim's spelling is the part that drifts. A rendering carrying the
+    sentence under a name outside the guarded pair is fed to the same predicate
+    the row above applies, in each of the three spellings the pattern knows.
+    """
+    planted = [
+        ("planted_third_cure", "planted_third_cure", f"Remove it -- {claim}.")
+        for claim in (
+            "removing it loses nothing",
+            "it holds no bytes",
+            "it holds no review evidence",
+        )
+    ]
+
+    caught = [
+        name
+        for name, cure, text in planted
+        if _CLAIMS_NOTHING_IS_LOST.search(text) is not None and cure not in _GUARDED_COSTLESS_CURES
+    ]
+
+    assert len(caught) == len(planted), (
+        f"the predicate saw {len(caught)} of {len(planted)} planted claims, so a cure "
+        f"spelling one of the others would pass the row above"
+    )
+
+
+@pytest.mark.parametrize(
+    "cure", sorted(_GUARDED_COSTLESS_CURES), ids=sorted(_GUARDED_COSTLESS_CURES)
+)
+def test_each_guarded_cure_withholds_its_costless_claim_over_a_container(cure: str) -> None:
+    """RED means an exemption covers a cure that does not carry the guard.
+
+    Both halves, because either one alone is the failure mode. Over a container
+    the cure must withhold the claim and print what is *inside* -- the question
+    that decides whether removing it is safe. Over a shape that holds nothing it
+    must still make it: an exemption for a cure that no longer claims anything is
+    stale, and would silently cover whatever took that name next.
+    """
+    assert hasattr(cures, cure), (
+        f"`{cure}` is exempted from the costless-claim row and no longer exists. Remove "
+        f"the name, or correct it -- an exemption nothing matches will cover whatever "
+        f"takes that name next."
+    )
+    function = getattr(cures, cure)
+    over_a_container = _render(function, _A_CONTAINER_OF_OTHER_NAMES)
+    over_a_pipe = _render(function, "a named pipe (FIFO)")
+
+    assert _CLAIMS_NOTHING_IS_LOST.search(over_a_pipe) is not None, (
+        f"{cure} no longer says what removing a named pipe costs, so its place among "
+        f"{sorted(_GUARDED_COSTLESS_CURES)} is an exemption of nothing:\n{over_a_pipe}"
+    )
+    claimed = _CLAIMS_NOTHING_IS_LOST.search(over_a_container)
     assert claimed is None, (
-        f"{cure} tells an operator that removing {shape} costs nothing, at "
-        f"{text[claimed.start() : claimed.start() + 60]!r}:\n{text}\n\n"
-        f"A directory holds other names, and nothing at this seam can tell whose they "
+        f"{cure} tells an operator that removing {_A_CONTAINER_OF_OTHER_NAMES} costs "
+        f"nothing, at {over_a_container[claimed.start() : claimed.start() + 60]!r}:\n"
+        f"{over_a_container}\n\n"
+        f"A directory holds other names, and nothing at either seam can tell whose they "
         f"are."
     )
-    assert "ls -la" in text, (
+    assert "ls -la" in over_a_container, (
         f"{cure} does not print what is *inside* the artefact, which is the question "
-        f"that decides whether removing it is safe:\n{text}"
+        f"that decides whether removing it is safe:\n{over_a_container}"
     )
 
 

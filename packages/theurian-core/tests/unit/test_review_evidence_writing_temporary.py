@@ -205,6 +205,54 @@ def test_a_socket_at_the_temporary_names_its_shape_rather_than_a_permission(
     )
 
 
+def test_a_directory_at_the_temporary_is_not_told_to_be_deleted(
+    store: ReviewEvidenceStore,
+) -> None:
+    """RED means an operator is told that removing their own directory loses nothing.
+
+    The seam the record-path split did not reach. ``_publish`` chose a cure per
+    shape and a **directory** at the record's own path got one that offers a
+    move; ``_temporary_refusal`` passed the shape into the *message* and
+    published ``planted_temporary_cure`` whatever the shape was. That text is
+    true of a link, a pipe and a socket at ``<record>.writing`` -- "it holds no
+    review evidence and removing it loses nothing" -- and false of a directory,
+    whose entries may be an operator's own files and which nothing at this seam
+    can tell the ownership of.
+
+    The plant carries a file for exactly that reason: a directory that could be
+    removed harmlessly would make the wrong cure look right.
+
+    Three phrases rather than one, spelled here rather than imported from
+    ``test_review_evidence_cures.py``'s pattern: a cure whose costless claim
+    survived under a different wording is the drift this row exists to catch,
+    and the cure it is about says the claim twice.
+    """
+    record = _record()
+    relative = record.relative_path
+    planted = _root(store, relative + WRITING)
+    planted.mkdir(parents=True)
+    (planted / "quarterly-notes.md").write_text("bytes an operator wrote\n", encoding="utf-8")
+
+    with pytest.raises(ReviewEvidenceError) as raised:
+        store.write([record], run=_run())
+
+    message, remedy = str(raised.value), raised.value.remedy
+    assert relative + WRITING in message, f"the refusal does not name the temporary: {message}"
+    assert "a directory" in message, f"the refusal does not name the shape: {message}"
+    for claim in ("loses nothing", "holds no bytes", "holds no review evidence"):
+        assert claim not in remedy, (
+            f"the cure tells an operator that removing this directory costs nothing, at "
+            f"`{claim}`: {remedy}"
+        )
+    assert "ls -la" in remedy, (
+        f"the cure does not print what is *inside* the directory, which is the question "
+        f"that decides whether removing it is safe: {remedy}"
+    )
+    assert (planted / "quarterly-notes.md").is_file(), (
+        "the operator's own file under the planted directory did not survive the refusal"
+    )
+
+
 def test_a_named_pipe_at_the_leaf_is_refused_rather_than_replaced(
     store: ReviewEvidenceStore,
 ) -> None:

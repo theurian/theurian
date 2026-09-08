@@ -320,6 +320,56 @@ def test_a_landing_refusal_says_what_already_landed_rather_than_nothing_was_writ
     )
 
 
+def test_a_directory_at_a_records_temporary_is_not_told_to_be_deleted(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RED means the shipped command tells an operator to delete their own directory.
+
+    The store-side row is
+    ``tests/unit/test_review_evidence_writing_temporary.py::test_a_directory_at_the_temporary_is_not_told_to_be_deleted``;
+    this is the same plant driven the way an operator meets it, because the
+    remedy is the field the CLI publishes and a claim is only false once someone
+    reads it. The sequence is a refetch: a run lands the records, a directory is
+    planted at one record's ``.writing`` sibling with a file inside it, and the
+    next run refuses over the plant.
+
+    ``.writing`` is not a landed record and nothing rebuilds what is under it,
+    so both halves are asserted: the remedy makes no costless claim, and the
+    file inside the plant is still there afterwards.
+    """
+    event = _event()
+    provider = CannedReviewProvider(
+        (event,), threads={42: (_thread(event),)}, submissions={42: (_submission(event),)}
+    )
+    landing_code, landing_out, landing_err = _run(monkeypatch, provider)
+    assert landing_code == 0, f"the first run did not land: {landing_out}\n{landing_err}"
+    landed = sorted((project / ".theurian" / "review").rglob("*.json"))
+    assert landed, "the first run landed nothing, so there is no temporary to plant beside"
+    planted = landed[0].with_name(landed[0].name + ".writing")
+    planted.mkdir()
+    (planted / "quarterly-notes.md").write_text("bytes an operator wrote\n", encoding="utf-8")
+
+    exit_code, out, err = _run(monkeypatch, provider)
+    document = _the_published_document(exit_code, out, err)
+
+    assert exit_code == 1, f"a record whose temporary is occupied exited {exit_code}"
+    assert set(document) == {"error", "remedy"}, (
+        f"the refusal published the run document rather than `{{error, remedy}}`: "
+        f"{sorted(document)}"
+    )
+    for claim in ("loses nothing", "holds no bytes", "holds no review evidence"):
+        assert claim not in document["remedy"], (
+            f"the published remedy tells an operator that removing this directory costs "
+            f"nothing, at `{claim}`: {document['remedy']}"
+        )
+    assert "ls -la" in document["remedy"], (
+        f"the remedy does not print what is *inside* the directory: {document['remedy']}"
+    )
+    assert (planted / "quarterly-notes.md").is_file(), (
+        "the operator's own file under the planted directory did not survive the run"
+    )
+
+
 def test_the_two_renderers_differ_on_exactly_the_class_the_row_below_drives() -> None:
     """The can-fail companion, and the correction of a reason that stood for two rounds.
 
