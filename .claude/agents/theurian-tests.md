@@ -21,7 +21,17 @@ subject being broken, the test is wrong, not the mutation.
 
 **Mutation runs get their own tree.** `tools/mutate.py` copies the checkout;
 never break-and-revert inside a tree another agent is editing, and never clean a
-mutation up with `git checkout --` in a tree holding uncommitted work.
+mutation up with `git checkout --` in a tree holding uncommitted work — restore
+a perturbed file by COPY (`cp` to scratch, `cp` back) whenever it carries
+uncommitted edits; the checkout discards them (CLAUDE.md's dev-machine section;
+PR #596's fix arc hit it live).
+
+**`tools/mutate.py`'s verdict path IS a full-suite run**, control included —
+never start it inside an assignment: full-suite and batch runs are serialized
+across lanes by the orchestrator. The in-assignment mode is `--prepare-tree`
+plus a scoped `pytest` selection in your own clone (with
+`git remote set-branches --add origin main && git fetch origin main` first, or
+the control is red). PR #596's arc measured the cost of this twice.
 
 Watch for assertions that hold regardless of the implementation:
 

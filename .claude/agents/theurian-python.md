@@ -161,6 +161,14 @@ built state" for a project that had one. Reading is not verification.
 Never leave the working tree modified beyond the change you were asked for, and
 never commit unless asked.
 
+Two perturbation rules, burned in from PR #596's fix arc: **restore a perturbed
+file by COPY, never `git checkout --` on a file carrying uncommitted work**
+(the checkout discards the edits — CLAUDE.md's dev-machine section, hit live);
+and **`tools/mutate.py`'s verdict path is a FULL-SUITE run** — inside an
+assignment use `--prepare-tree` + a scoped `pytest` selection in your own clone
+(fetch `origin/main` into it first), and leave batch verdicts to the
+orchestrator's serialized slot.
+
 When you do commit, the scope is `[a-z-]+` — lowercase letters and hyphens only.
 The CI Conventional-Commits gate rejects a digit or `#` in the scope, so an
 issue or ADR number goes in the subject text or body, never the scope
