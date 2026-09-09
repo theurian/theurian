@@ -3119,9 +3119,9 @@ class BuildProvenance:
         """Whether this installation built the review-finding store ``findings_store_id``."""
         return findings_store_id in self._built(self._load(), root, "findings")
 
-    def has_review_search(self, root: Path, store_id: str) -> bool:
+    def has_review(self, root: Path, store_id: str) -> bool:
         """Whether this installation built the review search store ``store_id``."""
-        return store_id in self._built(self._load(), root, "reviewSearch")
+        return store_id in self._built(self._load(), root, "review")
 
     def record_state(self, root: Path, state_hash: str) -> None:
         """Record that this installation built the canonical state ``state_hash``."""
@@ -3135,9 +3135,19 @@ class BuildProvenance:
         """Record that this installation built the review-finding store ``findings_store_id``."""
         self._record(root, "findings", findings_store_id)
 
-    def record_review_search(self, root: Path, store_id: str) -> None:
-        """Record that this installation built the review search store ``store_id``."""
-        self._record(root, "reviewSearch", store_id)
+    def record_review(self, root: Path, store_id: str) -> None:
+        """Record that this installation built the review search store ``store_id``.
+
+        Named for the **filename infix**, not for the store: the family key is
+        ``review`` because the artifact is ``theurian-review-<id>.sqlite``, exactly
+        as ``findings`` keys ``theurian-findings-`` and ``index`` keys
+        ``theurian-index-``. That is a convention a record depends on --
+        ``test_threat_model_t19_claims.py`` derives ``theurian-{family}-`` from
+        these method names and asserts the threat model names the artifact -- so a
+        family called ``review_search`` here would have T-19 vouching for a
+        ``theurian-review_search-`` that nothing writes.
+        """
+        self._record(root, "review", store_id)
 
     def _record(self, root: Path, kind: str, value: str) -> None:
         """Append one built artifact to a root's record, atomically.

@@ -6086,12 +6086,14 @@ rebuild strands nothing.
 Class: **derived state trusted by filesystem presence rather than by provenance.**
 
 Everything under `.theurian/state/` — the active pointers (`active.json`,
-`active-index.json`) and the **three** database families that live beside them:
+`active-index.json`) and the **four** database families that live beside them:
 the canonical state (`theurian-state-*`) and the published retrieval index
-(`theurian-index-*`), both named by a pointer, and — since ADR-0029's serving
-slice — the review-finding store (`theurian-findings-*`), which no pointer names
+(`theurian-index-*`), both named by a pointer; since ADR-0029's serving
+slice the review-finding store (`theurian-findings-*`), which no pointer names
 because `theurian findings build` writes it under a constant id
-(`FINDINGS_STORE_ID`) — is
+(`FINDINGS_STORE_ID`); and, since ADR-0030 slice 3, the review search store
+(`theurian-review-*`), which no pointer names either and for the same reason —
+`theurian review build` writes it under `REVIEW_SEARCH_STORE_ID` — is
 derived and git-ignored (ADR-0004). A repository contributor can nonetheless force-add a
 doctored copy past that ignore (`git add -f`), and a victim who clones (or
 downloads the ZIP/tarball) + `theurian project register` + serves over MCP,

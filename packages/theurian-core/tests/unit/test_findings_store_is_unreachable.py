@@ -358,6 +358,14 @@ _APPLICATION_NON_SERVING_MODULES: frozenset[str] = frozenset(
         # the findings one in every sense, and this module could not reach either
         # without a composition root handing it one.
         "review_ingest_service.py",
+        # The review *search* rebuild (ADR-0030 slice 3). It projects landed
+        # evidence records onto rows and hands them to an injected writer, so it
+        # names no store at all -- neither the findings one nor the review one,
+        # which are two different artifacts under `.theurian/state/` with their
+        # own schemas and their own version constants. It returns two counts and
+        # no content, and the direction is write-only: nothing here reads a store
+        # back.
+        "review_search_builder.py",
         # The ingestion secret gate (ADR-0030 decision 4). It decides whether a
         # review *evidence* record may become a file and returns the payload that
         # may be written; it serves nothing and reaches no store, and the
@@ -465,6 +473,17 @@ _INFRASTRUCTURE_NON_SERVING_MODULES: frozenset[str] = frozenset(
         "sqlite/findings_store.py",
         "sqlite/index_purge.py",
         "sqlite/index_schema.py",
+        # The review *search* store (ADR-0030 slice 3): a fourth database under
+        # `.theurian/state/`, with its own schema, its own version constant and its
+        # own rebuild path. It is here for the reason `sqlite/findings_store.py` is
+        # -- an adapter is not a serving *module* in this file's sense; what this
+        # file's population is about is which modules can reach the **findings**
+        # store, and none of these three names it, imports it, or shares a table
+        # with it. A review search returns review evidence, never a
+        # `Review-Finding:` trailer.
+        "sqlite/review_search_schema.py",
+        "sqlite/review_search_sql.py",
+        "sqlite/review_search_store.py",
         "sqlite/schema.py",
         "vector/__init__.py",
     }

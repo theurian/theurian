@@ -48,6 +48,7 @@ from theurian.domain.review import (
 )
 from theurian.domain.review_ingest import RefusalGrade, ReviewIngestRefusedError
 from theurian.infrastructure.github.limits import MAX_PULL_REQUESTS
+from theurian.infrastructure.sqlite.review_search_store import SqliteReviewSearchStore
 
 pytestmark = pytest.mark.integration
 
@@ -261,6 +262,39 @@ def test_a_clean_run_reports_counts_and_exits_zero(
     document = json.dumps(payload)
     for fetched in ("The retry loop is now bounded", "This retries forever", "Reviewer One"):
         assert fetched not in document, f"the report published fetched content: {fetched!r}"
+
+
+def test_a_run_leaves_the_derived_search_store_describing_what_it_landed(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0030 slice 3: ingest refreshes the derived store, so no second command is owed.
+
+    Without the refresh the store would go on describing the corpus as it was
+    *before* the run -- which for a first run means no store at all, and for a
+    later one means a search that cannot see what was just fetched. Asserted
+    through the store's own read rather than by the file existing, because a
+    store that was created and left empty is the same failure wearing a file.
+
+    Three assertions in one case on purpose: the document says a store was
+    written, the store holds a row per landed record, and the count agrees with
+    what the run reported landing. A refresh that ran against the wrong path
+    satisfies the first and neither of the others.
+    """
+    _settings(project)
+    _install(monkeypatch, _canned((_event(42),)))
+
+    code, payload = _invoke("review", "ingest", REPOSITORY)
+
+    assert code == 0
+    assert payload["searchStore"]["records"] == payload["landed"]["total"] == 3
+    assert payload["searchStore"]["withheld"] == 0
+    store = SqliteReviewSearchStore(Path(str(payload["searchStore"]["storePath"])))
+    assert len(store.dump()) == 3
+    assert {record.kind for record in store.dump()} == {
+        "pull-request",
+        "review-submission",
+        "review-thread",
+    }
 
 
 def test_a_second_invocation_updates_rather_than_adds(

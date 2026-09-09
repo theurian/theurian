@@ -111,6 +111,44 @@ _ACCOUNTED: Final[dict[str, str]] = {
         "outside `TheurianError`; raised as the `ValueError` this function's other "
         "shape faults already are, which buys the cure the complement arm cannot"
     ),
+    # The PascalCase lock-class name is deliberately not spelled in this row: the
+    # whole-word token trips `test_connection_claims.py`'s one-process
+    # lock-construction census (#494), whose key is that name searched over each
+    # test file's whole text, comments included -- and a verdict table is not a
+    # member of the population that census is about. `test_adr_0018_claims.py`'s
+    # findings entry avoids it for the same reason.
+    "review_commands.py:_lock_write_section.section:OSError": (
+        "the project's write lock -- acquisition, body and release -- converted into "
+        "a `TheurianError` the commands below already grade. Nothing in the "
+        "acquisition reaches it today: both calls the lock makes before it has a "
+        "descriptor, its `mkdir` and its `open`, convert their own `OSError` into a "
+        "graded error naming the lock file with a better cure. It is kept as the "
+        "backstop a future acquisition step would otherwise escape through, exactly "
+        "as its findings twin is"
+    ),
+    "review_commands.py:review_build:OSError": (
+        "the provenance write, which is the one call on this path raising a bare "
+        "`OSError`: the store converts its own and the lock's are converted one arm "
+        "up. Graded separately from the arm above because its precondition is a "
+        "different directory -- `THEURIAN_DATA_DIR`, outside the repository -- so a "
+        "cure naming `.theurian/` would send a reader to the wrong one"
+    ),
+    "review_commands.py:review_build:ProjectPathEscapeError": (
+        "`review_ingest`'s arm, for the same reason: exit code 4, a containment "
+        "refusal carrying its own remedy about where a path points"
+    ),
+    "review_commands.py:review_build:TheurianError": (
+        "`review_ingest`'s arm, and deliberately not `Exception` for the same "
+        "reason: it is the class the store and the builder grade *into*, so widening "
+        "it would publish a defect in this process as an operator-facing refusal"
+    ),
+    "review_commands.py:review_ingest:OSError": (
+        "the provenance write reached through the post-landing rebuild, graded like "
+        "`review_build`'s. Its sentence differs in the clause that matters: it says "
+        "the records landed, because the evidence is durable before the rebuild "
+        "starts and an operator told only that a build failed would go looking for "
+        "records that are on disk"
+    ),
     "review_commands.py:review_ingest:ProjectPathEscapeError": (
         "narrows the arm below it to exit code 4, a containment refusal carrying its "
         "own remedy about where a path points"
