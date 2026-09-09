@@ -421,16 +421,27 @@ def test_a_cure_that_survived_the_suite_is_refused_by_the_guard_it_walked_past(
     ``spread``, because the invitation set was matched as plain substrings; the
     patterns are word-bounded now.
 
-    The last two are round two's, and each is one shipped arm with one sentence
+    The last two are round two's, and each was one shipped arm with one sentence
     changed -- which is what makes them the plausible fifth arm rather than an
-    absurdity. The fifth is the ``directory-unreadable`` cure with "Then inspect
-    it." removed: its only remaining invitation verb is the ``read`` inside "can
-    be neither read nor **deleted**", which denies the reading it mentions and
-    sits nine characters before a deletion it also denies, so the whole property
-    used to be satisfied inside one negated clause. The sixth states a
-    consequence rather than a cost -- "blocks every project-scoped tool" -- and
-    cleared the cost property on the letters of "every project" inside
-    "project-scoped".
+    absurdity. The fifth is the ``directory-unreadable`` cure **as it shipped at
+    2d1f60c2** with "Then inspect it." removed: its only remaining invitation verb
+    is the ``read`` inside "can be neither read nor **deleted**", which denies the
+    reading it mentions and sits nine characters before a deletion it also denies,
+    so the whole property used to be satisfied inside one negated clause. The
+    sixth states a consequence rather than a cost -- "blocks every project-scoped
+    tool" -- and cleared the cost property on the letters of "every project"
+    inside "project-scoped".
+
+    **All six are held at the text that made them necessary, not re-pinned when
+    the arms move.** A planted cure is the input a check was written against, so
+    rewriting it to track the shipped text would silently change what the check is
+    measured on. Measured on the fifth: rebuilt on today's lead and tail it is
+    still refused, but by the *order* end -- "names the deletion before it names
+    the inspection" -- rather than by the invitation end this case exists to
+    exercise, because the tail's recovery now opens "So read out every entry's
+    projectId ...", which is an invitation and lands after the cost sentence. The
+    case would go RED for a reason that is not its own, and the property it guards
+    would stop being measured at all.
     """
     with pytest.raises(AssertionError) as excinfo:
         case.refused_by(case.text)

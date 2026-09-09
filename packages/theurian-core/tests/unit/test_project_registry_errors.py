@@ -221,8 +221,8 @@ def test_load_refuses_an_unparsable_registry_without_promising_a_costless_deleti
     )
     assert RE_REGISTER_INVOCATION in excinfo.value.remedy, (
         "the recovery has to stay typeable -- the population is the assertions reading the "
-        'invocation, by either spelling: `git grep -nE "re-register each project '
-        'with|RE_REGISTER_INVOCATION" packages/theurian-core/tests`'
+        'invocation, by either spelling: `git grep -n -e "re-register each project" -e '
+        "RE_REGISTER_INVOCATION packages/theurian-core/tests`"
     )
     _assert_the_registry_cure(
         excinfo.value.remedy, arm=RegistryFailureArm.UNPARSABLE, path=registry.path

@@ -180,10 +180,12 @@ INSPECTION_INVITATIONS: Final = (
 
 #: A sentence invites inspection when it opens with one of the verbs above, in
 #: the imperative, allowing the connectives an instruction is chained with:
-#: ``"Then inspect it."`` and ``"Inspect {path} before removing it"`` are
-#: invitations, ``"Restore read access to {path}"`` and ``"Once you have read
-#: out the roots you need, delete it"`` are not -- the first restores, the
-#: second is the deletion offer itself.
+#: ``"Then inspect it."``, ``"Inspect {path} before removing it"`` and the
+#: tail's ``"So read out every entry's projectId ... first;"`` are invitations --
+#: the last one only because ``so`` is among the connectives -- while
+#: ``"Restore read access to {path}"`` and ``"then delete it and re-register each
+#: project with ..."`` are not: the first restores, the second is the deletion
+#: offer itself.
 _AN_INVITATION: Final = re.compile(
     rf"^(?:(?:then|now|next|first|so|and)\s+)*(?:{'|'.join(INSPECTION_INVITATIONS)})"
 )
@@ -194,17 +196,31 @@ _AN_INVITATION: Final = re.compile(
 #: Read by name across the suite under **two spellings** -- this constant and the
 #: literal inside it -- so the key that enumerates the population is both::
 #:
-#:     git grep -nE "re-register each project with|RE_REGISTER_INVOCATION" \
+#:     git grep -n -e "re-register each project" -e RE_REGISTER_INVOCATION \
 #:         packages/theurian-core/tests
 #:
-#: The literal alone is not that key: it misses every assertion that reads this
-#: constant instead of spelling it. The population is the *assertions* in that
-#: output, by either spelling -- 10 of the 24 lines the search returns at the
-#: commit this note lands in. The other 14 are the two constant definitions (here
+#: One form, spelled the same way here, in ``test_cli_commands.py`` and in
+#: :data:`~theurian.application.project_service._HOW_TO_RECOVER_FROM_THE_DELETION`'s
+#: own note. Matching ``re-register each project with`` instead, as two of the
+#: three used to, misses the wrapped literals whose ``with`` sits on the next
+#: source line and returns a different total for the same population.
+#:
+#: **Scope: ``packages/theurian-core/tests``.** A third spelling lives in
+#: ``src`` -- ``_THE_RE_REGISTRATION_INVOCATION`` in ``cli/commands.py`` -- and is
+#: deliberately outside this key. It is not another pin of the cure: it is the
+#: antecedent check for a sentence that CLI layer *appends*, and it raises at
+#: runtime when the cure stops carrying an invocation, so it defends itself.
+#:
+#: The literal alone is not that key either: it misses every assertion that reads
+#: this constant instead of spelling it. The population is the *assertions* in
+#: that output, by either spelling -- 10 of the 36 lines the search returns at the
+#: commit this note lands in. The other 26 are the two constant definitions (here
 #: and in ``test_cli_commands.py``), one import of this one, the cure's own tail
-#: below, five planted-cure literals, and five lines of prose and search text.
-#: Re-run it rather than trusting the pair of numbers: both move with every test
-#: added.
+#: below, six planted-cure literals, one planted remedy in
+#: ``test_session_start_hook.py``, six lines of quoted instruction and docstring
+#: in ``test_registry_cure_execution.py``, and nine lines of prose and search
+#: text. Re-run it rather than trusting the pair of numbers: both move with every
+#: test added.
 RE_REGISTER_INVOCATION: Final = "re-register each project with `theurian project register`"
 
 #: Any spelling of the destructive verb: "Delete", "deleting", "deleted".
@@ -238,8 +254,16 @@ _SENTENCE_BREAK: Final = re.compile(r"(?<=[.;])\s+")
 THE_SHARED_CURE_TAIL: Final = (
     "The file records every project you have registered, so deleting it unregisters all "
     "of them, not only this one, and re-registering stamps today's date over each entry's "
-    "original registeredAt. Once you have read out the roots you need, delete it and "
-    "re-register each project with `theurian project register`."
+    "original registeredAt. Deleting it also frees every id: `theurian project register` "
+    "with no `--project-id` derives the id from the directory name, so a project registered "
+    "under any other id comes back under a different one, and two checkouts whose "
+    "directories share a name compete for a single id -- whichever re-registers first takes "
+    "it. So read out every entry's projectId (the key it sits under) and its rootPath "
+    "first; then delete it and re-register each project with `theurian project register`, "
+    "passing `--project-id <its projectId>` and running it inside that rootPath. The other "
+    "three fields are not restored from what you deleted: repositoryUrl and defaultBranch "
+    "are re-read from Git as the tree stands then, and knowledgeDirectory comes back as the "
+    "default."
 )
 
 #: The first sentences of each arm -- the half that differs, and the half the
@@ -252,7 +276,7 @@ THE_SHARED_CURE_TAIL: Final = (
 #: added without a pin fails there rather than being skipped here.
 THE_PINNED_CURE_LEADS: Final[Mapping[str, str]] = {
     "unparsable": (
-        "Inspect {path} before removing it -- the roots it lists are legible by eye "
+        "Inspect {path} before removing it -- the ids and roots it lists are legible by eye "
         "even where its top level is not something this build can read."
     ),
     "file-unreadable": (
@@ -261,12 +285,15 @@ THE_PINNED_CURE_LEADS: Final[Mapping[str, str]] = {
         "destroyed. Then inspect it."
     ),
     "directory-unreadable": (
-        "Restore access to {parent} first -- `chmod u+rwx` on it, and `chmod u+rx` "
-        "on every directory above it -- because this process could not look inside "
-        "that directory, and while it cannot, {path} can be neither read nor "
-        "deleted. Removing the file needs the write bit on {parent} as well as the "
-        "search bit, so `u+rx` alone would restore the read and leave the deletion "
-        "below refused. Then inspect it."
+        "Restore access to {parent} first, working from the top down: `chmod u+rx` on "
+        "each directory above it you cannot `cd` into, then `chmod u+rwx` on {parent} "
+        "itself. This process could not reach {path} -- the refusal is at {parent} or at "
+        "a directory above it, and it names the whole path rather than the component that "
+        "denied it. The order matters: `chmod` on {parent} is itself refused while a "
+        "directory above it denies the search. Until the refusal is lifted, {path} can be "
+        "neither read nor deleted, and removing the file needs the write bit on {parent} "
+        "as well as the search bit, so `u+rx` alone would restore the read and leave the "
+        "deletion below refused. Then inspect it."
     ),
     "unknown": (
         "Read {path} before removing it. What refused it is named in the message "

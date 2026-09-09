@@ -378,13 +378,39 @@ class RegistryFailureArm(StrEnum):
     #: the split.
     FILE_UNREADABLE = "file-unreadable"
 
-    #: The data directory holding the file was refused for ``EACCES``, one level
-    #: up: the ``.exists()`` probe could not traverse it. Deletion is blocked
-    #: there too, so the cure cannot open with either reading *or* removing the
-    #: file -- and its ``chmod`` has to grant what the deletion needs, which is
-    #: write and search on the directory rather than read on the file. The same
-    #: ``EACCES`` split as :attr:`FILE_UNREADABLE`: an ``ENAMETOOLONG`` reaching
-    #: the probe has no directory mode to restore either.
+    #: The ``.exists()`` probe was refused for ``EACCES``: this process could not
+    #: *reach* the file. Deletion is blocked with it, so the cure cannot open with
+    #: either reading *or* removing the file -- and its ``chmod`` has to grant what
+    #: the deletion needs, which is write and search on the directory rather than
+    #: read on the file. The same ``EACCES`` split as :attr:`FILE_UNREADABLE`: an
+    #: ``ENAMETOOLONG`` reaching the probe has no directory mode to restore either.
+    #:
+    #: **Two members, and this said "one level up" while covering both.** The
+    #: refusal is at the data directory *or* at any directory above it, and which
+    #: one is not knowable here. Measured on macOS at ``b9e8296b``, once with the
+    #: data directory at ``000`` and once with an ancestor at ``000`` and the data
+    #: directory at ``0700``: both reach this arm, and the ``OSError`` is the same
+    #: shape both times -- ``errno`` 13, ``filename`` the whole registry path,
+    #: ``filename2`` ``None``, ``strerror`` ``'Permission denied'``. The kernel
+    #: names no component, so no code here can name the refuser and the cure must
+    #: be true of both members. That is why its cause reads "could not reach"
+    #: rather than "could not look inside that directory", which was false for the
+    #: ancestor member, and why its steps run top-down: ``chmod u+rwx`` on the data
+    #: directory -- the shipped text's *first* command -- exits 1 with ``Permission
+    #: denied`` while a directory above it denies the search (measured), so the
+    #: ancestors' ``u+rx`` has to come first.
+    #:
+    #: **The cure locates the culprit by ``cd``, not by ``ls``, and that is a
+    #: portability decision.** What the probe needs from every component is the
+    #: *search* bit, which is exactly what ``cd`` tests. Measured on macOS at
+    #: ``b9e8296b`` over six ancestor modes with the data directory at ``0700``:
+    #: ``0000``, ``0400`` and ``0600`` reach this arm and each refuses ``cd``
+    #: (exit 1); ``0100``, ``0500`` and ``0700`` reach it not at all and each
+    #: accepts ``cd`` -- a locator with no false negative and no false positive.
+    #: ``ls`` happened to agree on that platform, but its exit status for a
+    #: read-without-search directory is an implementation's choice rather than a
+    #: POSIX one, and there is no Linux machine here to measure it on, so keying
+    #: the instruction on it would publish an unmeasured claim.
     DIRECTORY_UNREADABLE = "directory-unreadable"
 
     #: The arm for a reader whose condition this module cannot name, and there
@@ -440,9 +466,57 @@ _WHAT_DELETING_THE_REGISTRY_COSTS: Final = (
 #:
 #: The literal alone misses the assertions that read the tests' own constant
 #: instead of spelling it.
+#:
+#: **The ids are what recovery has to preserve, and the text used to say "roots"
+#: and name the one invocation that cannot preserve them.** An id is not stored
+#: anywhere else: :func:`derive_project_id` slugs the *directory name*, and the
+#: registry is what overrides it. So deleting the file frees every id, and a bare
+#: re-registration silently re-derives each one. Measured through the real CLI
+#: against a redirected ``HOME`` and ``THEURIAN_DATA_DIR`` on 2026-09-09 at
+#: ``b9e8296b``: a project in a directory named ``gamma`` registered as
+#: ``gamma-prod``, its ``projects.json`` removed, then ``theurian project
+#: register`` -- exit 0, and the entry came back keyed ``gamma``. With two
+#: checkouts both named ``api``, re-registering ``two/api`` first took the id
+#: ``api`` at exit 0 and ``one/api`` was then refused at exit 1: the id had been
+#: re-pointed at a different repository, which is the SEC-13 shape
+#: :meth:`ProjectRegistry.register` refuses to *do* -- it has nothing to refuse
+#: against once the file is gone.
+#:
+#: **What ``--project-id`` restores, field by field**, measured the same way and
+#: the same day. The field set is :meth:`ProjectRegistry.register`'s own ``entry``
+#: literal plus the key it is stored under -- re-derive it there rather than
+#: trusting this list, because a field added to that dict is a field this text
+#: silently stops accounting for:
+#:
+#: ==================  =========================================================
+#: field               ``register --project-id <id>`` run inside ``rootPath``
+#: ==================  =========================================================
+#: ``projectId``       restored -- by the flag, and by nothing else
+#: ``rootPath``        restored -- by where the command is run
+#: ``registeredAt``    restamped with today (named in the cost sentence above)
+#: ``repositoryUrl``   re-read from ``git remote get-url origin``: measured
+#:                     ``https://...`` -> ``""`` with the remote removed
+#: ``defaultBranch``   re-read from ``git symbolic-ref --short HEAD``: measured
+#:                     ``develop`` -> ``hotfix`` from another branch, and ->
+#:                     ``main`` on a detached HEAD
+#: ``knowledgeDirectory``  rewritten as ``DEFAULT_KNOWLEDGE_DIRECTORY``: measured
+#:                     ``.knowledge-custom`` -> ``.theurian``
+#: ==================  =========================================================
+#:
+#: The last three are the "other three fields" the text names. They are re-read
+#: from the tree rather than restored from the record, so they come back changed
+#: wherever the tree has moved -- which is why the text says they are not
+#: restored rather than promising they are the same.
 _HOW_TO_RECOVER_FROM_THE_DELETION: Final = (
-    "Once you have read out the roots you need, delete it and re-register each project "
-    "with `theurian project register`."
+    "Deleting it also frees every id: `theurian project register` with no `--project-id` "
+    "derives the id from the directory name, so a project registered under any other id comes "
+    "back under a different one, and two checkouts whose directories share a name compete for "
+    "a single id -- whichever re-registers first takes it. So read out every entry's projectId "
+    "(the key it sits under) and its rootPath first; then delete it and re-register each "
+    "project with `theurian project register`, passing `--project-id <its projectId>` and "
+    "running it inside that rootPath. The other three fields are not restored from what you "
+    "deleted: repositoryUrl and defaultBranch are re-read from Git as the tree stands then, "
+    "and knowledgeDirectory comes back as the default."
 )
 
 
@@ -489,12 +563,28 @@ def _registry_failure_lead(path: Path, arm: RegistryFailureArm) -> str:
     exited 0 and the ``rm`` exited 1 with ``Permission denied``, leaving the
     reader at exactly the refusal the arm was written to lift; at ``u+rwx`` all
     three exited 0.
+
+    **And the directory arm's steps are ordered, because one of its two members
+    cannot run them in the other order.** That arm is reached both by a data
+    directory at ``000`` and by an *ancestor* at ``000``
+    (:attr:`RegistryFailureArm.DIRECTORY_UNREADABLE` records the measurement that
+    they are indistinguishable at the raise). Measured in both, at ``b9e8296b``:
+    ``chmod u+rwx <data dir>`` -- the shipped text's first command -- exited 0 in
+    the first and 1 with ``Permission denied`` in the second, so the arm's own
+    opening step was unrunnable for half its readers. Top-down, ``chmod u+rx
+    <ancestor>`` then ``chmod u+rwx <data dir>``, exited 0 in both, and the
+    ``cat`` and ``rm`` after it exited 0 in both.
     """
     match arm:
         case RegistryFailureArm.UNPARSABLE:
+            # "ids and roots", not "roots": the tail below now asks the reader to
+            # carry the ids across too, and this is the sentence that says the
+            # inspection is possible at all. Promising less than the instruction
+            # needs is how the tail's own "read out the roots" came to name half
+            # of what recovery preserves.
             return (
-                f"Inspect {path} before removing it -- the roots it lists are legible by eye "
-                f"even where its top level is not something this build can read."
+                f"Inspect {path} before removing it -- the ids and roots it lists are legible "
+                f"by eye even where its top level is not something this build can read."
             )
         case RegistryFailureArm.FILE_UNREADABLE:
             return (
@@ -504,12 +594,16 @@ def _registry_failure_lead(path: Path, arm: RegistryFailureArm) -> str:
             )
         case RegistryFailureArm.DIRECTORY_UNREADABLE:
             return (
-                f"Restore access to {path.parent} first -- `chmod u+rwx` on it, and `chmod "
-                f"u+rx` on every directory above it -- because this process could not look "
-                f"inside that directory, and while it cannot, {path} can be neither read nor "
-                f"deleted. Removing the file needs the write bit on {path.parent} as well as "
-                f"the search bit, so `u+rx` alone would restore the read and leave the "
-                f"deletion below refused. Then inspect it."
+                f"Restore access to {path.parent} first, working from the top down: `chmod "
+                f"u+rx` on each directory above it you cannot `cd` into, then `chmod u+rwx` on "
+                f"{path.parent} itself. This process could not reach {path} -- the refusal is "
+                f"at {path.parent} or at a directory above it, and it names the whole path "
+                f"rather than the component that denied it. The order matters: `chmod` on "
+                f"{path.parent} is itself refused while a directory above it denies the "
+                f"search. Until the refusal is lifted, {path} can be neither read nor deleted, "
+                f"and removing the file needs the write bit on {path.parent} as well as the "
+                f"search bit, so `u+rx` alone would restore the read and leave the deletion "
+                f"below refused. Then inspect it."
             )
         case RegistryFailureArm.UNKNOWN:
             return (

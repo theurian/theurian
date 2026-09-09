@@ -974,11 +974,25 @@ _UNPARSEABLE_REGISTRY = b'{"demo": {"rootPath"'
 #: `RE_REGISTER_INVOCATION`, defined here and in `registry_deletion_cure_claims`
 #: and imported from the latter by `test_project_registry_errors`::
 #:
-#:     git grep -nE "re-register each project with|RE_REGISTER_INVOCATION" \
+#:     git grep -n -e "re-register each project" -e RE_REGISTER_INVOCATION \
 #:         packages/theurian-core/tests
 #:
+#: One form, spelled the same way here, in `registry_deletion_cure_claims` and in
+#: `_HOW_TO_RECOVER_FROM_THE_DELETION`'s own note in
+#: `application/project_service.py`. The three used to disagree -- two of them
+#: matched `re-register each project with`, which misses the wrapped literals
+#: whose `with` is on the next source line, and returned a different line total
+#: for the same population.
+#:
+#: **Scope: `packages/theurian-core/tests`.** A third spelling of the invocation
+#: lives in `src` -- `_THE_RE_REGISTRATION_INVOCATION` below in this same file's
+#: subject, `cli/commands.py` -- and is deliberately outside this key. It is not
+#: another pin of the cure: it is the antecedent check for the sentence
+#: `_registry_cure_in_repair_order` appends, and it raises at runtime when the
+#: cure stops carrying an invocation, so it defends itself.
+#:
 #: The population is the *assertions* in that output, by either spelling: 10 of
-#: the 24 lines it returns at the commit this note lands in, six of them in this
+#: the 36 lines it returns at the commit this note lands in, six of them in this
 #: file. The literal alone is not the key -- it finds none of the constant reads,
 #: which is four of those ten. Re-run it rather than trusting either number;
 #: both move with every test added.
