@@ -85,10 +85,10 @@ REPOSITORY: Final = "acme/order-service"
 #:
 #: Crockford base32 -- no ``I``, ``L``, ``O`` or ``U``.
 FIRST_RUN: Final = IngestionRun(
-    "01K1RBLD00000000000000AAAA", datetime(2026, 9, 7, 9, 0, tzinfo=UTC)
+    "01K1RB1D00000000000000AAAA", datetime(2026, 9, 7, 9, 0, tzinfo=UTC)
 )
 SECOND_RUN: Final = IngestionRun(
-    "01K1RBLD00000000000000BBBB", datetime(2026, 9, 8, 9, 0, tzinfo=UTC)
+    "01K1RB1D00000000000000BBBB", datetime(2026, 9, 8, 9, 0, tzinfo=UTC)
 )
 
 #: The cut every comparison below reads excerpts at. Wide enough that no fixture
