@@ -721,7 +721,10 @@ def test_a_corrupt_entry_does_not_hand_a_working_tree_the_id_it_collided_with(
     # not tell, the same impossibility `ids_for_root` refuses on.
     assert payload["registered"] is None
     assert "api-team-two" in payload["reason"], "the unreadable id has to be named to be removable"
-    assert "theurian project unregister api-team-two" in payload["remedy"]
+    # `--` and not merely the id: the cure is rendered by `unregister_commands`,
+    # which ends option parsing before the key it names (PR #626 round one). Read
+    # back off the rendered remedy, not guessed.
+    assert "theurian project unregister -- api-team-two" in payload["remedy"]
 
 
 def test_an_unreadable_entry_refuses_a_root_it_could_not_possibly_be(machine: Path) -> None:
@@ -747,7 +750,7 @@ def test_an_unreadable_entry_refuses_a_root_it_could_not_possibly_be(machine: Pa
         registry.ids_for_root(first)
 
     assert "payments" in str(raised.value), "the unreadable id is named, not merely counted"
-    assert "theurian project unregister payments" in raised.value.remedy
+    assert "theurian project unregister -- payments" in raised.value.remedy
 
 
 @pytest.mark.parametrize(
@@ -780,7 +783,7 @@ def test_registration_is_refused_while_the_file_holds_an_unreadable_entry(
 
     assert code != 0, f"the {form} form must refuse while an entry is unreadable"
     assert "api-team-two" in payload["error"], "the entry that blocks registration is named"
-    assert "theurian project unregister api-team-two" in payload["remedy"]
+    assert "theurian project unregister -- api-team-two" in payload["remedy"]
     assert _raw_ids(machine) == ["api", "api-team-two"], "no registration was created"
 
 
@@ -891,7 +894,7 @@ def test_status_will_not_call_a_readable_repository_registered_while_another_ent
 
     assert payload["registered"] is None
     assert "payments" in payload["reason"], "the entry that blocks the answer has to be named"
-    assert "theurian project unregister payments" in payload["remedy"]
+    assert "theurian project unregister -- payments" in payload["remedy"]
 
 
 def test_status_reports_the_unreadable_ids_by_value(broken_neighbour: Path) -> None:

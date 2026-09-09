@@ -783,8 +783,10 @@ class _RegistryRead:
         offers to unregister every project on the machine and re-derive every id
         from a directory name. ``unregister_commands`` is imported from the
         module that renders the registry's own refusals rather than re-spelled
-        here, so this surface cannot forget the ``shlex.quote`` a hand-edited
-        key needs. That the two texts stay apart is checked rather than
+        here, so this surface cannot forget either of the two things a
+        hand-edited key needs -- the ``shlex.quote`` that makes it one shell
+        word, and the ``--`` that makes that word an argument rather than an
+        option. That the two texts stay apart is checked rather than
         intended: ``test_cli_commands.py``'s
         ``_assert_this_is_not_the_whole_file_deletion_cure`` walks
         ``THE_PINNED_CURE_LEADS`` -- whose key set is asserted to *be*
@@ -801,21 +803,77 @@ class _RegistryRead:
         empty. It goes RED if this ever stops being true of
         :meth:`ProjectRegistry.unregister`.
 
-        Published only from the resolved branch. On the unresolved one the
-        exception ``resolve_context`` raises already carries both the reason and
-        the per-entry cure (:meth:`ProjectRegistry.ids_for_root`), so there is
-        nothing missing there to add and a second pair would displace it --
-        pinned by ``test_a_rootless_entry_keeps_the_refusals_own_per_entry_cure``.
+        Published only from the resolved branch, and what is *held* about the
+        unresolved one is narrower than "nothing there is missing". For a
+        **rootless** entry it is held. :meth:`ProjectRegistry.ids_for_root`
+        refuses every root while one exists, so that state resolves nowhere,
+        and ``test_a_rootless_entry_keeps_the_refusals_own_per_entry_cure``
+        plants exactly that entry and asserts that the payload is the
+        unresolved shape, that ``remedy`` *is* the refusal's own text, and that
+        the text backticks one well-formed ``unregister`` naming the id. A pair
+        rendered from here would break the middle one. The **unusable-key**
+        kind can reach that branch as well, beside an unrelated resolution
+        failure, and there its ``unreadable`` id is explained by nothing; that
+        gap was reproduced in PR #626's round one and is issue #628's, not this
+        method's.
         """
         if self.failure is not None or not self.unreadable:
             return {}
         return {
+            # **The cause named here is `holds_root`'s own, and no other**
+            # (PR #626 round one). The text this replaces offered two, and
+            # neither survived. "An entry that names no root" is not what
+            # reaches this branch: `ids_for_root` refuses every root while one
+            # exists, so resolution fails and the payload is
+            # `_unresolved_status`' instead -- only the window between that read
+            # and `_read_registry`'s own can leave a rootless id in this list,
+            # and a race is not a cause to lead a diagnosis with. The second was
+            # worse than unreachable, it was contradicted: for the unusable-key
+            # kind that *does* reach here, `ids_for_root` over the same file
+            # reads that entry's `rootPath`, sees some other directory, and ends
+            # its refusal "Every other project on this machine is unaffected" --
+            # so the product held two disagreeing sentences about one registry
+            # at one instant, and the half printed here is the one that same
+            # file refutes.
+            #
+            # What is true of either kind is weaker, and is the whole of it: the
+            # membership answer is computed from what `load` returned, `load`
+            # drops an entry it cannot read, and nothing left in it can say what
+            # a dropped entry registers. That is `holds_root`'s own argument for
+            # the null, said in the field that explains the null.
+            #
+            # The ids are `repr`-quoted, as `ids_for_root`'s unusable-key refusal
+            # already spells them over the same file, so an empty-string key
+            # renders as `''` rather than turning the list into `()`.
             "reason": (
                 f"{self.path} holds entries that cannot be read "
-                f"({', '.join(self.unreadable)}), so whether this root is registered cannot "
-                f"be answered: an entry that names no root, or that is keyed by an id no "
-                f"command accepts, cannot be ruled out as this directory's own registration."
+                f"({', '.join(repr(pid) for pid in self.unreadable)}), and this answer is "
+                f"computed from the entries it could load, which are not those. What a "
+                f"dropped entry registers is unreadable, so whether this root is registered "
+                f"is unanswerable from what is left -- and reporting it as unregistered "
+                f"would be a claim rather than an answer."
             ),
+            # One more site that spells `theurian project unregister` at a user,
+            # and the neighbours are named because the standing temptation is to
+            # share one sentence between them. Re-locate rather than trusting
+            # any line number written here:
+            #
+            #   git grep -n 'theurian project unregister' -- packages/theurian-core/src
+            #
+            # `ProjectRegistry.ids_for_root`'s two refusals render through this
+            # same `unregister_commands`, so they are one text at two call sites
+            # and the end-of-options marker reached them for free. `project_list`
+            # below renders the `<id>` placeholder instead: it has a list of ids
+            # beside it and no single one to name, so there is nothing there for
+            # a marker to protect. `mcp/tools.py`'s `_unresolvable` keeps a
+            # private `shlex.quote` render and so still carries the
+            # option-shaped-id defect this one just lost (#629). What differs
+            # *here* is where the text lands -- not as a raised error's `remedy`
+            # but as a field of a payload this command emits at exit 0, beside
+            # the `registered: null` it explains -- which is why it is written
+            # out rather than borrowed from a refusal that is not being raised.
+            # Folding the renders onto one helper is recorded as a consolidation
+            # candidate on #622 rather than taken here.
             "remedy": (
                 f"Remove them: {unregister_commands(self.unreadable)}. Each removes only the "
                 f"entry it names. `theurian project list` shows them under `unreadable`."
@@ -1987,9 +2045,17 @@ def project_status(as_json: JsonOption = False) -> None:
             # comment about a window.
             "unreadable": list(read.unreadable),
             # `reason`/`remedy` is this command's one vocabulary for "why part of
-            # this answer is missing", spoken by `_unresolved_status` and by
-            # `failure_fields` already. Two files can be unreadable at once, so
-            # the pair is filled by the pointer first and the registry second,
+            # this answer is missing", and four producers speak it:
+            # `_unresolved_status` on this command's other branch, and here
+            # `_pointer_failure_fields`, `failure_fields` and
+            # `unreadable_entry_fields` -- three of the four `**` merges below,
+            # the fourth publishing under its own `stateBuilt*` keys for the
+            # reason its own note gives. (PR #626 round one: this sentence
+            # enumerated two of the four, which is how the collision recorded at
+            # the last merge below stayed unremarked.)
+            #
+            # Two files can be unreadable at once, so the pair is filled by the
+            # pointer first and the registry second,
             # and the registry wins: `registered` degrades to `None` when the
             # registry fails, and `failure_fields` exists precisely because a
             # "cannot know" with no reason beside it is unactionable. Nothing is
@@ -2017,6 +2083,21 @@ def project_status(as_json: JsonOption = False) -> None:
             # beside it is unactionable (#384). Mutually exclusive with that
             # line rather than ordered after it -- `unreadable_entry_fields`
             # renders only where the read carried no failure at all.
+            #
+            # **The producer it does order against is `_pointer_failure_fields`
+            # above, and this one wins** by merging last (PR #626 round one). A
+            # corrupt `active.json` and a hand-edited registry entry are
+            # independent states of two different files, so both fire at once,
+            # and in that payload the pointer's own `reason`/`remedy` is
+            # overwritten and published nowhere -- `statePointerCorrupt: true`
+            # is all that survives of it. That is the #622 collision gaining a
+            # member rather than a new defect: before this producer existed the
+            # payload carried no text for the entry at all, so the same two
+            # failures left the *entry* unexplained -- the mirror of what is
+            # lost now. The namespacing cure is #622's; what this change owes is
+            # that the double state stops being unpinned, so the suite plants
+            # both failures together and asserts which of the two texts the pair
+            # carries.
             **read.unreadable_entry_fields(),
         },
         as_json=as_json,
