@@ -15,13 +15,18 @@ import sqlite3
 import subprocess
 import sys
 import unicodedata
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import pytest
 from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
 from migration_fixtures import UNREACHED_BODY_PIN, body_pin
+from registry_deletion_cure_claims import (
+    assert_a_deletion_cure_does_not_claim_it_is_costless,
+    assert_registry_deletion_cure_shape,
+)
 from typer.testing import CliRunner
 
 from theurian.application.project_service import (
@@ -920,6 +925,383 @@ def test_status_outside_a_repository_keeps_a_certain_answer_on_a_wholly_corrupt_
     assert "not inside a Git repository" in payload["reason"], "the fixture must be outside one"
     assert payload["registered"] is False
     assert payload["unreadable"] == []
+
+
+# -- issue #381: the unresolved branch has to name the registry failure too --
+#
+# `_unresolved_status` publishes one `reason`, and it is the *resolution*
+# failure's. `resolve_context` loads and validates the migrations before it asks
+# the registry which project this root is, so a broken migration raises first --
+# and when the registry is *also* unreadable, the payload pairs a
+# `registered: null` with migration prose and says nothing at all about the file
+# that produced the null. The reader is told a project's registration cannot be
+# established and handed a cure for a YAML file.
+#
+# The rule these four tests hold is two additive keys, `registryReason` and
+# `registryRemedy`, published whenever this branch's own `_read_registry()` comes
+# back with a failure *and* the directory is inside a Git working tree. Outside
+# one, `registered` is a literal `False` that no registry could contradict, and
+# `project list` owns reporting the file.
+#
+# One test per arm: the compound payload, where nothing named the registry at
+# all; the registry-only payload, where the right prose was already published
+# under a name that does not say which of two files it is about; and the two
+# fences -- every state in which the read *succeeded*, and every directory
+# outside a working tree -- where the keys must not appear.
+#
+# `remedy` is deliberately unasserted in the compound test. Its absence there is
+# issue #384's face -- `_unresolved_status` copies `exc.remedy`, and a malformed
+# YAML migration raises without one -- and pinning the whole payload here would
+# make this test fail when #384 lands beside it.
+
+#: The whole-file corruption used by the tests below. One shape rather than
+#: `REGISTRY_CORRUPTIONS`' three: what varies between those three is the
+#: message, which the `project list` and `project status` tests above already
+#: pin. What varies here is which *key* carries it.
+_UNPARSEABLE_REGISTRY = b'{"demo": {"rootPath"'
+
+#: The invocation `_registry_reset_remedy` must keep. Restated from the unit pin
+#: in `tests/unit/test_project_registry_errors.py` rather than imported, because
+#: "these payloads carry this exact string" is a claim about the CLI surface:
+#: three assertions already in this file read it off three different payloads.
+RE_REGISTER_INVOCATION = "re-register each project with `theurian project register`"
+
+
+def test_status_names_the_registry_failure_a_broken_migration_would_otherwise_hide(
+    project: Path, registry_path: Path
+) -> None:
+    """Issue #381. Two faults, one `reason`, and the wrong one wins.
+
+    Measured at ``2d3c23bb``, this exact state published ``{"reason": <the
+    migration parse error>, "registered": null, "unreadable": []}`` at exit 0 --
+    three keys, none of which mentions the registry. A caller saw membership
+    withheld and every published word explaining a migration file, so the one
+    action that would restore the answer was named nowhere.
+
+    ``registryReason`` and ``registryRemedy`` are additive: the migration
+    ``reason`` stays exactly what it was, because it is still true and is still
+    what ``migrate validate`` will report. The defect was never that ``reason``
+    was wrong; it was that it was the *only* thing said.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    _write_malformed_yaml_migration(project)
+    registry_path.write_bytes(_UNPARSEABLE_REGISTRY)
+
+    code, payload = _invoke("project", "status")
+
+    assert code == 0, "a compound failure is still a status, not a crash"
+    assert payload["registered"] is None, "the registry cannot say, and False would be a guess"
+    assert MALFORMED_YAML_MIGRATION_FILENAME in payload["reason"], (
+        "the resolution failure keeps the top-level reason; the new keys are additive"
+    )
+    assert str(registry_path) not in payload["reason"], (
+        "and that is the defect: the top-level reason is the migration's and says nothing "
+        "about the file the null actually came from"
+    )
+    assert "cannot be read as JSON" in payload["registryReason"], (
+        "the null's own cause is published under its own name"
+    )
+    assert str(registry_path) in payload["registryReason"], "and it names the file to go to"
+    assert RE_REGISTER_INVOCATION in payload["registryRemedy"], (
+        "a `cannot know` with no cure beside it is unactionable -- the whole point of #381"
+    )
+    assert_a_deletion_cure_does_not_claim_it_is_costless(
+        payload["registryRemedy"], where="project status --json registryRemedy"
+    )
+
+
+def test_status_names_the_registry_failure_beside_the_reason_that_already_carried_it(
+    project: Path, registry_path: Path
+) -> None:
+    """The registry-only arm: today's keys unchanged, the new ones beside them.
+
+    With the migrations healthy, ``resolve_context`` gets as far as the registry
+    and the whole-file refusal *is* the resolution failure, so ``reason`` and
+    ``remedy`` already carry the registry's own prose --
+    ``test_status_reports_a_registry_it_cannot_parse_instead_of_raising`` above
+    is the pin on that and is left exactly as it was.
+
+    ``registryReason``/``registryRemedy`` appear here too, duplicating them. That
+    is decided, not accidental: a consumer must be able to read the registry's
+    verdict from one pair of keys without first working out *why* resolution
+    failed, and a pair that is present only sometimes is a pair every caller
+    eventually stops checking. The equality assertion is what pins the
+    duplication as duplication -- two reads of the same file reaching the same
+    cure -- rather than leaving room for two subtly different sentences about it.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    registry_path.write_bytes(_UNPARSEABLE_REGISTRY)
+
+    code, payload = _invoke("project", "status")
+
+    assert code == 0
+    assert payload["registered"] is None
+    assert payload["unreadable"] == []
+    assert "cannot be read as JSON" in payload["reason"], "today's reason is unchanged"
+    assert RE_REGISTER_INVOCATION in payload["remedy"], "and so is today's remedy"
+
+    assert payload["registryReason"] == payload["reason"], (
+        "the same read, published under the name that says which file it is about"
+    )
+    assert payload["registryRemedy"] == payload["remedy"], (
+        "the duplication is deliberate: the registry keys must be readable without first "
+        "deciding whether the resolution failure happened to be the registry's"
+    )
+    assert_a_deletion_cure_does_not_claim_it_is_costless(
+        payload["registryRemedy"], where="project status --json registryRemedy"
+    )
+
+
+def _a_healthy_registry(project: Path, registry_path: Path) -> None:
+    """Registered, readable, and holding this root: the resolved payload.
+
+    Takes both paths and uses neither, so the three setups below share one
+    signature and the parametrize stays a table of states rather than of shapes.
+    """
+    _invoke("project", "register")
+
+
+def _an_unreadable_entry_for_another_root(project: Path, registry_path: Path) -> None:
+    """An id no consumer accepts, over an absolute root that is somewhere else.
+
+    `ids_for_root` does not refuse this -- the entry names a root and it is not
+    this one -- so resolution *succeeds* and the payload is the resolved shape,
+    with `registered: null` from `holds_root`'s broader refusal. The file parses,
+    so `_read_registry().failure` is `None`: the arm the new keys must not reach.
+    """
+    _invoke("project", "register")
+    entry = json.loads(registry_path.read_text())["demo"]
+    registry_path.write_text(
+        json.dumps(
+            {
+                "demo": entry,
+                "Team One/API": {
+                    "rootPath": str(project.parent / "elsewhere"),
+                    "defaultBranch": "main",
+                },
+            }
+        )
+    )
+
+
+def _an_entry_that_names_no_root(project: Path, registry_path: Path) -> None:
+    """A rootless entry, which `ids_for_root` *does* refuse.
+
+    So this one lands on the **unresolved** branch -- the branch issue #381
+    changes -- with the registry perfectly parseable. It is the fence that
+    matters most: a fix keyed on `unreadable` or on `registered is None` rather
+    than on `failure is not None` would publish a registry cure here, for a file
+    whose only problem is one entry that `project list` already names.
+    """
+    _invoke("project", "register")
+    entry = json.loads(registry_path.read_text())["demo"]
+    registry_path.write_text(json.dumps({"demo": entry, "hand-edited": {"defaultBranch": "main"}}))
+
+
+@dataclass(frozen=True)
+class _RegistryReadSucceeds:
+    """One state in which ``_read_registry()`` comes back with no failure.
+
+    The three expectations travel with the setup rather than as three more
+    parameters, so the case declares the payload it means to produce and the test
+    can refuse a fixture that stopped producing it.
+    """
+
+    set_up: Callable[[Path, Path], None]
+    branch: str
+    registered: bool | None
+    unreadable: list[str]
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        _RegistryReadSucceeds(_a_healthy_registry, "resolved", True, []),
+        _RegistryReadSucceeds(
+            _an_unreadable_entry_for_another_root, "resolved", None, ["Team One/API"]
+        ),
+        _RegistryReadSucceeds(_an_entry_that_names_no_root, "unresolved", None, ["hand-edited"]),
+    ],
+    ids=["healthy", "unreadable-entry-resolved", "unreadable-entry-unresolved"],
+)
+def test_status_publishes_no_registry_failure_keys_when_the_registry_could_be_read(
+    project: Path, registry_path: Path, case: _RegistryReadSucceeds
+) -> None:
+    """The fence on issue #381's keys: they answer for a failure, not for a null.
+
+    ``registered: null`` has two causes and only one of them is a registry that
+    could not be read. The other is a file that parsed perfectly and holds an
+    entry this reader cannot attribute -- ``holds_root``'s deliberately broader
+    refusal, whose cure is ``theurian project unregister <id>`` and whose subject
+    is named in ``unreadable``, not a whole-file failure. A fix keyed on the null
+    instead of on ``_read_registry().failure`` would print "delete the registry"
+    over one hand-edited line.
+
+    ``not in`` rather than ``is None``: absence is this payload's "never asked",
+    and ``null`` is "asked, and unknowable" -- the distinction
+    ``_unresolved_status``' own docstring draws for ``indexStale``. A key present
+    and empty would satisfy a truthiness check while telling every consumer that
+    the registry had something to report.
+
+    All three cases are expected GREEN before the fix as well as after; the point
+    of the pin is that they stay green *through* it. Each asserts the state it
+    set up first, so a fixture that stopped reaching its branch fails here rather
+    than passing the key check vacuously.
+    """
+    _invoke("init")
+    case.set_up(project, registry_path)
+
+    code, payload = _invoke("project", "status")
+
+    assert code == 0
+    assert ("projectId" in payload) == (case.branch == "resolved"), (
+        f"the fixture must reach the {case.branch} branch for this fence to mean anything"
+    )
+    assert payload["registered"] is case.registered
+    assert payload["unreadable"] == case.unreadable
+
+    assert "registryReason" not in payload, (
+        "the registry read succeeded; a key naming its failure would describe one that "
+        "did not happen"
+    )
+    assert "registryRemedy" not in payload, (
+        "and a cure for it would send the reader to delete the file over a single entry "
+        "`theurian project unregister` removes"
+    )
+
+
+def test_status_outside_a_repository_publishes_no_registry_failure_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other fence: outside a working tree the registry is not the subject.
+
+    ``_unresolved_status`` short-circuits on ``find_git_root`` and leaves
+    ``registered`` the literal ``False`` it initialised the payload with, because
+    no entry could be about a directory in no working tree -- the rule
+    ``test_status_outside_a_repository_keeps_a_certain_answer_on_a_wholly_corrupt_registry``
+    above pins for ``registered``, extended here to issue #381's keys. Naming the
+    registry failure here would attach a cure to an answer that does not depend
+    on it, and would tell a user standing in ``/tmp`` to delete every project's
+    registration. ``theurian project list`` is the surface that reports the file.
+
+    GREEN before the fix and after: the pin is that the new keys are gated on the
+    same ``find_git_root`` the ``registered`` answer is, and not on the registry
+    read alone.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(tmp_path / "datadir"))
+    path = tmp_path / "datadir" / "projects.json"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(_UNPARSEABLE_REGISTRY)
+
+    code, payload = _invoke("project", "status")
+
+    assert code == 0
+    assert "not inside a Git repository" in payload["reason"], "the fixture must be outside one"
+    assert payload["registered"] is False, (
+        "no entry could be about a directory in no working tree, and that answer stays certain"
+    )
+    assert "registryReason" not in payload, (
+        "the registry's condition cannot change an answer that does not depend on it"
+    )
+    assert "registryRemedy" not in payload, (
+        "and a delete-the-registry cure printed to somebody in /tmp is unattached to any "
+        "question they asked"
+    )
+
+
+# -- the destructive half of #381: what a delete-the-registry cure may claim --
+#
+# `projects.json` is the enumeration of every project's registration, and an
+# entry's `registeredAt` is recorded in no project's own `.theurian/`. Three
+# cures nevertheless offer to delete it, and the shape they must hold is
+# `registry_deletion_cure_claims` -- shared with the unit pin on
+# `_registry_reset_remedy`, because this family (PR #596) recurs at exactly the
+# seam between two files that each restate the rule.
+#
+# `_registry_reset_remedy` is pinned in `tests/unit/test_project_registry_errors.py`.
+# The two below are `_context_remedy`'s defaults, reached only when the raising
+# error carries no remedy of its own -- which is why they need a monkeypatched
+# raise to drive at all, and why nothing has ever rendered them in a test.
+
+
+def _raise_without_a_remedy(self: object) -> dict[str, dict[str, str]]:
+    """A registry failure that carries no cure of its own, so the default renders.
+
+    Every failure `ProjectRegistry` actually raises today sets one, which is why
+    `_context_remedy`'s defaults are otherwise unreachable -- and unrendered by
+    any test. They are still shipped text, and a fifth self-describing error
+    added without a remedy would publish them.
+    """
+    raise ProjectError("the registry could not be read", remedy="")
+
+
+def _published_remedy(payload: dict[str, Any]) -> str:
+    """The payload's ``remedy``, refused unless it is a string.
+
+    `_invoke` parses into `dict[str, Any]`, so a helper returning `payload[...]`
+    hands the shape checks an `Any` and every one of them passes vacuously on a
+    `None` or a list. This is where that stops.
+    """
+    remedy = payload["remedy"]
+    assert isinstance(remedy, str), f"remedy must be a string, got {remedy!r}"
+    return remedy
+
+
+def _list_over_a_registry_error_with_no_remedy(monkeypatch: pytest.MonkeyPatch) -> str:
+    """`project list`'s `_context_remedy` default, rendered."""
+    monkeypatch.setattr(ProjectRegistry, "load", _raise_without_a_remedy)
+    code, payload = _invoke("project", "list")
+
+    assert code == 1, "the fixture must reach the refusal branch"
+    return _published_remedy(payload)
+
+
+def _status_over_a_registry_error_with_no_remedy(monkeypatch: pytest.MonkeyPatch) -> str:
+    """`_RegistryRead.failure_fields`' `_context_remedy` default, rendered.
+
+    The resolved branch: `resolve_context` reads the registry through
+    `ids_for_root`, which this patch does not touch, so the project resolves and
+    the *second* read is the one that fails.
+    """
+    _invoke("project", "register")
+    monkeypatch.setattr(ProjectRegistry, "load", _raise_without_a_remedy)
+    code, payload = _invoke("project", "status")
+
+    assert code == 0, "the fixture must reach the degraded status, not a refusal"
+    assert payload["registered"] is None, "and the failure must be the one it degraded on"
+    return _published_remedy(payload)
+
+
+@pytest.mark.parametrize(
+    "render",
+    [_list_over_a_registry_error_with_no_remedy, _status_over_a_registry_error_with_no_remedy],
+    ids=["project-list", "project-status"],
+)
+def test_every_registry_cure_that_offers_deletion_names_what_the_deletion_costs(
+    project: Path, monkeypatch: pytest.MonkeyPatch, render: Callable[[pytest.MonkeyPatch], str]
+) -> None:
+    """The same lens as the unit pin, over the two cures written in the CLI.
+
+    "Inspect {path}, or delete it and re-register each project." leads with
+    inspection and promises nothing -- so it clears two of the three properties
+    already -- but it says nothing about what the deletion removes, and "each
+    project" reads as "the ones you care about" rather than "every registration
+    on this machine". RED on the cost property before the fix, GREEN after.
+
+    Walked over the *rendered* text rather than asserted against a table of call
+    sites: a table agrees with the routing it checks, while a render can only
+    agree with what a caller is actually handed. That is PR #596's rule for this
+    family, and it is what makes a fourth cure added later fail here rather than
+    be forgotten by a list.
+    """
+    _invoke("init")
+
+    remedy = render(monkeypatch)
+
+    assert_registry_deletion_cure_shape(remedy, where=f"{render.__name__}'s rendered remedy")
 
 
 def test_status_says_it_cannot_know_when_the_registry_breaks_between_its_two_reads(

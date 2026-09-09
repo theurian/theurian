@@ -342,11 +342,29 @@ def _registry_reset_remedy(path: Path) -> str:
     and which are not. A malformed *entry* is a narrower problem with its own,
     narrower remedy: see :meth:`ProjectRegistry.load`,
     :meth:`ProjectRegistry.ids_for_root` and :meth:`ProjectRegistry.register`.
+
+    **The deletion is offered with its cost rather than as a free action**
+    (issue #381). This text used to close with "it is derived and holds nothing
+    that is not also recoverable from each project's own .theurian/" -- a
+    costless-removal claim over the file that *is* the enumeration of the
+    registrations. A removal is honestly called free only over something holding
+    no bytes and no names, which is the shape PR #596 closed at another seam;
+    this file holds both, so the cure names the loss instead. Two things go with
+    it. Every *other* project's registration, since the deletion is not scoped
+    to the one the reader came here about; and each entry's ``registeredAt``,
+    which :meth:`ProjectRegistry.register` preserves from the existing entry and
+    never recomputes, so re-registering restamps it with today's date rather
+    than restoring it.
+
+    Hence inspection first: the roots inside a file that will not parse are
+    still legible by eye, and they are what makes the re-registration this
+    remedy names typeable.
     """
     return (
-        f"Delete {path} and re-register each project with `theurian project register`; "
-        f"it is derived and holds nothing that is not also recoverable from each "
-        f"project's own .theurian/."
+        f"Inspect {path} before removing it -- it records every project you have "
+        f"registered, so deleting it unregisters all of them, not only this one. "
+        f"Once you have read the roots you need out of it, delete it and re-register "
+        f"each project with `theurian project register`."
     )
 
 

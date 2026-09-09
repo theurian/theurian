@@ -1,18 +1,27 @@
-"""``ProjectRegistry.load``'s raw-filesystem-failure translation (issue #205).
+"""``ProjectRegistry.load``'s refusals, and what the cure beside them may claim.
 
-``ProjectRegistry._raw_entries`` -- the shared path behind ``load``, and so
-behind ``project.list``, every project-scoped MCP tool, and ``project
-status`` -- translates a bare ``OSError`` into ``ProjectError`` at two
-separate ``try`` blocks: the ``.exists()`` probe (added when a *data
-directory* at mode ``000`` was found to escape it, one level above where the
-read-side translation already covered a *registry file* at mode ``000``;
-issue #205's Class 1c) and the read itself. Both transformations survived a
-full-suite run with either one reverted -- no existing test drives a
-`chmod`-unreadable registry through `ProjectRegistry.load` at all. These two
-tests are that drive, one per branch, and are the same class for a shared
-reason: both convert the identical raw `OSError`, at the identical two-line
-`except OSError as exc: raise ProjectError(...)` shape, to the identical
-`_registry_reset_remedy`, and are proven here by the identical assertion.
+**The translation (issue #205).** ``ProjectRegistry._raw_entries`` -- the shared
+path behind ``load``, and so behind ``project.list``, every project-scoped MCP
+tool, and ``project status`` -- translates a bare ``OSError`` into
+``ProjectError`` at two separate ``try`` blocks: the ``.exists()`` probe (added
+when a *data directory* at mode ``000`` was found to escape it, one level above
+where the read-side translation already covered a *registry file* at mode
+``000``; issue #205's Class 1c) and the read itself. Both transformations
+survived a full-suite run with either one reverted -- no existing test drives a
+`chmod`-unreadable registry through `ProjectRegistry.load` at all. The
+parametrized test is that drive, one case per branch, and they are the same
+class for a shared reason: both convert the identical raw `OSError`, at the
+identical two-line `except OSError as exc: raise ProjectError(...)` shape, to
+the identical `_registry_reset_remedy`, and are proven here by the identical
+assertion.
+
+**The cure (issue #381).** That shared remedy used to be pinned here by exact
+text, which could notice the sentence changing but never that it was false --
+and it was: it promised that deleting the registry "holds nothing that is not
+also recoverable from each project's own .theurian/", a costless-removal claim
+over the one file holding every project's registration. The pin is now the
+shape in ``registry_deletion_cure_claims``, and the third test drives it through
+a malformed body so the claim is asserted even where a ``chmod`` cannot refuse.
 """
 
 from __future__ import annotations
@@ -23,6 +32,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from registry_deletion_cure_claims import assert_registry_deletion_cure_shape
 
 from theurian.application.project_service import ProjectError, ProjectRegistry
 
@@ -32,17 +42,34 @@ pytestmark = pytest.mark.unit
 #: the same guard `test_cli_commands.py` uses before a permission-refusal test.
 _CANNOT_BE_REFUSED_BY_A_MODE = sys.platform == "win32" or os.geteuid() == 0
 
+#: The invocation five other pins already assert on -- `test_cli_commands.py`
+#: (three), `test_unreadable_registry_surface.py` and `test_setup_service.py`.
+#: Named here because it is the half of this remedy that must *survive* the
+#: rewrite issue #381 asks for: a cure that drops it leaves the reader with a
+#: file they have been told to delete and no way back.
+RE_REGISTER_INVOCATION = "re-register each project with `theurian project register`"
 
-def _reset_remedy(path: Path) -> str:
-    """The exact text `_registry_reset_remedy` produces, re-derived rather than
-    imported: the function is private to `project_service.py`, and importing
-    a private helper to build the expected value would make this test unable
-    to notice a change to *what it returns*, only to whether it was called.
+
+def _assert_the_reset_remedy_shape(text: str, *, where: str) -> None:
+    """What `_registry_reset_remedy` must say, pinned as a shape not as bytes.
+
+    This was an exact-text comparison until issue #381, and the text it pinned
+    was the defect: "it is derived and holds nothing that is not also
+    recoverable from each project's own .theurian/" is a costless-removal claim
+    over the one file that holds every project's registration. An equality pin
+    could only notice that the sentence changed, never that it was false, and it
+    would have to be rewritten byte for byte alongside any correction -- which is
+    how a wrong claim survives its own fix.
+
+    The three properties are shared with every other surface that offers to
+    delete this file (``registry_deletion_cure_claims``); the invocation below is
+    this remedy's own, because the ``_context_remedy`` defaults spell the
+    recovery without naming the command.
     """
-    return (
-        f"Delete {path} and re-register each project with `theurian project register`; "
-        f"it is derived and holds nothing that is not also recoverable from each "
-        f"project's own .theurian/."
+    assert_registry_deletion_cure_shape(text, where=where)
+    assert RE_REGISTER_INVOCATION in text, (
+        f"{where} must keep the recovery typeable -- five other pins read this exact "
+        f"invocation, and a cure that only says 'delete it' has no way out: {text!r}"
     )
 
 
@@ -91,4 +118,41 @@ def test_load_raises_project_error_with_the_reset_remedy_when_unreadable(
         unreadable.chmod(0o700)
 
     assert f"{registry.path} cannot be opened" in str(excinfo.value)
-    assert excinfo.value.remedy == _reset_remedy(registry.path)
+    assert str(registry.path) in excinfo.value.remedy, "the file to inspect is named"
+    _assert_the_reset_remedy_shape(
+        excinfo.value.remedy, where=f"the reset remedy for {make_unreadable.__name__}"
+    )
+
+
+def test_the_reset_remedy_does_not_promise_a_costless_deletion_of_the_registry(
+    tmp_path: Path,
+) -> None:
+    """Issue #381's second half, and the PR #596 family it belongs to.
+
+    ``projects.json`` is not derived. It is the enumeration of every project's
+    registration, and an entry's ``registeredAt`` exists nowhere else -- no
+    project's own ``.theurian/`` records that it was registered, let alone when.
+    The remedy nevertheless told the operator that the file "holds nothing that
+    is not also recoverable from each project's own .theurian/", which is a
+    costless-removal claim over data-holding bytes: the shape PR #596's
+    ``test_no_cure_claims_a_costless_removal_outside_the_shape_guard`` exists to
+    refuse, met again at a different seam. RED before the fix on that claim;
+    GREEN after, over whatever prose replaces it.
+
+    **Driven through a body that is not JSON rather than through a ``chmod``**,
+    and that is what makes this the load-bearing pin rather than a duplicate of
+    the parametrized test above. That one is skipped wherever a mode cannot
+    refuse -- which includes a CI job running as root -- so on those runs it
+    would leave the whole claim unasserted. A malformed body reaches the same
+    ``_registry_reset_remedy`` on every platform and as every user.
+    """
+    registry = ProjectRegistry(path=tmp_path / "projects.json")
+    registry.path.write_bytes(b'{"demo": {"rootPath"')
+
+    with pytest.raises(ProjectError) as excinfo:
+        registry.load()
+
+    assert "cannot be read as JSON" in str(excinfo.value), (
+        "the fixture must reach the whole-file refusal, not some narrower one"
+    )
+    _assert_the_reset_remedy_shape(excinfo.value.remedy, where="_registry_reset_remedy")
