@@ -62,6 +62,11 @@ KNOWN_TOOL_NAMES = frozenset(
         "knowledge.status",
         "project.list",
         "review.findings",
+        # `review.search` (ADR-0030 decision 6). It serves review *evidence* from
+        # its own store and is expected here as a registered tool that reaches
+        # **no** symbol in :data:`STORE_SYMBOLS`: the equality below is what says
+        # so, rather than this comment.
+        "review.search",
         "system.capabilities",
     }
 )

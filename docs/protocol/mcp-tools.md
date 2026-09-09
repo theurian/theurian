@@ -3,22 +3,24 @@
 Protocol version: `theurian/v1`. Transport: Streamable HTTP at
 `http://127.0.0.1:7419/mcp`.
 
-Today, Core registers six callable MCP tools:
+Today, Core registers seven callable MCP tools:
 
 - `knowledge.search`
 - `knowledge.get`
 - `knowledge.status`
 - `project.list`
 - `review.findings`
+- `review.search`
 - `system.capabilities`
 
 `system.capabilities` is the runtime boundary for clients. In this build it
 reports `reviewFindings: true` — `review.findings` is callable — beside
 `writeTools: false`, `reviewIngestion: false`, and `traceability: false`; those
-three mean the write-intent, review-*history*, and traceability tools described
+three mean the write-intent, review-*ingestion*, and traceability tools described
 below are designed protocol shape, not callable tools in the current server.
 `reviewIngestion: false` is a statement about *callable tools* and nothing wider:
-the review-history fetch path itself has shipped (see below).
+the review-history fetch path itself has shipped, `theurian review ingest` lands
+its evidence, and `review.search` reads that evidence back (see below).
 
 ## Every project-scoped call names its project
 
@@ -337,28 +339,30 @@ The reasoning, the measurements and what remains uncovered are in
 
 ## Review
 
-One review tool is shipped. `review.findings` serves the `Review-Finding:`
-trailers a project's own git history carries, landed by `theurian findings
-build` and announced as `reviewFindings: true`
+Two review tools are shipped, and they read two different corpora.
+`review.findings` serves the `Review-Finding:` trailers a project's own git
+history carries, landed by `theurian findings build` and announced as
+`reviewFindings: true`
 ([ADR-0029](../adr/0029-review-findings-are-governed-knowledge.md)).
+`review.search` serves the review *evidence* `theurian review ingest` landed
+from GitHub — pull requests, review submissions and review threads — read back
+through the store `theurian review build` rebuilds
+([ADR-0030](../adr/0030-github-review-ingestion-spawns-gh.md) decision 6).
 
-Review *history* ingestion — GitHub threads, inline comments, resolution state —
-is **fetched but not served**: the adapter shipped with
-[ADR-0030](../adr/0030-github-review-ingestion-spawns-gh.md) slice 1, and none of
-the planned tools below is callable, so the server still reports
-`reviewIngestion: false`. Read that flag narrowly. It does **not** mean "this
-build cannot reach GitHub" — the fetch path exists, and with it SEC-10's
-repository allowlist, read and enforced before any process is spawned. From the
-serve slice it means *an ingestion call surface exists that a client may call*,
-published beside a scope field recording that ingestion covers public
-allowlisted repositories only. The two flags stay separate for the reason they
-always were: `reviewFindings` promises an offline read of local git trailers,
-and `reviewIngestion` is the one whose surface reaches GitHub-sourced content.
+The two flags stay separate for the reason they always were: `reviewFindings`
+promises an offline read of local git trailers, and `reviewIngestion` is the one
+whose surface reaches GitHub-sourced content. `reviewIngestion` still reports
+`false` in this commit, and it is read narrowly: it does **not** mean "this build
+cannot reach GitHub" — the fetch path exists, and with it SEC-10's repository
+allowlist, read and enforced before any process is spawned — and it does not mean
+nothing lands on disk, which `theurian review ingest` does. It reports whether an
+*ingestion call surface* exists that a client may call, and it flips beside its
+scope field in the commit that changes that.
 
 | Tool | Status | Purpose |
 | :-- | :-- | :-- |
 | `review.findings` | Shipped | Landed `Review-Finding:` trailers, filtered by reviewer, severity, commit or text |
-| `review.search` | Planned | Search review history |
+| `review.search` | Shipped | Ingested review evidence, filtered by repository, pull request, author, file, thread state or literal text |
 | `review.getThread` | Planned | One thread with comments and resolution |
 | `review.findSimilar` | Planned | Threads resembling a described situation |
 | `review.getDecisions` | Planned | Decisions reached in review |

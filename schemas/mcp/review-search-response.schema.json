@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theurian.dev/schemas/mcp/review-search-response.schema.json",
+  "title": "Output of the `review.search` MCP tool",
+  "description": "The whole response. `review.search` serves the review evidence `theurian review ingest` landed as files under `.theurian/review/` — pull requests, review submissions and review threads from public allowlisted repositories — read back through a derived store `theurian review build` rebuilds, under the SEC-15 safety triple (ADR-0030 decisions 3 and 6).\n\n**Three keys, and the shortness is the contract.** Every value here is a function of the records this call served or of this page's own boundary: `count` sizes `records`, `records` is those records, and `truncated` says whether a matching record existed past the page. Members that were considered and deliberately left out: a *total* matching count (a number over unserved rows, which `truncated` was chosen in favour of), the store's schema/evidence-format stamp (build metadata about a staleness decision the tool has already made by refusing), and an echo of the caller's own filters. A future member has to argue that it is a function of the served records, or of that boundary, alone.\n\n**A withheld record appears nowhere in this schema, and there is no key for one.** Withholding happens at build time by not writing the record at all, so a withheld record has no row in any table and nothing at read time could count one. A store built from a corpus that held withheld records and a store that never held them answer identically to every query, `truncated` included.\n\n**Matching is literal and nothing here is ranked.** `q` is a substring test over the stored text; there is no score, no term weight and no collection statistic anywhere on this path, so no published value is priced over records the caller did not receive.\n\n**A store that cannot be served from is a refusal, never an empty response.** The store does not exist, it was built by a superseded schema or from a superseded evidence format, it cannot be read, or **this installation did not build it** — a store delivered with the repository, force-added past the ignore that keeps derived state out of Git, is refused however well-formed it is (ADR-0004, SEC-7, threat-model T-19). One constant tool error naming `theurian review build` covers all of them, so the refusal carries nothing about the file and a planted store is indistinguishable from an absent one. `count: 0` therefore means \"the filter matched nothing\", never \"nothing has been built here\".",
+  "type": "object",
+  "required": ["count", "truncated", "records"],
+  "additionalProperties": false,
+  "properties": {
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "The number of entries in `records`, and nothing else. Not a total before `limit`: a count over records the caller did not receive is a different promise, and one this tool does not make. A caller that wants to know whether more exist reads `truncated`."
+    },
+    "truncated": {
+      "type": "boolean",
+      "description": "Whether at least one matching record existed past `limit`.\n\n`false` means this response is the whole answer to the filter. `true` means the page ends at `limit` and more matched — which a full page cannot otherwise be told apart from \"exactly this many exist\".\n\nIt is **one bit about this page's boundary, not a count**: the server reads one record past `limit` and discards it, so nothing here is computed over records the caller did not receive. That extra record comes from the same read as every served one, and a withheld record contributes no row to either, so `truncated` cannot carry a bit about a withheld population."
+    },
+    "records": {
+      "type": "array",
+      "description": "The matching records, in a total, deterministic order the store owns: repository, then pull request, then kind, then the record's own path. No key in that order is computed from the query, so the sequence is a property of the corpus alone and `limit` truncates a defined sequence rather than an arbitrary one. At most the `limit` the call asked for, which is refused outright above the server's cap rather than silently clamped.",
+      "items": {
+        "type": "object",
+        "required": [
+          "recordPath",
+          "recordKey",
+          "kind",
+          "provider",
+          "repository",
+          "pullRequest",
+          "threadState",
+          "filePath",
+          "sourceUri",
+          "authorExternalId",
+          "authorDisplayName",
+          "excerpt",
+          "excerptChannel",
+          "lastSeenRunId",
+          "lastSeenAt",
+          "contentClassification",
+          "mayContainInstructions",
+          "executable"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "recordPath": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Where the evidence file sits, relative to `.theurian/review/`, POSIX-spelled. The record's identity and the store's primary key: the same files produce the same paths in the same order on every machine, which is what makes a rebuild reproduce. Its three components are the hashed repository directory, the kind, and a leaf derived from the provider's own id for the record — provider structure throughout, never a name an author chose."
+          },
+          "recordKey": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The provider's own identifier for the record inside its repository — a pull-request number, or a node id. Unique inside a repository rather than across a project."
+          },
+          "kind": {
+            "enum": ["pull-request", "review-submission", "review-thread"],
+            "description": "Which of the three record shapes this is, carried as the evidence layout's own directory name rather than re-derived at serve time. A closed vocabulary: the layout refuses a directory outside it, so no other spelling can reach this field."
+          },
+          "provider": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The provider that answered, `github` today. Typed as a string rather than a `const` because the store holds whatever the ingestion adapter recorded, and a second adapter would fill it differently without a schema change to the store."
+          },
+          "repository": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The repository as the provider resolved it, `owner/name`. Provider structure — the adapter checks the resolved name back against the allowlist entry it asked for (ADR-0030 decision 2) — and **never** joined into a filesystem path."
+          },
+          "pullRequest": {
+            "type": ["integer", "null"],
+            "minimum": 1,
+            "description": "The pull request this record belongs to, or `null` when the record cannot say. A pull-request record carries its own number; a submission and a thread carry an event key the builder parses it out of, and a key that does not match the one recorded format answers `null` rather than a guess."
+          },
+          "threadState": {
+            "enum": ["open", "resolved", "outdated", "dismissed", null],
+            "description": "A review thread's resolution state, or `null` for the two kinds that have none. Deliberately not a review *submission*'s verdict (`APPROVED`, `CHANGES_REQUESTED`): the store keeps the two in separate columns, so a caller can tell which vocabulary a value came from. The `threadState` filter accepts exactly these four tokens and refuses anything else rather than matching nothing."
+          },
+          "filePath": {
+            "type": ["string", "null"],
+            "description": "The file a review thread is anchored to, as received, or `null` for a record with no anchor file.\n\n**Untrusted content, and the row most easily got wrong** (ADR-0030 decision 3's field table, decision 6). It looks like provider structure and is not: whoever authored the pull request named the file. It is served as **data** for filtering and display, and **SHALL NOT** be used to build a filesystem path — the containment SEC-7 requires is not weakened by a string that arrived over the network. The three labels below are what say so on the wire."
+          },
+          "sourceUri": {
+            "type": "string",
+            "minLength": 1,
+            "description": "FR-S3's pointer back to the upstream object — the pull request, the review, or the thread's own comment anchor. Written by Theurian at ingestion, not received, so it is neither provider structure nor author content but this project's own record of where it read from."
+          },
+          "authorExternalId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The record's principal author: the pull request's, the submission's, or the opening comment's.\n\nProvider structure *usually*, and a consumer **must not treat it as unforgeable identity**. ADR-0030's 2026-09-08 correction records that GitHub can answer with a *login* where a node id is expected, and a login is chosen by its owner. Under `providers.review.redactParticipantNames` (R-12) a login-fallback id is pseudonymised to `redacted~<sha256 prefix>` before the record is written, deterministically, so the identity graph survives the redaction; a node-id-shaped id is kept verbatim."
+          },
+          "authorDisplayName": {
+            "type": "string",
+            "description": "The same participant's display name.\n\n**Untrusted content** (ADR-0030 decision 3): its owner chooses it. Already pseudonymised at landing when the project asked for that (R-12), which is a change to what was written rather than a change to how it is served — it rides under the triple either way."
+          },
+          "excerpt": {
+            "type": ["string", "null"],
+            "description": "The first stored fragment of this record that satisfies the query's text filter, cut to a length bound; `null` only for a record carrying no text fragment at all, which no shipped projection produces.\n\n**Untrusted content** (ADR-0030 decisions 3 and 6, SEC-15). It is a comment body, a review body, or a pull request's title or description — free text a person outside this project wrote, which the ingestion path cannot tell from any other text. It frequently reads as an imperative, because a review *asks* for a change; that is the shape T-3 grades High when an agent takes it as an instruction addressed to it. The three labels below are what say otherwise.\n\n**Bounded at 280 characters, then marked.** A value longer than the bound is cut at it and followed by `...`, the same shape `knowledge.search` marks a truncated excerpt with, so a cut value cannot be read as a whole one. **The two lengths are disjoint, so a reader can tell them apart by arithmetic alone**: an untouched excerpt is at most 280 characters and a cut one is exactly 283. The cut is made by the store's own read rather than applied to what it returned, so the daemon never materialises the whole of a planted comment either; the published bytes are the same.\n\n**The match is not cut with the text.** The text filter is tested against the whole stored fragment, so a record whose only match lies past the bound is still served — cut and marked, but present. Matching the cut text instead would manufacture a false absence."
+          },
+          "excerptChannel": {
+            "enum": ["title", "body", "comment", null],
+            "description": "Which part of the record `excerpt` came from, so a caller can say *where* a match was rather than only that there was one: a pull request's title, a pull request's description or a review submission's body, or one comment inside a thread. `null` exactly when `excerpt` is.\n\nA closed vocabulary this codebase chose, not a value an author wrote — which is why this field is structural while the excerpt it describes is not."
+          },
+          "lastSeenRunId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The ingestion run that last observed this record upstream. Written by Theurian at ingestion. It is what lets an operator tell a record that survived a refetch from one whose upstream object has gone; the evidence files are durable by design, so an upstream delete does not reach Theurian's copy (ADR-0030 decision 2)."
+          },
+          "lastSeenAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When that run observed it: **normalised to UTC at a fixed width** rather than kept in the spelling the evidence file carried. It round-trips the *instant*, not its spelling. The normalisation is what makes the column comparable at all — SQLite compares TEXT byte-wise, so an offset-preserving value is not a chronological key."
+          },
+          "contentClassification": {
+            "const": "untrusted-knowledge",
+            "description": "Always `untrusted-knowledge` (SEC-15). Theurian labels; the calling agent enforces. That split is stated in SECURITY.md rather than left to a reader to infer. It is attached to the row as a whole because the row carries author-controlled text — the excerpt, the display name and the file path — beside the provider structure."
+          },
+          "mayContainInstructions": {
+            "const": true,
+            "description": "Always true. Review text asks for changes, so it reads as an instruction; it is a description of a request, and this label is what a client renders it under so an agent does not follow it."
+          },
+          "executable": {
+            "const": false,
+            "description": "Always false. Theurian returns documents, never runnable content."
+          }
+        }
+      }
+    }
+  }
+}

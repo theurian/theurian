@@ -404,8 +404,9 @@ theurian project register --project-id team-two-api
 
 Theurian exposes no client-specific surface: anything that speaks **MCP over
 Streamable HTTP** to `http://127.0.0.1:7419/mcp` can use it, and gets the same
-six read-only tools — `knowledge.search`, `knowledge.get`, `knowledge.status`,
-`project.list`, `review.findings`, `system.capabilities`. The daemon does put
+seven read-only tools — `knowledge.search`, `knowledge.get`, `knowledge.status`,
+`project.list`, `review.findings`, `review.search`, `system.capabilities`. The
+daemon does put
 four conditions on the request — one of them authentication, the other three
 because a loopback port is reachable from any page your browser opens
 (SEC-2, T-2):

@@ -620,7 +620,7 @@ def test_every_tool_is_registered_through_the_one_seam() -> None:
     """No *decorator* in ``register`` names anything but ``_tool``.
 
     **This is the narrower of two pins, and its limits are the point.** It reads
-    spelling: the decorator each tool carries. That catches a sixth tool added
+    spelling: the decorator each tool carries. That catches an eighth tool added
     with ``@server.tool`` and nothing else. It does **not** catch a bypass inside
     ``_tool`` itself -- deleting ``_forwarding``'s application leaves every
     decorator identical, and the adversarial round confirmed the full suite
@@ -655,8 +655,8 @@ def test_every_tool_is_registered_through_the_one_seam() -> None:
         f"these tools bypass `_forwarding`, so a refusal raised below the surface "
         f"is withheld from their callers under mcp >= 2.1: {bypassing}"
     )
-    assert len(through_the_seam) == 6, (
-        f"expected the six registered tools to go through `_tool`; found "
+    assert len(through_the_seam) == 7, (
+        f"expected the seven registered tools to go through `_tool`; found "
         f"{len(through_the_seam)}. If a tool was added or removed, update this "
         f"count deliberately -- it is what makes the assertion above meaningful."
     )

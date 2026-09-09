@@ -47,8 +47,13 @@ so the worst case is
 
     ``len(_held) + len(_reclaimed) <= 2 * permits``
 
-which at the shipped ``MAX_CONCURRENT_SEARCHES`` is **8 threads**, the occupancy
-T-6 already records for the two gates together.
+**per gate**, which at the shipped ``MAX_CONCURRENT_SEARCHES`` is **8 threads**
+each -- the 2x figure T-6 records. Across the gates ``mcp/tools.py::register``
+builds it multiplies: three of them since ``review.search`` landed, so 12 threads
+of concurrent occupancy and 24 counting parked holders, against the 40-token
+anyio worker pool that bounds them all. The per-gate bound is this class's; the
+aggregate is a property of how many gates the tool surface registers, and
+``register``'s own comments carry that arithmetic beside the gates themselves.
 
 **What it costs, stated rather than implied, and it is not a stall in every
 case.** Two regimes, and the honest sentence names both:

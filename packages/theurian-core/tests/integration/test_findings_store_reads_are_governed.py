@@ -222,7 +222,79 @@ def _land(registry: ProjectRegistry) -> Path:
     BuildProvenance.for_registry(registry).record_findings(
         Path(registry.load()["demo"]["rootPath"]), FINDINGS_STORE_ID
     )
+    _land_review_evidence(registry)
     return path
+
+
+def _land_review_evidence(registry: ProjectRegistry) -> None:
+    """A review search store beside the findings one, so ``review.search`` runs.
+
+    The drive calls every registered tool, and a tool refused before its body runs
+    executes no SQL -- which would leave the audit unable to say anything about
+    ``review.search`` at all. With the store here, that tool reaches its own read
+    and the audit observes what it does against the *findings* file: nothing. That
+    absence is the point rather than a side effect. ``review.search`` is the second
+    serving surface under ``.theurian/state/``, and "another tool reaching the same
+    content" is the family a second store makes reachable; this instrument scopes
+    by the opened **file**, so a review-search read that strayed onto the findings
+    one would be recorded and graded like any other.
+    """
+    from datetime import UTC
+
+    from theurian.application.project_service import REVIEW_SEARCH_STORE_ID
+    from theurian.application.review_search_builder import (
+        ReviewSearchBuilder,
+        ReviewSearchBuildRequest,
+    )
+    from theurian.cli.review_commands import evidence_entries
+    from theurian.domain.identifiers import ProjectId
+    from theurian.domain.review import ReviewEvent, ReviewParticipant
+    from theurian.infrastructure.review_evidence import (
+        EvidenceRecord,
+        IngestionRun,
+        ReviewEvidenceStore,
+    )
+    from theurian.infrastructure.sqlite.review_search_store import SqliteReviewSearchStore
+
+    paths = ProjectPaths.of(Path(registry.load()["demo"]["rootPath"]))
+    repository = "acme/order-service"
+    record = EvidenceRecord(
+        provider="github",
+        repository=repository,
+        anchor=SourceAnchor(
+            provider="github",
+            source_uri=f"https://github.com/{repository}/pull/42",
+            repository=repository,
+            commit_sha=_sha("a"),
+        ),
+        payload=ReviewEvent(
+            project_id=ProjectId("demo"),
+            provider="github",
+            repository=repository,
+            number=42,
+            title="Bound the retry budget",
+            body="Only retry calls that carry a signed token.",
+            author=ReviewParticipant(
+                provider="github", external_id="USER_A", display_name="Reviewer One"
+            ),
+            created_at=datetime(2026, 8, 1, 12, 0, tzinfo=UTC),
+            url=f"https://github.com/{repository}/pull/42",
+            head_commit=_sha("b"),
+            base_commit=_sha("c"),
+            head_ref_name="fix/retry-budget",
+            labels=("security",),
+        ),
+    )
+    evidence = ReviewEvidenceStore(paths.review)
+    evidence.write(
+        (record,),
+        run=IngestionRun("01K1AAAAAA01234567890ABCDE", datetime(2026, 9, 7, 9, 0, tzinfo=UTC)),
+    )
+    store = SqliteReviewSearchStore(paths.review_search_for(REVIEW_SEARCH_STORE_ID))
+    ReviewSearchBuilder(read_evidence=evidence_entries(evidence), write=store.replace_all).build(
+        ReviewSearchBuildRequest(withheld_record_keys=frozenset())
+    )
+    BuildProvenance.for_registry(registry).record_review(paths.root, REVIEW_SEARCH_STORE_ID)
 
 
 # -- The audit --------------------------------------------------------------
@@ -362,6 +434,17 @@ _DRIVE: Final[dict[str, tuple[dict[str, Any], ...]]] = {
         {"projectId": "demo", "limit": 1},
         {"projectId": "demo", "reviewer": "security", "severity": "HIGH"},
         {"projectId": "demo", "commitSha": _sha("c")},
+        {"projectId": "demo", "q": "token"},
+    ),
+    # Driven for the reason every tool here is: face (b) and face (c) are not
+    # specific to the sanctioned tool, so a helper reaching the findings store
+    # from *this* body would be invisible to the bytecode walk that inspects each
+    # tool's own code object. Its own store is landed by `_land_review_evidence`
+    # so these calls reach the body rather than the unavailable-store refusal.
+    "review.search": (
+        {"projectId": "demo"},
+        {"projectId": "demo", "limit": 1},
+        {"projectId": "demo", "repository": "acme/order-service", "pullRequest": 42},
         {"projectId": "demo", "q": "token"},
     ),
     "system.capabilities": ({},),

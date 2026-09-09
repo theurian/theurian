@@ -1283,6 +1283,13 @@ KNOWN_TOOL_NAMES = frozenset(
         "knowledge.status",
         "project.list",
         "review.findings",
+        # `review.search` serves review *evidence* -- ingested pull requests,
+        # review submissions and review threads (ADR-0030 decision 6) -- out of a
+        # different store, with a different schema, built from a different source.
+        # It serves no `Review-Finding:` trailer and reaches no symbol of the
+        # findings store, which is what the two arms below check rather than
+        # assume; its own disclosure round is ADR-0030's, not ADR-0029's.
+        "review.search",
         "system.capabilities",
     }
 )
