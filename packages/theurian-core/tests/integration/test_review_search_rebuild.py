@@ -604,6 +604,43 @@ def test_a_rebuild_that_fails_leaves_the_previous_store_serving_and_no_working_f
     )
 
 
+def test_the_working_name_a_rebuild_assembles_under_is_a_sibling_of_the_published_one(
+    tmp_path: Path,
+) -> None:
+    """The premise both of ``replace_all``'s publish claims rest on (#237, #404, SEC-7).
+
+    ``SqliteReviewSearchStore.building_path`` derives the working name by appending
+    a suffix to the published one, and two separate claims are built on that single
+    line. **Containment**: ``ProjectPaths.review_search_for`` proves the publish
+    name sits inside ``.theurian/state/``, and a name derived from it by appending
+    inherits that proof, where a separately-composed working path would need its
+    own. **Atomicity**: ``os.replace`` is atomic only within a filesystem, so a
+    working name under a temporary directory would silently degrade the publish
+    into a cross-device copy and lose the crash-safety the rename is there for.
+
+    Measured, not assumed: retargeting ``building_path`` at the *parent* of the
+    state directory left the whole review-search surface green -- the store, the
+    builder, the bound-input suite, both absence proofs, the tool suite, the ingest
+    CLI, the containment unit suite and the no-follow suite, 247 cases -- because
+    every one of them only ever asks whether the working file is *gone* afterwards.
+    Nothing asked where it was. The findings store's twin of this line has been
+    pinned since #404 (``test_findings_store.py``); this store inherited the design
+    without the pin, which is how a class falls in an ownership seam.
+    """
+    store = _project(tmp_path).store
+
+    assert store.building_path.parent == store.path.parent, (
+        "the working name left the published name's directory: the containment proof "
+        "`review_search_for` supplies no longer reaches it (#237, SEC-7), and a publish "
+        "across a filesystem boundary is a copy rather than an atomic rename (#404)"
+    )
+    assert store.building_path.name == store.path.name + ".building", (
+        "the working name is no longer the published name plus the suffix every other "
+        "builder in .theurian/state/ uses, so a reader of that directory cannot tell that a "
+        "writer has not finished here"
+    )
+
+
 # -- a rebuild that lands mid-read -------------------------------------------
 
 #: The query the raced call is driven with. One call, deliberately: the hook below
