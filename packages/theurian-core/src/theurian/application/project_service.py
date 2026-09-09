@@ -858,7 +858,7 @@ def _unreadable_ids(entries: Mapping[str, object]) -> tuple[str, ...]:
     )
 
 
-def _unregister_commands(project_ids: tuple[str, ...]) -> str:
+def unregister_commands(project_ids: tuple[str, ...]) -> str:
     """``theurian project unregister`` for each id, quoted so it can be typed.
 
     An unreadable id is whatever a hand edit left behind, spaces and quotes
@@ -866,6 +866,13 @@ def _unregister_commands(project_ids: tuple[str, ...]) -> str:
     ``theurian project unregister Team One/API`` is three arguments to a command
     that takes one -- so the remedy for the id that broke the registry was itself
     unrunnable, on every surface that printed it.
+
+    Public, and imported by ``cli/commands.py::_unreadable_entry_fields`` for
+    that reason (#384): ``project status``'s resolved branch names the same
+    entries this module's refusals do, and a second ``shlex.quote`` spelled at
+    the CLI layer is how one of the two comes to forget the quoting the other
+    remembers. The registry cure next door
+    (:func:`registry_deletion_remedy`) already crosses the boundary this way.
     """
     return ", ".join(f"`theurian project unregister {shlex.quote(pid)}`" for pid in project_ids)
 
@@ -2633,7 +2640,7 @@ class ProjectRegistry:
                 f"unregistered would address it by the id derived from its name, which may "
                 f"already belong to a different project.",
                 remedy=(
-                    f"Remove the unreadable entries: {_unregister_commands(rootless)}. "
+                    f"Remove the unreadable entries: {unregister_commands(rootless)}. "
                     f"`theurian project list` shows them under `unreadable`. Meanwhile "
                     f"anything that names a project id still works, including every daemon "
                     f"tool; anything that resolves the project from the current directory, "
@@ -2656,7 +2663,7 @@ class ProjectRegistry:
                 f"would address it by the id derived from its name, which may already belong "
                 f"to a different project.",
                 remedy=(
-                    f"Remove the entry: {_unregister_commands(unusable)}, then run "
+                    f"Remove the entry: {unregister_commands(unusable)}, then run "
                     f"`theurian project register` here again. `theurian project list` shows "
                     f"it under `unreadable`. Every other project on this machine is "
                     f"unaffected."
