@@ -585,6 +585,37 @@ def corpora(tmp_path_factory: pytest.TempPathFactory) -> Iterator[_Corpora]:
         yield built
 
 
+@pytest.fixture(scope="module")
+def empty_deployment(tmp_path_factory: pytest.TempPathFactory) -> Iterator[_Deployment]:
+    """A fourth deployment: a real build over zero evidence records.
+
+    Not the missing-store case
+    ``test_a_project_with_no_review_search_store_is_refused_not_answered_empty``
+    (``test_review_search_tool.py``) drives -- there the store file never
+    exists. Here ``theurian review build`` has run through the same builder
+    and the same store every other deployment in this module uses; the store
+    file exists on disk and carries its stamp, and it simply has nothing to
+    write, which is the state an operator is in immediately after a fresh
+    install builds against a repository nothing has landed into yet.
+
+    Built the same way :func:`corpora` builds its three, and separately from
+    them: its own ``base``, its own ``HOME``, its own registry. Module-scoped
+    for the same reason -- a real ``git init``, three CLI commands and a real
+    build, read by every test below rather than rebuilt per case.
+    """
+    origin = Path.cwd()
+    base = tmp_path_factory.mktemp("empty-corpus")
+    home = base / "home"
+    home.mkdir()
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setenv("HOME", str(home))
+        try:
+            deployment = _deploy(base, "empty", (), withheld=frozenset(), patched=patched)
+        finally:
+            os.chdir(origin)
+        yield deployment
+
+
 # -- what is compared -----------------------------------------------------------
 
 
@@ -988,6 +1019,55 @@ def test_the_control_serves_the_withheld_records_through_the_very_same_tool(
         "both withheld kinds must be reachable, or one of the two withheld record keys is "
         "never exercised"
     )
+
+
+def test_an_empty_corpus_refuses_like_a_full_one_and_serves_a_well_formed_query(
+    corpora: _Corpora, empty_deployment: _Deployment
+) -> None:
+    """The empty-corpus arm this module's own docstring records as undriven.
+
+    ``mcp/review_search.py``'s claim is that nothing it says varies with a
+    project's contents. The battery above drives that claim across two
+    non-empty corpora (``withholding`` and ``never_held``); this drives it
+    across the corpus size itself -- a deployment whose store was built from
+    zero records, compared against :attr:`_Corpora.control`, the full corpus
+    built with nothing withheld.
+
+    First the premise: the empty-corpus store is a real build, not the
+    missing-store case a different test already covers, or every comparison
+    below would be re-measuring that refusal under a new name. Then the
+    battery's own refusal arms -- bad filter shapes, an out-of-range limit --
+    reused rather than restated, so this exercises exactly what the battery
+    already calls a refusal: each must answer byte-identically whether the
+    corpus behind it holds zero records or all of them.
+
+    Last, the contrast that makes the equality mean something: a well-formed
+    request against the empty corpus must come back as an ordinary served
+    answer -- ``count`` zero, ``truncated`` false, no records -- rather than a
+    refusal. Without it, the byte-equalities above would be satisfied just as
+    well by a deployment that refuses everything, empty corpus or not.
+    """
+    assert empty_deployment.store.exists(), (
+        "the empty-corpus deployment's store file must exist on disk -- this fixture "
+        "stands for a real build over zero records, not the missing-store case "
+        "`test_a_project_with_no_review_search_store_is_refused_not_answered_empty` "
+        "already tests"
+    )
+
+    refusal_arms = [arm for arm in BATTERY if arm.name.startswith("refused-")]
+    assert refusal_arms, "the battery carries no refusal arm, so nothing below is exercised"
+    for arm in refusal_arms:
+        empty = _answer(empty_deployment, arm.arguments)
+        full = _answer(corpora.control, arm.arguments)
+        assert empty == full, (
+            f"the {arm.name!r} refusal differed between an empty-corpus deployment and a "
+            f"full one, so the refusal text varies with what the corpus holds"
+        )
+
+    served = _payload(_answer(empty_deployment, {}))
+    assert served["count"] == 0
+    assert served["truncated"] is False
+    assert served["records"] == []
 
 
 # -- the generated arm ------------------------------------------------------------
