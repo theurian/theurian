@@ -213,12 +213,12 @@ _AN_INVITATION: Final = re.compile(
 #:
 #: The literal alone is not that key either: it misses every assertion that reads
 #: this constant instead of spelling it. The population is the *assertions* in
-#: that output, by either spelling -- 10 of the 37 lines the search returns at the
-#: commit this note lands in. The other 27 are the two constant definitions (here
+#: that output, by either spelling -- 12 of the 40 lines the search returns at the
+#: commit this note lands in. The other 28 are the two constant definitions (here
 #: and in ``test_cli_commands.py``), one import of this one, the cure's own tail
 #: below, six planted-cure literals, one planted remedy in
 #: ``test_session_start_hook.py``, seven lines of quoted instruction and docstring
-#: across the two execution modules, and nine lines of prose and search text.
+#: across the two execution modules, and ten lines of prose and search text.
 #:
 #: **Count it against the tree the commit lands in, not the one you started
 #: from.** ``git grep`` reads tracked files, so a note written beside a

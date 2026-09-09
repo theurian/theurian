@@ -10,6 +10,8 @@ from __future__ import annotations
 import errno
 import json
 import os
+import re
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -24,20 +26,36 @@ import pytest
 from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
 from migration_fixtures import UNREACHED_BODY_PIN, body_pin
 from registry_deletion_cure_claims import (
+    THE_PINNED_CURE_LEADS,
+    THE_SHARED_CURE_TAIL,
     assert_a_deletion_cure_does_not_claim_it_is_costless,
     assert_registry_deletion_cure_shape,
     the_pinned_cure,
+    the_pinned_lead,
 )
 from typer.testing import CliRunner
 
 from theurian.application.project_service import (
+    ACTIVE_POINTER_REMEDY,
     KNOWLEDGE_DIR_ESCAPE_REMEDY,
     ProjectError,
     ProjectPaths,
     ProjectRegistry,
     derived_escape_remedy,
+    read_active_state,
 )
-from theurian.cli.context import schema_root
+
+# Private, and imported rather than transcribed for the reason every other
+# read-it-from-production pin in this file is: a literal here would go on
+# agreeing with itself after the shipped default moved, which is the drift the
+# assertion exists to catch. Importing a private whose value *is* the subject is
+# the established shape in this package -- `_PROVENANCE_REMEDY` in
+# `test_findings_build_cli.py`, `_ACCEPT_STEPS`/`_DRAFT_STEPS` in
+# `test_propose_cli.py`. Re-locate rather than trusting those names:
+#
+#   git grep -nE '^from theurian\.[a-z_.]+ import _' -- packages/theurian-core/tests
+from theurian.cli.commands import _UNRESOLVED_STATUS_REMEDY
+from theurian.cli.context import resolve_context, schema_root
 from theurian.cli.index_status_report import index_staleness
 from theurian.cli.main import app
 from theurian.domain.errors import MigrationError
@@ -144,21 +162,39 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     yield root
 
 
-def _invoke(*args: str) -> tuple[int, dict[str, Any]]:
-    """Run a command and parse its JSON.
+def _invoke_argv(words: list[str]) -> tuple[int, dict[str, Any]]:
+    """Run exactly these words and parse the JSON they produce.
 
-    ``mix_stderr=False`` matters: the CLI keeps stdout a clean machine channel
-    and puts errors on stderr, and a test that merged them could not tell.
+    The two streams staying apart matters: the CLI keeps stdout a clean machine
+    channel and puts errors on stderr, and a test that merged them could not
+    tell. ``CliRunner`` separates them, so the fallback below reads
+    ``result.stderr`` first and only then ``result.stdout``.
+
+    Split out of :func:`_invoke` so a caller that has to place ``--json``
+    somewhere other than last can still use one parse
+    (:func:`_following_the_unregister_cure`). Nothing here reaches a shell: the
+    words are handed to Typer's runner as argv.
     """
-    result = runner.invoke(app, [*args, "--json"], catch_exceptions=False)
+    result = runner.invoke(app, words, catch_exceptions=False)
     stream = result.stdout if result.exit_code == 0 else (result.stderr or result.stdout)
     return result.exit_code, json.loads(stream) if stream.strip() else {}
+
+
+def _invoke(*args: str) -> tuple[int, dict[str, Any]]:
+    """Run a command with ``--json`` appended, and parse its JSON."""
+    return _invoke_argv([*args, "--json"])
 
 
 def _write_migration(root: Path, migration: str = MIGRATION, body: str = BODY) -> None:
     (root / ".theurian/knowledge/architecture/auth-policy.md").write_text(body)
     (root / f".theurian/migrations/{MIGRATION_ID}-add-auth-policy.yaml").write_text(migration)
 
+
+#: The two migrations ``_write_cyclic_migrations`` makes depend on each other, so
+#: ``MigrationSet.ordered`` can find no application order. Crockford base32, like
+#: every ULID in this file: no ``I``, ``L``, ``O`` or ``U``.
+CYCLE_FIRST_ID = "01K1EAAAAA01234567890ABCDE"
+CYCLE_SECOND_ID = "01K1EBBBBB01234567890ABCDE"
 
 #: The path #116's test deletes -- a module constant so the write and the unlink
 #: cannot drift on the filename spelling.
@@ -991,10 +1027,10 @@ _UNPARSEABLE_REGISTRY = b'{"demo": {"rootPath"'
 #: `_registry_cure_in_repair_order` appends, and it raises at runtime when the
 #: cure stops carrying an invocation, so it defends itself.
 #:
-#: The population is the *assertions* in that output, by either spelling: 10 of
-#: the 37 lines it returns at the commit this note lands in, six of them in this
+#: The population is the *assertions* in that output, by either spelling: 12 of
+#: the 40 lines it returns at the commit this note lands in, eight of them in this
 #: file. The literal alone is not the key -- it finds none of the constant reads,
-#: which is four of those ten. Re-run it **after `git add`** rather than trusting
+#: which is six of those twelve. Re-run it **after `git add`** rather than trusting
 #: either number: `git grep` reads tracked files, so a count taken beside a
 #: still-untracked test file is a count of the tree the commit is not landing,
 #: and this denominator was one short for exactly that reason. Both move with
@@ -1456,6 +1492,1077 @@ def test_status_outside_a_repository_publishes_no_registry_failure_keys(
     assert "registryRemedy" not in payload, (
         "and a delete-the-registry cure printed to somebody in /tmp is unattached to any "
         "question they asked"
+    )
+
+
+# -- issue #384: the two states `project status` diagnosed without curing -----
+#
+# #381 taught the unresolved branch to name the registry failure beside its
+# `registered: null`. Two states were left where this command published a
+# diagnosis and no way out of it, and they sit on different branches. Both are
+# measured at `28f5f115`, the commit these tests were written against.
+#
+# **Face A, on the unresolved branch.** `_unresolved_status` copied `exc.remedy`
+# under a bare `if`, so a resolution failure raising *without* one -- a malformed
+# migration, which is the ordinary case -- reached the payload as a `reason` with
+# nothing beside it. `migrate status` grades that same exception through
+# `_require_project`, which spells `exc.remedy or "Fix the migration file, then
+# retry."`, so two commands answered one repository state with two different
+# amounts of help: `project status --json` published `{reason, registered,
+# unreadable}` at exit 0 while `migrate status --json` exited 4 carrying that cure.
+#
+# **Face B, on the resolved branch.** An entry keyed by an id no consumer accepts,
+# over a `rootPath` naming some other directory, is not something `ids_for_root`
+# refuses -- so resolution succeeds, `holds_root` withholds membership anyway, and
+# the payload is the full resolved shape with `registered: null` and the offending
+# id under `unreadable`. At `28f5f115` that payload carried no `reason` and no
+# `remedy` anywhere in it, while `theurian project list` over the same file printed
+# "Remove them with `theurian project unregister <id>`. Until then, commands that
+# resolve a project from the current directory refuse rather than guess."
+#
+# **What the two faces do not share is the cure.** Face B's is per entry: the file
+# parsed, and one line in it is bad. The whole-file deletion cure must not reach
+# it -- that offer unregisters every project on the machine over one hand-edited
+# line, which is why `failure_fields` is keyed on the registry read's own failure
+# and not on the null. The fence on that gate is the `unreadable-entry-unresolved`
+# case of
+# `test_status_publishes_no_registry_failure_keys_when_the_registry_could_be_read`
+# above.
+#
+# **The rootless kind of unreadable entry is out of scope here, and what is held
+# about it is exactly what one test asserts.** It reaches the *unresolved* branch,
+# because `ids_for_root` refuses every root while one entry names none, so no
+# rootless entry produces the state face B is about.
+# `test_a_rootless_entry_keeps_the_refusals_own_per_entry_cure` below is the
+# measurement, and the claim is its three assertions and no wider: the payload is
+# the unresolved shape, `remedy` *is* `resolve_context`'s own exception text, and
+# that text backticks exactly one well-formed `unregister` naming the rootless id.
+# A pair rendered from the resolved branch would displace the middle one, which is
+# why this face leaves that payload as it stands.
+#
+# It is **not** held that the unresolved branch is missing nothing. The
+# unusable-key kind reaches it too -- beside an unrelated resolution failure, such
+# as a malformed migration -- and there the `unreadable` id is reported with no
+# sentence explaining it and no per-entry cure. That gap is pre-existing, was
+# reproduced in PR #626's round one, and is issue #628's; the tests here do not
+# cover it and must not be read as saying it cannot happen.
+
+
+#: The span of the whole-file cure that must never appear in a per-entry one: it
+#: is the cost of deleting `projects.json`, and a payload naming one bad entry has
+#: no business quoting it. Checked against :data:`THE_SHARED_CURE_TAIL` before it
+#: is looked for, so a re-pin of that tail cannot leave the absence check reading
+#: for a sentence nothing ships.
+_THE_WHOLE_FILE_DELETION_COST = "deleting it unregisters all of them"
+
+
+def _assert_this_is_not_the_whole_file_deletion_cure(
+    remedy: str, *, registry_path: Path, where: str
+) -> None:
+    """The per-entry cure is not the registry-deletion cure wearing a new key.
+
+    Walked over the arms of :data:`THE_PINNED_CURE_LEADS` rather than against a
+    list written here, so a fifth arm is covered the day it is added -- PR #596's
+    rule for this family, applied in the negative direction: there the render must
+    reach the shared cure, here it must not.
+
+    Both halves are looked for, because either alone leaks the offer. The lead is
+    what names the deletion; the tail is what names its cost and its recovery, and
+    :data:`RE_REGISTER_INVOCATION` is the one span of that tail the assertions in
+    this file already read by name.
+    """
+    assert _THE_WHOLE_FILE_DELETION_COST in THE_SHARED_CURE_TAIL, (
+        f"{_THE_WHOLE_FILE_DELETION_COST!r} is no longer a span of the shipped cure, so its "
+        f"absence from a remedy proves nothing. Re-read the tail and re-pick the span."
+    )
+    for arm in THE_PINNED_CURE_LEADS:
+        assert the_pinned_lead(arm, registry_path) not in remedy, (
+            f"{where} carries the {arm!r} arm of the whole-file deletion cure. The file parsed: "
+            f"one entry in it is unreadable, and the cure for that is `theurian project "
+            f"unregister <id>`, not an offer to unregister every project on the machine."
+        )
+    assert THE_SHARED_CURE_TAIL not in remedy, (
+        f"{where} carries the whole-file cure's shared tail -- the cost of deleting "
+        f"`projects.json` and the re-registration that follows it -- for a file that can be "
+        f"read: {remedy!r}"
+    )
+    assert _THE_WHOLE_FILE_DELETION_COST not in remedy, (
+        f"{where} tells the reader that what it offers unregisters every project, which is "
+        f"true of deleting the file and false of removing one entry: {remedy!r}"
+    )
+    assert RE_REGISTER_INVOCATION not in remedy, (
+        f"{where} offers the whole-file cure's recovery, so something above it has already "
+        f"offered the deletion that recovery undoes: {remedy!r}"
+    )
+
+
+def _argv_of(span: str) -> list[str]:
+    """A backticked span as the words a reader would type, or nothing.
+
+    ``shlex`` rather than ``str.split``, because that is the difference between a
+    typeable invocation and a broken one: a hand-edited key like ``Team One/API``
+    reaches ``theurian project unregister`` as *one word* only when the cure
+    quotes it, which is what ``unregister_commands`` uses ``shlex.quote`` for.
+    One word is not yet one *argument* -- :data:`_END_OF_OPTIONS` is what buys
+    that, and the caller below is where it is asserted. A span that is not a
+    well-formed command line yields no argv rather than raising, so one such span
+    cannot hide every other span from the search.
+    """
+    try:
+        return shlex.split(span)
+    except ValueError:
+        return []
+
+
+#: The end-of-options marker ``unregister_commands`` renders between the command
+#: and the id it names, and the reason the extraction below reads position 3.
+#:
+#: ``shlex.quote`` buys one shell *word*; it does not buy one *positional
+#: argument*. A registry key of ``--help`` is already a safe word, so it quotes to
+#: itself, and the cure rendered ``theurian project unregister --help`` -- which
+#: prints usage at exit 0 and leaves the entry exactly where it was (PR #626 round
+#: one, adversarial HIGH-1). ``--json`` and ``-x`` exited 2 instead. The marker is
+#: what makes the quoted word an argument, and
+#: ``test_the_cure_for_an_option_shaped_id_removes_the_entry_rather_than_printing_usage``
+#: is the row that keeps it there.
+_END_OF_OPTIONS = "--"
+
+
+def _the_unregister_invocation_the_remedy_backticks(
+    remedy: str, *, for_id: str, where: str
+) -> list[str]:
+    """The ``theurian project unregister -- <id>`` argv this remedy names for ``for_id``.
+
+    The #381 execution predicate's rule, applied to a cure this file both reads
+    and runs: the words a test types come out of the quote rather than from beside
+    it (``test_registry_cure_execution.py``, "And the commands come out of the
+    quote, not from beside it"). A literal typed here would go on working after
+    the remedy stopped naming the id, which is the mutation that module measured
+    surviving the suite.
+
+    Exactly one invocation for the id, not merely one somewhere in the text: a
+    remedy naming a *different* entry's id would satisfy "an unregister command is
+    in here" while sending the reader to remove somebody else's registration.
+
+    **The shape includes the marker, and that is the whole of the round-one
+    containment.** ``argv[3]`` is asserted to be :data:`_END_OF_OPTIONS` rather
+    than being skipped over, so a render that goes back to quoting alone fails
+    here and not only in the one fixture whose id is option-shaped. Read back off
+    what ``unregister_commands`` renders at this commit::
+
+        `theurian project unregister -- 'Team One/API'`
+        `theurian project unregister -- --help`
+    """
+    spans = re.findall(r"`([^`]+)`", remedy)
+    matching = [
+        argv
+        for argv in (_argv_of(span) for span in spans)
+        if argv[:3] == ["theurian", "project", "unregister"]
+        and argv[3:4] == [_END_OF_OPTIONS]
+        and argv[4:] == [for_id]
+    ]
+    assert len(matching) == 1, (
+        f"{where} must name the entry to remove as a command the reader can type -- exactly "
+        f"one backticked `theurian project unregister -- {shlex.quote(for_id)}`. An id a hand "
+        f"edit left behind is one argument only when the cure quotes it, and it is a "
+        f"*positional* argument only when the cure ends option parsing before it. The remedy "
+        f"backticks {spans!r}"
+    )
+    return matching[0]
+
+
+def _following_the_unregister_cure(argv: list[str]) -> tuple[int, dict[str, Any]]:
+    """Run the argv a remedy named, with ``--json`` in the one place it still works.
+
+    :func:`_invoke` appends ``--json`` last, and last is now *past* the
+    end-of-options marker, where it is a second positional argument rather than a
+    flag. Measured against the real command over a planted registry:
+    ``["project", "unregister", "--", "Team One/API", "--json"]`` exits 2 with
+    ``Error: Got unexpected extra argument(s) (--json)`` and leaves the entry in
+    the file, while ``["project", "unregister", "--json", "--", "Team One/API"]``
+    exits 0 and the entry is gone.
+
+    So the *flag* moves and the extracted words do not: everything the cure
+    backticked still runs, in the order it backticked it, which is what keeps this
+    an execution of the published text rather than of a convenient paraphrase.
+    A reader wanting the machine channel puts the flag ahead of the marker the
+    same way -- ``unregister_commands``' own docstring records that measurement.
+
+    Nothing reaches a shell here; the words go to Typer's runner as argv.
+    """
+    assert argv[0] == "theurian", f"the cure must name the binary, not {argv[0]!r}"
+    marker = argv.index(_END_OF_OPTIONS)
+    return _invoke_argv([*argv[1:marker], "--json", *argv[marker:]])
+
+
+def test_status_and_migrate_status_publish_one_cure_for_one_broken_migration(
+    project: Path,
+) -> None:
+    """Issue #384, face A: one exception, two commands, and only one of them helped.
+
+    At ``28f5f115`` ``_unresolved_status`` published ``exc.remedy`` under a bare
+    ``if``, and a schema-invalid migration raises a plain ``MigrationError`` with
+    no ``remedy`` of its own -- so the command a confused user runs *first* named
+    the broken file and said nothing about what to do with it, while ``migrate
+    status``, over the identical repository, published ``_require_project``'s "Fix
+    the migration file, then retry." The parity is the claim, and it is the one
+    #205 already settled everywhere else: a self-describing error carries its own
+    cure, and an error that describes nothing still gets the branch's default
+    rather than silence.
+
+    **Asserted by invoking both commands against one repository, never against a
+    transcription.** A sentence pinned here would go on agreeing with itself after
+    the shared text moved, which is exactly what a parity test must not do.
+    ``reason``/``error`` are compared for the same reason: both are ``str(exc)``,
+    so their equality is what says the two payloads describe one exception rather
+    than two coincidentally similar failures.
+
+    The exit codes are deliberately unequal and are asserted as such. ``project
+    status`` answers 0 for a directory that is not a project at all; ``migrate
+    status`` grades a migration set it cannot load at ``EXIT_STATE_ERROR``. The
+    defect was never the code -- it was the missing sentence.
+
+    RED at ``28f5f115`` on the ``"remedy" in status`` line, where the payload was
+    ``{reason, registered, unreadable}`` and nothing else; GREEN once the
+    unresolved branch answers that key through ``_context_remedy`` like every other
+    surface reporting the same exception.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    _write_malformed_yaml_migration(project)
+
+    status_code, status = _invoke("project", "status")
+    migrate_code, migrated = _invoke("migrate", "status")
+
+    assert (status_code, migrate_code) == (0, EXIT_STATE_ERROR), (
+        "the two contracts differ by design; what must not differ is the help they give"
+    )
+    assert status["reason"] == migrated["error"], (
+        "the fixture must drive one exception into both commands, or the parity below is "
+        "comparing two unrelated failures"
+    )
+    assert migrated["remedy"], (
+        "and the surface being matched must publish a cure at all, or the equality holds "
+        "on two empty strings"
+    )
+    assert "remedy" in status, (
+        "a status that names a broken migration and offers no way to fix it is the whole of "
+        "issue #384's face A"
+    )
+    assert status["remedy"] == migrated["remedy"], (
+        "one exception, one cure: `migrate status` publishes it through `_require_project`, "
+        "and the exit-0 branch beside it must not be narrower than the command it sends "
+        "people to"
+    )
+
+
+def test_the_compound_payload_keeps_the_migrations_cure_apart_from_the_registrys(
+    project: Path, registry_path: Path
+) -> None:
+    """The identity gate's not-clobber direction, driven by the state face A creates.
+
+    ``_unresolved_status`` appends the repair-order sentence to ``remedy`` only
+    where ``remedy`` is already the same registry cure ``registryRemedy`` carries.
+    ``test_a_resolution_failure_with_a_cure_of_its_own_keeps_it_when_the_registry_also_fails``
+    drives the arm where it must not, through an exception that carries its own
+    ``.remedy``. Face A creates a *second* such arm and it is the one the compound
+    payload was written around: here ``remedy`` must be ``_context_remedy``'s answer
+    for a migration that describes nothing, so the gate meets a cure that no error
+    supplied. Two ways to get this wrong, and both are pinned below -- overwriting
+    the migration's cure with the registry's, and appending the ordering sentence
+    to a key that offers no re-registration for "the re-registration above" to
+    point at.
+
+    ``migrate status`` supplies the expected cure rather than a literal, for
+    ``test_status_and_migrate_status_publish_one_cure_for_one_broken_migration``'s
+    reason -- and here the equality carries a second claim: that the cure survives
+    the registry keys arriving beside it *unchanged*, which is what makes the two
+    instructions in this payload distinguishable rather than merely different.
+
+    RED at ``28f5f115`` on the ``"remedy" in payload`` line: the compound payload
+    published ``reason``, ``registryReason`` and ``registryRemedy``, so its only
+    actionable instruction was the destructive one. GREEN once face A's fix gives
+    the migration failure a cure of its own on this branch.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    _write_malformed_yaml_migration(project)
+    registry_path.write_bytes(_UNPARSEABLE_REGISTRY)
+
+    code, payload = _invoke("project", "status")
+    _, migrated = _invoke("migrate", "status")
+
+    assert code == 0
+    assert MALFORMED_YAML_MIGRATION_FILENAME in payload["reason"], (
+        "the fixture must reach the compound arm, where `reason` is not the registry's"
+    )
+    assert "remedy" in payload, (
+        "the payload's only instruction was the one that deletes every registration on the "
+        "machine; the failure `reason` names has a cure of its own and this is where it goes"
+    )
+    assert payload["remedy"] == migrated["remedy"], (
+        "and it is the same cure the command beside it publishes for this same migration, "
+        "unaltered by the registry keys arriving in the same payload"
+    )
+    assert payload["remedy"] != payload["registryRemedy"], (
+        "two failures, two cures: a payload whose keys carry one sentence twice has lost one "
+        "of the two things it had to say"
+    )
+    assert THE_REPAIR_ORDER_SENTENCE not in payload["remedy"], (
+        "the ordering sentence points at `the re-registration above`, and the migration's "
+        "cure offers no re-registration to point at"
+    )
+    assert RE_REGISTER_INVOCATION not in payload["remedy"], (
+        "and it must not have become a second spelling of the destructive offer one key over"
+    )
+    assert payload["registryRemedy"] == (
+        f"{the_pinned_cure('unparsable', registry_path)} {THE_REPAIR_ORDER_SENTENCE}"
+    ), "while the registry's own key still carries the shared cure, ordering sentence and all"
+
+
+def test_status_outside_a_repository_publishes_the_refusals_own_cure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fence face A's fix must not move: a self-describing refusal keeps its cure.
+
+    ``resolve_context`` raises "not inside a Git repository" *with* a ``remedy``,
+    and this payload publishes it. Routing the key through ``_context_remedy``
+    changes nothing here, by that function's own first rule -- "A non-empty
+    ``exc.remedy`` wins over everything below it" (issue #205) -- and this is where
+    that is measured rather than assumed.
+
+    The expected sentence comes from the exception itself, driven through the
+    production ``resolve_context`` in the same directory, rather than transcribed:
+    a literal here would pass a payload that had quietly stopped publishing the
+    refusal's own words and started publishing a copy of them.
+
+    GREEN at ``28f5f115``, and unpinned there. The sentence appears twice in the
+    tree at the commit this test lands in, and neither occurrence is an assertion::
+
+        git grep -n "Run this inside a Git repository" -- packages/theurian-core/src
+
+    -- ``cli/context.py``'s raise and ``cli/commands.py``'s ``_context_remedy``
+    default. Run over ``packages/theurian-core/tests`` instead, the same search
+    returns exactly one line and it is the one printed above, in this docstring:
+    no assertion anywhere in the suite spells the sentence, which is why a default
+    that swallowed this cure was invisible to it. Both counts are ``git grep``, so
+    re-run them **after ``git add``** -- a count taken beside an untracked file is
+    a count of a tree the commit does not have.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(tmp_path / "datadir"))
+    with pytest.raises(ProjectError) as excinfo:
+        resolve_context()
+    assert excinfo.value.remedy, "the fixture must produce a refusal that describes itself"
+
+    code, payload = _invoke("project", "status")
+
+    assert code == 0
+    assert "not inside a Git repository" in payload["reason"], "the fixture must be outside one"
+    assert payload["remedy"] == excinfo.value.remedy, (
+        "a refusal that carries its own cure keeps it: a status-branch default may only "
+        "answer for an exception that supplies nothing"
+    )
+
+
+def test_a_rootless_entry_keeps_the_refusals_own_per_entry_cure(
+    project: Path, registry_path: Path
+) -> None:
+    """The other fence, and the state #384 deliberately leaves alone.
+
+    An entry naming no root makes ``ids_for_root`` refuse every root, so this is
+    the *unresolved* branch -- and the exception it raises already carries both the
+    reason and the per-entry cure, naming the id to remove and the invocation that
+    removes it. Nothing is missing **in this state**, which is why #384's face B
+    answers for the resolved branch only and leaves this payload as it stands. The
+    claim is this state and not the branch: an unusable-key entry beside an
+    unrelated resolution failure lands here explained by nothing, and that gap is
+    issue #628's (PR #626 round one).
+
+    Pinned as equality against the exception's own ``remedy``, driven through the
+    production ``resolve_context``: this state's cure is the one text a fix keyed
+    on ``registered is None`` would replace with an offer to delete the whole file,
+    and until now the suite asserted only that the ``registryReason``/
+    ``registryRemedy`` keys stay away from it
+    (``test_status_publishes_no_registry_failure_keys_when_the_registry_could_be_read``'s
+    ``unreadable-entry-unresolved`` case), never what ``remedy`` itself says.
+
+    GREEN at ``28f5f115``.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    entry = json.loads(registry_path.read_text())["demo"]
+    registry_path.write_text(json.dumps({"demo": entry, "hand-edited": {"defaultBranch": "main"}}))
+    with pytest.raises(ProjectError) as excinfo:
+        resolve_context()
+
+    code, payload = _invoke("project", "status")
+
+    assert code == 0
+    assert "projectId" not in payload, "the fixture must reach the unresolved branch"
+    assert payload["registered"] is None
+    assert payload["unreadable"] == ["hand-edited"]
+    assert payload["remedy"] == excinfo.value.remedy, (
+        "the refusal's own per-entry cure is what this branch publishes, and it is the text "
+        "a whole-file deletion offer would displace"
+    )
+    _the_unregister_invocation_the_remedy_backticks(
+        payload["remedy"], for_id="hand-edited", where="project status --json remedy"
+    )
+    _assert_this_is_not_the_whole_file_deletion_cure(
+        payload["remedy"],
+        registry_path=registry_path,
+        where="project status --json remedy, unresolved branch",
+    )
+
+
+def test_status_names_the_unreadable_entry_that_withholds_membership(
+    project: Path, registry_path: Path, tmp_path: Path
+) -> None:
+    """Issue #384, face B: a resolved payload that withholds an answer and explains nothing.
+
+    An entry keyed by an id no consumer accepts, over an absolute ``rootPath``
+    naming somewhere else, is not one ``ids_for_root`` refuses -- it names a root,
+    and not this one -- so resolution succeeds, while ``holds_root`` withholds
+    membership anyway, because ``load`` keeps no key a consumer would reject and
+    ``unreadable_ids`` reports it
+    (``test_the_resolved_branch_reaches_the_same_null_with_nothing_racing_it``
+    pins that this state is deterministic, not a race). Measured at ``28f5f115``,
+    the payload was the full resolved shape -- ``projectId``, ``root``,
+    ``stateHash`` -- with ``registered: null``, the offending id under
+    ``unreadable``, and no ``reason`` or ``remedy`` anywhere in it. The same file,
+    read by ``theurian project list``, printed "Remove them with `theurian project
+    unregister <id>`."
+
+    So this payload published a withheld answer and left the reader to work out
+    both why it was withheld and what to do about it -- the defect #381 fixed one
+    branch over, arriving here through the other cause of the same null.
+
+    **The cure is per entry and must stay per entry.** The file parsed; one line
+    in it is bad. ``_assert_this_is_not_the_whole_file_deletion_cure`` is what
+    refuses the tempting reuse of the registry-deletion cure, which unregisters
+    every project on the machine and re-derives every id from a directory name.
+
+    RED at ``28f5f115`` on the ``"reason" in payload`` line; GREEN once the resolved
+    branch publishes a producer for the unreadable entries it already reports.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    entry = json.loads(registry_path.read_text())["demo"]
+    registry_path.write_text(
+        json.dumps(
+            {
+                "demo": entry,
+                "Team One/API": {"rootPath": str(tmp_path / "elsewhere"), "defaultBranch": "main"},
+            }
+        )
+    )
+
+    code, payload = _invoke("project", "status")
+
+    assert code == 0
+    assert payload["projectId"] == "demo", "the fixture must reach the resolved branch"
+    assert payload["registered"] is None, "and it must be the state that withholds membership"
+    assert payload["unreadable"] == ["Team One/API"]
+    assert "reason" in payload, (
+        "a `registered: null` with nothing beside it is a status a reader cannot act on -- "
+        "the rule `failure_fields` already holds for the other cause of this null"
+    )
+    assert all(unreadable_id in payload["reason"] for unreadable_id in payload["unreadable"]), (
+        "and what it names is the entries the null came from: an id absent from the prose is "
+        "an id the reader cannot look up in the file"
+    )
+    assert "remedy" in payload, "a `cannot know` with no cure beside it is unactionable"
+    _the_unregister_invocation_the_remedy_backticks(
+        payload["remedy"], for_id="Team One/API", where="project status --json remedy"
+    )
+    _assert_this_is_not_the_whole_file_deletion_cure(
+        payload["remedy"],
+        registry_path=registry_path,
+        where="project status --json remedy, resolved branch",
+    )
+
+
+def test_a_healthy_resolved_status_explains_nothing_because_nothing_is_wrong(
+    project: Path,
+) -> None:
+    """The fence face B's producer must not cross, and the hook reads it as one.
+
+    ``reason`` is this command's word for "part of this answer is degraded", and
+    ``plugins/claude-code/scripts/session-start.sh`` greps for exactly that key to
+    decide whether to warn a user at the start of every session. A resolved,
+    registered, readable project that published one would make that hook cry
+    degradation over a healthy repository, on every session, forever.
+
+    Asserted as key absence rather than as a falsy value, which is this payload's
+    own distinction: ``null`` is "asked, and the answer is unknowable"
+    (``registered`` over a registry nobody can read) and absence is "never asked"
+    (``_unresolved_status``' docstring, for ``indexStale``). The distinction has
+    teeth here: a ``reason`` of ``""`` passes a truthiness check and still matches
+    the hook's ``"reason": *"`` grep, so an assertion on the value rather than on
+    the key would not see the warning this test exists to prevent.
+
+    The state it set up is asserted first, so a fixture that stopped being healthy
+    fails here rather than passing the absence check vacuously.
+
+    GREEN at ``28f5f115``.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+
+    code, payload = _invoke("project", "status")
+
+    assert code == 0
+    assert payload["registered"] is True, "the fixture must be a healthy registered project"
+    assert payload["unreadable"] == [], "with nothing in the registry left to explain"
+    assert "reason" not in payload, (
+        "nothing about this status is degraded, and `reason` is what a session-start hook "
+        "greps for before it warns"
+    )
+    assert "remedy" not in payload, "a healthy project must not be handed a cure for nothing"
+
+
+def test_a_reader_of_the_unreadable_entry_cure_recovers_by_following_it(
+    project: Path, registry_path: Path, tmp_path: Path
+) -> None:
+    """Face B's cure, executed in the condition it is written for.
+
+    The test above pins what the payload *says*. This plants the condition, reads
+    the invocation back out of the remedy's own backticks, runs it, and measures
+    what the reader is left holding -- the executed-instruction predicate
+    ``test_registry_cure_execution.py`` holds every arm of the registry cure to,
+    applied to the one cure this payload publishes. A cure naming an id the file
+    does not hold, or an id the command refuses, fails mechanically here; a goal
+    statement ("the reader gets out") passes only because recovery is measured.
+
+    **The command comes out of the quote.** ``_the_unregister_invocation_the_remedy_backticks``
+    returns the argv, and that argv is what runs -- so a remedy rewritten to name a
+    different id runs that different id and fails at the recovery, rather than
+    passing on a literal typed beside it.
+    :func:`_following_the_unregister_cure` is what runs it, because ``--json``
+    appended last would land past the end-of-options marker and exit 2; the flag
+    is the only word that moves.
+
+    **Nothing here reaches a shell.** The invocation is handed to the in-process
+    CLI runner as argv, never interpolated into a command line: a cure is text from
+    a file a hand edit wrote, and the id in this fixture is deliberately not a slug.
+
+    Recovery is all three halves: the entry is gone, ``unreadable`` is empty, and
+    ``registered`` answers ``True`` again -- the honest answer, since ``demo``'s own
+    registration was never what was broken. A cure that removed the wrong entry
+    would leave ``unreadable`` populated; one that removed both would leave
+    ``registered`` ``False``.
+
+    RED at ``28f5f115``, where the payload carried no ``remedy`` to follow; GREEN
+    once the test above is, since this one follows the text that one reads.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    entry = json.loads(registry_path.read_text())["demo"]
+    registry_path.write_text(
+        json.dumps(
+            {
+                "demo": entry,
+                "Team One/API": {"rootPath": str(tmp_path / "elsewhere"), "defaultBranch": "main"},
+            }
+        )
+    )
+    _, broken = _invoke("project", "status")
+    assert broken["unreadable"] == ["Team One/API"], "the fixture must plant the condition"
+    assert "remedy" in broken, "and the payload must offer the cure this test then follows"
+
+    argv = _the_unregister_invocation_the_remedy_backticks(
+        broken["remedy"], for_id="Team One/API", where="project status --json remedy"
+    )
+    removed_code, removed = _following_the_unregister_cure(argv)
+
+    assert removed_code == 0, f"the invocation the cure names must run: {removed!r}"
+    assert removed["removed"] is True, "and it must remove the entry it names"
+    code, recovered = _invoke("project", "status")
+    assert code == 0
+    assert recovered["unreadable"] == [], "the entry the cure named is gone"
+    assert recovered["registered"] is True, (
+        "and membership is answerable again -- honestly, since this root's own registration "
+        "was never the thing that was broken"
+    )
+    assert "reason" not in recovered, "nothing is left to explain"
+    assert "remedy" not in recovered, "and nothing is left to cure"
+
+
+def _plant_unusable_keys_beside_demo(
+    registry_path: Path, *, elsewhere: Path, keys: tuple[str, ...]
+) -> None:
+    """Hand-edit the registry so ``demo`` stays healthy and ``keys`` are unreadable.
+
+    Each planted entry carries a ``rootPath`` field that is absolute and names
+    somewhere *else*, which is what puts the payload on the resolved branch:
+    ``ids_for_root`` refuses only a rootless entry, and an unusable key over
+    another directory is one it lets through, so ``holds_root`` withholds
+    membership and face B's producer renders. A key with no ``rootPath`` would
+    land on the unresolved branch instead and none of these tests would be about
+    what they say they are -- which is why every caller asserts ``projectId`` is
+    in the payload before it asserts anything else.
+
+    The roots are distinct per key so no two planted entries claim one directory.
+    """
+    entry = json.loads(registry_path.read_text())["demo"]
+    registry_path.write_text(
+        json.dumps(
+            {
+                "demo": entry,
+                **{
+                    key: {
+                        "rootPath": str(elsewhere / f"elsewhere-{index}"),
+                        "defaultBranch": "main",
+                    }
+                    for index, key in enumerate(keys)
+                },
+            }
+        )
+    )
+
+
+def test_the_cure_for_an_option_shaped_id_removes_the_entry_rather_than_printing_usage(
+    project: Path, registry_path: Path, tmp_path: Path
+) -> None:
+    """PR #626 round one, adversarial HIGH-1: the row that keeps ``--`` in the render.
+
+    ``shlex.quote`` guarantees one shell *word*. It does not guarantee that the
+    receiving command reads that word as a positional argument, and a registry key
+    of ``--help`` is the case where the two come apart: it is already a safe word,
+    so it quotes to itself, and the cure said ``theurian project unregister
+    --help``. Followed verbatim that printed usage, exited **0**, and left the
+    entry exactly where it was -- a published removal instruction that removes
+    nothing while reporting success. ``--json`` and ``-x`` as keys exited 2
+    instead, which is wrong more loudly rather than less.
+
+    So the argv is asserted as a whole rather than by substring. The marker is a
+    word in a specific position, and equality is what says *which* position; a
+    containment check would pass on a render that put it anywhere.
+
+    Then the invocation runs and recovery is measured on all three halves -- the
+    entry gone, ``unreadable`` empty, ``registered`` back to ``True`` -- because
+    "the cure is well-formed" is a claim about text and "the reader gets out" is a
+    claim about the file, and this defect satisfied the first while failing the
+    second.
+
+    RED at ``83004c61``, where ``unregister_commands`` rendered the quote alone:
+    the argv extraction finds no invocation for ``--help`` at all. GREEN with the
+    marker rendered.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    _plant_unusable_keys_beside_demo(registry_path, elsewhere=tmp_path, keys=("--help",))
+    _, broken = _invoke("project", "status")
+    assert broken["projectId"] == "demo", "the fixture must reach the resolved branch"
+    assert broken["unreadable"] == ["--help"], "and the planted key must be the unreadable one"
+
+    argv = _the_unregister_invocation_the_remedy_backticks(
+        broken["remedy"], for_id="--help", where="project status --json remedy"
+    )
+    removed_code, removed = _following_the_unregister_cure(argv)
+
+    assert argv == ["theurian", "project", "unregister", "--", "--help"], (
+        "an option-shaped key is one argument only behind the end-of-options marker; without "
+        "it this same text is `theurian project unregister --help`, which prints usage"
+    )
+    assert removed_code == 0, f"the invocation the cure names must run: {removed!r}"
+    assert removed["removed"] is True, (
+        "and it must remove the entry -- exit 0 was what the defect already had, so the "
+        "removal is the half that says the cure did something"
+    )
+    _, recovered = _invoke("project", "status")
+    assert recovered["unreadable"] == [], "the entry the cure named is gone"
+    assert recovered["registered"] is True, "and membership is answerable again"
+
+
+def test_two_unreadable_entries_are_both_named_and_both_curable(
+    project: Path, registry_path: Path, tmp_path: Path
+) -> None:
+    """PR #626 round one, adversarial MEDIUM: the arity every other fixture leaves free.
+
+    Face B's ``reason`` says "entries" and its ``remedy`` says "Each removes only
+    the entry it names", and until this test every fixture that reached the
+    producer planted exactly one entry -- so both claims held vacuously. That
+    round measured the cost: truncating either field to its first id was among
+    its four full-suite survivors. Two entries is the smallest fixture that can
+    tell the difference, and the assertions are written over
+    ``payload["unreadable"]`` rather than over a list typed here, so they scale
+    with whatever the fixture plants.
+
+    Both ids are sought in ``reason`` and one invocation is sought *per* id in
+    ``remedy``: ``_the_unregister_invocation_the_remedy_backticks`` insists on
+    exactly one match for each, so a remedy naming one entry twice fails as
+    surely as one naming it once.
+
+    Then **both** are followed, in the order the payload named them, and recovery
+    is the same three halves. Removing one and stopping would leave ``unreadable``
+    populated, which is what makes the second removal a measurement rather than a
+    repetition.
+
+    RED at ``83004c61``, on the argv extraction: the cure rendered no
+    end-of-options marker there. Its ``reason`` half would have held at that
+    commit -- the text was already a join over the whole tuple -- so what the
+    arity pin buys is that a truncation of either field now has somewhere to fail,
+    not that either field was wrong.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    _plant_unusable_keys_beside_demo(
+        registry_path, elsewhere=tmp_path, keys=("Team One/API", "Team Two/API")
+    )
+
+    _, broken = _invoke("project", "status")
+
+    assert broken["projectId"] == "demo", "the fixture must reach the resolved branch"
+    assert broken["unreadable"] == ["Team One/API", "Team Two/API"], (
+        "and it must plant two entries, or the arity this test exists for is untested"
+    )
+    assert all(unreadable_id in broken["reason"] for unreadable_id in broken["unreadable"]), (
+        f"an id absent from the prose is an id the reader cannot look up in the file, and the "
+        f"sentence says `entries`: {broken['reason']!r}"
+    )
+    # And each in its *quoted* form: a raw id is a substring of its own repr, so
+    # the line above passes with `repr` dropped from the join (PR #626 round two,
+    # adversarial MEDIUM). Derived per id rather than typed, so the check grows
+    # with whatever the fixture plants.
+    assert all(repr(unreadable_id) in broken["reason"] for unreadable_id in broken["unreadable"]), (
+        f"the ids are `repr`-quoted, which is what keeps an empty-string key legible as `''` "
+        f"rather than closing the list to `()`: {broken['reason']!r}"
+    )
+    for unreadable_id in broken["unreadable"]:
+        argv = _the_unregister_invocation_the_remedy_backticks(
+            broken["remedy"], for_id=unreadable_id, where="project status --json remedy"
+        )
+        removed_code, removed = _following_the_unregister_cure(argv)
+        assert (removed_code, removed["removed"]) == (0, True), (
+            f"every id the payload reports has to be removable by the invocation the same "
+            f"payload names for it, and {unreadable_id!r} was not: {removed!r}"
+        )
+
+    _, recovered = _invoke("project", "status")
+    assert recovered["unreadable"] == [], "following the cure for each entry clears all of them"
+    assert recovered["registered"] is True, (
+        "and membership is answerable again -- `demo`'s own registration was never broken, so "
+        "a cure that removed one entry too many would answer `False` here"
+    )
+    assert "reason" not in recovered, "nothing is left to explain"
+    assert "remedy" not in recovered, "and nothing is left to cure"
+
+
+def test_the_unreadable_entry_reason_names_the_file_and_a_cause_the_file_does_not_refute(
+    project: Path, registry_path: Path, tmp_path: Path
+) -> None:
+    """PR #626 round one, code-review M-3 and adversarial HIGH-2, over one field.
+
+    **The shape half (M-3).** Gutted to ``", ".join(self.unreadable)`` this
+    producer still emits a ``reason`` and still names every id. Measured with that
+    gut applied, over the nine files this change touches: every test that existed
+    before this one still passed. What the gut stops doing is naming the file the
+    ids are keys of, and saying that membership is *unanswerable* rather than
+    merely unknown. Those two are the load-bearing claims, so those two are
+    asserted, as spans rather than as a byte pin: the sentence around them is
+    prose and may be rewritten, while a ``reason`` that names neither the artefact
+    nor the epistemic status is not this text at all.
+
+    **The causation half (HIGH-2).** The text at ``83004c61`` offered two causes
+    and the file refutes the second. For the unusable-key kind that actually
+    reaches this branch, ``ids_for_root`` reads the same entry's own ``rootPath``,
+    sees a different directory, and ends its refusal "Every other project on this
+    machine is unaffected" -- so "cannot be ruled out as this directory's own
+    registration" made the product hold two disagreeing sentences about one
+    registry at one instant. The absence assert below is what keeps the refuted
+    disjunct out; the honest cause is ``holds_root``'s own, and it is the span
+    asserted positively beside it.
+
+    **The quoting half (round two).** Every assertion above and elsewhere reads
+    the ids raw, and a raw id is a substring of its own ``repr`` -- so dropping
+    ``repr`` from the join changed the shipped text and 204 tests went on passing.
+    The quoted form is asserted for that reason alone: it is the only spelling
+    that can tell the two renders apart, and it is what keeps an empty-string key
+    legible as ``''`` rather than closing the list to ``()``.
+
+    https://github.com/theurian/theurian/pull/626#issuecomment-5605076253
+
+    RED at ``83004c61`` three times over -- that text carried neither
+    "unanswerable" nor the honest cause, and did carry the refuted disjunct. RED
+    under the M-3 gut on the path and the two spans, and RED on the quoted form
+    alone when only ``repr`` is dropped.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    _plant_unusable_keys_beside_demo(registry_path, elsewhere=tmp_path, keys=("Team One/API",))
+
+    _, payload = _invoke("project", "status")
+
+    assert payload["projectId"] == "demo", "the fixture must reach the resolved branch"
+    assert payload["unreadable"] == ["Team One/API"]
+    assert str(registry_path) in payload["reason"], (
+        f"the ids are keys of a file, and a reader who is not told which file cannot open it: "
+        f"{payload['reason']!r}"
+    )
+    assert re.search(r"\bunanswerable\b", payload["reason"]), (
+        f"`registered: null` is 'asked, and the answer is unknowable', and the reason is where "
+        f"that status is said in words rather than in a JSON literal: {payload['reason']!r}"
+    )
+    assert re.search(r"\bcomputed from the entries it could load\b", payload["reason"]), (
+        f"and the cause has to be the one this reader can defend -- the membership answer comes "
+        f"from what `load` returned, and a dropped entry is not in it: {payload['reason']!r}"
+    )
+    # The *quoted* form, because a raw id is a substring of its own repr and the
+    # all-ids assertions elsewhere therefore pass either way -- dropping `repr`
+    # from the join survived 204 tests (PR #626 round two, adversarial MEDIUM).
+    # The quoting is what keeps an empty-string key legible as `''` instead of
+    # closing the list to `()`, and this line is what keeps the quoting.
+    assert "'Team One/API'" in payload["reason"], (
+        f"the ids are `repr`-quoted, as `ids_for_root`'s unusable-key refusal already spells "
+        f"them over the same file: {payload['reason']!r}"
+    )
+    # The refuted disjunct, kept out by name. `ids_for_root` over this same file
+    # ends its own refusal for this same entry with "Every other project on this
+    # machine is unaffected", so publishing the opposite here is the product
+    # contradicting itself over one registry at one instant.
+    # https://github.com/theurian/theurian/pull/626#issuecomment-5605076253
+    assert "cannot be ruled out as this directory's own registration" not in payload["reason"]
+
+
+def test_the_unreadable_entry_remedy_says_what_each_removal_costs(
+    project: Path, registry_path: Path, tmp_path: Path
+) -> None:
+    """PR #626 round one, code-review M-3, over the other field.
+
+    Gutted to ``unregister_commands(self.unreadable)`` alone, the remedy still
+    carries a well-formed invocation per id and still passes the argv extraction
+    and the whole-file-cure absence walk. Measured with that gut applied, over the
+    nine files this change touches: this test was the only failure. What the gut
+    loses is the one claim this text makes about a command it does not run --
+    that removing the entry a cure names costs the reader nothing else. That claim
+    is why the payload can offer the removal at all beside a *healthy*
+    registration, so it is pinned byte-exact: it is one sentence, and rewording it
+    is a decision about what the product promises rather than prose maintenance.
+
+    ``theurian project list`` is asserted beside it because the sentence pair is
+    what makes the cure runnable when the reader does not trust the id: one names
+    the cost, the other names where to read the ids back.
+
+    ``test_a_reader_of_the_unreadable_entry_cure_recovers_by_following_it`` and
+    ``test_two_unreadable_entries_are_both_named_and_both_curable`` are what make
+    the claim true rather than merely present; this is what makes it present.
+
+    GREEN at ``83004c61``: the marker is the only thing this remedy gained, and
+    this test reads no invocation. It is the byte pin arriving, not a defect
+    closing.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    _plant_unusable_keys_beside_demo(registry_path, elsewhere=tmp_path, keys=("Team One/API",))
+
+    _, payload = _invoke("project", "status")
+
+    assert payload["projectId"] == "demo", "the fixture must reach the resolved branch"
+    assert payload["unreadable"] == ["Team One/API"]
+    assert "Each removes only the entry it names." in payload["remedy"], (
+        f"the scoping claim is what lets this cure be offered beside a healthy registration, "
+        f"and a remedy that is only a list of commands has withdrawn it: {payload['remedy']!r}"
+    )
+    assert "`theurian project list` shows them under `unreadable`." in payload["remedy"], (
+        f"and the reader who does not trust an id retyped from prose needs the surface that "
+        f"prints it: {payload['remedy']!r}"
+    )
+
+
+def test_a_corrupt_state_pointer_beside_an_unreadable_entry_publishes_the_entrys_pair(
+    project: Path, registry_path: Path, tmp_path: Path
+) -> None:
+    """PR #626 round one, code-review M-1: the recorded which-wins, pinned as recorded.
+
+    ``reason``/``remedy`` is one pair spoken by several producers, and a corrupt
+    ``active.json`` and a hand-edited registry entry are independent states of two
+    different files -- so both fire at once and the last merge wins. Today that is
+    the entry's, and the pointer's own text is published nowhere: only
+    ``statePointerCorrupt: true`` survives of it.
+
+    That is the #622 collision gaining a member rather than a new defect. Before
+    this producer existed the same two failures left the *entry* unexplained, the
+    mirror of what is lost now, so the change swapped which text is lost rather
+    than losing one that used to be published. What it owes is that the state
+    stops being unpinned: the choice is recorded here, and a change of mind has to
+    edit this test rather than land unremarked.
+
+    https://github.com/theurian/theurian/issues/622
+
+    The pointer's own prose is driven out of ``read_active_state`` rather than
+    transcribed, so this cannot pass by looking for a sentence the product stopped
+    producing. Both halves are asserted -- that the entry's text is what the pair
+    carries, and that the pointer's is absent from the payload *anywhere*, not
+    merely from those two keys -- because "the entry wins" and "the pointer is
+    published under some other name" are different states and only the second
+    would make the loss survivable.
+
+    RED at ``83004c61`` on the argv extraction alone: the ordering this pins is
+    what that commit already did, and what was missing was any test that said so.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    _plant_unusable_keys_beside_demo(registry_path, elsewhere=tmp_path, keys=("Team One/API",))
+    pointer = project / ".theurian/state/active.json"
+    pointer.parent.mkdir(parents=True, exist_ok=True)
+    pointer.write_text("not json at all")
+    with pytest.raises(ProjectError) as pointer_failure:
+        read_active_state(ProjectPaths.of(project))
+
+    _, payload = _invoke("project", "status")
+
+    assert payload["projectId"] == "demo", "the fixture must reach the resolved branch"
+    assert payload["unreadable"] == ["Team One/API"], "with the registry entry planted"
+    assert payload["statePointerCorrupt"] is True, "and the pointer failing at the same time"
+    assert str(registry_path) in payload["reason"], (
+        "the entry's producer merges last, so the shared pair is the registry's -- this is the "
+        "recorded choice, and a swap of it belongs in this assertion rather than in a diff"
+    )
+    _the_unregister_invocation_the_remedy_backticks(
+        payload["remedy"], for_id="Team One/API", where="project status --json remedy"
+    )
+    published = json.dumps(payload)
+    assert str(pointer_failure.value) not in published, (
+        "the pointer's own reason is published nowhere in this payload, under no key -- "
+        "`statePointerCorrupt: true` is the whole of what survives of it (#622)"
+    )
+    assert ACTIVE_POINTER_REMEDY not in published, "and its cure goes with it"
+
+
+def _write_cyclic_migrations(root: Path) -> None:
+    """Two migrations that depend on each other, so no application order exists.
+
+    ``createItem`` only: the cycle is rejected by ``MigrationSet.ordered`` inside
+    ``load_migrations``, before any content file is read, so bodies would be two
+    more things to keep in sync for no coverage.
+    """
+    for migration_id, dependency, item in (
+        (CYCLE_FIRST_ID, CYCLE_SECOND_ID, "architecture.cycle-one"),
+        (CYCLE_SECOND_ID, CYCLE_FIRST_ID, "architecture.cycle-two"),
+    ):
+        (root / f".theurian/migrations/{migration_id}-cycle.yaml").write_text(
+            f"apiVersion: theurian.dev/v1\n"
+            f"id: {migration_id}\n"
+            f"createdAt: 2026-08-02T10:00:00+09:00\n"
+            f"author: engineer@example.com\n"
+            f"dependsOn:\n"
+            f"  - {dependency}\n"
+            f"operations:\n"
+            f"  - op: createItem\n"
+            f"    itemId: {item}\n"
+            f"    kind: architecture\n"
+            f"    namespace: backend\n"
+            f"    owner: platform-team\n"
+        )
+
+
+def test_a_dependency_cycle_gets_the_cycles_cure_not_the_generic_migration_one(
+    project: Path,
+) -> None:
+    """PR #626 round one, code-review M-2 / adversarial MEDIUM-2: the discrimination.
+
+    ``_context_remedy`` answers three ways below a self-describing error --
+    ``MigrationCycleError`` first, then ``MigrationError``, then the caller's
+    ``default`` -- and face A's fix routed this branch through it. Only the middle
+    arm was driven. That round measured it: rewriting the call site to the
+    hardcoded ``exc.remedy or "Fix the migration file, then retry."`` that
+    ``migrate status`` spells was one of its four full-suite survivors. Under that
+    rewrite a cycle -- which is reachable from ``project status``, because
+    ``load_migrations`` orders the set inside ``resolve_context`` -- would tell the
+    reader to fix a file, when what is wrong is a relationship between two of them
+    and neither is malformed.
+
+    So the cure is asserted **and** the one it must not be, because the two are
+    both plausible sentences about a broken migration set and only one of them
+    points at the edit that fixes this state.
+
+    GREEN at ``83004c61``, which is the point: the discrimination was already
+    correct and nothing drove it, so a regression to the hardcoded rule was a
+    silent one.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    _write_cyclic_migrations(project)
+
+    code, payload = _invoke("project", "status")
+
+    assert code == 0, "this branch answers at exit 0 for a repository it cannot resolve"
+    assert "Migration dependency cycle" in payload["reason"], (
+        f"the fixture must drive a cycle rather than some other load failure: {payload['reason']!r}"
+    )
+    assert payload["remedy"] == "Break the dependency cycle shown above, then retry.", (
+        f"`reason` names the cycle, so the cure is the edit that breaks it: {payload['remedy']!r}"
+    )
+    assert payload["remedy"] != "Fix the migration file, then retry.", (
+        "the generic migration cure points at a file, and no file here is malformed -- what is "
+        "wrong is the edge between two well-formed ones"
+    )
+
+
+def test_a_repository_whose_name_derives_no_id_gets_the_branchs_artefact_free_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #626 round one, code-review M-2: the ``default`` limb, driven at last.
+
+    :data:`_UNRESOLVED_STATUS_REMEDY` is what ``project status`` publishes for a
+    resolution failure that describes neither itself nor its type, and that round
+    measured no test driving it. One state does: ``derive_project_id`` slugs the
+    directory name through ``[^a-z0-9]+`` and strips the hyphens, so a repository
+    named ``---`` leaves an empty slug and raises a bare ``ProjectError`` --
+    ``remedy`` the empty string, and not a ``MigrationError``, so both of
+    ``_context_remedy``'s named arms decline and the ``default`` renders.
+
+    Asserted as equality against the imported constant, so a re-pin of the
+    sentence moves both together, and then asserted to name **no artefact**: that
+    is the decision recorded beside the constant, and it is the whole reason this
+    branch's default differs from every other ``default`` in the module. One call
+    to ``resolve_context`` reaches the working tree, the registry, every migration
+    and the installed schemas, so a remedy naming one of them would name a
+    non-cause for every arrival but one -- the defect #481, #520 and #525 each
+    shipped.
+
+    The directory is created here rather than through the ``project`` fixture,
+    which names its repository ``demo``.
+
+    GREEN at ``83004c61``, like the cycle test above and for the same reason: the
+    limb was correct and undriven. Rewriting the constant to name an artefact
+    keeps the equality above green -- it is imported, so both sides move -- and
+    goes RED on the artefact check, which is why there are two assertions and not
+    one.
+    """
+    root = tmp_path / "---"
+    root.mkdir()
+    for args in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "test@example.com"],
+        ["git", "config", "user.name", "Test"],
+    ):
+        subprocess.run(args, cwd=root, check=True, capture_output=True)  # noqa: S603
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(tmp_path / "datadir"))
+    monkeypatch.chdir(root)
+
+    code, payload = _invoke("project", "status")
+
+    assert code == 0, "this branch answers at exit 0 for a repository it cannot resolve"
+    assert "projectId" not in payload, "the fixture must reach the unresolved branch"
+    assert "Cannot derive a project id" in payload["reason"], (
+        f"and it must fail on the id derivation rather than on a migration or the registry, "
+        f"or the arm under test is not the one that rendered: {payload['reason']!r}"
+    )
+    assert payload["remedy"] == _UNRESOLVED_STATUS_REMEDY, (
+        f"an exception that describes nothing still gets this branch's own cure, and it is the "
+        f"one shipped beside the constant rather than a copy: {payload['remedy']!r}"
+    )
+    assert not [
+        artefact
+        for artefact in (str(root), "projects.json", "active.json", ".theurian", ".gitignore")
+        if artefact in payload["remedy"]
+    ], (
+        f"and it names no artefact: this branch cannot know which of the several files "
+        f"`resolve_context` touches was the one that failed, and `reason` is the field that "
+        f"does say: {payload['remedy']!r}"
     )
 
 

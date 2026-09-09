@@ -475,7 +475,10 @@ def test_an_unreadable_entry_makes_registration_undecidable_rather_than_missing(
     step = probe_project_registered(context)
 
     assert step.status is StepStatus.CONFLICTING
-    assert "theurian project unregister payments" in step.detail
+    # The cure this probe surfaces is `ids_for_root`'s, rendered by
+    # `unregister_commands`, so it carries the `--` end-of-options marker that
+    # makes a hand-edited key a positional argument (PR #626 round one).
+    assert "theurian project unregister -- payments" in step.detail
     assert step.paths == (), "a step that only reads must not appear in the changed-files list"
 
 

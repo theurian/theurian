@@ -78,12 +78,14 @@ main() {
     theurian::warn "this repository is not registered. Run /theurian:register-project."
   elif printf '%s' "$status" | grep -q '"reason": *"'; then
     # `reason` is Core's field for "part of this status is degraded", and it
-    # reaches `project status --json` from three places in `cli/commands.py`,
+    # reaches `project status --json` from four places in `cli/commands.py`,
     # not one: `_unresolved_status` on the *unresolved* branch (`resolve_context`
     # raised -- a broken migration, an unregistered root), and, on the
     # *resolved* branch -- `resolve_context` having finished successfully --
-    # `_pointer_failure_fields` (a corrupt `.theurian/state/active.json`) and
-    # `_RegistryRead.failure_fields` (the registry re-read failed mid-command).
+    # `_pointer_failure_fields` (a corrupt `.theurian/state/active.json`),
+    # `_RegistryRead.failure_fields` (the registry re-read failed mid-command)
+    # and `_RegistryRead.unreadable_entry_fields` (the registry read fine and
+    # holds a hand-edited entry, so `registered` is `null`; issue #384).
     # So `reason` is not evidence that resolution failed: on the resolved
     # branch it arrives with `registered: true` and can sit right beside
     # `indexStale` and a `statePointerCorrupt: true` this same payload
