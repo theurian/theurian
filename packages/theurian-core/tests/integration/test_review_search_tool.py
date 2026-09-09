@@ -905,6 +905,48 @@ async def test_a_bad_argument_is_a_graded_refusal_that_can_itself_be_built(
     assert "Traceback" not in message
 
 
+@pytest.mark.asyncio
+async def test_a_bad_filter_is_refused_the_same_way_whether_or_not_the_project_resolves(
+    served: ProjectRegistry,
+) -> None:
+    """The ordering claim in ``review_search``'s body, driven rather than read.
+
+    The tool checks its bounds **before** it reads the registry, and the comment
+    there states two things that follow. A refused request costs the daemon
+    nothing, because nothing has been opened yet (T-6); and the refusal a caller
+    gets for a bad token is *independent of whether the project resolves*, which
+    takes one input away from the error surface (SEC-13). A caller that could tell
+    "this project exists and your limit is wrong" from "your limit is wrong" would
+    have a project-existence oracle in an argument-validation message.
+
+    Reordered -- ``_resolve`` first, bounds second -- the two arms below separate:
+    the unknown project would answer with the registry's own refusal while the
+    known one answered with the bound's. So the equality is the assertion, and the
+    third arm is what keeps it from holding because both arms refuse identically
+    for some *other* reason: the unknown project with a **valid** filter must
+    produce a different message, or this surface is answering one constant to
+    everything.
+    """
+    unknown = "no-such-project-ever-registered"
+
+    resolvable = await _refusal(served, limit=0)
+    unresolvable = await _refusal(served, projectId=unknown, limit=0)
+    resolution_failure = await _refusal(served, projectId=unknown)
+
+    assert "limit" in resolvable and "Nothing was searched." in resolvable
+    assert unresolvable == resolvable, (
+        "a bad `limit` is refused differently depending on whether the project resolves, so "
+        "the bound is being checked after the registry read -- which both costs the daemon a "
+        "read for a request it was going to refuse and hands a caller a project-existence "
+        "oracle inside an argument-validation message"
+    )
+    assert resolution_failure != resolvable, (
+        "an unresolvable project with a valid filter must not answer the bound's own refusal, "
+        "or the equality above holds because this surface refuses everything with one string"
+    )
+    assert unknown not in resolvable, "and the refusal must not echo the caller's project id"
+
+
 @pytest.mark.parametrize(
     "argument, values",
     [
