@@ -1467,6 +1467,16 @@ def _state_probe_remedy(database: Path, exc: OSError) -> str:
     )
 
 
+#: The invocation the appended sentence's "the re-registration above" points at.
+#: Restated rather than imported from
+#: :mod:`theurian.application.project_service`, whose
+#: ``_HOW_TO_RECOVER_FROM_THE_DELETION`` spells it: a private constant read
+#: across a layer boundary would make the pointer relax silently with the cure it
+#: points at, and what has to hold here is that *this* payload's sentence has an
+#: antecedent.
+_THE_RE_REGISTRATION_INVOCATION: Final = "re-register each project with"
+
+
 def _registry_cure_in_repair_order(remedy: str) -> str:
     """The registry cure, plus the order the rest of this payload has to be fixed in.
 
@@ -1488,18 +1498,42 @@ def _registry_cure_in_repair_order(remedy: str) -> str:
     it is the registry's -- so a sentence pointing at that key belongs to the
     payload that publishes the key, not to the text every surface shares.
 
-    **Unconditional on this branch**, rather than gated on whether the resolution
-    failure happens to be the registry's. In the registry-only arm ``reason`` and
-    ``registryReason`` are the same failure, so "if ``reason`` names a different
-    failure" is simply false and the sentence costs a reader nothing; in the
-    compound arm it is the whole warning. A gate would have to re-derive which
-    arm this is from two independently read exceptions, which is the kind of
-    seam-side condition PR #596 spent four faces learning not to write.
+    **Appended unconditionally, and every claim it makes is conditional.** The
+    append is not gated on whether the resolution failure happens to be the
+    registry's, because a gate would have to re-derive which arm this is from two
+    independently read exceptions -- the kind of seam-side condition PR #596
+    spent four faces learning not to write. What the sentence *says* is gated
+    instead, inside its own grammar: the refusal clause sits under "if ``reason``
+    names a different failure", because in the registry-only arm there is no such
+    failure and ``theurian project register`` does not refuse -- deleting the
+    registry there leaves nothing in its way. Until this rewrite the clause's
+    second half stood outside that condition and said ``register`` refuses "while
+    this repository's project cannot be resolved", which in that arm was a
+    warning against the cure's own last step: driven through the real CLI on an
+    unparsable registry with healthy migrations, following the cure -- ``rm
+    projects.json``, then ``theurian project register`` -- exited 0. In the
+    compound arm, where a malformed migration is ``reason``, the same
+    ``register`` exited 1 naming that migration.
+
+    Raises:
+        ValueError: If ``remedy`` does not carry the re-registration invocation,
+            since "the re-registration above" would then point at nothing. The
+            population that can reach here is not fixed -- ``_context_remedy``
+            returns whatever cure the failing error carries -- so a registry
+            error added later with a cure of its own is caught here rather than
+            publishing a sentence about an instruction the payload never gave.
     """
+    if _THE_RE_REGISTRATION_INVOCATION not in remedy:
+        raise ValueError(
+            f"the registry cure this sentence is appended to no longer carries "
+            f"{_THE_RE_REGISTRATION_INVOCATION!r}, so 'the re-registration above' points at "
+            f"nothing. Either keep the invocation in `registry_deletion_remedy`, or stop "
+            f"appending this sentence to a cure that does not offer one. Got: {remedy!r}"
+        )
     return (
-        f"{remedy} If `reason` names a different failure, fix that one first: "
-        f"`theurian project register` refuses while this repository's project cannot be "
-        f"resolved, so the re-registration above cannot run until that failure is cleared."
+        f"{remedy} If `reason` names a different failure, fix that one first -- while it "
+        f"stands, `theurian project register` fails on it too, so the re-registration above "
+        f"cannot run."
     )
 
 
@@ -1568,6 +1602,16 @@ def _unresolved_status(exc: TheurianError) -> dict[str, Any]:
     carries the same cure -- the registry-only arm, where the resolution failure
     *is* the registry's -- it is published through it too, so the two keys stay
     the one sentence they are pinned to be.
+
+    That equality is what carries them together, so when it does not hold the
+    payload can carry two different cures for one file: the registry read inside
+    ``resolve_context`` and the read below are a window apart, and a registry
+    that changes in between reaches ``remedy`` on the arm the first read met,
+    without the ordering sentence, while ``registryRemedy`` carries the arm the
+    second met, with it. Recorded rather than repaired -- each key is honest
+    about its own read, which is the same answer ``registryReason`` gives for the
+    same race, and copying one over the other would attach a cure to a failure it
+    was not written for.
 
     Published **inside a Git working tree only**, for the same reason
     ``registered`` is decided there: outside one that answer is the literal

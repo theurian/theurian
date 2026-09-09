@@ -10,18 +10,31 @@ check over prose is a blacklist of spellings, prose paraphrases, and byte
 equality is what makes a rewritten cure impossible to ship without a human
 reading it.
 
-**The guard.** The shape properties were measured against mutation and four
-false cures walked past them: a costless claim spelled "regenerated
-automatically ... so removal is harmless", another spelled "a throwaway cache", a
-cost stated six sentences from the instruction that offered the deletion, and a
-cure that invites nothing at all but contains the letters ``read`` inside
-``spread``. The first two are refused only by the byte pin -- which is the
-concrete form of this module's argument for having one. The last two were real
-defects in the shape checks, in ``deletion_windows`` and in
-``INSPECTION_INVITATIONS``, and are fixed rather than accepted. All four are
-rendered here as literals and driven through the assertion that must now refuse
-each, so the guard is tested rather than trusted -- a check nobody has ever seen
-fail is a claim, not a control.
+**The guard.** The shape properties were measured against mutation and six false
+cures walked past them: a costless claim spelled "regenerated automatically ...
+so removal is harmless", another spelled "a throwaway cache", a cost stated six
+sentences from the instruction that offered the deletion, a cure that invites
+nothing at all but contains the letters ``read`` inside ``spread``, a cure whose
+only invitation verb is the ``read`` its own clause denies ("neither read nor
+deleted"), and one whose only cost-shaped phrase is "every project-scoped tool".
+The first two are refused only by the byte pin -- which is the concrete form of
+this module's argument for having one. The other four were each a real defect in
+a shape check, one apiece: ``deletion_windows`` took one span from the first
+deletion mention to the last, ``INSPECTION_INVITATIONS`` was matched without word
+boundaries, it was then matched without regard to whether the sentence *invited*
+anything, and ``THE_COST_OF_DELETING_THE_REGISTRY`` was matched as raw
+substrings. All four are fixed rather than accepted. All six cures are rendered
+here as literals and driven through the assertion that must now refuse each, so
+the guard is tested rather than trusted -- a check nobody has ever seen fail is a
+claim, not a control.
+
+**The arms are wiring as well as text**, and the wiring is held elsewhere: which
+condition reaches which arm is
+``tests/integration/test_registry_cure_execution.py``, which plants each
+condition, follows the arm's own instructions, and measures whether the reader
+gets back to a readable registry. This module is the texts themselves and the
+one refusal that has no condition behind it -- an ``arm`` that is not a member
+at all.
 """
 
 from __future__ import annotations
@@ -29,6 +42,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import pytest
 from registry_deletion_cure_claims import (
@@ -91,10 +105,16 @@ def test_every_arm_of_the_cure_is_pinned_so_a_fifth_one_cannot_arrive_unread() -
 class _ArmLead:
     """What one arm's opening sentences must do, as intent rather than as bytes.
 
-    The byte pin above already fixes these sentences, so nothing here can fail
-    while it passes. It is written anyway because the byte pin records *that* the
-    text is this text and never *why*: at the moment somebody re-pins a rewritten
-    arm, this table is the statement of what the rewrite may not quietly drop.
+    **These checks fail on their own**, and one of them did. They read the
+    *rendered* lead rather than the pin table, so they are only in agreement with
+    the byte pin while somebody keeps them in agreement: the round-two rewrite of
+    the ``unknown`` arm re-pinned cleanly and left this table's then-current
+    ``read-with-a-conditional-restore`` classification -- since replaced by the
+    one below -- asserting a ``chmod`` and an " if " that the new lead has neither
+    of. What this table adds is the half
+    the byte pin cannot hold -- the pin records *that* the text is this text and
+    never *why*, and at the moment somebody re-pins a rewritten arm this is the
+    statement of what the rewrite may not quietly drop.
     """
 
     #: The word the cure opens with -- its first imperative.
@@ -102,8 +122,10 @@ class _ArmLead:
     #: How the reader is let in, and the field the arms exist to vary. One of
     #: ``unconditional-inspection``, where the bytes are already in front of
     #: them; ``restore-then-inspect``, where a ``chmod`` has to come first and
-    #: the inspection waits behind it; or ``read-with-a-conditional-restore``,
-    #: where this surface cannot tell which of the two the reader is in.
+    #: the inspection waits behind it; or
+    #: ``read-with-the-cause-named-elsewhere``, where this module cannot name the
+    #: condition at all, so the lead prescribes nothing and sends the reader to
+    #: the message the cure travels with.
     lets_the_reader_in_by: str
 
 
@@ -121,7 +143,7 @@ _THE_ARM_LEADS = {
         opens_with="Restore", lets_the_reader_in_by="restore-then-inspect"
     ),
     RegistryFailureArm.UNKNOWN: _ArmLead(
-        opens_with="Read", lets_the_reader_in_by="read-with-a-conditional-restore"
+        opens_with="Read", lets_the_reader_in_by="read-with-the-cause-named-elsewhere"
     ),
 }
 
@@ -136,9 +158,16 @@ def test_only_the_arm_whose_reader_can_open_the_file_opens_by_telling_them_to(
     only where the bytes are in front of them. On the two arms that arrive with
     the file or its directory at mode ``000`` it is the message contradicting
     itself, so those lead with the ``chmod`` that makes the inspection possible
-    and put the inspection behind it. ``UNKNOWN`` renders for an error this
-    codebase has never raised, so it can assume neither and names the restoration
-    as a condition rather than as a step.
+    and put the inspection behind it.
+
+    ``UNKNOWN`` names no cause at all, and that is what changed with the errno
+    split. Its lead used to offer the ``chmod`` under a condition -- "if the file
+    or its directory refuses to open" -- which was defensible while the arm
+    rendered only for the CLI ``default``. Now that every non-``EACCES`` refusal
+    routes here, that antecedent is *true* for a reader whose registry path holds
+    a directory, while the ``chmod`` cures nothing they have: a false cause
+    wearing a conditional. So the lead prescribes nothing and points at the
+    message the cure travels with, and this case asserts both halves.
     """
     expected = _THE_ARM_LEADS[arm]
 
@@ -162,13 +191,26 @@ def test_only_the_arm_whose_reader_can_open_the_file_opens_by_telling_them_to(
                 f"to precede the inspection or the reader is told to read what the payload "
                 f"beside this says cannot be opened: {lead!r}"
             )
-        case "read-with-a-conditional-restore":
-            assert "chmod" in lead and " if " in lead, (
-                f"a default renders for an error this surface has never heard of, so it can "
-                f"assume neither that the file opens nor that it does not: the restoration is "
-                f"named and conditioned: {lead!r}"
+        case "read-with-the-cause-named-elsewhere":
+            assert "chmod" not in lead, (
+                f"this arm is what a non-EACCES refusal lands on -- a directory at the "
+                f"registry path, a name the filesystem will not take -- and none of them has a "
+                f"mode to restore, so naming one states a cause that is false for the reader "
+                f"who is actually here: {lead!r}"
+            )
+            assert "message beside this remedy" in lead, (
+                f"prescribing nothing is only honest if the reader is told where the cause *is* "
+                f"named; both surfaces that render this arm publish that message beside it: "
+                f"{lead!r}"
             )
         case unclassified:  # pragma: no cover - a fifth arm has to be classified
+            # Unreachable from this parametrize, which is why it carries no
+            # coverage: a fifth `RegistryFailureArm` member fails earlier and
+            # louder -- `_THE_ARM_LEADS[arm]` above raises `KeyError` before this
+            # `match` is entered, and `the_pinned_lead` raises another off
+            # `THE_PINNED_CURE_LEADS`. What this arm catches is the other
+            # direction: a member left in the table with a classification string
+            # nobody wrote a case for.
             raise AssertionError(f"{arm.value} has no lead classification: {unclassified!r}")
 
 
@@ -197,6 +239,37 @@ def test_only_the_directory_arm_says_the_deletion_itself_is_blocked() -> None:
     )
 
 
+def test_a_string_that_is_not_an_arm_is_refused_rather_than_rendered_as_a_cure() -> None:
+    """The half of the exhaustiveness argument mypy does not reach.
+
+    ``RegistryFailureArm`` is a :class:`~enum.StrEnum`, so a caller outside the
+    type checker's reach can hand :func:`registry_deletion_remedy` a bare string.
+    A member's *value* routes exactly as the member does -- the ``match``'s
+    patterns compare by equality -- and that is asserted here too, because it is
+    what makes ``the_pinned_cure``'s string keys and this suite's ``arm.value``
+    calls legitimate. Anything else used to take no case at all: the function
+    returned ``None`` from its ``match`` and the caller's f-string rendered the
+    literal word ``None`` in front of an offer to delete the reader's registry.
+
+    Asserted on the message rather than only on the type, because a ``ValueError``
+    raised for some unrelated reason would satisfy the raise alone.
+    """
+    by_value = registry_deletion_remedy(THE_REGISTRY, cast(RegistryFailureArm, "unparsable"))
+
+    assert by_value == registry_deletion_remedy(THE_REGISTRY, RegistryFailureArm.UNPARSABLE), (
+        "a member's value must route as the member does, which is what lets the pin table be "
+        "keyed by string"
+    )
+
+    with pytest.raises(ValueError, match="is not a RegistryFailureArm") as excinfo:
+        registry_deletion_remedy(THE_REGISTRY, cast(RegistryFailureArm, "file-unreadble"))
+
+    assert "delete" not in str(excinfo.value).lower(), (
+        "the refusal replaces the cure rather than accompanying it -- a typo must not reach a "
+        "reader as an offer to delete anything"
+    )
+
+
 # -- the guard's own teeth: cures that walked past it, refused here ----------
 #
 # Each text below is a hand-rendered cure over `THE_REGISTRY`, written to be
@@ -221,17 +294,17 @@ class _AFalseCure:
     message_names: str
 
 
-def _refuse_as_unpinned(text: str) -> None:
+def _the_byte_pin(text: str) -> None:
     assert_a_registry_cure_is_the_pinned_text(
         text, arm=RegistryFailureArm.UNPARSABLE.value, path=THE_REGISTRY, where="the planted cure"
     )
 
 
-def _refuse_for_a_distant_cost(text: str) -> None:
+def _the_cost_check(text: str) -> None:
     assert_a_deletion_cure_names_what_the_deletion_costs(text, where="the planted cure")
 
 
-def _refuse_for_no_invitation(text: str) -> None:
+def _the_invitation_check(text: str) -> None:
     assert_a_deletion_cure_invites_inspection_before_the_deletion(text, where="the planted cure")
 
 
@@ -246,7 +319,7 @@ _THE_CURES_THAT_WALKED_PAST_THE_SHAPES = [
             "read out the roots you need, delete it and re-register each project with "
             "`theurian project register`."
         ),
-        refused_by=_refuse_as_unpinned,
+        refused_by=_the_byte_pin,
         message_names="no longer the pinned text",
     ),
     _AFalseCure(
@@ -258,7 +331,7 @@ _THE_CURES_THAT_WALKED_PAST_THE_SHAPES = [
             "register again. Once you have read out the roots you need, delete it and "
             "re-register each project with `theurian project register`."
         ),
-        refused_by=_refuse_as_unpinned,
+        refused_by=_the_byte_pin,
         message_names="no longer the pinned text",
     ),
     _AFalseCure(
@@ -273,7 +346,7 @@ _THE_CURES_THAT_WALKED_PAST_THE_SHAPES = [
             "you have read out the roots you need, delete it and re-register each project "
             "with `theurian project register`."
         ),
-        refused_by=_refuse_for_a_distant_cost,
+        refused_by=_the_cost_check,
         message_names="without naming what that removes",
     ),
     _AFalseCure(
@@ -283,8 +356,32 @@ _THE_CURES_THAT_WALKED_PAST_THE_SHAPES = [
             "unregisters every project you have registered, not only this one. Delete it and "
             "re-register each project with `theurian project register`."
         ),
-        refused_by=_refuse_for_no_invitation,
+        refused_by=_the_invitation_check,
         message_names="never invites the reader to look",
+    ),
+    _AFalseCure(
+        claim="the only invitation is the negated 'read' the same clause denies",
+        text=(
+            "Restore access to /data first -- `chmod u+rwx` on it, and `chmod u+rx` on every "
+            "directory above it -- because this process could not look inside that directory, "
+            "and while it cannot, /data/projects.json can be neither read nor deleted. The "
+            "file records every project you have registered, so deleting it unregisters all "
+            "of them, not only this one, and re-registering stamps today's date over each "
+            "entry's original registeredAt. Once you have read out the roots you need, delete "
+            "it and re-register each project with `theurian project register`."
+        ),
+        refused_by=_the_invitation_check,
+        message_names="never invites the reader to look",
+    ),
+    _AFalseCure(
+        claim="the only 'every project' in the deletion's window is 'every project-scoped tool'",
+        text=(
+            "Inspect /data/projects.json before removing it -- the roots it lists are legible "
+            "by eye. A registry that will not parse blocks every project-scoped tool, so "
+            "delete it and re-register each project with `theurian project register`."
+        ),
+        refused_by=_the_cost_check,
+        message_names="without naming what that removes",
     ),
 ]
 
@@ -292,7 +389,14 @@ _THE_CURES_THAT_WALKED_PAST_THE_SHAPES = [
 @pytest.mark.parametrize(
     "case",
     _THE_CURES_THAT_WALKED_PAST_THE_SHAPES,
-    ids=["regenerated-automatically", "throwaway-cache", "distant-cost", "no-invitation"],
+    ids=[
+        "regenerated-automatically",
+        "throwaway-cache",
+        "distant-cost",
+        "no-invitation",
+        "negated-invitation",
+        "project-scoped-tool",
+    ],
 )
 def test_a_cure_that_survived_the_suite_is_refused_by_the_guard_it_walked_past(
     case: _AFalseCure,
@@ -316,6 +420,17 @@ def test_a_cure_that_survived_the_suite_is_refused_by_the_guard_it_walked_past(
     It cleared the inspection property on the letters ``read`` inside
     ``spread``, because the invitation set was matched as plain substrings; the
     patterns are word-bounded now.
+
+    The last two are round two's, and each is one shipped arm with one sentence
+    changed -- which is what makes them the plausible fifth arm rather than an
+    absurdity. The fifth is the ``directory-unreadable`` cure with "Then inspect
+    it." removed: its only remaining invitation verb is the ``read`` inside "can
+    be neither read nor **deleted**", which denies the reading it mentions and
+    sits nine characters before a deletion it also denies, so the whole property
+    used to be satisfied inside one negated clause. The sixth states a
+    consequence rather than a cost -- "blocks every project-scoped tool" -- and
+    cleared the cost property on the letters of "every project" inside
+    "project-scoped".
     """
     with pytest.raises(AssertionError) as excinfo:
         case.refused_by(case.text)

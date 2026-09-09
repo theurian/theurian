@@ -23,6 +23,14 @@ registry (``_RegistryRead.failure_fields`` and ``project list``). Until
 ``30e460b9`` the CLI spelled a near-duplicate of the cure itself, which is the
 seam this family recurs at; there is one text now, and this module pins it.
 
+Which arm each of those raises reaches is not the ``except`` clause's to decide:
+the two ``OSError`` clauses hand their errno to ``_arm_for_a_refused_registry``,
+which gives back the permission-shaped arm for ``EACCES`` and
+``RegistryFailureArm.UNKNOWN`` for everything else. The table of conditions that
+routing produces, and a following of each arm's instructions to see whether the
+reader gets out, are
+``tests/integration/test_registry_cure_execution.py``.
+
 **Byte equality is the lower layer, and the shapes are the upper one.**
 
 1. :data:`THE_PINNED_CURES` holds all four arms verbatim, with ``{path}`` and
@@ -46,11 +54,38 @@ about the registry can ship in these texts without a human reading it, because
 the texts are pinned byte for byte**. Any edit to any arm, paraphrase or single
 word, fails the equality pin and has to be re-pinned by hand, and the re-pinning
 is where the new sentence gets read. The pin is exhaustive over
-``RegistryFailureArm``, so a fifth arm cannot arrive without one. The shape
-properties are consequently *not* the guard against a changed text; they are the
-record of what a rewrite has to preserve, and the gate a newly pinned text
-clears at the moment it is pinned -- which is the only moment a checker gets to
-judge prose nobody has judged yet.
+``RegistryFailureArm``, so a fifth arm cannot arrive without one.
+
+**How far the shapes reach, measured rather than claimed.** They were described
+here as "the gate a newly pinned text clears at the moment it is pinned", and
+round two refuted that limb by attacking each property in turn: three of the
+four were bypassable as written. Property 1 loses to a paraphrase (round one's
+two planted cures). Property 2 read its cost phrases as raw substrings, so
+"blocks every project-scoped tool" -- which names no cost -- satisfied "every
+project". Property 3 read both of its ends as raw substrings too, so the negated
+"can be neither read nor deleted" supplied an invitation nine characters before
+a deletion, and the arm's real "Then inspect it." could be deleted with the
+property still passing. Property 4 was not attacked the same way, and could not
+be: it demands one literal, so what it constrains is that one sentence and
+nothing else about the text around it.
+
+Both repairable ones are repaired here, and each repair is driven by a planted
+cure in ``tests/unit/test_registry_deletion_cure_claims.py`` that passed before
+it and is refused after: the cost phrases are matched as whole words
+(:func:`_as_a_whole_phrase`), and property 3's invitation end is a sentence that
+*instructs* the reader to look rather than any occurrence of one of the verbs
+(:func:`_invites_inspection`). Its deletion end changed too
+(:func:`offers_a_deletion`), and that half refuses nothing -- it is the
+loosening the tightened invitation end needs in order to leave the honest
+``directory-unreadable`` arm passing, which is measured at the function itself
+rather than by a planted cure, because no planted cure could show it. Property 1
+is not repairable in kind, and stays as the tuple of spellings it is.
+
+What that buys is bounded and worth stating plainly: **the shapes gate a newly
+written text only as far as their patterns reach**, and a text that clears all
+four may still be false. They are the record of what a rewrite has to preserve.
+The guard that a *changed* text is read by a human is the byte pin, and it is
+the only one of the two that no paraphrase gets past.
 
 ``each project`` is deliberately **not** a cost phrase. Every one of these cures
 already says "re-register each project", so a check that accepted it would hold
@@ -64,8 +99,24 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Final
 
-#: Phrasings that promise the removal costs the reader nothing. Matched against a
-#: lowercased haystack, so a sentence-initial capital cannot slip one past.
+
+def _as_a_whole_phrase(phrase: str) -> re.Pattern[str]:
+    """``phrase``, matched only where the text says it and not merely spells it.
+
+    ``"every project"`` as a plain substring is satisfied by ``"every
+    project-scoped tool"``, which names no cost at all -- a phrase check that
+    accepts it is reading letters rather than words, and round two measured a
+    cure passing the cost property on exactly that. The trailing lookahead is
+    ``[\\w-]`` rather than ``\\b`` because ``\\b`` matches *before* a hyphen:
+    ``"project"`` and ``"project-scoped"`` are indistinguishable to it.
+
+    Compiled against a lowercased haystack, so a sentence-initial capital cannot
+    slip one past.
+    """
+    return re.compile(rf"(?<![\w-])({re.escape(phrase)})(?![\w-])")
+
+
+#: Phrasings that promise the removal costs the reader nothing.
 #:
 #: ``it is derived`` is here beside the outright promises because it is the
 #: *premise* the shipped claim rested on, and it is false of this file on its own
@@ -88,6 +139,10 @@ COSTLESS_REMOVAL_CLAIMS: Final = (
     "safe to delete",
 )
 
+_COSTLESS_REMOVAL_PATTERNS: Final = tuple(
+    (claim, _as_a_whole_phrase(claim)) for claim in COSTLESS_REMOVAL_CLAIMS
+)
+
 #: Spellings that name what deleting the registry actually costs: it removes the
 #: registration of *every* project on the machine, not only this one. Any one of
 #: them satisfies the check -- they are alternative wordings of one fact, and
@@ -100,27 +155,76 @@ THE_COST_OF_DELETING_THE_REGISTRY: Final = (
     "each registered project",
 )
 
-#: Invitations to look before destroying, as patterns rather than as substrings.
-#: The word boundary is the whole point: ``"read "`` as a plain substring is
-#: satisfied by ``"Registrations are spread across ..."``, so a cure that never
-#: invites anything cleared this check on the letters inside another word.
+_THE_COST_PATTERNS: Final = tuple(
+    _as_a_whole_phrase(cost) for cost in THE_COST_OF_DELETING_THE_REGISTRY
+)
+
+#: The verbs that invite a reader to look at the file, as patterns.
+#:
+#: **Matched only where the sentence uses one as an instruction** -- see
+#: :func:`_invites_inspection`. A token found anywhere in a sentence is not an
+#: invitation: ``"can be neither read nor deleted"`` denies the reading it
+#: mentions, and matching ``read`` there let a cure that invites nothing satisfy
+#: the order check nine characters before the deletion it also denies. Dropping
+#: ``read`` and ``open`` from the set instead would be the wrong repair, because
+#: the shipped ``unknown`` arm's whole invitation is the imperative ``Read
+#: {path} before removing it.``: what makes an occurrence an invitation is that
+#: the sentence tells the reader to do it, not which verb it picks.
 INSPECTION_INVITATIONS: Final = (
-    r"\binspect\w*",
-    r"\blook\s+at\b",
-    r"\bread\w*",
-    r"\bopen\w*",
-    r"\bexamine\w*",
+    r"inspect\w*",
+    r"look\s+at\b",
+    r"read\w*",
+    r"open\w*",
+    r"examine\w*",
+)
+
+#: A sentence invites inspection when it opens with one of the verbs above, in
+#: the imperative, allowing the connectives an instruction is chained with:
+#: ``"Then inspect it."`` and ``"Inspect {path} before removing it"`` are
+#: invitations, ``"Restore read access to {path}"`` and ``"Once you have read
+#: out the roots you need, delete it"`` are not -- the first restores, the
+#: second is the deletion offer itself.
+_AN_INVITATION: Final = re.compile(
+    rf"^(?:(?:then|now|next|first|so|and)\s+)*(?:{'|'.join(INSPECTION_INVITATIONS)})"
 )
 
 #: The way back, and the half of the cure that has to survive every rewrite: a
-#: reader told to delete a file and given no invocation has no way back. Read by
-#: name across the suite -- ``git grep -n "re-register each project with"
-#: packages/theurian-core/tests`` enumerates the assertions, and they are the
-#: population, not a number recorded here.
+#: reader told to delete a file and given no invocation has no way back.
+#:
+#: Read by name across the suite under **two spellings** -- this constant and the
+#: literal inside it -- so the key that enumerates the population is both::
+#:
+#:     git grep -nE "re-register each project with|RE_REGISTER_INVOCATION" \
+#:         packages/theurian-core/tests
+#:
+#: The literal alone is not that key: it misses every assertion that reads this
+#: constant instead of spelling it. The population is the *assertions* in that
+#: output, by either spelling -- 10 of the 24 lines the search returns at the
+#: commit this note lands in. The other 14 are the two constant definitions (here
+#: and in ``test_cli_commands.py``), one import of this one, the cure's own tail
+#: below, five planted-cure literals, and five lines of prose and search text.
+#: Re-run it rather than trusting the pair of numbers: both move with every test
+#: added.
 RE_REGISTER_INVOCATION: Final = "re-register each project with `theurian project register`"
 
 #: Any spelling of the destructive verb: "Delete", "deleting", "deleted".
 _DELETION = "delet"
+
+#: Words that turn a mention of the deletion into a statement that it *cannot* be
+#: done. Two shipped sentences are exactly that -- "can be neither read nor
+#: deleted" and "leave the deletion below refused" -- and both are honest
+#: warnings rather than offers, so a check that reads them as the offer measures
+#: the order against the wrong sentence.
+#:
+#: A bare ``not`` is deliberately absent: the cost sentence every arm carries
+#: says "unregisters all of them, **not** only this one", and reading that as a
+#: denial would leave the shipped cures with no offer at all.
+_A_DENIED_DELETION: Final = ("neither", "nor ", "cannot", "could not", "refused", "blocked")
+
+#: How far either side of the deletion word a denial is looked for. The two
+#: shipped denials need 17 characters before ("neither read nor ") and 17 after
+#: ("ion below refused"), so 30 clears both with margin.
+_DENIAL_WINDOW: Final = 30
 
 #: A sentence ends at a full stop or a semicolon followed by whitespace. The
 #: semicolon matters: the remedy issue #381 replaced joined its instruction and
@@ -157,15 +261,18 @@ THE_PINNED_CURE_LEADS: Final[Mapping[str, str]] = {
         "destroyed. Then inspect it."
     ),
     "directory-unreadable": (
-        "Restore access to {parent} first -- `chmod u+rx` on it and on every "
-        "directory above it -- because this process could not look inside that "
-        "directory, and while it cannot, {path} can be neither read nor deleted. "
-        "Then inspect it."
+        "Restore access to {parent} first -- `chmod u+rwx` on it, and `chmod u+rx` "
+        "on every directory above it -- because this process could not look inside "
+        "that directory, and while it cannot, {path} can be neither read nor "
+        "deleted. Removing the file needs the write bit on {parent} as well as the "
+        "search bit, so `u+rx` alone would restore the read and leave the deletion "
+        "below refused. Then inspect it."
     ),
     "unknown": (
-        "Read {path} before removing it, restoring access first if the file or its "
-        "directory refuses to open -- `chmod u+r` on the file, `chmod u+rx` on "
-        "{parent}."
+        "Read {path} before removing it. What refused it is named in the message "
+        "beside this remedy rather than here, so read that first: it is not always "
+        "a permission, and neither a directory sitting where the file belongs nor a "
+        "path the filesystem will not accept is cured by a mode change."
     ),
 }
 
@@ -247,11 +354,49 @@ def deletion_windows(text: str) -> list[str]:
     return [" ".join(sentences[max(i - 1, 0) : i + 2]) for i in offering]
 
 
+def offers_a_deletion(sentence: str) -> bool:
+    """Whether this sentence *offers* the deletion rather than denying it.
+
+    A cure may mention the deletion to say it cannot be done -- the
+    ``directory-unreadable`` arm does it twice, once to say the file "can be
+    neither read nor deleted" and once to say that ``u+rx`` alone would "leave
+    the deletion below refused". Both are warnings. Reading either as the offer
+    measures the inspection order against a sentence that instructs nothing.
+
+    **This half refuses nothing, and saying so is the point.** Ignoring the
+    denials can only move the first offer *earlier*, so it can only make
+    :func:`assert_a_deletion_cure_invites_inspection_before_the_deletion`
+    stricter -- no false cure gets past this function that would not also get
+    past a plain mention count. What it is for is the honest text: with the
+    invitation end tightened to an instruction, the shipped
+    ``directory-unreadable`` arm's own invitation ("Then inspect it.") arrives
+    *after* both of its warnings, so a mention count fails it. Measured --
+    reverting this call to ``_DELETION in sentence.lower()`` turns
+    ``test_each_registry_failure_arm_renders_the_cure_it_is_pinned_to[directory-unreadable]``
+    RED and leaves every planted cure refused exactly as before. The half that
+    refuses the negated-invitation cure is :func:`_invites_inspection`; these two
+    are a matched pair, not two guards.
+    """
+    lowered = sentence.lower()
+    return any(
+        not any(
+            denial in lowered[max(found.start() - _DENIAL_WINDOW, 0) : found.end() + _DENIAL_WINDOW]
+            for denial in _A_DENIED_DELETION
+        )
+        for found in re.finditer(_DELETION, lowered)
+    )
+
+
+def _invites_inspection(sentence: str) -> bool:
+    """Whether this sentence tells the reader to look, rather than merely spelling a verb."""
+    return _AN_INVITATION.search(sentence.strip().lower()) is not None
+
+
 def assert_a_deletion_cure_does_not_claim_it_is_costless(text: str, *, where: str) -> None:
     """Property 1: no promise that removal loses nothing."""
     lowered = text.lower()
-    for claim in COSTLESS_REMOVAL_CLAIMS:
-        assert claim not in lowered, (
+    for claim, pattern in _COSTLESS_REMOVAL_PATTERNS:
+        assert pattern.search(lowered) is None, (
             f"{where} claims a costless removal ({claim!r}) over the file that holds every "
             f"project's registration; the enumeration and each entry's registeredAt are "
             f"recoverable from no project's own .theurian/ (issue #381, the PR #596 family): "
@@ -269,7 +414,7 @@ def assert_a_deletion_cure_names_what_the_deletion_costs(text: str, *, where: st
     """
     windows = deletion_windows(text)
     assert any(
-        cost in window.lower() for window in windows for cost in THE_COST_OF_DELETING_THE_REGISTRY
+        pattern.search(window.lower()) for window in windows for pattern in _THE_COST_PATTERNS
     ), (
         f"{where} offers to delete the registry without naming what that removes -- it "
         f"unregisters every project on the machine, not only this one. Expected one of "
@@ -288,24 +433,45 @@ def assert_a_deletion_cure_invites_inspection_before_the_deletion(text: str, *, 
     look reaches the reader before the deletion does. Which arm leads with which
     sentence is pinned per arm in
     ``tests/unit/test_registry_deletion_cure_claims.py``.
+
+    **Both ends of that order are read per sentence, and both used to be read as
+    raw substrings.** The deletion end is the first sentence that *offers* the
+    deletion (:func:`offers_a_deletion`) rather than the first ``delet`` in the
+    text, and the invitation end is a sentence that *instructs* the reader to
+    look (:func:`_invites_inspection`) rather than any occurrence of one of the
+    verbs. Round two measured what the substring pair accepted: in "can be
+    neither read nor deleted", ``read`` sits nine characters before ``deleted``,
+    so a cure that invited nothing and denied both satisfied the whole property
+    inside one negated clause -- and deleting the arm's real "Then inspect it."
+    sentence left it passing.
+
+    The two ends do different jobs, and only one of them refuses anything. The
+    invitation end is the tightening: it is what turns that cure away. The
+    deletion end is the loosening that the tightening requires, since the honest
+    ``directory-unreadable`` arm puts its invitation after two sentences that
+    mention a deletion in order to deny it. Each is measured in
+    :func:`offers_a_deletion`'s own note.
     """
-    lowered = text.strip().lower()
-    assert not lowered.startswith(_DELETION), (
+    assert not text.strip().lower().startswith(_DELETION), (
         f"{where} opens with the destructive act; a cure for a file whose contents may be "
         f"salvageable has to offer inspection first: {text!r}"
     )
-    invited = [
-        found.start()
-        for pattern in INSPECTION_INVITATIONS
-        if (found := re.search(pattern, lowered)) is not None
-    ]
-    assert invited, (
-        f"{where} never invites the reader to look at the file before deleting it; expected "
-        f"one of {INSPECTION_INVITATIONS}: {text!r}"
+    sentences = _sentences(text)
+    offers = [i for i, sentence in enumerate(sentences) if offers_a_deletion(sentence)]
+    assert offers, (
+        f"{where} never offers the deletion, so there is no destructive instruction for an "
+        f"invitation to precede and this property would hold vacuously: {text!r}"
     )
-    assert min(invited) < lowered.find(_DELETION), (
+    invitations = [i for i, sentence in enumerate(sentences) if _invites_inspection(sentence)]
+    assert invitations, (
+        f"{where} never invites the reader to look at the file before deleting it -- no "
+        f"sentence instructs them to, whatever else spells one of {INSPECTION_INVITATIONS}: "
+        f"{text!r}"
+    )
+    assert min(invitations) < min(offers), (
         f"{where} names the deletion before it names the inspection, so a reader who stops "
-        f"at the first instruction destroys the file: {text!r}"
+        f"at the first instruction destroys the file. First offer: "
+        f"{sentences[min(offers)]!r}; first invitation: {sentences[min(invitations)]!r}"
     )
 
 

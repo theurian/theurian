@@ -24,8 +24,20 @@ the one file holding every project's registration. The pin is now the shapes and
 the byte pins in ``registry_deletion_cure_claims``, whose own tests are
 ``tests/unit/test_registry_deletion_cure_claims.py``. What this file adds is the
 *wiring*: that each raise reaches for the arm written for the condition it
-raises in. The third test drives the same wiring through a malformed body, so
-the claim is asserted even where a ``chmod`` cannot refuse.
+raises in. Two of the tests below drive that wiring through bodies rather than
+through a ``chmod`` -- a body that will not decode and a body that decodes to a
+list -- so the claim is asserted even where a mode cannot refuse, which includes
+any run as root.
+
+**Where an ``OSError`` is not enough to decide the arm.** A clause knows where
+the call failed; only ``errno`` knows why, so both ``except OSError`` clauses
+hand theirs to ``_arm_for_a_refused_registry``, which answers with the
+permission-shaped arm for ``EACCES`` and ``RegistryFailureArm.UNKNOWN`` for
+every other errno. The two cases this file drives are both ``EACCES`` and so
+keep their own arms; the non-``EACCES`` conditions -- a directory sitting at the
+registry path, a name the filesystem will not accept -- are planted and followed
+in ``tests/integration/test_registry_cure_execution.py``, which needs a
+filesystem this module deliberately does not touch beyond ``tmp_path``.
 """
 
 from __future__ import annotations
@@ -208,8 +220,50 @@ def test_load_refuses_an_unparsable_registry_without_promising_a_costless_deleti
         "the fixture must reach the whole-file refusal, not some narrower one"
     )
     assert RE_REGISTER_INVOCATION in excinfo.value.remedy, (
-        "the recovery has to stay typeable -- the population reading this literal is "
-        "`git grep -n 're-register each project with' packages/theurian-core/tests`"
+        "the recovery has to stay typeable -- the population is the assertions reading the "
+        'invocation, by either spelling: `git grep -nE "re-register each project '
+        'with|RE_REGISTER_INVOCATION" packages/theurian-core/tests`'
+    )
+    _assert_the_registry_cure(
+        excinfo.value.remedy, arm=RegistryFailureArm.UNPARSABLE, path=registry.path
+    )
+
+
+def test_a_registry_whose_top_level_is_not_an_object_keeps_the_legible_bytes_arm(
+    tmp_path: Path,
+) -> None:
+    """The fourth raise, and the only one no test drove to its arm.
+
+    ``_raw_entries`` refuses in four places and three of them were pinned to an
+    arm: the two ``OSError`` clauses by the parametrized test above, the decode
+    failure by the test above that. The non-dict raise -- a file that parses
+    perfectly and whose top level is a list, a number, a string -- was reached by
+    ``test_status_reports_a_registry_it_cannot_parse_instead_of_raising``'s
+    ``json-array`` case, which asserts the message and the shared tail every arm
+    carries, so it cannot tell one arm from another. Flipping this raise's arm to
+    ``FILE_UNREADABLE`` therefore went unnoticed -- measured with this test
+    deselected, the mutation leaves the seven-file scope of this branch green --
+    while a reader whose registry opens fine, and whose every byte is in front of
+    them, is told to ``chmod u+r`` a file nothing refused: the exact defect the
+    errno split above exists to remove, shipped through the one raise the split
+    does not touch.
+
+    Asserted on the arm's own opening imperative as well as on the pinned bytes,
+    because that is the sentence a reader stops at: "Inspect" is an instruction
+    they can carry out, "Restore read access" is one with nothing to restore.
+    """
+    registry = ProjectRegistry(path=tmp_path / "projects.json")
+    registry.path.write_bytes(b"[]")
+
+    with pytest.raises(ProjectError) as excinfo:
+        registry.load()
+
+    assert "must hold a JSON object" in str(excinfo.value), (
+        "the fixture must reach the non-dict raise, not the decode failure beside it"
+    )
+    assert excinfo.value.remedy.startswith("Inspect"), (
+        "this file opened and parsed, so the cure may not open by telling its reader to "
+        "restore an access nothing denied them"
     )
     _assert_the_registry_cure(
         excinfo.value.remedy, arm=RegistryFailureArm.UNPARSABLE, path=registry.path
