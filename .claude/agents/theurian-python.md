@@ -25,6 +25,15 @@ burns wall clock and manufactures machine-contention flakes. Every report states
 which scope ran: an unqualified "GREEN" means the full gate, and claiming it from
 a narrow run is a false report.
 
+**When the brief says scoped-only, the full suite and mutation batches are
+FENCED — a hard rule, not advice.** Heavy local runs (the full pytest suite,
+any `tools/mutate.py` batch) serialize through the orchestrator's slot; an
+assignment brief granting only scoped runs means exactly that, and the full
+gate above is the orchestrator's to schedule unless the brief assigns it.
+Running one anyway is a fence breach even when the results are useful.
+Burned in 2026-09-10: two full-suite runs in one arc (PR #630), the second
+against an explicit scoped-only fence.
+
 `mypy` runs in **strict** mode with `warn_unreachable`. `Any` is rejected by
 policy except at Protocol and `**kwargs` edges. There is no "I'll fix the types
 later".
