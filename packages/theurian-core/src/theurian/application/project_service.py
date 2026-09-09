@@ -146,6 +146,31 @@ UNBUILT_STATE_REMEDY: Final = (
 #: empty or missing store for a project that has one.
 FINDINGS_STORE_ID: Final = "local"
 
+#: The one review search store a project has (ADR-0030 slice 3).
+#:
+#: A constant for :data:`FINDINGS_STORE_ID`'s reason: the store is a wholesale
+#: projection of the evidence files under ``.theurian/review/``, rebuilt under one
+#: name rather than minting a build id per run. Public, and beside the method that
+#: spends it, because two surfaces name it -- ``theurian review build`` writes the
+#: store and the serving surface reads it -- and a private constant re-typed in the
+#: second place fails silently: the reader would open a path nothing writes and
+#: report a missing store for a project that has one.
+REVIEW_SEARCH_STORE_ID: Final = "local"
+
+#: The cure when the review search store cannot be named at all -- a store id that
+#: resolves outside ``.theurian/state/``, or that is not a usable filename.
+#:
+#: It names a rebuild rather than a repair because the store is derived (ADR-0004)
+#: and its source, the evidence files under ``.theurian/review/``, is still on
+#: disk. It deliberately does **not** tell anyone to delete anything under
+#: ``.theurian/review/``: that directory is the source and has no rebuild
+#: (ADR-0030 decision 3).
+REVIEW_SEARCH_STORE_REMEDY: Final = (
+    "Remove the file this names from .theurian/state/ and run `theurian review build` "
+    "to rebuild the search store from the evidence files under .theurian/review/. "
+    "The evidence files are the source and are not touched by a rebuild."
+)
+
 #: The half of "rename a project" that is easy to omit and impossible to notice.
 #: Canonical rows are stamped with the id in force at `migrate apply`, and
 #: `migrate apply` is idempotent, so it will not restamp them. An id changed
@@ -1501,6 +1526,56 @@ class ProjectPaths:
         """
         filename = f"theurian-findings-{build_id}.sqlite"
         return self._contained(self.knowledge_dir / "state" / filename)
+
+    def review_search_for(self, store_id: str) -> Path:
+        """Where the review search store lives (ADR-0030 slice 3).
+
+        The **fourth** artifact family under ``.theurian/state/``, and the
+        ``theurian-review-`` prefix is what keeps it apart from the other three.
+        ``index gc`` globs ``theurian-index-*`` and must not reclaim this file;
+        ``_applied_migration_ids`` globs ``theurian-state-*`` and would open
+        whatever matches as a canonical database. A prefix that collided with, or
+        was a prefix of, any of the other three would hand one artifact's reader
+        another's file --
+        ``test_project_paths_containment.py::test_the_findings_index_and_state_filename_prefixes_are_pairwise_disjoint``
+        holds the four apart.
+
+        **State-scoped, not merely root-scoped, and that is deliberate even though
+        no untrusted pointer feeds it today.** :meth:`findings_for` routes through
+        :meth:`_contained` alone and records why that is sufficient *for it*: its
+        ``build_id`` is a trusted constant, so root-level containment is enough
+        until a serving slice adds a pointer a local process can edit. This is that
+        serving slice. It still ships no pointer -- ``store_id`` is
+        :data:`REVIEW_SEARCH_STORE_ID`, a constant -- so what the check buys now is
+        not a closed hole but the ordering: the moment a pointer is added, the
+        containment it needs is already the one in force. The measured cost of
+        getting that ordering wrong is on :meth:`state_database_named`, where
+        root-scoped containment served a decoy *inside* the checkout at exit 0.
+
+        Raises:
+            ProjectError: If ``store_id`` would escape ``.theurian/state/``, or
+                cannot name a path at all. Converted here for the reason
+                :meth:`index_for`'s is: a ``ValueError`` from an embedded NUL or an
+                ``OSError`` from a name the platform rejects are neither of them a
+                ``TheurianError``, and callers may only ever need to catch one type.
+            ProjectPathEscapeError: If ``.theurian/state`` itself resolves outside
+                the project, which the ``self.state`` access below refuses first.
+        """
+        state = self.state  # one `_contained`; an escaping `state` refuses here
+        try:
+            candidate = (state / f"theurian-review-{store_id}.sqlite").resolve()
+            contained = candidate.is_relative_to(state.resolve())
+        except (ValueError, OSError) as exc:
+            raise ProjectError(
+                f"The review search store id {store_id!r} is not a usable filename.",
+                remedy=REVIEW_SEARCH_STORE_REMEDY,
+            ) from exc
+        if not contained:
+            raise ProjectError(
+                f"The review search store id {store_id!r} resolves outside {state}.",
+                remedy=REVIEW_SEARCH_STORE_REMEDY,
+            )
+        return candidate
 
     @property
     def write_lock(self) -> Path:
@@ -2942,18 +3017,22 @@ class BuildProvenance:
     only the clone, since repackaging strips the tracking metadata and leaves the
     file present-but-untracked.
 
-    **Three artifact families, one record.** ``state`` and ``index`` are the
+    **Four artifact families, one record.** ``state`` and ``index`` are the
     canonical state database and the retrieval index; ``findings`` is the
-    review-finding store ``theurian findings build`` writes (ADR-0029 phase-2).
-    All three sit under `.theurian/state/`, all three are git-ignored, and all
-    three are therefore force-addable by a repository contributor -- so the third
-    inherits the class this record closes rather than a milder version of it: a
-    clone shipping a fabricated ``theurian-findings-local.sqlite`` would otherwise
-    have `review.findings` serve its rows as the repository's own review history.
-    The findings family is keyed by :data:`FINDINGS_STORE_ID` rather than by a
-    per-build id, because the store is a wholesale rebuild under one constant name
-    (see that constant): there is no build id to record, and "this installation
-    has built this project's findings store" is the whole question.
+    review-finding store ``theurian findings build`` writes (ADR-0029 phase-2);
+    ``reviewSearch`` is the review search store ``theurian review build`` writes
+    (ADR-0030 slice 3). All four sit under `.theurian/state/`, all four are
+    git-ignored, and all four are therefore force-addable by a repository
+    contributor -- so each later family inherits the class this record closes
+    rather than a milder version of it: a clone shipping a fabricated
+    ``theurian-findings-local.sqlite`` would otherwise have `review.findings` serve
+    its rows as the repository's own review history, and a fabricated
+    ``theurian-review-local.sqlite`` would have a review search serve comments
+    nobody ever wrote as the project's own review evidence. Both are keyed by a
+    constant -- :data:`FINDINGS_STORE_ID`, :data:`REVIEW_SEARCH_STORE_ID` -- rather
+    than by a per-build id, because each store is a wholesale rebuild under one
+    name: there is no build id to record, and "this installation has built this
+    project's store" is the whole question.
 
     **Keyed by resolved root path, not project id.** The resolution layer that
     enforces the check holds the root (:attr:`ProjectPaths.root`) but not always
@@ -3040,6 +3119,10 @@ class BuildProvenance:
         """Whether this installation built the review-finding store ``findings_store_id``."""
         return findings_store_id in self._built(self._load(), root, "findings")
 
+    def has_review_search(self, root: Path, store_id: str) -> bool:
+        """Whether this installation built the review search store ``store_id``."""
+        return store_id in self._built(self._load(), root, "reviewSearch")
+
     def record_state(self, root: Path, state_hash: str) -> None:
         """Record that this installation built the canonical state ``state_hash``."""
         self._record(root, "state", state_hash)
@@ -3051,6 +3134,10 @@ class BuildProvenance:
     def record_findings(self, root: Path, findings_store_id: str) -> None:
         """Record that this installation built the review-finding store ``findings_store_id``."""
         self._record(root, "findings", findings_store_id)
+
+    def record_review_search(self, root: Path, store_id: str) -> None:
+        """Record that this installation built the review search store ``store_id``."""
+        self._record(root, "reviewSearch", store_id)
 
     def _record(self, root: Path, kind: str, value: str) -> None:
         """Append one built artifact to a root's record, atomically.
