@@ -362,7 +362,7 @@ shipped `theurian review ingest`, and the flag stayed `false` for the same
 reason. What it reports, and all it has reported, is the MCP-callable surface:
 *an ingestion call surface exists that a client may call*, which `review.search`
 now is. It does **not** say a client may start an ingestion run; no tool spawns
-`gh`, [ADR-0013](../adr/0013-approved-knowledge-changes-only-through-migrations.md)
+`gh`, [ADR-0013](../adr/0013-ai-writes-produce-proposals.md)
 keeps write intent off this surface, and a fetch is an operator's act through the
 CLI verb.
 

@@ -382,14 +382,6 @@ CLASSIFIED: Final[tuple[tuple[str, str, int, str, str], ...]] = (
         "record anchors to a pre-squash branch commit of that PR.",
     ),
     (
-        "394c850",
-        "docs/roadmap.md",
-        1,
-        "DANGLING, #463",
-        "Arrived at the same #504 merge seam: a roadmap-appendix population key "
-        "anchored to the same PR's pre-squash branch.",
-    ),
-    (
         "857d3b0",
         "docs/security/threat-model.md",
         1,
