@@ -14,6 +14,7 @@ import re
 import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Any, Final
 
@@ -332,39 +333,156 @@ def derived_escape_remedy(knowledge_directory_name: str, subdirectory: str) -> s
     )
 
 
-def _registry_reset_remedy(path: Path) -> str:
+class RegistryFailureArm(StrEnum):
+    """Which whole-registry failure :func:`registry_deletion_remedy` is writing for.
+
+    The arm is passed in rather than inferred, because the thing that decides it
+    -- which ``except`` the raise sits under -- is knowable only at the raise.
+    Naming it makes each caller state the condition its reader is standing in,
+    and a fifth member added here has to be given a lead of its own rather than
+    inheriting whichever branch a fallback happened to be: the dispatch in
+    :func:`_registry_failure_lead` is an exhaustive ``match`` with no default, so
+    the type checker refuses the module until the new member is answered.
+    Measured rather than assumed. Adding a ``FIFTH_MEMBER`` to this class and
+    running ``uv run mypy`` answers, against :func:`_registry_failure_lead`::
+
+        error: Missing return statement  [return]
+    """
+
+    #: The file was read and its top level is not a mapping of ids: undecodable
+    #: bytes, JSON that will not parse, or JSON that parses to something else.
+    #: The bytes are in front of the reader, so inspection can lead.
+    UNPARSABLE = "unparsable"
+
+    #: ``open`` on the file itself was refused -- a registry at mode ``000``.
+    #: Nothing can be read out of it until that is undone, so the ``chmod``
+    #: leads and the inspection follows it.
+    FILE_UNREADABLE = "file-unreadable"
+
+    #: The data directory holding the file was refused, one level up: the
+    #: ``.exists()`` probe could not traverse it. Deletion is blocked there too,
+    #: so the cure cannot open with either reading *or* removing the file.
+    DIRECTORY_UNREADABLE = "directory-unreadable"
+
+    #: A caller that cannot say which of the three it met, and the arm the CLI's
+    #: two whole-registry surfaces pass -- ``project list`` and
+    #: ``_RegistryRead.failure_fields``, as ``_context_remedy``'s ``default``.
+    #: That default renders only for a registry error carrying no ``remedy`` of
+    #: its own, which no refusal below raises today, so it is by definition an
+    #: error those surfaces have never heard of: it could have come from a
+    #: registry that opens perfectly or from one at mode ``000``. The lead
+    #: therefore assumes neither -- it invites the read *and* names the ``chmod``
+    #: that would make the read possible.
+    UNKNOWN = "unknown"
+
+
+#: What deleting the registry actually removes, stated beside the offer rather
+#: than at the seam that chooses it (PR #596's family, met again at this one).
+#: Two things go, and neither is recoverable from any project's own
+#: ``.theurian/``: every *other* project's registration, since the deletion is
+#: not scoped to the one the reader came here about, and each entry's
+#: ``registeredAt``, which :meth:`ProjectRegistry.register` preserves from the
+#: existing entry and never recomputes -- so re-registering restamps it with
+#: today's date rather than restoring it.
+_WHAT_DELETING_THE_REGISTRY_COSTS: Final = (
+    "The file records every project you have registered, so deleting it unregisters all "
+    "of them, not only this one, and re-registering stamps today's date over each entry's "
+    "original registeredAt."
+)
+
+#: The way back, and the half of this cure that has to survive every rewrite: a
+#: reader told to delete a file and given no invocation has no way back. Pinned
+#: by name across the suite -- grep the tests for the ``re-register each
+#: project`` literal.
+_HOW_TO_RECOVER_FROM_THE_DELETION: Final = (
+    "Once you have read out the roots you need, delete it and re-register each project "
+    "with `theurian project register`."
+)
+
+
+def _registry_failure_lead(path: Path, arm: RegistryFailureArm) -> str:
+    """The first sentence of the cure, which is the one that differs per arm.
+
+    Everything after it is shared, because the cost and the recovery do not
+    depend on how the reader got here. What does depend on it is whether they
+    can act on the file at all -- and the shipped text assumed they could, for
+    all four arrivals at once: "Inspect {path} ... Once you have read the roots
+    you need out of it" was published verbatim over a registry at mode ``000``
+    whose own message says it "cannot be opened". A cure that opens by telling
+    the reader to read what the payload beside it says is unreadable is not a
+    remedy; it is the message contradicting itself.
+    """
+    match arm:
+        case RegistryFailureArm.UNPARSABLE:
+            return (
+                f"Inspect {path} before removing it -- the roots it lists are legible by eye "
+                f"even where its top level is not something this build can read."
+            )
+        case RegistryFailureArm.FILE_UNREADABLE:
+            return (
+                f"Restore read access to {path} first -- `chmod u+r` on it -- because this "
+                f"process could not open the file, so nothing in it can be read before it is "
+                f"destroyed. Then inspect it."
+            )
+        case RegistryFailureArm.DIRECTORY_UNREADABLE:
+            return (
+                f"Restore access to {path.parent} first -- `chmod u+rx` on it and on every "
+                f"directory above it -- because this process could not look inside that "
+                f"directory, and while it cannot, {path} can be neither read nor deleted. "
+                f"Then inspect it."
+            )
+        case RegistryFailureArm.UNKNOWN:
+            return (
+                f"Read {path} before removing it, restoring access first if the file or its "
+                f"directory refuses to open -- `chmod u+r` on the file, `chmod u+rx` on "
+                f"{path.parent}."
+            )
+
+
+def registry_deletion_remedy(path: Path, arm: RegistryFailureArm) -> str:
     """The remedy for a registry file whose *set of ids* cannot be trusted.
 
-    Reached only when the top level of the file is not what every reader here
-    assumes -- unparsable JSON, or JSON that is not an object -- because that is
-    the one failure this module cannot recover from entry by entry: without a
-    dict of ids to iterate, there is no way to say which registrations are fine
-    and which are not. A malformed *entry* is a narrower problem with its own,
-    narrower remedy: see :meth:`ProjectRegistry.load`,
+    **Three causes, four arms**, which is what the sentence here used to get
+    wrong: it said "reached only when the top level of the file is not what every
+    reader here assumes -- unparsable JSON, or JSON that is not an object",
+    naming two of the three while the two ``OSError`` arms carried this very
+    text, and contradicting :meth:`ProjectRegistry._raw_entries`' own docstring
+    one screen away. The three are: the file cannot be opened at all, its bytes
+    do not decode or parse as JSON, or its top level is not an object. Each
+    leaves this module with no dict of ids to iterate and so no way to say which
+    registrations are fine and which are not. The first splits in two at the
+    reader's end -- the file's own mode, or the data directory's one level up --
+    and that is the fourth arm, because only one of them also blocks the
+    deletion. A malformed *entry* is a narrower problem with its own, narrower
+    remedy: see :meth:`ProjectRegistry.load`,
     :meth:`ProjectRegistry.ids_for_root` and :meth:`ProjectRegistry.register`.
+
+    One cure with one per-arm lead, rather than one text per layer. It used to be
+    two: this function's private predecessor, carried by the four raises in
+    :meth:`ProjectRegistry._raw_entries`, and a near-duplicate in
+    ``cli/commands.py`` written as ``_context_remedy``'s ``default`` at the two
+    surfaces that read the whole registry. Two spellings of one destructive offer
+    in two layers is the drift PR #596 watched reach four faces, and the fix that
+    stuck there is this one: the claim lives inside the cure, and a caller that
+    never heard of the split inherits it.
 
     **The deletion is offered with its cost rather than as a free action**
     (issue #381). This text used to close with "it is derived and holds nothing
     that is not also recoverable from each project's own .theurian/" -- a
     costless-removal claim over the file that *is* the enumeration of the
     registrations. A removal is honestly called free only over something holding
-    no bytes and no names, which is the shape PR #596 closed at another seam;
-    this file holds both, so the cure names the loss instead. Two things go with
-    it. Every *other* project's registration, since the deletion is not scoped
-    to the one the reader came here about; and each entry's ``registeredAt``,
-    which :meth:`ProjectRegistry.register` preserves from the existing entry and
-    never recomputes, so re-registering restamps it with today's date rather
-    than restoring it.
+    no bytes and no names; this file holds both, so
+    :data:`_WHAT_DELETING_THE_REGISTRY_COSTS` names the loss instead, on every
+    arm.
 
-    Hence inspection first: the roots inside a file that will not parse are
-    still legible by eye, and they are what makes the re-registration this
-    remedy names typeable.
+    **The lead is what the arm decides**, and it is the half that was wrong:
+    inspection can only come first where the reader can inspect. See
+    :func:`_registry_failure_lead`.
     """
     return (
-        f"Inspect {path} before removing it -- it records every project you have "
-        f"registered, so deleting it unregisters all of them, not only this one. "
-        f"Once you have read the roots you need out of it, delete it and re-register "
-        f"each project with `theurian project register`."
+        f"{_registry_failure_lead(path, arm)} "
+        f"{_WHAT_DELETING_THE_REGISTRY_COSTS} "
+        f"{_HOW_TO_RECOVER_FROM_THE_DELETION}"
     )
 
 
@@ -2040,12 +2158,21 @@ class ProjectRegistry:
         Raises only for a failure entry-by-entry validation cannot recover
         from: the file cannot be read at all, it is not JSON, or its top level is
         not an object. Each means the set of ids itself is unknown, so
-        :func:`_registry_reset_remedy` is the only remedy that applies -- and it
+        :func:`registry_deletion_remedy` is the only remedy that applies -- and it
         is now attached to all three, rather than to the last alone. This
         docstring already claimed to cover unparsable JSON while that branch
         raised with no remedy at all, which reached the user as an error naming
         no way out, from the one class of registry failure with a completely
         reliable cure.
+
+        **One cure, four arms, and the arm is passed at the raise.** The three
+        causes above arrive at the reader in four different conditions, and only
+        the last two leave them able to open the file: an unreadable *file*, an
+        unreadable *data directory*, undecodable or unparsable bytes, and a top
+        level that is not a mapping. :class:`RegistryFailureArm` is how each
+        raise says which, because the cure's first sentence -- inspect, or
+        ``chmod`` and then inspect -- is the only part that differs and this is
+        the only place that knows.
 
         ``UnicodeDecodeError`` is caught beside ``JSONDecodeError`` for the same
         reason ``read_active_index_pointer`` catches it: it is a ``ValueError``
@@ -2076,7 +2203,7 @@ class ProjectRegistry:
         except OSError as exc:
             raise ProjectError(
                 f"{self.path} cannot be opened: {exc}",
-                remedy=_registry_reset_remedy(self.path),
+                remedy=registry_deletion_remedy(self.path, RegistryFailureArm.DIRECTORY_UNREADABLE),
             ) from exc
         if not exists:
             return {}
@@ -2085,19 +2212,19 @@ class ProjectRegistry:
         except OSError as exc:
             raise ProjectError(
                 f"{self.path} cannot be opened: {exc}",
-                remedy=_registry_reset_remedy(self.path),
+                remedy=registry_deletion_remedy(self.path, RegistryFailureArm.FILE_UNREADABLE),
             ) from exc
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise ProjectError(
                 f"{self.path} cannot be read as JSON: {exc}",
-                remedy=_registry_reset_remedy(self.path),
+                remedy=registry_deletion_remedy(self.path, RegistryFailureArm.UNPARSABLE),
             ) from exc
 
         if not isinstance(loaded, dict):
             raise ProjectError(
                 f"{self.path} must hold a JSON object mapping project ids to registrations, "
                 f"not a {type(loaded).__name__}.",
-                remedy=_registry_reset_remedy(self.path),
+                remedy=registry_deletion_remedy(self.path, RegistryFailureArm.UNPARSABLE),
             )
         return loaded
 
@@ -2134,7 +2261,7 @@ class ProjectRegistry:
 
         The decision this reverses -- and the risk that made it look safe --
         was never really the protection it claimed. The refusal always paired
-        with one remedy, :func:`_registry_reset_remedy`: delete the file and
+        with one remedy, :func:`registry_deletion_remedy`: delete the file and
         re-register *everything*. That remedy destroys the very "this id is
         already spoken for" information the whole-file refusal was meant to
         preserve, so it never actually stopped an id from being reclaimed --

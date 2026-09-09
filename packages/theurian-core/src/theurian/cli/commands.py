@@ -40,11 +40,13 @@ from theurian.application.project_service import (
     ProjectError,
     ProjectPathEscapeError,
     ProjectPaths,
+    RegistryFailureArm,
     ensure_gitignore,
     entry_root,
     initialize_project,
     read_active_index,
     read_active_state,
+    registry_deletion_remedy,
     write_active_state,
 )
 from theurian.application.withdrawal_purge import (
@@ -689,32 +691,6 @@ def _context_remedy(exc: TheurianError, *, default: str) -> str:
     return default
 
 
-def _registry_default_remedy(path: Path) -> str:
-    """The cure for a whole-registry failure that carries none of its own.
-
-    :func:`_context_remedy`'s ``default`` at both surfaces here that read the
-    entire registry -- ``project list`` and :meth:`_RegistryRead.failure_fields`
-    -- and written once rather than at each of them because a destructive cure
-    is what this codebase has watched drift across a seam:
-    :mod:`theurian.infrastructure.review_evidence.cures` records that family and
-    the fix that stuck, which was moving the claim inside the cure instead of
-    checking it where the cure is chosen (PR #596).
-
-    Rendered only when the raising error's own ``remedy`` is empty, and the
-    whole-file refusals below carry
-    :func:`~theurian.application.project_service._registry_reset_remedy`, so
-    this is the text for a self-describing error added here later without one.
-    It repeats that cure's shape, and names what the deletion costs for the same
-    reason issue #381 records there: this file is the enumeration of the
-    registrations, so removing it is never scoped to the project in hand.
-    """
-    return (
-        f"Inspect {path} before removing it -- it records every project you have "
-        f"registered, so deleting it unregisters all of them, not only this one. "
-        f"Re-register each project afterwards."
-    )
-
-
 @dataclass(frozen=True, slots=True)
 class _RegistryRead:
     """What the registry could say, including that it could say nothing.
@@ -756,12 +732,24 @@ class _RegistryRead:
         list instead. Gated on :attr:`failure` rather than on that null for
         exactly that reason: the cure below offers to delete a file whose only
         problem may be one entry ``theurian project unregister`` removes.
+
+        The ``default`` is
+        :func:`~theurian.application.project_service.registry_deletion_remedy`
+        itself rather than a cure written here, because a destructive offer
+        spelled once per layer is what drifts across a seam (PR #596's family,
+        recorded in :mod:`theurian.infrastructure.review_evidence.cures`). The
+        arm is ``UNKNOWN`` and can be nothing else: a ``default`` renders only
+        for an error carrying no ``remedy``, so this surface cannot know what
+        opened and what did not -- the member's own note says the rest.
         """
         if self.failure is None:
             return {}
         return {
             reason_key: str(self.failure),
-            remedy_key: _context_remedy(self.failure, default=_registry_default_remedy(self.path)),
+            remedy_key: _context_remedy(
+                self.failure,
+                default=registry_deletion_remedy(self.path, RegistryFailureArm.UNKNOWN),
+            ),
         }
 
     def holds_root(self, root: Path) -> bool | None:
@@ -1348,7 +1336,8 @@ def project_list(as_json: JsonOption = False) -> None:
     raised. It used to escape as a Rich traceback, which mattered more here than
     anywhere else: this is the command every other surface names when it wants a
     user to go and look, `project unregister`'s remedy included, so the one place
-    `_registry_reset_remedy` was written for was the one place it never reached.
+    `registry_deletion_remedy` was written for was the one place it never
+    reached.
     """
     reg = registry()
     try:
@@ -1357,7 +1346,9 @@ def project_list(as_json: JsonOption = False) -> None:
     except TheurianError as exc:
         _fail(
             str(exc),
-            remedy=_context_remedy(exc, default=_registry_default_remedy(reg.path)),
+            remedy=_context_remedy(
+                exc, default=registry_deletion_remedy(reg.path, RegistryFailureArm.UNKNOWN)
+            ),
             as_json=as_json,
             code=1,
         )
@@ -1386,7 +1377,7 @@ def project_list(as_json: JsonOption = False) -> None:
 def _pointer_failure_fields(failure: TheurianError | None) -> dict[str, str]:
     """Why the state pointer could not be read and what cures it, or nothing.
 
-    The shape :attr:`_RegistryRead.failure_fields` uses, for the other file this
+    The shape :meth:`_RegistryRead.failure_fields` uses, for the other file this
     command reads. Kept as a function rather than a second dataclass because the
     pointer read has no equivalent of :meth:`_RegistryRead.holds_root` -- there
     is one value to lose and no membership question to answer about it.
@@ -1476,6 +1467,42 @@ def _state_probe_remedy(database: Path, exc: OSError) -> str:
     )
 
 
+def _registry_cure_in_repair_order(remedy: str) -> str:
+    """The registry cure, plus the order the rest of this payload has to be fixed in.
+
+    **The compound payload's only actionable instruction was a destructive one
+    whose recovery is blocked.** ``project status`` on a repository with both a
+    broken migration and an unreadable registry publishes the migration's failure
+    as ``reason`` and the registry's cure as ``registryRemedy``; when that
+    migration raises without a ``remedy`` of its own (issue #384), that cure is
+    the *only* instruction in the payload -- and it is the destructive one.
+    Followed verbatim it unregisters every project on the machine, and then the
+    ``theurian project register`` it ends with refuses at exit 1:
+    ``_resolve_or_refuse`` calls the same ``resolve_context`` that has already
+    failed on the migration named in the same payload. Measured against the real
+    CLI in that state, ``register`` answered exit 1 with the migration's own
+    error. The reader is left with the loss and without the recovery.
+
+    **Appended at the emit site, not inside the cure.** ``project list`` renders
+    the same cure with no ``reason`` beside it -- there is one failure there and
+    it is the registry's -- so a sentence pointing at that key belongs to the
+    payload that publishes the key, not to the text every surface shares.
+
+    **Unconditional on this branch**, rather than gated on whether the resolution
+    failure happens to be the registry's. In the registry-only arm ``reason`` and
+    ``registryReason`` are the same failure, so "if ``reason`` names a different
+    failure" is simply false and the sentence costs a reader nothing; in the
+    compound arm it is the whole warning. A gate would have to re-derive which
+    arm this is from two independently read exceptions, which is the kind of
+    seam-side condition PR #596 spent four faces learning not to write.
+    """
+    return (
+        f"{remedy} If `reason` names a different failure, fix that one first: "
+        f"`theurian project register` refuses while this repository's project cannot be "
+        f"resolved, so the re-registration above cannot run until that failure is cleared."
+    )
+
+
 def _unresolved_status(exc: TheurianError) -> dict[str, Any]:
     """``project status`` for a repository whose project could not be resolved.
 
@@ -1533,6 +1560,15 @@ def _unresolved_status(exc: TheurianError) -> dict[str, Any]:
     this payload paired a ``registered: null`` with migration prose, naming the
     file the null actually came from nowhere (issue #381).
 
+    ``registryRemedy`` is published through
+    :func:`_registry_cure_in_repair_order` rather than verbatim, because being
+    additive is not enough on its own: two cures in one payload need an order,
+    and this one's is not the order a reader takes them in. That function records
+    what following the destructive one first actually costs. Where ``remedy``
+    carries the same cure -- the registry-only arm, where the resolution failure
+    *is* the registry's -- it is published through it too, so the two keys stay
+    the one sentence they are pinned to be.
+
     Published **inside a Git working tree only**, for the same reason
     ``registered`` is decided there: outside one that answer is the literal
     ``False`` below, which no registry could contradict, so a
@@ -1566,9 +1602,20 @@ def _unresolved_status(exc: TheurianError) -> dict[str, Any]:
         # read's failure, and this payload used to name that file nowhere
         # (#381). Keyed on the failure rather than on the null -- the other
         # cause is a file that parsed and holds one entry `unreadable` names.
-        payload.update(
-            read.failure_fields(reason_key="registryReason", remedy_key="registryRemedy")
+        registry_fields = read.failure_fields(
+            reason_key="registryReason", remedy_key="registryRemedy"
         )
+        if registry_fields:
+            ordered = _registry_cure_in_repair_order(registry_fields["registryRemedy"])
+            # The duplication is this payload's contract: where resolution failed
+            # on this same file, both keys publish *one* cure, and the equality is
+            # pinned. One of them silently gaining the ordering sentence would put
+            # two subtly different sentences about the same file in one payload --
+            # so the keys move together or not at all.
+            if payload.get("remedy") == registry_fields["registryRemedy"]:
+                payload["remedy"] = ordered
+            registry_fields = {**registry_fields, "registryRemedy": ordered}
+        payload.update(registry_fields)
     # Stays a list even when the file did not parse, because a caller that
     # iterates it must not have to branch first. Inside a working tree, that the
     # set of ids is *unknown* rather than empty is then carried by `registered:
