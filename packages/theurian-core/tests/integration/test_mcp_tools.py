@@ -9,6 +9,7 @@ same entry point the transport uses -- against a project built by the real CLI.
 from __future__ import annotations
 
 import contextlib
+import copy
 import functools
 import json
 import re
@@ -1953,7 +1954,22 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
         "result as `nothing matched`, when it may mean `withheld by this "
         "deployment's ceiling`."
     )
-    serialized = json.dumps(result).casefold()
+    # **The live value first, then the excision.** `reviewIngestionScope` carries
+    # the word `public`, which is also a `Sensitivity` member, so the sweep below
+    # would fire on it. Pinning the value here before removing the key is what
+    # makes the exemption narrow rather than a hole: the key is asserted to hold
+    # exactly the one constant ADR-0030 decision 2 publishes, so a *different*
+    # value -- one that had started describing this deployment's own withholding
+    # -- fails here and never reaches the excision.
+    assert result["capabilities"]["reviewIngestionScope"] == "public-allowlisted", (
+        "the scope field must be the build constant ADR-0030 decision 2 publishes. "
+        "The sweep below excises this key, so a value that had drifted into "
+        "deployment state would be swept over rather than caught -- this pin is "
+        "what keeps the exemption to one known string."
+    )
+    swept = copy.deepcopy(result)
+    del swept["capabilities"]["reviewIngestionScope"]
+    serialized = json.dumps(swept).casefold()
     forbidden = ("ceiling", *(level.value for level in Sensitivity))
     leaked = sorted(word for word in forbidden if word in serialized)
     assert not leaked, (
@@ -1965,7 +1981,17 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
         f"(ADR-0025). Case-folded, and over the serialized response rather than "
         f"its keys, because that leak is as likely to arrive as a value, inside "
         f"`note`, or under a camel-cased key (`sensitivityCeiling`) as it is to "
-        f"arrive as a new top-level field the population tests would catch."
+        f"arrive as a new top-level field the population tests would catch.\n\n"
+        f"One key is excised before this sweep -- `capabilities."
+        f"reviewIngestionScope`, pinned to `public-allowlisted` immediately above "
+        f"-- and the exemption exists because ADR-0030 decision 2 **intentionally "
+        f"publishes a constant scope** whose value happens to contain the word "
+        f"`public`. It is the same string in every deployment of this build: "
+        f"policy shape, not deployment state, so it says nothing about what this "
+        f"installation is withholding. The exemption is NOT that capability values "
+        f"generally bypass the sweep -- every other value in this response is swept "
+        f"exactly as before, and a second key claiming the same exemption needs the "
+        f"same argument written out, not a second `del`."
     )
     assert result["capabilities"]["reviewFindings"] is True, (
         "`review.findings` is registered and callable: it serves the "
@@ -1977,20 +2003,33 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
         "this build answers, which is the degradation this whole block exists to "
         "let it get right."
     )
-    assert result["capabilities"]["reviewIngestion"] is False, (
-        "no tool ingests review *history*: `infrastructure/github/` holds the "
-        "ADR-0030 adapter and `theurian review ingest` now reaches it and lands "
-        "evidence files, but **no MCP tool does**, and a client reading `true` "
-        "would offer a call this server does not answer. Read the `false` "
-        "narrowly -- it says no ingestion call surface is callable, **not** that "
-        "this build cannot reach GitHub, which it can, and **not** that nothing "
-        "lands on disk, which the CLI verb does. `reviewFindings` above is a different thing "
-        "entirely: an offline read of local git trailers. What made T-7's "
-        "repository allowlist load-bearing was the adapter landing, not this flag "
-        "moving, and the allowlist is enforced now (`security/review_allowlist.py`, "
-        "consulted before any spawn); the scheme allowlist and private-network "
-        "rejection stay owed in the raw-URL context (#429). Flip this in the serve "
-        "slice, beside the scope field, not ahead of it."
+    assert result["capabilities"]["reviewIngestion"] is True, (
+        "the serve slice landed, so the narrowed meaning ADR-0030 decision 6 ties "
+        "this flag to is now satisfied: **an ingestion call surface exists that a "
+        "client may call** -- `review.search`, over the evidence `theurian review "
+        "ingest` landed and `theurian review build` projected. Read it as narrowly "
+        "as its history requires. It never meant `this build can reach GitHub` (the "
+        "fetch path shipped in slice 1 while this stayed `false`) and it never meant "
+        "`evidence lands on disk` (slice 2's CLI verb, same). It reports the "
+        "MCP-callable surface and nothing wider, and it does **not** say a client "
+        "may start an ingestion run: no tool spawns `gh`, ADR-0013 keeps write "
+        "intent off this surface, and a fetch stays an operator's act through the "
+        "CLI verb. `reviewFindings` above is a different `true` about a different "
+        "corpus -- an offline read of local git trailers -- and neither flag lets a "
+        "client conclude anything about the other's tool."
+    )
+    assert result["capabilities"]["reviewIngestionScope"] == "public-allowlisted", (
+        "the flag above is published **with** its scope or not at all (ADR-0030 "
+        "decisions 2 and 6). A `true` with no scope tells a client that ingested "
+        "review content is reachable and leaves out the half that decides how to "
+        "treat it: public-only v1 ingests no advisory-private GitHub surface -- no "
+        "private repositories, no security advisories, no private forks -- and every "
+        "record it holds was visible to the public repository's audience at the "
+        "moment it was ingested. The tense is load-bearing: an upstream edit or "
+        "delete does not reach Theurian's copy, and the remediation is manual. "
+        "Private-repository ingestion, with the `securityRelated` marking and the "
+        "uniform refusal it needs, is #575's -- and it is the change that would move "
+        "this value, which is why the value is pinned rather than merely present."
     )
     assert result["capabilities"]["traceability"] is False, (
         "no tool answers FR-T3's questions -- which code implements a spec, which "
@@ -2079,6 +2118,13 @@ async def test_the_capability_block_holds_exactly_the_flags_that_are_pinned(
         "sensitivityEnforcement",
         "reviewFindings",
         "reviewIngestion",
+        # Published **with** `reviewIngestion`, never one without the other
+        # (ADR-0030 decisions 2 and 6): a `true` with no scope tells a client that
+        # ingested review content is reachable and omits the half that decides how
+        # to treat it. Pinned here as a member so removing the scope while leaving
+        # the flag reddens, which is the pairing this population test is what
+        # enforces -- the value itself is pinned in the test above.
+        "reviewIngestionScope",
         "traceability",
         "writeTools",
     }, (

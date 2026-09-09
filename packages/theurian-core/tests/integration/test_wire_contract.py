@@ -1674,3 +1674,134 @@ def test_the_review_search_conformance_check_can_fail(
     for payload in rejected:
         with pytest.raises(ValidationError):
             validator.validate(payload)
+
+
+# -- system.capabilities (ADR-0030 decision 2, ADR-0025) --------------------
+
+CAPABILITIES_RESPONSE = "mcp/system-capabilities-response.schema.json"
+
+
+@pytest.fixture(scope="module")
+def capabilities_response(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
+    """The real ``system.capabilities`` response, captured once.
+
+    One capture, and one is enough here where three were needed for the review
+    surfaces: this tool takes no argument, resolves no project and reads nothing
+    off disk, so every call in a given build produces the same object. That is the
+    property the schema describes, and it is asserted below rather than assumed.
+    """
+    from theurian.application.project_service import ProjectRegistry
+
+    tmp = tmp_path_factory.mktemp("capabilities-conformance")
+    data_dir = tmp / "datadir"
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setenv("THEURIAN_DATA_DIR", str(data_dir))
+    try:
+        registry = ProjectRegistry.default(data_dir)
+        return asyncio.run(_call_capabilities(registry))
+    finally:
+        monkey.undo()
+
+
+async def _call_capabilities(registry: Any) -> dict[str, Any]:
+    from theurian.daemon.runner import build_server
+
+    result = await build_server(registry).call_tool("system.capabilities", {})
+    structured = getattr(result, "structuredContent", None)
+    if structured is not None:
+        payload: dict[str, Any] = structured
+        return payload
+    content: Any = result.content  # type: ignore[union-attr]
+    loaded: dict[str, Any] = json.loads(content[0].text)
+    return loaded
+
+
+@pytest.mark.integration
+def test_a_real_capabilities_response_validates_against_its_published_schema(
+    capabilities_response: dict[str, Any],
+) -> None:
+    """The half a schema-shape test cannot do: compare the schema to real output.
+
+    This response is what a client degrades against, so a field it carries that
+    nothing declares is undocumented protocol surface and a declared field it does
+    not send is a promise nothing keeps. ``additionalProperties: false`` at both
+    levels fails the first; ``required`` at both levels fails the second.
+    """
+    _validator(CAPABILITIES_RESPONSE).validate(capabilities_response)
+
+
+@pytest.mark.integration
+def test_the_capabilities_response_is_a_property_of_the_build_and_not_of_a_project(
+    capabilities_response: dict[str, Any], tmp_path: pathlib.Path
+) -> None:
+    """The schema's central claim, asserted rather than described.
+
+    Every value here is a build property: this tool resolves no project and passes
+    no authorization gate, so nothing it publishes may vary with what any
+    installation holds. Two calls against two different, separately-rooted data
+    directories -- one of them holding a registered project and one empty -- must
+    produce the identical object, byte for byte through the serializer.
+    """
+    from theurian.application.project_service import ProjectRegistry
+
+    other = tmp_path / "other-datadir"
+    monkey = pytest.MonkeyPatch()
+    monkey.setenv("THEURIAN_DATA_DIR", str(other))
+    try:
+        elsewhere = asyncio.run(_call_capabilities(ProjectRegistry.default(other)))
+    finally:
+        monkey.undo()
+
+    assert json.dumps(elsewhere, sort_keys=True) == json.dumps(
+        capabilities_response, sort_keys=True
+    ), (
+        "system.capabilities answered differently against a different data "
+        "directory, so something it publishes is a function of deployment state "
+        "rather than of the build -- which is exactly what a surface that resolves "
+        "no project and passes no gate must not carry (ADR-0025)"
+    )
+
+
+@pytest.mark.integration
+def test_the_capabilities_conformance_check_can_fail(
+    capabilities_response: dict[str, Any],
+) -> None:
+    """Guards the validation above: a schema loaded and never applied accepts all.
+
+    Each rejection is a different clause. ``reviewIngestionScope`` is checked in
+    both directions -- a wrong value and an absent key -- because it is the one
+    member whose *value* is the contract: ADR-0030 decision 2 publishes one
+    constant, and a schema that had relaxed it to a free string would let a build
+    announce a wider ingestion scope than the one that was reviewed.
+    """
+    validator = _validator(CAPABILITIES_RESPONSE)
+    response = capabilities_response
+    validator.validate(response)
+    capabilities = response["capabilities"]
+
+    rejected: tuple[dict[str, Any], ...] = (
+        {**response, "milestone": 8},
+        {key: value for key, value in response.items() if key != "capabilities"},
+        {key: value for key, value in response.items() if key != "note"},
+        {**response, "schemaVersion": "1"},
+        {**response, "capabilities": {**capabilities, "sensitivityCeiling": "internal"}},
+        {**response, "capabilities": {**capabilities, "knowledgeSearch": "vector"}},
+        {**response, "capabilities": {**capabilities, "writeTools": "false"}},
+        {**response, "capabilities": {**capabilities, "reviewIngestionScope": "any-repository"}},
+        {
+            **response,
+            "capabilities": {
+                key: value for key, value in capabilities.items() if key != "reviewIngestionScope"
+            },
+        },
+        {
+            **response,
+            "capabilities": {
+                key: value for key, value in capabilities.items() if key != "reviewIngestion"
+            },
+        },
+    )
+    for payload in rejected:
+        with pytest.raises(ValidationError):
+            validator.validate(payload)

@@ -14,13 +14,15 @@ Today, Core registers seven callable MCP tools:
 - `system.capabilities`
 
 `system.capabilities` is the runtime boundary for clients. In this build it
-reports `reviewFindings: true` — `review.findings` is callable — beside
-`writeTools: false`, `reviewIngestion: false`, and `traceability: false`; those
-three mean the write-intent, review-*ingestion*, and traceability tools described
-below are designed protocol shape, not callable tools in the current server.
-`reviewIngestion: false` is a statement about *callable tools* and nothing wider:
-the review-history fetch path itself has shipped, `theurian review ingest` lands
-its evidence, and `review.search` reads that evidence back (see below).
+reports `reviewFindings: true` and `reviewIngestion: true` — `review.findings`
+and `review.search` are both callable — beside `writeTools: false` and
+`traceability: false`, which mean the write-intent and traceability tools
+described below are designed protocol shape, not callable tools in the current
+server. `reviewIngestion: true` is a statement about *callable tools* and nothing
+wider: it says an ingestion call surface exists that a client may call, published
+beside `reviewIngestionScope: "public-allowlisted"`, and it does not say a client
+may start an ingestion run — no tool spawns `gh`, and a fetch stays an operator's
+act through `theurian review ingest` (see below).
 
 ## Every project-scoped call names its project
 
@@ -351,13 +353,30 @@ through the store `theurian review build` rebuilds
 
 The two flags stay separate for the reason they always were: `reviewFindings`
 promises an offline read of local git trailers, and `reviewIngestion` is the one
-whose surface reaches GitHub-sourced content. `reviewIngestion` still reports
-`false` in this commit, and it is read narrowly: it does **not** mean "this build
-cannot reach GitHub" — the fetch path exists, and with it SEC-10's repository
-allowlist, read and enforced before any process is spawned — and it does not mean
-nothing lands on disk, which `theurian review ingest` does. It reports whether an
-*ingestion call surface* exists that a client may call, and it flips beside its
-scope field in the commit that changes that.
+whose surface reaches GitHub-sourced content. `reviewIngestion` reports `true`
+from this slice, and it is read as narrowly as its history requires. It never
+meant "this build can reach GitHub" — the fetch path shipped in slice 1, with
+SEC-10's repository allowlist read and enforced before any process is spawned,
+while the flag stayed `false`. It never meant "evidence lands on disk" — slice 2
+shipped `theurian review ingest`, and the flag stayed `false` for the same
+reason. What it reports, and all it has reported, is the MCP-callable surface:
+*an ingestion call surface exists that a client may call*, which `review.search`
+now is. It does **not** say a client may start an ingestion run; no tool spawns
+`gh`, [ADR-0013](../adr/0013-approved-knowledge-changes-only-through-migrations.md)
+keeps write intent off this surface, and a fetch is an operator's act through the
+CLI verb.
+
+It is published **with** `reviewIngestionScope: "public-allowlisted"` and never
+one without the other (ADR-0030 decisions 2 and 6): a `true` with no scope tells a
+client that ingested review content is reachable and omits the half that decides
+how to treat it. The scope is the narrow claim ADR-0030 makes — no
+advisory-private GitHub surface is ingested, and every record held was visible to
+the public repository's audience *at the moment it was ingested* — not the wider
+and false one that a public repository cannot carry sensitive content. The tense
+is load-bearing: an upstream edit or delete does not reach Theurian's copy, and
+the remediation is manual (delete the evidence file, rebuild the store). The value
+is a build constant, identical in every deployment, which is what makes it
+publishable on a surface that resolves no project.
 
 | Tool | Status | Purpose |
 | :-- | :-- | :-- |

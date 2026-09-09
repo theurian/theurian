@@ -1377,3 +1377,88 @@ def test_the_published_excerpt_bound_is_the_one_the_shaper_applies() -> None:
         "the read must fetch one character past the bound, or a value of exactly "
         "the bound and a longer one arrive identical and nothing can mark the cut"
     )
+
+
+# -- system.capabilities response schema (ADR-0030 decision 2, ADR-0025) -----
+
+CAPABILITIES_RESPONSE = "mcp/system-capabilities-response.schema.json"
+
+
+def test_the_published_ingestion_scope_is_the_constant_the_tool_emits() -> None:
+    """ADR-0030 decision 2: one constant, published as a `const` and not a string.
+
+    The scope's *value* is the contract, not merely its presence: it records that
+    ingestion covers public allowlisted repositories only, and a schema that had
+    relaxed it to a free string would let a build announce a wider scope than the
+    one that was reviewed. Recomputed from the tool's own source rather than
+    transcribed, so the two cannot drift.
+    """
+    import inspect
+
+    from theurian.mcp import tools as tools_module
+
+    published = _load(CAPABILITIES_RESPONSE)["properties"]["capabilities"]["properties"][
+        "reviewIngestionScope"
+    ]["const"]
+    source = inspect.getsource(tools_module)
+
+    assert f'"reviewIngestionScope": "{published}"' in source, (
+        f"the schema publishes {published!r} as the ingestion scope and "
+        f"`mcp/tools.py` emits something else"
+    )
+
+
+def test_the_scope_and_its_flag_are_both_required_or_neither_is_a_control() -> None:
+    """The pairing ADR-0030 decisions 2 and 6 state, held at the published contract.
+
+    A `reviewIngestion: true` with no scope tells a client that ingested review
+    content is reachable and omits the half that decides how to treat it. Making
+    either optional in the schema would let a response carrying only the flag
+    validate, which is the shape the pairing exists to forbid.
+    """
+    capabilities = _load(CAPABILITIES_RESPONSE)["properties"]["capabilities"]
+
+    assert {"reviewIngestion", "reviewIngestionScope"} <= set(capabilities["required"])
+    assert capabilities["additionalProperties"] is False, (
+        "an open capabilities object would accept a member nothing declared, which "
+        "is how a value describing deployment state reaches a client unremarked"
+    )
+
+
+def test_the_published_capability_block_names_no_sensitivity_level() -> None:
+    """ADR-0025 at the schema, not only at the response.
+
+    ``sensitivityEnforcement`` reports that the axis is enforced and never which
+    ceiling a deployment declares -- and a *schema* that declared a ceiling member
+    would tell an integrator to expect one, which is the same disclosure one step
+    earlier. The one place a `Sensitivity` word legitimately appears is
+    ``reviewIngestionScope``'s ``public-allowlisted``, a build constant, so that
+    key is excised before the sweep exactly as ``test_mcp_tools.py``'s own sweep
+    excises it -- and its value is pinned first, so the exemption stays one known
+    string rather than a hole.
+    """
+    import copy
+    import json as json_module
+
+    from theurian.domain.enums import Sensitivity
+
+    capabilities = copy.deepcopy(_load(CAPABILITIES_RESPONSE)["properties"]["capabilities"])
+    scope = capabilities["properties"]["reviewIngestionScope"]
+
+    assert scope["const"] == "public-allowlisted"
+    del capabilities["properties"]["reviewIngestionScope"]
+    capabilities["required"] = [
+        name for name in capabilities["required"] if name != "reviewIngestionScope"
+    ]
+
+    swept = json_module.dumps(capabilities).casefold()
+    named = sorted(level.value for level in Sensitivity if f'"{level.value}"' in swept)
+
+    assert not named, (
+        f"the published capability block declares {named} as a value, so a client "
+        f"is told to expect a ceiling word this surface must never send (ADR-0025). "
+        f"The one exemption is `reviewIngestionScope`, pinned to its build constant "
+        f"above and excised before this sweep because ADR-0030 decision 2 "
+        f"intentionally publishes a constant scope -- not because capability values "
+        f"generally bypass it."
+    )

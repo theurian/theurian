@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theurian.dev/schemas/mcp/system-capabilities-response.schema.json",
+  "title": "Output of the `system.capabilities` MCP tool",
+  "description": "The whole response. `system.capabilities` exists so a client can degrade **per feature** rather than all-or-nothing on a version mismatch: version gating is coarse, and if only one capability is unavailable everything else should still work.\n\n**Every value here is a property of the build, never of a project or of a deployment's own state.** This tool resolves no project and passes no authorization gate, so nothing it publishes may vary with what any project holds or with what this installation is withholding. That is why `sensitivityEnforcement` is a boolean and not the ceiling word — the word would tell a caller which levels it is not being shown (ADR-0025) — and it is the test every future member has to pass. `reviewIngestionScope` is a value rather than a flag for the same reason read the other way: it is the identical constant in every deployment of this build, so it describes policy shape rather than deployment state.\n\n**This schema describes what is emitted, not what is planned.** `schemas/README.md`'s rule that a field is declared only once something emits it governs promises about future shapes; every property below is in the live response of this build, and the tests that validate it do so against output obtained from the tool.",
+  "type": "object",
+  "required": ["version", "protocolVersion", "schemaVersion", "capabilities", "note"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "This Core build's own version. It re-publishes the same process constant `theurian compat check` reads directly when it resolves CP-6, and **that gate never reads this response** — the compatibility comparison has already happened before either surface answers. A client that already passed the gate and sees a different value here is looking at a build other than the one it was checked against."
+    },
+    "protocolVersion": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The MCP protocol contract this build speaks, `theurian/v1`. Typed as a string rather than a `const` because a future protocol revision moves it without a schema change to this file. For a client that only calls MCP tools this is the sole place it is readable at all: liveness is served at the `/health` HTTP route, which is outside the MCP tool surface and has no callable-tool equivalent in this build."
+    },
+    "schemaVersion": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The canonical store's schema version — the shape of the state `theurian migrate apply` builds, not the shape of any derived artifact. The retrieval index, the review-finding store and the review search store each carry their own version constant, and none of them is reported here: a client has no read that would act on one, and a stale derived store is a refusal from the tool that reads it rather than a number for a client to compare."
+    },
+    "note": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Prose, not a field a client parses. It carries this build's one statement of ADR-0013 — no write-intent tool exists, and approved knowledge changes only through a human-authored migration."
+    },
+    "capabilities": {
+      "type": "object",
+      "description": "What this build supports, one feature at a time. Every member is a build property: a client reads it to decide which calls to offer, never to learn anything about a project. A response's own fields report what actually ran — `retrieval.mode` for a search, `raptorPath`'s presence for the forest — so a `true` here says a call is available, not that a given project will exercise it.",
+      "required": [
+        "knowledgeSearch",
+        "knowledgeGet",
+        "hybridRetrieval",
+        "raptor",
+        "sensitivityEnforcement",
+        "reviewFindings",
+        "reviewIngestion",
+        "reviewIngestionScope",
+        "traceability",
+        "writeTools"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "knowledgeSearch": {
+          "enum": ["hybrid", "substring"],
+          "description": "Which retrieval a client may **ask for**, and the one member here that is not a boolean. `hybrid` says lexical and vector results are fused. It is not a report of what ran: a response's own `retrieval.mode` is that, and it stays `substring` until a project has an index — so a build that downgraded this flag would be indistinguishable, to a client, from every un-indexed project it has ever seen."
+        },
+        "knowledgeGet": {
+          "type": "boolean",
+          "description": "Whether `knowledge.get` is callable: one item by id, with its body, relations and provenance."
+        },
+        "hybridRetrieval": {
+          "type": "boolean",
+          "description": "Whether this build fuses lexical and vector candidates. A server property; whether a given project has an index is discovered per response, through `retrieval.mode`."
+        },
+        "raptor": {
+          "type": "boolean",
+          "description": "Whether this build reads the RAPTOR forest — a summary retriever routing to leaves, with a surfaced leaf carrying `raptorPath` (ADR-0008 decision 8). A server property, like `hybridRetrieval`: whether a given project actually has a forest is discovered per response, through `raptorPath`'s presence."
+        },
+        "sensitivityEnforcement": {
+          "type": "boolean",
+          "description": "Whether this build enforces the disclosure axis. **The flag with a consequence for how a client reads an empty answer**: with it `true`, no results can mean \"withheld by this deployment's ceiling\" and not only \"nothing matched\", so a client must not tell a user that a project holds no such knowledge.\n\n**The flag, never the ceiling.** Which levels this deployment declares is deliberately not published anywhere in this response: that word would tell a caller which levels it is not being shown, which is a statement about withheld content on a surface no gate protects (ADR-0025). An operator reads the ceiling from the file they wrote it into."
+        },
+        "reviewFindings": {
+          "type": "boolean",
+          "description": "Whether `review.findings` is callable: the `Review-Finding:` trailers a project's own git history carries, landed by `theurian findings build`, filtered and served under the SEC-15 triple (ADR-0029). An offline read of local git metadata — it says nothing about GitHub, about review threads, or about what `reviewIngestion` covers."
+        },
+        "reviewIngestion": {
+          "type": "boolean",
+          "description": "Whether **an ingestion call surface exists that a client may call**: `review.search`, over the review evidence `theurian review ingest` landed and `theurian review build` projected (ADR-0030 decision 6).\n\nRead it as narrowly as its history requires, because the flag has meant three things and only the last is published. It never meant \"this build can reach GitHub\" — the fetch path shipped while the flag was `false`, because no tool exposed it. It never meant \"nothing lands on disk\" — the CLI verb landed evidence while the flag was `false`, for the same reason. It reports the MCP-callable surface and nothing wider.\n\nIt does **not** say a client may start an ingestion run. No tool spawns `gh`; ADR-0013 keeps write intent off this surface, and a fetch is an operator's act through the CLI verb. What a client may do is call `review.search` and read what an operator already ingested."
+        },
+        "reviewIngestionScope": {
+          "const": "public-allowlisted",
+          "description": "What ingestion covers, published **with** `reviewIngestion` and never one without the other (ADR-0030 decisions 2 and 6). A `true` with no scope tells a client that ingested review content is reachable and omits the half that decides how to treat it.\n\n`public-allowlisted` is the narrow claim ADR-0030 makes and not a wider one: this build ingests **no advisory-private GitHub surface** — no private repositories, no security advisories, no private forks — from an operator-declared repository allowlist read before any process is spawned, and every record it holds **was visible to the public repository's audience at the moment it was ingested**. It is deliberately *not* the claim that a public repository cannot carry sensitive content, which is false as a universal; what guards that is the secret scan at ingestion and the untrusted-content triple at serve.\n\n**The tense is load-bearing.** The evidence files are durable by design, so an upstream edit or delete does not reach Theurian's copy and nothing here would notice one. The remediation is manual: delete the evidence file and rebuild the store.\n\nA `const` because it is a **build constant** — the same string in every deployment of this build, which is what makes it policy shape rather than deployment state and therefore publishable on a surface that resolves no project. Private-repository ingestion, with the `securityRelated` marking and the uniform refusal it needs, is what would move it."
+        },
+        "traceability": {
+          "type": "boolean",
+          "description": "Whether any tool answers FR-T3's questions — which code implements a spec, which tests verify one. `false` in this build: the port declares the read and nothing calls it, and `knowledge.get`'s `relations` walk knowledge-to-knowledge relations rather than traceability edges. A client reading `true` would offer a query the server cannot serve."
+        },
+        "writeTools": {
+          "type": "boolean",
+          "description": "Whether any write-intent tool exists. `false`, and structurally so (ADR-0013): no MCP path reaches approved state, and a structural test walks every registered tool's bytecode for the write gateways. When write-intent tools arrive they emit proposal files rather than mutating approved state, which is a different promise from this one."
+        }
+      }
+    }
+  }
+}

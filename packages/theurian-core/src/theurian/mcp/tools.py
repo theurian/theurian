@@ -2418,29 +2418,65 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 # build parsed out of local git history, filtered and served
                 # under the SEC-15 triple.
                 #
-                # It says nothing about GitHub, review threads, comment
-                # resolution, or any write intent -- those are `reviewIngestion`,
-                # which stays false below. A client reading this `true` may call
-                # the tool; it may not conclude that review *history* is served,
-                # because no tool serves it.
-                #
-                # `reviewIngestion: false` narrowed with ADR-0030 and is worth
-                # reading exactly: the GitHub *fetch path* shipped in slice 1 --
-                # `infrastructure/github/` spawns `gh` -- while this stayed
-                # false, because no tool exposes it. So the flag reports "no
-                # ingestion call surface a client may call", not "this build
-                # cannot reach GitHub". The serve slice flips it beside a scope
-                # field recording that ingestion covers public allowlisted
-                # repositories only.
-                #
-                # Slice 2 narrowed it again in the same direction: evidence now
-                # *lands*, as files under `.theurian/review/`, through the CLI
-                # verb `theurian review ingest`. An operator runs that verb; no
-                # tool here starts it and no tool here reads what it wrote. The
-                # flag still speaks only about the MCP-callable surface, which is
-                # why landing a corpus did not move it.
+                # It says nothing about GitHub, review threads or comment
+                # resolution -- those are `reviewIngestion` below, which is now a
+                # different `true` about a different corpus. A client reading
+                # this flag may call `review.findings`; it may not conclude
+                # anything about what `review.search` serves, and the reverse
+                # holds too.
                 "reviewFindings": True,
-                "reviewIngestion": False,
+                # **The narrowed meaning, now that it is `true`: an ingestion
+                # call surface exists that a client may call.** ADR-0030 decision
+                # 6 ties the flip to the serve slice rather than to the ingest
+                # one, and this is that slice: `review.search` is registered and
+                # answers over the evidence `theurian review ingest` landed and
+                # `theurian review build` projected.
+                #
+                # Read it as narrowly as its history requires, because the flag
+                # has meant three different things and only the last one is
+                # published. It never meant "this build cannot reach GitHub" --
+                # the fetch path shipped in slice 1, `infrastructure/github/`
+                # spawns `gh`, and the flag stayed `false` because no tool
+                # exposed it. It never meant "nothing lands on disk" -- slice 2
+                # shipped `theurian review ingest`, which writes files under
+                # `.theurian/review/`, and the flag stayed `false` for the same
+                # reason. What it reports, and all it has ever reported, is the
+                # MCP-callable surface; the serve slice is the first change that
+                # moves that.
+                #
+                # It does **not** say a client may start an ingestion run. No
+                # tool here spawns `gh`, and none will without its own round:
+                # ADR-0013 keeps write intent off this surface, and a fetch is an
+                # operator's act through the CLI verb. What a client may do is
+                # call `review.search` and read what an operator already
+                # ingested.
+                "reviewIngestion": True,
+                # **Published together with the flag above, never one without the
+                # other** (ADR-0030 decisions 2 and 6). A `true` with no scope
+                # tells a client that ingested review content is reachable and
+                # says nothing about where it came from, which is the half that
+                # decides how the client should treat it: public-only v1 ingests
+                # no advisory-private GitHub surface -- no private repositories,
+                # no security advisories, no private forks -- and every record it
+                # holds was visible to the public repository's audience at the
+                # moment it was ingested. The tense is load-bearing and the
+                # residual is retention: an upstream edit or delete does not reach
+                # Theurian's copy, and the remediation is manual (delete the
+                # evidence file, rebuild the store).
+                #
+                # **A build constant, not deployment state.** It is the same
+                # string in every deployment of this build, so it is policy shape
+                # rather than a statement about what this installation holds or
+                # withholds -- which is why it may be published on a surface that
+                # resolves no project and passes no `_resolve`, while the
+                # sensitivity *ceiling* above may not. That distinction is the
+                # whole reason one is a flag and the other a value, and it is what
+                # `test_mcp_tools.py`'s ADR-0025 leak sweep exempts this one key
+                # for: the sweep forbids a `Sensitivity` word anywhere in the
+                # response because such a word would describe *this deployment's*
+                # withholding, and `public-allowlisted` describes the ingestion
+                # scope of every build alike.
+                "reviewIngestionScope": "public-allowlisted",
                 "traceability": False,
                 "writeTools": False,
             },
