@@ -31,7 +31,8 @@ above-ceiling item.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Iterator
+from dataclasses import dataclass, fields
 from enum import StrEnum
 
 from theurian.domain.errors import DomainError, InvariantViolationError
@@ -227,6 +228,38 @@ def untransportable_reason(value: str) -> str | None:
     return None
 
 
+def texts_of(instance: ReviewSearchRecord | ReviewSearchQuery) -> Iterator[tuple[str, str]]:
+    """Every ``(field name, string)`` pair a record or a query carries.
+
+    **The one population both the query's construction check and the search
+    builder's build-time check range over**, derived structurally rather than
+    kept as two hand-written lists that could drift apart: it walks
+    :func:`dataclasses.fields` and recurses into each value by its runtime
+    shape -- a plain string, a tuple of them, or a tuple of
+    :class:`ReviewTextFragment` -- so a text field added to either dataclass
+    tomorrow is reached by the change that adds it, on both sides, rather than
+    by whoever remembers to extend a list on one of them. What each caller does
+    with a string this yields -- deciding with :func:`untransportable_reason`
+    whether it can cross the SQLite boundary, and raising its own error shaped
+    for its own layer -- is theirs to do; this function only says which strings
+    exist to check.
+    """
+    for field in fields(instance):
+        for text in _texts_in(getattr(instance, field.name)):
+            yield field.name, text
+
+
+def _texts_in(value: object) -> Iterator[str]:
+    """Every string reachable inside one field's value, at any of its shapes."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, ReviewTextFragment):
+        yield value.content
+    elif isinstance(value, tuple):
+        for member in value:
+            yield from _texts_in(member)
+
+
 @dataclass(frozen=True, slots=True)
 class ReviewSearchQuery:
     """What one search asks for: predicates over stored columns, and a bound.
@@ -273,16 +306,14 @@ class ReviewSearchQuery:
                 "with no positive bound is an unbounded read of the store, which no "
                 "serving surface may issue."
             )
-        for field_name, value in (
-            ("repository", self.repository),
-            ("thread_state", self.thread_state),
-            ("author", self.author),
-            ("file_path", self.file_path),
-            ("text_contains", self.text_contains),
-        ):
-            if value is None:
-                continue
-            reason = untransportable_reason(value)
+        # Ranges over `texts_of`, not a hand-written tuple of field names: the
+        # two used to be spelled separately here and in
+        # `review_search_builder._refuse_untransportable`, and a field added to
+        # this dataclass without also joining the tuple would cross the SQLite
+        # boundary unchecked while every existing test stayed green. One walk
+        # now backs both checks.
+        for field_name, text in texts_of(self):
+            reason = untransportable_reason(text)
             if reason is not None:
                 raise DomainError(
                     f"ReviewSearchQuery.{field_name} cannot be matched as the text it "
@@ -338,5 +369,6 @@ __all__ = [
     "ReviewSearchRecord",
     "ReviewTextChannel",
     "ReviewTextFragment",
+    "texts_of",
     "untransportable_reason",
 ]

@@ -400,11 +400,14 @@ def test_a_wildcard_in_a_structural_filter_is_a_character_and_not_a_pattern(
 #: Every field of :class:`ReviewSearchQuery` whose value is caller-supplied text,
 #: **reflected** rather than listed.
 #:
-#: ``ReviewSearchQuery.__post_init__`` checks a hand-written tuple of five field
-#: names, and a sixth text field added without joining it would cross the SQLite
-#: boundary unchecked while every existing test stayed green. This is the
-#: population that notices: it is derived from the type, so the day a field is
-#: added the test that ranges over it covers the new one.
+#: ``ReviewSearchQuery.__post_init__`` itself reflects too, over
+#: :func:`~theurian.domain.review_search.texts_of` -- the same walk
+#: ``review_search_builder``'s build-time check consumes, so the two cannot
+#: drift into checking different populations. This test derives its own
+#: population a second, independent way -- from the field's declared type
+#: rather than from that production walk -- so a regression back to a
+#: hand-written tuple, or a narrowing of the shared walk to stop reaching some
+#: shape, still has something outside both to notice.
 TEXT_FIELDS: Final = tuple(
     name for name, hint in get_type_hints(ReviewSearchQuery).items() if hint == (str | None)
 )
@@ -436,11 +439,13 @@ def test_every_text_field_of_a_query_refuses_a_value_sqlite_cannot_be_handed(
     exception no ``except sqlite3.Error`` catches.
 
     Driven over :data:`TEXT_FIELDS`, which is reflected off the type rather than
-    written down: the check inside ``__post_init__`` ranges over a hand-written
-    tuple, and a sixth text field added without joining it would reach the driver
-    unchecked. The population is asserted to be the five that exist today, so the
-    day a field is added this test names it rather than silently covering four of
-    six.
+    written down: ``__post_init__`` reflects too, through the same shared walk
+    the review-search builder's own check consumes, but this test derives its
+    population independently -- from the field's declared type -- so a
+    regression back to a hand-written tuple still has something outside it to
+    catch. The population is asserted to be the five that exist today, so the
+    day a field is added this test names it rather than silently covering four
+    of six.
 
     Refused at construction, so no such query object exists to be handed to a
     store, and the refusal says nothing about what the store holds.

@@ -37,9 +37,9 @@ opened the pull request.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable
 from contextlib import nullcontext
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import final
 
@@ -53,6 +53,7 @@ from theurian.domain.review_search import (
     ReviewSearchRecord,
     ReviewTextChannel,
     ReviewTextFragment,
+    texts_of,
     untransportable_reason,
 )
 
@@ -421,11 +422,14 @@ def _instant_text(moment: datetime, relative_path: str) -> str:
 def _refuse_untransportable(record: ReviewSearchRecord) -> None:
     """Refuse a record carrying text SQLite cannot be handed as the text it is.
 
-    The population is **every string the record carries**, reached by reflection
-    over :func:`dataclasses.fields` rather than by a list somebody keeps in step:
-    a field added to :class:`ReviewSearchRecord` is covered by the change that
-    adds it, whether it is a plain string, a tuple of them, or a tuple of
-    fragments. ``test_review_search_builder.py``'s
+    The population is **every string the record carries**, reached through
+    :func:`~theurian.domain.review_search.texts_of` rather than by a list
+    somebody keeps in step here: a field added to :class:`ReviewSearchRecord`
+    is covered by the change that adds it, whether it is a plain string, a
+    tuple of them, or a tuple of fragments -- and the same walk backs
+    :class:`~theurian.domain.review_search.ReviewSearchQuery`'s own
+    construction check, so the two cannot drift into checking different
+    populations. ``test_review_search_builder.py``'s
     ``test_the_transportability_check_reaches_every_string_a_record_carries``
     is what fails when a shape stops being reached.
 
@@ -437,31 +441,19 @@ def _refuse_untransportable(record: ReviewSearchRecord) -> None:
     into one, so a hand-edited record can carry a value the writer that landed it
     could never have produced.
     """
-    for field in fields(record):
-        for text in _strings_in(getattr(record, field.name)):
-            reason = untransportable_reason(text)
-            if reason is not None:
-                raise ReviewSearchBuildError(
-                    # "a value in `<field>`", not "a `<field>`: the field names are
-                    # a mix of singulars and plurals (`file_path`, `texts`,
-                    # `participant_ids`), and the article-plus-name form printed
-                    # "carries a texts this build cannot store" against a real
-                    # record on 2026-09-10. The wrapper reads for every member.
-                    f"`{record.relative_path}` carries a value in `{field.name}` this "
-                    f"build cannot store: {reason}.",
-                    remedy=_record_cure(record.relative_path),
-                )
-
-
-def _strings_in(value: object) -> Iterator[str]:
-    """Every string reachable inside one record field, at any of its shapes."""
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, ReviewTextFragment):
-        yield value.content
-    elif isinstance(value, tuple):
-        for member in value:
-            yield from _strings_in(member)
+    for field_name, text in texts_of(record):
+        reason = untransportable_reason(text)
+        if reason is not None:
+            raise ReviewSearchBuildError(
+                # "a value in `<field>`", not "a `<field>`: the field names are
+                # a mix of singulars and plurals (`file_path`, `texts`,
+                # `participant_ids`), and the article-plus-name form printed
+                # "carries a texts this build cannot store" against a real
+                # record on 2026-09-10. The wrapper reads for every member.
+                f"`{record.relative_path}` carries a value in `{field_name}` this "
+                f"build cannot store: {reason}.",
+                remedy=_record_cure(record.relative_path),
+            )
 
 
 __all__ = [
