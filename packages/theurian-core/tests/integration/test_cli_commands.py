@@ -932,10 +932,10 @@ def test_status_outside_a_repository_keeps_a_certain_answer_on_a_wholly_corrupt_
 # `_unresolved_status` publishes one `reason`, and it is the *resolution*
 # failure's. `resolve_context` loads and validates the migrations before it asks
 # the registry which project this root is, so a broken migration raises first --
-# and when the registry is *also* unreadable, the payload pairs a
-# `registered: null` with migration prose and says nothing at all about the file
-# that produced the null. The reader is told a project's registration cannot be
-# established and handed a cure for a YAML file.
+# and when the registry was *also* unreadable, the payload up to `2d3c23bb`
+# paired a `registered: null` with migration prose and said nothing at all about
+# the file that produced the null. The reader was told a project's registration
+# could not be established and handed a cure for a YAML file.
 #
 # The rule these four tests hold is two additive keys, `registryReason` and
 # `registryRemedy`, published whenever this branch's own `_read_registry()` comes
@@ -962,15 +962,18 @@ _UNPARSEABLE_REGISTRY = b'{"demo": {"rootPath"'
 
 #: The invocation `_registry_reset_remedy` must keep. Restated from the unit pin
 #: in `tests/unit/test_project_registry_errors.py` rather than imported, because
-#: "these payloads carry this exact string" is a claim about the CLI surface:
-#: three assertions already in this file read it off three different payloads.
+#: "these payloads carry this exact string" is a claim about the CLI surface and
+#: this file is where that surface is read. Five assertions here take it at
+#: `043f0c5e` -- four off `project status` payloads and one off `project
+#: unregister`'s -- the three predating #381 spelled as literals, the two added
+#: with it through this constant.
 RE_REGISTER_INVOCATION = "re-register each project with `theurian project register`"
 
 
 def test_status_names_the_registry_failure_a_broken_migration_would_otherwise_hide(
     project: Path, registry_path: Path
 ) -> None:
-    """Issue #381. Two faults, one `reason`, and the wrong one wins.
+    """Issue #381. Two faults, one `reason`, and the wrong one won.
 
     Measured at ``2d3c23bb``, this exact state published ``{"reason": <the
     migration parse error>, "registered": null, "unreadable": []}`` at exit 0 --
@@ -1145,10 +1148,11 @@ def test_status_publishes_no_registry_failure_keys_when_the_registry_could_be_re
     and empty would satisfy a truthiness check while telling every consumer that
     the registry had something to report.
 
-    All three cases are expected GREEN before the fix as well as after; the point
-    of the pin is that they stay green *through* it. Each asserts the state it
-    set up first, so a fixture that stopped reaching its branch fails here rather
-    than passing the key check vacuously.
+    All three cases were GREEN at ``2d3c23bb``, where the keys did not exist, and
+    are GREEN at ``043f0c5e``, where they do; the point of the pin is that they
+    stayed green *through* the change rather than that they ever went red. Each
+    asserts the state it set up first, so a fixture that stopped reaching its
+    branch fails here rather than passing the key check vacuously.
     """
     _invoke("init")
     case.set_up(project, registry_path)
@@ -1186,9 +1190,9 @@ def test_status_outside_a_repository_publishes_no_registry_failure_keys(
     on it, and would tell a user standing in ``/tmp`` to delete every project's
     registration. ``theurian project list`` is the surface that reports the file.
 
-    GREEN before the fix and after: the pin is that the new keys are gated on the
-    same ``find_git_root`` the ``registered`` answer is, and not on the registry
-    read alone.
+    GREEN at ``2d3c23bb`` and at ``043f0c5e`` alike: the pin is that the keys are
+    gated on the same ``find_git_root`` the ``registered`` answer is, and not on
+    the registry read alone.
     """
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("THEURIAN_DATA_DIR", str(tmp_path / "datadir"))
@@ -1215,25 +1219,43 @@ def test_status_outside_a_repository_publishes_no_registry_failure_keys(
 # -- the destructive half of #381: what a delete-the-registry cure may claim --
 #
 # `projects.json` is the enumeration of every project's registration, and an
-# entry's `registeredAt` is recorded in no project's own `.theurian/`. Three
-# cures nevertheless offer to delete it, and the shape they must hold is
-# `registry_deletion_cure_claims` -- shared with the unit pin on
-# `_registry_reset_remedy`, because this family (PR #596) recurs at exactly the
-# seam between two files that each restate the rule.
+# entry's `registeredAt` is recorded in no project's own `.theurian/`. Two cure
+# texts nevertheless offer to delete it, and the shape both must hold is
+# `registry_deletion_cure_claims` -- shared with the unit pin rather than
+# restated there, because this family (PR #596) recurs at exactly the seam
+# between two files that each keep their own copy of the rule.
 #
-# `_registry_reset_remedy` is pinned in `tests/unit/test_project_registry_errors.py`.
-# The two below are `_context_remedy`'s defaults, reached only when the raising
-# error carries no remedy of its own -- which is why they need a monkeypatched
-# raise to drive at all, and why nothing has ever rendered them in a test.
+# One test per definition. Measured at `043f0c5e`:
+#
+#   `_registry_reset_remedy` (application/project_service.py:335) is carried by
+#   four raises inside `ProjectRegistry` and reaches a caller as `exc.remedy`.
+#   `tests/unit/test_project_registry_errors.py` holds it.
+#
+#   `_registry_default_remedy` (cli/commands.py:692) is `_context_remedy`'s
+#   `default` at the two surfaces that read the whole registry --
+#   `_RegistryRead.failure_fields` and `project list` -- and it is what the two
+#   cases below render. Issue #381 unified it out of two default strings written
+#   separately at those call sites, so the claim now lives inside the cure
+#   instead of at each seam.
+#
+# A `default` renders only when the raising error carries no remedy of its own,
+# and every refusal `ProjectRegistry` raises today carries one. Hence the
+# monkeypatched raise below, and hence nothing rendering this text before this
+# test existed.
+#
+# One rendering is deliberately not driven here: `failure_fields` also publishes
+# it as `registryRemedy` on `project status`' unresolved branch. That is the same
+# string from the same call site as the resolved case below, so what it would add
+# is coverage of the key name -- which the #381 tests above already hold.
 
 
 def _raise_without_a_remedy(self: object) -> dict[str, dict[str, str]]:
     """A registry failure that carries no cure of its own, so the default renders.
 
-    Every failure `ProjectRegistry` actually raises today sets one, which is why
-    `_context_remedy`'s defaults are otherwise unreachable -- and unrendered by
-    any test. They are still shipped text, and a fifth self-describing error
-    added without a remedy would publish them.
+    Every refusal `ProjectRegistry` actually raises today sets a remedy, which is
+    why `_registry_default_remedy` is otherwise unreachable -- and was unrendered
+    by any test until this one. It is still shipped text: a fifth self-describing
+    error added to those readers without a remedy would publish it.
     """
     raise ProjectError("the registry could not be read", remedy="")
 
@@ -1251,7 +1273,7 @@ def _published_remedy(payload: dict[str, Any]) -> str:
 
 
 def _list_over_a_registry_error_with_no_remedy(monkeypatch: pytest.MonkeyPatch) -> str:
-    """`project list`'s `_context_remedy` default, rendered."""
+    """`_registry_default_remedy`, rendered through `project list`'s refusal."""
     monkeypatch.setattr(ProjectRegistry, "load", _raise_without_a_remedy)
     code, payload = _invoke("project", "list")
 
@@ -1260,11 +1282,12 @@ def _list_over_a_registry_error_with_no_remedy(monkeypatch: pytest.MonkeyPatch) 
 
 
 def _status_over_a_registry_error_with_no_remedy(monkeypatch: pytest.MonkeyPatch) -> str:
-    """`_RegistryRead.failure_fields`' `_context_remedy` default, rendered.
+    """The same `_registry_default_remedy`, rendered through `failure_fields`.
 
     The resolved branch: `resolve_context` reads the registry through
     `ids_for_root`, which this patch does not touch, so the project resolves and
-    the *second* read is the one that fails.
+    the *second* read is the one that fails. `failure_fields` therefore spells
+    the pair `reason`/`remedy` here, not `registryReason`/`registryRemedy`.
     """
     _invoke("project", "register")
     monkeypatch.setattr(ProjectRegistry, "load", _raise_without_a_remedy)
@@ -1283,18 +1306,24 @@ def _status_over_a_registry_error_with_no_remedy(monkeypatch: pytest.MonkeyPatch
 def test_every_registry_cure_that_offers_deletion_names_what_the_deletion_costs(
     project: Path, monkeypatch: pytest.MonkeyPatch, render: Callable[[pytest.MonkeyPatch], str]
 ) -> None:
-    """The same lens as the unit pin, over the two cures written in the CLI.
+    """The same lens as the unit pin, over the cure the CLI writes itself.
 
-    "Inspect {path}, or delete it and re-register each project." leads with
-    inspection and promises nothing -- so it clears two of the three properties
-    already -- but it says nothing about what the deletion removes, and "each
-    project" reads as "the ones you care about" rather than "every registration
-    on this machine". RED on the cost property before the fix, GREEN after.
+    Both cases render the one `_registry_default_remedy`, so the parametrize is
+    over the *routes* rather than over two texts: a unified cure is only unified
+    while every route still arrives at it.
+
+    The text it replaced was "Inspect {path}, or delete it and re-register each
+    project.", written out separately at each of those two call sites. It led
+    with inspection and promised nothing, so it cleared two of the three
+    properties already; what it never said was what the deletion removes, and
+    "each project" reads as "the ones you care about" rather than "every
+    registration on this machine". RED on the cost property at `2d3c23bb`, GREEN
+    at `043f0c5e`.
 
     Walked over the *rendered* text rather than asserted against a table of call
     sites: a table agrees with the routing it checks, while a render can only
     agree with what a caller is actually handed. That is PR #596's rule for this
-    family, and it is what makes a fourth cure added later fail here rather than
+    family, and it is what makes a third cure added later fail here rather than
     be forgotten by a list.
     """
     _invoke("init")

@@ -42,11 +42,16 @@ pytestmark = pytest.mark.unit
 #: the same guard `test_cli_commands.py` uses before a permission-refusal test.
 _CANNOT_BE_REFUSED_BY_A_MODE = sys.platform == "win32" or os.geteuid() == 0
 
-#: The invocation five other pins already assert on -- `test_cli_commands.py`
-#: (three), `test_unreadable_registry_surface.py` and `test_setup_service.py`.
-#: Named here because it is the half of this remedy that must *survive* the
-#: rewrite issue #381 asks for: a cure that drops it leaves the reader with a
-#: file they have been told to delete and no way back.
+#: The invocation `_registry_reset_remedy` must keep. Seven assertions outside
+#: this file read it at `043f0c5e`: five in `test_cli_commands.py`, one in
+#: `test_unreadable_registry_surface.py`, one in `test_setup_service.py`.
+#: Recount rather than trusting that number -- it moves with the next pin -- by
+#: grepping `packages/theurian-core/tests` for this literal and for
+#: `RE_REGISTER_INVOCATION`.
+#:
+#: Named here because it is the half of this remedy that had to *survive* issue
+#: #381's rewrite: a cure that drops it leaves the reader with a file they have
+#: been told to delete and no way back.
 RE_REGISTER_INVOCATION = "re-register each project with `theurian project register`"
 
 
@@ -61,14 +66,15 @@ def _assert_the_reset_remedy_shape(text: str, *, where: str) -> None:
     would have to be rewritten byte for byte alongside any correction -- which is
     how a wrong claim survives its own fix.
 
-    The three properties are shared with every other surface that offers to
-    delete this file (``registry_deletion_cure_claims``); the invocation below is
-    this remedy's own, because the ``_context_remedy`` defaults spell the
-    recovery without naming the command.
+    The three properties are shared with the other cure that offers to delete
+    this file (``registry_deletion_cure_claims``); the invocation below is this
+    remedy's own, because that other cure -- the CLI's ``_registry_default_remedy``
+    -- spells the recovery without naming the command, closing at ``043f0c5e``
+    with "Re-register each project afterwards."
     """
     assert_registry_deletion_cure_shape(text, where=where)
     assert RE_REGISTER_INVOCATION in text, (
-        f"{where} must keep the recovery typeable -- five other pins read this exact "
+        f"{where} must keep the recovery typeable -- pins across the suite read this exact "
         f"invocation, and a cure that only says 'delete it' has no way out: {text!r}"
     )
 
@@ -136,8 +142,8 @@ def test_the_reset_remedy_does_not_promise_a_costless_deletion_of_the_registry(
     is not also recoverable from each project's own .theurian/", which is a
     costless-removal claim over data-holding bytes: the shape PR #596's
     ``test_no_cure_claims_a_costless_removal_outside_the_shape_guard`` exists to
-    refuse, met again at a different seam. RED before the fix on that claim;
-    GREEN after, over whatever prose replaces it.
+    refuse, met again at a different seam. RED on that claim at ``2d3c23bb``,
+    GREEN at ``043f0c5e`` over the prose that replaced it.
 
     **Driven through a body that is not JSON rather than through a ``chmod``**,
     and that is what makes this the load-bearing pin rather than a duplicate of

@@ -21,13 +21,18 @@ the author's:
    (:data:`INSPECTION_INVITATIONS`).
 
 **Shared rather than restated at each pin, because the seam is where this family
-recurs.** Four surfaces publish a delete-the-registry cure and they are reached
-through three different call paths: ``_registry_reset_remedy`` itself
-(``application/project_service.py``), ``_RegistryRead.failure_fields``' and
-``project list``'s ``_context_remedy`` defaults (``cli/commands.py``), and --
-once issue #381 lands -- ``project status``' unresolved branch through the first
-of those. A shape written out twice in two files drifts on the third surface,
-which is precisely how the #596 family reached four faces.
+recurs.** Two cure texts offer to delete this file, and they live in different
+layers. ``_registry_reset_remedy`` (``application/project_service.py``) is
+carried by four raises inside ``ProjectRegistry`` and reaches a caller as
+``exc.remedy``. ``_registry_default_remedy`` (``cli/commands.py``) is
+``_context_remedy``'s ``default`` at the two surfaces that read the whole
+registry -- ``_RegistryRead.failure_fields``, which ``project status`` calls on
+each of its two branches, and ``project list``. Issue #381 unified the second of
+those out of two default strings written separately at those two call sites,
+moving the claim inside the cure instead of restating it where the cure is
+chosen: PR #596's own fix for this family, applied at a new seam. A shape
+written out twice in two files drifts on the next surface, which is precisely
+how the #596 family reached four faces.
 
 ``each project`` is deliberately **not** a cost phrase. Every one of these cures
 already says "re-register each project", so a check that accepted it would hold
