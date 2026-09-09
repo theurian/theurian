@@ -26,6 +26,7 @@ from migration_fixtures import UNREACHED_BODY_PIN, body_pin
 from registry_deletion_cure_claims import (
     assert_a_deletion_cure_does_not_claim_it_is_costless,
     assert_registry_deletion_cure_shape,
+    the_pinned_cure,
 )
 from typer.testing import CliRunner
 
@@ -960,14 +961,35 @@ def test_status_outside_a_repository_keeps_a_certain_answer_on_a_wholly_corrupt_
 #: pin. What varies here is which *key* carries it.
 _UNPARSEABLE_REGISTRY = b'{"demo": {"rootPath"'
 
-#: The invocation `_registry_reset_remedy` must keep. Restated from the unit pin
-#: in `tests/unit/test_project_registry_errors.py` rather than imported, because
-#: "these payloads carry this exact string" is a claim about the CLI surface and
-#: this file is where that surface is read. Five assertions here take it at
-#: `043f0c5e` -- four off `project status` payloads and one off `project
-#: unregister`'s -- the three predating #381 spelled as literals, the two added
-#: with it through this constant.
+#: The invocation every arm of the registry cure must keep. Owned as a property
+#: by `registry_deletion_cure_claims`, whose
+#: `assert_a_deletion_cure_names_the_way_back` holds it over the cure itself, and
+#: restated here rather than imported, because "these payloads carry this exact
+#: string" is a claim about the CLI surface and this file is where that surface
+#: is read: an edit to the shared constant alone must not be able to relax an
+#: assertion about what a caller receives. Enumerate the reads with `git grep -n
+#: "re-register each project with" packages/theurian-core/tests` rather than
+#: trusting a number written here; at `30e460b9` this file holds five, four off
+#: `project status` payloads and one off `project unregister`'s, the three
+#: predating #381 spelled as literals and the two added with it through this
+#: constant.
 RE_REGISTER_INVOCATION = "re-register each project with `theurian project register`"
+
+#: The sentence `_registry_cure_in_repair_order` appends to the registry cure on
+#: the unresolved branch, byte for byte.
+#:
+#: Two cures in one payload need an order, and this one's is not the order a
+#: reader takes them in: the registry cure ends by telling them to run `theurian
+#: project register`, and on the compound arm that command refuses on the *other*
+#: failure named in the same payload. So the destructive half would be followed
+#: and the recovery half would not run. Appended at the emit site rather than
+#: inside the shared cure, because `project list` renders that cure with no
+#: `reason` key beside it for the sentence to point at.
+THE_REPAIR_ORDER_SENTENCE = (
+    "If `reason` names a different failure, fix that one first: `theurian project register` "
+    "refuses while this repository's project cannot be resolved, so the re-registration above "
+    "cannot run until that failure is cleared."
+)
 
 
 def test_status_names_the_registry_failure_a_broken_migration_would_otherwise_hide(
@@ -1014,6 +1036,46 @@ def test_status_names_the_registry_failure_a_broken_migration_would_otherwise_hi
     )
 
 
+def test_the_compound_payload_says_which_of_its_two_failures_to_fix_first(
+    project: Path, registry_path: Path
+) -> None:
+    """A destructive instruction whose recovery the same payload has already blocked.
+
+    This is the state the keys above created and nothing yet ordered. ``reason``
+    is the migration's, ``registryRemedy`` is the registry's cure, and where that
+    migration raises without a ``remedy`` of its own (issue #384) the destructive
+    cure is the *only* instruction the payload carries. Followed verbatim it
+    unregisters every project on the machine, and then the ``theurian project
+    register`` it ends with refuses at exit 1 on the migration named in the same
+    payload -- ``_resolve_or_refuse`` calls the ``resolve_context`` that already
+    failed. The reader takes the loss and does not get the recovery.
+
+    Pinned as the cure *plus* the ordering sentence, byte for byte, rather than
+    as a substring: what has to hold is that the shared cure arrived unaltered
+    and the ordering was appended to it. A cure quietly rewritten at this emit
+    site would satisfy "the sentence is in there" and put a second spelling of a
+    destructive offer one layer up, which is the drift PR #596 watched reach four
+    faces.
+    """
+    _invoke("init")
+    _invoke("project", "register")
+    _write_malformed_yaml_migration(project)
+    registry_path.write_bytes(_UNPARSEABLE_REGISTRY)
+
+    code, payload = _invoke("project", "status")
+
+    assert code == 0
+    assert MALFORMED_YAML_MIGRATION_FILENAME in payload["reason"], (
+        "the fixture must reach the compound arm, where `reason` is not the registry's"
+    )
+    assert payload["registryRemedy"] == (
+        f"{the_pinned_cure('unparsable', registry_path)} {THE_REPAIR_ORDER_SENTENCE}"
+    ), (
+        "the compound payload must publish the shared cure unaltered and name the order the "
+        "two failures have to be repaired in"
+    )
+
+
 def test_status_names_the_registry_failure_beside_the_reason_that_already_carried_it(
     project: Path, registry_path: Path
 ) -> None:
@@ -1030,8 +1092,17 @@ def test_status_names_the_registry_failure_beside_the_reason_that_already_carrie
     verdict from one pair of keys without first working out *why* resolution
     failed, and a pair that is present only sometimes is a pair every caller
     eventually stops checking. The equality assertion is what pins the
-    duplication as duplication -- two reads of the same file reaching the same
-    cure -- rather than leaving room for two subtly different sentences about it.
+    duplication as duplication -- one sentence about one file under two names --
+    rather than leaving room for two subtly different sentences about it.
+
+    Two *reads* produce those values, not one, and they are allowed to disagree:
+    ``test_status_says_it_cannot_know_when_the_registry_breaks_between_its_two_reads``
+    below is the case where the file changes in between and each key stays honest
+    about its own read. What is pinned here is that in a state where nothing
+    changes between them, neither key gains a sentence the other lacks -- and
+    since ``30e460b9`` that includes the repair-order sentence, which
+    ``_unresolved_status`` appends to ``remedy`` too wherever ``remedy`` is this
+    same cure.
     """
     _invoke("init")
     _invoke("project", "register")
@@ -1046,11 +1117,16 @@ def test_status_names_the_registry_failure_beside_the_reason_that_already_carrie
     assert RE_REGISTER_INVOCATION in payload["remedy"], "and so is today's remedy"
 
     assert payload["registryReason"] == payload["reason"], (
-        "the same read, published under the name that says which file it is about"
+        "one file, read twice with nothing changing in between, published under the name "
+        "that says which file it is about as well as under the one that does not"
     )
     assert payload["registryRemedy"] == payload["remedy"], (
         "the duplication is deliberate: the registry keys must be readable without first "
         "deciding whether the resolution failure happened to be the registry's"
+    )
+    assert payload["remedy"].endswith(THE_REPAIR_ORDER_SENTENCE), (
+        "the ordering sentence is appended to whichever keys carry this cure, so the two "
+        "keys cannot end up one sentence apart"
     )
     assert_a_deletion_cure_does_not_claim_it_is_costless(
         payload["registryRemedy"], where="project status --json registryRemedy"
@@ -1132,7 +1208,7 @@ class _RegistryReadSucceeds:
 def test_status_publishes_no_registry_failure_keys_when_the_registry_could_be_read(
     project: Path, registry_path: Path, case: _RegistryReadSucceeds
 ) -> None:
-    """The fence on issue #381's keys: they answer for a failure, not for a null.
+    """The keys answer for a failure, not for a null -- and one case is what says so.
 
     ``registered: null`` has two causes and only one of them is a registry that
     could not be read. The other is a file that parsed perfectly and holds an
@@ -1142,6 +1218,15 @@ def test_status_publishes_no_registry_failure_keys_when_the_registry_could_be_re
     instead of on ``_read_registry().failure`` would print "delete the registry"
     over one hand-edited line.
 
+    **Only ``unreadable-entry-unresolved`` can catch that.** The keys are written
+    by ``_unresolved_status``, which the other two cases never enter: they resolve,
+    so no gate keyed any way at all could publish a registry key there. Calling
+    all three a fence would overstate two of them. What they are is controls --
+    the resolved payload has never carried these keys and this says so if it ever
+    starts -- and the discriminating case is the third, which reaches the
+    unresolved branch with ``registered: null``, an ``unreadable`` entry, and a
+    registry that read perfectly.
+
     ``not in`` rather than ``is None``: absence is this payload's "never asked",
     and ``null`` is "asked, and unknowable" -- the distinction
     ``_unresolved_status``' own docstring draws for ``indexStale``. A key present
@@ -1149,10 +1234,10 @@ def test_status_publishes_no_registry_failure_keys_when_the_registry_could_be_re
     the registry had something to report.
 
     All three cases were GREEN at ``2d3c23bb``, where the keys did not exist, and
-    are GREEN at ``043f0c5e``, where they do; the point of the pin is that they
-    stayed green *through* the change rather than that they ever went red. Each
-    asserts the state it set up first, so a fixture that stopped reaching its
-    branch fails here rather than passing the key check vacuously.
+    have been GREEN since ``043f0c5e``, where they arrived; the point of the pin
+    is that they stayed green *through* the change rather than that they ever
+    went red. Each asserts the state it set up first, so a fixture that stopped
+    reaching its branch fails here rather than passing the key check vacuously.
     """
     _invoke("init")
     case.set_up(project, registry_path)
@@ -1161,7 +1246,7 @@ def test_status_publishes_no_registry_failure_keys_when_the_registry_could_be_re
 
     assert code == 0
     assert ("projectId" in payload) == (case.branch == "resolved"), (
-        f"the fixture must reach the {case.branch} branch for this fence to mean anything"
+        f"the fixture must reach the {case.branch} branch for this case to mean anything"
     )
     assert payload["registered"] is case.registered
     assert payload["unreadable"] == case.unreadable
@@ -1219,29 +1304,30 @@ def test_status_outside_a_repository_publishes_no_registry_failure_keys(
 # -- the destructive half of #381: what a delete-the-registry cure may claim --
 #
 # `projects.json` is the enumeration of every project's registration, and an
-# entry's `registeredAt` is recorded in no project's own `.theurian/`. Two cure
-# texts nevertheless offer to delete it, and the shape both must hold is
-# `registry_deletion_cure_claims` -- shared with the unit pin rather than
-# restated there, because this family (PR #596) recurs at exactly the seam
-# between two files that each keep their own copy of the rule.
+# entry's `registeredAt` is recorded in no project's own `.theurian/`. What a
+# cure offering to delete it may claim is `registry_deletion_cure_claims` --
+# shared with the unit pins rather than restated here, because this family
+# (PR #596) recurs at exactly the seam between two files that each keep their own
+# copy of the rule. The CLI kept such a copy until `30e460b9`: `_context_remedy`'s
+# registry `default` was a second spelling of the same destructive offer one
+# layer up. There is one cure now, with one lead per `RegistryFailureArm`, and
+# both of those call sites pass the `UNKNOWN` arm of it.
 #
-# One test per definition. Measured at `043f0c5e`:
+# Recount the render sites rather than trusting a number written here:
 #
-#   `_registry_reset_remedy` (application/project_service.py:335) is carried by
-#   four raises inside `ProjectRegistry` and reaches a caller as `exc.remedy`.
-#   `tests/unit/test_project_registry_errors.py` holds it.
+#   git grep -n "registry_deletion_remedy(" packages/theurian-core/src/theurian
 #
-#   `_registry_default_remedy` (cli/commands.py:692) is `_context_remedy`'s
-#   `default` at the two surfaces that read the whole registry --
-#   `_RegistryRead.failure_fields` and `project list` -- and it is what the two
-#   cases below render. Issue #381 unified it out of two default strings written
-#   separately at those call sites, so the claim now lives inside the cure
-#   instead of at each seam.
+# At `30e460b9` that is the definition, four raises inside `ProjectRegistry` --
+# which reach a caller as `exc.remedy`, and which
+# `tests/unit/test_project_registry_errors.py` holds arm by arm -- and two
+# `_context_remedy` defaults in `cli/commands.py`, at the two surfaces that read
+# the whole registry: `project list` and `_RegistryRead.failure_fields`. Those
+# two are what the cases below render.
 #
 # A `default` renders only when the raising error carries no remedy of its own,
 # and every refusal `ProjectRegistry` raises today carries one. Hence the
-# monkeypatched raise below, and hence nothing rendering this text before this
-# test existed.
+# monkeypatched raise below, and hence nothing rendering the `UNKNOWN` arm before
+# these tests existed.
 #
 # One rendering is deliberately not driven here: `failure_fields` also publishes
 # it as `registryRemedy` on `project status`' unresolved branch. That is the same
@@ -1253,9 +1339,10 @@ def _raise_without_a_remedy(self: object) -> dict[str, dict[str, str]]:
     """A registry failure that carries no cure of its own, so the default renders.
 
     Every refusal `ProjectRegistry` actually raises today sets a remedy, which is
-    why `_registry_default_remedy` is otherwise unreachable -- and was unrendered
-    by any test until this one. It is still shipped text: a fifth self-describing
-    error added to those readers without a remedy would publish it.
+    why the `UNKNOWN` arm is otherwise unreachable -- and was unrendered by any
+    test until this one. It is still shipped text: a fifth self-describing error
+    added to those readers without a remedy would publish it, and the arm's own
+    note in `RegistryFailureArm` is written for exactly that reader.
     """
     raise ProjectError("the registry could not be read", remedy="")
 
@@ -1273,7 +1360,7 @@ def _published_remedy(payload: dict[str, Any]) -> str:
 
 
 def _list_over_a_registry_error_with_no_remedy(monkeypatch: pytest.MonkeyPatch) -> str:
-    """`_registry_default_remedy`, rendered through `project list`'s refusal."""
+    """The cure's `UNKNOWN` arm, rendered through `project list`'s refusal."""
     monkeypatch.setattr(ProjectRegistry, "load", _raise_without_a_remedy)
     code, payload = _invoke("project", "list")
 
@@ -1282,7 +1369,7 @@ def _list_over_a_registry_error_with_no_remedy(monkeypatch: pytest.MonkeyPatch) 
 
 
 def _status_over_a_registry_error_with_no_remedy(monkeypatch: pytest.MonkeyPatch) -> str:
-    """The same `_registry_default_remedy`, rendered through `failure_fields`.
+    """The same `UNKNOWN` arm, rendered through `failure_fields`.
 
     The resolved branch: `resolve_context` reads the registry through
     `ids_for_root`, which this patch does not touch, so the project resolves and
@@ -1306,31 +1393,75 @@ def _status_over_a_registry_error_with_no_remedy(monkeypatch: pytest.MonkeyPatch
 def test_every_registry_cure_that_offers_deletion_names_what_the_deletion_costs(
     project: Path, monkeypatch: pytest.MonkeyPatch, render: Callable[[pytest.MonkeyPatch], str]
 ) -> None:
-    """The same lens as the unit pin, over the cure the CLI writes itself.
+    """The same lens as the unit pins, over the cure a CLI caller is handed.
 
-    Both cases render the one `_registry_default_remedy`, so the parametrize is
-    over the *routes* rather than over two texts: a unified cure is only unified
-    while every route still arrives at it.
+    Both cases render the one `UNKNOWN` arm, so the parametrize is over the
+    *routes* rather than over two texts: a unified cure is only unified while
+    every route still arrives at it. The whole shape is asserted rather than the
+    cost alone; the cost is simply the property that was RED.
 
-    The text it replaced was "Inspect {path}, or delete it and re-register each
+    The text this replaced was "Inspect {path}, or delete it and re-register each
     project.", written out separately at each of those two call sites. It led
-    with inspection and promised nothing, so it cleared two of the three
-    properties already; what it never said was what the deletion removes, and
-    "each project" reads as "the ones you care about" rather than "every
-    registration on this machine". RED on the cost property at `2d3c23bb`, GREEN
-    at `043f0c5e`.
+    with inspection and promised nothing, so it cleared two of today's four
+    properties; what it never said was what the deletion removes, and "each
+    project" reads as "the ones you care about" rather than "every registration
+    on this machine". RED on the cost property at `2d3c23bb`, GREEN at
+    `043f0c5e`.
 
     Walked over the *rendered* text rather than asserted against a table of call
     sites: a table agrees with the routing it checks, while a render can only
     agree with what a caller is actually handed. That is PR #596's rule for this
-    family, and it is what makes a third cure added later fail here rather than
-    be forgotten by a list.
+    family.
+
+    **Its reach is these two routes and no further.** The parametrize is a
+    literal pair, so a third route added to `cli/commands.py` is checked by
+    nothing here -- it is forgotten by exactly the sort of list this file argues
+    against, and claiming otherwise would be worse than the gap. What does cover
+    a new *arm* is `tests/unit/test_registry_deletion_cure_claims.py`, which
+    walks `RegistryFailureArm` itself and pins every member's bytes. The
+    reflective walk that would do the same for render routes is recorded on issue
+    #620, as population for that issue's structural contract test.
     """
     _invoke("init")
 
     remedy = render(monkeypatch)
 
     assert_registry_deletion_cure_shape(remedy, where=f"{render.__name__}'s rendered remedy")
+
+
+def test_project_list_publishes_the_registry_cure_with_no_sentence_about_a_reason_key(
+    project: Path, registry_path: Path
+) -> None:
+    """The fence on where the repair-order sentence is appended.
+
+    ``_registry_cure_in_repair_order`` tells the reader that if ``reason`` names a
+    different failure they must fix that one first. It is appended at
+    ``_unresolved_status``' emit site and not inside the shared cure, and this is
+    the reason why: ``project list`` publishes ``error`` and ``remedy``, has no
+    ``reason`` key at all, and reports exactly one failure -- the registry's. A
+    sentence sending this reader to compare against ``reason`` would point at a
+    key that is not in the payload and at a second failure that does not exist.
+
+    Pinned as byte equality against the ``unparsable`` arm rather than as an
+    absence, so the assertion also refuses the opposite drift: the cure arriving
+    here with anything else added or removed.
+    """
+    _invoke("init")
+    registry_path.write_bytes(_UNPARSEABLE_REGISTRY)
+
+    code, payload = _invoke("project", "list")
+
+    assert code == 1, "the fixture must reach the whole-file refusal"
+    assert "reason" not in payload, (
+        "there is no `reason` key on this payload for a repair-order sentence to point at"
+    )
+    assert THE_REPAIR_ORDER_SENTENCE not in payload["remedy"], (
+        "the ordering sentence belongs to the payload that publishes two failures, not to "
+        "the cure every surface shares"
+    )
+    assert payload["remedy"] == the_pinned_cure("unparsable", registry_path), (
+        "and what this surface publishes is the shared cure, unaltered in either direction"
+    )
 
 
 def test_status_says_it_cannot_know_when_the_registry_breaks_between_its_two_reads(
