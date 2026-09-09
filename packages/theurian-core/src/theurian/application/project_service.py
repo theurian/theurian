@@ -7,6 +7,7 @@ because one daemon serves many projects (ADR-0002). Everything under a project's
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import posixpath
@@ -14,8 +15,9 @@ import re
 import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Any, Final
+from typing import Any, Final, Never, NoReturn
 
 from theurian.application.authorization import decode_sensitivities, encode_sensitivities
 from theurian.domain.enums import Sensitivity
@@ -332,22 +334,382 @@ def derived_escape_remedy(knowledge_directory_name: str, subdirectory: str) -> s
     )
 
 
-def _registry_reset_remedy(path: Path) -> str:
+class RegistryFailureArm(StrEnum):
+    """Which whole-registry failure :func:`registry_deletion_remedy` is writing for.
+
+    The arm is passed in rather than inferred, because the thing that decides it
+    -- the condition the raise sits in -- is knowable only at the raise. Naming
+    it makes each caller state the condition its reader is standing in, and a
+    fifth member added here has to be given a lead of its own rather than
+    inheriting whichever branch a fallback happened to be: the dispatch in
+    :func:`_registry_failure_lead` ends in a wildcard that accepts only
+    ``Never``, so the type checker refuses the module until the new member is
+    answered. Measured rather than assumed: adding a ``FIFTH_MEMBER`` to this
+    class and running ``uv run mypy`` refuses
+    ``application/project_service.py`` at that wildcard with ``Argument 1 to
+    "_refuse_an_unclassified_arm" has incompatible type
+    "Literal[RegistryFailureArm.FIFTH_MEMBER]"; expected "Never"  [arg-type]``.
+
+    **The condition, not the ``except`` clause the raise sits under.** Two of
+    these arms are about a *mode*, and an ``OSError`` says only where the call
+    failed, never why: :func:`_arm_for_a_refused_registry` is what turns the
+    ``errno`` into the arm, so that a reader whose registry path holds a
+    directory is not told to ``chmod`` it.
+    """
+
+    #: The file was read and its top level is not a mapping of ids: undecodable
+    #: bytes, JSON that will not parse, or JSON that parses to something else.
+    #: The bytes are in front of the reader, so inspection can lead.
+    UNPARSABLE = "unparsable"
+
+    #: The read of the file itself was refused for ``EACCES`` -- a registry at
+    #: mode ``000``. Nothing can be read out of it until that is undone, so the
+    #: ``chmod`` leads and the inspection follows it.
+    #:
+    #: **``EACCES``, not "the read raised ``OSError``".** The arm's lead states a
+    #: cause, and that cause is true only of a refused mode. An ``EISDIR`` -- a
+    #: directory sitting where the registry file belongs, measured -- reaches the
+    #: same ``except`` with no mode bit to restore, as would an ``EIO`` or an
+    #: ``ESTALE`` from the storage under it, and ``chmod u+r`` would send every
+    #: one of those readers to correct a permission that was never the problem:
+    #: the "remedy that names a non-cause" defect
+    #: :func:`~theurian.cli.commands._state_probe_remedy` records one layer up.
+    #: Those errnos take :attr:`UNKNOWN`; :func:`_arm_for_a_refused_registry` is
+    #: the split.
+    FILE_UNREADABLE = "file-unreadable"
+
+    #: The ``.exists()`` probe was refused for ``EACCES``: this process could not
+    #: *reach* the file. Deletion is blocked with it, so the cure cannot open with
+    #: either reading *or* removing the file -- and its ``chmod`` has to grant what
+    #: the deletion needs, which is write and search on the directory rather than
+    #: read on the file. The same ``EACCES`` split as :attr:`FILE_UNREADABLE`: an
+    #: ``ENAMETOOLONG`` reaching the probe has no directory mode to restore either.
+    #:
+    #: **Two members, and this said "one level up" while covering both.** The
+    #: refusal is at the data directory *or* at any directory above it, and which
+    #: one is not knowable here. Measured on macOS at ``b9e8296b``, once with the
+    #: data directory at ``000`` and once with an ancestor at ``000`` and the data
+    #: directory at ``0700``: both reach this arm, and the ``OSError`` is the same
+    #: shape both times -- ``errno`` 13, ``filename`` the whole registry path,
+    #: ``filename2`` ``None``, ``strerror`` ``'Permission denied'``. The kernel
+    #: names no component, so no code here can name the refuser and the cure must
+    #: be true of both members. That is why its cause reads "could not reach"
+    #: rather than "could not look inside that directory", which was false for the
+    #: ancestor member, and why its steps run top-down: ``chmod u+rwx`` on the data
+    #: directory -- the shipped text's *first* command -- exits 1 with ``Permission
+    #: denied`` while a directory above it denies the search (measured), so the
+    #: ancestors' ``u+rx`` has to come first.
+    #:
+    #: **The cure locates the culprit by ``cd``, not by ``ls``, and that is a
+    #: portability decision.** What the probe needs from every component is the
+    #: *search* bit, which is exactly what ``cd`` tests. Measured on macOS at
+    #: ``b9e8296b`` over six ancestor modes with the data directory at ``0700``:
+    #: ``0000``, ``0400`` and ``0600`` reach this arm and each refuses ``cd``
+    #: (exit 1); ``0100``, ``0500`` and ``0700`` reach it not at all and each
+    #: accepts ``cd`` -- a locator with no false negative and no false positive.
+    #: ``ls`` happened to agree on that platform, but its exit status for a
+    #: read-without-search directory is an implementation's choice rather than a
+    #: POSIX one, and there is no Linux machine here to measure it on, so keying
+    #: the instruction on it would publish an unmeasured claim.
+    DIRECTORY_UNREADABLE = "directory-unreadable"
+
+    #: The arm for a reader whose condition this module cannot name, and there
+    #: are two ways to become one. The CLI's two whole-registry surfaces pass it
+    #: as ``_context_remedy``'s ``default`` -- ``project list`` and
+    #: ``_RegistryRead.failure_fields`` -- where it renders only for a registry
+    #: error carrying no ``remedy`` of its own, which no refusal below raises
+    #: today: an error those surfaces have never heard of, which could have come
+    #: from a registry that opens perfectly or from one at mode ``000``. The two
+    #: ``OSError`` raises below reach it through
+    #: :func:`_arm_for_a_refused_registry`, which hands this arm back for any
+    #: errno that is not ``EACCES``.
+    #:
+    #: **So the lead prescribes nothing**, and that is what the second
+    #: population changed. While this arm rendered only for the CLI ``default``
+    #: it could offer the ``chmod`` conditionally -- "if the file or its
+    #: directory refuses to open" -- because either half might be the reader's
+    #: case. Now that the errno split routes every non-``EACCES`` refusal here,
+    #: that antecedent is *true* for an ``EISDIR`` reader while the ``chmod``
+    #: cures nothing they have: a stated-false cause wearing a conditional,
+    #: which is the same defect the split was written to end -- and the
+    #: arrivals a ``chmod`` does cure are the ones the split sends to the two
+    #: arms above. The lead therefore prescribes nothing. It invites the read
+    #: and sends the reader to the message this cure travels with, which is
+    #: where the cause is named: both ``default`` sites publish that message
+    #: beside the cure (``error`` at ``project list``, ``reason`` or
+    #: ``registryReason`` at ``project status``), and both raises below put the
+    #: errno's own words in it.
+    UNKNOWN = "unknown"
+
+
+#: What deleting the registry actually removes, stated beside the offer rather
+#: than at the seam that chooses it (PR #596's family, met again at this one).
+#: Two things go, and neither is recoverable from any project's own
+#: ``.theurian/``: every *other* project's registration, since the deletion is
+#: not scoped to the one the reader came here about, and each entry's
+#: ``registeredAt``, which :meth:`ProjectRegistry.register` preserves from the
+#: existing entry and never recomputes -- so re-registering restamps it with
+#: today's date rather than restoring it.
+_WHAT_DELETING_THE_REGISTRY_COSTS: Final = (
+    "The file records every project you have registered, so deleting it unregisters all "
+    "of them, not only this one, and re-registering stamps today's date over each entry's "
+    "original registeredAt."
+)
+
+#: The way back, and the half of this cure that has to survive every rewrite: a
+#: reader told to delete a file and given no invocation has no way back. Pinned
+#: by name across the suite, under two spellings, so the key that enumerates the
+#: pins is both of them::
+#:
+#:     git grep -n -e "re-register each project" -e RE_REGISTER_INVOCATION \
+#:         packages/theurian-core/tests
+#:
+#: The literal alone misses the assertions that read the tests' own constant
+#: instead of spelling it.
+#:
+#: **The ids are what recovery has to preserve, and the text used to say "roots"
+#: and name the one invocation that cannot preserve them.** An id is not stored
+#: anywhere else: :func:`derive_project_id` slugs the *directory name*, and the
+#: registry is what overrides it. So deleting the file frees every id, and a bare
+#: re-registration silently re-derives each one. Measured through the real CLI
+#: against a redirected ``HOME`` and ``THEURIAN_DATA_DIR`` on 2026-09-09 at
+#: ``b9e8296b``: a project in a directory named ``gamma`` registered as
+#: ``gamma-prod``, its ``projects.json`` removed, then ``theurian project
+#: register`` -- exit 0, and the entry came back keyed ``gamma``. With two
+#: checkouts both named ``api``, re-registering ``two/api`` first took the id
+#: ``api`` at exit 0 and ``one/api`` was then refused at exit 1: the id had been
+#: re-pointed at a different repository, which is the SEC-13 shape
+#: :meth:`ProjectRegistry.register` refuses to *do* -- it has nothing to refuse
+#: against once the file is gone.
+#:
+#: **What ``--project-id`` restores, field by field**, measured the same way and
+#: the same day. The field set is :meth:`ProjectRegistry.register`'s own ``entry``
+#: literal plus the key it is stored under -- re-derive it there rather than
+#: trusting this list, because a field added to that dict is a field this text
+#: silently stops accounting for:
+#:
+#: ==================  =========================================================
+#: field               ``register --project-id <id>`` run inside ``rootPath``
+#: ==================  =========================================================
+#: ``projectId``       restored -- by the flag, and by nothing else
+#: ``rootPath``        restored -- by where the command is run
+#: ``registeredAt``    restamped with today (named in the cost sentence above)
+#: ``repositoryUrl``   re-read from ``git remote get-url origin``: measured
+#:                     ``https://...`` -> ``""`` with the remote removed
+#: ``defaultBranch``   re-read from ``git symbolic-ref --short HEAD``: measured
+#:                     ``develop`` -> ``hotfix`` from another branch, and ->
+#:                     ``main`` on a detached HEAD
+#: ``knowledgeDirectory``  rewritten as ``DEFAULT_KNOWLEDGE_DIRECTORY``: measured
+#:                     ``.knowledge-custom`` -> ``.theurian``
+#: ==================  =========================================================
+#:
+#: The last three are the "other three fields" the text names. They are re-read
+#: from the tree rather than restored from the record, so they come back changed
+#: wherever the tree has moved -- which is why the text says they are not
+#: restored rather than promising they are the same.
+_HOW_TO_RECOVER_FROM_THE_DELETION: Final = (
+    "Deleting it also frees every id: `theurian project register` with no `--project-id` "
+    "derives the id from the directory name, so a project registered under any other id comes "
+    "back under a different one, and two checkouts whose directories share a name compete for "
+    "a single id -- whichever re-registers first takes it. So read out every entry's projectId "
+    "(the key it sits under) and its rootPath first; then delete it and re-register each "
+    "project with `theurian project register`, passing `--project-id <its projectId>` and "
+    "running it inside that rootPath. The other three fields are not restored from what you "
+    "deleted: repositoryUrl and defaultBranch are re-read from Git as the tree stands then, "
+    "and knowledgeDirectory comes back as the default."
+)
+
+
+def _refuse_an_unclassified_arm(arm: Never) -> NoReturn:
+    """Refuse a value that is not a :class:`RegistryFailureArm` member.
+
+    Typed ``Never`` so it doubles as the exhaustiveness check
+    :class:`RegistryFailureArm`'s docstring measures: a fifth member reaching
+    the wildcard is a fifth member mypy refuses to pass here. What it adds at
+    *runtime* is the half mypy cannot cover -- ``RegistryFailureArm`` is a
+    :class:`~enum.StrEnum`, so an untyped caller can hand
+    :func:`registry_deletion_remedy` a bare string, a member's value routes on
+    the value patterns exactly as the member does, and anything else used to
+    fall out of the ``match`` with no case taken. That returned ``None``, which
+    the caller's f-string rendered as the literal word ``None`` in front of a
+    cure offering to delete the reader's registry.
+    """
+    raise ValueError(
+        f"{arm!r} is not a RegistryFailureArm, so there is no cure written for the condition "
+        f"it names. Pass a member of RegistryFailureArm -- `registry_deletion_remedy` renders "
+        f"one lead per member and has none for anything else."
+    )
+
+
+def _registry_failure_lead(path: Path, arm: RegistryFailureArm) -> str:
+    """The first sentence of the cure, which is the one that differs per arm.
+
+    Everything after it is shared, because the cost and the recovery do not
+    depend on how the reader got here. What does depend on it is whether they
+    can act on the file at all -- and the shipped text assumed they could, for
+    all four arrivals at once: "Inspect {path} ... Once you have read the roots
+    you need out of it" was published verbatim over a registry at mode ``000``
+    whose own message says it "cannot be opened". A cure that opens by telling
+    the reader to read what the payload beside it says is unreadable is not a
+    remedy; it is the message contradicting itself.
+
+    **Each ``chmod`` grants what the sentences around it promise**, which is not
+    the same mode on both unreadable arms. Read on the file is what makes the
+    inspection possible; write *and* search on the directory are what make the
+    ``rm`` in the shared tail possible, and read on the file buys nothing there.
+    Measured over a data directory at mode ``000``, running the arm's own
+    instruction and then the cure's own tail -- ``chmod <mode> <dir>``, ``cat
+    <registry>``, ``rm <registry>``: at ``u+rx`` the ``chmod`` and the ``cat``
+    exited 0 and the ``rm`` exited 1 with ``Permission denied``, leaving the
+    reader at exactly the refusal the arm was written to lift; at ``u+rwx`` all
+    three exited 0.
+
+    **And the directory arm's steps are ordered, because one of its two members
+    cannot run them in the other order.** That arm is reached both by a data
+    directory at ``000`` and by an *ancestor* at ``000``
+    (:attr:`RegistryFailureArm.DIRECTORY_UNREADABLE` records the measurement that
+    they are indistinguishable at the raise). Measured in both, at ``b9e8296b``:
+    ``chmod u+rwx <data dir>`` -- the shipped text's first command -- exited 0 in
+    the first and 1 with ``Permission denied`` in the second, so the arm's own
+    opening step was unrunnable for half its readers. Top-down, ``chmod u+rx
+    <ancestor>`` then ``chmod u+rwx <data dir>``, exited 0 in both, and the
+    ``cat`` and ``rm`` after it exited 0 in both.
+    """
+    match arm:
+        case RegistryFailureArm.UNPARSABLE:
+            # "ids and roots", not "roots": the tail below now asks the reader to
+            # carry the ids across too, and this is the sentence that says the
+            # inspection is possible at all. Promising less than the instruction
+            # needs is how the tail's own "read out the roots" came to name half
+            # of what recovery preserves.
+            return (
+                f"Inspect {path} before removing it -- the ids and roots it lists are legible "
+                f"by eye even where its top level is not something this build can read."
+            )
+        case RegistryFailureArm.FILE_UNREADABLE:
+            return (
+                f"Restore read access to {path} first -- `chmod u+r` on it -- because this "
+                f"process could not open the file, so nothing in it can be read before it is "
+                f"destroyed. Then inspect it."
+            )
+        case RegistryFailureArm.DIRECTORY_UNREADABLE:
+            return (
+                f"Restore access to {path.parent} first, working from the top down: `chmod "
+                f"u+rx` on each directory above it you cannot `cd` into, then `chmod u+rwx` on "
+                f"{path.parent} itself. This process could not reach {path} -- the refusal is "
+                f"at {path.parent} or at a directory above it, and it names the whole path "
+                f"rather than the component that denied it. The order matters: `chmod` on "
+                f"{path.parent} is itself refused while a directory above it denies the "
+                f"search. Until the refusal is lifted, {path} can be neither read nor deleted, "
+                f"and removing the file needs the write bit on {path.parent} as well as the "
+                f"search bit, so `u+rx` alone would restore the read and leave the deletion "
+                f"below refused. Then inspect it."
+            )
+        case RegistryFailureArm.UNKNOWN:
+            return (
+                f"Read {path} before removing it. What refused it is named in the message "
+                f"beside this remedy rather than here, so read that first: it is not always a "
+                f"permission, and neither a directory sitting where the file belongs nor a "
+                f"path the filesystem will not accept is cured by a mode change."
+            )
+        case _:
+            _refuse_an_unclassified_arm(arm)
+
+
+def registry_deletion_remedy(path: Path, arm: RegistryFailureArm) -> str:
     """The remedy for a registry file whose *set of ids* cannot be trusted.
 
-    Reached only when the top level of the file is not what every reader here
-    assumes -- unparsable JSON, or JSON that is not an object -- because that is
-    the one failure this module cannot recover from entry by entry: without a
-    dict of ids to iterate, there is no way to say which registrations are fine
-    and which are not. A malformed *entry* is a narrower problem with its own,
-    narrower remedy: see :meth:`ProjectRegistry.load`,
+    **Three causes, four arms**, which is what the sentence here used to get
+    wrong: it said "reached only when the top level of the file is not what every
+    reader here assumes -- unparsable JSON, or JSON that is not an object",
+    naming two of the three while the two ``OSError`` arms carried this very
+    text, and contradicting :meth:`ProjectRegistry._raw_entries`' own docstring
+    one screen away. The three are: the file cannot be opened at all, its bytes
+    do not decode or parse as JSON, or its top level is not an object. Each
+    leaves this module with no dict of ids to iterate and so no way to say which
+    registrations are fine and which are not. The first splits at the reader's
+    end -- the file's own mode, or the data directory's one level up -- and that
+    is the fourth arm, because only one of them also blocks the deletion. It
+    splits once more into no arm of its own: an ``open`` refused for anything but
+    a mode leaves the reader with nothing to ``chmod``, and takes the
+    :attr:`RegistryFailureArm.UNKNOWN` arm, which prescribes nothing and points
+    at the message instead (:func:`_arm_for_a_refused_registry`). A malformed
+    *entry* is a narrower
+    problem with its own, narrower remedy: see :meth:`ProjectRegistry.load`,
     :meth:`ProjectRegistry.ids_for_root` and :meth:`ProjectRegistry.register`.
+
+    One cure with one per-arm lead, rather than one text per layer. It used to be
+    two: this function's private predecessor, carried by the four raises in
+    :meth:`ProjectRegistry._raw_entries`, and a near-duplicate in
+    ``cli/commands.py`` written as ``_context_remedy``'s ``default`` at the two
+    surfaces that read the whole registry. Two spellings of one destructive offer
+    in two layers is the drift PR #596 watched reach four faces, and the fix that
+    stuck there is this one: the claim lives inside the cure, and a caller that
+    never heard of the split inherits it.
+
+    **The deletion is offered with its cost rather than as a free action**
+    (issue #381). This text used to close with "it is derived and holds nothing
+    that is not also recoverable from each project's own .theurian/" -- a
+    costless-removal claim over the file that *is* the enumeration of the
+    registrations. A removal is honestly called free only over something holding
+    no bytes and no names; this file holds both, so
+    :data:`_WHAT_DELETING_THE_REGISTRY_COSTS` names the loss instead, on every
+    arm.
+
+    **The lead is what the arm decides**, and it is the half that was wrong:
+    inspection can only come first where the reader can inspect. See
+    :func:`_registry_failure_lead`.
+
+    Raises:
+        ValueError: If ``arm`` is not a :class:`RegistryFailureArm` member. The
+            annotation says it cannot be, and an untyped caller is what the
+            annotation does not reach: because the enum is a
+            :class:`~enum.StrEnum`, a bare string carrying a member's *value*
+            routes exactly as the member does, while any other string used to
+            take no case at all and hand this f-string a ``None`` to render --
+            the word ``None``, printed in front of an offer to delete the
+            reader's registry. :func:`_refuse_an_unclassified_arm` is where that
+            now stops.
     """
     return (
-        f"Delete {path} and re-register each project with `theurian project register`; "
-        f"it is derived and holds nothing that is not also recoverable from each "
-        f"project's own .theurian/."
+        f"{_registry_failure_lead(path, arm)} "
+        f"{_WHAT_DELETING_THE_REGISTRY_COSTS} "
+        f"{_HOW_TO_RECOVER_FROM_THE_DELETION}"
     )
+
+
+def _arm_for_a_refused_registry(
+    exc: OSError, *, when_refused: RegistryFailureArm
+) -> RegistryFailureArm:
+    """Which arm an ``OSError`` earns -- decided by its ``errno``.
+
+    The two ``except OSError`` clauses in :meth:`ProjectRegistry._raw_entries`
+    know *where* the call failed, and each used to publish that as *why*:
+    whatever the kernel refused for, the reader was handed the arm written for a
+    refused mode. Measured through ``ProjectRegistry.load`` at ``2d1f60c2``, a
+    *directory* at the registry path answered ``cannot be opened: [Errno 21] Is
+    a directory`` beside "Restore read access ... ``chmod u+r`` on it", and an
+    ``ENAMETOOLONG`` at the ``.exists()`` probe took the data directory's
+    ``chmod`` story the same way. Neither reader has a mode bit to restore, so
+    each was told to correct a permission that was never their problem.
+
+    So ``EACCES`` -- the errno a refused mode actually produces, measured at both
+    of the mode-``000`` conditions ``tests/unit/test_project_registry_errors.py``
+    drives -- takes the arm written for it, and every other errno takes
+    :attr:`RegistryFailureArm.UNKNOWN`, whose lead prescribes no cure at all and
+    sends the reader to the message this cure travels with. That second half is
+    not decoration: routing an errno to an arm that would still have named a
+    ``chmod`` -- even conditionally -- would move the false cause rather than
+    remove it, which is why the split and the ``UNKNOWN`` lead changed together.
+    ``errno`` is the key :func:`~theurian.cli.commands._state_probe_remedy` uses
+    one layer up for the same choice, and this is the narrower set of the two:
+    that seam's sibling in ``proposal_service`` pairs ``EACCES`` with ``EPERM``,
+    which is not the mode refusal these two leads describe.
+
+    ``exc.errno`` is ``None`` for an ``OSError`` that never reached the kernel;
+    that is not ``EACCES`` either, so it takes ``UNKNOWN`` with the rest.
+    """
+    return when_refused if exc.errno == errno.EACCES else RegistryFailureArm.UNKNOWN
 
 
 def entry_root(entry: object) -> Path | None:
@@ -2022,12 +2384,30 @@ class ProjectRegistry:
         Raises only for a failure entry-by-entry validation cannot recover
         from: the file cannot be read at all, it is not JSON, or its top level is
         not an object. Each means the set of ids itself is unknown, so
-        :func:`_registry_reset_remedy` is the only remedy that applies -- and it
+        :func:`registry_deletion_remedy` is the only remedy that applies -- and it
         is now attached to all three, rather than to the last alone. This
         docstring already claimed to cover unparsable JSON while that branch
         raised with no remedy at all, which reached the user as an error naming
         no way out, from the one class of registry failure with a completely
         reliable cure.
+
+        **One cure, four arms, and the arm is passed at the raise.** The three
+        causes above arrive at the reader in four different conditions, and only
+        the last two leave them able to open the file: an unreadable *file*, an
+        unreadable *data directory*, undecodable or unparsable bytes, and a top
+        level that is not a mapping. :class:`RegistryFailureArm` is how each
+        raise says which, because the cure's first sentence -- inspect, or
+        ``chmod`` and then inspect -- is the only part that differs and this is
+        the only place that knows.
+
+        **Which of the two ``OSError`` arms is not the ``except``'s to decide.**
+        A clause knows where the call failed; only ``errno`` knows why, and both
+        clauses used to pass their permission-shaped arm whatever the kernel had
+        refused for -- a directory at the registry path was answered "``chmod
+        u+r`` on it", and an ``ENAMETOOLONG`` at the probe was answered with the
+        data directory's ``chmod``. :func:`_arm_for_a_refused_registry` is the
+        split, and it routes every non-``EACCES`` errno to the arm that assumes
+        neither.
 
         ``UnicodeDecodeError`` is caught beside ``JSONDecodeError`` for the same
         reason ``read_active_index_pointer`` catches it: it is a ``ValueError``
@@ -2058,7 +2438,12 @@ class ProjectRegistry:
         except OSError as exc:
             raise ProjectError(
                 f"{self.path} cannot be opened: {exc}",
-                remedy=_registry_reset_remedy(self.path),
+                remedy=registry_deletion_remedy(
+                    self.path,
+                    _arm_for_a_refused_registry(
+                        exc, when_refused=RegistryFailureArm.DIRECTORY_UNREADABLE
+                    ),
+                ),
             ) from exc
         if not exists:
             return {}
@@ -2067,19 +2452,24 @@ class ProjectRegistry:
         except OSError as exc:
             raise ProjectError(
                 f"{self.path} cannot be opened: {exc}",
-                remedy=_registry_reset_remedy(self.path),
+                remedy=registry_deletion_remedy(
+                    self.path,
+                    _arm_for_a_refused_registry(
+                        exc, when_refused=RegistryFailureArm.FILE_UNREADABLE
+                    ),
+                ),
             ) from exc
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise ProjectError(
                 f"{self.path} cannot be read as JSON: {exc}",
-                remedy=_registry_reset_remedy(self.path),
+                remedy=registry_deletion_remedy(self.path, RegistryFailureArm.UNPARSABLE),
             ) from exc
 
         if not isinstance(loaded, dict):
             raise ProjectError(
                 f"{self.path} must hold a JSON object mapping project ids to registrations, "
                 f"not a {type(loaded).__name__}.",
-                remedy=_registry_reset_remedy(self.path),
+                remedy=registry_deletion_remedy(self.path, RegistryFailureArm.UNPARSABLE),
             )
         return loaded
 
@@ -2116,7 +2506,7 @@ class ProjectRegistry:
 
         The decision this reverses -- and the risk that made it look safe --
         was never really the protection it claimed. The refusal always paired
-        with one remedy, :func:`_registry_reset_remedy`: delete the file and
+        with one remedy, :func:`registry_deletion_remedy`: delete the file and
         re-register *everything*. That remedy destroys the very "this id is
         already spoken for" information the whole-file refusal was meant to
         preserve, so it never actually stopped an id from being reclaimed --

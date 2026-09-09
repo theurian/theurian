@@ -1,18 +1,43 @@
-"""``ProjectRegistry.load``'s raw-filesystem-failure translation (issue #205).
+"""``ProjectRegistry.load``'s refusals, and which cure each one arrives with.
 
-``ProjectRegistry._raw_entries`` -- the shared path behind ``load``, and so
-behind ``project.list``, every project-scoped MCP tool, and ``project
-status`` -- translates a bare ``OSError`` into ``ProjectError`` at two
-separate ``try`` blocks: the ``.exists()`` probe (added when a *data
-directory* at mode ``000`` was found to escape it, one level above where the
-read-side translation already covered a *registry file* at mode ``000``;
-issue #205's Class 1c) and the read itself. Both transformations survived a
-full-suite run with either one reverted -- no existing test drives a
-`chmod`-unreadable registry through `ProjectRegistry.load` at all. These two
-tests are that drive, one per branch, and are the same class for a shared
-reason: both convert the identical raw `OSError`, at the identical two-line
-`except OSError as exc: raise ProjectError(...)` shape, to the identical
-`_registry_reset_remedy`, and are proven here by the identical assertion.
+**The translation (issue #205).** ``ProjectRegistry._raw_entries`` -- the shared
+path behind ``load``, and so behind ``project.list``, every project-scoped MCP
+tool, and ``project status`` -- translates a bare ``OSError`` into
+``ProjectError`` at two separate ``try`` blocks: the ``.exists()`` probe (added
+when a *data directory* at mode ``000`` was found to escape it, one level above
+where the read-side translation already covered a *registry file* at mode
+``000``; issue #205's Class 1c) and the read itself. Both transformations
+survived a full-suite run with either one reverted -- no existing test drives a
+`chmod`-unreadable registry through `ProjectRegistry.load` at all. The
+parametrized test is that drive, one case per branch. They are one class for the
+translation -- the identical raw `OSError`, at the identical two-line
+`except OSError as exc: raise ProjectError(...)` shape -- and two cases for the
+cure, which is the half that is *not* identical: an unreadable file and an
+unreadable data directory leave the reader able to do different things, so each
+branch passes its own ``RegistryFailureArm`` and this test pins which.
+
+**The cure (issue #381).** That remedy used to be pinned here by exact text,
+which could notice the sentence changing but never that it was false -- and it
+was: it promised that deleting the registry "holds nothing that is not also
+recoverable from each project's own .theurian/", a costless-removal claim over
+the one file holding every project's registration. The pin is now the shapes and
+the byte pins in ``registry_deletion_cure_claims``, whose own tests are
+``tests/unit/test_registry_deletion_cure_claims.py``. What this file adds is the
+*wiring*: that each raise reaches for the arm written for the condition it
+raises in. Two of the tests below drive that wiring through bodies rather than
+through a ``chmod`` -- a body that will not decode and a body that decodes to a
+list -- so the claim is asserted even where a mode cannot refuse, which includes
+any run as root.
+
+**Where an ``OSError`` is not enough to decide the arm.** A clause knows where
+the call failed; only ``errno`` knows why, so both ``except OSError`` clauses
+hand theirs to ``_arm_for_a_refused_registry``, which answers with the
+permission-shaped arm for ``EACCES`` and ``RegistryFailureArm.UNKNOWN`` for
+every other errno. The two cases this file drives are both ``EACCES`` and so
+keep their own arms; the non-``EACCES`` conditions -- a directory sitting at the
+registry path, a name the filesystem will not accept -- are planted and followed
+in ``tests/integration/test_registry_cure_execution.py``, which needs a
+filesystem this module deliberately does not touch beyond ``tmp_path``.
 """
 
 from __future__ import annotations
@@ -20,11 +45,21 @@ from __future__ import annotations
 import os
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from registry_deletion_cure_claims import (
+    RE_REGISTER_INVOCATION,
+    assert_a_registry_cure_is_the_pinned_text,
+    assert_registry_deletion_cure_shape,
+)
 
-from theurian.application.project_service import ProjectError, ProjectRegistry
+from theurian.application.project_service import (
+    ProjectError,
+    ProjectRegistry,
+    RegistryFailureArm,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -33,16 +68,21 @@ pytestmark = pytest.mark.unit
 _CANNOT_BE_REFUSED_BY_A_MODE = sys.platform == "win32" or os.geteuid() == 0
 
 
-def _reset_remedy(path: Path) -> str:
-    """The exact text `_registry_reset_remedy` produces, re-derived rather than
-    imported: the function is private to `project_service.py`, and importing
-    a private helper to build the expected value would make this test unable
-    to notice a change to *what it returns*, only to whether it was called.
+def _assert_the_registry_cure(text: str, *, arm: RegistryFailureArm, path: Path) -> None:
+    """The cure a refusal carries: the right shape, and the right arm's bytes.
+
+    Both layers, in the order ``registry_deletion_cure_claims`` argues for. The
+    shapes say what any cure for this file must hold -- no costless claim, the
+    cost beside the deletion, an invitation before the destruction, and the
+    ``theurian project register`` invocation that makes the recovery typeable.
+    The byte pin then says *which* of the four texts arrived, which is the only
+    way to catch a raise that reaches for the wrong arm: swapping the two
+    ``OSError`` branches would leave every shape satisfied and tell the reader to
+    ``chmod`` the wrong thing.
     """
-    return (
-        f"Delete {path} and re-register each project with `theurian project register`; "
-        f"it is derived and holds nothing that is not also recoverable from each "
-        f"project's own .theurian/."
+    assert_registry_deletion_cure_shape(text, where=f"the {arm.value} cure at the raise")
+    assert_a_registry_cure_is_the_pinned_text(
+        text, arm=arm.value, path=path, where=f"the {arm.value} cure at the raise"
     )
 
 
@@ -68,22 +108,44 @@ def _make_registry_file_unreadable(registry: ProjectRegistry) -> Path:
     return registry.path
 
 
+@dataclass(frozen=True)
+class _AnUnreadableRegistry:
+    """One ``OSError`` branch, and the arm whose cure it must raise with."""
+
+    make_unreadable: Callable[[ProjectRegistry], Path]
+    arm: RegistryFailureArm
+
+
 @pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
 @pytest.mark.parametrize(
-    "make_unreadable",
-    [_make_data_directory_unreadable, _make_registry_file_unreadable],
+    "case",
+    [
+        _AnUnreadableRegistry(
+            _make_data_directory_unreadable, RegistryFailureArm.DIRECTORY_UNREADABLE
+        ),
+        _AnUnreadableRegistry(_make_registry_file_unreadable, RegistryFailureArm.FILE_UNREADABLE),
+    ],
     ids=["data-directory-unreadable", "registry-file-unreadable"],
 )
-def test_load_raises_project_error_with_the_reset_remedy_when_unreadable(
+def test_load_refuses_an_unreadable_registry_with_the_cure_for_that_condition(
     tmp_path: Path,
-    make_unreadable: Callable[[ProjectRegistry], Path],
+    case: _AnUnreadableRegistry,
 ) -> None:
+    """Both branches translate, and each cures the condition its reader is in.
+
+    The translation is one behaviour: neither branch may let a bare ``OSError``
+    escape ``load``. The cure is not -- a registry file at mode ``000`` can still
+    be *removed* through a traversable parent, while a data directory at mode
+    ``000`` blocks the deletion the cure goes on to offer. A single text served
+    both until ``30e460b9`` and told the reader of an unopenable file to inspect
+    it, which is the payload contradicting itself.
+    """
     data_dir = tmp_path / "data"
     data_dir.mkdir(mode=0o700)
     registry = ProjectRegistry(path=data_dir / "projects.json")
     registry.path.write_text("{}", encoding="utf-8")
 
-    unreadable = make_unreadable(registry)
+    unreadable = case.make_unreadable(registry)
     try:
         with pytest.raises(ProjectError) as excinfo:
             registry.load()
@@ -91,4 +153,118 @@ def test_load_raises_project_error_with_the_reset_remedy_when_unreadable(
         unreadable.chmod(0o700)
 
     assert f"{registry.path} cannot be opened" in str(excinfo.value)
-    assert excinfo.value.remedy == _reset_remedy(registry.path)
+    assert str(registry.path) in excinfo.value.remedy, "the file to inspect is named"
+    _assert_the_registry_cure(excinfo.value.remedy, arm=case.arm, path=registry.path)
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_a_mode_000_registry_is_still_removable_through_a_traversable_parent(
+    tmp_path: Path,
+) -> None:
+    """The measurement the two unreadable arms are split on.
+
+    ``test_only_the_directory_arm_says_the_deletion_itself_is_blocked`` pins that
+    only the data-directory arm tells the reader the deletion cannot be done. That
+    is a claim about POSIX, not about prose: unlinking needs write and search on
+    the *directory*, and read on the file is irrelevant to it. Measured here
+    rather than assumed, because if it were false the file-unreadable arm would be
+    offering a deletion its own reader cannot perform -- and the fix would be a
+    production change, not a wording one.
+    """
+    traversable = tmp_path / "traversable"
+    traversable.mkdir(mode=0o700)
+    unreadable_file = traversable / "projects.json"
+    unreadable_file.write_text("{}", encoding="utf-8")
+    unreadable_file.chmod(0o000)
+
+    with pytest.raises(PermissionError):
+        unreadable_file.read_text(encoding="utf-8")
+    unreadable_file.unlink()
+
+    assert not unreadable_file.exists(), (
+        "a mode-000 registry is removable through a traversable parent, which is why the "
+        "file-unreadable cure offers the deletion without qualifying it"
+    )
+
+
+def test_load_refuses_an_unparsable_registry_without_promising_a_costless_deletion(
+    tmp_path: Path,
+) -> None:
+    """Issue #381's second half, and the PR #596 family it belongs to.
+
+    ``projects.json`` is not derived. It is the enumeration of every project's
+    registration, and an entry's ``registeredAt`` exists nowhere else -- no
+    project's own ``.theurian/`` records that it was registered, let alone when.
+    The remedy nevertheless told the operator that the file "holds nothing that
+    is not also recoverable from each project's own .theurian/", which is a
+    costless-removal claim over data-holding bytes: the shape PR #596's
+    ``test_no_cure_claims_a_costless_removal_outside_the_shape_guard`` exists to
+    refuse, met again at a different seam. RED on that claim at ``2d3c23bb``,
+    GREEN at ``043f0c5e`` over the prose that replaced it.
+
+    **Driven through a body that is not JSON rather than through a ``chmod``**,
+    and that is what makes this the load-bearing pin rather than a duplicate of
+    the parametrized test above. That one is skipped wherever a mode cannot
+    refuse -- which includes a CI job running as root -- so on those runs it
+    would leave the whole claim unasserted. A malformed body reaches
+    ``registry_deletion_remedy`` on every platform and as every user, and reaches
+    it on the arm for a file whose bytes the reader can still see.
+    """
+    registry = ProjectRegistry(path=tmp_path / "projects.json")
+    registry.path.write_bytes(b'{"demo": {"rootPath"')
+
+    with pytest.raises(ProjectError) as excinfo:
+        registry.load()
+
+    assert "cannot be read as JSON" in str(excinfo.value), (
+        "the fixture must reach the whole-file refusal, not some narrower one"
+    )
+    assert RE_REGISTER_INVOCATION in excinfo.value.remedy, (
+        "the recovery has to stay typeable -- the population is the assertions reading the "
+        'invocation, by either spelling: `git grep -n -e "re-register each project" -e '
+        "RE_REGISTER_INVOCATION packages/theurian-core/tests`"
+    )
+    _assert_the_registry_cure(
+        excinfo.value.remedy, arm=RegistryFailureArm.UNPARSABLE, path=registry.path
+    )
+
+
+def test_a_registry_whose_top_level_is_not_an_object_keeps_the_legible_bytes_arm(
+    tmp_path: Path,
+) -> None:
+    """The fourth raise, and the only one no test drove to its arm.
+
+    ``_raw_entries`` refuses in four places and three of them were pinned to an
+    arm: the two ``OSError`` clauses by the parametrized test above, the decode
+    failure by the test above that. The non-dict raise -- a file that parses
+    perfectly and whose top level is a list, a number, a string -- was reached by
+    ``test_status_reports_a_registry_it_cannot_parse_instead_of_raising``'s
+    ``json-array`` case, which asserts the message and the shared tail every arm
+    carries, so it cannot tell one arm from another. Flipping this raise's arm to
+    ``FILE_UNREADABLE`` therefore went unnoticed -- measured with this test
+    deselected, the mutation leaves the seven-file scope of this branch green --
+    while a reader whose registry opens fine, and whose every byte is in front of
+    them, is told to ``chmod u+r`` a file nothing refused: the exact defect the
+    errno split above exists to remove, shipped through the one raise the split
+    does not touch.
+
+    Asserted on the arm's own opening imperative as well as on the pinned bytes,
+    because that is the sentence a reader stops at: "Inspect" is an instruction
+    they can carry out, "Restore read access" is one with nothing to restore.
+    """
+    registry = ProjectRegistry(path=tmp_path / "projects.json")
+    registry.path.write_bytes(b"[]")
+
+    with pytest.raises(ProjectError) as excinfo:
+        registry.load()
+
+    assert "must hold a JSON object" in str(excinfo.value), (
+        "the fixture must reach the non-dict raise, not the decode failure beside it"
+    )
+    assert excinfo.value.remedy.startswith("Inspect"), (
+        "this file opened and parsed, so the cure may not open by telling its reader to "
+        "restore an access nothing denied them"
+    )
+    _assert_the_registry_cure(
+        excinfo.value.remedy, arm=RegistryFailureArm.UNPARSABLE, path=registry.path
+    )

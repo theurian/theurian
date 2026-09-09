@@ -950,6 +950,87 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   success, so `init` run against such a file today writes it rather than
   reporting a fault.
 
+- **`theurian project status` names the registry failure a broken migration used
+  to hide** ([#381](https://github.com/theurian/theurian/issues/381)).
+  `resolve_context` loads and validates the migrations before it asks the
+  registry which project a root is, so a broken migration raises first. When the
+  registry was *also* unreadable, the unresolved branch of `project status
+  --json` published a `registered: null` whose every published word explained a
+  YAML file: one `reason`, and it was the resolution failure's. The caller was
+  told membership could not be established and handed a cure for the wrong
+  artefact, while `theurian project list` exited 1 on the registry in the same
+  moment. That branch now publishes `registryReason` and `registryRemedy` beside
+  the null, under their own names.
+
+  **Additive, not a change of shape.** No existing key is renamed, removed or
+  made conditional, and the exit code stays 0 — `reason` is still the resolution
+  failure's and is still what `theurian migrate validate` will report. The pair
+  is gated on the branch's own registry read having failed rather than on
+  `registered` being null, whose other cause is a file that parsed and holds one
+  entry `theurian project unregister` removes; and on being inside a Git working
+  tree, because outside one `registered` is a literal `false` no registry could
+  contradict and `theurian project list` is the surface that reports the file.
+  Where the resolution failure *is* this registry failure, the pair deliberately
+  repeats `reason`/`remedy` rather than being suppressed: both statements are
+  true, and suppressing one would mean deciding that two independently read
+  exceptions are the same failure.
+
+  **The cure it publishes was rewritten, because one text answered four
+  different arrivals and it called the deletion free.** It read "Delete `<path>`
+  and re-register each project with `theurian project register`; it is derived
+  and holds nothing that is not also recoverable from each project's own
+  `.theurian/`" — false about the one file that *is* the enumeration of every
+  registration, and about each entry's `registeredAt`, which
+  `ProjectRegistry.register` preserves from the existing entry and never
+  recomputes. `registry_deletion_remedy` now takes a `RegistryFailureArm`, one
+  member per arrival condition — the file did not parse as a JSON object, the
+  `open` was refused, the data directory holding it could not be traversed, or
+  something else refused it — and the arm is selected by `errno` at both
+  `except OSError` sites: `EACCES` takes the arm written for a refused mode,
+  every other errno takes the catch-all, whose lead prescribes no `chmod` at all
+  and sends the reader to the message the cure travels with, since neither a
+  directory sitting where the file belongs nor a path the filesystem will not
+  accept is cured by a mode change.
+
+  **Each lead is written for what its own reader can do.** Inspection comes
+  first only where the file can be read; where it cannot, restoring access does:
+  `chmod u+r` on the file, or, for an unreachable data directory, `chmod u+rx`
+  on each directory above it you cannot `cd` into and then `chmod u+rwx` on the
+  directory itself, working top down. The order and the mode are both
+  measurements rather than reasoning — `chmod` on the data directory is itself
+  refused while a directory above it denies the search, and `u+rx` alone
+  restores the read while leaving the `rm` the cure ends with refused.
+
+  **The cost is stated beside the offer, the ids included.** Deleting the file
+  unregisters every project, not only the one the reader came about, and
+  re-registering stamps today's date over each entry's original `registeredAt`.
+  It also frees every id: `theurian project register` with no `--project-id`
+  derives the id from the directory name, so a project registered under any
+  other id comes back under a different one, and two checkouts whose directories
+  share a name compete for a single id. The cure says to read out every entry's
+  `projectId` and `rootPath` first, then to re-register with `--project-id` from
+  inside that `rootPath`, and names the three fields that come back re-read from
+  the tree rather than restored from the record — `repositoryUrl`,
+  `defaultBranch` and `knowledgeDirectory`.
+
+  **Two cures in one payload need an order.** In the compound case `reason` is
+  the migration's, and where that migration carries no remedy of its own
+  ([#384](https://github.com/theurian/theurian/issues/384)) the registry cure is
+  the payload's only instruction — a destructive one whose recovery is blocked:
+  followed verbatim it unregisters every project, and then the `theurian project
+  register` it ends with fails on the migration named in the same payload.
+  `registryRemedy` therefore carries a closing sentence saying to fix a `reason`
+  that names a different failure first. It is appended at the emit site rather
+  than inside the cure, because `theurian project list` renders the same cure
+  with no `reason` beside it; where `remedy` carries this same cure it is
+  published through the same function, so the two keys stay the one sentence
+  they are pinned to be.
+
+  All four arms are pinned byte for byte and exhaustively over
+  `RegistryFailureArm`, and each arm's own instructions are executed against a
+  planted instance of its condition with the recovery measured, so a cure whose
+  steps do not lift the refusal they name fails rather than reading well.
+
 ## [0.1.0] - 2026-09-05
 
 ### Added
