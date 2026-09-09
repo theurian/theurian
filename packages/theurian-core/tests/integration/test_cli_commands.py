@@ -2222,6 +2222,14 @@ def test_two_unreadable_entries_are_both_named_and_both_curable(
         f"an id absent from the prose is an id the reader cannot look up in the file, and the "
         f"sentence says `entries`: {broken['reason']!r}"
     )
+    # And each in its *quoted* form: a raw id is a substring of its own repr, so
+    # the line above passes with `repr` dropped from the join (PR #626 round two,
+    # adversarial MEDIUM). Derived per id rather than typed, so the check grows
+    # with whatever the fixture plants.
+    assert all(repr(unreadable_id) in broken["reason"] for unreadable_id in broken["unreadable"]), (
+        f"the ids are `repr`-quoted, which is what keeps an empty-string key legible as `''` "
+        f"rather than closing the list to `()`: {broken['reason']!r}"
+    )
     for unreadable_id in broken["unreadable"]:
         argv = _the_unregister_invocation_the_remedy_backticks(
             broken["remedy"], for_id=unreadable_id, where="project status --json remedy"
@@ -2267,11 +2275,19 @@ def test_the_unreadable_entry_reason_names_the_file_and_a_cause_the_file_does_no
     disjunct out; the honest cause is ``holds_root``'s own, and it is the span
     asserted positively beside it.
 
+    **The quoting half (round two).** Every assertion above and elsewhere reads
+    the ids raw, and a raw id is a substring of its own ``repr`` -- so dropping
+    ``repr`` from the join changed the shipped text and 204 tests went on passing.
+    The quoted form is asserted for that reason alone: it is the only spelling
+    that can tell the two renders apart, and it is what keeps an empty-string key
+    legible as ``''`` rather than closing the list to ``()``.
+
     https://github.com/theurian/theurian/pull/626#issuecomment-5605076253
 
     RED at ``83004c61`` three times over -- that text carried neither
     "unanswerable" nor the honest cause, and did carry the refuted disjunct. RED
-    under the M-3 gut on the path and the two spans.
+    under the M-3 gut on the path and the two spans, and RED on the quoted form
+    alone when only ``repr`` is dropped.
     """
     _invoke("init")
     _invoke("project", "register")
@@ -2292,6 +2308,15 @@ def test_the_unreadable_entry_reason_names_the_file_and_a_cause_the_file_does_no
     assert re.search(r"\bcomputed from the entries it could load\b", payload["reason"]), (
         f"and the cause has to be the one this reader can defend -- the membership answer comes "
         f"from what `load` returned, and a dropped entry is not in it: {payload['reason']!r}"
+    )
+    # The *quoted* form, because a raw id is a substring of its own repr and the
+    # all-ids assertions elsewhere therefore pass either way -- dropping `repr`
+    # from the join survived 204 tests (PR #626 round two, adversarial MEDIUM).
+    # The quoting is what keeps an empty-string key legible as `''` instead of
+    # closing the list to `()`, and this line is what keeps the quoting.
+    assert "'Team One/API'" in payload["reason"], (
+        f"the ids are `repr`-quoted, as `ids_for_root`'s unusable-key refusal already spells "
+        f"them over the same file: {payload['reason']!r}"
     )
     # The refuted disjunct, kept out by name. `ids_for_root` over this same file
     # ends its own refusal for this same entry with "Every other project on this
