@@ -992,10 +992,13 @@ _UNPARSEABLE_REGISTRY = b'{"demo": {"rootPath"'
 #: cure stops carrying an invocation, so it defends itself.
 #:
 #: The population is the *assertions* in that output, by either spelling: 10 of
-#: the 36 lines it returns at the commit this note lands in, six of them in this
+#: the 37 lines it returns at the commit this note lands in, six of them in this
 #: file. The literal alone is not the key -- it finds none of the constant reads,
-#: which is four of those ten. Re-run it rather than trusting either number;
-#: both move with every test added.
+#: which is four of those ten. Re-run it **after `git add`** rather than trusting
+#: either number: `git grep` reads tracked files, so a count taken beside a
+#: still-untracked test file is a count of the tree the commit is not landing,
+#: and this denominator was one short for exactly that reason. Both move with
+#: every test added, including the one added beside the note.
 RE_REGISTER_INVOCATION = "re-register each project with `theurian project register`"
 
 #: The sentence `_registry_cure_in_repair_order` appends to the registry cure on
