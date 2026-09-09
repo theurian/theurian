@@ -20,9 +20,16 @@ delete -- extended in the three directions a real operator reaches it from:
   the order of the records inside one load -- because they are two different
   places the property could be lost.
 
-And one lifecycle case that is not about content at all: a rebuild that fails
-must leave the previous store serving, because the alternative is an operator
-losing a working store to a bad record.
+And two lifecycle cases that are not about content at all:
+
+* **A rebuild that fails must leave the previous store serving**, because the
+  alternative is an operator losing a working store to a bad record.
+* **A rebuild that *lands* mid-call must not split the call across two stores.**
+  ``SqliteReviewSearchStore.search`` states that as a property of ``mode=ro``
+  plus publish-by-``os.replace``: the stamp and the rows come from one file, and
+  the worst a concurrent rebuild does is answer from the immediately previous
+  store, one publish behind. It is a claim about POSIX unlink semantics, so it is
+  measured rather than reasoned about.
 
 Marked ``integration``: every case lands real evidence files and opens a real
 SQLite database. Writes only under ``tmp_path``.
@@ -31,11 +38,13 @@ SQLite database. Writes only under ``tmp_path``.
 from __future__ import annotations
 
 import json
+import os
+import sqlite3
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final
+from typing import Any, Final, override
 
 import pytest
 
@@ -592,4 +601,130 @@ def test_a_rebuild_that_fails_leaves_the_previous_store_serving_and_no_working_f
     )
     assert ".theurian/state" in excinfo.value.remedy, (
         "the write-path remedy names the precondition to fix, not just a retry"
+    )
+
+
+# -- a rebuild that lands mid-read -------------------------------------------
+
+#: The query the raced call is driven with. One call, deliberately: the hook below
+#: fires once, so a comparison over several queries would race the first and read
+#: the *new* store for the rest -- which is a mixture this file would then be
+#: asserting rather than refusing.
+RACED: Final = ReviewSearchQuery(limit=50)
+
+
+def _reap_sidecars(path: Path) -> None:
+    """Remove a database's ``-wal``/``-shm`` companions, as ``replace_all`` does.
+
+    The publish reaps them *before* the rename, not after, so the publish name
+    never briefly holds a new main file beside the previous one's log. The hook
+    below imitates the real publish rather than only its rename, or the thing
+    being raced would not be the thing that ships.
+    """
+    for sidecar in ("-wal", "-shm"):
+        path.with_name(path.name + sidecar).unlink(missing_ok=True)
+
+
+def _publishing_connect(*, source: Path, target: Path, fired: list[str]) -> Any:
+    """A ``sqlite3.connect`` that publishes ``source`` over ``target`` mid-read.
+
+    The deterministic stand-in for a concurrent ``theurian review build``, and it
+    is a *scheduler* rather than a fake: the connection is a real
+    ``sqlite3.Connection``, the file operations are the real ones a publish
+    performs, and the only thing injected is **when** the publish lands.
+
+    It lands after the connection's first ``execute``, which for
+    :meth:`SqliteReviewSearchStore.search` is the stamp read. That is the window
+    the claim is about: if the connection followed the directory entry rather than
+    the inode it opened, the stamp would have come from one store and the rows
+    from another -- a call split across two publishes. A replace landing before
+    the open would not distinguish that from "the whole call read the new store",
+    which is why the hook is on the first read and not on the connect.
+
+    A thread would have raced the same window without pinning it, and a race whose
+    interleaving is not pinned is a test that passes on the runs where the
+    interleaving did not happen.
+    """
+    real_connect = sqlite3.connect
+
+    class _PublishingAfterTheFirstRead(sqlite3.Connection):
+        @override
+        def execute(self, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
+            cursor = super().execute(*args, **kwargs)
+            if not fired:
+                fired.append(str(args[0]))
+                _reap_sidecars(target)
+                os.replace(source, target)  # noqa: PTH105 - the atomic primitive under test
+            return cursor
+
+    def connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        return real_connect(*args, factory=_PublishingAfterTheFirstRead, **kwargs)
+
+    return connect
+
+
+def test_a_rebuild_that_lands_mid_call_answers_from_the_store_the_call_opened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``SqliteReviewSearchStore.search``'s ``mode=ro`` claim, measured not reasoned.
+
+    The method's docstring asserts a property of the operating system, not of this
+    codebase: ``mode=ro`` binds the connection to the file that existed when it
+    opened, ``replace_all`` publishes by ``os.replace``, which swaps a directory
+    entry and leaves an open descriptor reading the inode it already holds -- so a
+    rebuild landing mid-call cannot split the call across two stores, and the worst
+    it does is answer from the immediately previous store, whole and one publish
+    behind. That is a claim about POSIX unlink semantics, and a claim about the
+    platform is exactly the kind that must be run rather than argued.
+
+    Measured on macOS 26.6.2 (arm64), SQLite 3.47.1, CPython 3.13.3: the publish
+    lands immediately after the stamp read, the in-flight call returns the previous
+    store's whole answer with no error and no mixture, and the next call returns
+    the successor's. This test is what keeps that measurement true -- of a store
+    opened ``mode=rwc``, of a publish that stopped being a rename, and of a read
+    that acquired a second connection between the stamp and the rows.
+
+    Four assertions, in the order that makes a failure readable: the two stores
+    must really differ (or the race compares one store with itself); the publish
+    must really have landed *between* the stamp read and the row read (or the
+    window was never entered); the raced call must answer from the store it
+    opened; and the call after it must see the successor (or the publish never
+    happened and the third assertion holds for any implementation).
+    """
+    project = _project(tmp_path, "live")
+    project.land(_corpus(), run=FIRST_RUN)
+    project.build()
+    successor = _project(tmp_path, "successor")
+    successor.land((*_corpus(), _pull_request(number=43, body="the next publish.")), run=SECOND_RUN)
+    successor.build()
+    before = _one_answer(project.store, RACED)
+    published = _one_answer(successor.store, RACED)
+    fired: list[str] = []
+
+    with monkeypatch.context() as patched:
+        patched.setattr(
+            sqlite3,
+            "connect",
+            _publishing_connect(
+                source=successor.store.path, target=project.store.path, fired=fired
+            ),
+        )
+        during = _one_answer(project.store, RACED)
+
+    assert before != published and isinstance(before, list) and before, (
+        "the two stores must answer differently and both must answer something, or the race "
+        "below compares one store against itself"
+    )
+    assert fired and "review_search_schema_version" in fired[0], (
+        f"the publish must land between the stamp read and the row read, and it fired after "
+        f"{fired!r} instead -- so the window this case is about was never entered"
+    )
+    assert during == before, (
+        "a rebuild landing mid-call changed what the call answered: the read followed the "
+        "directory entry rather than the inode it opened, so a caller can be served a stamp "
+        "from one store and rows from another"
+    )
+    assert _one_answer(project.store, RACED) == published, (
+        "the next call must see the store the publish landed, or nothing was published and "
+        "the equality above holds for any implementation"
     )
