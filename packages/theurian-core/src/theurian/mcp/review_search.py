@@ -75,8 +75,9 @@ from theurian.mcp.results import SAFETY
 #: were a bound on the response: every other stored string comes back from the
 #: read whole, and what bounds the response is
 #: :data:`MAX_REVIEW_SEARCH_RESPONSE_CHARS`, plus at most one record that alone
-#: exceeds it -- served whole and alone, and bounded by ``MAX_SOURCE_FILE_BYTES``
-#: at landing rather than by that budget (see :func:`review_search_payload`).
+#: exceeds it -- the page's **first**, served whole and alone and bounded by
+#: ``MAX_SOURCE_FILE_BYTES`` at landing rather than by that budget; a later
+#: over-budget record is not served at all (see :func:`review_search_payload`).
 MAX_REVIEW_SEARCH_LIMIT: Final = 50
 
 #: What a caller gets without asking. Smaller than the cap on purpose: the common
@@ -623,12 +624,19 @@ def review_search_payload(probed: tuple[ReviewSearchHit, ...], *, page_size: int
     would be a guard over a subset of what it protects. Every value served here
     is therefore exactly the stored one, and what varies is how many of them.
 
-    **A single record that alone exceeds the budget is served whole and alone**,
-    which is ``domain/ranking.take_within_budget``'s rule and it is taken for that
+    **A single record that alone exceeds the budget is served whole and alone
+    when it is the page's first record**, which is
+    ``domain/ranking.take_within_budget``'s rule and it is taken for that
     function's reason: a caller whose budget is smaller than one record is better
     served by one over-long answer it can truncate than by an empty one it cannot
-    act on. The residual is recorded rather than claimed away -- that response is
-    bounded by one evidence record, which
+    act on. It is the ``served and`` in the loop below, so the exemption is
+    positional and not a property of the record: a later over-budget record is
+    simply not served, the page stops before it, and ``truncated`` reports that
+    the response carries fewer records than the read returned. Measured
+    2026-09-11 over a three-record page whose middle record alone exceeds the
+    budget: ``count: 1``, ``truncated: true``, and the record served is the small
+    one that preceded it. The residual is recorded rather than claimed away --
+    that first-record response is bounded by one evidence record, which
     ``ReviewEvidenceStore`` refuses above ``MAX_SOURCE_FILE_BYTES`` (8 MiB) at
     landing, rather than by the budget.
 

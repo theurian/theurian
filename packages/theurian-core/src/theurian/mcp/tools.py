@@ -2296,9 +2296,10 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         :data:`~theurian.mcp.review_search.MAX_REVIEW_SEARCH_RESPONSE_CHARS`
         bounds the **response**, stopping the page early when the records already
         in it have spent the budget -- plus at most one record that alone exceeds
-        it, which is served whole and alone and is bounded by
-        ``MAX_SOURCE_FILE_BYTES`` at landing rather than by this budget; and the
-        admission gate below bounds how many of these reads run at once. The
+        it, which is the page's **first** and is served whole and alone, bounded
+        by ``MAX_SOURCE_FILE_BYTES`` at landing rather than by this budget while a
+        later over-budget record is not served at all; and the admission gate
+        below bounds how many of these reads run at once. The
         excerpt bound was written as though it were the response bound, and it
         never was: ``authorDisplayName`` and ``filePath`` are author-controlled
         and were served uncut, which measured 104,904,775 characters in one
