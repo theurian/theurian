@@ -64,6 +64,7 @@ from types import ModuleType
 from typing import Final, get_type_hints
 
 import pytest
+from ast_keys import function_named, module_tree, private_side_effect_calls
 
 from theurian.application import project_service
 from theurian.application.project_service import (
@@ -119,39 +120,6 @@ PARENT_OPENERS: Final = ((findings_store_module, "_read"), (index_store_module, 
 # -- the census, derived ------------------------------------------------------
 
 
-def _tree(module: ModuleType) -> ast.Module:
-    return ast.parse(pathlib.Path(inspect.getfile(module)).read_text(encoding="utf-8"))
-
-
-def _function(tree: ast.Module, name: str) -> ast.FunctionDef:
-    """The named function anywhere in ``tree``, method or module level."""
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == name:
-            return node
-    raise LookupError(f"{name} is gone from the module this census reads")
-
-
-def _private_side_effect_calls(module: ModuleType, function_name: str) -> frozenset[str]:
-    """Bare-statement calls to the module's own private helpers inside a function.
-
-    The structural shape of a name-hygiene guard: a call whose value nobody uses,
-    made to a helper this module defines, standing between the caller and a file.
-    ``_finding_rows(load.accepted)`` is assigned and therefore excluded; a
-    ``mkdir`` on ``self._path.parent`` is an attribute call rather than a call to
-    a module-level helper, and is a precondition rather than a refusal.
-    """
-    tree = _tree(module)
-    private = {node.name for node in tree.body if isinstance(node, ast.FunctionDef)}
-    return frozenset(
-        node.value.func.id
-        for node in ast.walk(_function(tree, function_name))
-        if isinstance(node, ast.Expr)
-        and isinstance(node.value, ast.Call)
-        and isinstance(node.value.func, ast.Name)
-        and node.value.func.id in private
-    )
-
-
 def _shared_safety_calls(module: ModuleType, function_name: str) -> frozenset[str]:
     """Calls inside a function to names imported from the shared safety module.
 
@@ -159,7 +127,7 @@ def _shared_safety_calls(module: ModuleType, function_name: str) -> frozenset[st
     that stand in front of an ``open`` of derived state, so "what does the opener
     ask that module" is a structural reading of "what does the opener refuse".
     """
-    tree = _tree(module)
+    tree = module_tree(module)
     shared = {
         alias.asname or alias.name
         for node in ast.walk(tree)
@@ -169,7 +137,7 @@ def _shared_safety_calls(module: ModuleType, function_name: str) -> frozenset[st
     }
     return frozenset(
         node.func.id
-        for node in ast.walk(_function(tree, function_name))
+        for node in ast.walk(function_named(tree, function_name))
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in shared
     )
 
@@ -185,7 +153,7 @@ def _containment_recomputing_helpers() -> frozenset[str]:
     ``of`` (which returns a ``ProjectPaths``) falls out rather than being excluded
     by name.
     """
-    tree = _tree(project_service)
+    tree = module_tree(project_service)
     declaration = next(
         node
         for node in ast.walk(tree)
@@ -215,7 +183,7 @@ def _refusing_load_types() -> frozenset[str]:
     that cannot be stored is not built, so no half-assembled file exists to clean
     up and the refusal names the value rather than a database constraint.
     """
-    tree = _tree(review_search_domain)
+    tree = module_tree(review_search_domain)
     return frozenset(
         node.name
         for node in ast.walk(tree)
@@ -231,9 +199,9 @@ def _refusing_load_types() -> frozenset[str]:
 #: store makes the same call. Two members today: the unlink that makes a planted
 #: symlink at the working name unreachable, and the sidecar reap before the
 #: publish.
-WRITE_PATH_HYGIENE: Final = _private_side_effect_calls(
+WRITE_PATH_HYGIENE: Final = private_side_effect_calls(
     findings_store_module, "replace_all"
-) & _private_side_effect_calls(CHILD_MODULE, "replace_all")
+) & private_side_effect_calls(CHILD_MODULE, "replace_all")
 
 #: What the opener asks before it opens. Two members today: the shape refusal and
 #: the read-only URI.
@@ -289,7 +257,7 @@ def test_the_census_reads_a_source_that_still_carries_guards() -> None:
     renamed opener, a moved import, a helper turned into a method -- fails here
     rather than shrinking the census to nothing and passing.
     """
-    assert _private_side_effect_calls(findings_store_module, "replace_all"), (
+    assert private_side_effect_calls(findings_store_module, "replace_all"), (
         "no name-hygiene helper was found on the parent store's write path, so the "
         "intersection below is empty for a reason that is not inheritance"
     )

@@ -46,6 +46,21 @@ constant is a written literal rather than something computed. The day the
 findings family gains a per-build id, the qualification is false and has to move;
 that is the day this goes RED.
 
+**The sidecar qualification is held too, and it is the newest of them.** T-19's
+migration paragraph says the ``-wal``/``-shm`` removal there is "redundant
+defense-in-depth rather than the load-bearing reason", which is true of
+``migrate apply`` -- it deletes the main database first, so no log has anything
+to replay into. It does **not** generalise to a publish by ``os.replace``, which
+deletes nothing: a log sitting at the live name is applied to whatever database
+now answers there, and with the reap removed the next search was measured
+answering the corpus the rebuild had replaced. So (6) the entry must keep the
+distinction rather than letting "redundant" read as a statement about every
+removal, and (7) the code must keep making it true -- ``replace_all`` reaps the
+publish name's sidecars **immediately before** the rename, with no statement
+between them. The reap is identified from the shared ``WRITE_PATH_HYGIENE``
+census rather than by a spelled name, so a rename of the helper follows rather
+than reddens.
+
 **What it does not hold.** That the entry *describes* any family correctly --
 naming an artifact prefix is not saying anything true about it -- nor that the
 serve path it names actually calls the member it cites; that is a property of
@@ -76,9 +91,11 @@ from __future__ import annotations
 import ast
 import pathlib
 import re
+from collections.abc import Iterator
 from typing import Final
 
 import pytest
+from ast_keys import function_named, module_tree, private_side_effect_calls
 from threat_model_claims import (
     CHECKER,
     SPELLED_NUMBERS,
@@ -90,6 +107,8 @@ from threat_model_claims import (
 from write_lock_claims import REPO_ROOT
 
 from theurian.application.project_service import FINDINGS_STORE_ID, BuildProvenance
+from theurian.infrastructure.sqlite import findings_store as findings_store_module
+from theurian.infrastructure.sqlite import review_search_store as review_search_store_module
 
 pytestmark = pytest.mark.unit
 
@@ -97,9 +116,10 @@ pytestmark = pytest.mark.unit
 #: where the anchoring rules and the reason for them live.
 _THREAT_ID: Final = "T-19"
 
-#: The two halves of an artifact family, and the derivation over them, both live
-#: in ``threat_model_claims`` -- T-24 reads the same set, for the opposite claim.
-#: Only the serve-side prefix is used by name here.
+# The two halves of an artifact family, and the derivation over them, both live
+# in ``threat_model_claims``: T-24 reads the same set for the opposite claim, and
+# a copy per module drifts in whichever copy its author forgot. Only the
+# serve-side prefix, ``CHECKER``, is used by name here.
 
 #: How T-19 spells the size of the family set, as the phrase rather than as a
 #: bare number word. The entry carries other spelled numbers -- the control
@@ -531,4 +551,199 @@ def test_the_findings_store_id_is_a_written_constant_and_not_a_per_build_value()
         f"`{literal!r}` at module level, and importing it yields "
         f"`{FINDINGS_STORE_ID!r}`. The name is rebound somewhere this pin does not "
         f"read, so what the serve gate is handed is not the literal checked here"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The sidecar qualification: "redundant" is true of one rebuild, not of a publish.
+# ---------------------------------------------------------------------------
+
+#: What identifies T-19's sidecar qualification paragraph. Keyed on the phrase
+#: that says what the paragraph *is* -- that "redundant" does not generalise --
+#: rather than on the conclusion it reaches, for the reason
+#: :func:`_residual_block` gives: a key naming the conclusion would be satisfied
+#: by its own subject, so deleting the conclusion would drop the paragraph out of
+#: the population rather than fail.
+_SIDECAR_ANCHOR: Final = "does not generalise to the publish paths"
+
+#: The original sentence the qualification qualifies. Asserted as a premise, so
+#: the exception is never checked against a rule the entry has stopped stating.
+_REDUNDANT_CLAIM: Final = "redundant defense-in-depth rather than the load-bearing reason"
+
+#: The conclusion the qualification must reach. This is the whole of what it
+#: adds: on a path that publishes by rename, the reap is not defence in depth --
+#: it is the only thing standing between the next serve and the corpus the
+#: rebuild replaced.
+_LOAD_BEARING: Final = "load-bearing rather than redundant"
+
+#: The write whose ordering the qualification is about, and the parent it
+#: inherited its name hygiene from. Both are read for the census, and the census
+#: is the intersection, so a helper the parent carries and this store does not is
+#: not claimed here either.
+_PUBLISHING_WRITE: Final = "replace_all"
+
+#: The rename primitive, as ``review_search_store`` spells it. Named rather than
+#: derived because the claim is about this specific call -- an atomic rename onto
+#: the live name -- and a check that accepted any attribute call would be
+#: satisfied by the ``mkdir`` above it.
+_RENAME: Final = ("os", "replace")
+
+
+def _sidecar_block() -> str:
+    """T-19's one paragraph qualifying the "redundant" sentence, normalised.
+
+    Scoped to the paragraph for the reason the other block readers are: the entry
+    names ``-wal`` and the publish elsewhere too, and an entry-wide scan would let
+    a neighbouring sentence stand in for the qualification -- which is exactly the
+    text this holds.
+    """
+    blocks = [prose(block) for block in _BLOCK_BREAK.split(entry(_THREAT_ID)) if block.strip()]
+    carrying = [block for block in blocks if _SIDECAR_ANCHOR in block]
+
+    assert len(carrying) == 1, (
+        f"`{_SIDECAR_ANCHOR}` identifies {len(carrying)} of T-19's {len(blocks)} "
+        f"paragraphs, expected 1. Zero means the qualification was reworded past its "
+        f"own anchor and everything below would pass over nothing; more than one means "
+        f"what is read below is text this module never chose"
+    )
+    return carrying[0]
+
+
+def _statement_lists(node: ast.AST) -> Iterator[list[ast.stmt]]:
+    """Every list of statements inside *node*, in no particular order.
+
+    Adjacency is a property of one block, so the arm below has to compare
+    statements that are siblings rather than statements that merely appear in
+    source order: a reap at the end of a ``with`` body and a rename after it are
+    *not* adjacent, and a check on line numbers alone would call them so.
+    """
+    for inner in ast.walk(node):
+        for field in ("body", "orelse", "finalbody"):
+            found = getattr(inner, field, None)
+            if isinstance(found, list) and all(isinstance(item, ast.stmt) for item in found):
+                yield found
+
+
+def _is_rename(statement: ast.stmt) -> bool:
+    """Whether *statement* is a bare ``os.replace(...)`` call."""
+    return (
+        isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Call)
+        and isinstance(statement.value.func, ast.Attribute)
+        and statement.value.func.attr == _RENAME[1]
+        and isinstance(statement.value.func.value, ast.Name)
+        and statement.value.func.value.id == _RENAME[0]
+    )
+
+
+def _bare_call_name(statement: ast.stmt) -> str | None:
+    """The name of the bare-statement function call *statement* is, if it is one."""
+    if (
+        isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Call)
+        and isinstance(statement.value.func, ast.Name)
+    ):
+        return statement.value.func.id
+    return None
+
+
+def test_t19_keeps_the_sidecar_qualification_it_gained_for_the_publish_paths() -> None:
+    """RED means "redundant" is back to reading as a claim about every removal.
+
+    T-19's migration paragraph says the ``-wal``/``-shm`` removal is redundant
+    defence in depth, and that is true where it is written: ``migrate apply``
+    deletes the main database first, so a committed log has nothing to replay
+    into. A reader who takes the word as general concludes that a sidecar left
+    beside any Theurian database is inert -- and on a publish path it is not.
+    Measured on the review search store: a writer killed before it checkpointed
+    leaves a log carrying real frames, and with the reap removed the next
+    ``search`` answers the corpus the rebuild replaced, with no error anywhere.
+
+    So the paragraph is not decoration. It is the difference between a reader
+    treating a stray ``-wal`` as litter and treating it as a way to revert a
+    rebuild's decisions, withholding included.
+
+    The general claim is asserted first, as a premise: a paragraph that no longer
+    says the migration removal is redundant needs its qualification rewritten,
+    not preserved, and this arm cannot tell whether the exception still applies.
+    """
+    text = entry(_THREAT_ID)
+    qualification = _sidecar_block()
+
+    assert _REDUNDANT_CLAIM in prose(text), (
+        f"T-19 no longer says the migration rebuild's sidecar removal is "
+        f"`{_REDUNDANT_CLAIM}`, so the qualification checked below has nothing to "
+        f"qualify. Whatever the entry says instead has to be reconciled with the "
+        f"publish paths by hand"
+    )
+
+    assert _LOAD_BEARING in qualification, (
+        f"T-19's sidecar paragraph no longer concludes that the reap is "
+        f"`{_LOAD_BEARING}` on a path that publishes by rename: {qualification[:400]}\n\n"
+        f"Without that sentence the entry says only that one rebuild's removal is "
+        f"redundant, and a reader carries the word to the publish paths -- where a log "
+        f"left at the live name is applied to whatever database now answers there."
+    )
+
+
+def test_the_publishing_write_reaps_the_sidecars_immediately_before_the_rename() -> None:
+    """RED means the ordering T-19's qualification describes stopped being true.
+
+    The qualification is a claim about *where in the write* the reap happens.
+    After the rename, the publish name would briefly hold the new main database
+    beside the previous one's log -- a database plus a foreign journal, which a
+    reader opening it reads as neither store. Before the rename, there is nothing
+    at the name for a stale log to be applied to.
+
+    So "immediately before" is the claim, and adjacency is how it is checked:
+    the reap and the rename must be neighbouring statements in one block. A
+    statement inserted between them -- anything that can raise, anything that
+    yields -- widens the window the ordering exists to close, and does it in a
+    diff that looks like refactoring.
+
+    The reap is **not** named here. It is taken from the same
+    ``WRITE_PATH_HYGIENE`` census ``test_review_search_store_guards.py`` derives:
+    the module's own private helpers called as bare statements inside
+    ``replace_all``, intersected with the parent store's. So renaming the helper
+    moves this pin with it, and a *new* hygiene helper appearing between the reap
+    and the rename is the change this reports.
+    """
+    census = private_side_effect_calls(
+        findings_store_module, _PUBLISHING_WRITE
+    ) & private_side_effect_calls(review_search_store_module, _PUBLISHING_WRITE)
+    write = function_named(module_tree(review_search_store_module), _PUBLISHING_WRITE)
+
+    assert census, (
+        f"the write-path name-hygiene census over `{_PUBLISHING_WRITE}` is empty, so "
+        f"there is no reap for the ordering below to be about. Either the helpers moved "
+        f"or the derivation stopped seeing them -- `test_review_search_store_guards.py` "
+        f"is where that census and its premise test live"
+    )
+    preceding = [
+        (block[index - 1], statement)
+        for block in _statement_lists(write)
+        for index, statement in enumerate(block)
+        if _is_rename(statement) and index > 0
+    ]
+    assert len(preceding) == 1, (
+        f"`{_PUBLISHING_WRITE}` contains {len(preceding)} `{_RENAME[0]}.{_RENAME[1]}(...)` "
+        f"statements with something before them, expected 1. Zero means the publish "
+        f"stopped being a rename -- which is a bigger change than this pin's wording, and "
+        f"T-19's qualification is about a rename; more than one means the statement "
+        f"checked below is whichever the walk found first"
+    )
+    before, rename = preceding[0]
+
+    assert _bare_call_name(before) in census, (
+        f"the statement immediately before `{_PUBLISHING_WRITE}`'s rename is "
+        f"`{ast.unparse(before)}`, which is not one of the write's name-hygiene helpers "
+        f"({sorted(census)}).\n\n"
+        f"T-19 records that the reap happens immediately before the rename, and that the "
+        f"reap is load-bearing on this path rather than redundant. After the rename the "
+        f"publish name holds the new database beside the previous one's log; with the "
+        f"reap gone, a log carrying real frames reverts the rebuild and the next serve "
+        f"answers the corpus it replaced, with no error anywhere.\n\n"
+        f"If the statement in between is genuinely harmless, it still widens the window "
+        f"the ordering closes -- move it above the reap, or rewrite the paragraph to say "
+        f"what now sits in the gap. Rename line {rename.lineno}."
     )
