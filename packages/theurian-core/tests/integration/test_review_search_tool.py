@@ -1222,6 +1222,109 @@ async def test_a_running_review_search_holds_its_permit_until_the_store_read_ret
     await server.call_tool("review.search", {"projectId": "demo"})
 
 
+#: The request shapes the capacity refusal is captured under, crossed with two
+#: projects holding different corpora.
+#:
+#: Every axis is a **valid** request, because an invalid one never reaches the
+#: gate: ``build_query`` refuses before anything is opened. What each axis varies
+#: is something the refusal could have been built from -- whether the filter
+#: matches anything, whether the needle appears in the corpus, how large a page
+#: was asked for, which structural column was named.
+_CAPACITY_AXES: Final[tuple[tuple[str, dict[str, Any]], ...]] = (
+    ("no filter", {}),
+    ("a needle the corpus carries", {"q": "demo-only-payment-rotation"}),
+    ("a needle no record carries", {"q": "VWXYZ-nobody-carries-this"}),
+    ("a repository that matches", {"repository": "acme/order-service"}),
+    ("a repository that matches nothing", {"repository": "acme/nothing-here"}),
+    ("the smallest page", {"limit": 1}),
+    ("the largest page", {"limit": MAX_REVIEW_SEARCH_LIMIT}),
+    ("a thread state", {"threadState": "resolved"}),
+    ("a pull request", {"pullRequest": 42}),
+    ("a file path", {"filePath": AUTHOR_FILE}),
+)
+
+
+@pytest.mark.asyncio
+async def test_the_capacity_refusal_is_byte_identical_whatever_the_request(
+    two_projects: ProjectRegistry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SEC-13, the claim the refusal makes about itself, measured over its inputs.
+
+    ``REVIEW_SEARCH_CAPACITY_REFUSAL`` ends by telling the caller that it "carries
+    nothing from your request or from any project's contents". That is a property
+    of what the daemon publishes when it is busy, and a refusal that varied with
+    the query, the project or the corpus behind it would be a disclosure channel
+    in its own right -- the observable family *an error that fires for one input
+    and not another*, in its quieter form where the error fires for every input and
+    says something different each time.
+
+    Captured across two axes rather than one, which is what the sibling surface's
+    own byte-identity case (``test_search_concurrency_cap.py``) records paying for:
+    every request shape in :data:`_CAPACITY_AXES` is crossed with **both**
+    projects, so a message built from the corpus and a message built from the
+    request are both reachable. All the captures must be one string, and that
+    string must be the constant with nothing appended -- comparing the captures
+    only against each other would hold for a message that appended the same wrong
+    thing every time.
+
+    ``ADMISSION_WAIT_SECONDS`` is shortened for the captures. The wait is not what
+    this case is about -- it is how long a caller parks before being turned away,
+    pinned by its own cases -- and twenty full waits would put a minute on the
+    suite to measure a string.
+    """
+    monkeypatch.setattr(tools_module, "ADMISSION_WAIT_SECONDS", 0.02)
+    server = build_server(two_projects)
+    gate = _gate_of(server, "review.search", "review_search_admission")
+    recorder = _CountingStore()
+    monkeypatch.setattr(tools_module, "SqliteReviewSearchStore", recorder.factory)
+    permits = [gate.acquire(_A_MOMENT) for _ in range(MAX_CONCURRENT_SEARCHES)]
+    captured: dict[str, str] = {}
+
+    try:
+        assert all(permit is not None for permit in permits), (
+            "a fresh gate refused one of its own permits, so what the calls below meet is not "
+            "a full gate"
+        )
+        for project_id in ("demo", "beta"):
+            for name, arguments in _CAPACITY_AXES:
+                with pytest.raises(SdkToolError) as raised:
+                    await asyncio.wait_for(
+                        server.call_tool("review.search", {"projectId": project_id, **arguments}),
+                        timeout=_CALL_BOUND_SECONDS,
+                    )
+                captured[f"{project_id}: {name}"] = str(raised.value)
+    finally:
+        for permit in permits:
+            if permit is not None:
+                gate.release(permit)
+
+    assert len(captured) == 2 * len(_CAPACITY_AXES), (
+        f"every axis must have been captured against both projects; got {sorted(captured)}"
+    )
+    assert len(set(captured.values())) == 1, (
+        f"the capacity refusal varies with the request or with the project's contents. "
+        f"Distinct messages: {sorted(set(captured.values()))}"
+    )
+    sole = next(iter(captured.values()))
+    assert sole.endswith(REVIEW_SEARCH_CAPACITY_REFUSAL), (
+        f"the tool's own message is no longer exactly the published constant -- something is "
+        f"appended to it, which twenty identical captures cannot see on their own: {sole!r}"
+    )
+    # What sits in front of the constant is the SDK's envelope, measured here as
+    # `Error executing tool review.search: `. It is asserted by what it must *not*
+    # carry rather than by its wording: a wrapper that started echoing the caller's
+    # arguments would leak through a refusal none of the code below wrote.
+    envelope = sole[: len(sole) - len(REVIEW_SEARCH_CAPACITY_REFUSAL)]
+    for token in ("demo", "beta", "acme/order-service", AUTHOR_FILE, "payment-rotation"):
+        assert token not in envelope, (
+            f"the refusal's envelope carries {token!r} from the request or the corpus: {sole!r}"
+        )
+    assert recorder.reads == [], (
+        "a refused caller reached the store, so these captures were taken after work the cap "
+        "exists to prevent"
+    )
+
+
 # -- Bound input at the tool -> store seam -------------------------------------
 
 
