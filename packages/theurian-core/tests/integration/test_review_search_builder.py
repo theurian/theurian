@@ -525,7 +525,7 @@ def _with_event_key(paths: ProjectPaths, number: str) -> Path:
     ("number", "expected"),
     [
         pytest.param("0", "pull request 0", id="zero"),
-        pytest.param("9" * 20, "larger than", id="beyond-the-column"),
+        pytest.param("9" * 20, "wider than", id="beyond-the-column"),
     ],
 )
 def test_a_hand_edited_pull_request_number_is_refused_with_the_record_cure(
@@ -632,7 +632,16 @@ def test_a_non_ascii_digit_in_an_event_key_names_no_pull_request(
     )
 
 
-def test_the_over_range_refusal_never_renders_the_number_it_refuses(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "run",
+    [
+        pytest.param("9" * (sys.get_int_max_str_digits() + 1), id="all-nines"),
+        pytest.param("0" * (sys.get_int_max_str_digits() + 1) + "1", id="leading-zeros"),
+    ],
+)
+def test_the_over_range_refusal_never_renders_the_number_it_refuses(
+    tmp_path: Path, run: str
+) -> None:
     """RED means composing the refusal is itself the next crash.
 
     ``_pull_request_of`` parses ``#(\\d+)``, so a hand-edited event key can carry
@@ -641,17 +650,32 @@ def test_the_over_range_refusal_never_renders_the_number_it_refuses(tmp_path: Pa
     quoted the caller's number back would raise ``ValueError`` *inside the arm
     building it*, which is the face ``mcp/findings._digits`` met. The bound is
     named instead, which is the part a reader acts on.
+
+    **Two runs of the same width, and the second is #630's HIGH-1.** The guard
+    measured ``digits.lstrip("0")`` while ``int`` counts every character in the
+    run, so a run of 4,301 zeros and a ``1`` presented the guard with one
+    significant digit, passed it, and reached ``int`` whole: ``ValueError:
+    Exceeds the limit (4300 digits) for integer string conversion``, outside
+    ``TheurianError`` and therefore outside every arm ``theurian review ingest``
+    and ``theurian review build`` grade. Both runs now stop at the same line,
+    which is why the refusal names the **width** rather than a magnitude -- a run
+    of zeros is not larger than anything.
     """
     paths = _project(tmp_path)
     evidence = _landed(paths, _submission())
-    digits = sys.get_int_max_str_digits() + 1
-    _with_event_key(paths, "9" * digits)
+    _with_event_key(paths, run)
 
     with pytest.raises(ReviewSearchBuildError) as excinfo:
         _build(paths, evidence, withheld=frozenset())
 
+    assert f"run of {len(run)} digits" in str(excinfo.value), (
+        f"the refusal does not say how wide the run was: {excinfo.value}"
+    )
     assert str(MAX_STORED_PULL_REQUEST) in str(excinfo.value)
-    assert "9" * 100 not in str(excinfo.value)
+    for rendered in ("9" * 100, "0" * 100):
+        assert rendered not in str(excinfo.value), (
+            "the refusal rendered the run it refuses, which is the crash it exists to avoid"
+        )
 
 
 def test_a_hand_edited_pull_request_record_number_is_refused_at_the_record(

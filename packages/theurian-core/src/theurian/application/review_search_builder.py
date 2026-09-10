@@ -91,9 +91,9 @@ WriteReviewSearchStore = Callable[[ReviewSearchLoad], None]
 #: pull-request number no provider issued.
 _EVENT_KEY_NUMBER = re.compile(r"#(\d+)\Z", re.ASCII)
 
-#: How many significant decimal digits a pull-request number may be written with,
-#: derived from the bound rather than chosen: :data:`MAX_STORED_PULL_REQUEST` is
-#: nineteen digits wide, so a longer run is out of range whatever it spells.
+#: How many decimal digits a pull-request number's run may span, derived from the
+#: bound rather than chosen: :data:`MAX_STORED_PULL_REQUEST` is nineteen digits
+#: wide, so a longer run is out of range whatever it spells.
 #:
 #: The check is on the run's **length** because ``int`` itself is not total:
 #: CPython refuses to convert a decimal string past
@@ -105,6 +105,18 @@ _EVENT_KEY_NUMBER = re.compile(r"#(\d+)\Z", re.ASCII)
 #: and a traceback. The same family as ``mcp/findings._digits`` (PR #504 round 1,
 #: R1-2 face ii), met on the *write* side: the refusal about an unrenderable
 #: number must not itself render it.
+#:
+#: **The whole run is measured, leading zeros included**, and that is the width
+#: CPython measures too: ``int("0" * 4301 + "1")`` raises the identical
+#: ``ValueError`` -- ``value has 4302 digits`` -- for a run that spells 1
+#: (measured 2026-09-10, Python 3.13). Measuring after ``lstrip("0")`` was #630's
+#: HIGH-1: the guard saw one significant digit, passed, and handed ``int`` the
+#: whole run anyway. What the wider key costs is a zero-padded run spelling an
+#: in-range number, refused where it used to be stored -- and the run in a landed
+#: key is rendered from an ``int`` by
+#: :meth:`~theurian.domain.review.ReviewEvent.external_key`, the one producer
+#: :data:`_EVENT_KEY_NUMBER`'s note found, whose ``str`` carries no leading zero
+#: at all. A hand-edited one is what this refuses, by the file it names.
 _MAX_NUMBER_DIGITS: Final = len(str(MAX_STORED_PULL_REQUEST))
 
 
@@ -401,8 +413,9 @@ def _pull_request_of(payload: ReviewRecordPayload, relative_path: str) -> int | 
 
     Raises:
         ReviewSearchBuildError: If the key's digit run is wider than the store's
-            column, which is a refusal on the run's **length** and therefore
-            before any ``int``. See :data:`_MAX_NUMBER_DIGITS`.
+            column -- the **whole** run, leading zeros included -- which is a
+            refusal on its **length** and therefore before any ``int``. See
+            :data:`_MAX_NUMBER_DIGITS`.
     """
     match payload:
         case ReviewEvent():
@@ -416,12 +429,18 @@ def _pull_request_of(payload: ReviewRecordPayload, relative_path: str) -> int | 
             if found is None:
                 return None
             digits = found.group(1)
-            if len(digits.lstrip("0")) > _MAX_NUMBER_DIGITS:
+            # The whole run, not `digits.lstrip("0")`: the significant-digit
+            # spelling measured something narrower than what it was guarding, and
+            # `int` below counts every character in the run. See
+            # `_MAX_NUMBER_DIGITS`.
+            if len(digits) > _MAX_NUMBER_DIGITS:
                 raise ReviewSearchBuildError(
-                    f"`{relative_path}` names a pull request written with "
-                    f"{len(digits)} digits, so it is larger than "
-                    f"{MAX_STORED_PULL_REQUEST} -- the widest value the store's "
-                    f"column holds -- and could not be stored.",
+                    f"`{relative_path}` names a pull request as a run of "
+                    f"{len(digits)} digits, wider than the {_MAX_NUMBER_DIGITS} "
+                    f"digits of {MAX_STORED_PULL_REQUEST}, the widest value the "
+                    f"store's column holds. The whole run is measured, leading "
+                    f"zeros included, and refused unconverted: the width is what "
+                    f"this refuses, not the value it spells.",
                     remedy=_record_cure(relative_path),
                 )
             return int(digits)
