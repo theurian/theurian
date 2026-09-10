@@ -373,13 +373,36 @@ class SqliteReviewSearchStore:
         build, so a "fully case-insensitive" claim is not one this store can make.
 
         **Current, or nothing -- checked through the connection that reads the
-        rows.** ``mode=ro`` binds this connection to the file that existed when it
-        opened, and :meth:`replace_all` publishes by ``os.replace`` onto that name,
-        which swaps the directory entry and leaves an open connection reading the
-        inode it already holds. So a rebuild landing mid-call cannot split this
-        method across two stores: the stamp and the rows come from one file, and
-        the worst a concurrent rebuild does is make this call answer from the
+        rows.** Two things carry that, and neither of them is ``mode=ro``. The
+        first is that **the stamp and the rows are read on one connection**: a
+        second open between them would resolve the name again and could land on a
+        different file, which is the split this method must not have. The second
+        is that :meth:`replace_all` **publishes by ``os.replace``**, which swaps
+        the directory entry and leaves an already-open connection reading the
+        inode it holds -- a property of the open descriptor, not of the mode it
+        was opened in. So a rebuild landing mid-call cannot split this method
+        across two stores: the stamp and the rows come from one file, and the
+        worst a concurrent rebuild does is make this call answer from the
         immediately-previous store -- whole, consistent, and one publish behind.
+
+        Attributing it to ``mode=ro`` was wrong, and measured to be: a plain
+        read-write connect holds the same property (PR #630 round 1, 2026-09-10),
+        so the old sentence named a flag that could be dropped without the
+        behaviour moving. Both real halves are driven --
+        ``test_review_search_rebuild.py::``
+        ``test_a_rebuild_that_lands_mid_call_answers_from_the_store_the_call_opened``
+        lands a publish immediately after the stamp read and requires the whole
+        answer to come from the store this call opened, and
+        ``::test_publishing_a_rebuild_swaps_a_new_inode_onto_the_live_name`` is
+        the rename's own fingerprint.
+
+        **What ``mode=ro`` does do is a different guarantee**, and it is stated
+        where it is applied: it stops a read conjuring an empty database at a path
+        whose file is gone (:meth:`_read`, driven by
+        ``test_review_search_store_guards.py::``
+        ``test_a_serving_read_of_a_missing_store_conjures_no_database``). That
+        matters to the refusal this method raises for a missing store; it has
+        nothing to do with the race above.
 
         **A total, deterministic order** (:data:`SEARCH_ORDER`), and nothing in it
         is a rank: no key is computed from the query, so the sequence is a
