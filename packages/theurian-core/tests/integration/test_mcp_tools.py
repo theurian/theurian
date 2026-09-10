@@ -23,6 +23,7 @@ from typing import Any
 import pytest
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
+from mcp.types import CallToolResult
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
@@ -339,13 +340,24 @@ async def _call_on(server: MCPServer, tool: str, **arguments: Any) -> dict[str, 
     from two different grants and so cannot let the helper build one.
     """
     result = await server.call_tool(tool, arguments)
-    content: Any = result.content  # type: ignore[union-attr]
-    structured = getattr(result, "structuredContent", None)
-    if structured is not None:
-        payload: dict[str, Any] = structured
-        return payload
-    loaded: dict[str, Any] = json.loads(content[0].text)
-    return loaded
+    # `structured_content`, not `structuredContent`: the camelCase spelling is a
+    # serialisation alias and not an attribute, so a `getattr` for it returned the
+    # default on every call and this helper always took the text-block branch --
+    # the structured copy of every assertion in this module was unread.
+    assert isinstance(result, CallToolResult), (
+        f"`{tool}` answered with {type(result).__name__} rather than a tool result"
+    )
+
+    structured = result.structured_content
+
+    assert structured is not None, (
+        f"`{tool}` published no structured content, so this helper would fall back to "
+        f"the text block and every assertion below would range over one of the "
+        f"response's two copies without saying which"
+    )
+
+    payload: dict[str, Any] = structured
+    return payload
 
 
 # -- Authorization grants (#119) -------------------------------------------

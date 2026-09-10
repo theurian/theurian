@@ -110,6 +110,7 @@ import pytest
 from hypothesis import given, seed, settings
 from hypothesis import strategies as st
 from mcp.server import MCPServer
+from mcp.types import CallToolResult
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
@@ -711,6 +712,22 @@ async def _serve(deployment: _Deployment, arguments: dict[str, Any]) -> str:
     distinguishability face of the family (SEC-13), and folding it in means no
     comparison below can forget it. Deliberately every exception: what a caller
     observes is the refusal, whatever its Python type.
+
+    **Both copies are read by their attribute names, and that they are really
+    there is asserted rather than assumed.** ``CallToolResult`` names its fields
+    ``structured_content`` and ``is_error``; ``structuredContent`` and ``isError``
+    are serialisation *aliases*, not attributes, so a ``getattr`` for either
+    camelCase spelling returns its default on every call. This function asked for
+    both of them that way, so both keys were the literal ``null`` in every string
+    it ever produced, and every comparison over them held ``None == None`` --
+    vacuously, for both corpora, whatever the tool published. This module's
+    closure ran over the text blocks alone; the structured copy and the error flag
+    were unverified, and nothing said so because a vacuous comparison is a passing
+    one.
+
+    The premise assertion below is what makes that class fail loudly rather than
+    silently, and it is **separate from the comparison on purpose**: a comparison
+    cannot report the absence of the thing it is comparing.
     """
     try:
         result = await deployment.server.call_tool(
@@ -720,12 +737,24 @@ async def _serve(deployment: _Deployment, arguments: dict[str, Any]) -> str:
         return json.dumps(
             {"refusal": f"{type(exc).__name__}: {exc}"}, sort_keys=True, ensure_ascii=False
         )
-    content: Any = result.content  # type: ignore[union-attr]
+
+    assert isinstance(result, CallToolResult), (
+        f"`review.search` answered with {type(result).__name__} rather than a tool result, "
+        f"so this call never produced a response to compare"
+    )
+    assert result.structured_content is not None, (
+        "the tool answered with no structured content, so the `structured` key below "
+        "would compare `None` against `None` and this module's closure would hold over "
+        "the text blocks alone -- the defect this assertion exists to stop recurring, "
+        "not a condition to tolerate"
+    )
+
+    content: Any = result.content
     blocks = [[type(block).__name__, getattr(block, "text", None)] for block in content or ()]
     return json.dumps(
         {
-            "isError": getattr(result, "isError", None),
-            "structured": getattr(result, "structuredContent", None),
+            "isError": result.is_error,
+            "structured": result.structured_content,
             "content": blocks,
         },
         sort_keys=True,
@@ -862,6 +891,49 @@ def test_a_served_response_carries_no_identity_of_the_deployment_that_served_it(
             f"comparisons; they would have to normalise it away, which is how a real "
             f"difference gets masked"
         )
+
+
+def test_both_published_copies_of_one_response_carry_the_same_payload(
+    corpora: _Corpora,
+) -> None:
+    """The second premise every byte comparison here rests on: both copies are in it.
+
+    An MCP result publishes this answer **twice** -- once as a JSON text block and
+    once as structured content -- and a client may read either. :func:`_serve`
+    therefore folds both into the string the comparisons range over, so that the
+    closure covers what a client actually receives rather than one of its two
+    spellings.
+
+    That premise silently stopped holding. ``CallToolResult``'s fields are
+    ``structured_content`` and ``is_error``; the camelCase names are serialisation
+    aliases and not attributes, so the ``getattr(result, "structuredContent",
+    None)`` this module used returned ``None`` on every call there had ever been.
+    The compared string carried ``"structured": null`` for both corpora, every
+    comparison over it was ``None == None``, and the whole closure ran over the
+    text blocks alone -- passing, in the reassuring way a vacuous assertion
+    passes.
+
+    So this asserts the two copies against each other. It is the positive control
+    for the premise: it fails if the structured copy is absent, and it fails if it
+    is present but says something the text block does not, which is a wire-contract
+    defect in its own right -- one client reading the answer the other cannot see.
+    """
+    answer = _answer(corpora.withholding, {})
+    envelope = json.loads(answer)
+
+    assert envelope["structured"] is not None, (
+        "the structured copy is absent from the compared envelope, so every comparison "
+        "in this module holds over the text block alone"
+    )
+    assert envelope["structured"] == json.loads(envelope["content"][0][1]), (
+        "the two copies of one response disagree: a client reading structured content "
+        "receives something a client reading the text block does not, and the byte "
+        "comparisons below would be ranging over two answers rather than one"
+    )
+    assert envelope["structured"]["records"], (
+        "the copies agree on an answer with no rows, so this control compares two empty "
+        "things and says nothing about a served response"
+    )
 
 
 # -- the property ----------------------------------------------------------------
