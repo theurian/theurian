@@ -18,7 +18,7 @@ recurs by exactly the same route: somebody rewords one site.
 :func:`test_the_four_sites_spell_the_never_meant_sentences_one_way` compares the
 four extracted sets, so a site moving alone reddens whichever way it moved.
 
-**Three records narrate the value, both ways round.** ``review/__init__.py`` and
+**Five records narrate the value, both ways round.** ``review/__init__.py`` and
 ``infrastructure/github/__init__.py`` were re-tensed when slice 3 flipped the
 flag -- unpinned, which the flipping commit recorded as owed rather than leaving
 silent. The third is the flag's own pin: ``test_mcp_tools.py`` asserted
@@ -26,26 +26,43 @@ silent. The third is the flag's own pin: ``test_mcp_tools.py`` asserted
 ``false``" said and a sibling assertion message had the flag "stays false" --
 both left behind by the flip, in the file whose job is to hold it.
 
+The fourth and fifth are documents, and they are here because the enumeration
+above missed them for a whole round. ADR-0026's **Compliance** section listed
+``reviewIngestion: false`` among the flags reading false, and ``docs/roadmap.md``
+opened by saying no review ingestion adapter exists -- both false since slice 1,
+both outside the source-tree population the earlier sweep keyed on. ADR-0026's
+Compliance section is maintained rather than frozen: the #504 flip of
+``reviewFindings`` edited this same paragraph, which is the precedent this row
+follows (PR #504). An ADR's *Context* and *Decision* sections are the opposite -- they
+record what was true when the decision was taken, and ADR-0030's ``false``
+sentences are correct there and are deliberately not in this population.
+
 A prose pin alone would keep the ``true``-era wording against a build that had
 flipped back; a value pin alone would keep the value against records still
 describing the ``false`` era. So the fact side is the value read out of
 ``mcp/tools.py``'s own capability dict, and it *selects* which wording each
-record must carry and which it must not. Flip the flag and all three are RED
+record must carry and which it must not. Flip the flag and all five are RED
 until they are re-tensed; re-tense one backwards and it is RED until the flag
 moves.
 
-**Narrates, not mentions.** Many records name this flag; these three tell a
+**Narrates, not mentions.** Many records name this flag; these five tell a
 reader what its value *is* and reason from it, which is what makes them false
 rather than merely dated when it moves. The population is enumerated rather than
-derived -- a fourth narration would not redden this -- and that is the honest
-bound, with the answer being to add it here in the change that writes it.
+derived -- a sixth narration would not redden this -- and that is the honest
+bound, with the answer being to add it here in the change that writes it. Two
+rounds have now added a row after the fact, which is the cost of an enumeration
+and is recorded rather than argued away: a derived population, keyed on the
+narrating spellings across the whole corpus, is the shape that would not need
+the third.
 
 **Each site is read the way its own reader reads it.** A Python comment through
 ``tokenize``, because comments are not in a syntax tree; a test's assertion
 message through the AST, because implicit string concatenation is one string to
 a reader and four literals to a text search; a JSON schema through ``json``,
 because a description is an escaped string in the file and plain prose in a
-client's tooling; Markdown as text. A single grep over four files would have
+client's tooling; Markdown as prose with its block quoting removed, because
+ADR-0026's sentence lives inside a ``>`` quote and flattening the wraps alone
+leaves a ``>`` in the middle of it. A single grep over four files would have
 matched three of them and silently missed the fourth.
 
 **Why this is not a row in ``test_adr_0030_claims.py``'s ``CLAIM_SURFACES``.**
@@ -63,7 +80,7 @@ held by ``tests/integration/test_mcp_tools.py`` and
 ``tests/integration/test_wire_contract.py``. Every arm here would pass against a
 daemon that registered nothing and declared ``true``.
 
-Pure: it reads five repository files -- two of them twice, for two different
+Pure: it reads eight repository files -- two of them twice, for two different
 claims -- and opens no database, no socket and no temporary directory.
 """
 
@@ -89,8 +106,10 @@ _REVIEW_PACKAGE: Final = REPO_ROOT / "packages/theurian-core/src/theurian/review
 _GITHUB_PACKAGE: Final = (
     REPO_ROOT / "packages/theurian-core/src/theurian/infrastructure/github/__init__.py"
 )
+_BOUNDARY_ADR: Final = REPO_ROOT / "docs/adr/0026-evidence-plane-not-control-plane.md"
+_ROADMAP: Final = REPO_ROOT / "docs/roadmap.md"
 
-#: The flag whose meaning all six records state.
+#: The flag whose meaning all eight records state.
 _FLAG: Final = "reviewIngestion"
 
 #: A "it never meant X" clause, with the quoted subject captured.
@@ -173,6 +192,23 @@ def _schema_description(source: pathlib.Path, flag: str) -> str:
         f"boolean"
     )
     return _flattened(capabilities[flag]["description"])
+
+
+def _markdown_prose(source: pathlib.Path) -> str:
+    """*source* as prose, with block quoting removed before the wraps are flattened.
+
+    A Markdown document is read as text, but not as raw text: the sentence this
+    module quotes out of ADR-0026 lives in a ``>`` block quote, so flattening the
+    wraps alone leaves a ``>`` in the middle of it and every quotation that spans
+    a line break reports itself missing. What a reader sees is the quoted prose,
+    and that is what the quotation has to be checked against.
+    """
+    return _flattened(
+        " ".join(
+            line.lstrip().removeprefix(">").lstrip() if line.lstrip().startswith(">") else line
+            for line in source.read_text(encoding="utf-8").splitlines()
+        )
+    )
 
 
 def _package_docstring(source: pathlib.Path) -> str:
@@ -314,7 +350,7 @@ def test_the_four_sites_spell_the_never_meant_sentences_one_way() -> None:
 #: Each record that **narrates** the flag's value, what it must say, and what it
 #: must not, per published value.
 #:
-#: Narrates rather than mentions: these three tell a reader what the value *is*
+#: Narrates rather than mentions: these five tell a reader what the value *is*
 #: and reason from it, so they go false the moment it moves, while the many
 #: records that merely name the flag do not.
 #:
@@ -371,6 +407,25 @@ _ERA_NARRATIONS: Final[tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]], 
             "which is what `reviewIngestion` below stays false for",
         ),
     ),
+    (
+        "docs/adr/0026-evidence-plane-not-control-plane.md (Compliance)",
+        "boundary-adr",
+        (
+            "`reviewIngestion: true` is that case a second time",
+            "The boundary is where it was: ingested review content is evidence a "
+            "caller reads, and it gates nothing.",
+        ),
+        ("The other capability flags — `traceability: false`, `reviewIngestion: false` —",),
+    ),
+    (
+        "docs/roadmap.md (the not-shipped preamble)",
+        "roadmap",
+        ("The **review ingestion adapter was on that list and no longer belongs on it**",),
+        (
+            "Neither does any write-intent MCP tool, review ingestion adapter, or "
+            "evaluation harness.",
+        ),
+    ),
 )
 
 
@@ -386,6 +441,10 @@ def _era_text(reader: str) -> str:
         return _package_docstring(_REVIEW_PACKAGE)
     if reader == "github-package":
         return _package_docstring(_GITHUB_PACKAGE)
+    if reader == "boundary-adr":
+        return _markdown_prose(_BOUNDARY_ADR)
+    if reader == "roadmap":
+        return _markdown_prose(_ROADMAP)
     return _string_constants(_FLAG_PIN)
 
 
@@ -410,7 +469,7 @@ def _assert_states_the_era(label: str, text: str, published: object) -> None:
         + "".join(f"\n  missing: {sentence}" for sentence in missing)
         + "".join(f"\n  stale:   {sentence}" for sentence in stale)
         + "\n\nIf the flag moved, this record is re-tensed in the same commit: it is "
-        "one of the three that narrate the value rather than merely mention it, and a "
+        "one of the five that narrate the value rather than merely mention it, and a "
         "record describing an era the build has left is read as current by everyone "
         "who opens it. If the flag did not move, the record drifted and the wording is "
         "what gets restored."

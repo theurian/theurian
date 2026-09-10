@@ -12,8 +12,10 @@ benchmark.
 
 **This document describes direction and design. It is not a description of
 shipped capability.** `knowledge.trace` and `knowledge.impact` do not exist.
-Neither does any write-intent MCP tool, review ingestion adapter, or evaluation
-harness. What ships today is what
+Neither does any write-intent MCP tool, nor an evaluation harness. The **review
+ingestion adapter was on that list and no longer belongs on it**: ADR-0030
+slice 1 landed `theurian review ingest`, and the re-measured table below carries
+the flag flip that goes with it. What ships today is what
 [`system.capabilities`](protocol/mcp-tools.md) reports, and that report is the
 authority every sentence below was checked against:
 

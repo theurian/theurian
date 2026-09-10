@@ -108,9 +108,9 @@ Held by tests today — **one clause of the three**:
   MCP half only; that a human *merged* the proposal is T-15's recorded residual
   and is held by nothing.
 
-> The other capability flags — `traceability: false`, `reviewIngestion: false` —
-> are asserted with their reasoning in `test_mcp_tools.py`, and it is worth
-> saying what that does and does not do for this ADR. It is evidence of
+> The other capability flags — `traceability: false`, and `writeTools: false`
+> beside it — are asserted with their reasoning in `test_mcp_tools.py`, and it is
+> worth saying what that does and does not do for this ADR. It is evidence of
 > *capability honesty*: a flag cannot be flipped ahead of the feature it
 > advertises. It is not evidence of the boundary. A build could report every flag
 > truthfully and still orchestrate.
@@ -119,6 +119,16 @@ Held by tests today — **one clause of the three**:
 > and is asserted the same way. It is the case in the other direction — a flag
 > that moved *with* the feature it advertises, rather than ahead of it — and it
 > leaves this ADR's boundary where it was: a served review finding is evidence a
+> caller reads, and it gates nothing.
+>
+> `reviewIngestion: true` is that case a second time, and is recorded here for
+> the reason `reviewFindings` was: this paragraph named it among the flags
+> reading `false`, and ADR-0030 slice 1 landed the adapter it advertises. It is
+> published beside `reviewIngestionScope: "public-allowlisted"`, never one
+> without the other, and it does **not** say a client may start an ingestion run
+> — no tool spawns `gh`, a fetch is an operator's act through the CLI verb, and
+> ADR-0013 keeps write intent off this surface. What moved is what a caller may
+> *read*. The boundary is where it was: ingested review content is evidence a
 > caller reads, and it gates nothing.
 
 Held by prose and review, not by a test:
