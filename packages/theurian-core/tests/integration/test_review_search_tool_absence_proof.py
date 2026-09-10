@@ -64,6 +64,17 @@ same string, so *error distinguishability* is part of the comparison rather than
 separate claim -- a request refused against one corpus and answered against the
 other separates here (SEC-13).
 
+The adjacent pair
+-----------------
+One withheld thread and one visible thread are alike in **every** ordering key --
+same repository, same pull request, same kind, same anchor file -- with leaves
+that differ only where the order is decided, so the withheld row sits immediately
+before the visible one in the served sequence. That is the configuration where
+withholding could plausibly disturb a row the caller *may* read: its slot, its
+excerpt, the position its excerpt was cut at. The visible neighbour's opening
+comment straddles ``MAX_EXCERPT_CHARS`` on purpose, so the comparison covers
+where the cut fell and not only which stored value survived.
+
 What this module does not reach
 -------------------------------
 - **Durations and resource consumption.** Two members of the observable-family
@@ -132,6 +143,7 @@ from theurian.infrastructure.review_evidence import (
     ReviewEvidenceStore,
 )
 from theurian.infrastructure.sqlite.review_search_store import SqliteReviewSearchStore
+from theurian.mcp.review_search import MAX_EXCERPT_CHARS
 
 pytestmark = pytest.mark.integration
 
@@ -204,6 +216,29 @@ VISIBLE_NUMBERS: Final = (20, 21, 22, 23)
 #: What every record carries, visible and withheld alike, so one query reaches the
 #: whole corpus -- which is what a displacement arm and a page-edge arm both need.
 SHARED_TERM: Final = "medallion"
+
+#: The anchor file the **adjacent pair** below shares, and the file path every
+#: other visible thread already carried. A *visible* value on purpose: a filter
+#: naming it reaches the withheld sibling in the control and only visible rows in
+#: the pair, which is what makes the pair's arms able to bite.
+SHARED_FILE_PATH: Final = "src/ledger.py"
+
+#: The adjacent pair's node ids: one withheld thread and one visible thread that
+#: are alike in **every** ordering key -- same repository, same pull request, same
+#: kind -- and whose leaves differ only at the character that decides the order.
+#: ``_1_`` sorts before ``_2``, so the withheld sibling sits *immediately before*
+#: the visible one in the served sequence.
+#:
+#: This is family 2b: the case where withholding could plausibly move something
+#: about a row the caller may read -- its slot, its excerpt, the position its
+#: excerpt was cut at -- because the row nobody may see is its immediate
+#: neighbour rather than somewhere else in the corpus. Adjacency is *measured*
+#: rather than assumed by
+#: :func:`test_a_visible_records_bytes_do_not_move_when_its_neighbour_is_withheld`;
+#: neither id is a substring of the other, so the planted-value assertions cannot
+#: fire on the visible one's own path.
+ADJACENT_WITHHELD_THREAD_ID: Final = "PRRT_ENFOLD_1_VWXYZ"
+ADJACENT_VISIBLE_THREAD_ID: Final = "PRRT_ENFOLD_2"
 
 #: An author no record ever carried. The differential for "withheld" against
 #: "never existed" (SEC-13).
@@ -311,7 +346,7 @@ def _thread(  # noqa: PLR0913 - one keyword per field a search filters or matche
     state: ReviewThreadState,
     author: str = "USER_VISIBLE",
     display_name: str = "Reviewer One",
-    file_path: str = "src/ledger.py",
+    file_path: str = SHARED_FILE_PATH,
 ) -> EvidenceRecord:
     """One landed review thread. Its record key is its provider node id."""
     participant = _participant(author, display_name)
@@ -343,9 +378,23 @@ def _thread(  # noqa: PLR0913 - one keyword per field a search filters or matche
     )
 
 
-#: Everything both deployments hold. Six records across all three kinds, every one
-#: carrying :data:`SHARED_TERM` and every one spelled from :data:`VOCABULARY`, so a
-#: single query reaches the whole corpus and the page-edge arm has a defined edge.
+#: The **visible neighbour**'s opening comment, and it is long on purpose.
+#:
+#: The serving surface cuts an excerpt at ``MAX_EXCERPT_CHARS`` and marks what it
+#: cut, so a *short* fragment is compared as a whole stored value and says nothing
+#: about **where** the cut fell. This one straddles the bound, so the two corpora
+#: are compared on the cut position too -- the "which part of a row reached a
+#: field" face of the observable-family table, which a value comparison alone does
+#: not reach.
+#:
+#: Spelled from :data:`VOCABULARY` alone, so the alphabet guard still holds over
+#: it: the letters ``p``--``z`` never appear in a visible record's matchable text.
+ADJACENT_LONG_COMMENT: Final = " ".join((SHARED_TERM, *(VOCABULARY * 4)))
+
+#: Everything both deployments hold. Seven records across all three kinds, every
+#: one carrying :data:`SHARED_TERM` and every one spelled from :data:`VOCABULARY`,
+#: so a single query reaches the whole corpus and the page-edge arm has a defined
+#: edge.
 VISIBLE_CORPUS: Final = (
     *(
         _pull_request(
@@ -366,17 +415,32 @@ VISIBLE_CORPUS: Final = (
         bodies=(f"{SHARED_TERM} declined childhood.", "hemlock enfold."),
         state=ReviewThreadState.RESOLVED,
     ),
+    # The visible half of the adjacent pair: the row whose bytes must not move.
+    _thread(
+        external_id=ADJACENT_VISIBLE_THREAD_ID,
+        number=VISIBLE_NUMBERS[0],
+        bodies=(ADJACENT_LONG_COMMENT, "collide official hemlock."),
+        state=ReviewThreadState.RESOLVED,
+        file_path=SHARED_FILE_PATH,
+    ),
 )
 
 #: The records ``withholding`` is asked not to write and ``never_held`` never had.
 #:
-#: Two kinds and two keys, because the withheld set is matched on
+#: Two kinds and three keys, because the withheld set is matched on
 #: ``EvidenceRecord.record_key`` and that property answers differently per kind: a
 #: pull request is keyed by its **number**, a thread by its node id. A corpus that
 #: withheld only one shape would leave the other's key untested.
 #:
-#: The thread is ``open`` while every visible thread is ``resolved``, so
+#: The threads are ``open`` while every visible thread is ``resolved``, so
 #: ``threadState`` is a filter that reaches the withheld records and nothing else.
+#:
+#: The third record is the **withheld half of the adjacent pair**: it shares the
+#: repository, the pull request, the kind and the anchor file with a visible
+#: thread, and its leaf sorts immediately before that thread's. Everything else in
+#: this corpus is withheld from a *different* pull request, which is a corpus a
+#: build could get right while still letting a withheld row disturb the row beside
+#: it.
 WITHHELD_CORPUS: Final = (
     _pull_request(
         number=PLANTED_NUMBER,
@@ -394,6 +458,15 @@ WITHHELD_CORPUS: Final = (
         display_name=PLANTED_DISPLAY_NAME,
         file_path=PLANTED_FILE_PATH,
     ),
+    _thread(
+        external_id=ADJACENT_WITHHELD_THREAD_ID,
+        number=VISIBLE_NUMBERS[0],
+        bodies=(f"{SHARED_TERM} {PLANTED_PAYLOAD} enfold.", f"{PLANTED_PAYLOAD} once more."),
+        state=ReviewThreadState.OPEN,
+        author=PLANTED_AUTHOR,
+        display_name=PLANTED_DISPLAY_NAME,
+        file_path=SHARED_FILE_PATH,
+    ),
 )
 
 #: The keys ``withholding`` withholds, taken from the records' **own**
@@ -410,6 +483,9 @@ PLANTED_VALUES: Final = (
     PLANTED_DISPLAY_NAME,
     PLANTED_FILE_PATH,
     PLANTED_THREAD_ID,
+    # The adjacent sibling's own id, which reaches a response through its
+    # `recordPath` rather than through any text a caller can match on.
+    ADJACENT_WITHHELD_THREAD_ID,
 )
 
 
@@ -717,6 +793,10 @@ BATTERY: Final[tuple[_Arm, ...]] = (
     _Arm("shared-term-page-edge", {"q": SHARED_TERM, "limit": len(VISIBLE_CORPUS)}, True),
     _Arm("withheld-author", {"author": PLANTED_AUTHOR}, True),
     _Arm("withheld-file-path", {"filePath": PLANTED_FILE_PATH}, True),
+    # The adjacent pair's own filter: a file path a *visible* thread carries and a
+    # withheld one shares, so the pair sits side by side in the answer.
+    _Arm("shared-file-path", {"filePath": SHARED_FILE_PATH}, True),
+    _Arm("shared-file-path-first-slot", {"filePath": SHARED_FILE_PATH, "limit": 1}, True),
     _Arm("withheld-pull-request", {"pullRequest": PLANTED_NUMBER}, True),
     _Arm("withheld-thread-state", {"threadState": "open"}, True),
     _Arm("whole-repository", {"repository": REPOSITORY}, True),
@@ -921,6 +1001,85 @@ def test_a_withheld_record_never_costs_a_visible_one_its_slot_in_the_response(
     assert len(paths(corpora.withholding, contested)) == 2, (
         "and the caller must get the records it asked for rather than a short page"
     )
+
+
+def _row_for(deployment: _Deployment, arguments: dict[str, Any], leaf: str) -> dict[str, Any]:
+    """The one served row whose ``recordPath`` names ``leaf``.
+
+    Raises rather than returning ``None`` when the row is absent: every use below
+    is a comparison *of* that row, and a comparison between two absences is the
+    vacuous pass this whole module is written against.
+    """
+    rows = [row for row in _records(_answer(deployment, arguments)) if leaf in row["recordPath"]]
+    assert len(rows) == 1, f"expected exactly one row naming {leaf!r} in {arguments}, got {rows}"
+    return rows[0]
+
+
+def test_a_visible_records_bytes_do_not_move_when_its_neighbour_is_withheld(
+    corpora: _Corpora,
+) -> None:
+    """Family 2b: the visible row whose withheld sibling is its immediate neighbour.
+
+    Every other case in this module compares whole responses, where a difference
+    could sit anywhere. This one fixes on **one visible row** and asks whether
+    anything about it moves when the row immediately beside it in the served
+    sequence is withheld. The pair is alike in every ordering key -- same
+    repository, same pull request, same kind, same anchor file -- and their leaves
+    differ only where the order is decided, so the withheld sibling occupies the
+    slot before the visible row rather than sitting somewhere else in the corpus.
+
+    **The excerpt is compared at its cut**, which is why the visible neighbour's
+    opening comment is longer than ``MAX_EXCERPT_CHARS``. A short fragment is
+    served whole, so comparing it only asks whether a stored value survived; a cut
+    one also carries *where the cut fell*, which is the "which part of a row
+    reached a field" member of the observable-family table.
+
+    Three premises before the property, each of which would make the equality
+    hold for any implementation if it stopped being true: the **control** must
+    serve both siblings, they must really be adjacent there, and the visible
+    neighbour's excerpt must really arrive cut and marked. The cut premise is read
+    off ``never_held`` rather than off the control on purpose -- it is the corpus
+    the property compares against, so a defect that moved the cut for *both*
+    corpora alike would still leave this case asserting something.
+    """
+    query = {"filePath": SHARED_FILE_PATH, "limit": 50}
+    control_paths = [row["recordPath"] for row in _records(_answer(corpora.control, query))]
+    positions = {
+        leaf: index
+        for index, path in enumerate(control_paths)
+        for leaf in (ADJACENT_VISIBLE_THREAD_ID, ADJACENT_WITHHELD_THREAD_ID)
+        if leaf in path
+    }
+
+    assert set(positions) == {ADJACENT_VISIBLE_THREAD_ID, ADJACENT_WITHHELD_THREAD_ID}, (
+        f"the control must serve both halves of the pair for this filter; it served {control_paths}"
+    )
+    assert (
+        abs(positions[ADJACENT_VISIBLE_THREAD_ID] - positions[ADJACENT_WITHHELD_THREAD_ID]) == 1
+    ), (
+        f"the two siblings are not adjacent in the control's served order ({control_paths}), so "
+        f"this case is no longer about a withheld row sitting immediately beside a visible one"
+    )
+
+    reference = str(_row_for(corpora.never_held, query, ADJACENT_VISIBLE_THREAD_ID)["excerpt"])
+    assert len(reference) == MAX_EXCERPT_CHARS + 3 and reference.endswith("..."), (
+        f"the visible neighbour's excerpt is {len(reference)} characters and is not marked as "
+        f"cut, so this case compares a whole stored value and says nothing about where a cut "
+        f"fell"
+    )
+
+    for arguments in (query, {"filePath": SHARED_FILE_PATH}, {"q": SHARED_TERM, "limit": 50}):
+        withholding = _row_for(corpora.withholding, arguments, ADJACENT_VISIBLE_THREAD_ID)
+        never_held = _row_for(corpora.never_held, arguments, ADJACENT_VISIBLE_THREAD_ID)
+        assert withholding == never_held, (
+            f"a visible row's own published fields moved with the record beside it: {arguments} "
+            f"served it as {withholding} against {never_held}"
+        )
+        assert withholding["excerpt"] == reference, (
+            f"the cut fell somewhere else for {arguments} than it does over the whole page, so "
+            f"what a caller reads of a visible comment depends on a record it may not be told "
+            f"about"
+        )
 
 
 def test_the_page_boundary_bit_does_not_move_with_a_withheld_record(
@@ -1216,7 +1375,17 @@ def test_the_two_corpora_differ_by_exactly_the_withheld_records() -> None:
 
     assert {record.record_key for record in WITHHELD_CORPUS} == WITHHELD_KEYS
     assert kept == {record.record_key for record in VISIBLE_CORPUS}
-    assert len(WITHHELD_KEYS) == len(WITHHELD_CORPUS) == 2, (
-        "both withheld kinds must have distinct keys -- a pull request is keyed by its "
+    assert len(WITHHELD_KEYS) == len(WITHHELD_CORPUS) == 3, (
+        "every withheld record must have a distinct key -- a pull request is keyed by its "
         "number and a thread by its node id, and a collision would leave one key untested"
+    )
+    assert {ADJACENT_WITHHELD_THREAD_ID, PLANTED_THREAD_ID} <= WITHHELD_KEYS, (
+        "the two withheld threads are the pull-request-keyed record's counterpart and the "
+        "adjacent sibling; losing either leaves one of the two key shapes, or the adjacency "
+        "case's own plant, out of the withheld set"
+    )
+    assert ADJACENT_WITHHELD_THREAD_ID not in ADJACENT_VISIBLE_THREAD_ID, (
+        "the visible neighbour's id contains the withheld sibling's, so every "
+        "`planted value not in the response` assertion would fire on a row the caller is "
+        "entitled to -- a red test with nothing wrong behind it"
     )
