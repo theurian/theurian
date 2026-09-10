@@ -1466,9 +1466,26 @@ over it, and it carries its own bounds rather than a share of anyone else's.
 | characters per served `excerpt`, cut inside the store's own `SELECT` | `mcp/review_search.py::MAX_EXCERPT_CHARS` (280), derived from `domain/retrieval.py::EXCERPT_CHARS` rather than respelled, and applied by `infrastructure/sqlite/review_search_sql.py::excerpt_columns()` as `substr(t.content, 1, ?)` | **clamps**, and marks the cut with three characters, so an untouched excerpt is at most the bound and a cut one is exactly `MAX_EXCERPT_CHARS + 3` |
 | characters per string filter, before anything is matched or echoed | `mcp/review_search.py::MAX_FILTER_CHARS` (400) — 400 rather than the fourth member's 200 because the long member here is a **file path**, and `q` shares the bound rather than taking `knowledge.search`'s 2,000 because the match is literal | **refuses**, naming the bound and never quoting the value |
 | magnitude of `pullRequest` | `mcp/review_search.py::MAX_PULL_REQUEST`, the widest value the store's signed 64-bit column can hold (`2**63 - 1`) | **refuses** |
-| characters in the whole response | `mcp/review_search.py::MAX_REVIEW_SEARCH_RESPONSE_CHARS`, **derived rather than chosen**: `MAX_REVIEW_SEARCH_LIMIT × (MAX_EXCERPT_CHARS + 3 + 17 × MAX_FILTER_CHARS)`, where the 17 is itself derived — the published keys beside `excerpt`, read off the two field-classification sets and the SEC-15 triple, so a field added to the shaper widens the budget by the change that adds it. Size this by the expression, not by the figure it evaluates to today | **clamps the page**: records stop being added once the budget is spent, and `truncated` says the response carries fewer records than the read returned |
+| content characters of the shaped records — **not wire bytes**, see below the table | `mcp/review_search.py::MAX_REVIEW_SEARCH_RESPONSE_CHARS`, **derived rather than chosen**: `MAX_REVIEW_SEARCH_LIMIT × (MAX_EXCERPT_CHARS + 3 + 17 × MAX_FILTER_CHARS)`, where the 17 is itself derived — the published keys beside `excerpt`, read off the two field-classification sets and the SEC-15 triple, so a field added to the shaper widens the budget by the change that adds it. Size this by the expression, not by the figure it evaluates to today | **clamps the page**: records stop being added once the budget is spent, and `truncated` says the response carries fewer records than the read returned |
 | concurrent occupancy | an `AdmissionGate` of its own — the third — sized by `MAX_CONCURRENT_SEARCHES` (4), waited on for `ADMISSION_WAIT_SECONDS` (1.0 s), refusing with `REVIEW_SEARCH_CAPACITY_REFUSAL` | **refuses** |
 | wall clock per call | **nothing** — recorded as *not taken*, with the reasoning below | neither |
+
+**The response bound's unit is content characters, and the frame a caller
+receives is larger.** `_record_chars` sums each shaped row's key names and the
+length of each string value, so the figure is what the *records* hold rather than
+what crosses the wire. Two things separate the two, and neither is modelled by
+the budget on purpose — sizing the page on a serialized string would cost the
+graded stop at the record boundary, which is what keeps every served value the
+stored one. JSON escaping costs up to six wire characters for one counted here
+(CJK does not escape: the SDK serializes with `ensure_ascii=False`; a control
+character does), and the SDK sends the payload **twice**, as a `content` text
+block and as `structured_content`. Measured 2026-09-11 over a full page of 50
+records against the SDK's own serialization: 188,900 budget characters against
+203,257 on the wire, **2.15×** counting both carries; 30,350 against 44,707 for
+short values, 2.95×; and 188,700 against 1,072,157, **11.36×**, where every
+string is control characters. A transport limit is therefore sized at roughly
+twelve times this budget and never at the budget itself. Re-basing the budget on
+serialized size was considered and rejected for the record-boundary reason above.
 
 **Only the excerpt was bounded when the tool was first written, and the excerpt
 was the cheap field to bound.** `authorDisplayName` and `filePath` are

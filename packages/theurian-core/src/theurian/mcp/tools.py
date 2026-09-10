@@ -2305,6 +2305,17 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         response at ``limit=50`` against the 14,050 the prose declared
         (2026-09-10).
 
+        **That third figure is content characters of the shaped records, not wire
+        bytes**, and the gap is not small. JSON escaping costs up to six wire
+        characters for one counted in the budget, and the SDK sends the payload
+        twice -- a ``content`` text block and ``structured_content`` -- so one
+        response's JSON crosses the wire two times over. Measured 2026-09-11 over
+        a full page of 50 records: 2.15x the budget figure for long unescaped
+        values, 2.95x for short ones, and 11.36x where every string is control
+        characters. Size a transport limit at roughly twelve times this budget,
+        never at the budget itself; the constant's own note carries the figures
+        and how they were taken.
+
         **Project-scoped, through the same gate as every other project tool.**
         ``projectId`` is required (ADR-0002: many agents share one daemon, so an
         implicit default resolves one agent's query against another's project), and

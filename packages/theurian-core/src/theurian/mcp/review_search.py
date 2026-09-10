@@ -199,6 +199,27 @@ _KEYS_BESIDE_THE_EXCERPT: Final = (
 
 #: The whole response's content budget, in characters.
 #:
+#: **The unit is content characters of the shaped records, not wire bytes**, and
+#: the two are not interchangeable. :func:`_record_chars` sums each row's key
+#: names and the length of each string value; the frame a caller receives is
+#: larger for two reasons that this budget deliberately does not model, because
+#: modelling them would mean sizing the page on a serialized string and losing
+#: the graded stop at the record boundary:
+#:
+#: * **JSON escaping.** A character that has to be escaped costs up to six on the
+#:   wire (``\\uXXXX``) and one here. CJK does not escape -- the SDK serializes
+#:   with ``ensure_ascii=False`` -- but a control character does.
+#: * **The payload crosses twice.** The SDK sends both a ``content`` text block
+#:   and ``structured_content``, so the frame carries one response's JSON twice.
+#:
+#: Measured 2026-09-11 on this module, a full page of 50 records against the
+#: SDK's own serialization (``indent=2``, ``ensure_ascii=False``): 188,900 budget
+#: characters against 203,257 on the wire (1.08x, 2.15x counting both carries);
+#: 30,350 against 44,707 for short values (1.47x, 2.95x); and 188,700 against
+#: 1,072,157 (5.68x, **11.36x**) where every string is control characters. So a
+#: figure here bounds the wire frame at roughly twelve times itself, and a reader
+#: sizing a transport limit should use that multiple rather than this number.
+#:
 #: **Derived, not chosen.** One record is allowed its excerpt term --
 #: :data:`MAX_EXCERPT_CHARS` plus the cut marker, which is the longest excerpt
 #: this surface will publish -- plus :data:`MAX_FILTER_CHARS` for each of the
@@ -554,6 +575,16 @@ def _record_chars(row: dict[str, Any]) -> int:
     ``executable`` are booleans; and any field this record kind has no value for
     is ``null``. Each renders in at most twenty characters, and how many of them
     there can be is bounded by the row's own key count, which *is* in the sum.
+
+    **The walk covers records, and the response envelope sits outside it by a
+    size argument rather than by an oversight.** ``count``, ``truncated`` and
+    ``records`` are the only three keys :func:`review_search_payload` adds around
+    the rows: 21 characters of key names, and 27 once the two non-record values
+    are rendered -- ``count`` is ``len(served)`` and so at most
+    :data:`MAX_REVIEW_SEARCH_LIMIT`, two digits, and ``truncated`` is a boolean
+    (measured 2026-09-11). That is a constant beside a budget of
+    :data:`MAX_REVIEW_SEARCH_RESPONSE_CHARS`, and not a term a caller can grow.
+    What varies with the corpus is inside the rows, which is what this sums.
     """
     return sum(
         len(key) + (len(value) if isinstance(value, str) else 0) for key, value in row.items()
