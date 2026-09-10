@@ -1998,10 +1998,11 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
         "Review-Finding trailers `theurian findings build` landed in a project's "
         "store, under the SEC-15 triple (ADR-0029 phase-2 slice-3). The flag "
         "promises that one read and nothing else -- not GitHub, not review "
-        "threads, not any write intent, which is what `reviewIngestion` below "
-        "stays false for. A client reading `false` here would never call a tool "
-        "this build answers, which is the degradation this whole block exists to "
-        "let it get right."
+        "threads, not any write intent. `reviewIngestion` below is a different "
+        "`true` about a different corpus, and neither flag lets a client "
+        "conclude anything about the other's tool. A client reading `false` "
+        "here would never call a tool this build answers, which is the "
+        "degradation this whole block exists to let it get right."
     )
     assert result["capabilities"]["reviewIngestion"] is True, (
         "the serve slice landed, so the narrowed meaning ADR-0030 decision 6 ties "
@@ -2100,9 +2101,11 @@ async def test_the_capability_block_holds_exactly_the_flags_that_are_pinned(
     after it was written. A new capability would ship declared-but-unasserted,
     which is the state `reviewIngestion`, `traceability` and `knowledgeSearch`
     were each found in (#129) -- and a capability flag is a security statement
-    when it is `reviewIngestion`, whose published meaning narrowed with ADR-0030:
-    the `false` now says no ingestion call surface is callable, not that nothing
-    reaches GitHub.
+    when it is `reviewIngestion`, whose published meaning narrowed with ADR-0030
+    and then, with slice 3's serve tool, went `true` under that narrowed
+    reading: it says an ingestion call surface exists that a client may call,
+    never that this build can reach GitHub. A client that read it the wide way
+    would take the `true` as permission to expect a fetch.
 
     So this fails when a flag is added *and* when one is removed, and its message
     says what to do about it. The value of a new flag belongs in the test above;

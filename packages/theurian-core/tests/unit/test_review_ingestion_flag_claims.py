@@ -1,4 +1,4 @@
-"""``reviewIngestion``'s published meaning, held across the six places it is stated.
+"""``reviewIngestion``'s published meaning, held across the records that state it.
 
 The flag has meant three different things and only the last is published, which
 is why every record that mentions it spends more words on what it does *not* say
@@ -18,16 +18,27 @@ recurs by exactly the same route: somebody rewords one site.
 :func:`test_the_four_sites_spell_the_never_meant_sentences_one_way` compares the
 four extracted sets, so a site moving alone reddens whichever way it moved.
 
-**The two package docstrings, both ways round.** ``review/__init__.py`` and
-``infrastructure/github/__init__.py`` narrate the flag's value, and both were
-re-tensed when slice 3 flipped it -- unpinned, which the flipping commit recorded
-as owed rather than leaving silent. A prose pin alone would keep the ``true``-era
-wording against a build that had flipped back; a value pin alone would keep the
-value against docstrings still describing the ``false`` era. So the fact side is
-the value read out of ``mcp/tools.py``'s own capability dict, and it *selects*
-which wording each docstring must carry and which it must not. Flip the flag and
-the docstrings are RED until they are re-tensed; re-tense them backwards and they
-are RED until the flag moves.
+**Three records narrate the value, both ways round.** ``review/__init__.py`` and
+``infrastructure/github/__init__.py`` were re-tensed when slice 3 flipped the
+flag -- unpinned, which the flipping commit recorded as owed rather than leaving
+silent. The third is the flag's own pin: ``test_mcp_tools.py`` asserted
+``reviewIngestion is True`` while one of its docstrings still explained what "the
+``false``" said and a sibling assertion message had the flag "stays false" --
+both left behind by the flip, in the file whose job is to hold it.
+
+A prose pin alone would keep the ``true``-era wording against a build that had
+flipped back; a value pin alone would keep the value against records still
+describing the ``false`` era. So the fact side is the value read out of
+``mcp/tools.py``'s own capability dict, and it *selects* which wording each
+record must carry and which it must not. Flip the flag and all three are RED
+until they are re-tensed; re-tense one backwards and it is RED until the flag
+moves.
+
+**Narrates, not mentions.** Many records name this flag; these three tell a
+reader what its value *is* and reason from it, which is what makes them false
+rather than merely dated when it moves. The population is enumerated rather than
+derived -- a fourth narration would not redden this -- and that is the honest
+bound, with the answer being to add it here in the change that writes it.
 
 **Each site is read the way its own reader reads it.** A Python comment through
 ``tokenize``, because comments are not in a syntax tree; a test's assertion
@@ -52,8 +63,8 @@ held by ``tests/integration/test_mcp_tools.py`` and
 ``tests/integration/test_wire_contract.py``. Every arm here would pass against a
 daemon that registered nothing and declared ``true``.
 
-Pure: it reads four repository files and two package docstrings, and opens no
-database, no socket and no temporary directory.
+Pure: it reads five repository files -- two of them twice, for two different
+claims -- and opens no database, no socket and no temporary directory.
 """
 
 from __future__ import annotations
@@ -300,16 +311,29 @@ def test_the_four_sites_spell_the_never_meant_sentences_one_way() -> None:
     )
 
 
-#: What each package docstring must say, and must not say, per published value.
+#: Each record that **narrates** the flag's value, what it must say, and what it
+#: must not, per published value.
 #:
-#: The ``false`` column is not hypothetical wording: it is what both docstrings
-#: really said before slice 3 flipped the flag, quoted rather than invented. A
-#: branch sha is orphaned by the squash that merges it and a quotation survives,
-#: which is the citation rule ``test_review_ingest_changelog_claims.py`` records.
-_DOCSTRING_ERAS: Final[tuple[tuple[str, pathlib.Path, tuple[str, ...], tuple[str, ...]], ...]] = (
+#: Narrates rather than mentions: these three tell a reader what the value *is*
+#: and reason from it, so they go false the moment it moves, while the many
+#: records that merely name the flag do not.
+#:
+#: **The third row is the same defect twice over.** ``test_mcp_tools.py``
+#: asserted ``reviewIngestion is True`` while one docstring narrated "the `false`
+#: now says no ingestion call surface is callable" and a sibling assertion
+#: message said the flag "stays false" -- both left behind by the flip, in the
+#: file that is the flag's own pin. Neither was reachable from the two package
+#: docstrings' rows, which is why the row exists rather than the two sentences
+#: being quietly corrected.
+#:
+#: The ``false`` column is not hypothetical wording anywhere: it is what each
+#: record really said, quoted rather than invented. A branch sha is orphaned by
+#: the squash that merges it and a quotation survives, which is the citation rule
+#: ``test_review_ingest_changelog_claims.py`` records.
+_ERA_NARRATIONS: Final[tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]], ...]] = (
     (
         "review/__init__.py",
-        _REVIEW_PACKAGE,
+        "review-package",
         (
             "``system.capabilities`` reports ``reviewIngestion: true``",
             "because that serving half is callable",
@@ -323,7 +347,7 @@ _DOCSTRING_ERAS: Final[tuple[tuple[str, pathlib.Path, tuple[str, ...], tuple[str
     ),
     (
         "infrastructure/github/__init__.py",
-        _GITHUB_PACKAGE,
+        "github-package",
         (
             "That tool is what moved ``system.capabilities`` to ``reviewIngestion: true``",
             "A fetch is still an operator's act through the CLI verb.",
@@ -333,7 +357,36 @@ _DOCSTRING_ERAS: Final[tuple[tuple[str, pathlib.Path, tuple[str, ...], tuple[str
             "Slice 3 adds the tool and flips it.",
         ),
     ),
+    (
+        "tests/integration/test_mcp_tools.py (the flag's own pin)",
+        "flag-pin",
+        (
+            "and then, with slice 3's serve tool, went `true` under that narrowed "
+            "reading: it says an ingestion call surface exists that a client may call",
+            "`reviewIngestion` below is a different `true` about a different corpus",
+        ),
+        (
+            "the `false` now says no ingestion call surface is callable, not that nothing "
+            "reaches GitHub",
+            "which is what `reviewIngestion` below stays false for",
+        ),
+    ),
 )
+
+
+def _era_text(reader: str) -> str:
+    """The text of one narrating record, read the way its own reader reads it.
+
+    The flag's own pin is read through its string constants rather than as a file,
+    because both of its narrations are a docstring and an assertion message -- one
+    of them written as implicitly concatenated literals with the claim broken
+    across two of them.
+    """
+    if reader == "review-package":
+        return _package_docstring(_REVIEW_PACKAGE)
+    if reader == "github-package":
+        return _package_docstring(_GITHUB_PACKAGE)
+    return _string_constants(_FLAG_PIN)
 
 
 def _assert_states_the_era(label: str, text: str, published: object) -> None:
@@ -344,8 +397,8 @@ def _assert_states_the_era(label: str, text: str, published: object) -> None:
     sentences of a build that publishes ``false``, so a flip back is RED until
     the docstrings are re-tensed with it.
     """
-    row = next(case for case in _DOCSTRING_ERAS if case[0] == label)
-    _name, _path, on_true, on_false = row
+    row = next(case for case in _ERA_NARRATIONS if case[0] == label)
+    _name, _reader, on_true, on_false = row
     required, forbidden = (on_true, on_false) if published is True else (on_false, on_true)
 
     missing = [sentence for sentence in required if sentence not in text]
@@ -356,21 +409,21 @@ def _assert_states_the_era(label: str, text: str, published: object) -> None:
         f"`{_TOOLS.name}` publishes.\n"
         + "".join(f"\n  missing: {sentence}" for sentence in missing)
         + "".join(f"\n  stale:   {sentence}" for sentence in stale)
-        + "\n\nIf the flag moved, this docstring is re-tensed in the same commit: it is "
-        "one of the two records that narrate the value rather than merely mention it, "
-        "and a package docstring describing an era the build has left is read as "
-        "current by everyone who opens the package. If the flag did not move, the "
-        "docstring drifted and the wording is what gets restored."
+        + "\n\nIf the flag moved, this record is re-tensed in the same commit: it is "
+        "one of the three that narrate the value rather than merely mention it, and a "
+        "record describing an era the build has left is read as current by everyone "
+        "who opens it. If the flag did not move, the record drifted and the wording is "
+        "what gets restored."
     )
 
 
 @pytest.mark.parametrize(
-    ("label", "path"),
-    [(case[0], case[1]) for case in _DOCSTRING_ERAS],
-    ids=[case[0] for case in _DOCSTRING_ERAS],
+    ("label", "reader"),
+    [(case[0], case[1]) for case in _ERA_NARRATIONS],
+    ids=[case[0] for case in _ERA_NARRATIONS],
 )
-def test_each_package_docstring_narrates_the_flag_the_capability_dict_publishes(
-    label: str, path: pathlib.Path
+def test_each_record_narrates_the_flag_the_capability_dict_publishes(
+    label: str, reader: str
 ) -> None:
     """RED means a package docstring describes an era this build has left.
 
@@ -390,7 +443,7 @@ def test_each_package_docstring_narrates_the_flag_the_capability_dict_publishes(
     ``mcp/tools.py``'s own capability dict, so the expectation is never written
     twice.
     """
-    _assert_states_the_era(label, _package_docstring(path), _published_capability(_FLAG))
+    _assert_states_the_era(label, _era_text(reader), _published_capability(_FLAG))
 
 
 def test_the_docstring_checker_demands_the_other_era_when_the_flag_moves() -> None:
@@ -409,8 +462,8 @@ def test_the_docstring_checker_demands_the_other_era_when_the_flag_moves() -> No
     reported too. Nothing in ``src/`` is read for the second half and nothing is
     written at all.
     """
-    label, path, _on_true, on_false = _DOCSTRING_ERAS[0]
-    live = _package_docstring(path)
+    label, reader, _on_true, on_false = _ERA_NARRATIONS[0]
+    live = _era_text(reader)
 
     with pytest.raises(AssertionError, match=re.escape("missing")):
         _assert_states_the_era(label, live, published=False)
