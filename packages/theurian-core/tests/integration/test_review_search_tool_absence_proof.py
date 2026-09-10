@@ -894,8 +894,9 @@ def test_a_query_matching_a_withheld_record_answers_as_a_corpus_that_never_held_
         "below is between two deployments that were never asked anything"
     )
     assert control != withholding, (
-        "the control and the withholding deployment must answer alike, so nothing was "
-        "withheld and this case passes over a build that did no filtering at all"
+        "the control and the withholding deployment must answer *differently* here, and they "
+        "answered alike -- so nothing was withheld, and the equality below would pass over a "
+        "build that did no filtering at all"
     )
     assert withholding.encode("utf-8") == never_held.encode("utf-8"), (
         "a deployment that withheld a record answered a query matching that record's own "
