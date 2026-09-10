@@ -2312,6 +2312,17 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         is, and a store with no record in it is refused with the constant below --
         the same one an absent store gets, so the two are indistinguishable.
 
+        **This read needs write access to ``.theurian/state/``**, which is not
+        obvious from a tool that only reads. The store is a WAL database, so
+        SQLite creates its ``-wal`` and ``-shm`` companions beside it on the first
+        serving read even though that connection is opened ``mode=ro``. Measured
+        2026-09-10: with the directory at ``0o500`` and the companions absent, the
+        read fails with ``attempt to write a readonly database`` and reaches a
+        caller as :data:`REVIEW_SEARCH_UNAVAILABLE_REFUSAL` -- the same refusal an
+        absent store gets, whose remedy names ``theurian review build`` and will
+        not fix a directory mode. An operator meeting that refusal on a store they
+        know they built should check the mode before rebuilding.
+
         Raises:
             ToolError: If the project does not resolve (see :func:`_resolve`), if
                 a filter is outside its bound or vocabulary (see
@@ -2488,15 +2499,26 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 #
                 # Read it as narrowly as its history requires, because the flag
                 # has meant three different things and only the last one is
-                # published. It never meant "this build cannot reach GitHub" --
-                # the fetch path shipped in slice 1, `infrastructure/github/`
-                # spawns `gh`, and the flag stayed `false` because no tool
-                # exposed it. It never meant "nothing lands on disk" -- slice 2
-                # shipped `theurian review ingest`, which writes files under
+                # published. It never meant "this build can reach GitHub" -- the
+                # fetch path shipped in slice 1, `infrastructure/github/` spawns
+                # `gh`, and the flag stayed `false` because no tool exposed it, so
+                # its value has never tracked reachability in either direction.
+                # It never meant "evidence lands on disk" -- slice 2 shipped
+                # `theurian review ingest`, which writes files under
                 # `.theurian/review/`, and the flag stayed `false` for the same
                 # reason. What it reports, and all it has ever reported, is the
                 # MCP-callable surface; the serve slice is the first change that
                 # moves that.
+                #
+                # Both sentences are written as what a reader must not conclude
+                # from the `true` this now publishes, which is the reading at
+                # risk. The same two sentences are in
+                # `schemas/mcp/system-capabilities-response.schema.json`,
+                # `docs/protocol/mcp-tools.md` and this flag's own pin in
+                # `tests/integration/test_mcp_tools.py`; they are spelled one way
+                # across all four deliberately, because two of them carried the
+                # `false`-reading form and a reader meeting both would have to
+                # work out whether the difference meant anything.
                 #
                 # It does **not** say a client may start an ingestion run. No
                 # tool here spawns `gh`, and none will without its own round:

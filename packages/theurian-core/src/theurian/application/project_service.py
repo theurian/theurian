@@ -3202,26 +3202,45 @@ def verify_state_provenance(
     produced influences no served result whatever put it on disk, but this
     function is not what holds the build side.
 
-    The sibling gates, **as of this commit and pinned by nothing**: ``has_state``
-    in ``cli/index_commands.py`` (``index build``) and ``cli/commands.py``
-    (``migrate apply``); ``has_index`` in ``cli/commands.py`` and
-    ``mcp/search.py``; ``has_findings`` in ``mcp/tools.py`` (``review.findings``).
+    The sibling gates, **as of this commit and pinned by nothing**, re-derived
+    from ``git grep -nE '\\.has_(state|index|findings|review)\\(' --
+    packages/theurian-core/src``, which answers eight lines -- the seven below and
+    this function's own check. The call form matters to that search: one of the
+    seven reaches the record through ``BuildProvenance.default()`` rather than
+    through a ``provenance`` name, so a key written as ``provenance.has_`` would
+    answer six and miss it. ``has_state`` in
+    ``cli/index_commands.py`` (``index build``) and ``cli/commands.py``
+    (``migrate apply``, which discards rather than refuses); ``has_index`` in
+    ``cli/commands.py`` (the withdrawal purge's copy-forward, answering
+    ``UNTRUSTED_SOURCE_INDEX``), ``mcp/search.py`` (the ranked path standing
+    aside) and ``application/index_secret_scan.py`` (the scan verdict reading
+    ``UNRECORDED``); ``has_findings`` in ``mcp/tools.py`` (``review.findings``);
+    and ``has_review`` in ``mcp/tools.py`` (``review.search``).
 
-    **The findings family has one gate and no build-side twin, which is a
-    difference rather than a gap.** ``index build`` and ``migrate apply`` gate
+    **The two review families have one gate each and no build-side twin, which is
+    a difference rather than a gap.** ``index build`` and ``migrate apply`` gate
     because each *consumes* an artifact this record vouches for -- an index built
-    over a doctored state would launder it -- while ``findings build`` consumes
-    nothing derived: it reads git history and rebuilds the store wholesale, so
-    there is no delivered artifact for it to be fooled by. What it does instead is
-    *record*, at ``cli/findings_commands.py``'s ``record_findings`` call, and that
-    call is what makes the store it just built servable.
+    over a doctored state would launder it. ``findings build`` consumes nothing
+    derived: it reads git history and rebuilds the store wholesale, so there is no
+    delivered artifact for it to be fooled by. ``review build`` reads the evidence
+    files under ``.theurian/review/``, and those are **source rather than derived**
+    (ADR-0030 decision 3) -- nothing here vouches for them, deliberately, and what
+    that costs is recorded as threat-model T-24 rather than left to be inferred
+    from this list. What both build commands do instead is *record*, at
+    ``cli/findings_commands.py``'s ``record_findings`` call and at
+    ``cli/review_commands.py``'s ``record_review`` call, and that is what makes the
+    store each has just built servable.
 
     This list is prose, so a gate added or moved will not
     redden anything -- an earlier revision of this docstring named the wrong
-    function for the build path and stayed green for a milestone, and a later one
-    enumerated two families after the third had shipped. Re-derive it from ``git
-    grep`` rather than trusting it, and treat a disagreement as this sentence
-    being stale rather than the code being wrong.
+    function for the build path and stayed green for a milestone, a later one
+    enumerated two families after the third had shipped, and the one before this
+    enumerated three after the fourth had, while also omitting
+    ``index_secret_scan.py``'s ``has_index`` call. Three drifts in a row is the
+    argument for the search
+    above being written down beside the list: re-derive it from ``git grep``
+    rather than trusting it, and treat a disagreement as this sentence being stale
+    rather than the code being wrong.
 
     Raises:
         ProjectError: If no out-of-tree record shows this installation built the

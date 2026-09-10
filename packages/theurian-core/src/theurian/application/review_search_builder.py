@@ -71,12 +71,20 @@ WriteReviewSearchStore = Callable[[ReviewSearchLoad], None]
 
 #: The trailing ``#<number>`` of an event key. ``ReviewEvent.external_key`` is
 #: ``f"{provider}:{repository}#{number}"`` and is the **only** producer of the
-#: ``event_key`` a submission or a thread carries -- ``git grep -n 'event_key='
-#: -- packages/theurian-core/src`` answers four lines: the two codec reads that
-#: load the value back out of a file, and the two writers, which are
-#: ``response.submission(node, project_id, event.external_key)`` and
-#: ``event_key=event.external_key``. So the parse below is exact for every record
-#: the shipped writer lands.
+#: ``event_key`` a submission or a thread carries.
+#:
+#: The population, with the search that answers it. **The pathspec excludes this
+#: file**, and it is not decoration: the command appears in this comment, so a
+#: search without it matches its own two occurrences here and answers six where
+#: the population is four --
+#: ``git grep -n 'event_key=' -- packages/theurian-core/src ':!*review_search_builder.py'``.
+#:
+#: Those four are ``review_provider.py``'s ``ReviewThread(...)``, which binds
+#: ``event.external_key`` directly; ``response.py``'s ``ReviewSubmission(...)``
+#: inside ``submission()``, whose one caller hands it the same
+#: ``event.external_key`` **positionally** and is therefore not itself among the
+#: four; and the two ``codec.py`` reads that load the value back out of a landed
+#: file. So the parse below is exact for every record the shipped writer lands.
 #:
 #: ASCII-anchored (``re.ASCII``) rather than ``str.isdigit``: that predicate is
 #: true of ``٣`` and ``int`` accepts it, so a non-ASCII digit would become a
