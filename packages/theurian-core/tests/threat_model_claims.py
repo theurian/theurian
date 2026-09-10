@@ -45,6 +45,7 @@ Pure: two files read as text, no database, socket or temporary directory.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Final
 
 from write_lock_claims import REPO_ROOT, collapsed
@@ -90,6 +91,43 @@ SPELLED_NUMBERS: Final = {
 #: The same mapping the other way round, so a RED can name the word an entry
 #: should now carry rather than leaving an editor to work it out from a count.
 WORD_FOR_COUNT: Final = {count: word for word, count in SPELLED_NUMBERS.items()}
+
+
+#: The two halves of an artifact family on ``BuildProvenance``: the build side
+#: that records one, and the serve side that asks whether this installation did.
+#:
+#: Here rather than in T-19's module because two entries now read the same set.
+#: T-19 spells how many families there are and names each; T-24 rests on the set
+#: holding **no** per-record member -- provenance answers "did this installation
+#: build the store", never "did this installation ingest the evidence" -- so a new
+#: family is the day both entries have to move, and they find out together.
+RECORDER: Final = "record_"
+CHECKER: Final = "has_"
+
+
+def artifact_families(namespace: Iterable[str]) -> tuple[str, ...]:
+    """The artifact families *namespace* exposes, one per matched record/has pair.
+
+    Sorted, so the failure messages built from it do not depend on iteration
+    order. Takes a namespace rather than reading the class itself so the
+    derivation can be exercised against a synthetic member list -- which is how
+    the "a fourth family reddens this" claim was demonstrated without waiting for
+    a fourth family to exist.
+
+    Private members are excluded by the prefixes themselves: ``_record``, the
+    shared writer both recorders call, does not start with ``record_``.
+    """
+    recorders = {name.removeprefix(RECORDER) for name in namespace if name.startswith(RECORDER)}
+    checkers = {name.removeprefix(CHECKER) for name in namespace if name.startswith(CHECKER)}
+
+    assert recorders == checkers, (
+        f"`BuildProvenance` records {sorted(recorders)} and checks {sorted(checkers)}. "
+        f"Every artifact family needs both halves -- a `record_*` with no `has_*` is "
+        f"an artifact no serve path gates, and a `has_*` with no `record_*` gates one "
+        f"nothing can ever produce -- and until they agree there is no single set for "
+        f"T-19 and T-24 to be held against"
+    )
+    return tuple(sorted(recorders))
 
 
 def prose(text: str) -> str:

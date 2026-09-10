@@ -76,11 +76,17 @@ from __future__ import annotations
 import ast
 import pathlib
 import re
-from collections.abc import Iterable
 from typing import Final
 
 import pytest
-from threat_model_claims import SPELLED_NUMBERS, WORD_FOR_COUNT, entry, prose
+from threat_model_claims import (
+    CHECKER,
+    SPELLED_NUMBERS,
+    WORD_FOR_COUNT,
+    artifact_families,
+    entry,
+    prose,
+)
 from write_lock_claims import REPO_ROOT
 
 from theurian.application.project_service import FINDINGS_STORE_ID, BuildProvenance
@@ -91,14 +97,9 @@ pytestmark = pytest.mark.unit
 #: where the anchoring rules and the reason for them live.
 _THREAT_ID: Final = "T-19"
 
-#: The two halves of an artifact family on :class:`BuildProvenance`: the build
-#: side that records one, and the serve side that asks whether this installation
-#: did. A family is a name that has both, and :func:`artifact_families` fails
-#: loudly on one that has only one half -- a recorder with no reader is an
-#: artifact nothing gates, and a reader with no recorder gates an artifact
-#: nothing can ever produce.
-_RECORDER: Final = "record_"
-_CHECKER: Final = "has_"
+#: The two halves of an artifact family, and the derivation over them, both live
+#: in ``threat_model_claims`` -- T-24 reads the same set, for the opposite claim.
+#: Only the serve-side prefix is used by name here.
 
 #: How T-19 spells the size of the family set, as the phrase rather than as a
 #: bare number word. The entry carries other spelled numbers -- the control
@@ -169,31 +170,6 @@ _PROJECT_SERVICE_MODULE: Final = (
 #: ``FINDINGS_STORE_ID = "local"`` would satisfy the call-site arm while being a
 #: second spelling that drifts from the writer's.
 _STORE_ID_HOME: Final = "theurian.application.project_service"
-
-
-def artifact_families(namespace: Iterable[str]) -> tuple[str, ...]:
-    """The artifact families *namespace* exposes, one per matched record/has pair.
-
-    Sorted, so the failure messages built from it do not depend on iteration
-    order. Takes a namespace rather than reading the class itself so the
-    derivation can be exercised against a synthetic member list -- which is how
-    the "a fourth family reddens this" claim was demonstrated without waiting for
-    a fourth family to exist.
-
-    Private members are excluded by the prefixes themselves: ``_record``, the
-    shared writer both recorders call, does not start with ``record_``.
-    """
-    recorders = {name.removeprefix(_RECORDER) for name in namespace if name.startswith(_RECORDER)}
-    checkers = {name.removeprefix(_CHECKER) for name in namespace if name.startswith(_CHECKER)}
-
-    assert recorders == checkers, (
-        f"`BuildProvenance` records {sorted(recorders)} and checks {sorted(checkers)}. "
-        f"Every artifact family needs both halves -- a `record_*` with no `has_*` is "
-        f"an artifact no serve path gates, and a `has_*` with no `record_*` gates one "
-        f"nothing can ever produce -- and until they agree there is no single set for "
-        f"T-19 to be held against"
-    )
-    return tuple(sorted(recorders))
 
 
 def _enumeration_block() -> str:
@@ -419,8 +395,8 @@ def test_t19_cites_the_findings_serve_check_and_every_cited_member_exists() -> N
         f"citation is what a reader auditing the control follows, so a record naming "
         f"a symbol that was renamed or removed is evidence of nothing"
     )
-    assert f"{_CHECKER}{_FINDINGS_FAMILY}" in cited, (
-        f"T-19 no longer cites `BuildProvenance.{_CHECKER}{_FINDINGS_FAMILY}`, the "
+    assert f"{CHECKER}{_FINDINGS_FAMILY}" in cited, (
+        f"T-19 no longer cites `BuildProvenance.{CHECKER}{_FINDINGS_FAMILY}`, the "
         f"serve-side check for the `{_FINDINGS_FAMILY}` family; it cites {sorted(cited)}. "
         f"That sentence is the entry's only evidence that the provenance gate reaches "
         f"the family ADR-0029's serving slice added"
@@ -462,7 +438,7 @@ def test_t19s_residual_says_the_findings_family_is_keyed_by_a_constant_not_a_has
         f"would fail to match, which is not true of the findings store: {text[:400]}"
     )
     assert _PER_ROOT_RECORD in text, (
-        f"T-19's residual no longer records that `BuildProvenance.{_CHECKER}"
+        f"T-19's residual no longer records that `BuildProvenance.{CHECKER}"
         f"{_FINDINGS_FAMILY}` holds a `{_PER_ROOT_RECORD}`. That is the whole "
         f"difference from the other two families -- their file names carry the id the "
         f"serve path checks, so a substitution under a different id finds no record, "
@@ -493,10 +469,10 @@ def test_the_findings_serve_gate_is_asked_about_the_shared_store_id_constant() -
     while being the second spelling.
     """
     tree = _parsed(_TOOLS_MODULE)
-    calls = _calls_to_method(tree, f"{_CHECKER}{_FINDINGS_FAMILY}")
+    calls = _calls_to_method(tree, f"{CHECKER}{_FINDINGS_FAMILY}")
 
     assert len(calls) == 1, (
-        f"{_TOOLS_MODULE.name} makes {len(calls)} `{_CHECKER}{_FINDINGS_FAMILY}(...)` "
+        f"{_TOOLS_MODULE.name} makes {len(calls)} `{CHECKER}{_FINDINGS_FAMILY}(...)` "
         f"calls, expected 1. Zero means the serve gate moved or was removed and this "
         f"arm would pass over nothing; more than one means the id checked below is "
         f"whichever call came first in the tree"
@@ -514,13 +490,13 @@ def test_the_findings_serve_gate_is_asked_about_the_shared_store_id_constant() -
     literals = [node.value for node in passed if isinstance(node, ast.Constant)]
 
     assert _STORE_ID_CONSTANT in names, (
-        f"the `{_CHECKER}{_FINDINGS_FAMILY}` call is not passed `{_STORE_ID_CONSTANT}`; "
+        f"the `{CHECKER}{_FINDINGS_FAMILY}` call is not passed `{_STORE_ID_CONSTANT}`; "
         f"it is passed {sorted(names)} and {literals}. T-19's residual says this "
         f"family is keyed by a constant, which is why the record it checks is a "
         f"per-root boolean -- an id that varies makes that sentence false"
     )
     assert not literals, (
-        f"the `{_CHECKER}{_FINDINGS_FAMILY}` call is passed the literal(s) {literals} "
+        f"the `{CHECKER}{_FINDINGS_FAMILY}` call is passed the literal(s) {literals} "
         f"where the shared constant belongs. A respelled id reads identically and "
         f"drifts the first time either place is reworded, and the resulting failure is "
         f"a store reported missing for a project that built one"
