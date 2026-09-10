@@ -48,6 +48,7 @@ under ``tmp_path``.
 
 from __future__ import annotations
 
+import fnmatch
 import sqlite3
 from contextlib import closing
 from datetime import UTC, datetime
@@ -364,8 +365,39 @@ def test_a_sql_statement_in_a_filter_is_a_value_and_alters_nothing(
     )
 
 
+#: The two structural filters a wildcard is driven through, with the value that
+#: spells one and the ordinary value a wildcard reading would sweep up with it.
+#:
+#: **Two rows because the clause builder has two shapes, not one.** ``repository``
+#: is a column equality in the ``WHERE``; ``author`` is an equality inside an
+#: ``EXISTS`` sub-select over ``review_participants``, written on its own line and
+#: reachable by its own edit. A case that drove only the first left the second's
+#: ``=`` free to become a ``LIKE`` with every test in this file still green.
+_WILDCARD_FILTERS: Final[tuple[tuple[str, str, str], ...]] = (
+    ("repository", "acme/%", REPOSITORY),
+    ("author", "USER_%", "USER_A"),
+)
+
+
+def _swept_up_by_a_wildcard_reading(pattern: str, ordinary: str) -> bool:
+    """Whether ``ordinary`` would be selected if ``pattern`` were read as LIKE.
+
+    ``%`` is LIKE's "any sequence" and ``_`` its "any single character", which are
+    ``fnmatch``'s ``*`` and ``?``. Computed rather than asserted by hand, because
+    the whole value of the decoy is that it is *exactly* what the misreading
+    selects: a decoy no wildcard reading would reach makes the case pass under
+    either implementation.
+    """
+    return fnmatch.fnmatchcase(ordinary, pattern.replace("%", "*").replace("_", "?"))
+
+
+@pytest.mark.parametrize(
+    ("filter_name", "spelled", "ordinary"),
+    _WILDCARD_FILTERS,
+    ids=[row[0] for row in _WILDCARD_FILTERS],
+)
 def test_a_wildcard_in_a_structural_filter_is_a_character_and_not_a_pattern(
-    tmp_path: Path,
+    tmp_path: Path, filter_name: str, spelled: str, ordinary: str
 ) -> None:
     """A structural filter is an equality, so nothing in it is a metacharacter.
 
@@ -375,23 +407,30 @@ def test_a_wildcard_in_a_structural_filter_is_a_character_and_not_a_pattern(
     ``=`` comparisons where a metacharacter is inert by construction. A change that
     turned a structural filter into a ``LIKE`` -- to make it "more useful" -- would
     pass every text-side test in this file and let ``acme/%`` select every
-    repository the project has ingested.
-    """
-    literal = _record(
-        relative_path=MATCHING, record_key="LITERAL", repository="acme/%", texts=("literal",)
-    )
-    ordinary = _record(
-        relative_path=DECOY, record_key="ORDINARY", repository=REPOSITORY, texts=("ordinary",)
-    )
-    store = _built(tmp_path, literal, ordinary)
+    repository the project has ingested, or ``USER_%`` every author.
 
-    assert _paths(store, ReviewSearchQuery(limit=10, repository="acme/%")) == (MATCHING,), (
-        "`acme/%` must select the repository spelled `acme/%` and not every repository "
-        "beginning `acme/`"
+    Driven over both clause shapes (:data:`_WILDCARD_FILTERS`). The decoy's
+    quality is computed rather than claimed: it must be a value the wildcard
+    reading really would sweep up, or the case holds whichever operator the clause
+    carries.
+    """
+    planted: dict[str, Any] = {filter_name: spelled}
+    plain: dict[str, Any] = {filter_name: ordinary}
+    literal = _record(relative_path=MATCHING, record_key="LITERAL", texts=("literal",), **planted)
+    decoy = _record(relative_path=DECOY, record_key="ORDINARY", texts=("ordinary",), **plain)
+    store = _built(tmp_path, literal, decoy)
+
+    assert _swept_up_by_a_wildcard_reading(spelled, ordinary), (
+        f"{ordinary!r} is not what a wildcard reading of {spelled!r} would select, so the "
+        f"decoy cannot tell an equality from a LIKE"
     )
-    assert _paths(store, ReviewSearchQuery(limit=10, repository=REPOSITORY)) == (DECOY,), (
-        "and the ordinary repository must still select its own record, so the equality above "
-        "is not satisfied by a filter that stopped matching anything"
+    assert _paths(store, _filtered(filter_name, spelled)) == (MATCHING,), (
+        f"`{spelled}` must select the record whose `{filter_name}` is spelled that way and "
+        f"not every record the same value would match as a pattern"
+    )
+    assert _paths(store, _filtered(filter_name, ordinary)) == (DECOY,), (
+        f"and the ordinary `{filter_name}` must still select its own record, so the equality "
+        f"above is not satisfied by a filter that stopped matching anything"
     )
 
 
