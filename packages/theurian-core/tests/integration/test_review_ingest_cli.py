@@ -19,8 +19,10 @@ never touched.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
+import shutil
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -33,6 +35,7 @@ import pytest
 from fakes import CannedReviewProvider, ReadKey
 from typer.testing import CliRunner
 
+from theurian.application.project_service import ProjectPathEscapeError, ProjectPaths
 from theurian.application.review_landing_gate import REDACTED_DISPLAY_NAME
 from theurian.cli import review_commands
 from theurian.cli.commands import EXIT_STATE_ERROR
@@ -362,6 +365,168 @@ def test_a_rebuild_that_fails_after_landing_still_publishes_the_run_document(
     assert "rebuilt" in refusal["error"]
     assert "`theurian review build`" in refusal["remedy"]
     assert len(_landed(project)) == 3
+
+
+def _rebuild_raising(monkeypatch: pytest.MonkeyPatch, exc: BaseException) -> None:
+    """Put a rebuild that raises ``exc`` where the command calls the real one.
+
+    A plant rather than a real fault, and the two cases below say why in their own
+    words: the arms these drive are keyed on a **type**, and the conditions that
+    raise those types for real -- an escaping ``.theurian/state``, a
+    ``THEURIAN_DATA_DIR`` the provenance write cannot open -- would each need a
+    different plant while proving the same thing about the same three lines.
+    """
+
+    def _raise(_paths: ProjectPaths) -> dict[str, object]:
+        raise exc
+
+    monkeypatch.setattr(review_commands, "rebuild_search_store", _raise)
+
+
+def test_a_rebuild_that_escapes_the_tree_publishes_the_run_document_and_exits_four(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The containment arm of the same split, which nothing drove.
+
+    ``rebuild_search_store`` resolves ``.theurian/review``, the write lock and the
+    store's own path through the containment chokepoint, so a working tree
+    carrying a symbolic link force-added past ADR-0004's ignore reaches
+    ``review ingest`` **after** the records have landed. Exit 4 rather than 1 is
+    the grading ``_fail_a_path_escape`` gives every such refusal, and the run
+    document is owed here for the reason the sibling case above records: the
+    evidence is durable and its counts exist nowhere else.
+    """
+    _settings(project, policy="warn")
+    _install(
+        monkeypatch,
+        _canned((_event(42),), threads={42: (_thread(_event(42), file_path=f"src/{SECRET}.py"),)}),
+    )
+    _rebuild_raising(
+        monkeypatch,
+        ProjectPathEscapeError(
+            "`.theurian/state` resolves outside the working tree.",
+            remedy="Remove the link at .theurian/state, then run `theurian review build`.",
+        ),
+    )
+
+    result = runner.invoke(app, ["review", "ingest", REPOSITORY, "--json"], catch_exceptions=False)
+
+    assert result.exit_code == EXIT_STATE_ERROR
+    document = json.loads(result.stdout)
+    assert document["landed"]["total"] == 3
+    assert document["secretsWarned"] is True
+    assert "searchStore" not in document
+    refusal = json.loads(result.stderr)
+    assert set(refusal) == {"error", "remedy"}
+    assert "outside the working tree" in refusal["error"]
+    assert "`theurian review build`" in refusal["remedy"]
+    assert len(_landed(project)) == 3
+
+
+def test_a_provenance_write_that_fails_publishes_the_run_document_and_exits_one(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bare-``OSError`` arm, which nothing drove either.
+
+    Its sentence is the one that differs from the ``TheurianError`` arm's in the
+    clause that matters -- the store *was* rebuilt, and what is missing is this
+    installation's record that it built it (ADR-0004, SEC-7), which is why a
+    review search will stand aside from a store it cannot attribute. Its cure
+    names ``THEURIAN_DATA_DIR`` and not ``.theurian/``, because that is the
+    directory the failed write was addressed to.
+    """
+    _settings(project, policy="warn")
+    _install(
+        monkeypatch,
+        _canned((_event(42),), threads={42: (_thread(_event(42), file_path=f"src/{SECRET}.py"),)}),
+    )
+    _rebuild_raising(monkeypatch, OSError(errno.EACCES, "Permission denied"))
+
+    result = runner.invoke(app, ["review", "ingest", REPOSITORY, "--json"], catch_exceptions=False)
+
+    assert result.exit_code == 1
+    document = json.loads(result.stdout)
+    assert document["landed"]["total"] == 3
+    assert document["secretsWarned"] is True
+    assert "searchStore" not in document
+    refusal = json.loads(result.stderr)
+    assert "could not record that it built it" in refusal["error"]
+    assert "THEURIAN_DATA_DIR" in refusal["remedy"], (
+        f"the cure sends the operator to the wrong directory: {refusal['remedy']}"
+    )
+    assert len(_landed(project)) == 3
+
+
+def test_a_rebuild_defect_outside_every_graded_arm_still_publishes_the_run_document(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The class, rather than a fourth arm: the emit is owed by *every* exit.
+
+    #630's HIGH-1 was an unenumerated exception -- a ``ValueError`` out of
+    ``int``, outside ``TheurianError`` and outside ``OSError`` -- reaching the
+    rebuild half, where three ``except`` arms each emitted the run document and
+    the complement of those three emitted nothing. Fixing the ``ValueError`` at
+    its source closes that member; it does not close the class, because the next
+    unenumerated one lands in the same complement.
+
+    So this drives a ``RuntimeError`` no arm names and asserts **both** halves of
+    what the structure now owes:
+
+    * the run document is published anyway -- by the ``finally`` around the
+      rebuild, which no exception class can route around;
+    * the defect stays **loud**. It is not converted into an operator-facing
+      refusal (nothing on stderr, and the ``{error, remedy}`` shape never
+      appears), because a bug in this process is not a condition an operator can
+      cure -- the recorded reason ``test_review_evidence_exception_keys.py``
+      keeps for not widening these arms to ``except Exception``.
+
+    **Completeness, not presence.** A ``finally`` guarantees the emit *runs*, so
+    the failure it can still wear is a half-built document. The published one is
+    therefore compared against what the same corpus publishes on a clean run:
+    equal in every member, and differing by exactly the ``searchStore`` block the
+    crash means there is nothing to say about. ``_payload`` is a pure function of
+    the report ``service.run`` returned before the rebuild began, so this equality
+    is the shape the code has -- and a truncated emit, or one assembled from a
+    report the rebuild had mutated, reddens here.
+    """
+    _settings(project, policy="warn")
+    _install(
+        monkeypatch,
+        _canned((_event(42),), threads={42: (_thread(_event(42), file_path=f"src/{SECRET}.py"),)}),
+    )
+    real = review_commands.rebuild_search_store
+    _rebuild_raising(monkeypatch, RuntimeError("the derived store's writer has a bug"))
+
+    result = runner.invoke(app, ["review", "ingest", REPOSITORY, "--json"])
+
+    assert isinstance(result.exception, RuntimeError), (
+        f"the defect was converted rather than raised: {result.exception!r}"
+    )
+    assert result.exit_code != 0
+    assert result.stderr == "", (
+        f"a defect in this process was published as an operator-facing refusal: {result.stderr}"
+    )
+    published = json.loads(result.stdout)
+    assert published["secretsWarned"] is True
+    assert len(published["findings"]) == 1
+    assert published["landed"]["total"] == 3
+
+    # The same corpus, ingested cleanly into an empty `.theurian/review/`: the
+    # counts a second run over a full one would report are different numbers
+    # (`updated`, not `new`), and this comparison is about content rather than
+    # about re-ingestion.
+    shutil.rmtree(project / ".theurian" / "review")
+    monkeypatch.setattr(review_commands, "rebuild_search_store", real)
+
+    clean_code, clean = _invoke("review", "ingest", REPOSITORY)
+
+    assert clean_code == 0
+    assert set(clean) - set(published) == {"searchStore"}, (
+        "the two documents differ by something other than the block the crash removed"
+    )
+    assert published == {key: value for key, value in clean.items() if key != "searchStore"}, (
+        "the document the crash published is not the whole landing report"
+    )
 
 
 def test_a_second_invocation_updates_rather_than_adds(

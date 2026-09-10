@@ -396,7 +396,10 @@ def review_ingest(
     publishes the run document first and refuses after it, with no `searchStore`
     block -- the evidence is durable before the rebuild starts, so the counts of
     what landed are still the answer to "what do I have", and `theurian review
-    build` re-runs just that half.
+    build` re-runs just that half. That holds for a rebuild fault this command
+    does not grade as well: the run document is published whatever the failure
+    was, and a fault carrying no cure is reported as the defect it is rather than
+    dressed up as a refusal.
     """
     from theurian.cli.commands import (  # noqa: PLC0415 - cycle
         _emit,
@@ -447,16 +450,41 @@ def review_ingest(
     # fails costs a stale derived store and no evidence -- and the run's counts
     # are the only record of what just happened. `secretsWarned` and `findings`
     # in particular exist nowhere else: a `warn` run lands the flagged record and
-    # no later command recomputes that it did. Every arm below therefore emits
-    # the run document *before* it fails, the ordering `report.clean` uses.
+    # no later command recomputes that it did.
+    #
+    # **The emit is owed by every exit from the rebuild, and a `finally` is what
+    # owes it** -- not the three arms below, which is how it was written until
+    # #630's HIGH-1. Enumerated arms publish the document for the exception
+    # classes somebody has already met: a `ValueError` out of `int` was outside
+    # all three, so the run document went with it. The inner `try` has no handler
+    # at all, so an unenumerated exception still leaves this function loudly --
+    # a defect in this process is not an operator-facing refusal, the reason
+    # `test_review_evidence_exception_keys.py` records for not widening any of
+    # these arms to `except Exception` -- but it leaves *after* the document is
+    # out. `document` is built before the rebuild starts because `_payload` is a
+    # pure function of the report `service.run` already returned, so what the
+    # `finally` publishes is the whole landing report and never a half-built one;
+    # the rebuild takes `paths` and nothing else, so it mutates neither `report`
+    # nor `document` and its only contribution is one key added to a copy.
+    # `test_a_rebuild_defect_outside_every_graded_arm_still_publishes_the_run_document`
+    # is what goes RED when either half of that stops holding.
+    document = _payload(report)
+    search: dict[str, object] | None = None
     try:
-        search = rebuild_search_store(context.paths)
+        try:
+            search = rebuild_search_store(context.paths)
+        finally:
+            # `search is None` exactly when the rebuild did not return: the block
+            # describes a store that exists, so a failed rebuild publishes the
+            # document without it rather than with an empty one.
+            _emit(
+                document if search is None else {**document, "searchStore": search},
+                as_json=as_json,
+            )
     except ProjectPathEscapeError as exc:
-        _emit(_payload(report), as_json=as_json)
         _fail_a_path_escape(exc, as_json=as_json)
         return
     except TheurianError as exc:
-        _emit(_payload(report), as_json=as_json)
         _fail(
             f"The records landed under .theurian/review/, but the search store could "
             f"not be rebuilt from them ({exc}), so a review search will not see what "
@@ -472,7 +500,6 @@ def review_ingest(
         # `_lock_write_section`. Its sentence differs from the arm above in the
         # clause that matters -- the store *was* rebuilt here, and what is missing
         # is this installation's record that it built it.
-        _emit(_payload(report), as_json=as_json)
         _fail(
             f"The records landed and the search store was rebuilt, but this "
             f"installation could not record that it built it ({exc}), so a review "
@@ -482,7 +509,6 @@ def review_ingest(
             code=1,
         )
         return
-    _emit({**_payload(report), "searchStore": search}, as_json=as_json)
     if not report.clean:
         # Emitted first and *then* non-zero: the counts of what did land are the
         # operator's answer to "what do I still have", and a caller scripting
