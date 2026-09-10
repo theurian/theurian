@@ -203,8 +203,10 @@ def excerpt_columns() -> str:
     column in ``DUMP_COLUMNS`` is selected whole, ``file_path`` and
     ``author_display_name`` included, and those two are author-controlled
     (ADR-0030 decision 3). The response is bounded above this layer, by
-    ``mcp/review_search.MAX_REVIEW_SEARCH_RESPONSE_CHARS``; the read is bounded
-    only by what the evidence writer would let land.
+    ``mcp/review_search.MAX_REVIEW_SEARCH_RESPONSE_CHARS`` -- plus at most one
+    record that alone exceeds it, which is served whole and alone and is bounded
+    by ``MAX_SOURCE_FILE_BYTES`` at landing rather than by that budget; the read
+    is bounded only by what the evidence writer would let land.
 
     ``substr`` counts UTF-8 code points, which is what ``len`` counts, so a bound
     stated in characters means the same thing on both sides of the boundary.

@@ -2286,12 +2286,15 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         footprint carrying it -- arbitrarily large;
         :data:`~theurian.mcp.review_search.MAX_REVIEW_SEARCH_RESPONSE_CHARS`
         bounds the **response**, stopping the page early when the records already
-        in it have spent the budget; and the admission gate below bounds how many
-        of these reads run at once. The excerpt bound was written as though it
-        were the response bound, and it never was: ``authorDisplayName`` and
-        ``filePath`` are author-controlled and were served uncut, which measured
-        104,904,775 characters in one response at ``limit=50`` against the 14,050
-        the prose declared (2026-09-10).
+        in it have spent the budget -- plus at most one record that alone exceeds
+        it, which is served whole and alone and is bounded by
+        ``MAX_SOURCE_FILE_BYTES`` at landing rather than by this budget; and the
+        admission gate below bounds how many of these reads run at once. The
+        excerpt bound was written as though it were the response bound, and it
+        never was: ``authorDisplayName`` and ``filePath`` are author-controlled
+        and were served uncut, which measured 104,904,775 characters in one
+        response at ``limit=50`` against the 14,050 the prose declared
+        (2026-09-10).
 
         **Project-scoped, through the same gate as every other project tool.**
         ``projectId`` is required (ADR-0002: many agents share one daemon, so an

@@ -74,7 +74,9 @@ from theurian.mcp.results import SAFETY
 #: to what it returned. That is a bound on one term and was written as though it
 #: were a bound on the response: every other stored string comes back from the
 #: read whole, and what bounds the response is
-#: :data:`MAX_REVIEW_SEARCH_RESPONSE_CHARS`.
+#: :data:`MAX_REVIEW_SEARCH_RESPONSE_CHARS`, plus at most one record that alone
+#: exceeds it -- served whole and alone, and bounded by ``MAX_SOURCE_FILE_BYTES``
+#: at landing rather than by that budget (see :func:`review_search_payload`).
 MAX_REVIEW_SEARCH_LIMIT: Final = 50
 
 #: What a caller gets without asking. Smaller than the cap on purpose: the common

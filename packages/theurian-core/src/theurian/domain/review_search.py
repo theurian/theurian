@@ -368,7 +368,9 @@ class ReviewSearchHit:
     excerpt is merely the one whose bound can be applied *by the read*, because
     it is the one field a surface publishes an excerpt of rather than the value
     of. What bounds a whole response is the serving surface's own budget
-    (``mcp/review_search.MAX_REVIEW_SEARCH_RESPONSE_CHARS``).
+    (``mcp/review_search.MAX_REVIEW_SEARCH_RESPONSE_CHARS``), plus at most one
+    record that alone exceeds it -- served whole and alone, and bounded by
+    ``MAX_SOURCE_FILE_BYTES`` at landing rather than by that budget.
 
     :attr:`file_path`, :attr:`author_display_name` and :attr:`excerpt` are
     **author-controlled untrusted content** (ADR-0030 decision 6) and are
