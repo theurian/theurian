@@ -40,7 +40,6 @@ import os
 import sqlite3
 from collections.abc import Iterator
 from contextlib import closing, contextmanager, suppress
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, final
@@ -114,22 +113,6 @@ class ReviewSearchStoreError(TheurianError):
     def __init__(self, detail: str, *, remedy: str = _REBUILD_REMEDY) -> None:
         self.remedy = remedy
         super().__init__(f"The review search store could not be used ({detail}).")
-
-
-@dataclass(frozen=True, slots=True)
-class ReviewSearchStamp:
-    """The recorded identity of the schema and record format that produced a store.
-
-    A store whose stamp is not the current pair is stale: either this file's DDL
-    has moved or the evidence documents it was projected from are written to a
-    different shape, and in both cases its rows would be read differently now.
-    :meth:`SqliteReviewSearchStore.search` is the consumer that acts on it, and it
-    makes the comparison inside its own read rather than through a separate probe
-    -- two opens would let a rebuild land between the check and the rows.
-    """
-
-    review_search_schema_version: int
-    evidence_format_version: int
 
 
 #: The working name a rebuild assembles under before publishing (#404). The same
@@ -280,40 +263,6 @@ class SqliteReviewSearchStore:
             raise ReviewSearchStoreError(
                 f"writing {self._path.name}: {exc}", remedy=_WRITE_REMEDY
             ) from exc
-
-    def stamp(self) -> ReviewSearchStamp | None:
-        """The recorded (schema version, evidence format version), or ``None``.
-
-        A missing file, a missing metadata row, an unreadable one, an artefact at
-        the path, or an OS-level failure merely checking whether the file exists
-        all answer ``None`` -- each means the same thing to a staleness check:
-        there is no trustworthy stamp, so a rebuild is owed. A corrupt file is
-        *not* raised here for that reason; :meth:`dump`, which promises real
-        content, is where a damaged store becomes loud.
-
-        :class:`ReviewSearchStoreError` is inside the caught tuple because
-        :meth:`_read`'s shape refusal is that class rather than an ``OSError``:
-        without it, a socket or a named pipe at the store path would raise out of
-        a method whose whole contract is that it does not -- the reach regression
-        ``findings_store.stamp`` records having made once already.
-        """
-        try:
-            exists = self._path.exists()
-        except OSError:
-            return None
-        if not exists:
-            return None
-        try:
-            with self._read() as connection:
-                row = connection.execute(SELECT_STAMP).fetchone()
-        except (sqlite3.Error, OSError, ReviewSearchStoreError):
-            return None
-        if row is None:
-            return None
-        return ReviewSearchStamp(
-            review_search_schema_version=int(row["review_search_schema_version"]),
-            evidence_format_version=int(row["evidence_format_version"]),
-        )
 
     def dump(self) -> tuple[ReviewSearchRecord, ...]:
         """Every stored record in ``relative_path`` order, for verification.
@@ -475,6 +424,23 @@ class SqliteReviewSearchStore:
         )
         try:
             with self._read() as connection:
+                # **The staleness check lives here, inside the read that serves
+                # the rows, and there is no separate probe.** A store whose stamp
+                # is not the current (schema version, evidence format version)
+                # pair is stale: either this file's DDL has moved or the evidence
+                # documents it was projected from are written to a different
+                # shape, and in both cases its rows would be read differently
+                # now. Two opens would let a rebuild land between the check and
+                # the rows; one connection cannot be split that way.
+                #
+                # `_read` is also where the *shape* of the path is refused, and
+                # that refusal is a `ReviewSearchStoreError` rather than an
+                # `OSError` -- so a socket, a named pipe or a directory at the
+                # store path arrives as this method's own class, passes through
+                # the `except ReviewSearchStoreError` arm below still worded for
+                # its own cause, and is never relabelled "reading <file>". The
+                # reach regression `findings_store` records having made once is
+                # what that costs when the class is wrong.
                 stamp_row = connection.execute(SELECT_STAMP).fetchone()
                 if stamp_row is None:
                     raise ReviewSearchStoreError(
