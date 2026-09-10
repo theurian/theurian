@@ -23,7 +23,12 @@ delete -- extended in the three directions a real operator reaches it from:
 And three lifecycle cases that are not about content at all:
 
 * **A rebuild that fails must leave the previous store serving**, because the
-  alternative is an operator losing a working store to a bad record.
+  alternative is an operator losing a working store to a bad record. Driven at
+  both seams and with its cost written down: at the adapter, with a load built by
+  hand, and at the operator's own path, where the evidence has moved past a store
+  that keeps answering as though it had not. Nothing on the read side marks that
+  store stale, so the refusal is the whole of the signal and the case asserts it
+  names the file.
 * **A rebuild that succeeds must publish by swapping a name, never by rewriting
   the live file.** That is ``replace_all``'s stated atomicity, and the inode the
   published name resolves to afterwards is the only fingerprint of it a
@@ -62,6 +67,7 @@ import pytest
 from theurian.application.project_service import ProjectPaths
 from theurian.application.review_search_builder import (
     ReviewSearchBuilder,
+    ReviewSearchBuildError,
     ReviewSearchBuildRequest,
 )
 from theurian.cli.review_commands import evidence_entries, evidence_paths
@@ -77,6 +83,7 @@ from theurian.domain.review import (
     ReviewThread,
 )
 from theurian.domain.review_search import (
+    MAX_STORED_PULL_REQUEST,
     ReviewSearchLoad,
     ReviewSearchQuery,
     ReviewSearchRecord,
@@ -615,6 +622,74 @@ def test_a_rebuild_that_fails_leaves_the_previous_store_serving_and_no_working_f
     assert ".theurian/state" in excinfo.value.remedy, (
         "the write-path remedy names the precondition to fix, not just a retry"
     )
+
+
+def test_a_failed_rebuild_keeps_serving_a_store_the_evidence_has_moved_past(
+    tmp_path: Path,
+) -> None:
+    """The staleness bound of "the previous store keeps serving", written down.
+
+    The case above drives the adapter with a load built by hand. This one is the
+    operator's path: real evidence, a real rebuild, and a corpus that changed
+    under a store that is still being served. Serving the previous store **is**
+    the design -- an operator must not lose a working store to one bad record --
+    and this case exists to state what that costs, because a bound nobody writes
+    down is read as absent.
+
+    What it costs: after the refusal the store answers exactly as it did before,
+    so **the response carries nothing a caller could use to tell a current store
+    from one the evidence has moved past.** A served row still names an evidence
+    file that is no longer at that path. There is no build stamp on the wire and
+    this case does not ask for one -- ``review_search_payload`` rejected that
+    member deliberately -- so the whole of what bounds the staleness is on the
+    operator's side: the refusal is loud, it names the file, and it carries the
+    command to re-run.
+
+    RED here means one of three things, and all three matter: a failed rebuild
+    published something, a failed rebuild emptied the store, or the refusal stopped
+    naming the file an operator has to go and fix.
+    """
+    project = _project(tmp_path)
+    project.land(_corpus(), run=FIRST_RUN)
+    project.build()
+    before = _served(project.store)
+    _assert_every_query_answered(before)
+    was_landed_at = next(
+        path for path in project.paths.review.rglob("*.json") if path.parent.name == "pull-request"
+    )
+    relative = was_landed_at.relative_to(project.paths.review).as_posix()
+
+    number = MAX_STORED_PULL_REQUEST + 1
+    document = json.loads(was_landed_at.read_text(encoding="utf-8"))
+    document["record"]["number"] = number
+    # Renamed as well as edited: the reader derives a record's path from its
+    # contents and refuses a file sitting anywhere else, and that refusal is not
+    # the one this case is about.
+    was_landed_at.with_name(f"{number}.json").write_text(
+        json.dumps(document, indent=2), encoding="utf-8"
+    )
+    was_landed_at.unlink()
+
+    with pytest.raises(ReviewSearchBuildError) as excinfo:
+        project.build()
+
+    assert _served(project.store) == before, (
+        "a rebuild that refused changed what is served: the previous store must survive a "
+        "build that never published, whole and unchanged"
+    )
+    assert relative in before, (
+        "the premise: the served answer names the evidence file that has since moved, or "
+        "this case is not about a store the evidence moved past"
+    )
+    assert not (project.paths.review / relative).exists(), (
+        "the premise: that file must actually be gone from the evidence directory for the "
+        "staleness this case bounds to exist at all"
+    )
+    assert f"{number}.json" in excinfo.value.remedy, (
+        "the refusal is the whole of the staleness signal, so it has to name the file to "
+        "go and fix -- a caller reading the store gets no signal at all"
+    )
+    assert "theurian review build" in excinfo.value.remedy
 
 
 def test_the_working_name_a_rebuild_assembles_under_is_a_sibling_of_the_published_one(
