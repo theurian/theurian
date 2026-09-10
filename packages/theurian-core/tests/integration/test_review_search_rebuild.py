@@ -29,11 +29,15 @@ And three lifecycle cases that are not about content at all:
   published name resolves to afterwards is the only fingerprint of it a
   single-threaded test can read.
 * **A rebuild that *lands* mid-call must not split the call across two stores.**
-  ``SqliteReviewSearchStore.search`` states that as a property of ``mode=ro``
-  plus publish-by-``os.replace``: the stamp and the rows come from one file, and
-  the worst a concurrent rebuild does is answer from the immediately previous
-  store, one publish behind. It is a claim about POSIX unlink semantics, so it is
-  measured rather than reasoned about.
+  ``SqliteReviewSearchStore.search`` names two carriers and ``mode=ro`` is
+  neither of them: the stamp and the rows are read **on one connection**, so no
+  second open can resolve the name again between them, and ``replace_all``
+  **publishes by ``os.replace``**, which swaps the directory entry and leaves an
+  already-open connection reading the inode it holds -- a property of the open
+  descriptor, not of the mode it was opened in. So the stamp and the rows come
+  from one file, and the worst a concurrent rebuild does is answer from the
+  immediately previous store, one publish behind. It is a claim about POSIX
+  unlink semantics, so it is measured rather than reasoned about.
 
 The last two are **different properties** -- publish atomicity and snapshot
 isolation -- and each has its own case below, because neither implies the other.
@@ -783,23 +787,37 @@ def _publishing_connect(*, source: Path, target: Path, fired: list[str]) -> Any:
 def test_a_rebuild_that_lands_mid_call_answers_from_the_store_the_call_opened(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``SqliteReviewSearchStore.search``'s ``mode=ro`` claim, measured not reasoned.
+    """``SqliteReviewSearchStore.search``'s one-connection claim, measured not reasoned.
 
     The method's docstring asserts a property of the operating system, not of this
-    codebase: ``mode=ro`` binds the connection to the file that existed when it
-    opened, ``replace_all`` publishes by ``os.replace``, which swaps a directory
-    entry and leaves an open descriptor reading the inode it already holds -- so a
-    rebuild landing mid-call cannot split the call across two stores, and the worst
-    it does is answer from the immediately previous store, whole and one publish
-    behind. That is a claim about POSIX unlink semantics, and a claim about the
-    platform is exactly the kind that must be run rather than argued.
+    codebase, and it names two carriers: the stamp and the rows are read **on one
+    connection**, so no second open can resolve the name again between them, and
+    ``replace_all`` publishes by ``os.replace``, which swaps a directory entry and
+    leaves an open descriptor reading the inode it already holds. So a rebuild
+    landing mid-call cannot split the call across two stores, and the worst it does
+    is answer from the immediately previous store, whole and one publish behind.
+    That is a claim about POSIX unlink semantics, and a claim about the platform is
+    exactly the kind that must be run rather than argued.
+
+    **``mode=ro`` is not one of the carriers**, and that is measured rather than
+    argued: PR #630 round 1 (2026-09-10) ran this race against a plain read-write
+    connect and it held identically, so the mode could be dropped without the
+    behaviour moving. What the serving read really opens ``mode=ro`` for is a
+    different guarantee, stated on ``_read`` and driven by
+    ``test_review_search_store_guards.py::``
+    ``test_a_serving_read_of_a_missing_store_conjures_no_database``.
 
     Measured on macOS 26.6.2 (arm64), SQLite 3.47.1, CPython 3.13.3: the publish
     lands immediately after the stamp read, the in-flight call returns the previous
     store's whole answer with no error and no mixture, and the next call returns
-    the successor's. This test is what keeps that measurement true -- of a store
-    opened ``mode=rwc``, of a publish that stopped being a rename, and of a read
-    that acquired a second connection between the stamp and the rows.
+    the successor's. **This case keeps the first carrier true and only that one**
+    -- a read that acquired a second connection between the stamp and the rows
+    answers from two stores here and this goes RED. It cannot see the second
+    carrier, because it performs the publish itself rather than calling
+    ``replace_all``: a publish that stopped being a rename is
+    ``::test_publishing_a_rebuild_swaps_a_new_inode_onto_the_live_name``'s to
+    catch, which is why the module docstring above calls them different
+    properties with a case each.
 
     Four assertions, in the order that makes a failure readable: the two stores
     must really differ (or the race compares one store with itself); the publish
