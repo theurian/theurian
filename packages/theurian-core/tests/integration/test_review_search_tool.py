@@ -29,7 +29,9 @@ What this file holds, each named where it is asserted:
 - **the tool->store seam passes a caller's text as text**: operator syntax, the
   LIKE metacharacters and a regular-expression-looking needle all arrive at the
   store as literal characters. The store half of that claim is
-  ``test_review_search_bound_input.py``'s; this holds the seam above it.
+  ``test_review_search_bound_input.py``'s; this holds the seam above it;
+- **a caller who finds the admission gate full is refused in this tool's own
+  words**, before the store is read, by this tool's own semaphore (T-6, SEC-8).
 
 The round-level two-corpora battery for this tool is separate. What is here is
 the module-level half the implementation owes.
@@ -37,7 +39,9 @@ the module-level half the implementation owes.
 
 from __future__ import annotations
 
+import asyncio
 import copy
+import inspect
 import json
 import subprocess
 from collections.abc import Iterator
@@ -81,6 +85,8 @@ from theurian.infrastructure.review_evidence import (
     ReviewEvidenceStore,
 )
 from theurian.infrastructure.sqlite.review_search_store import SqliteReviewSearchStore
+from theurian.mcp import tools as tools_module
+from theurian.mcp.admission import AdmissionGate
 from theurian.mcp.results import SAFETY
 from theurian.mcp.review_search import (
     AUTHOR_CONTROLLED_FIELDS,
@@ -93,7 +99,12 @@ from theurian.mcp.review_search import (
     review_record,
 )
 from theurian.mcp.tools import (
+    ADMISSION_WAIT_SECONDS,
+    FINDINGS_CAPACITY_REFUSAL,
+    MAX_CONCURRENT_SEARCHES,
+    REVIEW_SEARCH_CAPACITY_REFUSAL,
     REVIEW_SEARCH_UNAVAILABLE_REFUSAL,
+    SEARCH_CAPACITY_REFUSAL,
 )
 
 pytestmark = pytest.mark.integration
@@ -770,6 +781,183 @@ async def test_a_project_path_that_stops_resolving_does_not_publish_the_operator
 
     assert REVIEW_SEARCH_UNAVAILABLE_REFUSAL in message
     assert "secret-layout" not in message
+
+
+# -- The admission gate: the busy path (T-6, SEC-8, #26) -----------------------
+
+#: Every gate probe's wait. Nothing is parked in the gate this file drives, so an
+#: ``acquire`` either answers at once or the gate is genuinely full; the wait only
+#: has to be long enough not to race the gate's own lock.
+_A_MOMENT: Final = 0.05
+
+#: The bound on the refused call. ``ADMISSION_WAIT_SECONDS`` is what the caller
+#: spends parked in ``acquire``; the rest is slack for the dispatch to a worker
+#: thread. Bounded rather than awaited outright, so a gate that wedged fails this
+#: case with a message instead of hanging the suite without one.
+_CALL_BOUND_SECONDS: Final = ADMISSION_WAIT_SECONDS + 5.0
+
+
+def _gate_of(server: Any, tool_name: str, cell: str) -> AdmissionGate:
+    """The :class:`AdmissionGate` in ``tool_name``'s own closure.
+
+    The three gates are locals inside ``mcp/tools.py::register`` rather than
+    module attributes, so the only way to name one is through the registered
+    function's closure -- the traversal ``test_search_concurrency_cap.py``
+    established for ``knowledge.search``. ``Tool.fn`` is ``_tool``'s
+    ``_forwarding`` wrapper since #491, whose own closure holds ``fn`` and not the
+    gate; ``functools.wraps`` puts the body on ``__wrapped__``, which
+    ``inspect.unwrap`` follows. Both steps are asserted rather than assumed:
+    reading a wrapper's closure would find no cell of this name, and reading the
+    wrong cell would drive a different object while still passing.
+    """
+    tool = server._tool_manager.get_tool(tool_name)
+    assert tool is not None, f"`{tool_name}` must be registered"
+    fn = inspect.unwrap(tool.fn)
+    assert cell in fn.__code__.co_freevars, (
+        f"the unwrapped body of `{tool_name}` must be the closure `register` built around "
+        f"`{cell}`; if `_tool`/`_forwarding` changed shape, follow it here rather than "
+        f"deleting the assertion -- reading a wrapper's closure would pass against the "
+        f"wrong object"
+    )
+    gate = fn.__closure__[fn.__code__.co_freevars.index(cell)].cell_contents
+    assert isinstance(gate, AdmissionGate), (
+        f"`{tool_name}`'s `{cell}` holds a {type(gate).__name__}, so the occupancy driven "
+        f"below is being read off something other than the shipped gate"
+    )
+    return gate
+
+
+class _CountingStore:
+    """A stand-in store that records every serving read and returns no rows.
+
+    ``review_search`` constructs the store *before* it takes a permit and reads it
+    *inside* the gated block, so a call refused at the gate leaves nothing here and
+    an admitted one leaves exactly one entry. That is what turns "a refused request
+    costs the daemon no store read" (T-6) into an assertion rather than a claim
+    about where a line sits in the file.
+
+    ``factory`` is what ``mcp/tools.py`` calls where it would construct
+    :class:`SqliteReviewSearchStore`; constructing is deliberately not recorded,
+    because the refused caller constructs one too.
+    """
+
+    def __init__(self) -> None:
+        self.reads: list[Path] = []
+
+    def factory(self, path: Path) -> Any:
+        recorder = self
+
+        class _Store:
+            def search(
+                self,
+                query: Any,  # noqa: ARG002 - port shape
+                *,
+                text_chars: int,  # noqa: ARG002 - port shape
+            ) -> tuple[Any, ...]:
+                recorder.reads.append(path)
+                return ()
+
+        return _Store()
+
+
+@pytest.mark.asyncio
+async def test_a_review_search_that_finds_its_gate_full_is_refused_in_this_tools_own_words(
+    served: ProjectRegistry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T-6, SEC-8, #26: the busy path, which nothing in the suite drove.
+
+    ``review.search`` is a synchronous tool, and a thread ``anyio.to_thread.run_sync``
+    has dispatched cannot be cancelled by a transport timeout -- so what bounds
+    what a caller can make this daemon spend is how many of these reads run at
+    once, not how long anybody waits. The gate is that bound, and its refusal is
+    the branch that had no test: mutating ``permit =
+    review_search_admission.acquire(ADMISSION_WAIT_SECONDS)`` to ``... or True``,
+    which admits every caller a full gate should have turned away, survived the
+    whole suite.
+
+    **Occupancy is created on the gate itself, not by parking four callers in a
+    blocking stub.** Both produce the same state -- the gate holds
+    ``MAX_CONCURRENT_SEARCHES`` permits and has none left -- and this one produces
+    it deterministically, with no worker thread parked in a stub that a failure
+    elsewhere could leave blocked. It still drives the whole branch: a tool that
+    did not consult this gate at all would be admitted here and answer, which is
+    the mutation's own shape. What it deliberately does not claim is the *other*
+    half of the cap, that a real ``review.search`` occupies a permit while it runs;
+    that is a separate property and it has no case yet.
+
+    **This tool's own gate, and its own words.** The three tools hold three
+    distinct gates by design (``register``'s comment: a caller refused here has not
+    been refused by the search cap or the findings cap). Asserted both ways --
+    draining this one leaves the other two at zero outstanding, and the refused
+    caller is answered by ``REVIEW_SEARCH_CAPACITY_REFUSAL`` and by neither of the
+    other two constants -- because a shared semaphore would publish a message that
+    is false about which occupancy is full.
+
+    The refusal's own words are checked as literal text, not by comparing the
+    imported constant with itself: an emptied constant satisfies ``constant in
+    message`` and says nothing to a caller. ``isError`` is the transport's form of
+    this; in process the SDK re-raises it as ``ToolError``, which is what this
+    file's own ``_refusal`` helper catches.
+    """
+    server = build_server(served)
+    gate = _gate_of(server, "review.search", "review_search_admission")
+    siblings = {
+        "knowledge.search": _gate_of(server, "knowledge.search", "search_admission"),
+        "review.findings": _gate_of(server, "review.findings", "findings_admission"),
+    }
+    recorder = _CountingStore()
+    monkeypatch.setattr(tools_module, "SqliteReviewSearchStore", recorder.factory)
+    permits = [gate.acquire(_A_MOMENT) for _ in range(MAX_CONCURRENT_SEARCHES)]
+
+    try:
+        assert all(permit is not None for permit in permits), (
+            f"a fresh gate refused one of its own {MAX_CONCURRENT_SEARCHES} permits, so the "
+            f"saturation below is not the state this case is about"
+        )
+        assert gate.acquire(_A_MOMENT) is None, (
+            "the gate admitted a caller past its cap, so what the tool meets below is not a "
+            "full gate and the refusal it answers would prove nothing"
+        )
+        with pytest.raises(SdkToolError) as raised:
+            await asyncio.wait_for(
+                server.call_tool("review.search", {"projectId": "demo"}),
+                timeout=_CALL_BOUND_SECONDS,
+            )
+        refused = str(raised.value)
+        reads_while_full = list(recorder.reads)
+        outstanding_while_full = {name: each.outstanding for name, each in siblings.items()}
+    finally:
+        for permit in permits:
+            if permit is not None:
+                gate.release(permit)
+    await server.call_tool("review.search", {"projectId": "demo"})
+
+    assert REVIEW_SEARCH_CAPACITY_REFUSAL in refused
+    assert f"concurrent review-evidence searches ({MAX_CONCURRENT_SEARCHES})" in refused, (
+        "the refusal no longer names this tool's own occupancy, so a caller cannot tell "
+        "which of the daemon's three caps turned it away"
+    )
+    assert "Retry shortly." in refused, "a capacity refusal must carry its remedy"
+    assert "Traceback" not in refused
+    assert reads_while_full == [], (
+        "the refused caller reached the store anyway: the gate must refuse before any read "
+        "runs, or a flood spends exactly what the cap exists to bound (T-6)"
+    )
+    assert SEARCH_CAPACITY_REFUSAL not in refused and FINDINGS_CAPACITY_REFUSAL not in refused, (
+        "`review.search` answered with another tool's capacity message, so the gates are "
+        "shared and one of the published messages is false about its own load"
+    )
+    assert all(sibling is not gate for sibling in siblings.values()), (
+        "`review.search` shares a gate object with another tool"
+    )
+    assert outstanding_while_full == {"knowledge.search": 0, "review.findings": 0}, (
+        "draining `review.search`'s gate consumed another tool's permits, so a review-evidence "
+        "flood refuses callers of a tool it is not loading"
+    )
+    assert len(recorder.reads) == 1, (
+        "the same call was still refused once the permits came back, so the refusal above was "
+        "not the gate's doing and this case would hold for any implementation"
+    )
 
 
 # -- Bound input at the tool -> store seam -------------------------------------

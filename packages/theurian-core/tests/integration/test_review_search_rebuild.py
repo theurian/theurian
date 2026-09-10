@@ -20,16 +20,23 @@ delete -- extended in the three directions a real operator reaches it from:
   the order of the records inside one load -- because they are two different
   places the property could be lost.
 
-And two lifecycle cases that are not about content at all:
+And three lifecycle cases that are not about content at all:
 
 * **A rebuild that fails must leave the previous store serving**, because the
   alternative is an operator losing a working store to a bad record.
+* **A rebuild that succeeds must publish by swapping a name, never by rewriting
+  the live file.** That is ``replace_all``'s stated atomicity, and the inode the
+  published name resolves to afterwards is the only fingerprint of it a
+  single-threaded test can read.
 * **A rebuild that *lands* mid-call must not split the call across two stores.**
   ``SqliteReviewSearchStore.search`` states that as a property of ``mode=ro``
   plus publish-by-``os.replace``: the stamp and the rows come from one file, and
   the worst a concurrent rebuild does is answer from the immediately previous
   store, one publish behind. It is a claim about POSIX unlink semantics, so it is
   measured rather than reasoned about.
+
+The last two are **different properties** -- publish atomicity and snapshot
+isolation -- and each has its own case below, because neither implies the other.
 
 Marked ``integration``: every case lands real evidence files and opens a real
 SQLite database. Writes only under ``tmp_path``.
@@ -638,6 +645,79 @@ def test_the_working_name_a_rebuild_assembles_under_is_a_sibling_of_the_publishe
         "the working name is no longer the published name plus the suffix every other "
         "builder in .theurian/state/ uses, so a reader of that directory cannot tell that a "
         "writer has not finished here"
+    )
+
+
+# -- a rebuild that succeeds: the publish is a rename ------------------------
+
+
+def test_publishing_a_rebuild_swaps_a_new_inode_onto_the_live_name(tmp_path: Path) -> None:
+    """``replace_all``'s publish-by-rename (#404), pinned by the rename's fingerprint.
+
+    **Why this is load-bearing and not a lifecycle nicety.** The two-corpora
+    byte-identity closure -- ``test_review_search_tool_absence_proof.py``'s
+    ``test_every_query_in_the_battery_answers_identically_over_the_two_corpora`` --
+    runs one query battery against a corpus built from the withheld records and one
+    built without them, and every query in it reads a *published* store. A build
+    that wrote under the live name would put a third state on that name for the
+    duration of the write: a file that is neither corpus, holding whatever prefix
+    of the previous build the new bytes had not yet covered. A reader landing there
+    can observe a row the finished store withholds, which is exactly the disclosure
+    the closure exists to prevent. Atomic publish is the foundation that closure
+    stands on.
+
+    **Why the observable is the inode rather than the atomicity itself.**
+    Atomicity is a statement about a window, and on a store this size that window
+    is not observable through SQLite: the pages are cached and the write completes
+    well inside one scheduling quantum, so a racing reader gets a coherent database
+    either way. Replacing ``os.replace(building, self._path)`` with
+    ``self._path.write_bytes(building.read_bytes())`` therefore left every other
+    case in this file green. What *is* observable is the mechanism that carries the
+    atomicity: ``rename(2)`` swaps a directory entry, so the live name resolves to
+    the sibling's inode afterwards, while every in-place rewrite -- ``write_bytes``,
+    truncate-and-copy, ``shutil.copyfile`` -- opens the file already at the name and
+    keeps its inode. The inode swap is the rename's fingerprint, and it is the one
+    fingerprint a single-threaded test can read.
+
+    **The division of labour with the race case below.** This case pins **publish
+    atomicity**: what the publish does to the name. The race case,
+    :func:`test_a_rebuild_that_lands_mid_call_answers_from_the_store_the_call_opened`,
+    pins **snapshot isolation**: that one in-flight call is answered from one
+    store, whichever it opened. Neither implies the other, and that is why both
+    exist -- an in-place rewrite preserves snapshot isolation (the reader holds the
+    very inode being overwritten) while destroying atomicity, which is how the
+    mutation above stayed green with the race case in the suite.
+
+    **Platform premise: POSIX rename semantics**, and no Windows skip, on the same
+    reasoning the race case is run under -- the supported platforms are POSIX, and
+    a Windows port owes both cases a new mechanism rather than a skip.
+
+    A rebuild over the *same* evidence, deliberately: nothing about the load has to
+    change for the publish to be a publish, and a case that grew the corpus would
+    let a reader think the new inode came from the new record.
+    """
+    project = _project(tmp_path)
+    project.land(_corpus(), run=FIRST_RUN)
+    project.build()
+    published = project.store.path
+    before_inode = published.stat().st_ino
+    before = _served(project.store)
+
+    report = project.build()
+
+    _assert_every_query_answered(before)
+    assert report == {"records": 3, "withheld": 0}, (
+        "the second build must really have run, or the inode below never had an opportunity to move"
+    )
+    assert published.stat().st_ino != before_inode, (
+        "the published store kept its inode across a rebuild, so the new store was written "
+        "*through* the live name rather than renamed onto it -- for the length of that write "
+        "the name held a half-built file, and a reader landing there can be served a row the "
+        "finished store withholds (#404)"
+    )
+    assert _served(project.store) == before, (
+        "and the store that the rename published must answer exactly as the one it replaced, "
+        "or the new inode is a new file rather than a rebuild of the same evidence"
     )
 
 
