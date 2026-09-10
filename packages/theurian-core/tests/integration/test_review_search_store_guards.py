@@ -34,10 +34,10 @@ in four families rather than remembered:
 **pin per guard = :data:`PINS`**, which maps every derived member to the test
 that drives it -- six in this module, four already driven elsewhere and named by
 file so the claim is checkable. :func:`test_every_inherited_guard_has_a_driving_
-test` asserts the map and the census agree **in both directions**, so a seventh
-inherited guard joins the census by the reflection and fails here until somebody
-writes its pin. That is what makes this a census rather than the five guards a
-mutation run happened to hit.
+test` asserts the map and the census agree **in both directions**, so an
+eleventh inherited guard joins the census by the reflection and fails here until
+somebody writes its pin. That is what makes this a census rather than the five
+guards a mutation run happened to hit.
 
 Each pin below was verified RED under the removal of the guard it drives; the
 docstrings say what the neutered store does, because "this test would fail"
@@ -249,6 +249,16 @@ PINS: Final[dict[str, str]] = {
 }
 
 
+#: What each intersected family holds today, and the floor it is held to. Only
+#: the two families that read the **child** store are here: a parent-side check
+#: cannot see a child that stopped calling the guard, and these are the two whose
+#: derivation ends in an intersection with :data:`CHILD_MODULE`.
+_CHILD_READING_FLOORS: Final = (
+    ("WRITE_PATH_HYGIENE", WRITE_PATH_HYGIENE, 2, "the store's write path", "replace_all"),
+    ("OPENER_SAFETY", OPENER_SAFETY, 2, "the store's opener", "_read"),
+)
+
+
 def test_the_census_reads_a_source_that_still_carries_guards() -> None:
     """The premise: a walk that found nothing would report perfect coverage.
 
@@ -256,6 +266,30 @@ def test_the_census_reads_a_source_that_still_carries_guards() -> None:
     intersected, so a derivation that stopped seeing the parent's guards -- a
     renamed opener, a moved import, a helper turned into a method -- fails here
     rather than shrinking the census to nothing and passing.
+
+    The parent side is only half of it. :data:`WRITE_PATH_HYGIENE` and
+    :data:`OPENER_SAFETY` are *intersections*, and the child is the side a
+    regression lands on: a store that stopped calling ``_unlink_sidecars``, or an
+    opener that stopped asking for ``read_only_uri``, empties its half of the
+    intersection while every parent assertion above stays green. So each of those
+    two is floored at the count it holds today, with the family named in the
+    message -- because the number alone does not say which walk went blind.
+
+    The total floor was ``>= 6`` and could not fail for either of them: the census
+    holds ten members, and emptying a whole child-reading family drops it to the
+    six the other two families contribute on their own. A floor a family can be
+    deleted under reports a coverage that is not there, which is the defect this
+    module exists to prevent, one level up.
+
+    The floor is not a second spelling of
+    :func:`test_every_inherited_guard_has_a_driving_test`, and the separating case
+    is the plausible edit rather than a contrived one: **remove a guard from the
+    child store and delete its :data:`PINS` entry in the same change**, which is
+    what tidying up after a removal looks like. The map and the census still agree,
+    so that test stays green, and the census is nine, so ``>= 6`` stays green too.
+    Measured under exactly that edit -- ``_unlink_sidecars`` dropped from
+    ``replace_all`` and from ``PINS`` -- this arm was the only assertion in the
+    module that failed.
     """
     assert private_side_effect_calls(findings_store_module, "replace_all"), (
         "no name-hygiene helper was found on the parent store's write path, so the "
@@ -266,14 +300,22 @@ def test_the_census_reads_a_source_that_still_carries_guards() -> None:
             f"`{module.__name__}.{opener}` asks the shared safety module nothing, so this "
             f"census has stopped reading a module it claims to derive from"
         )
-    assert len(INHERITED_GUARDS) >= 6, (
-        f"the census found only {sorted(INHERITED_GUARDS)}; the six guards this module "
-        f"exists to pin are fewer than that"
+    for name, family, floor, surface, function in _CHILD_READING_FLOORS:
+        assert len(family) >= floor, (
+            f"{name} is down to {sorted(family)} from {floor} members: {surface} "
+            f"(`{CHILD_MODULE.__name__}.{function}`) no longer makes a call it inherited, "
+            f"or the derivation stopped reading it. Either way that guard is now unpinned "
+            f"and the total below cannot tell you so"
+        )
+    assert len(INHERITED_GUARDS) >= 10, (
+        f"the census found {len(INHERITED_GUARDS)} guards, {sorted(INHERITED_GUARDS)}; "
+        f"this module pins ten, six here and four elsewhere, so a smaller census means "
+        f"a derivation stopped finding what it inherited"
     )
 
 
 def test_every_inherited_guard_has_a_driving_test() -> None:
-    """The census, both ways: a seventh inherited guard fails here until it is pinned.
+    """The census, both ways: an eleventh inherited guard fails here until it is pinned.
 
     This is the assertion that makes the module a closure rather than a list. The
     left side is computed from the shipped source every run; the right side is
