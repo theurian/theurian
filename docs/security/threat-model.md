@@ -1897,16 +1897,27 @@ and issued from a child process is outside all three —
 `__import__("sub" + "process")` running `curl` survives the entire suite today,
 and the spawn arm's own docstring names and measures it.
 
-`system.capabilities` reports `reviewIngestion: false`, pinned by
-`test_capabilities_report_what_is_and_is_not_built` — and **that flag no longer
-means "this build cannot reach GitHub"**. The fetch path shipped with ADR-0030
-slice 1 while the flag stayed `false`, because no tool exposes it; from slice 3
-the flag means *an ingestion call surface exists that a client may call*. The
-window between the two is a **bounded residual, recorded rather than argued
-away**: for slices 1 and 2 the machine-readable answer reads `false` while a
-fetch path ships, which is a wrong answer to a security question even though a
-client acting on it loses no capability it could have had, since no tool is
-callable. Judge this entry's controls by the table above, not by the flag.
+`system.capabilities` reports `reviewIngestion: true`, published beside
+`reviewIngestionScope: "public-allowlisted"` and pinned by
+`test_capabilities_report_what_is_and_is_not_built` — and **that flag has never
+tracked whether this build can reach GitHub, in either direction**. The fetch
+path shipped with ADR-0030 slice 1 and the landing path with slice 2, both while
+the flag read `false`, because no tool exposed either; slice 3 registered
+`review.search` and moved it. What the `true` says is *an ingestion call surface
+exists that a client may call*, and nothing wider: **no MCP tool spawns `gh`**, a
+fetch stays an operator's act through `theurian review ingest`, and the flip adds
+no site to the four this entry counts above.
+
+The window before it is a **bounded residual, recorded rather than argued
+away**: for slices 1 and 2 the machine-readable answer read `false` while a
+fetch path shipped, which was a wrong answer to a security question even though a
+client acting on it lost no capability it could have had, since no tool was
+callable. Slice 3 closed that window. Judge this entry's controls by the table
+above, not by the flag: the repository allowlist stays **discharged**, the scheme
+allowlist and private-network rejection stay **owed** against
+[#429](https://github.com/theurian/theurian/issues/429), and the flip changed
+neither — it registered a reader of a local SQLite store, which reaches no
+network and starts no process.
 
 **`reviewFindings: true` is beside it and does not weaken it.** The
 `review.findings` tool serves the `Review-Finding:` trailers `theurian findings
@@ -1916,9 +1927,9 @@ network site** — the serving read is a SQLite read of a local artifact — and
 `infrastructure/git/trailer_source.py` entry already listed above, performed by
 the CLI's rebuild rather than by the tool. The change that made this entry's
 repository allowlist load-bearing was **not** either flag moving: it was the
-review-ingestion *adapter* landing, two slices ahead of the flag it will
-eventually flip. Both flags are asserted, with that split stated as the reason,
-in `test_capabilities_report_what_is_and_is_not_built`.
+review-ingestion *adapter* landing in slice 1, two slices ahead of the flag that
+slice 3 finally flipped. Both flags are asserted, with that split stated as the
+reason, in `test_capabilities_report_what_is_and_is_not_built`.
 
 #### T-15 — A secret in a document becomes an approved, indexed revision (Information disclosure, High — the scanner covers one gate, best effort)
 

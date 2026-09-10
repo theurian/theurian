@@ -31,8 +31,11 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   per-response byte cap are named constants with graded stops. A `gh` that is
   absent, below the 2.86.0 version floor, or unauthenticated is a refusal
   envelope carrying a remedy, with the child's stderr contained inside it.
-  `theurian review ingest` is what reaches this code; **no MCP tool does**, so
-  `system.capabilities` still reports `reviewIngestion: false`.
+  `theurian review ingest` is what reaches this code, and **no MCP tool does** —
+  a fetch stays an operator's act. `system.capabilities` reports
+  `reviewIngestion: true` beside `reviewIngestionScope: "public-allowlisted"`,
+  which is a statement about the callable surface (`review.search`, a read over
+  what was already ingested) and not about this adapter.
 - **`theurian review ingest OWNER/REPO`, the command that reaches it** (ADR-0030
   decisions 3 and 4, part of
   [#479](https://github.com/theurian/theurian/issues/479)). A new `review` Typer
