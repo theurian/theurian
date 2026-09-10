@@ -45,6 +45,7 @@ import inspect
 import json
 import subprocess
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
@@ -95,8 +96,11 @@ from theurian.mcp.review_search import (
     MAX_FILTER_CHARS,
     MAX_PULL_REQUEST,
     MAX_REVIEW_SEARCH_LIMIT,
+    MAX_REVIEW_SEARCH_RESPONSE_CHARS,
     PROVIDER_CONTROLLED_FIELDS,
+    _record_chars,
     review_record,
+    review_search_payload,
 )
 from theurian.mcp.tools import (
     ADMISSION_WAIT_SECONDS,
@@ -1255,3 +1259,121 @@ def test_the_shaper_copies_a_hit_and_computes_nothing_across_rows() -> None:
     assert row["excerpt"] == hit.excerpt
     assert row["lastSeenAt"] == hit.last_seen_at
     assert review_record(hit) == frozen, "the shaper is not a pure function of its hit"
+
+
+# -- The whole-response content budget ----------------------------------------
+
+
+def _planted(index: int, *, field_chars: int) -> ReviewSearchHit:
+    """One hit whose two author-controlled non-excerpt fields carry ``field_chars``.
+
+    ``filePath`` and ``authorDisplayName`` are the fields ADR-0030 decision 3
+    puts on the author's side of the trust boundary that are **not** the excerpt,
+    so they are the ones no read-side cut reaches. Everything else is the shape
+    a real record has.
+    """
+    return replace(
+        _hit(),
+        relative_path=f"sha256-{'a' * 64}/review-thread/PRRT_{index}.json",
+        record_key=f"PRRT_{index}",
+        file_path="f" * field_chars,
+        author_display_name="n" * field_chars,
+    )
+
+
+def test_an_ordinary_full_page_is_nowhere_near_the_response_budget() -> None:
+    """The direction that keeps the budget from becoming a bound on real answers.
+
+    A page of :data:`MAX_REVIEW_SEARCH_LIMIT` records with the longest excerpt
+    this surface publishes and ordinary-sized paths and names is served whole,
+    and ``truncated`` stays ``false``: the budget is a containment bound, not a
+    page size, and a fix that turned a legitimate answer into a truncated one
+    would be a worse defect than the one it closes.
+    """
+    page = tuple(
+        replace(_planted(index, field_chars=60), excerpt="e" * MAX_EXCERPT_CHARS)
+        for index in range(MAX_REVIEW_SEARCH_LIMIT)
+    )
+
+    payload = review_search_payload(page, page_size=MAX_REVIEW_SEARCH_LIMIT)
+
+    assert payload["count"] == MAX_REVIEW_SEARCH_LIMIT
+    assert payload["truncated"] is False
+    spent = sum(_record_chars(row) for row in payload["records"])
+    assert spent < MAX_REVIEW_SEARCH_RESPONSE_CHARS, (
+        f"an ordinary full page spends {spent} of {MAX_REVIEW_SEARCH_RESPONSE_CHARS}; "
+        f"the budget has stopped being headroom"
+    )
+
+
+def test_a_page_of_planted_author_fields_stops_at_the_budget_and_says_so() -> None:
+    """RED means one planted record still sizes what a whole call costs.
+
+    The measurement this closes, taken on this module 2026-09-10: fifty hits
+    carrying a 1 MiB ``filePath`` and a 1 MiB ``authorDisplayName`` each shaped
+    into **104,904,775 JSON characters** in one response, because only ``excerpt``
+    was ever cut. The records here are a fiftieth of that each, so several fit and
+    the stop lands between records rather than at the first one -- which is what
+    distinguishes a graded budget from a cap of one.
+
+    Every served record is asserted **whole**: the budget stops adding records, it
+    never cuts a field, so a served ``filePath`` is the stored path and not a
+    prefix of one.
+    """
+    planted = 40_000
+    probed = tuple(_planted(index, field_chars=planted) for index in range(11))
+
+    payload = review_search_payload(probed, page_size=10)
+
+    assert 1 < payload["count"] < 10, (
+        f"{payload['count']} records came back; the budget should stop this page "
+        f"between records rather than at the first or not at all"
+    )
+    assert payload["truncated"] is True
+    assert sum(_record_chars(row) for row in payload["records"]) <= (
+        MAX_REVIEW_SEARCH_RESPONSE_CHARS
+    )
+    for row in payload["records"]:
+        assert row["filePath"] == "f" * planted
+        assert row["authorDisplayName"] == "n" * planted
+
+
+def test_one_record_larger_than_the_whole_budget_is_served_alone_and_whole() -> None:
+    """``take_within_budget``'s rule: never an empty answer a caller cannot act on.
+
+    A caller whose budget is smaller than a single record is better served by one
+    over-long answer it can truncate. The residual is recorded rather than
+    claimed away: that response is bounded by one evidence record, and the
+    evidence writer refuses a record above ``MAX_SOURCE_FILE_BYTES`` at landing.
+    """
+    over = MAX_REVIEW_SEARCH_RESPONSE_CHARS
+    probed = tuple(_planted(index, field_chars=over) for index in range(3))
+
+    payload = review_search_payload(probed, page_size=2)
+
+    assert payload["count"] == 1
+    assert payload["truncated"] is True
+    assert payload["records"][0]["filePath"] == "f" * over
+
+
+def test_the_response_budget_covers_every_key_a_record_publishes() -> None:
+    """RED means the budget ranges over a subset of what it protects.
+
+    The cost of a row is measured by walking the row itself, so the population is
+    every key :func:`review_record` publishes rather than the fields somebody
+    remembered were long -- ``excerpt`` was the only bounded one, and an
+    enumeration of the two that joined it would be a guard over a subset again.
+
+    Driven by lengthening each key's value in turn: a key the walk does not reach
+    costs the response nothing, and the sum does not move.
+    """
+    row = review_record(_hit())
+    baseline = _record_chars(row)
+
+    assert row, "an empty row cannot exercise this walk"
+    for key in row:
+        widened = {**row, key: "x" * 500}
+        assert _record_chars(widened) > baseline, (
+            f"lengthening `{key}` did not move the budget, so the walk does not "
+            f"reach it and a value planted there would cost the response nothing"
+        )

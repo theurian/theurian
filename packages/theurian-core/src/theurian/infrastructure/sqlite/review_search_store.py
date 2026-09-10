@@ -393,11 +393,22 @@ class SqliteReviewSearchStore:
 
         The one serving read. What it promises, and how each promise is kept:
 
-        **Bounded in rows and in text.** ``LIMIT`` is bound from
+        **Bounded in rows, and in excerpt text.** ``LIMIT`` is bound from
         :class:`ReviewSearchQuery`'s already-positive value, and ``text_chars`` --
         required, with no default -- cuts the excerpt inside the ``SELECT`` (see
-        :func:`excerpt_columns`), so what this method materialises is bounded by
-        ``limit * text_chars`` whatever the corpus holds.
+        :func:`excerpt_columns`), so the **excerpt** this method materialises is
+        bounded by ``limit * text_chars`` whatever the corpus holds.
+
+        **The other columns come back whole, and nothing here bounds them.** That
+        sentence used to read as though ``limit * text_chars`` bounded the whole
+        read; it bounds one term of it. ``file_path`` and ``author_display_name``
+        are author-controlled (ADR-0030 decision 3) and arrive at whatever length
+        they were stored at, as do the structural strings. What bounds them is
+        elsewhere and is recorded where it is: the evidence writer refuses a
+        record above ``MAX_SOURCE_FILE_BYTES`` at landing, and the serving surface
+        stops adding records past
+        ``mcp/review_search.MAX_REVIEW_SEARCH_RESPONSE_CHARS`` when it shapes the
+        response.
 
         **The cut bounds the projection, never the match.** The ``EXISTS``
         predicate names the whole ``content`` column; only the excerpt sub-selects

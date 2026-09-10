@@ -192,11 +192,19 @@ def excerpt_columns() -> str:
     a value this module deliberately never parses.
 
     The cut happens **in the read**: ``substr`` means SQLite never hands Python
-    more than ``text_chars`` characters per row, so the read's own footprint is
-    bounded by ``limit * text_chars`` whatever the corpus holds. A surface that
-    fetched the fragment whole and clamped afterwards would already have paid for
-    every planted byte -- the measured shape ``findings_store._SERVE_COLUMNS``
-    records (22.0 MB of Python heap against 0.1 MB, ``tracemalloc`` peak).
+    more than ``text_chars`` characters of *excerpt* per row, so the read's
+    excerpt footprint is bounded by ``limit * text_chars`` whatever the corpus
+    holds. A surface that fetched the fragment whole and clamped afterwards would
+    already have paid for every planted byte -- the measured shape
+    ``findings_store._SERVE_COLUMNS`` records (22.0 MB of Python heap against
+    0.1 MB, ``tracemalloc`` peak).
+
+    **That is a bound on this one term and on no other column.** Every other
+    column in ``DUMP_COLUMNS`` is selected whole, ``file_path`` and
+    ``author_display_name`` included, and those two are author-controlled
+    (ADR-0030 decision 3). The response is bounded above this layer, by
+    ``mcp/review_search.MAX_REVIEW_SEARCH_RESPONSE_CHARS``; the read is bounded
+    only by what the evidence writer would let land.
 
     ``substr`` counts UTF-8 code points, which is what ``len`` counts, so a bound
     stated in characters means the same thing on both sides of the boundary.

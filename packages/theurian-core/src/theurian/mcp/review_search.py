@@ -68,10 +68,13 @@ from theurian.mcp.results import SAFETY
 #: Half the sibling surface's 100, and the difference is the row rather than a
 #: preference: a landed trailer is one line, while a record here carries an
 #: excerpt bounded at :data:`MAX_EXCERPT_CHARS` characters, so 50 rows is the
-#: comparable page in bytes. The daemon's own footprint while assembling one is
-#: bounded by ``limit * (MAX_EXCERPT_CHARS + 1)`` because the cut is made by the
-#: store's read (see :func:`excerpt_fetch_chars`), not applied to what it
-#: returned.
+#: comparable page in bytes. The **excerpt** the daemon materialises while
+#: assembling one is bounded by ``limit * (MAX_EXCERPT_CHARS + 1)`` because that
+#: cut is made by the store's read (see :func:`excerpt_fetch_chars`), not applied
+#: to what it returned. That is a bound on one term and was written as though it
+#: were a bound on the response: every other stored string comes back from the
+#: read whole, and what bounds the response is
+#: :data:`MAX_REVIEW_SEARCH_RESPONSE_CHARS`.
 MAX_REVIEW_SEARCH_LIMIT: Final = 50
 
 #: What a caller gets without asking. Smaller than the cap on purpose: the common
@@ -165,6 +168,43 @@ PROVIDER_CONTROLLED_FIELDS: Final = frozenset(
         "lastSeenRunId",
         "lastSeenAt",
     }
+)
+
+#: How many keys one served record publishes besides ``excerpt``.
+#:
+#: Derived from the published population rather than counted by hand: the two
+#: classification sets above and the SEC-15 triple are exactly the keys
+#: :func:`review_record` sends, which
+#: ``test_review_search_tool.py::test_a_served_record_publishes_exactly_the_classified_fields``
+#: pins against a real response's own key set in both directions. So a field
+#: added to the shaper joins this count by the change that adds it, and the
+#: budget below widens with it rather than leaving the new field outside itself.
+_KEYS_BESIDE_THE_EXCERPT: Final = (
+    len(AUTHOR_CONTROLLED_FIELDS | PROVIDER_CONTROLLED_FIELDS | set(SAFETY)) - 1
+)
+
+#: The whole response's content budget, in characters.
+#:
+#: **Derived, not chosen.** One record is allowed its excerpt term --
+#: :data:`MAX_EXCERPT_CHARS` plus the cut marker, which is the longest excerpt
+#: this surface will publish -- plus :data:`MAX_FILTER_CHARS` for each of the
+#: :data:`_KEYS_BESIDE_THE_EXCERPT` other keys it carries. ``MAX_FILTER_CHARS``
+#: is this surface's own answer to how long one value on this row can
+#: legitimately be: it was sized for a **file path**, which is the longest
+#: author-controlled value here that is not the excerpt. The page is allowed
+#: :data:`MAX_REVIEW_SEARCH_LIMIT` such records -- ``50 * (280 + 3 + 17 * 400)``,
+#: 354,150 characters -- so an ordinary full page is nowhere near it and a
+#: planted one stops at it.
+#:
+#: **What it is for.** Only ``excerpt`` was bounded, and it was the *cheap* field
+#: to bound: ``authorDisplayName`` and ``filePath`` are author-controlled
+#: (ADR-0030 decision 3) and crossed uncut, as did every structural string.
+#: Measured 2026-09-10 on this module, 50 hits carrying a 1 MiB ``filePath`` and
+#: a 1 MiB ``authorDisplayName`` each: **104,904,775 JSON characters in one
+#: response**, against the 14,050 the prose above declared. The evidence writer's
+#: own ``MAX_SOURCE_FILE_BYTES`` (8 MiB) was the only thing bounding it.
+MAX_REVIEW_SEARCH_RESPONSE_CHARS: Final = MAX_REVIEW_SEARCH_LIMIT * (
+    MAX_EXCERPT_CHARS + len(_CUT_MARKER) + _KEYS_BESIDE_THE_EXCERPT * MAX_FILTER_CHARS
 )
 
 
@@ -433,8 +473,13 @@ def review_record(hit: ReviewSearchHit) -> dict[str, Any]:
     typed here.
 
     Nothing here is computed across rows: every value is this row's own stored
-    column, bounded in length and otherwise unmodified, so no published field can
-    be a function of anything but the record it came from.
+    column, unmodified except for the excerpt's cut, so no published field can be
+    a function of anything but the record it came from. **Only ``excerpt`` is
+    bounded per field.** ``filePath`` and ``authorDisplayName`` are
+    author-controlled and are served whole, because a cut identity or a cut path
+    publishes a value that is neither the author's nor findable; what bounds the
+    *response* is :data:`MAX_REVIEW_SEARCH_RESPONSE_CHARS`, applied at the record
+    boundary by :func:`review_search_payload`.
     """
     return {
         "recordPath": hit.relative_path,
@@ -479,23 +524,68 @@ def probing(query: ReviewSearchQuery) -> ReviewSearchQuery:
     return replace(query, limit=query.limit + 1)
 
 
+def _record_chars(row: dict[str, Any]) -> int:
+    """How much of :data:`MAX_REVIEW_SEARCH_RESPONSE_CHARS` one shaped row spends.
+
+    Walks the row itself -- every key it publishes, and every value of it that is
+    a string -- rather than naming the fields known to be long. A budget covers
+    the whole of what it protects or it is not one: ``excerpt`` was the only
+    bounded member here and every other string crossed uncut, and an enumeration
+    is exactly what the next field added to :func:`review_record` would slip past.
+
+    The values that are **not** strings are left out of the sum, and none of them
+    is corpus-sized. ``pullRequest`` is an integer, bounded at the record by
+    :data:`~theurian.domain.review_search.MAX_STORED_PULL_REQUEST` for every store
+    this product's own build produced; ``mayContainInstructions`` and
+    ``executable`` are booleans; and any field this record kind has no value for
+    is ``null``. Each renders in at most twenty characters, and how many of them
+    there can be is bounded by the row's own key count, which *is* in the sum.
+    """
+    return sum(
+        len(key) + (len(value) if isinstance(value, str) else 0) for key, value in row.items()
+    )
+
+
 def review_search_payload(probed: tuple[ReviewSearchHit, ...], *, page_size: int) -> dict[str, Any]:
-    """The whole response: the records, how many, and whether the page ended early.
+    """The whole response: the records, how many, and whether it ended early.
 
     ``probed`` is what :func:`probing` asked for -- up to ``page_size + 1``
-    records. The page is the first ``page_size`` of them; the extra one, if it
-    came back, is discarded here and is the entire basis of ``truncated``.
+    records. The page is the first ``page_size`` of them, cut short if they do not
+    fit :data:`MAX_REVIEW_SEARCH_RESPONSE_CHARS`; whatever is left over, the probe
+    row included, is discarded here and is the entire basis of ``truncated``.
 
     **Three members, and the shortness is the point.** Every value is a function
-    of the served rows and of this page's own boundary, which is ADR-0030 decision
-    6's closure stated at the response rather than at a field:
+    of the served rows and of this response's own boundary, which is ADR-0030
+    decision 6's closure stated at the response rather than at a field:
 
     * ``count`` is the number of records in *this* response, not a total before
       ``limit`` and not a count of anything the caller did not receive;
     * ``records`` is those records;
-    * ``truncated`` is whether a matching record existed past the page -- one bit
-      about *this* page's edge, which is what stops a full page from being misread
-      as the whole answer.
+    * ``truncated`` is whether this response carries fewer records than the read
+      returned -- one bit about *its own* edge, which is what stops a full page
+      from being misread as the whole answer.
+
+    **The budget is a graded stop at the record boundary, never a cut inside a
+    value.** Records are added until the next one would take the response past
+    the bound, and then no more are added; ``truncated`` reports it, in the same
+    bit and with the same meaning a full page reports. The alternative considered
+    was per-field caps on ``authorDisplayName`` and ``filePath`` with the
+    excerpt's marker discipline, and it was rejected: those two are not the whole
+    population -- ``recordPath`` is the record's identity and the store's primary
+    key, ``recordKey`` and ``sourceUri`` are how a caller goes and finds the
+    record -- so a cap that covered the population would cut values whose whole
+    purpose is to be used verbatim, and one that covered only the two long ones
+    would be a guard over a subset of what it protects. Every value served here
+    is therefore exactly the stored one, and what varies is how many of them.
+
+    **A single record that alone exceeds the budget is served whole and alone**,
+    which is ``domain/ranking.take_within_budget``'s rule and it is taken for that
+    function's reason: a caller whose budget is smaller than one record is better
+    served by one over-long answer it can truncate than by an empty one it cannot
+    act on. The residual is recorded rather than claimed away -- that response is
+    bounded by one evidence record, which
+    ``ReviewEvidenceStore`` refuses above ``MAX_SOURCE_FILE_BYTES`` (8 MiB) at
+    landing, rather than by the budget.
 
     Members that were considered and are deliberately absent. A **total matching
     count** is a number over unserved rows, and ``truncated`` is what it was
@@ -512,13 +602,29 @@ def review_search_payload(probed: tuple[ReviewSearchHit, ...], *, page_size: int
     that **held** withheld records and one that **never did** answer identically,
     to every query -- ``truncated`` included, which holds because the probe row
     comes from the same read as every served row and a withheld record contributes
-    no row to it.
+    no row to it. The budget does not weaken that: what it spends is the length of
+    rows the caller *receives*, so a withheld record can no more displace a served
+    one here than it can occupy a slot in the read.
     """
-    served = probed[:page_size]
+    served: list[dict[str, Any]] = []
+    spent = 0
+    for hit in probed[:page_size]:
+        row = review_record(hit)
+        cost = _record_chars(row)
+        # `served and`, so the first record is taken whatever it costs.
+        if served and spent + cost > MAX_REVIEW_SEARCH_RESPONSE_CHARS:
+            break
+        served.append(row)
+        spent += cost
     return {
         "count": len(served),
-        "truncated": len(probed) > page_size,
-        "records": [review_record(hit) for hit in served],
+        # Fewer records than the read returned, whether the page bound or the
+        # budget is what stopped it: the probe row is one the read returned and
+        # this response does not carry, so the old spelling
+        # (`len(probed) > page_size`) is this one restricted to the case where the
+        # budget never fires.
+        "truncated": len(served) < len(probed),
+        "records": served,
     }
 
 
@@ -529,6 +635,7 @@ __all__ = [
     "MAX_FILTER_CHARS",
     "MAX_PULL_REQUEST",
     "MAX_REVIEW_SEARCH_LIMIT",
+    "MAX_REVIEW_SEARCH_RESPONSE_CHARS",
     "PROVIDER_CONTROLLED_FIELDS",
     "ReviewSearchQueryError",
     "build_query",

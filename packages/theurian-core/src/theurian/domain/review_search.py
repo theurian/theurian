@@ -355,12 +355,20 @@ class ReviewSearchQuery:
 class ReviewSearchHit:
     """One record a search selected, with a bounded excerpt of why.
 
-    The structural columns come back whole -- each is a short, provider-shaped
-    value -- while :attr:`excerpt` is cut by the read itself, because that is the
-    one field whose size the corpus rather than the caller decides. A serving
-    surface deciding what a cut *means* to a client asks for one character more
-    than it will publish and marks the row when that character arrives, the way
-    ``mcp/findings._bounded_text`` already does for a finding.
+    Every column but :attr:`excerpt` comes back whole; :attr:`excerpt` is cut by
+    the read itself. A serving surface deciding what a cut *means* to a client
+    asks for one character more than it will publish and marks the row when that
+    character arrives, the way ``mcp/findings._bounded_text`` already does for a
+    finding.
+
+    **The excerpt is not the only field the corpus sizes**, which is what an
+    earlier revision of this docstring got wrong when it called the rest "short,
+    provider-shaped" values. :attr:`file_path` and :attr:`author_display_name`
+    are author-controlled and arrive at whatever length they were stored at; the
+    excerpt is merely the one whose bound can be applied *by the read*, because
+    it is the one field a surface publishes an excerpt of rather than the value
+    of. What bounds a whole response is the serving surface's own budget
+    (``mcp/review_search.MAX_REVIEW_SEARCH_RESPONSE_CHARS``).
 
     :attr:`file_path`, :attr:`author_display_name` and :attr:`excerpt` are
     **author-controlled untrusted content** (ADR-0030 decision 6) and are

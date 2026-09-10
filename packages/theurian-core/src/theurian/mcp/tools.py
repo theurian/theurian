@@ -2217,11 +2217,11 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         can distinguish "withheld" from "never existed".
 
         **Every published value is a function of the rows this call served, or of
-        this page's own boundary.** ``count`` sizes the returned array; each row is
-        stored columns, bounded in length and otherwise unmodified; ``truncated``
-        says whether a matching record existed past the page, which is one bit
-        about where this page ends rather than a number over records the caller did
-        not receive. See
+        this response's own boundary.** ``count`` sizes the returned array; each
+        row is stored columns, unmodified but for the excerpt's cut; ``truncated``
+        says whether this response carries fewer records than the read returned,
+        which is one bit about where it ends rather than a number over records the
+        caller did not receive. See
         :func:`~theurian.mcp.review_search.review_search_payload` for the members
         considered and left out, and why each would have been a statistic over
         content this tool does not serve.
@@ -2233,11 +2233,18 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         :mod:`theurian.mcp.review_search` for why this tool differs from
         ``knowledge.search`` there.
 
-        **Bounded in three dimensions, not one.** ``limit`` bounds the records;
-        ``excerpt_fetch_chars`` bounds each row's text **in the store's own read**,
-        so one planted comment cannot make a response -- or the daemon's own
-        footprint while assembling it -- arbitrarily large; and the admission gate
-        below bounds how many of these reads run at once.
+        **Bounded in four dimensions, not one.** ``limit`` bounds the records;
+        ``excerpt_fetch_chars`` bounds each row's **excerpt** in the store's own
+        read, so one planted comment cannot make that term -- or the daemon's
+        footprint carrying it -- arbitrarily large;
+        :data:`~theurian.mcp.review_search.MAX_REVIEW_SEARCH_RESPONSE_CHARS`
+        bounds the **response**, stopping the page early when the records already
+        in it have spent the budget; and the admission gate below bounds how many
+        of these reads run at once. The excerpt bound was written as though it
+        were the response bound, and it never was: ``authorDisplayName`` and
+        ``filePath`` are author-controlled and were served uncut, which measured
+        104,904,775 characters in one response at ``limit=50`` against the 14,050
+        the prose declared (2026-09-10).
 
         **Project-scoped, through the same gate as every other project tool.**
         ``projectId`` is required (ADR-0002: many agents share one daemon, so an
