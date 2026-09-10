@@ -72,6 +72,12 @@ _NEEDS_SYMLINKS = pytest.mark.skipif(
     sys.platform == "win32", reason="symlinks need privileges on Windows"
 )
 
+#: A mode bit denies nothing to a process that ignores it. The offline CI image
+#: runs as root, where a directory at ``0o500`` still opens for writing, so the
+#: one case that plants one skips there rather than asserting a refusal that
+#: cannot happen.
+_CANNOT_BE_REFUSED_BY_A_MODE = sys.platform == "win32" or os.geteuid() == 0
+
 
 # -- canned domain values -----------------------------------------------------
 
@@ -295,6 +301,67 @@ def test_a_run_leaves_the_derived_search_store_describing_what_it_landed(
         "review-submission",
         "review-thread",
     }
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_a_rebuild_that_fails_after_landing_still_publishes_the_run_document(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RED means a failed rebuild throws away everything the run has to report.
+
+    The rebuild runs *after* the records are durable, so the counts of what
+    landed are still the whole answer to "what do I have now" -- and under the
+    ``warn`` policy they are the only answer: ``secretsWarned`` and ``findings``
+    say that this run wrote a credential into ``.theurian/review/``, and no other
+    command recomputes them. Sharing one handler with the refusals that fire
+    *before* a report exists graded this as "the command could not run" and
+    published nothing at all.
+
+    The plant is the reviewer's own: ``.theurian/state`` at ``0o500`` lets the
+    landing half finish -- the evidence files go under ``.theurian/review/`` --
+    and stops ``sqlite3.connect`` from creating the derived store beside it.
+
+    Both streams are read, because the claim is about the *ordering* of two
+    documents rather than about either one: the run document on stdout, then the
+    refusal on stderr, then exit 1.
+    """
+    _settings(project, policy="warn")
+    _install(
+        monkeypatch,
+        _canned((_event(42),), threads={42: (_thread(_event(42), file_path=f"src/{SECRET}.py"),)}),
+    )
+    state = project / ".theurian" / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    state.chmod(0o500)
+
+    try:
+        result = runner.invoke(
+            app, ["review", "ingest", REPOSITORY, "--json"], catch_exceptions=False
+        )
+    finally:
+        state.chmod(0o700)
+
+    assert result.exit_code == 1
+    document = json.loads(result.stdout)
+    assert document["clean"] is True
+    assert document["secretsWarned"] is True, (
+        "the run landed a flagged record under `warn`, and this field is the only "
+        "published one that says so -- losing it is what the split fixes"
+    )
+    assert len(document["findings"]) == 1
+    assert document["landed"]["total"] == 3
+    assert "searchStore" not in document, (
+        "no store was written, so the block that describes one must be absent "
+        "rather than describing a rebuild that did not happen"
+    )
+    refusal = json.loads(result.stderr)
+    assert set(refusal) == {"error", "remedy"}
+    assert ".theurian/review/" in refusal["error"], (
+        f"the refusal does not say where the records landed: {refusal['error']}"
+    )
+    assert "rebuilt" in refusal["error"]
+    assert "`theurian review build`" in refusal["remedy"]
+    assert len(_landed(project)) == 3
 
 
 def test_a_second_invocation_updates_rather_than_adds(
@@ -742,8 +809,8 @@ def test_the_help_says_the_evidence_is_source_and_whose_decision_committing_it_i
     assert "the project's decision" in collapsed
 
 
-def test_the_help_says_exit_one_carries_two_documents(project: Path) -> None:
-    """A caller scripting ``--json | jq .clean`` gets one of two shapes at exit 1.
+def test_the_help_says_which_documents_exit_one_carries(project: Path) -> None:
+    """A caller scripting ``--json | jq .clean`` gets one of three shapes at exit 1.
 
     `propose accept`'s help enumerates its exit-1 population; this one did not,
     and understated it: the run document is what a *non-clean run* publishes,
@@ -753,6 +820,11 @@ def test_the_help_says_exit_one_carries_two_documents(project: Path) -> None:
     A script keyed on `clean` reads the second as *absent* rather than as
     *refused*.
 
+    **Three shapes rather than two since the rebuild became its own half**: a run
+    whose records landed and whose rebuild then failed publishes the run document
+    on stdout *and* the refusal on stderr, so a script reading only stdout sees a
+    document at exit 1 that no earlier revision of this command produced.
+
     The `warn` half is here for the same reason: exit 0 covers a run that landed
     a credential, and the help is where an operator who reads nothing else would
     have to be told which field says so.
@@ -761,9 +833,8 @@ def test_the_help_says_exit_one_carries_two_documents(project: Path) -> None:
 
     assert result.exit_code == 0
     collapsed = " ".join(result.stdout.split())
-    assert "either of two documents" in collapsed
+    assert "the run document, or `{error, remedy}`, or both" in collapsed
     assert "no `clean` field" in collapsed
-    assert "`{error, remedy}`" in collapsed
     assert "`secretsWarned`" in collapsed
     for refusal in ("allowlist", "private", "transport override", "version floor"):
         assert refusal in collapsed, f"the exit-1 population does not name {refusal!r}"

@@ -373,25 +373,30 @@ def review_ingest(
     found a secret under the `warn` policy, because `warn` is the project
     recording that a finding is reported and the record lands anyway; the
     published document sets `secretsWarned` to true there, so `clean` alone is
-    not what a caller has to notice it by. 1 carries **either of two documents**:
-    the run document, when the run happened and was not clean -- a record `block`
-    withheld, or a pull request the listing or a fetch could not read; or
-    `{error, remedy}`, when the command refused before any report existed --
-    the repository is not in the allowlist, resolves as private, resolves to a
-    different name, the `gh` configuration carries a transport override, `gh` is
-    missing, below the recorded version floor or unauthenticated, a recorded
-    bound was reached, `.theurian/config.yaml` cannot be read or names a value
-    this build does not recognise, or a file already under `.theurian/review/`
-    cannot be read or written, or the derived search store could not be rebuilt
-    after the records landed. The second shape carries no `clean` field at all,
-    so a caller scripting `--json | jq .clean` has to allow for both. 4 when a
-    path under `.theurian/` could not be proved to stay inside the working tree.
+    not what a caller has to notice it by. 1 carries **the run document, or
+    `{error, remedy}`, or both**: the run document alone, on stdout, when the run
+    happened and was not clean -- a record `block` withheld, or a pull request the
+    listing or a fetch could not read; `{error, remedy}` alone, on stderr, when
+    the command refused before any report existed -- the repository is not in the
+    allowlist, resolves as private, resolves to a different name, the `gh`
+    configuration carries a transport override, `gh` is missing, below the
+    recorded version floor or unauthenticated, a recorded bound was reached,
+    `.theurian/config.yaml` cannot be read or names a value this build does not
+    recognise, or a file already under `.theurian/review/` cannot be read or
+    written; and **both** when the records landed and the rebuild that follows
+    them did not. The `{error, remedy}` shape carries no `clean` field at all, so
+    a caller scripting `--json | jq .clean` has to allow for a run that published
+    nothing on stdout. 4 when a path under `.theurian/` could not be proved to
+    stay inside the working tree -- carrying the run document too, if the escape
+    was met by the rebuild rather than before the fetch.
 
     The run document carries a `searchStore` block: the derived store is rebuilt
     from every landed record once the run has finished landing, so a search sees
-    this run's records without a second command. A failure to rebuild it is
-    reported as a refusal that says the records landed -- the evidence is durable
-    before the rebuild starts, and `theurian review build` re-runs just that half.
+    this run's records without a second command. A failure to rebuild it
+    publishes the run document first and refuses after it, with no `searchStore`
+    block -- the evidence is durable before the rebuild starts, so the counts of
+    what landed are still the answer to "what do I have", and `theurian review
+    build` re-runs just that half.
     """
     from theurian.cli.commands import (  # noqa: PLC0415 - cycle
         _emit,
@@ -422,12 +427,6 @@ def review_ingest(
                 )
             )
         )
-        # After landing, never before or instead of it. The evidence files are the
-        # source and are already durable by here (ADR-0030 decision 3), so a
-        # rebuild that fails costs a stale derived store and no evidence -- which
-        # is what the refusal below says, so an operator is not left thinking the
-        # run lost records.
-        search = rebuild_search_store(context.paths)
     except ProjectPathEscapeError as exc:
         _fail_a_path_escape(exc, as_json=as_json)
         return
@@ -439,10 +438,41 @@ def review_ingest(
         # `LIMIT_EXCEEDED`'s recorded cure reaches an operator at all.
         _fail(str(exc), remedy=exc.remedy or _GENERIC_REMEDY, as_json=as_json, code=1)
         return
+
+    # After landing, never before or instead of it -- and in a `try` of its own,
+    # which is the difference between the two halves rather than a style choice.
+    # Above this line nothing is durable, so a failure means the command could not
+    # run and there is nothing to report. Below it the evidence files are the
+    # source and are already on disk (ADR-0030 decision 3), so a rebuild that
+    # fails costs a stale derived store and no evidence -- and the run's counts
+    # are the only record of what just happened. `secretsWarned` and `findings`
+    # in particular exist nowhere else: a `warn` run lands the flagged record and
+    # no later command recomputes that it did. Every arm below therefore emits
+    # the run document *before* it fails, the ordering `report.clean` uses.
+    try:
+        search = rebuild_search_store(context.paths)
+    except ProjectPathEscapeError as exc:
+        _emit(_payload(report), as_json=as_json)
+        _fail_a_path_escape(exc, as_json=as_json)
+        return
+    except TheurianError as exc:
+        _emit(_payload(report), as_json=as_json)
+        _fail(
+            f"The records landed under .theurian/review/, but the search store could "
+            f"not be rebuilt from them ({exc}), so a review search will not see what "
+            f"this run landed until the rebuild succeeds.",
+            remedy=exc.remedy or _GENERIC_REMEDY,
+            as_json=as_json,
+            code=1,
+        )
+        return
     except OSError as exc:
         # Only the provenance write raises a bare `OSError` on this path: the
         # store's own write converts its own, and the lock's are converted by
-        # `_lock_write_section`.
+        # `_lock_write_section`. Its sentence differs from the arm above in the
+        # clause that matters -- the store *was* rebuilt here, and what is missing
+        # is this installation's record that it built it.
+        _emit(_payload(report), as_json=as_json)
         _fail(
             f"The records landed and the search store was rebuilt, but this "
             f"installation could not record that it built it ({exc}), so a review "

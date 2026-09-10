@@ -147,17 +147,27 @@ _ACCOUNTED: Final[dict[str, str]] = {
         "`review_build`'s. Its sentence differs in the clause that matters: it says "
         "the records landed, because the evidence is durable before the rebuild "
         "starts and an operator told only that a build failed would go looking for "
-        "records that are on disk"
+        "records that are on disk. It sits in the rebuild's own `try` and emits the "
+        "run document before it fails"
     ),
     "review_commands.py:review_ingest:ProjectPathEscapeError": (
         "narrows the arm below it to exit code 4, a containment refusal carrying its "
-        "own remedy about where a path points"
+        "own remedy about where a path points. **Two arms wear this spelling** since "
+        "the rebuild took a `try` of its own, and one verdict covers both because "
+        "this table is keyed by type expression rather than by position: before "
+        "landing it refuses with nothing to report, and in the rebuild half it emits "
+        "the run document first, because the records are already on disk by then"
     ),
     "review_commands.py:review_ingest:TheurianError": (
         "the observable's own mechanism, and deliberately not `Exception`: it is the "
         "class both store seams grade *into*, so widening it here would publish a "
         "defect in this process as an operator-facing refusal instead of fixing the "
-        "seam that let one through"
+        "seam that let one through. **Two arms wear this spelling**, and the split is "
+        "what #630's H-1 fixed: the fetch half has nothing landed to report, while "
+        "the rebuild half emits the run document and only then refuses -- one handler "
+        "for both graded a failed rebuild as a command that could not run, and threw "
+        "away the `secretsWarned` and `findings` counts of a `warn` run that had just "
+        "landed a flagged record"
     ),
     "review_ingest_service.py:ReviewIngestService._fetch:ReviewIngestRefusedError": (
         "the record-scope skip, narrow on purpose: the module's docstring records "
