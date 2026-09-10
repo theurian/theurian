@@ -43,12 +43,18 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   adapter page, capped at `MAX_PULL_REQUESTS`), `--since` stops at a
   pull-request number, `--json` emits the run as a document. It exits 0 on a
   clean run — **which includes a `warn` run that found a secret and landed the
-  record anyway**; **1 on either of two documents**, the run document when the
-  run happened and was not clean (a record `block` withheld, or a pull request
-  the listing or a fetch could not read) and `{error, remedy}` when the command
-  refused before any report existed, which carries no `clean` field at all; and 4
-  when a path under `.theurian/` could not be proved to stay inside the working
-  tree.
+  record anyway**; **1 on the run document, or `{error, remedy}`, or both** —
+  the run document alone, on stdout, when the run happened and was not clean (a
+  record `block` withheld, or a pull request the listing or a fetch could not
+  read); `{error, remedy}` alone, on stderr, when the command refused before any
+  report existed; and **both** when the records landed and the rebuild that
+  follows them did not, because that rebuild sits in a `try` of its own and every
+  arm in it publishes the run document before it fails. The `{error, remedy}`
+  shape carries no `clean` field at all, so a caller scripting `--json | jq
+  .clean` has to allow for a run that published nothing on stdout. And 4 when a
+  path under `.theurian/` could not be proved to stay inside the working tree —
+  carrying the run document too, if the escape was met by the rebuild rather than
+  before the fetch.
 
   **It is an operator surface and reports identities, not content.** A
   repository, a pull-request number, a provider node id, a field name and a
