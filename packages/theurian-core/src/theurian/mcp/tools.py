@@ -1067,7 +1067,10 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
     # tool's worker thread is not stopped by cancelling the awaiting task, so a
     # transport timeout bounds how long a caller waits and never how much the
     # daemon spends. `review.search` joins that entry as a query-side member
-    # rather than taking a bound this comment invents.
+    # rather than taking a bound this comment invents -- as *The fifth query-side
+    # member: `review.search`*, which carries these figures beside the round's
+    # own, and states the three grounds the deferral rests on and the reach it
+    # accepts.
     #
     # The aggregate this adds -- a third `MAX_CONCURRENT_SEARCHES` of concurrent
     # occupancy, and up to twice that in parked holders while the gate's own

@@ -885,13 +885,15 @@ argument it carried is not true of the other two.
 | `IndexStore.search_dense` | `fetchall` over every embedding in the project, then a `struct.unpack` and a Python cosine per row, then a sort | **yes** — `_dense_ranking` is pure Python | **nothing.** The port takes no `limit`, and one would not have bounded it — see below |
 | `mcp.search._scan`, behind `substring_answer` | one `list_items_by_status` materialising every *surfaceable* item in the project — the withheld rows are dropped by a SQL `status IN (...)` filter over `idx_items_status`, never read (#158) — then two queries per document, the revision then its source anchors, and a Python `in` over the whole of its title and body | **yes** — the match is a Python `in` | `limit`, and only for a query that *matches*. One that matches nothing walks every surfaceable document, and `list_items_by_status` materialises the whole surfaceable set before the first comparison either way — so its rows and memory are still bounded by nothing the caller passes. What it no longer carries is the *withheld* count: since #158 the read is planned through `idx_items_status` and never touches a withheld row (`test_the_substring_scan_materializes_the_same_rows_however_many_are_withheld`) |
 
-**A fourth query-side member landed after those three** — `review.findings`
-(ADR-0029 phase-2 slice-3) — **and it is enumerated at the end of this entry's
-query material**, under *The fourth query-side member: `review.findings`*. It is set apart rather
-than added as a row because every "all three" and "the third member" statement
-between here and there was measured against the Milestone 5 set and continues to
-range over it: the cost table, the GIL columns, the concurrency figures and the
-`knowledge_search` admission gate are all statements about those three.
+**Two more query-side members landed after those three** — `review.findings`
+(ADR-0029 phase-2 slice-3) and `review.search` (ADR-0030 slice 3) — **and both
+are enumerated at the end of this entry's query material**, under *The fourth
+query-side member: `review.findings`* and *The fifth query-side member:
+`review.search`*. They are set apart rather than added as rows because every
+"all three" and "the third member" statement between here and there was measured
+against the Milestone 5 set and continues to range over it: the cost table, the
+GIL columns, the concurrency figures and the `knowledge_search` admission gate
+are all statements about those three.
 
 All three are reachable from the public API with no tuning and no privileges. The
 scan needs eight two-character terms with the matching one typed last — roughly
@@ -1451,6 +1453,83 @@ of 684/672/673 µs. That is a single-call disclosure result, not a concurrency
 price, and it is not evidence that this member is cheaper than the three above.
 The reason the cap is the same constant is that a second number would be a
 tuning claim, not that a measurement supports one.
+
+**The fifth query-side member: `review.search`.**
+Added by ADR-0030 slice 3 (2026-09-10), and here for the fourth member's reason:
+a documented entry point that reads a database on a caller's request. It is
+listed separately for that reason too — none of the measurements above ranges
+over it, and it carries its own bounds rather than a share of anyone else's.
+
+| Dimension | Bound | Refuses or clamps |
+| :-- | :-- | :-- |
+| rows returned | `mcp/review_search.py::MAX_REVIEW_SEARCH_LIMIT` (50), `DEFAULT_REVIEW_SEARCH_LIMIT` (20) when the caller sends none | **refuses**, for the fourth member's reason: a silent clamp would let a caller read "these are the records matching my filter" off a page cut from more |
+| characters per served `excerpt`, cut inside the store's own `SELECT` | `mcp/review_search.py::MAX_EXCERPT_CHARS` (280), derived from `domain/retrieval.py::EXCERPT_CHARS` rather than respelled, and applied by `infrastructure/sqlite/review_search_sql.py::excerpt_columns()` as `substr(t.content, 1, ?)` | **clamps**, and marks the cut with three characters, so an untouched excerpt is at most the bound and a cut one is exactly `MAX_EXCERPT_CHARS + 3` |
+| characters per string filter, before anything is matched or echoed | `mcp/review_search.py::MAX_FILTER_CHARS` (400) — 400 rather than the fourth member's 200 because the long member here is a **file path**, and `q` shares the bound rather than taking `knowledge.search`'s 2,000 because the match is literal | **refuses**, naming the bound and never quoting the value |
+| magnitude of `pullRequest` | `mcp/review_search.py::MAX_PULL_REQUEST`, the widest value the store's signed 64-bit column can hold (`2**63 - 1`) | **refuses** |
+| characters in the whole response | `mcp/review_search.py::MAX_REVIEW_SEARCH_RESPONSE_CHARS`, **derived rather than chosen**: `MAX_REVIEW_SEARCH_LIMIT × (MAX_EXCERPT_CHARS + 3 + 17 × MAX_FILTER_CHARS)`, where the 17 is itself derived — the published keys beside `excerpt`, read off the two field-classification sets and the SEC-15 triple, so a field added to the shaper widens the budget by the change that adds it. Size this by the expression, not by the figure it evaluates to today | **clamps the page**: records stop being added once the budget is spent, and `truncated` says the response carries fewer records than the read returned |
+| concurrent occupancy | an `AdmissionGate` of its own — the third — sized by `MAX_CONCURRENT_SEARCHES` (4), waited on for `ADMISSION_WAIT_SECONDS` (1.0 s), refusing with `REVIEW_SEARCH_CAPACITY_REFUSAL` | **refuses** |
+| wall clock per call | **nothing** — recorded as *not taken*, with the reasoning below | neither |
+
+**Only the excerpt was bounded when the tool was first written, and the excerpt
+was the cheap field to bound.** `authorDisplayName` and `filePath` are
+author-controlled (ADR-0030 decision 3) and crossed uncut, as did every
+structural string, so the sentence that read `limit × excerpt_fetch_chars()` as
+a bound on the response was bounding one term of it. Measured 2026-09-10 on
+`mcp/review_search.py`, 50 hits each carrying a 1 MiB `filePath` and a 1 MiB
+`authorDisplayName`: **104,904,775 JSON characters in one response**, against the
+14,050 the prose declared. The only thing bounding it was the evidence writer's
+own `MAX_SOURCE_FILE_BYTES` (8 MiB) at landing. The response bound in the table
+above is what closed that, and it is applied while the page is being shaped
+rather than to a page already built.
+
+**The unbounded term that remains is duration, and it is `q`.** The store carries
+no index a `WHERE` on its filter columns can use, so a filtered read is a scan
+plus a sort; `q` is a `LIKE`, and SQLite tries the pattern at each starting offset
+of each stored fragment, so a near-miss costs the product of the needle's length
+and the corpus's. **Two measurement sets are recorded and neither divides the
+other** — they were taken on different corpora with different instruments, and a
+ratio across two instruments is fabricated (the same rule the fourth member's read
+face applies, and the #199 unit-A amendment above):
+
+- **PR #630 round 1 (adversarial), 2026-09-10.** At `MAX_FILTER_CHARS`, LIKE
+  backtracking cost **301× a baseline call at the store layer** and **174×
+  through the tool**. Under four concurrent hostile callers, **four of eight
+  benign callers were refused** — that number is the reach this deferral accepts,
+  and it is recorded here rather than left to be inferred from the cap.
+- **PR #630's re-measurement, 2026-09-10**, CPython 3.13.3 arm64, over 500
+  records of one 65,536-character fragment each, medians of 15: 1,167.0 µs
+  unfiltered, 22,266.1 µs for a one-character near-miss (19.1×), 273,432.7 µs at
+  64 characters (234.3×) and **1,547,952.9 µs — 1.55 s in one call, 1,326.4× — at
+  `MAX_FILTER_CHARS`**. The cost is linear in the needle's length across that
+  sweep. The same day, both stores at 2,000 rows and each tool at its own default
+  page size, medians of 40: a `review.findings` serve at 1,030.7 µs against
+  `pullRequest=` 926.0 µs (0.90×), `filePath=` 1,131.8 µs (1.10×), no filter
+  1,230.1 µs (1.19×), `author=` 2,554.9 µs (2.48×), `q=budget` 3,867.3 µs (3.75×)
+  and `repository=` 7,822.2 µs (7.59×) — so the filtered path costs up to 7.6× a
+  findings serve, and the claim that this member is "no more expensive than a
+  findings serve" was never measured and is not true.
+
+**The per-query wall-clock bound is recorded as not taken here, on three
+grounds.** It is the same deferral T-6 already records for the other four
+members, and this member does not reopen it:
+
+1. **The transport cannot take it.** A sync MCP tool runs through
+   `anyio.to_thread.run_sync`; cancelling the *awaiting* task does not stop the
+   worker thread already dispatched to it, so a transport-level timeout bounds
+   how long a caller waits and never what the daemon spends. The concurrency cap
+   and the admission wait bound the **fleet** — how many of these run at once and
+   how long a caller queues for a permit — not one call.
+2. **The cost is inherent to the non-ranked design.** `q` is `O(needle ×
+   corpus)` `LIKE` backtracking because there is no rank, no term weight and no
+   collection statistic on this path — which is exactly the property ADR-0030
+   decision 6 keeps to inherit no T-17a constraint (the #368 boundary). Bounding
+   the spend rather than the rate means either a ranked surface with build-time
+   statistics or a runtime interrupt, and both are their own decision rather than
+   a tuning of this one.
+3. **The mitigations that do apply are operator-side.** SEC-10's repository
+   allowlist bounds whose evidence can land in the corpus at all, and the bounds
+   in the table above bound what one call returns. Neither bounds what one call
+   costs, and this row says so rather than letting the caps read as if they did.
 
 **Controls on `propose accept`'s body-materialisation cost**
 ([#306](https://github.com/theurian/theurian/issues/306),
