@@ -380,6 +380,41 @@ def test_a_store_stamped_by_a_superseded_schema_is_refused(tmp_path: Path) -> No
     assert "superseded" in str(excinfo.value)
 
 
+def test_a_dump_of_a_half_built_store_refuses_rather_than_answering_a_smaller_corpus(
+    tmp_path: Path,
+) -> None:
+    """A crash between the schema commit and the data commit leaves a *valid* file.
+
+    ``replace_all`` writes the three content tables and the stamp in one
+    transaction after the DDL has committed on its own, so the window a crash can
+    land in leaves a database that opens cleanly, carries every table, and has no
+    metadata row. Nothing about reading it raises: a dump that walked the content
+    tables would answer with whatever rows made it, and a caller comparing a
+    rebuild against it would read that as a smaller corpus rather than as a
+    corpus nobody finished writing.
+
+    Which is why ``dump`` checks the metadata row *before* any content row. The
+    damage is applied by hand rather than by racing a real build: what the case is
+    about is that the check happens at all, and a race would make the test flaky
+    about the thing it is asserting.
+    """
+    store = _built(
+        tmp_path, _record(relative_path="a/review-thread/1.json", texts=(_comment("kept"),))
+    )
+    with closing(sqlite3.connect(store.path)) as connection:
+        connection.execute("DELETE FROM review_search_metadata")
+        connection.commit()
+
+    with pytest.raises(ReviewSearchStoreError) as excinfo:
+        store.dump()
+
+    assert "no metadata row" in str(excinfo.value), (
+        f"the refusal must say what is wrong with the file, not merely that something is: "
+        f"{excinfo.value}"
+    )
+    assert "theurian review build" in excinfo.value.remedy
+
+
 def test_a_rebuild_over_one_load_leaves_a_logically_identical_store(tmp_path: Path) -> None:
     """Wholesale by construction: two writes of one load are one store.
 
