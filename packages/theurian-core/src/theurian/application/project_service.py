@@ -3020,8 +3020,12 @@ class BuildProvenance:
     **Four artifact families, one record.** ``state`` and ``index`` are the
     canonical state database and the retrieval index; ``findings`` is the
     review-finding store ``theurian findings build`` writes (ADR-0029 phase-2);
-    ``reviewSearch`` is the review search store ``theurian review build`` writes
-    (ADR-0030 slice 3). All four sit under `.theurian/state/`, all four are
+    ``review`` is the review search store ``theurian review build`` writes
+    (ADR-0030 slice 3) -- named for the **filename infix**, not for the store, as
+    ``findings`` keys ``theurian-findings-`` and ``index`` keys
+    ``theurian-index-``; see :meth:`record_review`, whose docstring records what a
+    family called ``review_search`` would cost T-19. All four sit under
+    `.theurian/state/`, all four are
     git-ignored, and all four are therefore force-addable by a repository
     contributor -- so each later family inherits the class this record closes
     rather than a milder version of it: a clone shipping a fabricated
