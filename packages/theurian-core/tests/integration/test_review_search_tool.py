@@ -44,6 +44,7 @@ import copy
 import inspect
 import json
 import subprocess
+import threading
 from collections.abc import Iterator
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -1093,6 +1094,132 @@ async def test_a_review_search_that_finds_its_gate_full_is_refused_in_this_tools
         "the same call was still refused once the permits came back, so the refusal above was "
         "not the gate's doing and this case would hold for any implementation"
     )
+
+
+#: Every wait in the occupancy case below. A stub left blocked is a worker thread
+#: the whole suite cannot finish -- ``anyio.to_thread.run_sync`` gives it no way to
+#: be cancelled from outside -- so each wait is bounded and fails loudly.
+_OCCUPANCY_WAIT_SECONDS: Final = 5.0
+
+
+class _BlockingStore:
+    """A stand-in store whose ``search`` stays inside the gated block until released.
+
+    :meth:`factory` is what ``mcp/tools.py`` calls where it would construct
+    :class:`SqliteReviewSearchStore`, so a call that reaches the read occupies
+    exactly one permit and stays there. That is the only way a semaphore's
+    *occupancy* becomes observable: the gate-full case above creates the full
+    state by draining the gate itself, which says what a caller meeting a full
+    gate is told and nothing about whether a running search is what fills it.
+
+    The findings surface's ``_StoreGate`` is the precedent this mirrors; a shared
+    harness is not possible because the two ports differ in the method they block
+    on (``serve_findings`` against ``search``).
+    """
+
+    def __init__(self, expected: int) -> None:
+        self._lock = threading.Lock()
+        self._entered = 0
+        self._expected = expected
+        self.all_entered = threading.Event()
+        self.release = threading.Event()
+
+    @property
+    def entered(self) -> int:
+        with self._lock:
+            return self._entered
+
+    def factory(self, path: Path) -> Any:  # noqa: ARG002 - the adapter's constructor shape
+        holder = self
+
+        class _Store:
+            def search(
+                self,
+                query: Any,  # noqa: ARG002 - port shape
+                *,
+                text_chars: int,  # noqa: ARG002 - port shape
+            ) -> tuple[Any, ...]:
+                return holder._enter()
+
+        return _Store()
+
+    def _enter(self) -> tuple[Any, ...]:
+        with self._lock:
+            self._entered += 1
+            if self._entered >= self._expected:
+                self.all_entered.set()
+        assert self.release.wait(timeout=_OCCUPANCY_WAIT_SECONDS), (
+            f"the release was never set within {_OCCUPANCY_WAIT_SECONDS}s -- a leaked blocked "
+            f"worker would hang the whole suite, so this fails loudly instead"
+        )
+        return ()
+
+
+@pytest.mark.asyncio
+async def test_a_running_review_search_holds_its_permit_until_the_store_read_returns(
+    served: ProjectRegistry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half of the cap, which the gate-full case deliberately does not claim.
+
+    That case drains the gate itself and then asks what the tool tells the caller
+    who meets it. This one asks the question the cap exists for: does a **running**
+    ``review.search`` occupy a permit for as long as its store read runs? Without
+    that, the semaphore bounds how many callers may *hold* a permit and not how
+    many reads run at once -- and a sync tool's worker thread cannot be cancelled
+    by a transport timeout, so concurrent reads are the whole quantity being
+    bounded (T-6, SEC-8, #26).
+
+    Driven the way the findings surface drives its twin
+    (``test_review_findings_tool.py::test_the_findings_read_is_admission_gated_
+    like_a_search``): ``MAX_CONCURRENT_SEARCHES`` real calls are parked *inside*
+    the store read, and the next real call must be refused in this tool's own
+    words while they are there. Acquiring the permit after the read, or releasing
+    it before, admits that caller.
+
+    Three assertions, in the order that makes a failure readable: every call
+    reached the read (so the state below is a saturation and not a stall), the
+    next call is refused by this tool's own message, and once the parked calls
+    return the gate admits again -- without which the refusal could be a tool that
+    refuses always.
+    """
+    holder = _BlockingStore(MAX_CONCURRENT_SEARCHES)
+    monkeypatch.setattr(tools_module, "SqliteReviewSearchStore", holder.factory)
+    server = build_server(served)
+    parked = [
+        asyncio.create_task(server.call_tool("review.search", {"projectId": "demo"}))
+        for _ in range(MAX_CONCURRENT_SEARCHES)
+    ]
+
+    try:
+        entered = await asyncio.get_running_loop().run_in_executor(
+            None, holder.all_entered.wait, _OCCUPANCY_WAIT_SECONDS
+        )
+        assert entered, (
+            f"only {holder.entered}/{MAX_CONCURRENT_SEARCHES} callers reached the store read "
+            f"within {_OCCUPANCY_WAIT_SECONDS}s -- the harness failed to saturate, which is "
+            f"also what a permit leaked by an earlier exit path looks like"
+        )
+        with pytest.raises(SdkToolError) as raised:
+            await asyncio.wait_for(
+                server.call_tool("review.search", {"projectId": "demo"}),
+                timeout=_CALL_BOUND_SECONDS,
+            )
+    finally:
+        holder.release.set()
+        await asyncio.wait_for(
+            asyncio.gather(*parked, return_exceptions=True), timeout=_OCCUPANCY_WAIT_SECONDS
+        )
+
+    assert REVIEW_SEARCH_CAPACITY_REFUSAL in str(raised.value), (
+        "a caller arriving while every permit was held inside a running store read was not "
+        "refused by this tool's cap, so the permit is not held for the read's duration and "
+        "the semaphore bounds nothing a caller can make this daemon spend"
+    )
+    assert SEARCH_CAPACITY_REFUSAL not in str(raised.value), (
+        "`review.search` answered with the knowledge-search cap's message, so the two share "
+        "one semaphore and one of the published messages is false about its own load"
+    )
+    await server.call_tool("review.search", {"projectId": "demo"})
 
 
 # -- Bound input at the tool -> store seam -------------------------------------
