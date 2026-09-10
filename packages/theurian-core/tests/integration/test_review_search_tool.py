@@ -1353,6 +1353,63 @@ async def test_a_long_comment_is_cut_by_the_read_and_marked_on_the_wire(
     assert tail_needle not in excerpt
 
 
+@pytest.mark.parametrize(
+    ("stored_chars", "cut"),
+    [(MAX_EXCERPT_CHARS, False), (MAX_EXCERPT_CHARS + 1, True)],
+    ids=["exactly-the-bound", "one-past-the-bound"],
+)
+@pytest.mark.asyncio
+async def test_a_comment_at_the_excerpt_boundary_is_marked_only_when_it_was_cut(
+    project: ProjectRegistry, stored_chars: int, cut: bool
+) -> None:
+    """The boundary itself, from both sides -- the case a long fragment cannot make.
+
+    ``_bounded_excerpt`` marks a value it cut and leaves a value that fits alone,
+    and the whole distinction rests on one comparison against
+    :data:`MAX_EXCERPT_CHARS`. A fragment four times the bound exercises that
+    comparison nowhere near the edge, so the off-by-one -- ``<=`` becoming ``<`` --
+    survives it: measured, that mutation leaves
+    :func:`test_a_long_comment_is_cut_by_the_read_and_marked_on_the_wire` green
+    while a comment of **exactly** the bound is published as ``280`` characters
+    plus a marker, which tells a reader that an authored value they have in full
+    was truncated.
+
+    Both sides, because the marker is a claim in two directions: a fragment of
+    exactly the bound is whole and unmarked, and one character more is cut to the
+    bound and marked. The store's read is what makes the second knowable at all --
+    it fetches one character past the bound (``excerpt_fetch_chars``), so the extra
+    character *is* the evidence.
+
+    The needle sits at the front of the fragment so both arms are found by the same
+    query and the match is not what differs between them.
+    """
+    needle = "sentinel-at-the-bound"
+    planted = needle + "e" * (stored_chars - len(needle))
+    assert len(planted) == stored_chars, "the fixture must plant the length this arm is about"
+    _land_and_build(project, "demo", (_thread("demo", "acme/edge", number=4, opening=planted),))
+
+    result = await _call(project, q=needle)
+    excerpt = result["records"][0]["excerpt"]
+
+    assert result["count"] == 1
+    if cut:
+        assert excerpt == planted[:MAX_EXCERPT_CHARS] + "...", (
+            "a fragment one character past the bound must come back cut at the bound and "
+            "marked, or a caller cannot tell a truncated value from a whole one"
+        )
+        return
+    assert excerpt == planted, (
+        "a fragment of exactly the bound was not published as the value it is; the read "
+        "fetches one character more than the bound precisely so this case can be told "
+        "apart from a fragment that really was longer"
+    )
+    assert len(excerpt) == MAX_EXCERPT_CHARS
+    assert not excerpt.endswith("..."), (
+        "a fragment that fits the bound was marked as cut, which says an authored value "
+        "the caller has in full is only part of one"
+    )
+
+
 @pytest.mark.asyncio
 async def test_the_default_page_size_is_the_published_constant(served: ProjectRegistry) -> None:
     """The default is a value, not an accident: a caller that omits ``limit`` gets it.
