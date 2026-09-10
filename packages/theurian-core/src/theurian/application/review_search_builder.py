@@ -41,14 +41,15 @@ from collections.abc import Callable, Iterable
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import final
+from typing import Final, final
 
 from theurian.application.findings_builder import WriteSection
 from theurian.application.review_landing_gate import ReviewRecordPayload
-from theurian.domain.errors import TheurianError
+from theurian.domain.errors import InvariantViolationError, TheurianError
 from theurian.domain.knowledge import SourceAnchor
 from theurian.domain.review import ReviewEvent, ReviewParticipant, ReviewSubmission, ReviewThread
 from theurian.domain.review_search import (
+    MAX_STORED_PULL_REQUEST,
     ReviewSearchLoad,
     ReviewSearchRecord,
     ReviewTextChannel,
@@ -81,6 +82,22 @@ WriteReviewSearchStore = Callable[[ReviewSearchLoad], None]
 #: true of ``٣`` and ``int`` accepts it, so a non-ASCII digit would become a
 #: pull-request number no provider issued.
 _EVENT_KEY_NUMBER = re.compile(r"#(\d+)\Z", re.ASCII)
+
+#: How many significant decimal digits a pull-request number may be written with,
+#: derived from the bound rather than chosen: :data:`MAX_STORED_PULL_REQUEST` is
+#: nineteen digits wide, so a longer run is out of range whatever it spells.
+#:
+#: The check is on the run's **length** because ``int`` itself is not total:
+#: CPython refuses to convert a decimal string past
+#: ``sys.get_int_max_str_digits()`` -- 4,300 digits by default -- and raises
+#: ``ValueError``, which is neither a ``TheurianError`` nor anything ``theurian
+#: review build`` grades. Measured 2026-09-10, before this arm existed: a landed
+#: file whose ``eventKey`` ended in 4,301 nines ended the build in
+#: ``ValueError: Exceeds the limit (4300 digits) for integer string conversion``
+#: and a traceback. The same family as ``mcp/findings._digits`` (PR #504 round 1,
+#: R1-2 face ii), met on the *write* side: the refusal about an unrenderable
+#: number must not itself render it.
+_MAX_NUMBER_DIGITS: Final = len(str(MAX_STORED_PULL_REQUEST))
 
 
 class ReviewSearchBuildError(TheurianError):
@@ -221,8 +238,12 @@ class ReviewSearchBuilder:
 
         Raises:
             ReviewSearchBuildError: If a landed record carries a value this build
-                cannot store -- text with no UTF-8 encoding, or a last-seen instant
-                that cannot be expressed in UTC. Each names the evidence file.
+                cannot store -- text with no UTF-8 encoding, a last-seen instant
+                that cannot be expressed in UTC, or a value one of
+                :class:`~theurian.domain.review_search.ReviewSearchRecord`'s own
+                invariants refuses, which is where a hand-edited ``eventKey``
+                naming pull request ``0``, or one wider than the store's column
+                holds, arrives. Each names the evidence file.
             TheurianError: Whatever the reader or the writer raises, unchanged.
                 Both carry their own remedy about their own artefact, and the read
                 side's in particular is about a file this layer never opened.
@@ -260,23 +281,37 @@ def _projected(entry: EvidenceEntry) -> ReviewSearchRecord:
     rebuild over unchanged evidence reproduce.
     """
     author, participants, texts = _people_and_text(entry.payload)
-    record = ReviewSearchRecord(
-        relative_path=entry.relative_path,
-        record_key=entry.record_key,
-        kind=entry.kind,
-        provider=entry.provider,
-        repository=entry.repository,
-        pull_request=_pull_request_of(entry.payload),
-        thread_state=_thread_state_of(entry.payload),
-        file_path=_file_path_of(entry.payload),
-        source_uri=entry.anchor.source_uri,
-        author_external_id=author.external_id,
-        author_display_name=author.display_name,
-        participant_ids=participants,
-        texts=texts,
-        last_seen_run_id=entry.last_seen_run_id,
-        last_seen_at=_instant_text(entry.last_seen_at, entry.relative_path),
-    )
+    try:
+        record = ReviewSearchRecord(
+            relative_path=entry.relative_path,
+            record_key=entry.record_key,
+            kind=entry.kind,
+            provider=entry.provider,
+            repository=entry.repository,
+            pull_request=_pull_request_of(entry.payload, entry.relative_path),
+            thread_state=_thread_state_of(entry.payload),
+            file_path=_file_path_of(entry.payload),
+            source_uri=entry.anchor.source_uri,
+            author_external_id=author.external_id,
+            author_display_name=author.display_name,
+            participant_ids=participants,
+            texts=texts,
+            last_seen_run_id=entry.last_seen_run_id,
+            last_seen_at=_instant_text(entry.last_seen_at, entry.relative_path),
+        )
+    except InvariantViolationError as exc:
+        # Every one of these invariants is about a value a **landed file**
+        # supplied, and `InvariantViolationError` carries no remedy: an
+        # `eventKey` hand-edited to end `#0` reached an operator as `Run
+        # `theurian doctor`.`, the CLI's backstop for an error that describes no
+        # cure -- over a defect `doctor` cannot see and would not mention.
+        #
+        # Caught as the **class** rather than by re-checking a chosen field here:
+        # the population is every invariant `ReviewSearchRecord` states, so a
+        # fourth one added there arrives graded and naming the file by the change
+        # that adds it. The detail is `str(exc)` unchanged because those messages
+        # already open with the record's own path.
+        raise ReviewSearchBuildError(str(exc), remedy=_record_cure(entry.relative_path)) from exc
     _refuse_untransportable(record)
     return record
 
@@ -334,7 +369,7 @@ def _distinct(values: Iterable[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(values))
 
 
-def _pull_request_of(payload: ReviewRecordPayload) -> int | None:
+def _pull_request_of(payload: ReviewRecordPayload, relative_path: str) -> int | None:
     """Which pull request a record belongs to, where the record can say.
 
     A :class:`~theurian.domain.review.ReviewEvent` carries its own number. The
@@ -351,13 +386,37 @@ def _pull_request_of(payload: ReviewRecordPayload) -> int | None:
     reviewer searches for. So it is parsed, against the one format
     :data:`_EVENT_KEY_NUMBER` records as the only producer, and a key that does
     not match answers ``None`` rather than a guess.
+
+    ``relative_path`` is taken for :func:`_instant_text`'s reason: the digit run
+    below is refused by a message that has to name the evidence file, and this
+    function is the layer that is looking at the string.
+
+    Raises:
+        ReviewSearchBuildError: If the key's digit run is wider than the store's
+            column, which is a refusal on the run's **length** and therefore
+            before any ``int``. See :data:`_MAX_NUMBER_DIGITS`.
     """
     match payload:
         case ReviewEvent():
+            # No length arm: the number arrived as a JSON integer through the
+            # codec, so `int` has already been applied by the reader and its own
+            # failures are graded there. `ReviewSearchRecord` refuses an
+            # out-of-range one at construction, which is the arm this reaches.
             return payload.number
         case ReviewSubmission() | ReviewThread():
             found = _EVENT_KEY_NUMBER.search(payload.event_key)
-            return None if found is None else int(found.group(1))
+            if found is None:
+                return None
+            digits = found.group(1)
+            if len(digits.lstrip("0")) > _MAX_NUMBER_DIGITS:
+                raise ReviewSearchBuildError(
+                    f"`{relative_path}` names a pull request written with "
+                    f"{len(digits)} digits, so it is larger than "
+                    f"{MAX_STORED_PULL_REQUEST} -- the widest value the store's "
+                    f"column holds -- and could not be stored.",
+                    remedy=_record_cure(relative_path),
+                )
+            return int(digits)
 
 
 def _thread_state_of(payload: ReviewRecordPayload) -> str | None:

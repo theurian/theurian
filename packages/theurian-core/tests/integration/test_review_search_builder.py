@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
@@ -59,7 +60,11 @@ from theurian.domain.review import (
     ReviewSubmission,
     ReviewThread,
 )
-from theurian.domain.review_search import ReviewSearchRecord, ReviewTextChannel
+from theurian.domain.review_search import (
+    MAX_STORED_PULL_REQUEST,
+    ReviewSearchRecord,
+    ReviewTextChannel,
+)
 from theurian.infrastructure.review_evidence import (
     EvidenceRecord,
     IngestionRun,
@@ -498,4 +503,119 @@ def test_a_last_seen_instant_that_cannot_be_expressed_in_utc_is_refused_by_name(
         _projected(overflowing)
 
     assert "a/review-submission/1.json" in str(excinfo.value)
+    assert "theurian review build" in excinfo.value.remedy
+
+
+def _with_event_key(paths: ProjectPaths, number: str) -> Path:
+    """Rewrite the one landed record's ``eventKey`` to end ``#number``.
+
+    A hand edit of the landed file rather than of the builder's own types,
+    because what these two cases assert is that a **file** on disk produces a
+    graded refusal: ``_pull_request_of`` parses the trailing ``#(\\d+)`` out of
+    exactly this string, so the file is the only place such a number can enter.
+    """
+    landed = next(paths.review.rglob("*.json"))
+    document = json.loads(landed.read_text(encoding="utf-8"))
+    document["record"]["eventKey"] = f"{PROVIDER}:{REPOSITORY}#{number}"
+    landed.write_text(json.dumps(document, indent=2), encoding="utf-8")
+    return landed
+
+
+@pytest.mark.parametrize(
+    ("number", "expected"),
+    [
+        pytest.param("0", "pull request 0", id="zero"),
+        pytest.param("9" * 20, "larger than", id="beyond-the-column"),
+    ],
+)
+def test_a_hand_edited_pull_request_number_is_refused_with_the_record_cure(
+    tmp_path: Path, number: str, expected: str
+) -> None:
+    """RED means a number a landed file supplied is graded as somebody else's fault.
+
+    Both ends of the store's column, and each arrived wrong in its own way.
+    ``#0`` reached ``ReviewSearchRecord``'s own invariant, which raises
+    ``InvariantViolationError`` -- a ``TheurianError`` carrying an **empty**
+    remedy, so ``theurian review build`` printed its backstop cure, ``Run
+    `theurian doctor`.``, over a defect ``doctor`` cannot see. A twenty-digit
+    number carried past the record and into ``sqlite3``, which answered
+    ``OverflowError``; the store's write arm graded that as *the store could not
+    be written* with a cure about free disk space, sending an operator to check a
+    filesystem over a byte in an evidence file.
+
+    Both now carry :func:`_record_cure`: the file to open, and the command to
+    re-run once it is corrected.
+    """
+    paths = _project(tmp_path)
+    evidence = _landed(paths, _submission())
+    landed = _with_event_key(paths, number)
+
+    with pytest.raises(ReviewSearchBuildError) as excinfo:
+        _build(paths, evidence, withheld=frozenset())
+
+    assert expected in str(excinfo.value)
+    assert landed.relative_to(paths.review).as_posix() in str(excinfo.value)
+    assert landed.relative_to(paths.review).as_posix() in excinfo.value.remedy
+    assert "theurian review build" in excinfo.value.remedy
+    assert "do not delete it" in excinfo.value.remedy
+    for wrong in ("theurian doctor", "free disk space"):
+        assert wrong not in excinfo.value.remedy, (
+            f"the cure still sends the operator to {wrong!r} over a value in an evidence file"
+        )
+
+
+def test_the_over_range_refusal_never_renders_the_number_it_refuses(tmp_path: Path) -> None:
+    """RED means composing the refusal is itself the next crash.
+
+    ``_pull_request_of`` parses ``#(\\d+)``, so a hand-edited event key can carry
+    a number of any length, and CPython refuses to render an integer wider than
+    ``sys.get_int_max_str_digits()`` -- 4,300 digits by default. A refusal that
+    quoted the caller's number back would raise ``ValueError`` *inside the arm
+    building it*, which is the face ``mcp/findings._digits`` met. The bound is
+    named instead, which is the part a reader acts on.
+    """
+    paths = _project(tmp_path)
+    evidence = _landed(paths, _submission())
+    digits = sys.get_int_max_str_digits() + 1
+    _with_event_key(paths, "9" * digits)
+
+    with pytest.raises(ReviewSearchBuildError) as excinfo:
+        _build(paths, evidence, withheld=frozenset())
+
+    assert str(MAX_STORED_PULL_REQUEST) in str(excinfo.value)
+    assert "9" * 100 not in str(excinfo.value)
+
+
+def test_a_hand_edited_pull_request_record_number_is_refused_at_the_record(
+    tmp_path: Path,
+) -> None:
+    """The other way an out-of-range number arrives, and the guard that catches it.
+
+    A pull-request record carries its own ``number`` as a JSON integer, so the
+    event-key digit-run arm never sees it: the reader has already produced an
+    ``int``, and ``ReviewEvent`` bounds it below and not above. What refuses it is
+    :class:`ReviewSearchRecord`'s own invariant, and without this case that
+    invariant would be a guard no data reaches -- the event-key cases above all
+    stop one layer earlier.
+
+    The file is **renamed** as well as edited, because the reader derives a
+    record's own path from its contents and refuses a file sitting anywhere else.
+    That check is what a plain edit meets first, and it is not the one under test
+    here.
+    """
+    number = MAX_STORED_PULL_REQUEST + 1
+    paths = _project(tmp_path)
+    evidence = _landed(paths, _event())
+    original = next(paths.review.rglob("*.json"))
+    document = json.loads(original.read_text(encoding="utf-8"))
+    document["record"]["number"] = number
+    landed = original.with_name(f"{number}.json")
+    landed.write_text(json.dumps(document, indent=2), encoding="utf-8")
+    original.unlink()
+
+    with pytest.raises(ReviewSearchBuildError) as excinfo:
+        _build(paths, evidence, withheld=frozenset())
+
+    assert f"larger than {MAX_STORED_PULL_REQUEST}" in str(excinfo.value)
+    assert landed.relative_to(paths.review).as_posix() in excinfo.value.remedy
     assert "theurian review build" in excinfo.value.remedy

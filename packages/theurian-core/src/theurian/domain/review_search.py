@@ -34,8 +34,24 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass, fields
 from enum import StrEnum
+from typing import Final
 
 from theurian.domain.errors import DomainError, InvariantViolationError
+
+#: The largest ``pull_request`` a record may carry, which is the largest value the
+#: column behind it can hold: SQLite's INTEGER is a signed 64-bit value, and
+#: ``sqlite3`` raises ``OverflowError`` binding anything wider. No layer between
+#: here and the driver converts that, so without this bound a hand-edited
+#: ``eventKey`` ending ``#99999999999999999999`` reached an operator as *the store
+#: could not be written*, with a cure about disk space -- measured 2026-09-10:
+#: ``writing theurian-review-local.sqlite: Python int too large to convert to
+#: SQLite INTEGER``.
+#:
+#: A **twin** of ``mcp/review_search.MAX_PULL_REQUEST`` rather than one import of
+#: the other, for the reason that constant already records about its own twin: the
+#: two bound different populations -- a caller's *filter* there, a stored *record*
+#: here -- and what they share is a property of SQLite, not of either surface.
+MAX_STORED_PULL_REQUEST: Final = 2**63 - 1
 
 
 class ReviewTextChannel(StrEnum):
@@ -105,7 +121,8 @@ class ReviewSearchRecord:
     #: structure, and **never** joined into a filesystem path (ADR-0030 decision 3).
     repository: str
     #: The pull request this record belongs to, where one can be read from the
-    #: record. ``None`` rather than a guess when it cannot.
+    #: record. ``None`` rather than a guess when it cannot. Positive and no wider
+    #: than :data:`MAX_STORED_PULL_REQUEST`, refused at construction either way.
     pull_request: int | None
     #: A thread's resolution state, ``None`` for the two kinds that have none.
     thread_state: str | None
@@ -154,6 +171,18 @@ class ReviewSearchRecord:
                 f"ReviewSearchRecord for `{self.relative_path}` names pull request "
                 f"{self.pull_request}, and a pull-request number is positive. `None` is "
                 "the value for a record whose pull request cannot be read."
+            )
+        # The over-range arm quotes both the bound and nothing else. The value is
+        # parsed out of a landed ``eventKey`` with `#(\d+)`, so a hand-edited file
+        # can carry one thousands of digits long, and rendering an integer past
+        # `sys.get_int_max_str_digits()` raises *inside the refusal being built* --
+        # the class `mcp/findings._digits` met (PR #504 round 1, R1-2 face ii).
+        # The arm above may quote its value: it fires only below 1.
+        if self.pull_request is not None and self.pull_request > MAX_STORED_PULL_REQUEST:
+            raise InvariantViolationError(
+                f"ReviewSearchRecord for `{self.relative_path}` names a pull request "
+                f"larger than {MAX_STORED_PULL_REQUEST}, which is the widest value the "
+                "store's column holds, so the record could not be stored."
             )
 
 
@@ -363,6 +392,7 @@ class ReviewSearchHit:
 
 
 __all__ = [
+    "MAX_STORED_PULL_REQUEST",
     "ReviewSearchHit",
     "ReviewSearchLoad",
     "ReviewSearchQuery",
