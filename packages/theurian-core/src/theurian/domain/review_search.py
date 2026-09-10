@@ -103,13 +103,24 @@ class ReviewSearchRecord:
     already guarantees unique and totally ordered. It is the store's primary key
     for that reason, and it is what makes a rebuild reproduce: the same files
     produce the same keys in the same order on every machine.
+
+    **Every field below is what the evidence file says, and the attributions name
+    the route rather than the record.** ``theurian review ingest`` fills these
+    from a provider's answer, but ``.theurian/review/`` is source rather than
+    derived state and is not git-ignored, so a clone can carry files a repository
+    author wrote and the build projects them like any other (threat-model T-24).
+    A sentence here that says "the provider's own" or "written by Theurian" is
+    therefore about the ingest route; on a clone-delivered record the value is
+    whatever the file names, held only to the shape the reader checks and to the
+    derived path it must sit at.
     """
 
     #: Where the evidence file sits, relative to ``.theurian/review/``, POSIX-spelled.
     relative_path: str
-    #: The provider's own identifier for the record inside its repository -- a
-    #: pull-request number, or a node id. This is the key a withheld set is
-    #: matched against -- see ``ReviewSearchBuildRequest.withheld_record_keys`` in
+    #: The identifier the record carries for itself inside its repository -- a
+    #: pull-request number, or a node id; the provider's own on the ingest route.
+    #: This is the key a withheld set is matched against -- see
+    #: ``ReviewSearchBuildRequest.withheld_record_keys`` in
     #: :mod:`theurian.application.review_search_builder`.
     record_key: str
     #: ``pull-request``, ``review-submission`` or ``review-thread``, carried as the
@@ -117,8 +128,9 @@ class ReviewSearchRecord:
     kind: str
     #: The provider that answered, ``github`` today.
     provider: str
-    #: The repository as the provider resolved it, ``owner/name``. Provider
-    #: structure, and **never** joined into a filesystem path (ADR-0030 decision 3).
+    #: The repository the record names, ``owner/name`` -- as the provider
+    #: resolved it on the ingest route. Provider structure there, and **never**
+    #: joined into a filesystem path on either (ADR-0030 decision 3).
     repository: str
     #: The pull request this record belongs to, where one can be read from the
     #: record. ``None`` rather than a guess when it cannot. Positive and no wider
@@ -129,7 +141,8 @@ class ReviewSearchRecord:
     #: The file a thread is anchored to, as received. **Author-controlled**
     #: (ADR-0030 decision 6): served as data, never used to build a path.
     file_path: str | None
-    #: FR-S3's pointer back to the upstream object, written by Theurian.
+    #: FR-S3's pointer back to the upstream object, written by ``theurian review
+    #: ingest`` rather than received on the route that fetched the record.
     source_uri: str
     #: The record's principal author: the pull request's, the submission's, or the
     #: opening comment's. Provider structure *usually* -- ADR-0030's 2026-09-08
@@ -137,7 +150,8 @@ class ReviewSearchRecord:
     #: is author-chosen, so a consumer must not treat it as unforgeable identity.
     author_external_id: str
     #: The same participant's display name. **Author-controlled**, and already
-    #: pseudonymised at landing when the project asked for that (R-12).
+    #: pseudonymised when ``theurian review ingest`` landed it and the project
+    #: asked for that (R-12) -- an ingest-route control, not a serve-time one.
     author_display_name: str
     #: Every participant's ``external_id``, first appearance first, de-duplicated.
     #: What the author filter ranges over, so a reply in a thread is found by the
@@ -145,7 +159,8 @@ class ReviewSearchRecord:
     participant_ids: tuple[str, ...]
     #: The searchable text, in the record's own reading order.
     texts: tuple[ReviewTextFragment, ...]
-    #: The ingestion run that last observed this record upstream.
+    #: The ingestion run that last observed this record upstream, as the record
+    #: states it.
     last_seen_run_id: str
     #: When that run observed it: a UTC-normalised, fixed-width ISO-8601 instant,
     #: **not** the spelling the evidence file carried. SQLite compares TEXT

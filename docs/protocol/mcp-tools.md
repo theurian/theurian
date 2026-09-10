@@ -346,10 +346,17 @@ Two review tools are shipped, and they read two different corpora.
 history carries, landed by `theurian findings build` and announced as
 `reviewFindings: true`
 ([ADR-0029](../adr/0029-review-findings-are-governed-knowledge.md)).
-`review.search` serves the review *evidence* `theurian review ingest` landed
-from GitHub — pull requests, review submissions and review threads — read back
-through the store `theurian review build` rebuilds
+`review.search` serves the review *evidence* under `.theurian/review/` — pull
+requests, review submissions and review threads — read back through the store
+`theurian review build` rebuilds
 ([ADR-0030](../adr/0030-github-review-ingestion-spawns-gh.md) decision 6).
+`theurian review ingest` lands that evidence from GitHub, and a clone can
+deliver it too: `.theurian/review/` is source rather than derived state and is
+deliberately not git-ignored, so a project may commit its evidence and the build
+projects whatever is there. The provenance check on this path is on the *store*
+and answers "did this installation build it", never "who wrote the records"
+([threat model T-24](../security/threat-model.md)); every served row rides under
+the SEC-15 triple whatever its origin.
 
 The two flags stay separate for the reason they always were: `reviewFindings`
 promises an offline read of local git trailers, and `reviewIngestion` is the one
@@ -370,18 +377,24 @@ It is published **with** `reviewIngestionScope: "public-allowlisted"` and never
 one without the other (ADR-0030 decisions 2 and 6): a `true` with no scope tells a
 client that ingested review content is reachable and omits the half that decides
 how to treat it. The scope is the narrow claim ADR-0030 makes — no
-advisory-private GitHub surface is ingested, and every record held was visible to
-the public repository's audience *at the moment it was ingested* — not the wider
-and false one that a public repository cannot carry sensitive content. The tense
-is load-bearing: an upstream edit or delete does not reach Theurian's copy, and
-the remediation is manual (delete the evidence file, rebuild the store). The value
-is a build constant, identical in every deployment, which is what makes it
-publishable on a surface that resolves no project.
+advisory-private GitHub surface is ingested, and every record `theurian review
+ingest` landed was visible to the public repository's audience *at the moment it
+was ingested* — not the wider and false one that a public repository cannot carry
+sensitive content. The tense is load-bearing: an upstream edit or delete does not
+reach Theurian's copy, and the remediation is manual (delete the evidence file,
+rebuild the store). The value is a build constant, identical in every deployment,
+which is what makes it publishable on a surface that resolves no project.
+
+It is a statement about *ingestion*, not an inventory of `.theurian/review/`:
+that directory is source and is not git-ignored, so a clone can carry evidence a
+repository author wrote, and nothing in this value or in a `review.search`
+response tells the two apart (threat model
+[T-24](../security/threat-model.md), an accepted residual).
 
 | Tool | Status | Purpose |
 | :-- | :-- | :-- |
 | `review.findings` | Shipped | Landed `Review-Finding:` trailers, filtered by reviewer, severity, commit or text |
-| `review.search` | Shipped | Ingested review evidence, filtered by repository, pull request, author, file, thread state or literal text |
+| `review.search` | Shipped | Review evidence under `.theurian/review/`, filtered by repository, pull request, author, file, thread state or literal text |
 | `review.getThread` | Planned | One thread with comments and resolution |
 | `review.findSimilar` | Planned | Threads resembling a described situation |
 | `review.getDecisions` | Planned | Decisions reached in review |

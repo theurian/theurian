@@ -28,9 +28,11 @@ fetches pull requests, review threads, inline comments and resolution state by
 spawning the operator's `gh`, over public repositories the project has
 allowlisted. Slice 2 added the landing half: `theurian review ingest` screens
 each fetched record and writes what the gate clears under `.theurian/review/`.
-Slice 3 added the serving half: `theurian review build` projects those files
-into a SQLite store, and the `review.search` MCP tool reads that store back
-under the untrusted-content safety triple. So `system.capabilities` reports
+Slice 3 added the serving half: `theurian review build` projects the files under
+`.theurian/review/` into a SQLite store — whatever put them there, since that
+directory is source rather than derived state and a clone may carry one
+([threat model T-24](../security/threat-model.md)) — and the `review.search` MCP
+tool reads that store back under the untrusted-content safety triple. So `system.capabilities` reports
 `reviewIngestion: true` beside `reviewIngestionScope: "public-allowlisted"`,
 both pinned by `test_capabilities_report_what_is_and_is_not_built` — a statement
 about the callable surface and nothing wider, since no MCP tool spawns `gh` and

@@ -25,10 +25,15 @@ by-construction argument ``index_builder`` makes for an above-ceiling item and t
 one ADR-0030 decision 6 inherits from T-17a.
 
 **Nothing here derives that set from author content.** The two shipped callers
-pass ``frozenset()``: v1's scope is public allowlisted repositories, so there is
-nothing to withhold, and the real setter is
+pass ``frozenset()``: v1 *ingests* only public allowlisted repositories, so
+nothing it fetches is advisory-private and there is nothing for it to withhold,
+and the real setter is
 [#575](https://github.com/theurian/theurian/issues/575)'s, computed at ingestion
-from advisory state. A label, a category or a body must never decide it --
+from advisory state. That is a claim about the ingest route rather than about
+this build's input: ``.theurian/review/`` is source and is not git-ignored, so
+the files read below may equally have arrived with a clone (threat-model T-24),
+and withholding was never the control for those. A label, a category or a body
+must never decide it --
 ADR-0030 decision 3 discharges ADR-0019 exactly there, because a design that let a
 label decide what is withheld would hand the withholding decision to whoever
 opened the pull request.
@@ -171,14 +176,17 @@ class EvidenceEntry:
     #: The file's path under ``.theurian/review/``, POSIX-spelled. Unique across
     #: one read, and the store's primary key.
     relative_path: str
-    #: The provider's own identifier for this record inside its repository. The
-    #: key :attr:`ReviewSearchBuildRequest.withheld_record_keys` is matched against.
+    #: The identifier this record carries for itself inside its repository -- the
+    #: provider's own on the ingest route, whatever a clone-delivered file names
+    #: on the other (T-24). The key
+    #: :attr:`ReviewSearchBuildRequest.withheld_record_keys` is matched against.
     record_key: str
     #: ``pull-request``, ``review-submission`` or ``review-thread``.
     kind: str
     provider: str
     repository: str
-    #: FR-S3's pointer back to the upstream object, written by Theurian.
+    #: FR-S3's pointer back to the upstream object, written by ``theurian review
+    #: ingest`` on the route that fetched the record.
     anchor: SourceAnchor
     payload: ReviewRecordPayload
     last_seen_run_id: str

@@ -143,18 +143,30 @@ _NUL: Final = "\x00"
 #: not one an author wrote.
 AUTHOR_CONTROLLED_FIELDS: Final = frozenset({"filePath", "authorDisplayName", "excerpt"})
 
-#: Every published key whose value is **provider** structure or a value Theurian
-#: itself wrote at ingestion -- states, ids, timestamps, the source anchor, the
-#: last-seen stamp. Validated and normalized rather than labelled, which is the
-#: other side of decision 6's boundary.
+#: Every published key whose value is **provider** structure or a value
+#: ``theurian review ingest`` wrote -- states, ids, timestamps, the source anchor,
+#: the last-seen stamp. Validated and normalized rather than labelled, which is
+#: the other side of decision 6's boundary.
+#:
+#: **The classification is about the field's *role*, not about who filled it in
+#: on any given record.** ``.theurian/review/`` is source rather than derived
+#: state and is not git-ignored, so a clone can carry evidence files a repository
+#: author wrote and ``theurian review build`` projects them like any other
+#: (threat-model T-24): in such a file every key below holds whatever the record
+#: names, and the read checks shape and the derived path, never authorship. What
+#: does not vary with the route is the labelling -- the whole row rides under
+#: :data:`~theurian.mcp.results.SAFETY` whatever its origin -- which is why the
+#: boundary is safe to draw on the role.
 #:
 #: ``authorExternalId`` is here **with a caveat ADR-0030 records in the same
 #: table**: GitHub can answer with a *login* where a node id is expected, and a
 #: login is author-chosen. It stays on this side because the record cannot say
 #: which of the two a given value is, and because R-12 pseudonymises the
-#: login-fallback case before the record is written -- but a consumer must not
-#: treat it as unforgeable identity. The whole row carries the triple regardless,
-#: which is what makes that caveat safe to record rather than urgent to fix.
+#: login-fallback case before ``theurian review ingest`` writes the record -- an
+#: ingest-route control, so it says nothing about a clone-delivered file -- but a
+#: consumer must not treat it as unforgeable identity. The whole row carries the
+#: triple regardless, which is what makes that caveat safe to record rather than
+#: urgent to fix.
 PROVIDER_CONTROLLED_FIELDS: Final = frozenset(
     {
         "recordPath",

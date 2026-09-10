@@ -46,12 +46,12 @@
           "recordPath": {
             "type": "string",
             "minLength": 1,
-            "description": "Where the evidence file sits, relative to `.theurian/review/`, POSIX-spelled. The record's identity and the store's primary key: the same files produce the same paths in the same order on every machine, which is what makes a rebuild reproduce. Its three components are the hashed repository directory, the kind, and a leaf derived from the provider's own id for the record — provider structure throughout, never a name an author chose."
+            "description": "Where the evidence file sits, relative to `.theurian/review/`, POSIX-spelled. The record's identity and the store's primary key: the same files produce the same paths in the same order on every machine, which is what makes a rebuild reproduce. Its three components are the hashed repository directory, the kind, and a leaf derived from the id the record carries for itself.\n\n**The layout is structural; the id inside the file is only structural on the ingest route.** The repository component is a SHA-256 and the kind is one of three directory names the reader refuses to step outside, so neither can carry a name an author chose. The leaf is the id itself when it is a name a filesystem should carry — plus a short case tag when the id is not already lowercase — and its SHA-256 otherwise. So on a record `theurian review ingest` landed the leaf spells the provider's own id, and in a hand-written file delivered with the repository (threat-model T-24) it spells, the same way, whatever filesystem-safe id that file's author chose."
           },
           "recordKey": {
             "type": "string",
             "minLength": 1,
-            "description": "The provider's own identifier for the record inside its repository — a pull-request number, or a node id. Unique inside a repository rather than across a project."
+            "description": "The identifier the record carries for itself inside its repository — a pull-request number, or a node id. Unique inside a repository rather than across a project.\n\nThe provider's own on a record `theurian review ingest` landed; in a file delivered with the repository it is whatever the record names, and the store adopts it (threat-model T-24)."
           },
           "kind": {
             "enum": ["pull-request", "review-submission", "review-thread"],
@@ -60,12 +60,12 @@
           "provider": {
             "type": "string",
             "minLength": 1,
-            "description": "The provider that answered, `github` today. Typed as a string rather than a `const` because the store holds whatever the ingestion adapter recorded, and a second adapter would fill it differently without a schema change to the store."
+            "description": "The provider that answered, `github` today. Typed as a string rather than a `const` because the store holds whatever the landed file names — what the ingestion adapter recorded, on the route that fetched it — and a second adapter would fill it differently without a schema change to the store."
           },
           "repository": {
             "type": "string",
             "minLength": 1,
-            "description": "The repository as the provider resolved it, `owner/name`. Provider structure — the adapter checks the resolved name back against the allowlist entry it asked for (ADR-0030 decision 2) — and **never** joined into a filesystem path.\n\n**The `repository` filter's collation is exact**, byte for byte and case-sensitive, while ingestion is case-insensitive about a repository name: the allowlist check case-folds, as GitHub does, so a project can hold records under a spelling the operator did not type. **The stored spelling is this field's value** — read it off a served record and filter with that, rather than with the spelling you would have written."
+            "description": "The repository this record names, `owner/name`, and **never** joined into a filesystem path.\n\nProvider structure on the ingest route, where the adapter checks the resolved name back against the allowlist entry it asked for (ADR-0030 decision 2). In a file delivered with the repository it is whatever the record names, and the one check it meets is structural: the value is hashed with the provider and compared against the directory the file sits in, so it agrees with the layout without anything vouching for it (threat-model T-24).\n\n**The `repository` filter's collation is exact**, byte for byte and case-sensitive, while ingestion is case-insensitive about a repository name: the allowlist check case-folds, as GitHub does, so a project can hold records under a spelling the operator did not type. **The stored spelling is this field's value** — read it off a served record and filter with that, rather than with the spelling you would have written."
           },
           "pullRequest": {
             "type": ["integer", "null"],
@@ -83,16 +83,16 @@
           "sourceUri": {
             "type": "string",
             "minLength": 1,
-            "description": "FR-S3's pointer back to the upstream object — the pull request, the review, or the thread's own comment anchor. Written by Theurian at ingestion, not received, so it is neither provider structure nor author content but this project's own record of where it read from."
+            "description": "FR-S3's pointer back to the upstream object — the pull request, the review, or the thread's own comment anchor. `theurian review ingest` writes it rather than receiving it, so on the route that fetched the record it is neither provider structure nor author content but this project's own record of where it read from.\n\nIn a file delivered with the repository it is whatever the record carries: the codec reads it as a non-empty string and nothing else on this path looks at it, so a fabricated record can name a plausible permalink (threat-model T-24)."
           },
           "authorExternalId": {
             "type": "string",
             "minLength": 1,
-            "description": "The record's principal author: the pull request's, the submission's, or the opening comment's.\n\nProvider structure *usually*, and a consumer **must not treat it as unforgeable identity**. ADR-0030's 2026-09-08 correction records that GitHub can answer with a *login* where a node id is expected, and a login is chosen by its owner. Under `providers.review.redactParticipantNames` (R-12) a login-fallback id is pseudonymised to `redacted~<sha256 prefix>` before the record is written, deterministically, so the identity graph survives the redaction; a node-id-shaped id is kept verbatim."
+            "description": "The record's principal author: the pull request's, the submission's, or the opening comment's.\n\nProvider structure *usually*, and a consumer **must not treat it as unforgeable identity**. ADR-0030's 2026-09-08 correction records that GitHub can answer with a *login* where a node id is expected, and a login is chosen by its owner. Under `providers.review.redactParticipantNames` (R-12) a login-fallback id is pseudonymised to `redacted~<sha256 prefix>` before `theurian review ingest` writes the record, deterministically, so the identity graph survives the redaction; a node-id-shaped id is kept verbatim. That is an ingest-route control, and a file delivered with the repository carries whatever ids it was written with (threat-model T-24)."
           },
           "authorDisplayName": {
             "type": "string",
-            "description": "The same participant's display name.\n\n**Untrusted content** (ADR-0030 decision 3): its owner chooses it. Already pseudonymised at landing when the project asked for that (R-12), which is a change to what was written rather than a change to how it is served — it rides under the triple either way."
+            "description": "The same participant's display name.\n\n**Untrusted content** (ADR-0030 decision 3): its owner chooses it. Already pseudonymised when `theurian review ingest` landed it and the project asked for that (R-12) — a change to what that route wrote rather than to how any record is served, and no help on a file delivered with the repository (threat-model T-24). It rides under the triple either way."
           },
           "excerpt": {
             "type": ["string", "null"],
@@ -105,7 +105,7 @@
           "lastSeenRunId": {
             "type": "string",
             "minLength": 1,
-            "description": "The ingestion run that last observed this record upstream. Written by Theurian at ingestion. It is what lets an operator tell a record that survived a refetch from one whose upstream object has gone; the evidence files are durable by design, so an upstream delete does not reach Theurian's copy (ADR-0030 decision 2)."
+            "description": "The ingestion run that last observed this record upstream, as the record states it. `theurian review ingest` writes it on the route that fetched the record, and it is what lets an operator tell a record that survived a refetch from one whose upstream object has gone; the evidence files are durable by design, so an upstream delete does not reach Theurian's copy (ADR-0030 decision 2).\n\nIn a file delivered with the repository it is whatever the record names, and no run by that id need ever have happened here (threat-model T-24)."
           },
           "lastSeenAt": {
             "type": "string",

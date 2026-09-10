@@ -1527,9 +1527,12 @@ members, and this member does not reopen it:
    statistics or a runtime interrupt, and both are their own decision rather than
    a tuning of this one.
 3. **The mitigations that do apply are operator-side.** SEC-10's repository
-   allowlist bounds whose evidence can land in the corpus at all, and the bounds
-   in the table above bound what one call returns. Neither bounds what one call
-   costs, and this row says so rather than letting the caps read as if they did.
+   allowlist bounds whose evidence `theurian review ingest` can add to the
+   corpus, and the bounds in the table above bound what one call returns. Neither
+   bounds what one call costs, and this row says so rather than letting the caps
+   read as if they did. The allowlist bounds the *ingest* route only: a clone can
+   deliver evidence files past it (T-24), so what it bounds is the inflow an
+   operator's own runs produce, not the size of the corpus a query scans.
 
 **Controls on `propose accept`'s body-materialisation cost**
 ([#306](https://github.com/theurian/theurian/issues/306),
@@ -6638,8 +6641,8 @@ entry is the face of a victim who **did** run it.
 | :-- | :-- |
 | SEC-15's triple on every served row (`contentClassification: untrusted-knowledge`, `mayContainInstructions: true`, `executable: false`) | attached at the row rather than per field, so a fabricated record carries it exactly as an ingested one does. The instruction it gives a client is **correct** for this content, which is the reason this entry is not graded higher |
 | No promotion path out of review evidence | `KnowledgeCandidate` is constructed nowhere in `src/` (pinned by `tests/unit/test_adr_0030_claims.py::test_nothing_in_the_shipped_package_constructs_a_knowledge_candidate`), so a fabricated record cannot become approved knowledge, cannot be indexed, and cannot be returned by `knowledge.search` or `knowledge.get` |
-| The surface no longer over-claims | the tool description and the response schema said the records were the ones `theurian review ingest` landed from public allowlisted repositories. They now name both routes and state that the T-19 check is on the *store* and answers "did this installation build it", never "who wrote the records" (`mcp/tools.py`, `schemas/mcp/review-search-response.schema.json`) |
-| `reviewIngestionScope: "public-allowlisted"` is unaffected | it is a statement about *ingestion*, which really is allowlisted; it was never a statement about what is in `.theurian/review/`, and the entry above says so |
+| The surface no longer over-claims, and the population was derived rather than listed | the tool description and the response schema said the records were the ones `theurian review ingest` landed from public allowlisted repositories — and so, one layer down, did the served schema's own field descriptions, the domain record, the builder, the evidence record, the protocol page and this entry's T-6 sibling, each attributing a served value to that route without naming it. **The rule now, over every one of them:** a sentence asserting provenance or an ingestion guarantee for a field that can arrive clone-delivered either names the route it holds for, or says what the read actually checks — which is shape and the derived path, never authorship. The T-19 check is stated as being on the *store*, answering "did this installation build it" and never "who wrote the records" |
+| `reviewIngestionScope: "public-allowlisted"` is unaffected | it is a statement about *ingestion*, which really is allowlisted; it was never a statement about what is in `.theurian/review/`. Its published wording now says so itself rather than leaving a reader to take "every record it holds" as an inventory — the sentence names `theurian review ingest` as its subject on every surface that publishes or records the scope (`schemas/mcp/system-capabilities-response.schema.json`, `mcp/tools.py`, `docs/protocol/mcp-tools.md`, and ADR-0030 decision 2, where the correction is to the sentence and not to the decision) |
 
 **The residual, stated rather than argued away: a repository author can plant
 review evidence that a clone serves.** No control refuses it, and the surface's

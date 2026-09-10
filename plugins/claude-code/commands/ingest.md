@@ -39,7 +39,8 @@ Report what was ingested by source type and how many documents changed.
   `system.capabilities` reports `reviewIngestion: true` beside
   `reviewIngestionScope: "public-allowlisted"`, and that flag is a statement
   about **MCP tools**: ADR-0030's serve slice moved it by registering
-  `review.search`, a read over evidence that was already ingested. No tool
+  `review.search`, a read over evidence already landed under `.theurian/review/`.
+  No tool
   fetches, which is why fetching is a separate CLI verb the operator runs. That
   file is
   read for three keys:

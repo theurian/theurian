@@ -344,15 +344,28 @@ people are capable of putting such a thing where it does not belong. The true an
 narrower claim is:
 
 > Public-only v1 ingests **no advisory-private GitHub surface** (private
-> repositories, security advisories, private forks), and every record it holds
-> was **visible to the public repository's audience at the moment it was
-> ingested**.
+> repositories, security advisories, private forks), and every record **it
+> ingests** was **visible to the public repository's audience at the moment it
+> was ingested**.
 
 That is the same structural shape ADR-0029 decision 6 records for public `main`:
 the protection is *structural* — the source has no access to the withheld
 surface — and it is not a claim that the public surface is guaranteed clean. What
 guards the second half is unchanged from the rest of the product: the secret scan
 at ingestion (decision 4) and the untrusted-content triple at serve (decision 6).
+
+**The subject is `theurian review ingest`, not `.theurian/review/`, and the
+correction is to the sentence rather than to the decision.** This quote read
+"every record *it holds*" until 2026-09-11, which a reader could take as an
+inventory of the evidence directory — and that is false, because decision 3 makes
+those files source rather than derived state and `theurian init` deliberately
+does not git-ignore them, so a clone can carry evidence a repository author wrote
+and `theurian review build` projects it like any other. The scope this decision
+sets is unchanged: what an ingestion run may fetch, and from where. What a
+*corpus* may contain is threat-model T-24, an accepted residual recorded there
+with its grade and its upgrade triggers. Every surface that publishes this scope
+— the capabilities schema, `mcp/tools.py`, `docs/protocol/mcp-tools.md` — names
+the same subject.
 
 **The tense is load-bearing, and the residual it names is retention.** Decision 3
 makes the evidence files durable precisely so an upstream delete does not erase

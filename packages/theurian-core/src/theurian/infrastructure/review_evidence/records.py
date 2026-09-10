@@ -35,18 +35,30 @@ class EvidenceRecord:
     carried beside it. A stored ``kind`` is a field that can disagree with the
     object it labels -- and the label decides the directory, so a disagreement is
     a record filed where nothing looks for it.
+
+    **This type is built on both sides of the seam, and the field notes below
+    name the write side.** An ingestion run constructs one from what the adapter
+    answered; :func:`~theurian.infrastructure.review_evidence.reader._stored`
+    constructs one from a file on disk, which -- ``.theurian/review/`` being
+    source rather than derived state, and not git-ignored -- may have arrived
+    with a clone rather than from any run here (threat-model T-24). Read "the
+    provider resolved it" and "Theurian writes it" as statements about the run
+    that fetched a record, not as guarantees about a record read back.
     """
 
     #: The provider that answered, ``"github"`` today.
     provider: str
-    #: The repository as the provider resolved it, ``owner/name``. Written inside
+    #: The repository this record names, ``owner/name`` -- as the provider
+    #: resolved it, on the run that fetched it. Written inside
     #: the file and hashed into the directory name, **never joined into a path**:
     #: the published allowlist pattern accepts ``../..``, so a joined value leaves
     #: the directory while satisfying the contract (ADR-0030 decision 3).
     repository: str
-    #: FR-S3's pointer back to the upstream object. Theurian writes it, which is
-    #: why the ingestion scan does not read it (decision 3's third
-    #: *Controlled by* value).
+    #: FR-S3's pointer back to the upstream object. An ingestion run writes it
+    #: rather than receiving it, which is why that run's scan does not read it
+    #: (decision 3's third *Controlled by* value). Read back, it is whatever the
+    #: file carries: the codec takes a non-empty string and nothing checks it
+    #: further.
     anchor: SourceAnchor
     payload: EvidencePayload
 
@@ -83,7 +95,10 @@ class EvidenceRecord:
 
     @property
     def record_key(self) -> str:
-        """The provider's own identifier for this record inside its repository.
+        """The identifier this record carries for itself inside its repository.
+
+        The provider's own on a record an ingestion run fetched; on one read back
+        off disk, whatever the payload names.
 
         A pull request is keyed by its **number** rather than by a node id: the
         number is what a reviewer types, it is unique inside the repository the
