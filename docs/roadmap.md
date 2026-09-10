@@ -43,25 +43,53 @@ A ninth joined on the same terms, and stays out of the same table:
 ([ADR-0029](adr/0029-review-findings-are-governed-knowledge.md)). It reports that
 `review.findings` is callable — an offline read of the `Review-Finding:` trailers
 `theurian findings build` landed in that project's own store, served under the
-untrusted-content safety triple. **It is not `reviewIngestion` moving.** That
-flag, in the table above, is still `false`. The two are separate on purpose,
-because the change that reaches GitHub is the one that owes SEC-10's repository
-allowlist, and an offline trailer read owes none.
+untrusted-content safety triple. **It was not `reviewIngestion` moving.** The two
+are separate on purpose, because the change that reaches GitHub is the one that
+owes SEC-10's repository allowlist, and an offline trailer read owes none.
 
-**And `reviewIngestion: false` no longer means "nothing reaches GitHub".**
-[ADR-0030](adr/0030-github-review-ingestion-spawns-gh.md) slice 1 shipped the
-adapter that does — `infrastructure/github/` spawns the operator's `gh` — and
-with it SEC-10's repository allowlist, which is now read and enforced before any
-process is spawned. Slice 2 added `theurian review ingest`, which reaches that
-code and lands evidence files under `.theurian/review/`, screened by an
-ingestion-time secret gate. The flag still reads `false`, because it speaks about
-the **MCP-client-callable surface** and nothing wider: `theurian review ingest`
-is an operator command, run by the operator in their own terminal, and **no MCP
-tool** reaches any of it — so there is still nothing here for a client to call.
-From slice 3 the flag means *an ingestion call surface exists*, published beside
-a scope field. The window in between is a recorded residual: for two slices the
-machine-readable answer reads `false` while a fetch path, and then a landing
-path, ships. The raw-URL fetch controls — a
+A tenth joined with the flip below, on the same terms and out of the same table:
+`reviewIngestionScope: "public-allowlisted"`, published with `reviewIngestion`
+and never one without the other
+([ADR-0030](adr/0030-github-review-ingestion-spawns-gh.md) decisions 2 and 6).
+
+**Re-measured 2026-09-10 on the ADR-0030 slice-3 branch
+([#630](https://github.com/theurian/theurian/pull/630)), and one row moved.** The
+table above is left as the dated reading it is; this one is the current answer,
+obtained by building the server and calling the tool rather than by reading the
+handler's literals:
+
+| Flag | Value at `f702736` | Re-measured 2026-09-10 |
+| :-- | :-- | :-- |
+| `knowledgeSearch` | `"hybrid"` | `"hybrid"` |
+| `knowledgeGet` | `true` | `true` |
+| `hybridRetrieval` | `true` | `true` |
+| `raptor` | `true` | `true` |
+| **`reviewIngestion`** | **`false`** | **`true`** |
+| `traceability` | `false` | `false` |
+| `writeTools` | `false` | `false` |
+
+The three flags that joined after `f702736` — `sensitivityEnforcement`,
+`reviewFindings` and `reviewIngestionScope` — were read in the same call and hold
+`true`, `true` and `"public-allowlisted"`. They stay out of both columns for the
+reason given above: a table anchored to a commit does not gain rows the commit
+never had.
+
+What moved the one row is
+[ADR-0030](adr/0030-github-review-ingestion-spawns-gh.md) slice 3, and the value
+means less than it looks like it means, so read the whole arc: slice 1 shipped
+the adapter that reaches GitHub — `infrastructure/github/` spawns the operator's
+`gh` — and with it SEC-10's repository allowlist, read and enforced before any
+process is spawned; slice 2 added `theurian review ingest`, which lands evidence
+files under `.theurian/review/` screened by an ingestion-time secret gate; and
+through both the flag read `false`, because it speaks about the
+**MCP-client-callable surface** and nothing wider. Slice 3 registered
+`review.search` over the store `theurian review build` projects from those files,
+and that is the first thing here a client can call — so the flag moved, meaning
+*an ingestion call surface exists that a client may call* and not that a client
+may start an ingestion run. **No MCP tool spawns `gh`**; a fetch is still an
+operator's act. The two-slice window in which the machine-readable answer read
+`false` while a fetch path and then a landing path shipped is a recorded
+residual, closed by slice 3. The raw-URL fetch controls — a
 scheme allowlist and private-network rejection — stay owed against the OpenAPI
 `$ref` fetcher ([#429](https://github.com/theurian/theurian/issues/429)).
 
@@ -264,10 +292,13 @@ not; **absent** — effectively nothing.
   comments and resolution state over the operator's `gh`. Slice 2 lands that
   evidence on disk behind `theurian review ingest` — durable files under
   `.theurian/review/`, each record screened by the ingestion-time secret gate and
-  optionally redacted of participant display names before it becomes a file. What
-  is still absent is the serving half: no SQLite store is built from those files,
-  no `review.search` exists, and no MCP tool exposes any of it, so
-  `reviewIngestion` stays `false` until the serve slice.
+  optionally redacted of participant display names before it becomes a file.
+  Slice 3 added the serving half: `theurian review build` projects those files
+  into a SQLite store and the `review.search` MCP tool reads it back, which is
+  what moved `reviewIngestion` to `true` beside
+  `reviewIngestionScope: "public-allowlisted"`. What is still absent is
+  everything after serving — classification and candidate generation, both out of
+  ADR-0030's scope.
 - **Multi-vendor integration** — neutral wire, Claude-only bootstrap (§0).
 
 ### Absent
@@ -670,7 +701,7 @@ Anything independent may run in parallel.
 | **Security** | **The preconditions are already recorded in the threat model.** SEC-10's repository allowlist ships — read and enforced before the `gh` review adapter spawns anything ([ADR-0030](adr/0030-github-review-ingestion-spawns-gh.md)) — while the URL allowlists stay owed in the raw-URL context ([#429](https://github.com/theurian/theurian/issues/429); #129 closed on the wording, not the controls). SEC-11 (secret scanning) ships at the approval gate — `theurian propose accept` scans every body it would land **and the migration document's author-written fields with it** ([#336](https://github.com/theurian/theurian/issues/336)), `block` by default per `security.secretScan` (ADR-0027 decision 3) — so the title and the published source anchors (provider, sourceUri, repository, commitSha, filePath), which appear verbatim on every result, are covered at the gate; index-time scanning shipped under [#329](https://github.com/theurian/theurian/issues/329) and `theurian ingest` runs no scan of its own — #198 is closed, having shipped the `propose accept` half above — and a proposal's `evidence.json` is scanned at accept since [#361](https://github.com/theurian/theurian/issues/361), leaving *draft*-time advisory scanning as the owed half of [#330](https://github.com/theurian/theurian/issues/330); the surfaces that describe what is and is not in force are regression-pinned by `test_config_key_call_sites.py` and `test_examples.py`. SEC-12 (JSON Schema validation of MCP input) becomes mandatory the moment a write-intent tool opens. **T-15's "nothing enforces the merge" residual is a Phase B precondition, not a background fact**: opening a protocol-level write path multiplies the callers who can put a file in `.theurian/migrations/`, and `migrate apply` does not ask whether it was committed. `evidence.json`'s `agentId` and `model` become the only record of origin in a multi-agent setting, so their being required is preserved. |
 | **Tests** | The e2e ADR-0013 explicitly records as owed — after an agent session that calls every write-intent tool, approved state is unchanged — is discharged here. |
 | **Benchmark** | No retrieval impact. Candidate quality is judged by the human reviewing; automatic quality scoring is a non-goal. |
-| **Exit criteria** | A demonstration of propose → PR → merge → apply from both Claude Code and Codex (or any plain MCP client). `reviewIngestion: true`. |
+| **Exit criteria** | A demonstration of propose → PR → merge → apply from both Claude Code and Codex (or any plain MCP client). **Not `reviewIngestion: true`** — ADR-0030 slice 3 moved that flag ahead of this phase, on the serving half alone, so it is already satisfied and no longer discriminates. What this phase owes is the half the flag does not report: a `KnowledgeCandidate` generated from an ingested review thread. |
 | **Dependencies** | Phase 0 — #119 and SEC-12 first. The ordering is about *writers* increasing, not gates. |
 | **Risks** | A new prompt-injection surface: review text is untrusted content, and turning it into a candidate is precisely the path by which an injected instruction becomes a knowledge candidate. The existing safety triple and never-auto-approve (FR-V4) absorb it, but the threat model's T-3 section needs the candidate path added. |
 
