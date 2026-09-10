@@ -1,4 +1,4 @@
-"""Every guard the review search store inherited, with the test that drives it.
+"""The inherited guards four derivation keys reach, each with the test that drives it.
 
 The fourth artifact family under ``.theurian/state/`` was built on the design the
 first three already carried -- publish by rename under a ``.building`` sibling,
@@ -10,10 +10,20 @@ two records under one key -- and it inherited the *design* without inheriting th
 list: a guard nothing drives survives its own deletion, and the deletion is
 invisible because the surrounding tests only ever ask whether the store answered.
 
+**The population is bounded by the four derivation keys below, and is not a total
+census of the store's guards.** The keys are structural readings of the shipped
+source -- bare-statement calls to private helpers, calls to names imported from
+one shared module, a return annotation, a raising ``__post_init__`` -- and a
+guard written in any other shape is outside them however important it is. That
+bound is stated because the alternative is the defect this module exists to
+prevent, one level up: a partial population presented as a total reports a
+coverage that is not there. `The keys do not reach`_ names every guard known to
+sit outside them and where each is driven.
+
 The closure argument
 --------------------
-**guards inherited = the derived census**, computed here from the shipped source
-in four families rather than remembered:
+**guards the keys reach = the derived census**, computed here from the shipped
+source in four families rather than remembered:
 
 * :data:`WRITE_PATH_HYGIENE` -- the module's own private helpers whose whole
   purpose is their effect on a *name*, called as bare statements inside
@@ -43,6 +53,45 @@ Each pin below was verified RED under the removal of the guard it drives; the
 docstrings say what the neutered store does, because "this test would fail"
 is a claim and the measured consequence is a fact.
 
+.. _The keys do not reach:
+
+What the keys do not reach
+--------------------------
+The ledger the bound above owes, current 2026-09-11. Every entry is a guard on
+this store that no derivation key finds, with *why* it falls outside and the test
+that drives it -- or "undriven", said plainly, because an unnamed gap is
+indistinguishable from a covered one:
+
+* ``os.replace(building, self._path)``, the publish itself. It is a call to the
+  standard library, not to a private helper, so :data:`WRITE_PATH_HYGIENE`'s key
+  cannot see it. Driven by ``test_review_search_rebuild.py::
+  test_publishing_a_rebuild_swaps_a_new_inode_onto_the_live_name``, which pins the
+  rename by its fingerprint: the live name resolves to a new inode afterwards.
+* ``CONNECTION_PRAGMAS``, applied by iterating a constant rather than by calling
+  anything, which is why neither the write-path key nor the opener key reaches it.
+  One of its four members is driven: ``journal_mode = WAL``, by the killed-writer
+  arm of :func:`test_a_rebuild_publishes_over_the_sidecars_a_serve_left_behind` --
+  its premise asserts the ``-wal`` and ``-shm`` exist, which is false the moment
+  the store stops running in WAL. ``foreign_keys = ON``, ``busy_timeout`` and
+  ``synchronous`` are **undriven** for this store.
+* ``dump``'s metadata-row check, in ``dump`` rather than in ``_read`` or
+  ``replace_all``, which are the only two functions any key reads. Driven by
+  ``test_review_search_store.py::
+  test_a_dump_of_a_half_built_store_refuses_rather_than_answering_a_smaller_corpus``.
+* ``search``'s schema-and-format stamp comparison, outside the keys for the same
+  reason. Driven by ``test_review_search_store.py::
+  test_a_store_stamped_by_a_superseded_schema_is_refused``.
+* ``search``'s ``text_chars`` refusal, which is raised in the adapter's own method
+  rather than in a domain ``__post_init__``, so :data:`LOAD_REFUSALS`' key does
+  not reach it. Driven by ``test_review_search_store.py::
+  test_a_non_positive_text_cut_is_refused_rather_than_serving_empty_excerpts``.
+
+The ledger is a written list and not a derivation, so it is the part of this
+module that goes stale silently. It is scoped accordingly: a guard belongs here
+when it is on this store's own read or write path, and a guard the keys *do*
+reach never does -- :data:`PINS` and the census argue about those in both
+directions.
+
 Marked ``integration``: real SQLite files, real named pipes and sockets, and one
 child process. Writes only under ``tmp_path``.
 """
@@ -54,6 +103,7 @@ import inspect
 import json
 import os
 import pathlib
+import re
 import socket
 import subprocess
 import sys
@@ -353,7 +403,64 @@ _SUITE_DIRECTORY: Final = {
     "test_derived_state_value_envelope.py": "integration",
     "test_review_search_store.py": "integration",
     "test_review_search_builder.py": "integration",
+    "test_review_search_rebuild.py": "integration",
 }
+
+#: A ``file.py::test_name`` citation and a ``:func:`test_name``` reference to a
+#: test in this module, both matched **after the docstring's whitespace has been
+#: collapsed**. The prose wraps citations across lines -- one of them mid-
+#: identifier -- so a check reading the raw text would see a subset and report the
+#: rest as absent from a ledger that names them.
+_CITED_ELSEWHERE: Final = re.compile(r"(test_[a-z_0-9]+\.py)::(test_[a-z_0-9]+)")
+_CITED_HERE: Final = re.compile(r":func:`(test_[a-z_0-9]+)`")
+
+
+def test_every_test_this_module_s_prose_cites_exists() -> None:
+    """The out-of-key ledger names guards no derivation reaches, so nothing else can check it.
+
+    ``What the keys do not reach`` in the module docstring is a written list. It is
+    the one part of this module that is not recomputed from the source every run,
+    which makes it the part that goes stale silently -- and a stale entry is worse
+    than an absent one, because it reports a guard as driven by a test that is no
+    longer there. The census cannot help: these guards are outside its keys by
+    definition, which is why they are in prose in the first place.
+
+    What is checkable is the citation, so the citation is checked, exactly as
+    :func:`test_every_inherited_guard_has_a_driving_test` checks :data:`PINS`'
+    external pins -- in a file the ledger names, or in this module's own globals.
+    Both counts are pinned as well as both populations, so an entry that loses its
+    citation entirely fails here rather than passing an empty loop.
+
+    What is **not** mechanised, and is not claimed to be: that each cited test
+    still drives the guard the ledger says it drives. A rename is caught; a
+    rewrite is not.
+    """
+    flattened = "".join((__doc__ or "").split())
+    elsewhere = _CITED_ELSEWHERE.findall(flattened)
+    here = _CITED_HERE.findall(flattened)
+
+    assert len(elsewhere) == 4, (
+        f"this module's prose cites {len(elsewhere)} tests in other files, {elsewhere}; "
+        f"four of the ledger's five entries cite one, so a different number means an "
+        f"entry lost its citation or gained one this check has not read"
+    )
+    assert len(here) == 2, (
+        f"this module's prose cites {len(here)} tests in this module, {here}; the census "
+        f"argument cites one and the ledger's `CONNECTION_PRAGMAS` entry cites the other"
+    )
+    for file_name, test_name in elsewhere:
+        source = (
+            pathlib.Path(__file__).parent.parent / _SUITE_DIRECTORY[file_name] / file_name
+        ).read_text(encoding="utf-8")
+        assert f"def {test_name}(" in source, (
+            f"the prose records a guard as driven by `{file_name}::{test_name}`, and that "
+            f"file carries no such test -- so an out-of-key guard reads as covered when "
+            f"nothing covers it"
+        )
+    for test_name in here:
+        assert test_name in globals(), (
+            f"the prose cites `{test_name}` as a test in this module and there is no such test here"
+        )
 
 
 # -- the corpus every pin below is driven against -----------------------------
