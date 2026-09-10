@@ -1037,14 +1037,42 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
     # this tool's own occupancy. Sharing a pool would let load on one tool publish
     # a message that is false about another.
     #
-    # Sized by the same constant for the same reason: this serve is one bounded
-    # SQLite read whose row count and per-row byte count are both capped by the
-    # query the tool built (`mcp/review_search.py`), so it is no more expensive
-    # than a findings serve and a second number would be an unmeasured tuning
-    # claim. The aggregate this adds -- a third `MAX_CONCURRENT_SEARCHES` of
-    # concurrent occupancy, and up to twice that in parked holders while the
-    # gate's own reclaim ceiling has room -- is the arithmetic the comment above
-    # and `mcp/admission.py`'s module docstring both state.
+    # Sized by the same constant, and **not** because this serve is as cheap as a
+    # findings serve. It is not, and the sentence that said so was never measured.
+    # Both stores at 2,000 rows, each tool at its own default page size, medians
+    # of 40 clean wall-clock calls on CPython 3.13.3 arm64, 2026-09-10: a findings
+    # serve at 1,030.7 us against, per review-search filter shape, `pullRequest=`
+    # 926.0 us (0.90x), `filePath=` 1,131.8 us (1.10x), no filter 1,230.1 us
+    # (1.19x), `author=` 2,554.9 us (2.48x), `q=budget` 3,867.3 us (3.75x) and
+    # `repository=` 7,822.2 us (7.59x). The filtered shapes are the expensive
+    # ones: this store carries no index a `WHERE` on those columns can use, so a
+    # filter buys a scan plus a sort where the unfiltered read walks the primary
+    # key and stops at `limit`.
+    #
+    # `q` is the amplifier, and its lever is the **needle's length**: SQLite's
+    # LIKE tries the pattern at each starting offset of the stored fragment, so a
+    # near-miss costs the product of the two lengths. Measured the same day over
+    # 500 records of one 65,536-character fragment each, medians of 15: 1,167.0 us
+    # unfiltered, 22,266.1 us for a one-character near-miss (19.1x), 273,432.7 us
+    # at 64 characters (234.3x), and **1,547,952.9 us -- 1.55 s in one call,
+    # 1,326.4x -- at `MAX_FILTER_CHARS`**, which is the longest `q` this surface
+    # accepts.
+    #
+    # So the number is the same because a second one would be an unmeasured tuning
+    # claim, not because the two serves cost the same. What this cap bounds is the
+    # *rate*: at most `MAX_CONCURRENT_SEARCHES` of those at once. A per-call
+    # wall-clock bound is what would bound the spend, and it stays recorded as
+    # **not taken** for every query-side member of T-6 in
+    # `docs/security/threat-model.md`, for the reason recorded there: a sync MCP
+    # tool's worker thread is not stopped by cancelling the awaiting task, so a
+    # transport timeout bounds how long a caller waits and never how much the
+    # daemon spends. `review.search` joins that entry as a query-side member
+    # rather than taking a bound this comment invents.
+    #
+    # The aggregate this adds -- a third `MAX_CONCURRENT_SEARCHES` of concurrent
+    # occupancy, and up to twice that in parked holders while the gate's own
+    # reclaim ceiling has room -- is the arithmetic the comment above and
+    # `mcp/admission.py`'s module docstring both state.
     review_search_admission = AdmissionGate(MAX_CONCURRENT_SEARCHES)
 
     def _with_remedy(exc: ProjectError) -> ToolError:
