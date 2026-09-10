@@ -176,7 +176,24 @@ def _anchor(repository: str, uri: str) -> SourceAnchor:
     )
 
 
-def _event(project: str, repository: str, *, number: int, title: str, body: str) -> EvidenceRecord:
+def _event(  # noqa: PLR0913 - three of these exist to be planted, one row each
+    project: str,
+    repository: str,
+    *,
+    number: int,
+    title: str,
+    body: str,
+    labels: tuple[str, ...] = ("security",),
+    head_ref_name: str = "fix/retry-budget",
+    milestone: str | None = None,
+) -> EvidenceRecord:
+    """One landed pull request.
+
+    ``labels``, ``head_ref_name`` and ``milestone`` are keywords because they are
+    the three author-controlled rows of ADR-0030 decision 3's table that the
+    projection deliberately does **not** carry, and the arm that checks they never
+    reach the wire plants a distinctive value in each.
+    """
     return EvidenceRecord(
         provider=PROVIDER,
         repository=repository,
@@ -193,12 +210,13 @@ def _event(project: str, repository: str, *, number: int, title: str, body: str)
             url=f"https://github.com/{repository}/pull/{number}",
             head_commit="b" * 40,
             base_commit="c" * 40,
-            head_ref_name="fix/retry-budget",
-            labels=("security",),
+            head_ref_name=head_ref_name,
+            labels=labels,
             merged=True,
             merge_commit="d" * 40,
             merged_at=datetime(2026, 8, 2, 12, 0, tzinfo=UTC),
             ci_successful=True,
+            milestone=milestone,
         ),
     )
 
@@ -496,45 +514,126 @@ def test_the_shaper_follows_the_imported_object_and_not_three_typed_literals(
 # -- ADR-0030 decision 3's field table, over the shaper ------------------------
 
 
-#: Every **author**-controlled row of ADR-0030 decision 3's field table, and how
-#: this surface serves it. ``None`` means the projection does not carry it at all
-#: -- which is a schema decision recorded on ``ReviewSearchRecord``, not a serving
-#: one, and it is pinned here so adding one later cannot arrive unclassified.
+#: Every **author**-controlled row of ADR-0030 decision 3's field table: the
+#: table's own words for the field, the key this surface serves it under, and --
+#: for a row the projection does not carry at all -- the camelCase key this
+#: surface would give it plus the value planted in the corpus below.
+#:
+#: The three unserved rows are a schema decision recorded on
+#: ``ReviewSearchRecord``, not a serving one, and they are pinned here so adding
+#: one later cannot arrive unclassified.
+#:
+#: **The unserved rows need a wire spelling of their own, and until this column
+#: existed they had none**: the arm compared the table's *prose* -- ``head branch
+#: name``, ``milestone name`` -- against a set of camelCase wire keys, and no
+#: sentence with spaces in it can be one, so the assertion held for every possible
+#: implementation. The value column is the other half: a key spelled differently
+#: from the guess here would still carry the field, so what must be absent is the
+#: value as well as the name.
 #:
 #: The four body-shaped rows collapse onto one served key: the excerpt is the
 #: first matching fragment, whichever channel it came from, and ``excerptChannel``
 #: says which.
-_AUTHOR_CONTROLLED_TABLE: Final = (
-    ("comment body", "excerpt"),
-    ("review body", "excerpt"),
-    ("PR title", "excerpt"),
-    ("PR description", "excerpt"),
-    ("participant display_name", "authorDisplayName"),
-    ("file path as received", "filePath"),
-    ("labels", None),
-    ("head branch name", None),
-    ("milestone name", None),
+_AUTHOR_CONTROLLED_TABLE: Final[tuple[tuple[str, str | None, str | None, str | None], ...]] = (
+    ("comment body", "excerpt", None, None),
+    ("review body", "excerpt", None, None),
+    ("PR title", "excerpt", None, None),
+    ("PR description", "excerpt", None, None),
+    ("participant display_name", "authorDisplayName", None, None),
+    ("file path as received", "filePath", None, None),
+    ("labels", None, "labels", "PLANTED-LABEL-VWXYZ"),
+    ("head branch name", None, "headRefName", "fix/PLANTED-BRANCH-VWXYZ"),
+    ("milestone name", None, "milestoneName", "PLANTED-MILESTONE-VWXYZ"),
 )
+
+#: The unserved rows' planted values, keyed by the table's own words, so the
+#: corpus below and the assertions cannot drift apart.
+_PLANTED_UNSERVED: Final[dict[str, str]] = {
+    row: value
+    for row, published, _spelling, value in _AUTHOR_CONTROLLED_TABLE
+    if published is None and value is not None
+}
+
+
+@pytest.fixture
+def planted_unserved(project: ProjectRegistry) -> ProjectRegistry:
+    """The corpus, with a distinctive value in each field the projection omits.
+
+    A separate fixture from :func:`served` rather than a change to the shared
+    corpus: every other case in this file reads the ordinary values, and a corpus
+    carrying planted markers everywhere would make an unrelated failure read as a
+    leak.
+    """
+    _land_and_build(
+        project,
+        "demo",
+        (
+            _event(
+                "demo",
+                "acme/order-service",
+                number=42,
+                title="Bound the retry budget",
+                body="署名付きトークンを持つ呼び出しだけを再試行する。",
+                labels=(_PLANTED_UNSERVED["labels"],),
+                head_ref_name=_PLANTED_UNSERVED["head branch name"],
+                milestone=_PLANTED_UNSERVED["milestone name"],
+            ),
+        ),
+    )
+    return project
 
 
 @pytest.mark.parametrize(
-    "table_row, published",
+    "table_row, published, unserved_spelling, planted",
     _AUTHOR_CONTROLLED_TABLE,
-    ids=[row for row, _ in _AUTHOR_CONTROLLED_TABLE],
+    ids=[row for row, *_rest in _AUTHOR_CONTROLLED_TABLE],
 )
-def test_every_author_controlled_field_is_either_served_under_the_triple_or_not_served(
-    table_row: str, published: str | None
+@pytest.mark.asyncio
+async def test_every_author_controlled_field_is_either_served_under_the_triple_or_not_served(
+    planted_unserved: ProjectRegistry,
+    table_row: str,
+    published: str | None,
+    unserved_spelling: str | None,
+    planted: str | None,
 ) -> None:
     """Decision 6's population is decision 3's table, checked row by row.
 
-    Two ways this reddens, and both are the failure it exists for: a field the
+    Three ways this reddens, and each is a failure it exists for: a field the
     table calls author-controlled that the shaper serves *outside*
-    :data:`AUTHOR_CONTROLLED_FIELDS` -- so nothing labels it -- and a field
-    recorded here as unserved that has quietly acquired a wire key.
+    :data:`AUTHOR_CONTROLLED_FIELDS` -- so nothing labels it; a field recorded
+    here as unserved that has acquired a wire key; and a field recorded as
+    unserved whose *value* has reached the response under some other key.
+
+    The unserved rows are driven against a **real served response** built from a
+    corpus that carries a distinctive value in each of the three, so the absence
+    is measured rather than argued from a classification constant. The positive
+    control is inside the same assertion set: the response must carry rows, and
+    the corpus's own planted values must really be on the landed record, or an
+    absence proves only that nothing was served.
     """
+    result = await _call(planted_unserved)
+    records = result["records"]
+    assert records, "the field table must be checked against a response that served rows"
+
     if published is None:
-        assert table_row not in AUTHOR_CONTROLLED_FIELDS
+        assert unserved_spelling is not None and planted is not None
+        rendered = json.dumps(result, ensure_ascii=False)
+        for record in records:
+            assert unserved_spelling not in record, (
+                f"ADR-0030 decision 3 calls {table_row!r} author-controlled and this surface "
+                f"does not carry it; a record now publishes {unserved_spelling!r}, so the "
+                f"field is served with nothing classifying it (`AUTHOR_CONTROLLED_FIELDS`)"
+            )
+        assert unserved_spelling not in AUTHOR_CONTROLLED_FIELDS | PROVIDER_CONTROLLED_FIELDS, (
+            f"{unserved_spelling!r} has been classified, so the shaper is expected to serve a "
+            f"field this table records as not carried at all"
+        )
+        assert planted not in rendered, (
+            f"the corpus's {table_row} is {planted!r} and the response carries it, so the "
+            f"field reached the wire under a key this table did not predict"
+        )
         return
+
     assert published in AUTHOR_CONTROLLED_FIELDS, (
         f"ADR-0030 decision 3 calls {table_row!r} author-controlled and this surface "
         f"serves it as {published!r}, which is not in AUTHOR_CONTROLLED_FIELDS -- so "
@@ -543,6 +642,38 @@ def test_every_author_controlled_field_is_either_served_under_the_triple_or_not_
     assert published not in PROVIDER_CONTROLLED_FIELDS, (
         f"{published!r} is classified on both sides of decision 3's trust boundary"
     )
+    assert any(published in record for record in records), (
+        f"{published!r} is classified as a served author-controlled field and no served "
+        f"record carries the key, so the classification describes a field nobody sends"
+    )
+
+
+def test_the_corpus_really_plants_each_unserved_field() -> None:
+    """The guard on the guard: an absence is only evidence if the value was there.
+
+    The three assertions above search a response for a planted value. If the
+    corpus stopped carrying one -- a keyword renamed, a default reinstated -- the
+    search would find nothing for a reason that has nothing to do with the
+    projection. This reads the values back off the **landed record** the fixture
+    builds, so a corpus that stopped planting them fails here instead.
+    """
+    landed = _event(
+        "demo",
+        "acme/order-service",
+        number=42,
+        title="Bound the retry budget",
+        body="a body",
+        labels=(_PLANTED_UNSERVED["labels"],),
+        head_ref_name=_PLANTED_UNSERVED["head branch name"],
+        milestone=_PLANTED_UNSERVED["milestone name"],
+    )
+    event = landed.payload
+    assert isinstance(event, ReviewEvent)
+
+    assert set(_PLANTED_UNSERVED) == {"labels", "head branch name", "milestone name"}
+    assert event.labels == (_PLANTED_UNSERVED["labels"],)
+    assert event.head_ref_name == _PLANTED_UNSERVED["head branch name"]
+    assert event.milestone == _PLANTED_UNSERVED["milestone name"]
 
 
 @pytest.mark.asyncio
