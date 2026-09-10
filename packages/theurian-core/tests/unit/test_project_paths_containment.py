@@ -28,6 +28,7 @@ import pytest
 
 from theurian.application.project_service import (
     KNOWLEDGE_DIR_ESCAPE_REMEDY,
+    BuildProvenance,
     ProjectError,
     ProjectPathEscapeError,
     ProjectPaths,
@@ -714,3 +715,49 @@ def test_the_findings_index_and_state_filename_prefixes_are_pairwise_disjoint(
         f"one artifact prefix is a prefix of another ({prefixes}), so a glob on "
         f"the shorter one would also match the other artifact's files"
     )
+
+
+def test_the_state_rebuild_tail_names_a_command_for_every_artifact_family() -> None:
+    """RED means removing `.theurian/state` leaves one artifact with no cure named.
+
+    ``derived_escape_remedy`` tells a reader to remove a whole subdirectory, and
+    the tail is the only place the response says what to run afterwards. Keying it
+    on the subdirectory cannot say *which* artifact the refused leaf was -- four
+    families resolve under ``state`` -- so the tail has to name the union, and a
+    union is only correct while it grows with the family list. It did not: the
+    review search store landed as the fourth family with the tail still naming
+    three, so a reader who removed ``state/`` rebuilt everything except their
+    review evidence's projection.
+
+    The population is read off :class:`BuildProvenance` -- one ``record_<family>``
+    and one ``has_<family>`` per family -- rather than listed here, so a fifth
+    family reddens this at the moment it lands. The command per family is derived
+    from the same token by the CLI's own convention (``theurian <family> build``);
+    ``state`` is the one exception, rebuilt by ``migrate apply`` and named
+    unconditionally because every escape under this subdirectory costs it.
+    """
+    recorders = {
+        name.removeprefix("record_") for name in vars(BuildProvenance) if name.startswith("record_")
+    }
+    checkers = {
+        name.removeprefix("has_") for name in vars(BuildProvenance) if name.startswith("has_")
+    }
+    assert recorders == checkers, (
+        f"`BuildProvenance` records {sorted(recorders)} and checks {sorted(checkers)}; "
+        f"until they agree there is no single family set for this tail to cover"
+    )
+    assert "state" in recorders, "the canonical state is not among the recorded families"
+
+    tail = derived_escape_remedy(".theurian", "state")
+
+    assert "`theurian migrate apply`" in tail, (
+        "the tail does not name the unconditional rebuild for the canonical state"
+    )
+    for family in sorted(recorders - {"state"}):
+        assert f"`theurian {family} build`" in tail, (
+            f"the `state` rebuild tail names no command for the `{family}` family. "
+            f"Add it -- `theurian {family} build` if that is the verb, and correct "
+            f"this derivation if it is not -- so a reader who removes "
+            f"`.theurian/state` is told how to rebuild every artifact it held.\n"
+            f"{tail}"
+        )

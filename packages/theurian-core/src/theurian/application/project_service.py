@@ -238,17 +238,21 @@ _MIN_PARTS_UNDER_A_DERIVED_SUBDIRECTORY: Final = 2
 
 #: What a reader has to run *after* removing each derived subdirectory, keyed on
 #: the subdirectory and not on the refused leaf -- the leaf is not what gets
-#: removed, and two artifact families share ``state/``.
+#: removed, and four artifact families share ``state/``.
 #:
-#: ``state`` names three rebuilds because it holds three things: the canonical
-#: database (``theurian-state-*``), the retrieval index (``theurian-index-*``)
-#: and the review-findings store (``theurian-findings-*``), plus both pointers.
+#: ``state`` names four rebuilds because it holds four things: the canonical
+#: database (``theurian-state-*``), the retrieval index (``theurian-index-*``),
+#: the review-findings store (``theurian-findings-*``) and the review search
+#: store (``theurian-review-*``, ADR-0030 slice 3), plus both pointers.
 #: ``migrate apply`` rebuilds the first and republishes its pointer and is
-#: therefore unconditional; the other two are named conditionally because a
+#: therefore unconditional; the other three are named conditionally because a
 #: project that never built them has nothing to rebuild. Keying on the
-#: subdirectory cannot tell those three apart -- ``findings_for`` resolves under
-#: ``state`` too -- so the tail covers the union rather than guessing which
-#: artifact the refused leaf was.
+#: subdirectory cannot tell those four apart -- ``findings_for`` and
+#: ``review_search_for`` both resolve under ``state`` too -- so the tail covers
+#: the union rather than guessing which artifact the refused leaf was, and the
+#: union has to grow with the family list: the fourth family landed with this
+#: tail still naming three, which left a reader who had removed ``state/``
+#: rebuilding everything except their review evidence's projection.
 #:
 #: ``runtime`` names none, because nothing there needs rebuilding: it holds the
 #: advisory lock file and nothing else, and the next command recreates it.
@@ -269,8 +273,9 @@ _MIN_PARTS_UNDER_A_DERIVED_SUBDIRECTORY: Final = 2
 _REBUILD_AFTER_REMOVING: Final[dict[str, str]] = {
     "state": (
         " Then run `theurian migrate apply` to rebuild the canonical state. If this "
-        "project had also built a retrieval index or a review-findings store, "
-        "`theurian index build` and `theurian findings build` rebuild those."
+        "project had also built a retrieval index, a review-findings store or a "
+        "review search store, `theurian index build`, `theurian findings build` and "
+        "`theurian review build` rebuild those."
     ),
     "runtime": (
         " Nothing needs rebuilding afterwards: the only thing Theurian keeps there is "
@@ -344,7 +349,7 @@ def derived_escape_remedy(knowledge_directory_name: str, subdirectory: str) -> s
     what :data:`KNOWLEDGE_DIR_ESCAPE_REMEDY`'s own subject is not.
 
     The rebuild tail is keyed per subdirectory by
-    :data:`_REBUILD_AFTER_REMOVING`, which records why ``state`` names three
+    :data:`_REBUILD_AFTER_REMOVING`, which records why ``state`` names four
     commands and ``runtime`` names none.
     """
     path = f"{knowledge_directory_name}/{subdirectory}"
