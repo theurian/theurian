@@ -78,7 +78,7 @@ COLLISION_CURE: Final = (
 #: gets repeated.
 #:
 #: **"the directory the message names" is what this said, and two of its three
-#: sites name a file.** ``_relative_paths`` publishes it over a directory that
+#: sites name a file.** ``relative_paths`` publishes it over a directory that
 #: could not be listed; ``_temporary_refusal``'s errno fallback names
 #: ``<record>.writing`` and :meth:`~..store.ReviewEvidenceStore._write_one`'s
 #: rename arm names the record -- and for either of those the mode to look at is

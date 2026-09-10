@@ -246,7 +246,7 @@ def _land_review_evidence(registry: ProjectRegistry) -> None:
         ReviewSearchBuilder,
         ReviewSearchBuildRequest,
     )
-    from theurian.cli.review_commands import evidence_entries
+    from theurian.cli.review_commands import evidence_entries, evidence_paths
     from theurian.domain.identifiers import ProjectId
     from theurian.domain.review import ReviewEvent, ReviewParticipant
     from theurian.infrastructure.review_evidence import (
@@ -291,9 +291,11 @@ def _land_review_evidence(registry: ProjectRegistry) -> None:
         run=IngestionRun("01K1AAAAAA01234567890ABCDE", datetime(2026, 9, 7, 9, 0, tzinfo=UTC)),
     )
     store = SqliteReviewSearchStore(paths.review_search_for(REVIEW_SEARCH_STORE_ID))
-    ReviewSearchBuilder(read_evidence=evidence_entries(evidence), write=store.replace_all).build(
-        ReviewSearchBuildRequest(withheld_record_keys=frozenset())
-    )
+    ReviewSearchBuilder(
+        read_evidence=evidence_entries(evidence),
+        list_evidence_paths=evidence_paths(paths.review),
+        write=store.replace_all,
+    ).build(ReviewSearchBuildRequest(withheld_record_keys=frozenset()))
     BuildProvenance.for_registry(registry).record_review(paths.root, REVIEW_SEARCH_STORE_ID)
 
 

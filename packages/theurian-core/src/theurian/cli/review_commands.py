@@ -68,6 +68,7 @@ from theurian.application.review_ingest_service import (
 )
 from theurian.application.review_search_builder import (
     EvidenceEntry,
+    ListEvidencePaths,
     ReadEvidence,
     ReviewSearchBuilder,
     ReviewSearchBuildRequest,
@@ -76,6 +77,7 @@ from theurian.domain.errors import TheurianError
 from theurian.infrastructure.github import GitHubReviewProvider
 from theurian.infrastructure.github.limits import MAX_PULL_REQUESTS, PAGE_SIZE
 from theurian.infrastructure.review_evidence import (
+    EvidenceReader,
     EvidenceRecord,
     IngestionRun,
     ReviewEvidenceStore,
@@ -198,10 +200,12 @@ def evidence_entries(store: ReviewEvidenceStore) -> ReadEvidence:
     describes a record it is projecting, and neither type reaches into the
     other's layer.
 
-    ``read_all`` is the only reading seam used, deliberately: the evidence
-    package's reader is reached through the store's own method rather than
-    constructed here, so there stays exactly one way this product reads a landed
-    record and one place its refusals are worded.
+    ``read_all`` is the only seam used that *reads a record*, deliberately: the
+    evidence package's reader is reached through the store's own method rather
+    than constructed here, so there stays exactly one way this product reads a
+    landed record and one place its refusals are worded. :func:`evidence_paths`
+    is the sibling that constructs the reader directly, and it may because it
+    opens no file at all.
     """
 
     def read() -> tuple[EvidenceEntry, ...]:
@@ -221,6 +225,29 @@ def evidence_entries(store: ReviewEvidenceStore) -> ReadEvidence:
         )
 
     return read
+
+
+def evidence_paths(review_root: Path) -> ListEvidencePaths:
+    """Bind the evidence reader's own walk as the build's membership check.
+
+    :func:`evidence_entries`' companion, and the reason the two are separate: this
+    one is called with the project's write lock held, immediately before the
+    publish, to drop any record whose file has gone away since the read. It must
+    therefore be a *listing* -- ``relative_paths`` opens no file -- where the other
+    is a parse per record.
+
+    Bound to :class:`EvidenceReader`'s walk rather than to a listing written here,
+    so the set a publish is checked against is the set a re-read would enumerate.
+    A second walk in this module would have to repeat which directory depth counts,
+    which kind directories are records and which suffix a leaf must carry, and the
+    first time one of those drifted the build would either resurrect a deleted
+    record or drop a live one.
+
+    ``review_root`` is the same ``ProjectPaths.review`` the store is built on,
+    already proved contained inside the project -- the precondition
+    :class:`EvidenceReader` states in its own ``Args``.
+    """
+    return EvidenceReader(review_root).relative_paths
 
 
 def _lock_write_section(lock_path: Path) -> WriteSection:
@@ -279,6 +306,7 @@ def rebuild_search_store(paths: ProjectPaths) -> dict[str, object]:
     store_path = paths.review_search_for(REVIEW_SEARCH_STORE_ID)
     builder = ReviewSearchBuilder(
         read_evidence=evidence_entries(ReviewEvidenceStore(paths.review)),
+        list_evidence_paths=evidence_paths(paths.review),
         write=SqliteReviewSearchStore(store_path).replace_all,
         write_section=_lock_write_section(paths.write_lock),
     )

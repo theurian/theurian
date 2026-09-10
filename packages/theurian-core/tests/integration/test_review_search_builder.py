@@ -6,7 +6,7 @@ them back through ``ReviewEvidenceStore.read_all`` and lands rows in a database,
 because the properties below are about the seam between those and not about a
 projection function in isolation.
 
-Four claims, and each fails on its own:
+Five claims, and each fails on its own:
 
 * **A withheld record is not written.** Asserted over every table of the store
   file rather than over a search result, because a row no query happens to select
@@ -18,6 +18,13 @@ Four claims, and each fails on its own:
   dumped-value form, against the store built from a corpus that never held K --
   the one-query-two-corpora shape, at the store level. The MCP-level version of
   the same closure is a later commit's.
+* **A record deleted between the read and the publish is not republished.** The
+  evidence read is outside the project's write lock, so a rebuild can hold a
+  corpus older than the disk; the membership check inside the section is what
+  keeps a deletion -- ADR-0030 decision 3's only retention remedy -- from being
+  silently undone. The opposite direction is asserted in the same section: a file
+  that lands *after* the read is absent until the next build, because picking it
+  up would mean parsing it under the lock.
 * **A rebuild reproduces.** Delete the store, run the builder again over the same
   files, and it comes back equal -- ADR-0030's owed test 4, whose write-and-read
   half slice 2 already held and which needed a store to delete.
@@ -34,13 +41,15 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
-from contextlib import closing
+from collections.abc import Callable, Iterator
+from contextlib import closing, contextmanager, nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
 import pytest
 
+from theurian.application.findings_builder import WriteSection
 from theurian.application.project_service import ProjectPaths
 from theurian.application.review_search_builder import (
     EvidenceEntry,
@@ -48,7 +57,7 @@ from theurian.application.review_search_builder import (
     ReviewSearchBuildError,
     ReviewSearchBuildRequest,
 )
-from theurian.cli.review_commands import evidence_entries
+from theurian.cli.review_commands import evidence_entries, evidence_paths
 from theurian.domain.enums import ReviewThreadState
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.knowledge import SourceAnchor
@@ -191,17 +200,32 @@ def _landed(paths: ProjectPaths, *records: EvidenceRecord) -> ReviewEvidenceStor
 
 
 def _build(
-    paths: ProjectPaths, evidence: ReviewEvidenceStore, *, withheld: frozenset[str]
+    paths: ProjectPaths,
+    evidence: ReviewEvidenceStore,
+    *,
+    withheld: frozenset[str],
+    write_section: WriteSection = nullcontext,
 ) -> tuple[SqliteReviewSearchStore, dict[str, object]]:
-    """One build, exactly as the composition root composes it, minus the lock.
+    """One build, exactly as the composition root composes it, minus the lock file.
 
-    ``evidence_entries`` is imported from the CLI rather than re-implemented here:
-    that nine-field mapping is the thing under test as much as the builder is, and
-    a test that mapped the records itself would pass over a composition root that
-    had stopped carrying a field.
+    ``evidence_entries`` and ``evidence_paths`` are imported from the CLI rather
+    than re-implemented here: that nine-field mapping is the thing under test as
+    much as the builder is, and the second binds the same directory walk the read
+    goes through, so a test that listed the files itself would pass over a
+    composition root that had stopped carrying a field or started listing a
+    different set.
+
+    ``write_section`` defaults to the builder's own ``nullcontext`` and is a
+    parameter for the two race cases below, which need to change the directory at
+    a named instant *inside* the section rather than around the call.
     """
     store = SqliteReviewSearchStore(paths.review_search_for("local"))
-    builder = ReviewSearchBuilder(read_evidence=evidence_entries(evidence), write=store.replace_all)
+    builder = ReviewSearchBuilder(
+        read_evidence=evidence_entries(evidence),
+        list_evidence_paths=evidence_paths(paths.review),
+        write=store.replace_all,
+        write_section=write_section,
+    )
     report = builder.build(ReviewSearchBuildRequest(withheld_record_keys=withheld))
     return store, report
 
@@ -292,6 +316,133 @@ def test_the_build_api_cannot_be_asked_to_withhold_nothing_by_omission() -> None
     """
     with pytest.raises(TypeError):
         ReviewSearchBuildRequest()  # type: ignore[call-arg]
+
+
+# -- the window between the read and the publish ------------------------------
+
+
+def _write_section_that(act: Callable[[], None]) -> WriteSection:
+    """A write section that runs ``act`` the instant the build enters it.
+
+    The race, made deterministic and placed at the *latest* instant it can happen:
+    the build has already read the evidence, and the directory changes before
+    anything is published. A change made around the call instead would prove
+    nothing about where the builder checks, since the read is the first thing
+    ``build`` does and the write is the last.
+
+    Passed as the real ``write_section`` collaborator rather than by patching, so
+    what these two cases drive is the seam the composition root fills with the
+    project's write lock.
+    """
+
+    @contextmanager
+    def section() -> Iterator[None]:
+        act()
+        yield
+
+    return section
+
+
+def _landed_by_kind(paths: ProjectPaths) -> dict[str, Path]:
+    """The one landed file per record kind, keyed by the directory it sits in.
+
+    The layout is ``<repository hash>/<kind>/<leaf>.json``, so the parent's name is
+    the kind. Unambiguous only while a corpus lands one record of each kind, which
+    the assertion below is what keeps true rather than assumes.
+    """
+    by_kind = {landed.parent.name: landed for landed in paths.review.rglob("*.json")}
+    assert len(by_kind) == len(list(paths.review.rglob("*.json"))), (
+        "two records of one kind landed, so keying by kind picks an arbitrary file"
+    )
+    return by_kind
+
+
+def test_a_record_deleted_between_the_read_and_the_publish_is_not_republished(
+    tmp_path: Path,
+) -> None:
+    """RED means a rebuild silently undoes a deletion.
+
+    The evidence read happens outside the project's write lock on purpose -- a
+    parse per file must not hold the single writer -- so of two concurrent
+    rebuilds the one that read *earlier* can publish *later*. Without a membership
+    check at the publish, that build writes back a record whose file was deleted
+    in between, and both commands exit 0.
+
+    Deleting a file is the retention remedy ADR-0030 decision 3 leaves an
+    operator: ``.theurian/review/`` is source, no refetch rebuilds it, and there
+    is no other way to take a landed record out. So the resurrected row is the
+    remediation reverted, not a store one refetch behind.
+
+    Three records land and two vanish at the publish. The submission is the case
+    the fix is about -- nothing withheld it, and it is gone because its file is.
+    The thread is the interaction: it is **both** withheld and deleted, and it
+    stays out for the first reason, counted once. The pull request is the
+    complement, so a build that published nothing at all cannot pass here.
+    """
+    paths = _project(tmp_path)
+    evidence = _landed(paths, _event(), _submission(), _thread())
+    thread_key = "PRRT_kwDO_test_node_0001"
+    landed = _landed_by_kind(paths)
+
+    def delete_two_of_the_three() -> None:
+        landed["review-submission"].unlink()
+        landed["review-thread"].unlink()
+
+    store, report = _build(
+        paths,
+        evidence,
+        withheld=frozenset({thread_key}),
+        write_section=_write_section_that(delete_two_of_the_three),
+    )
+
+    stored = _every_stored_value(store)
+    for trace in ("PRR_kwDOABCD1", "Approving; the budget is now bounded."):
+        assert trace not in stored, (
+            f"a deleted record's {trace!r} was republished from a read taken before "
+            f"the file went away"
+        )
+    for trace in (thread_key, "USER_C", "This retries forever."):
+        assert trace not in stored, f"a withheld and deleted record's {trace!r} is in the store"
+    assert "Bound the retry budget" in stored, "the record that survived is missing too"
+    assert report == {"records": 1, "withheld": 1}
+
+
+def test_a_file_that_lands_after_the_read_arrives_with_the_next_build(tmp_path: Path) -> None:
+    """The other direction, and it stays one rebuild behind on purpose.
+
+    The publish-time check can only drop, never add: noticing a new file inside
+    the write section is not enough, because holding it would mean *reading* it,
+    and a parse per file under the single writer lock is what the read/write split
+    exists to keep out.
+
+    So a record that lands after the read is absent from this build's store and
+    present in the next one. RED here means either that the check started reading
+    inside the lock, or that a rebuild stopped converging.
+    """
+    paths = _project(tmp_path)
+    evidence = _landed(paths, _event())
+
+    def land_a_thread() -> None:
+        evidence.write((_thread(),), run=RUN)
+
+    store, first = _build(
+        paths,
+        evidence,
+        withheld=frozenset(),
+        write_section=_write_section_that(land_a_thread),
+    )
+
+    assert first == {"records": 1, "withheld": 0}
+    assert "This retries forever." not in _every_stored_value(store), (
+        "a file that landed after the read was published, which needs a parse under the lock"
+    )
+
+    rebuilt, second = _build(paths, evidence, withheld=frozenset())
+
+    assert second == {"records": 2, "withheld": 0}
+    assert "This retries forever." in _every_stored_value(rebuilt), (
+        "the next rebuild did not converge on the file the first one was too early to see"
+    )
 
 
 # -- rebuild is the durability story ------------------------------------------

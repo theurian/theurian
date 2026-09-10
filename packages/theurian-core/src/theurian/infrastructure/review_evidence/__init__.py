@@ -15,6 +15,13 @@ store will consume -- the writer in
 :mod:`theurian.infrastructure.review_evidence.reader`, which the store's
 ``read_all`` delegates to.
 
+:class:`EvidenceReader` is exported beside the store for one caller and one
+question: slice 3's build asks *which files still exist* just before it
+publishes, so a record deleted since its read is not put back. That is a
+directory listing rather than a record read, so it does not belong behind
+``read_all`` -- and it is not added to the store façade either, which is the
+module the 800-line ceiling already split the reader out of.
+
 **The file grain is the thread, the submission and the pull-request event -- one
 file each.** Four constraints decide it, and the third is the one that rules out
 the coarser shape:
@@ -57,6 +64,7 @@ from theurian.infrastructure.review_evidence.layout import (
     record_path,
     repository_directory,
 )
+from theurian.infrastructure.review_evidence.reader import EvidenceReader
 from theurian.infrastructure.review_evidence.records import EvidenceRecord
 from theurian.infrastructure.review_evidence.run import IngestionRun, new_ingestion_run
 from theurian.infrastructure.review_evidence.store import ReviewEvidenceStore
@@ -64,6 +72,7 @@ from theurian.infrastructure.review_evidence.store import ReviewEvidenceStore
 __all__ = [
     "EVIDENCE_FORMAT_VERSION",
     "EvidenceKind",
+    "EvidenceReader",
     "EvidenceRecord",
     "IngestionRun",
     "ReviewEvidenceError",

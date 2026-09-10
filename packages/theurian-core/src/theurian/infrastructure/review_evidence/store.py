@@ -95,7 +95,7 @@ from theurian.security.regular_file import (
 #: record. It deliberately does **not** end in
 #: :data:`~theurian.infrastructure.review_evidence.layout.EVIDENCE_SUFFIX`, so a
 #: file an interrupted run left behind is skipped by
-#: :meth:`~theurian.infrastructure.review_evidence.reader.EvidenceReader._relative_paths`
+#: :meth:`~theurian.infrastructure.review_evidence.reader.EvidenceReader.relative_paths`
 #: rather than read as a record.
 _WRITING_SUFFIX: Final = ".writing"
 

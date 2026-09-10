@@ -1430,7 +1430,7 @@ def _land_review_evidence(root: pathlib.Path) -> None:
         ReviewSearchBuilder,
         ReviewSearchBuildRequest,
     )
-    from theurian.cli.review_commands import evidence_entries
+    from theurian.cli.review_commands import evidence_entries, evidence_paths
     from theurian.domain.enums import ReviewThreadState
     from theurian.domain.identifiers import ProjectId
     from theurian.domain.knowledge import SourceAnchor
@@ -1541,9 +1541,11 @@ def _land_review_evidence(root: pathlib.Path) -> None:
     evidence = ReviewEvidenceStore(paths.review)
     evidence.write(records, run=run)
     store = SqliteReviewSearchStore(paths.review_search_for(REVIEW_SEARCH_STORE_ID))
-    ReviewSearchBuilder(read_evidence=evidence_entries(evidence), write=store.replace_all).build(
-        ReviewSearchBuildRequest(withheld_record_keys=frozenset())
-    )
+    ReviewSearchBuilder(
+        read_evidence=evidence_entries(evidence),
+        list_evidence_paths=evidence_paths(paths.review),
+        write=store.replace_all,
+    ).build(ReviewSearchBuildRequest(withheld_record_keys=frozenset()))
     # `review.search` refuses a store this installation has no record of building
     # (ADR-0004, SEC-7, T-19), so without this record every capture below would be
     # a refusal rather than a response to validate.

@@ -84,7 +84,7 @@ from theurian.application.review_search_builder import (
     ReviewSearchBuilder,
     ReviewSearchBuildRequest,
 )
-from theurian.cli.review_commands import evidence_entries
+from theurian.cli.review_commands import evidence_entries, evidence_paths
 from theurian.domain.enums import ReviewThreadState
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.knowledge import SourceAnchor
@@ -337,9 +337,11 @@ def _built(
     evidence = ReviewEvidenceStore(paths.review)
     evidence.write(tuple(records), run=RUN)
     store = SqliteReviewSearchStore(paths.review_search_for("local"))
-    ReviewSearchBuilder(read_evidence=evidence_entries(evidence), write=store.replace_all).build(
-        ReviewSearchBuildRequest(withheld_record_keys=withheld)
-    )
+    ReviewSearchBuilder(
+        read_evidence=evidence_entries(evidence),
+        list_evidence_paths=evidence_paths(paths.review),
+        write=store.replace_all,
+    ).build(ReviewSearchBuildRequest(withheld_record_keys=withheld))
     return store
 
 

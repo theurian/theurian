@@ -5,11 +5,11 @@ independent brute-force probes, and the closure stopped there -- at the *leaf*.
 The **directory** components fold too, and three sites compared them byte-wise
 against a filesystem that does not:
 
-* ``_relative_paths``' ``kind_directory.name in _KIND_DIRECTORIES``, so a
+* ``relative_paths``' ``kind_directory.name in _KIND_DIRECTORIES``, so a
   planted ``Pull-Request/`` made every record written into it invisible to every
   later read -- ``new=1, kept=0`` on every run for ever, and slice 3's store
   built from a corpus quietly smaller than the disk;
-* ``_relative_paths``' ``leaf.name.endswith(EVIDENCE_SUFFIX)``, the same face one
+* ``relative_paths``' ``leaf.name.endswith(EVIDENCE_SUFFIX)``, the same face one
   level down: a planted ``42.JSON`` swallows the bytes of a record derived as
   ``42.json`` and keeps its own spelling (measured on APFS);
 * ``mkdir(exist_ok=True)`` and ``os.replace``, which do not compare anything in
@@ -207,7 +207,7 @@ _ACCOUNTED: Final[dict[str, str]] = {
     ),
     "reader.py:kind_directory.is_dir": (
         "a shape question, not a name one. It swallows its own `OSError`, so an "
-        "`ELOOP` directory reads as absent -- recorded at `_relative_paths`"
+        "`ELOOP` directory reads as absent -- recorded at `relative_paths`"
     ),
     "reader.py:kind_directory.iterdir": "the read walk's third level; folds to find, below",
     "reader.py:kind_directory.name": "folded before the membership test, so a variant is found",
@@ -470,7 +470,7 @@ def test_the_kind_directory_names_are_their_own_casefold() -> None:
     shouted = [kind.value for kind in EvidenceKind if kind.value != kind.value.casefold()]
 
     assert not shouted, (
-        f"{shouted} are not their own casefold, so `_relative_paths`' folded membership "
+        f"{shouted} are not their own casefold, so `relative_paths`' folded membership "
         "test no longer recognises the directories this build writes."
     )
 

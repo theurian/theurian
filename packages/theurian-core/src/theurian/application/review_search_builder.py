@@ -8,12 +8,13 @@ injection, so a build is exercised without naming a filesystem layout or SQLite
 
 **The direction of the dependency is the whole point of this module's shape.**
 The evidence files are the source and this layer may not name the package that
-reads them, so the build takes a :data:`ReadEvidence` callable and a
-:data:`WriteReviewSearchStore` callable, and the composition root binds
-``ReviewEvidenceStore.read_all`` to the first and
-``SqliteReviewSearchStore.replace_all`` to the second -- the shape
-``review_ingest_service`` already uses for the landing seam, and the reason
-:class:`EvidenceEntry` exists rather than the store's own record type.
+reads them, so the build takes three callables -- :data:`ReadEvidence`,
+:data:`ListEvidencePaths` and :data:`WriteReviewSearchStore` -- and the
+composition root binds ``ReviewEvidenceStore.read_all``,
+``EvidenceReader.relative_paths`` and ``SqliteReviewSearchStore.replace_all`` to
+them in that order -- the shape ``review_ingest_service`` already uses for the
+landing seam, and the reason :class:`EvidenceEntry` exists rather than the
+store's own record type.
 
 **Withholding is physical, and it is decided by the caller.**
 :attr:`ReviewSearchBuildRequest.withheld_record_keys` has **no default** for the
@@ -68,6 +69,17 @@ from theurian.domain.review_search import (
 #: .review_ingest_service.ReadLandedKeys`' reason: this layer may not name the
 #: package that owns the files, and the composition root is where the two meet.
 ReadEvidence = Callable[[], tuple["EvidenceEntry", ...]]
+
+#: Which evidence files exist *right now*, as the same relative paths
+#: :attr:`EvidenceEntry.relative_path` carries. A listing and never a read: it is
+#: called with the project's write lock held, where a parse per file is exactly
+#: what :meth:`ReviewSearchBuilder.build`'s read/write split exists to keep out.
+#:
+#: Bound to the walk the record read goes through rather than to one written for
+#: this check, so the set a publish drops against is the set a re-read would
+#: enumerate. Two walks with their own opinions about which directories count
+#: would drop a live record the moment they drifted.
+ListEvidencePaths = Callable[[], frozenset[str]]
 
 #: How a built load becomes durable. Bound to a store already addressed to a path,
 #: so this layer never names a file: an application service that knew where the
@@ -225,6 +237,12 @@ class ReviewSearchBuilder:
         self,
         *,
         read_evidence: ReadEvidence,
+        # No default, for `withheld_record_keys`' reason turned the other way up:
+        # a builder that could be constructed without this one revalidates against
+        # nothing and republishes a deleted record, which is the defect the
+        # parameter exists to close. Every construction site therefore states its
+        # listing, and every test that builds runs the check over a real directory.
+        list_evidence_paths: ListEvidencePaths,
         write: WriteReviewSearchStore,
         # `nullcontext`, so a test driving a builder against a private temporary
         # path gets the same behaviour without inventing a lock file. The shipped
@@ -232,6 +250,7 @@ class ReviewSearchBuilder:
         write_section: WriteSection = nullcontext,
     ) -> None:
         self._read_evidence = read_evidence
+        self._list_evidence_paths = list_evidence_paths
         self._write = write
         self._write_section = write_section
 
@@ -258,11 +277,33 @@ class ReviewSearchBuilder:
         git read, and one continuous hold over the publish rather than two
         sequential holds (#468).
 
-        That leaves one ordering the lock deliberately does not fix: two rebuilds
-        can read the directory at different instants and the one that read
-        *earlier* may publish *later*, so the surviving store can be one refetch
-        behind. It is a whole, self-consistent store either way, and the next
-        rebuild converges.
+        Two rebuilds can therefore read the directory at different instants, and
+        the one that read *earlier* may publish *later*. In the **deletion**
+        direction that is not a store one refetch behind but a removal undone:
+        deleting a file is the retention remedy ADR-0030 decision 3 leaves an
+        operator, since ``.theurian/review/`` is source and no refetch rebuilds
+        it, so a record republished from a stale read puts back content somebody
+        took out -- with both commands exiting 0 and nothing saying so. The
+        membership check below is what closes it, and
+        ``test_review_search_builder.py``'s
+        ``test_a_record_deleted_between_the_read_and_the_publish_is_not_republished``
+        is what fails when it stops running inside the section.
+
+        **The check is a listing, not a second read**, which is what keeps the
+        paragraph above true: :data:`ListEvidencePaths` opens no file and decodes
+        nothing, so the hold is a directory walk plus a set membership test over
+        records already projected in memory. Re-reading here would put the parse
+        per file back under the lock, which is the thing the split exists to
+        avoid.
+
+        **The addition direction stays one rebuild behind, on purpose.** A file
+        that landed after the read is not picked up inside the section, because
+        noticing it is not enough -- it would have to be *read*, and that is the
+        parse this must not hold. So a new record is absent until the next
+        rebuild, which converges;
+        ``test_a_file_that_lands_after_the_read_arrives_with_the_next_build``
+        pins both halves. A store briefly missing a record that exists costs a
+        rebuild; a store that resurrects a deleted one costs the deletion.
 
         Raises:
             ReviewSearchBuildError: If a landed record carries a value this build
@@ -271,17 +312,32 @@ class ReviewSearchBuilder:
                 :class:`~theurian.domain.review_search.ReviewSearchRecord`'s own
                 invariants refuses, which is where a hand-edited ``eventKey``
                 naming pull request ``0``, or one wider than the store's column
-                holds, arrives. Each names the evidence file.
-            TheurianError: Whatever the reader or the writer raises, unchanged.
-                Both carry their own remedy about their own artefact, and the read
-                side's in particular is about a file this layer never opened.
+                holds, arrives. Each names the evidence file. Raised before the
+                write section is entered, so a corpus this build cannot project
+                never takes the project's write lock at all.
+            TheurianError: Whatever the reader, the listing or the writer raises,
+                unchanged. Each carries its own remedy about its own artefact, and
+                the read side's in particular is about a file this layer never
+                opened. A listing that refuses ends the build with nothing
+                written, which is the direction to fail in: publishing without
+                knowing what is on disk is how the deletion above comes back.
         """
         entries = self._read_evidence()
         kept = tuple(
             entry for entry in entries if entry.record_key not in request.withheld_record_keys
         )
-        load = ReviewSearchLoad(records=tuple(_projected(entry) for entry in kept))
+        projected = tuple(_projected(entry) for entry in kept)
         with self._write_section():
+            # Inside the section and immediately before the write, so what is
+            # published is keyed on what is on disk at publish time rather than at
+            # read time. A record withheld above never reaches here at all, so a
+            # key that is both withheld and deleted is out for the first reason.
+            still_on_disk = self._list_evidence_paths()
+            load = ReviewSearchLoad(
+                records=tuple(
+                    record for record in projected if record.relative_path in still_on_disk
+                )
+            )
             self._write(load)
         # Two counts and no third. A per-repository count was drafted here and
         # dropped: its dict key would have been the string `"repositories"`, which
@@ -292,6 +348,12 @@ class ReviewSearchBuilder:
         # positive, and a renamed key would have been a name chosen to dodge a
         # scan rather than to describe a number.
         return {
+            # What was published, which is the read's records minus the withheld
+            # ones minus any whose file went away before the write. So the two
+            # counts stop summing to what the read found exactly when the
+            # revalidation above drops something -- a window narrow enough that no
+            # third key is published for it, and wide enough that this note is
+            # cheaper than the next reader deriving the missing one.
             "records": len(load.records),
             # The count of records this build was given and did not write. It is a
             # function of the caller's own withheld set and of files on the
@@ -552,6 +614,7 @@ def _refuse_untransportable(record: ReviewSearchRecord) -> None:
 
 __all__ = [
     "EvidenceEntry",
+    "ListEvidencePaths",
     "ReadEvidence",
     "ReviewSearchBuildError",
     "ReviewSearchBuildRequest",

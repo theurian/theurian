@@ -38,7 +38,7 @@ which makes a newly-narrowed arm a red test rather than the next round's finding
 ``ast.ExceptHandler`` and on a call spelled ``suppress``, so an alias
 (``from contextlib import suppress as quietly``) is invisible to it, as is any
 other way of swallowing an exception -- ``Path.is_dir()``'s internal one is the
-member that already exists in this package, and ``_relative_paths``' row is
+member that already exists in this package, and ``relative_paths``' row is
 where it is written down. It also stops at this file set: a helper these modules
 call from elsewhere in the package carries its own arms and is not walked here.
 
@@ -108,7 +108,7 @@ _ACCOUNTED: Final[dict[str, str]] = {
     "reader.py:EvidenceReader._read_one:_FoldedPathError": (
         "a `ValueError` caught ahead of its own base, and only to change the cure"
     ),
-    "reader.py:EvidenceReader._relative_paths:OSError": (
+    "reader.py:EvidenceReader.relative_paths:OSError": (
         "the walk's only calls that are not total are `Path.iterdir` and "
         "`Path.is_dir`, and `OSError` is both contracts -- `is_dir` swallows its own "
         "internally, which is the recorded residual: a directory that is really an "

@@ -50,7 +50,7 @@ from theurian.infrastructure.review_evidence.run import IngestionRun
 from theurian.infrastructure.review_evidence.spellings import first_differing_component
 from theurian.security.paths import read_source_file
 
-#: The directory names :meth:`EvidenceReader._relative_paths` walks, derived from
+#: The directory names :meth:`EvidenceReader.relative_paths` walks, derived from
 #: the enum rather than listed, so a fourth kind is walked by the change that
 #: adds it.
 _KIND_DIRECTORIES: Final = frozenset(kind.value for kind in EvidenceKind)
@@ -167,9 +167,9 @@ class EvidenceReader:
                 same grounds, after the ``SecurityError`` and ``DomainError`` arms
                 above it have taken their own members.
         """
-        return tuple(self._read_one(relative) for relative in sorted(self._relative_paths()))
+        return tuple(self._read_one(relative) for relative in sorted(self.relative_paths()))
 
-    def _relative_paths(self) -> list[str]:
+    def relative_paths(self) -> frozenset[str]:
         """Every ``.json`` leaf exactly two directories below the review root.
 
         Two levels exactly, because that is the layout
@@ -178,6 +178,27 @@ class EvidenceReader:
         directory that is not one of the record kinds, is left alone rather than
         read -- a project may keep a ``README`` beside its evidence, and refusing
         one would make the directory this product's rather than the project's.
+
+        **Public because a derived build has to ask what still exists without
+        reading it.**
+        :meth:`~theurian.application.review_search_builder.ReviewSearchBuilder.build`
+        reads the evidence outside the project's write lock and publishes inside
+        it, so it revalidates membership against this listing immediately before
+        the write -- a record whose file was deleted in between must not be
+        republished. This is the seam that makes that check ask the *same* walk
+        :meth:`read_all` reads through, rather than a second enumeration with its
+        own opinion about which directories count and which suffix is a record.
+
+        It opens no file and decodes nothing, which is what makes it callable
+        under that lock at all: the only calls below that touch the filesystem are
+        ``Path.iterdir`` and ``Path.is_dir`` -- the same two
+        ``tests/unit/test_review_evidence_exception_keys.py`` records this method's
+        ``OSError`` arm against.
+
+        A ``frozenset`` because membership is what the caller asks of it, and the
+        strings are unique by construction anyway -- one directory cannot hold two
+        entries of one name, so no composition of three of them repeats.
+        :meth:`read_all` sorts it back into the total order it promises.
 
         **Finding folds; accepting does not** (round two, R2-C). Both selections
         here used to be byte comparisons against a filesystem that folds case, so
@@ -196,15 +217,21 @@ class EvidenceReader:
         choose. The other half of the same rule is at the write, where
         :class:`OnDiskSpellings` refuses before a record can land into such a
         directory at all.
+
+        Raises:
+            ReviewEvidenceError: If the review directory cannot be listed. The
+                caller under the write lock publishes nothing in that case, which
+                is the direction to fail in: a build that could not learn what is
+                on disk and wrote anyway would be the one that reverts a deletion.
         """
         if not self._root.is_dir():
-            return []
+            return frozenset()
         try:
             # `kind_directory` rather than `kind`: the name `kind` is an
             # `EvidenceKind` everywhere else in this package, and a `Path` bound
             # to it here made `kind.name` read as the enum's member name when it
             # is the directory's.
-            return [
+            return frozenset(
                 f"{repository.name}/{kind_directory.name}/{leaf.name}"
                 for repository in self._root.iterdir()
                 if repository.is_dir()
@@ -212,7 +239,7 @@ class EvidenceReader:
                 if kind_directory.is_dir() and kind_directory.name.casefold() in _KIND_DIRECTORIES
                 for leaf in kind_directory.iterdir()
                 if leaf.name.casefold().endswith(EVIDENCE_SUFFIX)
-            ]
+            )
         except OSError as exc:
             raise ReviewEvidenceError(
                 "The review directory could not be listed: "
