@@ -35,6 +35,18 @@ of the entry moving.
    would raise it, and that paragraph is what makes the Medium checkable by
    someone who was not in the round.
 
+**A fifth thing is held, and it is a population rather than a fact.** T-24's
+control table carries the rule the round that closed this class wrote: a sentence
+asserting provenance or an ingestion guarantee for a field that can arrive clone-
+delivered either names the route it holds for, or says what the read actually
+checks -- shape and the derived path, never authorship. That closure was reached
+by deriving the sentences rather than fixing the ones a review quoted, and a
+closure of that shape decays through the *next* sentence somebody writes. So the
+population is re-derived here every run from the surfaces and the key the census
+used, and compared against the census that judged it: a new matching line has no
+judgement behind it and fails. It cannot decide whether a sentence is honest --
+that is a reading -- but an unjudged member can no longer be added silently.
+
 **Both sides are pinned, and they fail differently.** The fact arms read the
 live symbols and one syntax tree; the prose arms read the entry and the
 document's summary table. Neither side is parsed from the other. A prose arm RED
@@ -50,14 +62,15 @@ is built on -- and a lookup that found neither would fail on the presence half
 rather than pass on the absence half.
 
 Pure in the sense the other claim pins are: one document read as text, one module
-read as a syntax tree, and two modules read for their symbols -- no database,
-socket or temporary directory.
+read as a syntax tree, two modules read for their symbols, and the thirteen
+authority surfaces read as lines -- no database, socket or temporary directory.
 """
 
 from __future__ import annotations
 
 import ast
 import pathlib
+import re
 from typing import Final
 
 import pytest
@@ -352,4 +365,194 @@ def test_the_threat_summary_table_carries_t24_at_the_grade_the_entry_argues() ->
         f"argues `{_GRADE}`. A reader triaging from the table would carry the table's "
         f"figure into a decision the entry does not support -- and if the grade really "
         f"moved, it moves in both places and in the entry's argument for it"
+    )
+
+
+# -- the honest-wording ratchet, derived ---------------------------------------
+
+#: The surfaces T-24's control-table rule ranges over: everything that *describes*
+#: a served review field, or the ingestion guarantee around it, with the authority
+#: of the product rather than of a commit message. Taken verbatim from the census
+#: that closed the class, so this pin and that closure read one population.
+#:
+#: A directory contributes its ``.py`` files. ``tests/`` is deliberately absent:
+#: a test narrating the flag is held by ``test_review_ingestion_flag_claims.py``'s
+#: era rows, which compare it against the published value rather than against this
+#: rule.
+_AUTHORITY_SURFACES: Final = (
+    "schemas/mcp/review-search-response.schema.json",
+    "schemas/mcp/system-capabilities-response.schema.json",
+    "schemas/config/project-config.schema.json",
+    "packages/theurian-core/src/theurian/mcp/review_search.py",
+    "packages/theurian-core/src/theurian/mcp/tools.py",
+    "packages/theurian-core/src/theurian/domain/review_search.py",
+    "packages/theurian-core/src/theurian/application/review_search_builder.py",
+    "packages/theurian-core/src/theurian/infrastructure/review_evidence/",
+    "packages/theurian-core/src/theurian/infrastructure/sqlite/review_search_store.py",
+    "docs/security/threat-model.md",
+    "docs/protocol/mcp-tools.md",
+    "docs/architecture/review-knowledge.md",
+    "plugins/claude-code/commands/ingest.md",
+)
+
+#: The spellings a provenance or ingestion-guarantee sentence reaches for. Case-
+#: insensitive, matched per line, and the same alternation the closing census ran
+#: -- so a member this pin reports is a member that census judged.
+#:
+#: **Deliberately an over-approximation.** ``allowlist`` and ``secret scan`` catch
+#: knowledge-side sentences that are out of the class entirely. That is the right
+#: direction for a ratchet: it costs a judgement on a sentence that turns out to be
+#: fine, and the alternative -- a key narrow enough to be quiet -- is a key that
+#: misses the sentence nobody thought to spell out.
+_OVER_CLAIM_TERMS: Final = re.compile(
+    r"at ingestion|Theurian (itself )?(wrote|writes)|written by Theurian|never received"
+    r"|not received|allowlist|secret scan|was visible to|public[- ]allowlisted"
+    r"|every record it holds|every record held|an author chose|provider's own"
+    r"|as the provider resolved|the adapter record|the ingestion (adapter|run|path|scan)"
+    r"|landed by|already ingested|pseudonymised at landing",
+    re.IGNORECASE,
+)
+
+#: Matching lines per surface, measured 2026-09-11 at the commit that adds this
+#: arm, after the census's own rewordings landed. Seventy-seven lines; the closing
+#: census reported eighty-four **before** it rewrote the sentences that carried
+#: ``every record it holds`` and its siblings, which is the difference.
+_JUDGED_CENSUS: Final[dict[str, int]] = {
+    "docs/security/threat-model.md": 27,
+    "docs/architecture/review-knowledge.md": 8,
+    "packages/theurian-core/src/theurian/mcp/tools.py": 8,
+    "schemas/mcp/review-search-response.schema.json": 7,
+    "docs/protocol/mcp-tools.md": 5,
+    "packages/theurian-core/src/theurian/application/review_search_builder.py": 4,
+    "schemas/config/project-config.schema.json": 4,
+    "packages/theurian-core/src/theurian/domain/review_search.py": 3,
+    "packages/theurian-core/src/theurian/infrastructure/review_evidence/records.py": 3,
+    "plugins/claude-code/commands/ingest.md": 3,
+    "schemas/mcp/system-capabilities-response.schema.json": 3,
+    "packages/theurian-core/src/theurian/infrastructure/review_evidence/layout.py": 1,
+    "packages/theurian-core/src/theurian/infrastructure/sqlite/review_search_store.py": 1,
+}
+
+
+def _surface_files() -> list[pathlib.Path]:
+    """Every file the population key names, a directory expanded to its modules."""
+    found: list[pathlib.Path] = []
+    for surface in _AUTHORITY_SURFACES:
+        path = REPO_ROOT / surface
+
+        # Named rather than left to raise: a surface that moved is the way this
+        # key goes blind, and the total below stays comfortably above its floor
+        # when one file drops out. `FileNotFoundError` is a failure too, but it
+        # says nothing about what to do with it.
+        assert path.exists(), (
+            f"`{surface}` is in the T-24 authority population and is not in the tree. "
+            f"If it moved, move it here in the same commit -- a population key that "
+            f"names a path nothing resolves stops reading a surface it claims to cover"
+        )
+
+        found.extend(sorted(path.rglob("*.py")) if surface.endswith("/") else [path])
+    return found
+
+
+def _authority_census() -> dict[str, int]:
+    """Matching lines per surface, keyed by repository-relative path."""
+    counted: dict[str, int] = {}
+    for path in _surface_files():
+        hits = sum(
+            1
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if _OVER_CLAIM_TERMS.search(line)
+        )
+        if hits:
+            counted[path.relative_to(REPO_ROOT).as_posix()] = hits
+    return counted
+
+
+def test_the_authority_surfaces_still_carry_the_sentences_the_key_was_built_for() -> None:
+    """The premise: a key that matched nothing would report a clean surface.
+
+    The arm below asserts that a population has not *grown*. An assertion of that
+    shape passes perfectly against a key that stopped matching -- a renamed file, a
+    moved schema, a regex broken by an edit -- and it would pass most convincingly
+    at the moment it had stopped working. So the population is asserted to be
+    substantial first, and asserted to reach the two surfaces the class was found
+    on rather than merely to be non-empty somewhere.
+    """
+    census = _authority_census()
+
+    assert sum(census.values()) > 50, (
+        f"the population key matched {sum(census.values())} lines across "
+        f"{len(census)} surfaces. It matched 77 when it was written, so a figure this "
+        f"small means the key has stopped reading the surfaces it names rather than "
+        f"that the sentences went away"
+    )
+    for surface in (
+        "docs/security/threat-model.md",
+        "schemas/mcp/review-search-response.schema.json",
+    ):
+        assert census.get(surface), (
+            f"`{surface}` matched nothing. That is where the over-claiming sentences were "
+            f"found, so a zero here is the key going blind, not the surface going quiet"
+        )
+
+
+def test_no_unjudged_sentence_joins_the_t24_authority_population() -> None:
+    """RED means a provenance sentence entered an authority surface unjudged.
+
+    T-24's control table states the rule this arm ratchets: *a sentence asserting
+    provenance or an ingestion guarantee for a field that can arrive clone-
+    delivered either names the route it holds for, or says what the read actually
+    checks -- which is shape and the derived path, never authorship.* The class was
+    closed by deriving that population and judging all of it, rather than by fixing
+    the sentences a review round happened to quote.
+
+    A closure like that decays in one way: the next sentence. Somebody documents a
+    served field, reaches for "landed by `theurian review ingest`" because that is
+    the route they have in mind, and the surface over-claims again -- for a corpus
+    a clone can carry, which is the whole residual T-24 accepts. Nothing would say
+    so, because the sentence reads exactly like the ones already there.
+
+    So the **population** is derived here every run and compared against the census
+    that judged it. A new matching line in any authority surface has no judgement
+    behind it and fails, naming the file and the rule to judge it by. This does not
+    and cannot decide whether the wording is honest -- that is a reading -- but it
+    makes an unjudged member impossible to add silently, which is the part that was
+    missing.
+
+    **What it costs, recorded rather than claimed away.** The key is an over-
+    approximation, so an out-of-class edit -- a knowledge-side ``allowlist``
+    sentence -- reddens too, and the answer is to judge it and move the number. And
+    a reword that removes one matching line while adding another leaves the count
+    where it was: this arm holds the population's *size* per surface, not its text,
+    and pinning eighty-odd sentences verbatim would break on a line wrap.
+
+    Paired with the fact side, which is held elsewhere and not restated here: the
+    served field classification (``AUTHOR_CONTROLLED_FIELDS`` and
+    ``PROVIDER_CONTROLLED_FIELDS``, pinned against the schema's own property set by
+    ``test_schemas.py`` and against the served response by
+    ``test_review_search_tool.py``), and the day per-record provenance lands, which
+    is :func:`test_provenance_gained_no_per_record_member_while_t24_records_one_as_unowned`'s
+    equality over ``BuildProvenance``'s families.
+    """
+    census = _authority_census()
+    grown = {
+        surface: (count, _JUDGED_CENSUS.get(surface, 0))
+        for surface, count in census.items()
+        if count > _JUDGED_CENSUS.get(surface, 0)
+    }
+
+    assert not grown, (
+        "an authority surface gained a line matching the T-24 provenance key, and "
+        "nothing has judged it:\n"
+        + "".join(
+            f"\n  {surface}: {now} lines, {then} judged"
+            for surface, (now, then) in sorted(grown.items())
+        )
+        + "\n\nJudge the new sentence against T-24's control-table rule: a sentence "
+        "asserting provenance or an ingestion guarantee for a field that can arrive "
+        "clone-delivered either **names the route it holds for** (`theurian review "
+        "ingest` landed it, or a clone delivered it), or **says what the read "
+        "actually checks** -- shape and the derived path, never authorship. Then "
+        "record the new count in `_JUDGED_CENSUS` in the same commit, so the next "
+        "reader can see it was judged rather than absorbed."
     )
