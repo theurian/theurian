@@ -564,6 +564,74 @@ def test_a_hand_edited_pull_request_number_is_refused_with_the_record_cure(
         )
 
 
+#: Event keys whose trailing run is digits to Unicode and not to ASCII, with what
+#: an ``int`` would make of each. Every one is matched by ``\\d`` without
+#: ``re.ASCII``, and ``int`` converts all four -- so a pattern that dropped the
+#: flag would store a pull-request number **no provider ever issued**, silently
+#: and with no refusal anywhere.
+#:
+#: Four rather than one, because they are four different Unicode decimal families
+#: and a narrowing that admitted only some of them is the same defect:
+#: Arabic-Indic at one digit and at three, fullwidth Latin, and Lepcha.
+_NON_ASCII_DIGIT_KEYS: Final[tuple[tuple[str, str, int], ...]] = (
+    ("arabic-indic-one-digit", "٣", 3),
+    # RUF001 is suppressed rather than obeyed: the fullwidth digits are
+    # *confusable with ASCII ones*, which is the property under test rather than a
+    # typo, and an escape would hide the very thing an operator sees in a
+    # hand-edited file.
+    ("fullwidth", "１２", 12),  # noqa: RUF001
+    ("arabic-indic-three-digits", "٩٨٧", 987),
+    ("lepcha", "᱇", 7),
+)
+
+
+@pytest.mark.parametrize(
+    ("suffix", "would_be"),
+    [(case[1], case[2]) for case in _NON_ASCII_DIGIT_KEYS],
+    ids=[case[0] for case in _NON_ASCII_DIGIT_KEYS],
+)
+def test_a_non_ascii_digit_in_an_event_key_names_no_pull_request(
+    tmp_path: Path, suffix: str, would_be: int
+) -> None:
+    """``_EVENT_KEY_NUMBER``'s ``re.ASCII`` flag, which nothing drove.
+
+    The pattern's own note says why the flag is there: ``\\d`` matches every
+    Unicode decimal digit without it, ``int`` accepts them all, and the result
+    would be a pull-request number no provider issued -- attached to a real
+    record, filterable, and indistinguishable on the wire from one GitHub gave.
+    The premise is measured rather than argued: each suffix really does convert,
+    so a pattern without the flag really would produce that number.
+
+    A landed file's ``eventKey`` is hand-edited, for the reason the sibling cases
+    give: that string is the only place such a number can enter, because the
+    shipped writer builds the key from an ``int``.
+
+    The correct answer is ``None`` rather than a refusal. A key that does not match
+    the one format the shipped writer produces names no pull request, and the
+    record is still review evidence worth serving under every other filter -- so
+    the build succeeds and the column is empty.
+    """
+    assert int(suffix) == would_be, (
+        "the premise: `int` really converts this run, so a pattern without `re.ASCII` "
+        "really would store it as a pull-request number"
+    )
+    paths = _project(tmp_path)
+    evidence = _landed(paths, _submission())
+    _with_event_key(paths, suffix)
+
+    store, report = _build(paths, evidence, withheld=frozenset())
+
+    assert report == {"records": 1, "withheld": 0}, (
+        "the build must still succeed: a key that names no pull request is not a damaged "
+        "record, and refusing it would drop real review evidence"
+    )
+    (stored,) = store.dump()
+    assert stored.pull_request is None, (
+        f"a non-ASCII digit run became pull request {stored.pull_request}, a number no "
+        f"provider issued -- and one a caller can filter on as though it had"
+    )
+
+
 def test_the_over_range_refusal_never_renders_the_number_it_refuses(tmp_path: Path) -> None:
     """RED means composing the refusal is itself the next crash.
 
