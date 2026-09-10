@@ -65,7 +65,7 @@
           "repository": {
             "type": "string",
             "minLength": 1,
-            "description": "The repository as the provider resolved it, `owner/name`. Provider structure — the adapter checks the resolved name back against the allowlist entry it asked for (ADR-0030 decision 2) — and **never** joined into a filesystem path."
+            "description": "The repository as the provider resolved it, `owner/name`. Provider structure — the adapter checks the resolved name back against the allowlist entry it asked for (ADR-0030 decision 2) — and **never** joined into a filesystem path.\n\n**The `repository` filter's collation is exact**, byte for byte and case-sensitive, while ingestion is case-insensitive about a repository name: the allowlist check case-folds, as GitHub does, so a project can hold records under a spelling the operator did not type. **The stored spelling is this field's value** — read it off a served record and filter with that, rather than with the spelling you would have written."
           },
           "pullRequest": {
             "type": ["integer", "null"],
@@ -78,7 +78,7 @@
           },
           "filePath": {
             "type": ["string", "null"],
-            "description": "The file a review thread is anchored to, as received, or `null` for a record with no anchor file.\n\n**Untrusted content, and the row most easily got wrong** (ADR-0030 decision 3's field table, decision 6). It looks like provider structure and is not: whoever authored the pull request named the file. It is served as **data** for filtering and display, and **SHALL NOT** be used to build a filesystem path — the containment SEC-7 requires is not weakened by a string that arrived over the network. The three labels below are what say so on the wire."
+            "description": "The file a review thread is anchored to, as received, or `null` for a record with no anchor file.\n\n**Untrusted content, and the row most easily got wrong** (ADR-0030 decision 3's field table, decision 6). It looks like provider structure and is not: whoever authored the pull request named the file. It is served as **data** for filtering and display, and **SHALL NOT** be used to build a filesystem path — the containment SEC-7 requires is not weakened by a string that arrived over the network. The three labels below are what say so on the wire.\n\n**The `filePath` filter's collation is exact too**, byte for byte and case-sensitive, like `repository` above. Only `q` folds case, and only the 26 ASCII letters."
           },
           "sourceUri": {
             "type": "string",

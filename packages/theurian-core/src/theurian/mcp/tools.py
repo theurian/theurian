@@ -2245,6 +2245,21 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         is that it is never written: it has no row in any table, so nothing here
         can distinguish "withheld" from "never existed".
 
+        **The equality filters are exact and case-sensitive, and ``q`` is not.**
+        ``repository``, ``filePath``, ``author`` and ``threadState`` are compared
+        byte for byte -- SQLite's default collation -- so ``repository`` must be
+        spelled as the store holds it, which is the spelling the response's own
+        ``repository`` field carries. ``q`` folds the 26 ASCII letters and nothing
+        else, because it is a ``LIKE``. The asymmetry is worth stating because
+        *ingestion* is case-insensitive about a repository name: the adapter
+        checks GitHub's answer against the allowlist entry case-folded, and GitHub
+        itself treats owner and repository names that way, so a project can hold
+        records under a spelling the operator did not type. Measured 2026-09-10
+        against a record stored as ``Acme/Order-Service``: the stored spelling
+        answers one row, ``acme/order-service`` answers none. Read the spelling
+        off a served record rather than assuming one; normalising the filters is
+        a change to the store's own schema and is not made here.
+
         **Every published value is a function of the rows this call served, or of
         this response's own boundary.** ``count`` sizes the returned array; each
         row is stored columns, unmodified but for the excerpt's cut; ``truncated``

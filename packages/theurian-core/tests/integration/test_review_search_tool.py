@@ -1377,3 +1377,51 @@ def test_the_response_budget_covers_every_key_a_record_publishes() -> None:
             f"lengthening `{key}` did not move the budget, so the walk does not "
             f"reach it and a value planted there would cost the response nothing"
         )
+
+
+# -- The collation the equality filters use ------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_equality_filters_are_exact_while_q_folds_ascii_case(
+    project: ProjectRegistry,
+) -> None:
+    """The key beside the docstring's collation sentence, and the asymmetry it warns of.
+
+    Ingestion is case-insensitive about a repository name -- the adapter checks
+    GitHub's answer against the allowlist entry case-folded, as GitHub itself does
+    -- so a project can hold records under a spelling the operator never typed.
+    The equality filters are SQLite's default collation, byte for byte, and ``q``
+    is a ``LIKE`` that folds the 26 ASCII letters and nothing else. A caller who
+    read one behaviour off the other would take an empty response for "there are
+    no such records".
+
+    Driven both ways round on both filters, so a store that had started folding
+    (or a ``q`` that had stopped) reddens here rather than in a user's terminal.
+    """
+    stored = "Acme/Order-Service"
+    _land_and_build(project, "demo", _corpus("demo", stored))
+
+    exact = await _call(project, repository=stored)
+    folded = await _call(project, repository=stored.lower())
+    path_exact = await _call(project, filePath=AUTHOR_FILE)
+    path_folded = await _call(project, filePath=AUTHOR_FILE.upper())
+    text_exact = await _call(project, q="Bound the retry budget")
+    text_folded = await _call(project, q="bound the retry budget")
+
+    assert exact["count"] > 0
+    assert folded["count"] == 0, (
+        "the repository filter folded case; the docstring and the response schema "
+        "both say it does not, and a caller told otherwise would filter on a "
+        "spelling that is not the stored one"
+    )
+    assert exact["records"][0]["repository"] == stored, (
+        "the served value is what a caller is told to filter with, so it has to be "
+        "the stored spelling"
+    )
+    assert path_exact["count"] > 0
+    assert path_folded["count"] == 0
+    assert text_exact["count"] == text_folded["count"] > 0, (
+        "`q` is a LIKE and folds ASCII case; if it stopped, the docstring's "
+        "asymmetry is no longer the one being described"
+    )
