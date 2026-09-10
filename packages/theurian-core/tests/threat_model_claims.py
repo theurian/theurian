@@ -4,7 +4,13 @@
 state facts about today's code -- how many places may spawn a process, which
 derived database families exist, which symbol gates a serve path. Each of those
 sentences is worth exactly what it says only while something recomputes it, so
-this file set holds them against the code, one module per entry.
+this file set holds them against the code, one module per entry -- with one
+recorded exception. T-6 has two, because the entry carries two independent claim
+surfaces with different fact sides: ``test_threat_model_t6_claims.py`` holds the
+fourth query-side member's served-text bound, and
+``test_threat_model_t6_review_search_claims.py`` holds the fifth member's bounds
+table and its wall-clock deferral. Both read the entry through :func:`entry`,
+which is the part the convention exists to share.
 
 **The slicing lives here because it is the part every such pin gets wrong the
 same way.** An entry is a Markdown section with no closing delimiter: it runs

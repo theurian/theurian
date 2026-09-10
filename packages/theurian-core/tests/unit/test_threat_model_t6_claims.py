@@ -35,6 +35,14 @@ can omit it and get a whole column back; (5) the read fetches exactly one
 character more than the surface publishes, which is the evidence
 ``mcp/findings.py::_bounded_text`` marks a cut from.
 
+**T-6 has a second pin module, and this one is not it.** Everything here is
+about the **fourth** query-side member, ``review.findings``, and one row of its
+bounds table. The **fifth** member, ``review.search``, has its own block in the
+same entry -- its own bounds table, its own symbols, and a wall-clock deferral
+that converts an adversarial HIGH -- and that block is held by
+``tests/unit/test_threat_model_t6_review_search_claims.py``. A change to this
+entry that touches the fifth member belongs there.
+
 **What it does not hold.** That the serving read *uses* the projection it
 selects, or that anything is actually cut: the statement is assembled at call
 time, and a store that selected ``_SERVE_COLUMNS`` and then re-read the whole
