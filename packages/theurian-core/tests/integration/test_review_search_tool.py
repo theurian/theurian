@@ -1776,6 +1776,35 @@ def test_one_record_larger_than_the_whole_budget_is_served_alone_and_whole() -> 
     assert payload["records"][0]["filePath"] == "f" * over
 
 
+def test_a_page_the_budget_stops_short_of_the_limit_still_reports_truncated() -> None:
+    """The one arm that separates ``truncated``'s two candidate spellings.
+
+    ``truncated`` is ``len(served) < len(probed)``. The spelling it replaced,
+    ``len(probed) > page_size``, agrees with it everywhere the read filled the
+    page -- which is every other budget test in this module: 11 probed against a
+    page of 10, three against two. Both say ``True`` there, so none of them can
+    tell the two apart, and a regression to the old spelling would keep them all
+    green.
+
+    Here the read returned **fewer** records than the limit and the budget still
+    cut the page: five matches asked for at a limit of fifty, one served. The
+    caller is holding one record out of five and must be told the answer ended
+    early -- under the old spelling ``5 > 50`` is ``False``, and this response
+    would claim to be the whole answer while withholding four of its five
+    records. That is the failure this test prevents, and it is why the arm is
+    written with ``page_size`` far above the match count rather than one above
+    it.
+    """
+    over = MAX_REVIEW_SEARCH_RESPONSE_CHARS
+    probed = tuple(_planted(index, field_chars=over) for index in range(5))
+
+    payload = review_search_payload(probed, page_size=50)
+
+    assert len(probed) < 50, "the read must fall short of the page for this arm to separate"
+    assert payload["count"] == 1
+    assert payload["truncated"] is True
+
+
 def test_the_response_budget_covers_every_key_a_record_publishes() -> None:
     """RED means the budget ranges over a subset of what it protects.
 
