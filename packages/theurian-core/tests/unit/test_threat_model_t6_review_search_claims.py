@@ -420,6 +420,27 @@ def test_t6_gives_review_search_its_own_bounds_block_and_cites_every_published_b
     )
 
 
+#: The symbols T-6's fifth-member table puts a **figure** beside, measured
+#: 2026-09-11. Six of the eight bounds the table ranges over.
+#:
+#: The two absentees are absent for their own reasons, and both are deliberate:
+#: ``MAX_PULL_REQUEST`` is written as the expression a reader sizes it by rather
+#: than as a decimal, and ``MAX_REVIEW_SEARCH_RESPONSE_CHARS`` is described by what
+#: it bounds rather than by its number. Neither is covered by the drift comparison,
+#: which is the honest bound and is why they are named here instead of left as a
+#: gap in a set nobody wrote down.
+_CITED_SYMBOLS: Final = frozenset(
+    {
+        "ADMISSION_WAIT_SECONDS",
+        "DEFAULT_REVIEW_SEARCH_LIMIT",
+        "MAX_CONCURRENT_SEARCHES",
+        "MAX_EXCERPT_CHARS",
+        "MAX_FILTER_CHARS",
+        "MAX_REVIEW_SEARCH_LIMIT",
+    }
+)
+
+
 def test_the_figures_t6_puts_beside_each_bound_are_the_live_ones() -> None:
     """RED means the record states a bound the code does not apply.
 
@@ -438,6 +459,16 @@ def test_the_figures_t6_puts_beside_each_bound_are_the_live_ones() -> None:
     ``mcp/tools.py`` and are read from its source rather than imported, for the
     reason ``test_threat_model_t19_claims.py`` records: a pin over the daemon's
     tool surface should not depend on that surface importing cleanly.
+
+    **Which symbols carry a figure is pinned, not merely that some symbol does.**
+    The drift check only ranges over the citations it finds, so a figure deleted
+    from the table takes its own coverage with it: the entry stops stating that
+    bound, the comparison stops making it, and both look like success. A floor of
+    "at least one citation" is satisfied by a table that quotes one of eight. So
+    the cited set is compared against :data:`_CITED_SYMBOLS` by equality --
+    six of the eight today, and the two that carry no figure are named there with
+    why. A citation lost reddens; a citation gained reddens too, and is answered by
+    recording it, at which point the drift check covers it.
     """
     block = _member_block(_ORDINAL)
     rows = "\n".join(_table_rows(block))
@@ -450,9 +481,17 @@ def test_the_figures_t6_puts_beside_each_bound_are_the_live_ones() -> None:
         for symbol in live
         if (found := _citation(symbol).findall(rows)) and found[0]
     }
-    assert quoted, (
-        f"T-6's `{_ORDINAL}` member table puts a figure beside none of {sorted(live)}, "
-        f"so there is nothing here to compare against the live constants: {rows[:400]}"
+    assert set(quoted) == set(_CITED_SYMBOLS), (
+        f"T-6's `{_ORDINAL}` member table cites {sorted(quoted)}; this pin records "
+        f"{sorted(_CITED_SYMBOLS)}.\n\n"
+        f"LOST a citation {sorted(set(_CITED_SYMBOLS) - set(quoted))}: the entry no "
+        f"longer states that bound, and the drift comparison below silently stops "
+        f"covering it -- which reads as a pass. Restore the figure, or record here "
+        f"that the entry deliberately stopped stating it.\n\n"
+        f"GAINED a citation {sorted(set(quoted) - set(_CITED_SYMBOLS))}: welcome, and "
+        f"add it to `_CITED_SYMBOLS` in the same commit so the next reader can see the "
+        f"coverage grew rather than wondering.\n\n"
+        f"Rows read: {rows[:400]}"
     )
 
     drifted = {

@@ -1732,9 +1732,15 @@ def test_an_ordinary_full_page_is_nowhere_near_the_response_budget() -> None:
     assert payload["count"] == MAX_REVIEW_SEARCH_LIMIT
     assert payload["truncated"] is False
     spent = sum(_record_chars(row) for row in payload["records"])
-    assert spent < MAX_REVIEW_SEARCH_RESPONSE_CHARS, (
-        f"an ordinary full page spends {spent} of {MAX_REVIEW_SEARCH_RESPONSE_CHARS}; "
-        f"the budget has stopped being headroom"
+    # "Nowhere near" is a ratio, so it is asserted as one. `spent <
+    # MAX_REVIEW_SEARCH_RESPONSE_CHARS` is what `truncated is False` above already
+    # implies -- it would hold at 99% of the bound, which is a page one longer
+    # field away from being cut and is not headroom by any reading of the word.
+    assert spent * 2 < MAX_REVIEW_SEARCH_RESPONSE_CHARS, (
+        f"an ordinary full page spends {spent} of {MAX_REVIEW_SEARCH_RESPONSE_CHARS}, "
+        f"{spent / MAX_REVIEW_SEARCH_RESPONSE_CHARS:.0%} of the budget. Under half is "
+        f"what this case means by headroom; above it, the budget has started bounding "
+        f"legitimate answers and the next field added to a record will cut one"
     )
 
 
@@ -1788,6 +1794,33 @@ def test_one_record_larger_than_the_whole_budget_is_served_alone_and_whole() -> 
     assert payload["records"][0]["filePath"] == "f" * over
 
 
+def test_the_only_match_is_served_over_budget_and_is_not_called_truncated() -> None:
+    """The over-budget record that is also the whole answer, which is not truncation.
+
+    The response schema said an over-long first record comes back "with
+    ``truncated`` true", full stop. That is the *page's-first-of-many* case above,
+    and it is not what happens when the read found exactly one record: nothing was
+    dropped, so ``truncated`` is ``false`` and the caller is correctly told this is
+    the whole answer to its filter. The behaviour was right and the published
+    sentence was wrong, which is the direction that misleads a client -- it would
+    have gone looking for a page that does not exist.
+
+    Driven beside the case above with the *same* over-budget record, so the two
+    differ in one thing only: whether the read returned anything behind it.
+    """
+    over = MAX_REVIEW_SEARCH_RESPONSE_CHARS
+    probed = (_planted(0, field_chars=over),)
+
+    payload = review_search_payload(probed, page_size=50)
+
+    assert payload["count"] == 1
+    assert payload["records"][0]["filePath"] == "f" * over, (
+        "the premise: the only match must still be the over-budget record, or this is "
+        "not the same case as the arm above"
+    )
+    assert payload["truncated"] is False
+
+
 def test_a_page_the_budget_stops_short_of_the_limit_still_reports_truncated() -> None:
     """The one arm that separates ``truncated``'s two candidate spellings.
 
@@ -1827,6 +1860,14 @@ def test_the_response_budget_covers_every_key_a_record_publishes() -> None:
 
     Driven by lengthening each key's value in turn: a key the walk does not reach
     costs the response nothing, and the sum does not move.
+
+    **The key name is charged too, and that half needs its own arm.** A row's cost
+    is ``len(key) + len(value)``, because what a client receives is the serialised
+    object and the key travels in it. Lengthening a value cannot tell that term is
+    there: drop ``len(key)`` from the sum and every assertion above still passes,
+    since a widened value moves the total either way. So the second loop renames a
+    key without touching its value, which moves the cost only if the name is
+    charged.
     """
     row = review_record(_hit())
     baseline = _record_chars(row)
@@ -1837,6 +1878,14 @@ def test_the_response_budget_covers_every_key_a_record_publishes() -> None:
         assert _record_chars(widened) > baseline, (
             f"lengthening `{key}` did not move the budget, so the walk does not "
             f"reach it and a value planted there would cost the response nothing"
+        )
+    for key in row:
+        renamed = {("x" * 500 if name == key else name): value for name, value in row.items()}
+        assert _record_chars(renamed) > baseline, (
+            f"lengthening the *name* `{key}` did not move the budget, so the walk charges "
+            f"nothing for the key. A response's keys are bytes a client receives, and a "
+            f"sum that counts only values under-reports every row by the width of its "
+            f"own field names"
         )
 
 
