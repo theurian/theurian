@@ -376,3 +376,67 @@ def test_a_corpus_an_operator_emptied_inside_the_window_is_published_rather_than
         f"an operator deleted, which is decision 3's only retention remedy silently "
         f"undone -- and the build that undid it refused, so nothing said so"
     )
+
+
+def test_a_build_over_an_emptied_corpus_a_writer_landed_into_refuses_and_leaves_the_store(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The third world, and the one that let a false pairing stay green.
+
+    The two cases above are the guard's two outcomes over a corpus an operator
+    emptied: face 2 is the same act with **nothing** landing inside the window, so
+    the corpus is gone at the publish and the empty store is published. Here a
+    writer lands a record inside that same window. The corpus is therefore *not*
+    gone when the build reaches its publish, the build has nothing it can publish
+    from it, and it refuses -- and the store the earlier build wrote goes on
+    serving.
+
+    **Nothing about that is a change this pull request made.** The guard has
+    behaved this way since it was rekeyed; what was missing was a case standing on
+    this row, and its absence is why a pairing written on the *intent* axis -- an
+    all-withheld build matching "a corpus emptied on purpose" -- read as true. It
+    is not: an emptied corpus is in the publishing world only while the listing at
+    the publish is empty, and this case is the other half of that act.
+
+    It is also why "emptied on purpose" is not an input the build can recognise.
+    What reaches it is ``entries == ()``, which an un-ingested project produces
+    just as readily, so the refusal below is byte-identical to the one a corpus
+    that never held records gets -- the residual
+    ``review_search_builder.build``'s docstring records.
+
+    Four assertions, each failing on its own. The read found nothing, asserted off
+    the read. The command exits 1 with the envelope on stderr. The refusal is the
+    read-nothing arm. And the rows the earlier build published are still there,
+    which is what the refusal buys an operator whose deletion raced a writer.
+    """
+    _land(project)
+    seeded = runner.invoke(app, ["review", "build", "--json"], catch_exceptions=False)
+    assert seeded.exit_code == 0, seeded.stderr
+    assert _stored_rows(project) == LANDED_RECORDS, (
+        "the store did not come up holding the landed records, so there is nothing "
+        "for the refusal below to be protecting"
+    )
+    _delete_every_evidence_file(project)
+
+    observed = _with_a_writer_between_the_read_and_the_publish(monkeypatch, lambda: _land(project))
+
+    result = runner.invoke(app, ["review", "build", "--json"], catch_exceptions=False)
+
+    assert observed.count == 0, (
+        f"the premise: this build read {observed.count} records over a corpus that was "
+        f"emptied before it started, so the landing did not fall inside its window and "
+        f"this case drove a stale read rather than the read-nothing row"
+    )
+    assert result.exit_code == 1, result.stdout + (result.stderr or "")
+    assert result.stdout == ""
+    payload = json.loads(result.stderr)
+    assert "read no evidence records" in payload["error"], (
+        f"the refusal is not the read-nothing arm, so this case is not on the row it "
+        f"names: {payload['error']!r}"
+    )
+    assert _stored_rows(project) == LANDED_RECORDS, (
+        f"the store holds {_stored_rows(project)} records where the earlier build "
+        f"published {LANDED_RECORDS}: a build that could publish nothing replaced a "
+        f"serving store, at the one moment nothing downstream can tell that from a "
+        f"project with no evidence"
+    )

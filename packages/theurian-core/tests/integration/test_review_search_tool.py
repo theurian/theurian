@@ -1986,7 +1986,9 @@ def test_the_scoped_section_excludes_the_sibling_tool() -> None:
     """The bounds pin's scoping, held rather than described (round one, adversarial).
 
     :func:`_published_review_search_section` slices one tool's section out of a
-    page that documents six, and the arm below reads its bounds from that slice.
+    page that documents **seven** -- that page's own opening sentence states the
+    number, and ``test_documented_tool_set.py`` holds it against the built server
+    -- and the arm below reads its bounds from that slice.
     Nothing held the slice: widening it to the whole file left every assertion
     green, because no fragment there happens to appear twice today. A structural
     choice nothing checks is a structural choice the next edit removes -- and it

@@ -31,6 +31,27 @@ handed to the same checker, and each superseded sentence is planted into a copy
 of the module text and handed to the same checker. Nothing under ``src/`` is
 written.
 
+**The same wording spread into the test tree, and the sweep that found it is
+recorded here rather than automated.** :data:`_SUPERSEDED_WORDING` is keyed to
+``review_search_builder.py`` alone, and while it held, four sentences in
+``test_review_search_builder.py`` and two more in sibling modules were still
+stating the read-time mechanism as current fact. The key that finds them, kept
+here so the next reader can re-run it rather than re-invent it::
+
+    git grep -nE 'keep none|kept none|keeps none|keyed on the read' \\
+        -- packages/theurian-core/tests tests
+
+**Ten hits at** ``e8ccd00f``, the commit that closed that sweep -- a count and
+the tree it was measured on, because the population moves with every sentence
+anyone writes and a bare number goes stale silently. Six were corrected there;
+the rest are correctly conditioned on the listing and are *supposed* to match.
+
+That ratio is the reason this is not a row in :data:`_SUPERSEDED_WORDING` or a
+scan of its own. A pin over this key would fire on the conditioned sentences
+every run, and a pin that cries wolf is one the next author deletes -- so what is
+automated is the narrow quotation set below, and what is written down is the key
+for a person to run when this class is touched again.
+
 Pure: it reads one repository file, as text and as a syntax tree, and opens no
 database, no socket and no temporary directory.
 """
@@ -191,12 +212,15 @@ def test_the_empty_publish_guard_is_keyed_on_the_publish_time_capture() -> None:
     proof** (round one, adversarial). The check reads the identifiers in the
     ``if``'s test, so a rekey written *into* that expression is caught -- and one
     written a line above it is not: hoisting ``read_time_key = bool(projected)``
-    and conjoining the name restores the pre-#636 behaviour while the condition
-    still names ``at_the_publish`` and names nothing on the read list. That
-    mutation was run, and only the driving cases went RED. So this arm and those
-    cases are not two views of one claim: this one says the anchor is still
-    written where the decision is taken, and they say the decision is still the
-    right one. Neither is redundant and neither is sufficient.
+    and conjoining the name restores **face 1** -- a build that read nothing
+    publishes its empty store over a landing again -- while the condition still
+    names ``at_the_publish`` and names nothing on the read list. Face 2 survives
+    the hoist, measured: the corpus-gone driving case stayed GREEN under it,
+    because an empty listing empties the load whichever conjunct is read. So the
+    evasion is partial, and what caught it was a driving case rather than this
+    arm. This one says the anchor is still written where the decision is taken;
+    those say the decision is still the right one. Neither is redundant and
+    neither is sufficient.
     """
     tree = ast.parse(BUILDER.read_text(encoding="utf-8"), filename=BUILDER.name)
 
