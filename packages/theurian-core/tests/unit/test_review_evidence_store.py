@@ -299,6 +299,11 @@ def test_a_review_path_that_exists_and_is_not_a_directory_refuses(tmp_path: Path
     assert "not a directory" in str(refused.value)
     assert "ls -ld .theurian/review" in refused.value.remedy
     assert "Do not delete it" in refused.value.remedy
+    # The verb the reader ran, not the verb the sibling cures were written for.
+    # This refusal comes off the *read* walk, so `theurian review build` reaches
+    # it as readily as `review ingest` does -- and a real run met it through the
+    # first of those.
+    assert "theurian review build" in refused.value.remedy
 
 
 # -- fingerprints: what a listing can tell without reading a file -------------

@@ -104,11 +104,21 @@ UNWRITABLE_CURE: Final = (
 #: ``ls -ld`` rather than ``ls -l``: the subject is the path itself and not what
 #: a directory at it would contain, and ``ls -l`` on a directory lists its
 #: entries instead of describing it.
+#:
+#: **It names both verbs where every other cure here says "run the ingestion
+#: again", and the difference is which command the reader actually ran.** The
+#: sibling cures are published from the *write* path, which only ``theurian
+#: review ingest`` reaches. This one is published from the **read** walk, which
+#: ``theurian review build`` reaches too -- and that is the command a real run
+#: met it through (measured 2026-09-11 against a scratch project: `theurian
+#: review build` exit 1, this text on stderr). "Run the ingestion again" sends
+#: that reader to a different command than the one that refused.
 MISPLACED_ROOT_CURE: Final = (
-    "`ls -ld .theurian/review` prints what is at that path -- it is not a directory, "
-    "so no evidence record can be listed and none can be written. Move it somewhere "
-    "outside `.theurian/`, then run the ingestion again. Do not delete it: nothing "
-    "here can tell what it holds or whose it is, and review evidence that was already "
+    "`ls -ld .theurian/review` prints what is at that path: something other than a "
+    "directory is standing where the review evidence tree belongs. Move it somewhere "
+    "outside `.theurian/`, then run `theurian review build` again -- or `theurian "
+    "review ingest`, if that is the command that refused. Do not delete it: nothing "
+    "here can tell what it holds or whose it is, and any review evidence that was "
     "under that name has no rebuild (ADR-0030 decision 3)."
 )
 
