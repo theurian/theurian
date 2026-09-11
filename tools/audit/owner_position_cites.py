@@ -584,6 +584,25 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
         "issue as no issue. Like the three rows above it, a live run stops producing "
         "this one.",
     ),
+    # A TRUE owner cite about an issue the offline snapshot cannot see. The
+    # CHANGELOG's slice-3 race-refusal entry names #636 as owning the guard's
+    # known-limitation fix, and that is the owner-position form working as
+    # intended: #636 was filed 2026-09-11 (after the 2026-09-03 snapshot) and
+    # read OPEN, `bug`+`milestone-8`, release-gating for 0.2.0, the same day
+    # (`gh issue view 636`). The cite is correct, the owner is live, and only
+    # the snapshot's age makes it a suspect. A live run stops producing this
+    # row.
+    (
+        "packages/theurian-core/CHANGELOG.md",
+        "636",
+        "owns the fix and",
+        "correct -- true owner cite; open issue filed after the snapshot",
+        "The [Unreleased] slice-3 entry's race-refusal paragraph names #636 as the "
+        "owner of the empty-publish guard's known-limitation fix, which it is: "
+        "#636 carries the second-capture closure shape and gates the 0.2.0 cut. "
+        "Filed 2026-09-11, read OPEN the same day; the 2026-09-03 tracker "
+        "snapshot predates it, so the offline run reads a live owner as absent.",
+    ),
     # Another member of that same class, from #533's changelog entry, and the
     # first one outside `docs/`. Same reading, one measurement worth carrying to
     # whoever does #576's refresh: **the refresh is not a one-line commit.**
