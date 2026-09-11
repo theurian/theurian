@@ -53,6 +53,7 @@ from theurian.application.project_service import (
     BuildProvenance,
     ProjectPaths,
     ProjectRegistry,
+    derived_escape_remedy,
 )
 from theurian.cli.main import app
 from theurian.daemon.runner import build_server
@@ -86,6 +87,7 @@ from theurian.mcp.tools import (
     FINDINGS_UNAVAILABLE_REFUSAL,
     MAX_CONCURRENT_SEARCHES,
     MAX_QUERY_CHARS,
+    PATH_ESCAPE_REFUSAL,
 )
 
 pytestmark = pytest.mark.integration
@@ -1972,6 +1974,147 @@ async def test_a_store_path_that_resolves_outside_the_project_answers_the_one_co
     assert not published, (
         f"the refusal published the operator's filesystem layout to an MCP caller "
         f"(GHSA-97q9): {published}\n{message}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_escaping_state_directory_is_refused_without_naming_the_resolved_layout(
+    project: ProjectRegistry, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same envelope one layer up, at ``_resolve`` rather than at this tool.
+
+    The face above plants an escaping findings **leaf** and is answered inside
+    ``review.findings``' own body. This one plants an escaping
+    ``.theurian/state`` **directory**, which refuses a layer earlier -- in
+    ``_resolve``, where ``read_active_state``'s handler answers
+    ``_with_remedy(exc)``. That fold keeps ``str(exc)``, and a
+    ``ProjectPathEscapeError``'s message is ``_contain``'s own: *"<leaf> resolves
+    outside the project root <root>"*, two absolute paths. So a tool taught the
+    constant for its own store path still published the operator's layout through
+    the resolve it shares with every other project-scoped tool.
+
+    **The seam is ``_resolve`` and the reach is every tool that resolves through
+    it.** ``knowledge.search``, ``knowledge.get``, ``knowledge.status``,
+    ``review.findings`` and ``review.search`` each call it, so what is under test
+    is one handler rather than one tool. It is driven through ``review.findings``
+    because this file already builds the registered, migrated,
+    provenance-recorded checkout the refusal has to be reached *past*
+    (``_check_out``, ``_land``) -- the envelope ``_resolve`` publishes is the same
+    on all five.
+
+    **The project is moved behind a symbolic link on purpose, and that is the
+    differential.** Left in place, the root the message names is the same string
+    the registry records and ``project.list`` already publishes, so an absence
+    assertion could not tell "no layout" from "a layout this caller was given
+    anyway". Moved, ``ProjectPaths.of`` resolves the registered spelling and every
+    path in the message is the **resolved** form -- the operator's physical
+    layout, which no Theurian surface publishes to an MCP caller. What this test
+    pins is that the response never names that form.
+
+    **The assertion is over the whole absolute-path population, not over that
+    pair.** ``str(tmp_path.resolve())`` is a prefix of every path this run can
+    produce, so it fires for a disclosure through any substring at all, and the
+    four named candidates beside it exist to say *which* one leaked. The
+    registered spelling is in the set and carries no teeth here: measured at
+    ``68d8ee19`` it was already absent, because ``ProjectPaths.of`` resolves the
+    root before a single path is built. It is asserted because the invariant is
+    "no absolute path in the message component", not "not the resolved one".
+    Whether the registered spelling may be published by *other* branches of this
+    surface is a separate question with its own answer -- the no-built-knowledge-
+    state refusal a few lines below in ``_resolve`` publishes ``rootPath`` through
+    ``_publishable``, deliberately -- and this test does not settle it.
+
+    **The cure survives, and it is layout-free by construction rather than by
+    luck.** ``ProjectPaths._escape_remedy`` keys this refusal to
+    ``derived_escape_remedy(self.knowledge_dir.name, parts[0])``, and that
+    function renders ``f"{knowledge_directory_name}/{subdirectory}"`` -- a
+    *basename* (``.theurian``) and a relative child name (``state``). Neither
+    argument can carry an absolute path, so dropping the message while keeping
+    ``exc.remedy`` costs the caller nothing actionable. Both halves are asserted:
+    the literal sentence an operator reads, and the whole cure compared against
+    the shipped function's own output, so a reworded remedy moves both sides
+    together while a remedy that started interpolating a path is caught by the
+    population above.
+
+    **What the message half is, and not only what it is not.**
+    :data:`~theurian.mcp.tools.PATH_ESCAPE_REFUSAL` is asserted present beside the
+    absence sweep, because the two do not imply each other: measured 2026-09-11, a
+    ``_with_remedy`` that dropped the message half entirely -- leaving the caller a
+    cure for a fault nobody named -- satisfied every other assertion here. The
+    absence sweep says no layout crossed; this says the caller was still told what
+    went wrong.
+
+    RED at ``68d8ee19``, where the message named
+    ``<resolved-root>/.theurian/state/active.json`` and ``<resolved-root>``.
+    """
+    _land(project)
+    served = await _call(project, projectId="demo")
+    assert served["count"] == 3, (
+        "the premise: this project serves before the plant, so what refuses below is "
+        "the escaping state directory and not an unresolvable project or an unbuilt store"
+    )
+
+    registered = Path(project.load()["demo"]["rootPath"])
+    monkeypatch.chdir(tmp_path)  # step out of the tree before moving it
+    elsewhere = tmp_path / "opaque-elsewhere"
+    elsewhere.mkdir()
+    physical = elsewhere / "real-demo"
+    registered.rename(physical)
+    registered.symlink_to(physical)
+    paths = ProjectPaths.of(registered)
+    state = paths.knowledge_dir / "state"
+    outside_state = tmp_path / "outside-state"
+    state.rename(outside_state)
+    state.symlink_to(outside_state)
+
+    assert paths.root != registered, (
+        "the premise: the registered spelling must resolve to a different directory, "
+        "or the resolved form this test looks for is the string the registry already "
+        "publishes and the differential is vacuous"
+    )
+    assert state.resolve() == outside_state.resolve(), "the premise: the planted link is live"
+    assert not state.resolve().is_relative_to(paths.root), (
+        "the premise: `.theurian/state` must really resolve outside the project root, "
+        "or the containment refusal this test drives never fires"
+    )
+    assert (outside_state / "active.json").exists(), (
+        "the premise: the state directory's contents moved with it, so what refuses "
+        "below is containment and not a pointer that is simply gone"
+    )
+
+    message = await _call_failing(project, projectId="demo")
+
+    # `in`, not `==`: the SDK prefixes a failing tool's message with "Error
+    # executing tool review.findings: ", which is the transport's and constant.
+    assert PATH_ESCAPE_REFUSAL in message, (
+        f"the message half arrived as something other than the one constant "
+        f"`_with_remedy` substitutes, so what is asserted below is a cure beside an "
+        f"unpinned sentence: {message}"
+    )
+    assert "Remove `.theurian/state`" in message, (
+        f"the refusal reached the caller without the one act that resolves it, so an "
+        f"agent is told a path escaped and given nothing to do about it: {message}"
+    )
+    assert derived_escape_remedy(paths.knowledge_dir.name, "state") in message, (
+        f"the cure arrived cut down rather than whole, so the operator is missing part "
+        f"of what `ProjectPaths._escape_remedy` published for this path: {message}"
+    )
+    leaf = paths.knowledge_dir / "state" / "active.json"
+    published = {
+        name: value
+        for name, value in (
+            ("the resolved project root", str(paths.root)),
+            ("the resolved state pointer under it", str(leaf)),
+            ("the directory the state link escaped to", str(outside_state.resolve())),
+            ("the registered spelling of the root", str(registered)),
+            ("the temporary tree this run was given", str(tmp_path.resolve())),
+        )
+        if value in message
+    }
+    assert not published, (
+        f"`_resolve` published the operator's resolved filesystem layout to an MCP "
+        f"caller (GHSA-97q9), through a seam the store-path guard above does not "
+        f"cover: {published}\n{message}"
     )
 
 
