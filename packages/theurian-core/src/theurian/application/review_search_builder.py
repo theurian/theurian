@@ -477,6 +477,24 @@ class ReviewSearchBuilder:
         :meth:`~theurian.infrastructure.review_evidence.reader.EvidenceReader.fingerprints`
         records, is a read of every file by another name.
 
+        **What the rebuild costs in memory is linear in the corpus, because it is
+        wholesale.** Every record is held at once -- the read's entries, then the
+        projection over them -- so there is no bound on this build's footprint
+        other than how much evidence a project has. Measured 2026-09-11 (CPython
+        3.13, ``tracemalloc``, a synthetic ASCII corpus of one 4,000-character
+        pull-request body per record, this method driven through injected
+        collaborators): peak allocation **doubled 1.97x to 2.00x across four
+        doublings** of the record count, from 250 records to 4,000, and stood at
+        **1.37 to 1.42 bytes per stored character** end to end. The projection's
+        own share of that is **8% to 12%**, because a projected record *references*
+        the stored strings rather than copying them -- so what dominates is holding
+        the corpus at all, and halving the projection would not help. The scope is
+        this method and its injected read: a real build also pays
+        :meth:`~theurian.infrastructure.review_evidence.reader.EvidenceReader
+        .read_all`'s JSON parse per file, which is not in these figures and can only
+        make them larger. An incremental rebuild is the change that would bound
+        this, and it is not designed here.
+
         Raises:
             ReviewSearchBuildError: If a landed record carries a value this build
                 cannot store -- text with no UTF-8 encoding, a last-seen instant

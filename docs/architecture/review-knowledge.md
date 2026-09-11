@@ -195,6 +195,15 @@ Evidence collection is reliable and cheap; interpretation is fragile and
 optional. Keeping them separate means a model outage costs you candidates, not
 your review history.
 
+**The rebuild that sits between them is wholesale, so its memory is linear in the
+corpus.** `theurian review build` — and the same rebuild `theurian review ingest`
+runs after it lands — reads every record under `.theurian/review/` and holds all
+of them at once, so the only bound on one build's footprint is how much evidence
+a project has. The measurement, its scope and what dominates it are recorded
+where the build makes that trade, in `ReviewSearchBuilder.build`'s docstring
+(`application/review_search_builder.py`). An incremental rebuild is the change
+that would bound it, and it is not designed.
+
 ## Privacy
 
 Review data contains author identity and opinions.

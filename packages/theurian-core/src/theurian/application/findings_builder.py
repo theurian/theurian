@@ -43,6 +43,24 @@ from theurian.domain.review_finding import PARSER_STAMP
 #: single-use, so a builder reused across two builds must be able to take it
 #: twice. ``WriteLock(path).held`` in the CLI composition root is exactly one of
 #: these, named there and nowhere in this layer (ADR-0003).
+#:
+#: **It is imported outside this module, and the home has not moved with it.**
+#: Three modules name it (``git grep -n "from theurian.application.findings_builder
+#: import" -- packages/theurian-core/src``, plus the ``WriteSection`` member in
+#: ``cli/findings_commands.py``'s grouped import): ``cli/findings_commands.py``
+#: and ``cli/review_commands.py``, the two composition roots that build a real
+#: section out of ``WriteLock(path).held``, and
+#: :class:`~theurian.application.review_search_builder.ReviewSearchBuilder`, which
+#: takes it for the identical purpose -- one continuous hold over its own publish,
+#: with the expensive read outside it. So the name sits in a module whose subject
+#: is findings while being shared by **two builders**.
+#:
+#: Moving it to a neutral home was considered and not done: the alias is four
+#: tokens with no behaviour, the move touches two packages and two composition
+#: roots to buy a better filename, and a second builder is where that trade
+#: starts paying rather than where it has paid. A **third** builder is where it
+#: should be made. What this note buys meanwhile is that a change to the type here
+#: is known to reach both builders and both roots.
 WriteSection = Callable[[], AbstractContextManager[None]]
 
 
