@@ -35,14 +35,16 @@ say something the tree can be asked about:
   out of ``int`` landed outside all three and took the document with it. The drift
   this row guards is a reword *back* to the enumeration, which reads as the more
   precise sentence and carries the identical hole.
-- **The race remedy's guard is keyed on the publish-time listing, not on what the
-  read saw** (#636). This row is unlike the other four: the wording it replaces
-  was a recorded **defect**, not a narrower true claim. Until the guard was
-  rekeyed the entry told a reader that a whole-corpus deletion is refused and that
-  a build which read nothing empties a serving store -- both of which stopped
-  being true in the pull request that added this row. A revert reinstates a
-  description of a build that no longer exists, and a rebase against a branch
-  taken before the fix restores it mechanically.
+- **The race remedy's guard is keyed on the publish-time listing, and a
+  whole-corpus deletion publishes the empty store only where the corpus is gone
+  at the publish** (#636). This row has been corrected twice and neither
+  correction was a softening. Its first wording was the recorded **defect** --
+  the read-time key, which told a reader that a deletion is refused and that a
+  build which read nothing empties a serving store. Its second stated the
+  separation on the *intent* axis, which no build can read: what reaches one is
+  ``entries == ()`` whether the records never existed or somebody had just
+  deleted them. Both are in the drift column's history, and the second is what it
+  carries now, because that is the sentence a rebase restores.
 
 **Each claim is pinned from both sides, and the two sides fail differently on
 purpose.** The prose pins hold *spelling*: they are blind to whether the
@@ -277,30 +279,41 @@ ENTRY_CLAIMS: Final[tuple[tuple[str, str, str, str], ...]] = (
         "the race remedy's guard is keyed on the publish-time listing",
         (
             "**The guard is keyed on the publish-time listing rather than on what the "
+            "read saw**, which is what separates a stale build from a build whose "
+            "corpus is **gone at the publish**: a whole-corpus deletion publishes the "
+            "empty store where the corpus is gone when the build reaches its publish, "
+            "honouring the only retention remedy ADR-0030 decision 3 leaves. Where "
+            "another writer lands a record inside that same window the corpus is not "
+            "gone at the publish, so that build refuses and the rows the earlier one "
+            "published go on serving."
+        ),
+        # The wording this row pinned until the verdict pass, and the reason it had
+        # to move: it stated the separation on the **intent** axis -- "a corpus an
+        # operator emptied on purpose" -- which is not an axis this build can read.
+        # What reaches it is `entries == ()` whether the records never existed or
+        # somebody had just deleted them, so those are one input and not two. The
+        # second half was the falsifiable part: "a whole-corpus deletion inside
+        # another build's window publishes the empty store" is unconditional and
+        # false wherever a writer lands a record inside that window, which
+        # `tests/integration/test_review_build_empty_publish.py::
+        # test_a_build_over_an_emptied_corpus_a_writer_landed_into_refuses_and_leaves_the_store`
+        # drives at exit 1. It also contradicted the *Fixed* entry in this same
+        # document once that was rekeyed, which is how the docs lane found it.
+        #
+        # Kept as the drift column rather than dropped, because it is the sentence
+        # a rebase against any commit before the verdict pass restores, and it
+        # reads as a correction rather than as a reversion.
+        (
+            "**The guard is keyed on the publish-time listing rather than on what the "
             "read saw**, which is what separates a stale build from a corpus an "
             "operator emptied on purpose: a whole-corpus deletion inside another "
             "build's window publishes the empty store, honouring the only retention "
             "remedy ADR-0030 decision 3 leaves."
         ),
-        # The sentence this replaced, quoted from `1751236a`, and the reason the
-        # row exists at all: it is the *only* drift column here whose original was
-        # a recorded **defect** rather than a correct-but-narrower claim. A revert
-        # does not merely understate the build -- it reinstates a paragraph telling
-        # a reader that a deletion is refused and that a read-zero build empties a
-        # serving store, both of which stopped being true in this same PR. It is
-        # also the wording a rebase against a pre-fix branch would restore
-        # silently, which is the mechanical route this guards.
-        (
-            "**The guard is keyed on read-time facts, and that is a recorded defect "
-            "rather than a property** — a build that read zero records publishes its "
-            "empty store over rows a concurrent first landing had just built, and a "
-            "whole-corpus deletion inside another build's window is refused rather "
-            "than honoured until the operator re-runs."
-        ),
         (
             "`tests/unit/test_review_search_builder_claims.py::"
             "test_the_empty_publish_guard_is_keyed_on_the_publish_time_capture`, with "
-            "the two faces driven by `tests/integration/"
+            "the three worlds driven by `tests/integration/"
             "test_review_build_empty_publish.py`"
         ),
     ),

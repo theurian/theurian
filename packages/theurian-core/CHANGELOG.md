@@ -514,9 +514,12 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   carries the landing report and stderr carries `{error, remedy}`.
 
   **The guard is keyed on the publish-time listing rather than on what the read
-  saw**, which is what separates a stale build from a corpus an operator emptied
-  on purpose: a whole-corpus deletion inside another build's window publishes the
-  empty store, honouring the only retention remedy ADR-0030 decision 3 leaves.
+  saw**, which is what separates a stale build from a build whose corpus is
+  **gone at the publish**: a whole-corpus deletion publishes the empty store
+  where the corpus is gone when the build reaches its publish, honouring the only
+  retention remedy ADR-0030 decision 3 leaves. Where another writer lands a
+  record inside that same window the corpus is not gone at the publish, so that
+  build refuses and the rows the earlier one published go on serving.
   What stood here described the read-time key and recorded it as a defect
   ([#636](https://github.com/theurian/theurian/issues/636)); that defect is fixed
   under *Fixed* in this same section, before any release carried it. The
