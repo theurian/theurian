@@ -450,7 +450,8 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
         "member whose retraction sits two blocks down rather than one, and it is what "
         "sets `_SUPERSESSION_REACH`.",
     ),
-    # The three rows below -- one in ADR-0029, two in ADR-0030 -- are one member of
+    # The four rows below -- one in ADR-0029, two in ADR-0030, one in the threat
+    # model -- are one member of
     # a class this ledger did not have before: a cite whose owner is **open**, read
     # as dead only because the offline snapshot is older than the issue.
     # `tracker_state` answers from
@@ -458,21 +459,29 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
     # reproducibility), that file was measured 2026-09-03 at `01aa2479`, and
     # `states()` returns `(absent from the tracker)` for anything filed since --
     # which `classify` treats exactly like `issue:closed`. A live run verdicts
-    # all three correct. The standing problem is the snapshot ageing out from
+    # all four correct. The standing problem is the snapshot ageing out from
     # under this audit, filed as
     # https://github.com/theurian/theurian/issues/576; these rows record the
     # reading, they do not fix that.
     #
     # **They are stale under a live run today, not at some future refresh.** With
     # #575 and #579 read open -- which any run without `--offline` does -- the sweep
-    # stops producing the three rows and the reconciliation reports them in the
+    # stops producing the four rows and the reconciliation reports them in the
     # *stale* direction. Driven through :func:`ledger_drift` against a state table
     # with those two open::
     #
-    #     unrecorded=0 stale=3 drift=0 ambiguous=0
-    #       STALE -> docs/adr/0030-...md #575 'it is owned by'
-    #       STALE -> docs/adr/0029-...md #575 'which has advisory context), not to this source'
-    #       STALE -> docs/adr/0030-...md #575 'owed table names #575 rather than this ADR'
+    #     unrecorded=0 stale=4 drift=0 ambiguous=0
+    #       STALE -> docs/adr/0030-github-review-ingestion-...md #575 'it is owned by'
+    #       STALE -> docs/adr/0029-review-findings-are-gove...md #575 'which has advisory
+    #                context), not to this source'
+    #       STALE -> docs/adr/0030-github-review-ingestion-...md #575 'owed table names
+    #                #575 rather than this ADR'
+    #       STALE -> docs/security/threat-model.md #575 'no issue owns it today'
+    #
+    # Re-run 2026-09-11, on the text as committed, with the threat-model row in
+    # place; the fourth line is the row that commit added. The paste is wrapped at
+    # this file's column, and only there -- the two wrapped lines are one line of
+    # output each.
     #
     # So the documented no-flag invocation in this module's own header exits 1 on
     # this branch **now**; `--offline` is the form the census test runs and the form
@@ -481,7 +490,7 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
     # #576 carries the same note so whoever does the refresh meets it there rather
     # than discovering it from a red gate.
     #
-    # **A fourth cite of the same shape gets no row, and the reason is
+    # **One further cite of the same shape gets no row, and the reason is
     # over-determined.** ADR-0030's corpus disposition names #579 -- filed
     # 2026-09-05, open, absent from the same snapshot -- as the owner of the
     # post-merge corpus re-seed, in owner position (`it is owned by`). The sweep
@@ -550,7 +559,51 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
         "`_PROXIMITY` -- so no row is owed for the table, and adding one would read as "
         "stale. Its owed-item *prose* at :735 is a member, and has its own row above.",
     ),
-    # A fourth member of that same class, from #533's changelog entry, and the
+    # The same class met at a sentence that **disclaims** ownership, which is why
+    # it gets a row of its own rather than sharing the reasoning above. T-24's
+    # non-goal paragraph says an owed item is deliberately *unowned*, and the
+    # owner key fires on the `owns` in "no issue owns it today" sitting inside
+    # `_PROXIMITY` of the adjacent-cite `[#575]` beside it. The key cannot read a
+    # negation -- it never could, and this is the shape that makes that concrete
+    # rather than theoretical -- so the judgement is the row.
+    (
+        "docs/security/threat-model.md",
+        "575",
+        "no issue owns it today",
+        "correct -- adjacent cite, not an owner; open issue, snapshot-age false positive",
+        "T-24's *Non-goal for this slice* paragraph. #575 is cited as what the owed item "
+        "is **adjacent to** -- 'it is adjacent to [#575], which is about a different "
+        "question (what may be *ingested*), not about vouching for what is already on "
+        "disk' -- and the same sentence says in its own words that nothing owns it: "
+        "'is not implemented and no issue owns it today'. That is the recorded-unowned "
+        "form ADR-0030's owner-position diagnosis prescribes, not a dead owner, so no "
+        "repointing is owed and inventing one would be the defect the paragraph "
+        "refuses. It is here twice over: the owner key cannot see the negation beside "
+        "the cite, and #575 was filed 2026-09-05 and read OPEN, `phase-b`, on "
+        "2026-09-11 (`gh issue view 575`), so the 2026-09-03 snapshot reads a live "
+        "issue as no issue. Like the three rows above it, a live run stops producing "
+        "this one.",
+    ),
+    # A TRUE owner cite about an issue the offline snapshot cannot see. The
+    # CHANGELOG's slice-3 race-refusal entry names #636 as owning the guard's
+    # known-limitation fix, and that is the owner-position form working as
+    # intended: #636 was filed 2026-09-11 (after the 2026-09-03 snapshot) and
+    # read OPEN, `bug`+`milestone-8`, release-gating for 0.2.0, the same day
+    # (`gh issue view 636`). The cite is correct, the owner is live, and only
+    # the snapshot's age makes it a suspect. A live run stops producing this
+    # row.
+    (
+        "packages/theurian-core/CHANGELOG.md",
+        "636",
+        "owns the fix and",
+        "correct -- true owner cite; open issue filed after the snapshot",
+        "The [Unreleased] slice-3 entry's race-refusal paragraph names #636 as the "
+        "owner of the empty-publish guard's known-limitation fix, which it is: "
+        "#636 carries the second-capture closure shape and gates the 0.2.0 cut. "
+        "Filed 2026-09-11, read OPEN the same day; the 2026-09-03 tracker "
+        "snapshot predates it, so the offline run reads a live owner as absent.",
+    ),
+    # Another member of that same class, from #533's changelog entry, and the
     # first one outside `docs/`. Same reading, one measurement worth carrying to
     # whoever does #576's refresh: **the refresh is not a one-line commit.**
     # Measured 2026-09-07 on this branch, with `tracker_state.py --refresh`

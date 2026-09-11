@@ -344,9 +344,9 @@ people are capable of putting such a thing where it does not belong. The true an
 narrower claim is:
 
 > Public-only v1 ingests **no advisory-private GitHub surface** (private
-> repositories, security advisories, private forks), and every record it holds
-> was **visible to the public repository's audience at the moment it was
-> ingested**.
+> repositories, security advisories, private forks), and every record **it
+> ingests** was **visible to the public repository's audience at the moment it
+> was ingested**.
 
 That is the same structural shape ADR-0029 decision 6 records for public `main`:
 the protection is *structural* — the source has no access to the withheld
@@ -354,18 +354,48 @@ surface — and it is not a claim that the public surface is guaranteed clean. W
 guards the second half is unchanged from the rest of the product: the secret scan
 at ingestion (decision 4) and the untrusted-content triple at serve (decision 6).
 
+**The subject is `theurian review ingest`, not `.theurian/review/`, and the
+correction is to the sentence rather than to the decision.** This quote read
+"every record *it holds*" until 2026-09-11, which a reader could take as an
+inventory of the evidence directory — and that is false, because decision 3 makes
+those files source rather than derived state and `theurian init` deliberately
+does not git-ignore them, so a clone can carry evidence a repository author wrote
+and `theurian review build` projects it like any other. The scope this decision
+sets is unchanged: what an ingestion run may fetch, and from where. What a
+*corpus* may contain is threat-model T-24, an accepted residual recorded there
+with its grade and its upgrade triggers. Every surface that publishes this scope
+— the capabilities schema, `mcp/tools.py`, `docs/protocol/mcp-tools.md` — names
+the same subject.
+
 **The tense is load-bearing, and the residual it names is retention.** Decision 3
 makes the evidence files durable precisely so an upstream delete does not erase
 the record — which means *"visible to the public audience"* is true at ingestion
 time and can stop being true afterwards, when an author edits or deletes a
-comment upstream. This ADR does not pretend otherwise, and it does not build a
-propagation path either: an upstream delete does not reach Theurian's copy, and
-there is no mechanism that would notice one. **The remediation path exists and is
-manual**: delete the evidence file and rebuild the derived store, which is
+comment upstream. This ADR does not pretend otherwise. **The two cases part
+there, and only one of them is the residual.** An upstream *edit* does reach
+Theurian's copy: decision 3's writer rewrites a record whose content changed and
+`ReviewIngestReport` counts it `updated`, so the next `theurian review ingest`
+run whose window covers the record brings the edit with it. An upstream *delete*
+does not — that is the retention decision itself, and no mechanism here would
+notice one. **The remediation path exists and is manual**, and it is the delete
+case's: delete the evidence file and rebuild the derived store, which is
 exactly the operation decision 3's files-as-source shape already supports (the
 store is rebuilt from the files, so removing a file removes the record from every
-surface). A capability that would make it automatic is not designed here and is
-listed in *What this does not close*.
+surface). A capability that would make *deletion* automatic is not designed here
+and is listed in *What this does not close*.
+
+**The sentence above read "it does not build a propagation path either" until
+2026-09-11, and that was wrong for edits.** Its colon-clause named only delete,
+but the sentence it followed had enumerated "edits or deletes", so the generic
+half read as covering both — and the surfaces that publish this scope spelled it
+out that way, as "an upstream edit or delete does not reach Theurian's copy". The
+capabilities schema, `mcp/tools.py`, `docs/protocol/mcp-tools.md` and the flag's
+own pin in `tests/integration/test_mcp_tools.py` are corrected in the same
+commit, and they were corrected against the *measured* behaviour:
+`tests/unit/test_review_evidence_store.py::test_a_refetch_rewrites_a_record_whose_content_changed_upstream`
+has pinned the update since slice 2. As with the `it holds` correction above, the
+decision is unchanged — retention is still what decision 3 chooses — and what was
+wrong was a sentence about how the corpus behaves.
 
 **The private-repository arm stays owed, and it keeps a named owner.** ADR-0029
 assigned it to this arm: a finding marked `securityRelated` at ingestion time,
@@ -390,9 +420,12 @@ the flag alone is not enough: a client that reads `reviewIngestion: true` and
 nothing else would conclude that review history is ingested wherever the operator
 points it. The decision is therefore **`reviewIngestion: true` plus a scope
 field** — proposed shape `reviewIngestionScope: "public-allowlisted"`, a string
-beside the booleans, which the capability block already does elsewhere
-(`knowledgeSearch: "hybrid"`, `mcp/tools.py:1868`) — flipped together at the serve
-slice, with the wire schema change that publishes them landing in slice 3.
+beside the booleans, which the capability block already does elsewhere (the
+`"knowledgeSearch": "hybrid"` entry in `mcp/tools.py`) — flipped together at the
+serve slice, with the wire schema change that publishes them landing in slice 3.
+(That cite read `mcp/tools.py:1868` until slice 3 moved the line; it is re-cited
+by the quoted entry under this document's own *Demoted populations* rule, which
+is that a quote survives renumbering and a line number does not.)
 
 **The flag's published meaning narrows, and that redefinition is stated here
 rather than performed quietly.** Today `reviewIngestion: false` is read as *this
@@ -964,10 +997,14 @@ Two inherited controls are named so the serve slice does not rediscover them:
 7. **What `gh` does after the vector is handed over.** Clause 8's version floor
    bounds *which* binary, not its behaviour; the residual is recorded in decision
    1 and in *Consequences → Negative*.
-8. **Propagating an upstream edit or delete into the evidence files.** Decision 2
+8. **Propagating an upstream *delete* into the evidence files.** Decision 2
    records the retention residual and the manual remediation — delete the file,
    rebuild the derived store; a capability that *notices* an upstream deletion and
-   acts on it is not designed here.
+   acts on it is not designed here. An upstream **edit** is not in this item and
+   never was: a refetch rewrites the record and reports it `updated`. The heading
+   read "an upstream edit or delete" until 2026-09-11, matching the widening
+   decision 2 records above and describing as unbuilt something the write path
+   already does.
 9. **Headless environment-token authentication.** Excluded from clause 4's
    constant by decision, not by omission: identity comes from the operator's
    persisted `gh` login. Admitting a token variable is a decision with its own
@@ -1175,12 +1212,28 @@ body. What this adds to the argument below is a second independent observation o
 the same property — the population moves, on an open PR, between one round and
 the next — rather than a new number for it.
 
+**Re-measured a third time on 2026-09-11, by comment identity, and #569's count
+is now frozen.** `gh api graphql` against
+`repository(owner:"theurian", name:"theurian").pullRequest(number:569)` answers
+`state: MERGED`, `mergedAt: 2026-09-05T15:55:12Z`, and
+`reviewThreads.totalCount: 2` — thread ids `PRRT_kwDOTqMAc86fiBod` and
+`PRRT_kwDOTqMAc86fiqjB`, each rooted by `github-advanced-security`, created
+`2026-09-05T09:35:33Z` and `2026-09-05T11:13:26Z`. Both root comments predate the
+merge, so this is the same pair the 2026-09-07 run counted, now **identified**
+rather than merely agreed with, and the pull request is closed so the count can no
+longer move. It does not move the 2026-09-05 row, which was a floor taken while
+the PR was open; it retires the *uncertainty* in the paragraph above.
+
 **The second measurement falsifies the universal an earlier draft of this section
 drew from the first**, which said this repository "cannot exercise thread
 ingestion at all". None of those five PRs is in the merge list above: #12, #132,
-#224 and #352 are older than every member, and #569 is not merged at all. The
-narrow 0/0 reading was true; the universal was not, and it is withdrawn here
-rather than softened.
+#224 and #352 are older than every member, and #569 merged on 2026-09-05
+**after** the window that list covers — it is not among the 38 refs enumerated
+there. (This sentence read "#569 is not merged at all", which was true when it
+was written and stopped being true the same day: the merge landed at 15:55Z. The
+claim it carries is unchanged, because what the argument needs is that #569 is
+outside the merge list, not that it is unmerged.) The narrow 0/0 reading was
+true; the universal was not, and it is withdrawn here rather than softened.
 
 What remains true is the ground the fixture decision actually rests on: this
 project's review rounds happen in agent transcripts and land as commit trailers —
@@ -1293,6 +1346,11 @@ Measured now, and reproducible from this ADR (2026-09-05, `origin/main` @
   358:| `review.listUnresolved` | Planned | Open threads |
   ```
 
+  Slice 3 did what this measurement predicted: the `review.search` row moved from
+  *Planned* to *Shipped* in place, and no row was added. The block above is left
+  at its own commit, because a measurement re-taken every time the tree moves
+  stops being a measurement.
+
 - `ReviewResolution` has **no consumer outside its defining module**: two hits,
   both in `domain/review.py` (`git grep -n "ReviewResolution" --
   packages/theurian-core/src`).
@@ -1348,70 +1406,181 @@ lands moves its own items from *owed* to *landed* here and names the test that
 discharges each; an item a slice did **not** reach stays on the list with the
 slice that will, and is never quietly dropped.
 
-**Slice 1 — ingest** *(shipped at `7c486588`; the list below is still written as
-owed. Recording which test discharges each item is owed to slice 1's own record
-and has not been done — that is a gap in this section, not a claim that the tests
-are missing.)*
+**Slice 1 — ingest** *(shipped at `7c486588`. The discharges below were filled in
+during slice 3 ([#603](https://github.com/theurian/theurian/issues/603)), which
+is late: the list stood as *owed* for two slices while the tests existed, and a
+list that says "owed" about work that shipped is as wrong as one that says
+"landed" about work that did not. Paths are `packages/theurian-core/tests/`, and
+every name here was resolved against the tree rather than written from the
+slice's own brief. Three items are **not** discharged by a test and say so by
+name.)*
 
-- **Ten clause tests**, one per row of decision 1's table: the single spawn site
-  (equality-pinned), the literal `graphql` endpoint with identity in variables,
-  the `--hostname github.com` pin, the absolute binary path with `shell=False`,
-  the absence of `--paginate`, the timeout and the two caps as named constants,
-  the version floor's refusal, the two graded refusal envelopes for absent and
-  unauthenticated `gh` with no stderr escaping them, and the per-response byte cap
-  with its incremental read.
-- **Clause 4's tests (i), (ii-a) and (ii-b), exactly as clause 4 specifies them —
-  three tests, slice 1.** The rationale lives there and is not restated here:
+- **Landed in slice 1 — ten clause tests**, one per row of decision 1's table.
+  Clause 1, the single spawn site:
+  `unit/test_network_call_sites.py::test_no_module_outside_the_recorded_spawn_sites_can_start_another_program`
+  (the equality pin, grown by one) with
+  `::test_the_process_scan_sees_each_spawning_form_and_no_other` as its positive
+  control, and
+  `unit/test_gh_argument_vector.py::test_only_the_recorded_modules_name_the_spawn_helper_or_the_class_that_calls_it`
+  for the second half of the clause. Clause 2, the literal endpoint with
+  identity in variables: `::test_the_endpoint_element_is_the_literal_graphql` and
+  `::test_no_vector_element_is_built_by_formatting_a_repository_name`. Clause 3,
+  the host pin: `::test_the_hostname_is_pinned_in_every_vector_that_makes_a_request`.
+  Clause 5, the absolute binary and no shell:
+  `::test_the_first_vector_element_is_an_absolute_path` and
+  `::test_the_spawn_module_reaches_no_shell`. Clause 6, no `--paginate`:
+  `::test_paginate_is_absent_from_every_vector` and
+  `::test_a_second_page_changes_only_the_cursor`, with the cursor read itself at
+  `integration/test_gh_review_provider.py::test_a_second_page_is_asked_for_with_a_cursor`.
+  Clause 7, the timeout and the two caps as named constants:
+  `unit/test_gh_argument_vector.py::test_each_recorded_bound_is_the_value_the_prose_names`
+  and `::test_every_recorded_limit_has_a_test_side_home`, with the graded stops at
+  `integration/test_gh_review_provider.py::test_a_limit_past_the_recorded_cap_stops_before_spawning`,
+  `::test_a_response_that_never_stops_paging_is_stopped_by_the_page_cap` and
+  `::test_a_thread_past_the_comment_cap_is_reported_not_truncated`, and the
+  timeout at
+  `integration/test_gh_bounded_read.py::test_a_child_that_never_answers_is_stopped_at_the_recorded_timeout`.
+  Clause 8, the version floor:
+  `integration/test_gh_review_provider.py::test_a_gh_below_the_floor_is_refused_and_the_message_names_the_floor`.
+  Clause 9, the two graded envelopes with the child's stderr contained:
+  `::test_no_gh_on_the_path_is_a_graded_refusal_not_a_traceback`,
+  `::test_an_unauthenticated_gh_is_a_graded_envelope_carrying_its_own_stderr` and
+  `::test_a_failed_query_reports_the_childs_own_words_inside_the_envelope`. Clause
+  10, the per-response byte cap and the read shape that makes it real:
+  `integration/test_gh_bounded_read.py::test_a_child_that_overruns_the_cap_is_refused_without_waiting_for_it_to_finish`
+  — the bounded wait is what separates an incremental read from an accumulating
+  one — with `::test_a_child_at_the_cap_exactly_is_read_rather_than_refused` and
+  `::test_a_cap_refusal_leaves_no_child_behind`.
+- **Landed in slice 1 — clause 4's tests (i), (ii-a) and (ii-b), exactly as
+  clause 4 specifies them.** (i) is
+  `unit/test_gh_child_environment.py::test_the_child_environment_is_exactly_the_recorded_mapping`,
+  written test-side rather than read from the production constant — which is what
+  makes it killable — with `::test_the_expected_mapping_can_fail` as its control
+  and
+  `integration/test_gh_review_provider.py::test_the_child_receives_the_constructed_environment_and_nothing_else`
+  observing the same mapping on the far side of the process boundary. (ii-a), the
+  refusal driver that needs no `gh`, is
+  `::test_a_planted_transport_override_refuses_before_any_binary_probe`. (ii-b),
+  the residual demonstration through a test seam, is
+  `integration/test_gh_transport_residual.py::test_with_the_refusal_bypassed_the_request_leaves_through_the_socket`
+  with `::test_without_the_seam_the_same_fixture_reaches_the_socket_zero_times` as
+  the control that makes the zero mean something; only (ii-b) skips, and it
+  reports the skip. The rationale lives in clause 4 and is not restated here:
   round two corrected it in the clause and left this bullet carrying the
   superseded version byte-unchanged, which is the two-places class this ADR keeps
   meeting. (An earlier version of this bullet cited "(i)'s companion" as a fourth
   item; the companion is a property of (i)'s form, not a separate test, so the
   citation resolved to nothing.)
-- **The allowlist is consulted before the spawn** — a synthetic-input test that a
-  repository outside `providers.review.repositories` produces **no process
-  spawn**, not a filtered result.
-- **A private repository is refused at ingestion** — a synthetic-input test that
-  nothing is written and the refusal carries a remedy.
-- **A renamed repository is refused** — a fixture whose response resolves to a
-  `nameWithOwner` other than the allowlisted entry is rejected, not followed.
-- **Evidence paths are containment-safe before the key is load-bearing** — the
-  schema pattern rejects `.` and `..` segments, and a path built from a hostile
-  `owner/repo` value resolves through `security/paths.py` and is refused; both in
-  the allowlist-reader commit.
-- **`test_network_call_sites.py`'s absence claim is retired in the same commit
-  that admits the site**, with the pinned set growing by exactly one and the file's
-  own admission checklist satisfied clause by clause.
-- **A pre-spawn refusal of transport-override keys** in the gh config the
+- **Landed in slice 1 — the allowlist is consulted before the spawn.**
+  `integration/test_gh_review_provider.py::test_an_unallowlisted_repository_starts_no_process`
+  asserts the spawn recorder is **empty** rather than that the result was
+  filtered; the refusal itself is
+  `unit/test_review_allowlist.py::test_an_unlisted_repository_is_refused_with_its_grade`,
+  and `::test_an_empty_allowlist_allows_nothing` holds the direction an absent
+  list fails in.
+- **Landed in slice 1 — a private repository is refused at ingestion.**
+  `integration/test_gh_review_provider.py::test_a_private_repository_is_refused_at_ingestion`,
+  with `::test_a_repository_that_does_not_resolve_as_public_is_refused` for the
+  answer that is neither public nor private and
+  `::test_a_private_repository_is_refused_on_the_reviews_read_too` for the second
+  read, which would otherwise be a seam the first test never reaches.
+- **Landed in slice 1 — a renamed repository is refused.**
+  `integration/test_gh_review_provider.py::test_a_rename_redirect_is_refused_rather_than_followed`,
+  held from the other side by
+  `::test_a_resolved_name_contained_in_the_entry_is_still_a_different_repository`
+  and `::test_a_case_difference_is_not_a_rename` — without the second, a check
+  that refused every case difference would pass the first while breaking
+  ingestion of a correctly allowlisted repository.
+- **Landed in slice 1 — evidence paths are containment-safe before the key is
+  load-bearing.** The schema-pattern half is
+  `unit/test_review_allowlist.py::test_the_pattern_this_module_enforces_is_the_one_the_schema_publishes`
+  and `::test_a_traversal_or_malformed_name_is_refused`; the path half is
+  `unit/test_project_paths_containment.py::test_every_path_helper_refuses_when_a_committed_symlink_escapes_under_it`,
+  whose population is derived rather than listed by
+  `::test_the_containment_sweep_covers_every_path_returning_helper`, so
+  `ProjectPaths.review` joined that sweep by existing.
+- **Landed in slice 1 — `test_network_call_sites.py`'s absence claim is retired
+  in the same commit that admits the site.** Same pin as clause 1:
+  `unit/test_network_call_sites.py::test_no_module_outside_the_recorded_spawn_sites_can_start_another_program`,
+  an equality that fails on an addition *and* a removal, with
+  `::test_the_process_scan_sees_each_spawning_form_and_no_other` proving the scan
+  can see one. The file's own admission checklist is prose beside the pinned set
+  and is not separately held.
+- **Landed in slice 1 — a pre-spawn refusal of transport-override keys** in the
   precedence-resolved gh config — best effort, reducing only the accidental
   single-well-formed-file case and leaving decision 1's four-member divergence
   class, with clause 4's tests as its drivers. Its spec: the same precedence chain
   `gh` resolves (empty-string variable treated as absent), and the check runs
   **before** any binary probe.
-- **The known-key set is re-taken whenever clause 8's version floor moves** —
-  member (b) is bounded only by what that version of `gh` understands.
-- **Every T-7 sentence is rewritten per control** — `threat-model.md:6454`,
-  `requirements-analysis.md:1352` and `roadmap.md:272`, which carries the same
-  allowlist-owner sentence outside the two entries — recording the repository
-  allowlist as **discharged** on the `gh` path and private-network rejection as
-  **reduced with its residual class named** (decision 1's four-member divergence
-  class), never as discharged, with #429 still owning the raw-URL context.
-- **The three populations move in this PR**: the fetch-absence prose, the
+  `unit/test_gh_transport_guard.py::test_a_planted_transport_override_is_refused_before_anything_is_spawned`
+  is the refusal; the precedence chain is `::test_gh_config_dir_wins_over_both_others`,
+  `::test_an_empty_gh_config_dir_falls_through_exactly_as_gh_does` and
+  `::test_the_override_is_seen_through_every_locator_gh_resolves`; and
+  `::test_a_configuration_that_moves_nothing_refuses_nothing` is what stops the
+  check from being satisfied by refusing everything.
+- **Still owed, and not a test obligation — the known-key set is re-taken
+  whenever clause 8's version floor moves.** Member (b) is bounded only by what
+  that version of `gh` understands, so nothing in this suite can discharge it: a
+  test can only hold the set *this* build looks for, which
+  `unit/test_gh_transport_guard.py::test_the_known_key_set_is_what_the_check_looks_for`
+  does. The obligation is a hand re-measurement against the new binary, owed by
+  whoever raises the floor constant, and it is recorded here rather than dressed
+  as discharged.
+- **Landed in slice 1, prose with one pinned half — every T-7 sentence is
+  rewritten per control**, recording the repository allowlist as **discharged**
+  on the `gh` path and private-network rejection as **reduced with its residual
+  class named** (decision 1's four-member divergence class), never as discharged,
+  with #429 still owning the raw-URL context. The only half a test holds is the
+  spawn-site enumeration:
+  `unit/test_threat_model_t7_claims.py::test_the_t7_spawn_bullet_names_every_pinned_spawn_site_and_spells_how_many`.
+  That the *per-control* rewrite is faithful is a reading, and no mechanical check
+  reaches it — said here rather than left to be inferred from a name beside it.
+  (The three line-anchored cites this bullet carried — `threat-model.md:6454`,
+  `requirements-analysis.md:1352`, `roadmap.md:272` — are dropped under this
+  document's own *Demoted populations* rule: a line number does not survive an
+  edit to the file above it, and the sentences are findable by the control each
+  names.)
+- **Landed in slice 1, and discharged by a measurement rather than a test — the
+  three populations move in this PR**: the fetch-absence prose, the
   `providers.review.repositories` sentences, and the Milestone-7 attributions.
-- **The sites recording the old `reviewIngestion` meaning are rewritten** — the
-  key, its exclusions and its output are in decision 2 — two slices before the
-  flag flips. Test sites are among the movers, one of them a byte-pinned constant,
-  so the sweep is not a prose pass. The annotated population and its composition
-  live where the brief does (*Demoted populations*), not in a count here that
-  would go stale beside a correct key.
-- **The domain-model break is recorded** — a CHANGELOG entry under `#### Changed`
-  with a `BREAKING` marker naming the old shape and the new one, and a
-  `BREAKING CHANGE:` trailer on the commit.
+  Each key was re-run on the branch and its output pasted into
+  [PR #583](https://github.com/theurian/theurian/pull/583)'s *Populations,
+  re-measured* section, which is the record; nothing in the suite re-runs them,
+  and a later drift is caught by the next assignment's re-measurement rather than
+  by a RED.
+- **Landed in slice 1, pinned in slice 3 — the sites recording the old
+  `reviewIngestion` meaning are rewritten** — the key, its exclusions and its
+  output are in decision 2 — two slices before the flag flips. Test sites are
+  among the movers, one of them a byte-pinned constant, so the sweep is not a
+  prose pass. The annotated population and its composition live where the brief
+  does (*Demoted populations*), not in a count here that would go stale beside a
+  correct key. The sweep left nothing holding the result, which is what slice 3
+  added:
+  `unit/test_review_ingestion_flag_claims.py::test_the_four_sites_spell_the_never_meant_sentences_one_way`
+  holds the four sites' shared sentences against each other, and
+  `::test_each_record_narrates_the_flag_the_capability_dict_publishes` holds each
+  narrating record to the era the live flag value selects, with
+  `::test_the_docstring_checker_demands_the_other_era_when_the_flag_moves` as its
+  control. Its population is **enumerated, not derived**: a ninth narrating record
+  would not redden it, and that bound is recorded in the module's own docstring.
+- **Half landed in slice 1 — the domain-model break is recorded.** The CHANGELOG
+  half landed: `packages/theurian-core/CHANGELOG.md`'s `### Changed` section (the
+  level the file actually uses; this item said `#### Changed`) carries two
+  `BREAKING` entries naming the old shape and the new one, for `ReviewResolution`
+  and for `ReviewEvent`. **The commit half did not.** The merged commit
+  `7c486588` records the break as prose inside its body — *"(BREAKING:
+  ReviewResolution's field order and optionality — no consumer existed to
+  migrate)"* — and carries no `BREAKING CHANGE:` footer; `git log origin/main
+  --format='%B' | grep -cE '^BREAKING CHANGE:'` answers **1** across the whole
+  history, and it is not this commit. History is not rewritten for it, so what is
+  owed is the *next* break on this path taking the trailer, and this item is left
+  here saying so rather than marked landed. No test holds either half.
 
 **Slice 2 — land**
 
 Four of the five landed in slice 2 and each names the test that discharges it;
-the fifth is **half** discharged, and the half that is not says which slice
-takes it. Paths are `packages/theurian-core/tests/`.
+the fifth was **half** discharged there and its second half landed in slice 3,
+named in place below. Paths are `packages/theurian-core/tests/`.
 
 - **Landed in slice 2 — a flagged record under `block` never becomes a file.**
   `unit/test_review_landing_gate.py::test_under_block_the_flagged_record_never_becomes_a_file`
@@ -1444,10 +1613,13 @@ takes it. Paths are `packages/theurian-core/tests/`.
   and the survival half is `::test_a_record_upstream_no_longer_returns_survives_the_refetch`
   with `::test_a_refetch_rewrites_a_record_whose_content_changed_upstream` as the
   positive control that keeps a store writing nothing at all from passing it.
-  **Still owed, and it belongs to slice 3:** *deleting the derived store,
-  rebuilding from the files, and reproducing the served content.* There is no
-  derived store to delete until slice 3 builds one, so this half cannot be
-  written earlier — it is not deferred, it is not yet expressible.
+  **The second half landed in slice 3**, which is when it first became
+  expressible — there was no derived store to delete until slice 3 built one:
+  `integration/test_review_search_rebuild.py::test_a_deleted_store_rebuilds_to_the_same_answers_from_the_same_evidence`
+  throws the store away, rebuilds from the files alone and compares the served
+  answers, with `::test_two_builds_agree_whatever_order_the_evidence_records_arrived_in`
+  and `::test_the_served_order_does_not_depend_on_the_order_records_were_written`
+  holding the reproduction against the one input a filesystem is free to vary.
 - **Landed in slice 2 — FR-V5, made checkable.**
   `integration/test_review_ingest_is_model_free.py::test_no_callable_in_the_built_pipeline_reaches_a_model`
   walks the built ingest pipeline's object graph in the shape of
@@ -1462,29 +1634,94 @@ takes it. Paths are `packages/theurian-core/tests/`.
 
 **Slice 3 — serve**
 
-- **Every author-controlled field carries the SEC-15 triple, bound by import** —
-  a test that a `review.search` payload carries `theurian.mcp.results.SAFETY`
-  (`mcp/results.py:44`) itself, not three re-spelled literals, with a companion
-  asserting the check can fail. The population is decision 3's field table, so a
-  field added there without a disposition reddens this test rather than shipping
-  unclassified.
-- **The two-corpora equality** — one query against an index that held synthetic
-  withheld rows and one that never did, asserting identical responses across every
-  published field, count and member.
-- **A ranked surface over review evidence ranks the T-17a-purged population**, if
-  one is built — a filter does not clean FTS5 collection statistics.
-- **The capability flag and its scope field** — a test that
-  `system.capabilities` publishes `reviewIngestion: true` together with the
-  public-allowlisted scope, and that the wire schema accepts both. It reddens two
-  existing equality pins on purpose —
-  `test_mcp_tools.py`'s capability-key assertion and the flag-value assertion at
-  `:1980` — so the slice cannot land the flag without moving what asserts it.
-- **SEC-13 cross-project isolation over review evidence** — a test that a caller
-  authorized for project A receives no review record belonging to project B. The
-  requirement is not new, and neither is the control; what is new is a second
-  store it has to hold over. Routed into this ADR by round two, which found it
-  absent since the first draft.
-- **`review.search` query input is bound, not interpolated** — a test that a
-  query string reaches SQLite as a bound parameter and that FTS5 operator syntax
-  in it is treated as text rather than as query structure. Same round-two routing:
-  the ADR specified what the surface *returns* and never what it *accepts*.
+Five of the six landed and each names the test that discharges it; the sixth is
+**conditional and its condition is unmet**, which is a different state from owed
+and says so. Paths are `packages/theurian-core/tests/`.
+
+**The slice closed at round five under the fixed-round-budget ruling, with one
+HIGH open and release-gating** (2026-09-11). CRITICAL was zero throughout;
+[#636](https://github.com/theurian/theurian/issues/636) — the empty-publish guard
+keying on read-time facts while the build holds the publish-time listing that
+decides them — was filed rather than fixed, is the first post-merge item, and the
+0.2.0 cut does not happen until it is fixed and re-verified. It touches none of
+the discharges below: no arm of the two-corpora equality, the triple, the flag,
+SEC-13 or the bound-input battery rests on that guard.
+
+- **Landed in slice 3 — every author-controlled field carries the SEC-15 triple,
+  bound by import.**
+  `integration/test_review_search_tool.py::test_every_served_record_carries_the_imported_safety_triple`
+  compares a served row against `theurian.mcp.results.SAFETY` itself rather than
+  against three re-spelled literals, with
+  `::test_the_triple_assertion_reddens_on_a_re_spelled_drifted_triple` as the
+  companion that proves the check can fail and
+  `::test_the_shaper_follows_the_imported_object_and_not_three_typed_literals`
+  holding the shaper to the imported object. The population is decision 3's field
+  table:
+  `::test_every_author_controlled_field_is_either_served_under_the_triple_or_not_served`
+  is what reddens for a field added there without a disposition, with
+  `::test_the_corpus_really_plants_each_unserved_field` keeping it from passing
+  over fields no fixture carries, and
+  `unit/test_schemas.py::test_the_published_review_record_fields_are_the_ones_the_shaper_classifies`
+  and `::test_the_published_review_record_safety_triple_is_the_one_the_code_attaches`
+  hold the published schema to the same classification.
+- **Landed in slice 3 — the two-corpora equality, at both layers.** At the store:
+  `integration/test_review_search_absence_proof.py::test_every_query_in_the_battery_answers_identically_over_the_two_corpora`,
+  with
+  `::test_no_generated_query_separates_a_withholding_store_from_one_that_never_held_the_records`
+  as the generated-input arm. At the tool, which is the layer a caller actually
+  reaches:
+  `integration/test_review_search_tool_absence_proof.py::test_every_query_in_the_battery_answers_identically_over_the_two_corpora`,
+  with `::test_the_battery_really_reaches_the_withheld_records` and
+  `::test_the_control_serves_the_withheld_records_through_the_very_same_tool`
+  keeping the equality from being satisfied by a battery that reaches nothing, and
+  `::test_no_generated_request_separates_the_two_corpora_at_the_tool`. Three
+  channels beyond the field values are held separately, because "every published
+  field" does not cover them:
+  `::test_a_withheld_record_never_costs_a_visible_one_its_slot_in_the_response`
+  (displacement), `::test_the_page_boundary_bit_does_not_move_with_a_withheld_record`
+  (`truncated`), and `::test_both_published_copies_of_one_response_carry_the_same_payload`
+  — which exists because the SDK sends the payload twice and a comparison that
+  read only one copy was comparing `None` to `None`.
+- **Conditional, and the condition is unmet — a ranked surface over review
+  evidence ranks the T-17a-purged population, if one is built.** None is built:
+  this slice's read has no score, no term weight and no collection statistic, so
+  there is no build-time statistic for a withheld row to price, and that absence
+  is structural rather than asserted —
+  `integration/test_review_search_absence_proof.py::test_the_store_schema_carries_no_full_text_index_for_a_withheld_row_to_price`
+  recomputes it from the store's own schema, with
+  `::test_no_trace_of_a_withheld_record_survives_in_any_table_or_any_byte_of_the_store`
+  holding the physical absence the argument rests on. The item stays on this list
+  for whoever builds a ranked surface; it is not discharged, because a filter does
+  not clean FTS5 collection statistics and nothing here proves it would.
+- **Landed in slice 3 — the capability flag and its scope field.**
+  `integration/test_mcp_tools.py::test_capabilities_report_what_is_and_is_not_built`
+  holds both values together,
+  `::test_the_capability_block_holds_exactly_the_flags_that_are_pinned` and
+  `::test_the_system_capabilities_response_holds_exactly_the_keys_that_are_pinned`
+  are the two equality pins the slice had to move to land the flag, and the wire
+  half is
+  `integration/test_wire_contract.py::test_a_real_capabilities_response_validates_against_its_published_schema`
+  with `::test_the_capabilities_conformance_check_can_fail`. The response schema
+  it validates against is new in this slice. (This bullet cited the flag-value
+  assertion by line number, `:1980`; the line has moved, and the pins are named
+  here instead — see *Demoted populations*.)
+- **Landed in slice 3 — SEC-13 cross-project isolation over review evidence.**
+  `integration/test_review_search_tool.py::test_a_review_search_for_one_project_cannot_observe_the_other`.
+  The refusals are held to the same standard, since a message that varied with a
+  project's contents would be the same leak one layer over:
+  `::test_a_bad_filter_is_refused_the_same_way_whether_or_not_the_project_resolves`,
+  `integration/test_review_search_tool_absence_proof.py::test_an_empty_corpus_refuses_like_a_full_one_and_serves_a_well_formed_query`,
+  and the provenance arm
+  `integration/test_review_search_tool.py::test_a_store_this_installation_did_not_build_is_refused_in_the_words_a_missing_one_gets`.
+- **Landed in slice 3 — `review.search` query input is bound, not interpolated.**
+  `integration/test_review_search_bound_input.py::test_a_sql_statement_in_a_filter_is_a_value_and_alters_nothing`
+  and `::test_a_wildcard_in_a_structural_filter_is_a_character_and_not_a_pattern`
+  hold the binding;
+  `::test_operator_shaped_search_text_selects_only_the_record_that_spells_it`
+  holds operator syntax as text rather than as query structure — the ADR wrote
+  that as FTS5 syntax, and the surface that shipped is a `LIKE` with no query
+  language at all, so what is driven is the operator vocabulary a caller would
+  reach for against either; and
+  `::test_every_text_field_of_a_query_refuses_a_value_sqlite_cannot_be_handed`
+  holds the two byte shapes that cannot cross the boundary. At the tool:
+  `integration/test_review_search_tool.py::test_operator_syntax_in_the_query_arrives_at_the_store_as_text`.

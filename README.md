@@ -202,7 +202,7 @@ files or enforce how an agent follows either source.
 |  |  |
 | :-- | :-- |
 | **Engineering knowledge governance** | Knowledge has an owner, a trust level, a sensitivity, and a validity window, and its status reaches `approved` through a migration the workflow expects a human to author and merge — a convention the code does not check (T-15). What *is* enforced is that no MCP tool can write it. |
-| **AI proposes, humans approve** | Nothing an AI writes becomes approved knowledge. `system.capabilities` reports `writeTools: false` — no write-intent *MCP* tool exists, so proposing is the `theurian propose` CLI's job today, and a write-intent tool will emit the same proposal file a human reviews and merges. Resolved review threads become *candidates* when **candidate generation** lands ([Phase B](docs/roadmap.md)) — the *fetch* and *landing* halves shipped with [ADR-0030](docs/adr/0030-github-review-ingestion-spawns-gh.md), and what they write is review evidence under `.theurian/review/`, never approved knowledge: `KnowledgeCandidate` is constructed nowhere in `src/` (`git grep -n "KnowledgeCandidate(" -- packages/theurian-core/src` answers nothing). `system.capabilities` reports `reviewIngestion: false` while no *MCP* tool exposes either half. The direction never reverses. ([ADR-0013](docs/adr/0013-ai-writes-produce-proposals.md)) |
+| **AI proposes, humans approve** | Nothing an AI writes becomes approved knowledge. `system.capabilities` reports `writeTools: false` — no write-intent *MCP* tool exists, so proposing is the `theurian propose` CLI's job today, and a write-intent tool will emit the same proposal file a human reviews and merges. Resolved review threads become *candidates* when **candidate generation** lands ([Phase B](docs/roadmap.md)) — the *fetch* and *landing* halves shipped with [ADR-0030](docs/adr/0030-github-review-ingestion-spawns-gh.md), and what they write is review evidence under `.theurian/review/`, never approved knowledge: `KnowledgeCandidate` is constructed nowhere in `src/` (`git grep -n "KnowledgeCandidate(" -- packages/theurian-core/src` answers nothing). `system.capabilities` reports `reviewIngestion: true` beside `reviewIngestionScope: "public-allowlisted"`, which says an ingestion call surface exists that a client may call — `review.search`, a read over what `theurian review build` projected out of `.theurian/review/`, and not over "what an operator ingested": that directory is source rather than derived state and is not git-ignored, so a clone can deliver records this installation never fetched (threat model [T-24](docs/security/threat-model.md)) — and no *MCP* tool exposes either half: none spawns `gh`, none lands a file. The direction never reverses. ([ADR-0013](docs/adr/0013-ai-writes-produce-proposals.md)) |
 | **Evidence-backed retrieval** | Every result carries its revision's provenance: provider and URI, plus repository, commit, file and line range where the source pins them. A revision with no anchor at all has to declare that it originates in Theurian rather than in a repository; a revision satisfying neither cannot be stored (INV-8). |
 | **Reproducible knowledge state** | State is content-addressed and no revision is ever overwritten, so a citation to a revision id means the same thing forever. `knowledge.search` names the `snapshotId` that answered it, and `knowledge.status` publishes that same string as `stateHash`, so two answers can be compared. *Passing one back* to query that state is not implemented (FR-R7). ([ADR-0006](docs/adr/0006-immutable-revisions-and-optimistic-concurrency.md), [ADR-0016](docs/adr/0016-state-hash-covers-the-working-tree.md)) |
 
@@ -404,10 +404,10 @@ theurian project register --project-id team-two-api
 
 Theurian exposes no client-specific surface: anything that speaks **MCP over
 Streamable HTTP** to `http://127.0.0.1:7419/mcp` can use it, and gets the same
-six read-only tools — `knowledge.search`, `knowledge.get`, `knowledge.status`,
-`project.list`, `review.findings`, `system.capabilities`. The daemon does put
-four conditions on the request — one of them authentication, the other three
-because a loopback port is reachable from any page your browser opens
+seven read-only tools — `knowledge.search`, `knowledge.get`, `knowledge.status`,
+`project.list`, `review.findings`, `review.search`, `system.capabilities`. The
+daemon does put four conditions on the request — one of them authentication, the
+other three because a loopback port is reachable from any page your browser opens
 (SEC-2, T-2):
 
 | Your client must | Or the request gets |

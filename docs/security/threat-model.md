@@ -885,13 +885,15 @@ argument it carried is not true of the other two.
 | `IndexStore.search_dense` | `fetchall` over every embedding in the project, then a `struct.unpack` and a Python cosine per row, then a sort | **yes** — `_dense_ranking` is pure Python | **nothing.** The port takes no `limit`, and one would not have bounded it — see below |
 | `mcp.search._scan`, behind `substring_answer` | one `list_items_by_status` materialising every *surfaceable* item in the project — the withheld rows are dropped by a SQL `status IN (...)` filter over `idx_items_status`, never read (#158) — then two queries per document, the revision then its source anchors, and a Python `in` over the whole of its title and body | **yes** — the match is a Python `in` | `limit`, and only for a query that *matches*. One that matches nothing walks every surfaceable document, and `list_items_by_status` materialises the whole surfaceable set before the first comparison either way — so its rows and memory are still bounded by nothing the caller passes. What it no longer carries is the *withheld* count: since #158 the read is planned through `idx_items_status` and never touches a withheld row (`test_the_substring_scan_materializes_the_same_rows_however_many_are_withheld`) |
 
-**A fourth query-side member landed after those three** — `review.findings`
-(ADR-0029 phase-2 slice-3) — **and it is enumerated at the end of this entry's
-query material**, under *The fourth query-side member: `review.findings`*. It is set apart rather
-than added as a row because every "all three" and "the third member" statement
-between here and there was measured against the Milestone 5 set and continues to
-range over it: the cost table, the GIL columns, the concurrency figures and the
-`knowledge_search` admission gate are all statements about those three.
+**Two more query-side members landed after those three** — `review.findings`
+(ADR-0029 phase-2 slice-3) and `review.search` (ADR-0030 slice 3) — **and both
+are enumerated at the end of this entry's query material**, under *The fourth
+query-side member: `review.findings`* and *The fifth query-side member:
+`review.search`*. They are set apart rather than added as rows because every
+"all three" and "the third member" statement between here and there was measured
+against the Milestone 5 set and continues to range over it: the cost table, the
+GIL columns, the concurrency figures and the `knowledge_search` admission gate
+are all statements about those three.
 
 All three are reachable from the public API with no tuning and no privileges. The
 scan needs eight two-character terms with the matching one typed last — roughly
@@ -1452,6 +1454,103 @@ price, and it is not evidence that this member is cheaper than the three above.
 The reason the cap is the same constant is that a second number would be a
 tuning claim, not that a measurement supports one.
 
+**The fifth query-side member: `review.search`.**
+Added by ADR-0030 slice 3 (2026-09-10), and here for the fourth member's reason:
+a documented entry point that reads a database on a caller's request. It is
+listed separately for that reason too — none of the measurements above ranges
+over it, and it carries its own bounds rather than a share of anyone else's.
+
+| Dimension | Bound | Refuses or clamps |
+| :-- | :-- | :-- |
+| rows returned | `mcp/review_search.py::MAX_REVIEW_SEARCH_LIMIT` (50), `DEFAULT_REVIEW_SEARCH_LIMIT` (20) when the caller sends none | **refuses**, for the fourth member's reason: a silent clamp would let a caller read "these are the records matching my filter" off a page cut from more |
+| characters per served `excerpt`, cut inside the store's own `SELECT` | `mcp/review_search.py::MAX_EXCERPT_CHARS` (280), derived from `domain/retrieval.py::EXCERPT_CHARS` rather than respelled, and applied by `infrastructure/sqlite/review_search_sql.py::excerpt_columns()` as `substr(t.content, 1, ?)` | **clamps**, and marks the cut with three characters, so an untouched excerpt is at most the bound and a cut one is exactly `MAX_EXCERPT_CHARS + 3` |
+| characters per string filter, before anything is matched or echoed | `mcp/review_search.py::MAX_FILTER_CHARS` (400) — 400 rather than the fourth member's 200 because the long member here is a **file path**, and `q` shares the bound rather than taking `knowledge.search`'s 2,000 because the match is literal | **refuses**, naming the bound and never quoting the value |
+| magnitude of `pullRequest` | `mcp/review_search.py::MAX_PULL_REQUEST`, the widest value the store's signed 64-bit column can hold (`2**63 - 1`) | **refuses** |
+| content characters of the shaped records — **not wire bytes**, see below the table | `mcp/review_search.py::MAX_REVIEW_SEARCH_RESPONSE_CHARS`, **derived rather than chosen**: `MAX_REVIEW_SEARCH_LIMIT × (MAX_EXCERPT_CHARS + 3 + 17 × MAX_FILTER_CHARS)`, where the 17 is itself derived — the published keys beside `excerpt`, read off the two field-classification sets and the SEC-15 triple, so a field added to the shaper widens the budget by the change that adds it. Size this by the expression, not by the figure it evaluates to today | **clamps the page**: records stop being added once the budget is spent, and `truncated` says the response carries fewer records than the read returned |
+| concurrent occupancy | an `AdmissionGate` of its own — the third — sized by `MAX_CONCURRENT_SEARCHES` (4), waited on for `ADMISSION_WAIT_SECONDS` (1.0 s), refusing with `REVIEW_SEARCH_CAPACITY_REFUSAL` | **refuses** |
+| wall clock per call | **nothing** — recorded as *not taken*, with the reasoning below | neither |
+
+**The response bound's unit is content characters, and the frame a caller
+receives is larger.** `_record_chars` sums each shaped row's key names and the
+length of each string value, so the figure is what the *records* hold rather than
+what crosses the wire. Two things separate the two, and neither is modelled by
+the budget on purpose — sizing the page on a serialized string would cost the
+graded stop at the record boundary, which is what keeps every served value the
+stored one. JSON escaping costs up to six wire characters for one counted here
+(CJK does not escape: the SDK serializes with `ensure_ascii=False`; a control
+character does), and the SDK sends the payload **twice**, as a `content` text
+block and as `structured_content`. Measured 2026-09-11 over a full page of 50
+records against the SDK's own serialization: 188,900 budget characters against
+203,257 on the wire, **2.15×** counting both carries; 30,350 against 44,707 for
+short values, 2.95×; and 188,700 against 1,072,157, **11.36×**, where every
+string is control characters. A transport limit is therefore sized at roughly
+twelve times this budget and never at the budget itself. Re-basing the budget on
+serialized size was considered and rejected for the record-boundary reason above.
+
+**Only the excerpt was bounded when the tool was first written, and the excerpt
+was the cheap field to bound.** `authorDisplayName` and `filePath` are
+author-controlled (ADR-0030 decision 3) and crossed uncut, as did every
+structural string, so the sentence that read `limit × excerpt_fetch_chars()` as
+a bound on the response was bounding one term of it. Measured 2026-09-10 on
+`mcp/review_search.py`, 50 hits each carrying a 1 MiB `filePath` and a 1 MiB
+`authorDisplayName`: **104,904,775 JSON characters in one response**, against the
+14,050 the prose declared. The only thing bounding it was the evidence writer's
+own `MAX_SOURCE_FILE_BYTES` (8 MiB) at landing. The response bound in the table
+above is what closed that, and it is applied while the page is being shaped
+rather than to a page already built.
+
+**The unbounded term that remains is duration, and it is `q`.** The store carries
+no index a `WHERE` on its filter columns can use, so a filtered read is a scan
+plus a sort; `q` is a `LIKE`, and SQLite tries the pattern at each starting offset
+of each stored fragment, so a near-miss costs the product of the needle's length
+and the corpus's. **Two measurement sets are recorded and neither divides the
+other** — they were taken on different corpora with different instruments, and a
+ratio across two instruments is fabricated (the same rule the fourth member's read
+face applies, and the #199 unit-A amendment above):
+
+- **PR #630 round 1 (adversarial), 2026-09-10.** At `MAX_FILTER_CHARS`, LIKE
+  backtracking cost **301× a baseline call at the store layer** and **174×
+  through the tool**. Under four concurrent hostile callers, **four of eight
+  benign callers were refused** — that number is the reach this deferral accepts,
+  and it is recorded here rather than left to be inferred from the cap.
+- **PR #630's re-measurement, 2026-09-10**, CPython 3.13.3 arm64, over 500
+  records of one 65,536-character fragment each, medians of 15: 1,167.0 µs
+  unfiltered, 22,266.1 µs for a one-character near-miss (19.1×), 273,432.7 µs at
+  64 characters (234.3×) and **1,547,952.9 µs — 1.55 s in one call, 1,326.4× — at
+  `MAX_FILTER_CHARS`**. The cost is linear in the needle's length across that
+  sweep. The same day, both stores at 2,000 rows and each tool at its own default
+  page size, medians of 40: a `review.findings` serve at 1,030.7 µs against
+  `pullRequest=` 926.0 µs (0.90×), `filePath=` 1,131.8 µs (1.10×), no filter
+  1,230.1 µs (1.19×), `author=` 2,554.9 µs (2.48×), `q=budget` 3,867.3 µs (3.75×)
+  and `repository=` 7,822.2 µs (7.59×) — so the filtered path costs up to 7.6× a
+  findings serve, and the claim that this member is "no more expensive than a
+  findings serve" was never measured and is not true.
+
+**The per-query wall-clock bound is recorded as not taken here, on three
+grounds.** It is the same deferral T-6 already records for the other four
+members, and this member does not reopen it:
+
+1. **The transport cannot take it.** A sync MCP tool runs through
+   `anyio.to_thread.run_sync`; cancelling the *awaiting* task does not stop the
+   worker thread already dispatched to it, so a transport-level timeout bounds
+   how long a caller waits and never what the daemon spends. The concurrency cap
+   and the admission wait bound the **fleet** — how many of these run at once and
+   how long a caller queues for a permit — not one call.
+2. **The cost is inherent to the non-ranked design.** `q` is `O(needle ×
+   corpus)` `LIKE` backtracking because there is no rank, no term weight and no
+   collection statistic on this path — which is exactly the property ADR-0030
+   decision 6 keeps to inherit no T-17a constraint (the #368 boundary). Bounding
+   the spend rather than the rate means either a ranked surface with build-time
+   statistics or a runtime interrupt, and both are their own decision rather than
+   a tuning of this one.
+3. **The mitigations that do apply are operator-side.** SEC-10's repository
+   allowlist bounds whose evidence `theurian review ingest` can add to the
+   corpus, and the bounds in the table above bound what one call returns. Neither
+   bounds what one call costs, and this row says so rather than letting the caps
+   read as if they did. The allowlist bounds the *ingest* route only: a clone can
+   deliver evidence files past it (T-24), so what it bounds is the inflow an
+   operator's own runs produce, not the size of the corpus a query scans.
+
 **Controls on `propose accept`'s body-materialisation cost**
 ([#306](https://github.com/theurian/theurian/issues/306),
 [#400](https://github.com/theurian/theurian/issues/400)). The controls above
@@ -1818,16 +1917,27 @@ and issued from a child process is outside all three —
 `__import__("sub" + "process")` running `curl` survives the entire suite today,
 and the spawn arm's own docstring names and measures it.
 
-`system.capabilities` reports `reviewIngestion: false`, pinned by
-`test_capabilities_report_what_is_and_is_not_built` — and **that flag no longer
-means "this build cannot reach GitHub"**. The fetch path shipped with ADR-0030
-slice 1 while the flag stayed `false`, because no tool exposes it; from slice 3
-the flag means *an ingestion call surface exists that a client may call*. The
-window between the two is a **bounded residual, recorded rather than argued
-away**: for slices 1 and 2 the machine-readable answer reads `false` while a
-fetch path ships, which is a wrong answer to a security question even though a
-client acting on it loses no capability it could have had, since no tool is
-callable. Judge this entry's controls by the table above, not by the flag.
+`system.capabilities` reports `reviewIngestion: true`, published beside
+`reviewIngestionScope: "public-allowlisted"` and pinned by
+`test_capabilities_report_what_is_and_is_not_built` — and **that flag has never
+tracked whether this build can reach GitHub, in either direction**. The fetch
+path shipped with ADR-0030 slice 1 and the landing path with slice 2, both while
+the flag read `false`, because no tool exposed either; slice 3 registered
+`review.search` and moved it. What the `true` says is *an ingestion call surface
+exists that a client may call*, and nothing wider: **no MCP tool spawns `gh`**, a
+fetch stays an operator's act through `theurian review ingest`, and the flip adds
+no site to the four this entry counts above.
+
+The window before it is a **bounded residual, recorded rather than argued
+away**: for slices 1 and 2 the machine-readable answer read `false` while a
+fetch path shipped, which was a wrong answer to a security question even though a
+client acting on it lost no capability it could have had, since no tool was
+callable. Slice 3 closed that window. Judge this entry's controls by the table
+above, not by the flag: the repository allowlist stays **discharged**, the scheme
+allowlist and private-network rejection stay **owed** against
+[#429](https://github.com/theurian/theurian/issues/429), and the flip changed
+neither — it registered a reader of a local SQLite store, which reaches no
+network and starts no process.
 
 **`reviewFindings: true` is beside it and does not weaken it.** The
 `review.findings` tool serves the `Review-Finding:` trailers `theurian findings
@@ -1837,9 +1947,9 @@ network site** — the serving read is a SQLite read of a local artifact — and
 `infrastructure/git/trailer_source.py` entry already listed above, performed by
 the CLI's rebuild rather than by the tool. The change that made this entry's
 repository allowlist load-bearing was **not** either flag moving: it was the
-review-ingestion *adapter* landing, two slices ahead of the flag it will
-eventually flip. Both flags are asserted, with that split stated as the reason,
-in `test_capabilities_report_what_is_and_is_not_built`.
+review-ingestion *adapter* landing in slice 1, two slices ahead of the flag that
+slice 3 finally flipped. Both flags are asserted, with that split stated as the
+reason, in `test_capabilities_report_what_is_and_is_not_built`.
 
 #### T-15 — A secret in a document becomes an approved, indexed revision (Information disclosure, High — the scanner covers one gate, best effort)
 
@@ -6086,12 +6196,14 @@ rebuild strands nothing.
 Class: **derived state trusted by filesystem presence rather than by provenance.**
 
 Everything under `.theurian/state/` — the active pointers (`active.json`,
-`active-index.json`) and the **three** database families that live beside them:
+`active-index.json`) and the **four** database families that live beside them:
 the canonical state (`theurian-state-*`) and the published retrieval index
-(`theurian-index-*`), both named by a pointer, and — since ADR-0029's serving
-slice — the review-finding store (`theurian-findings-*`), which no pointer names
+(`theurian-index-*`), both named by a pointer; since ADR-0029's serving
+slice the review-finding store (`theurian-findings-*`), which no pointer names
 because `theurian findings build` writes it under a constant id
-(`FINDINGS_STORE_ID`) — is
+(`FINDINGS_STORE_ID`); and, since ADR-0030 slice 3, the review search store
+(`theurian-review-*`), which no pointer names either and for the same reason —
+`theurian review build` writes it under `REVIEW_SEARCH_STORE_ID` — is
 derived and git-ignored (ADR-0004). A repository contributor can nonetheless force-add a
 doctored copy past that ignore (`git add -f`), and a victim who clones (or
 downloads the ZIP/tarball) + `theurian project register` + serves over MCP,
@@ -6139,7 +6251,29 @@ the Git-tracked migrations rather than adopting bytes it cannot vouch for; becau
 `create_database` refuses to write over an existing file, the rebuild deletes the
 main database and creates a fresh one, so a committed `-wal` has no main database
 to replay into — the sidecars are removed as well, redundant defense-in-depth
-rather than the load-bearing reason. What vouches for those migrations
+rather than the load-bearing reason.
+
+**"Redundant" is true of *that* rebuild and does not generalise to the publish
+paths, which is measured and not reasoned.** The sentence above holds because
+`migrate apply` deletes the main database first, so nothing is left for a log to
+replay into. A publish that lands by `os.replace` deletes nothing: it renames a
+new inode onto the live name, and a `-wal` sitting at that name is applied to
+whatever database now answers there. Measured on the review search store
+(2026-09-10, `tests/integration/test_review_search_store_guards.py::test_a_rebuild_publishes_over_the_sidecars_a_serve_left_behind`),
+in two arms that behave differently: a `mode=ro` serving read leaves an **empty**
+log (0 bytes, 32 KiB of shared-memory index), which SQLite ignores, so removing
+the reap leaves the store answering correctly; a **writer killed before it
+checkpointed** leaves a log carrying real frames of the database it was written
+for (4,152 bytes), and with the reap removed the next `search` answers **the
+corpus the rebuild replaced** — a rebuild's decisions, withholding included,
+reverted by a file nobody reaped, with no error anywhere. `replace_all` therefore
+reaps `-wal` and `-shm` immediately before the rename, and on that path the reap
+is load-bearing rather than redundant. A garbage log was measured too and is not
+driven, because SQLite validates the log's header before applying anything and
+ignores it like the empty one — an arm planting bytes could not tell the guard
+from its absence.
+
+What vouches for those migrations
 is human PR review (T-1), not FR-K5: FR-K5 compares a migration file against the
 checksum recorded when it was applied, and a fresh clone has applied nothing, so
 an author who wrote both the migration and — on its first apply — its checksum
@@ -6481,6 +6615,81 @@ nothing more. The `raptorPath[].title` staleness is the T-17a residual
 content against canonical, but a summary node is derived text with no single
 canonical revision to compare against.
 
+#### T-24 — A repository ships its own `.theurian/review/` and a local build serves it as review history (Tampering, Medium — accepted residual, recorded)
+
+Class: **the evidence a store is projected from is delivered by the repository,
+and the provenance anchor vouches for the build rather than for the input.**
+
+A **sister of T-19 with a different root cause**, and the difference is the whole
+entry. T-19 is about derived state: `.theurian/state/` is git-ignored (ADR-0004),
+a copy in a clone had to be force-added past that ignore, and `BuildProvenance`
+refuses it because this installation did not build it.
+`.theurian/review/` is **source**, not derived — ADR-0030 decision 3 withdrew
+ADR-0004's "raw GitHub review caches" entry in place, because an upstream comment
+can be edited or deleted and a discarded local copy of a deleted comment is data
+loss no refetch recovers. So `theurian init` deliberately does *not* write it into
+the managed `.gitignore` block — `.theurian/review/` is not among
+`domain/project.py::GITIGNORE_SECTIONS`' entries, and it is not in
+`DERIVED_SUBDIRECTORIES` either — and whether a project commits its review
+evidence is the project's decision.
+
+The consequence is that **no ignore has to be bypassed and no provenance check
+fires.** A repository author writes evidence files by hand — the codec reads
+`sourceUri` and every other identity field as a string out of the JSON
+(`infrastructure/review_evidence/codec.py`), so a fabricated record can name a
+real repository, a real pull-request number and a plausible permalink. A victim
+clones, runs the documented `theurian review build`, and that command projects the
+files and then calls `BuildProvenance.record_review`
+(`cli/review_commands.py::rebuild_search_store`). Every gate downstream is
+satisfied, honestly: this installation really did build the store. `review.search`
+then serves fabricated review history as the repository's own.
+
+**The provenance control answers a narrower question than a reader expects.** It
+answers *did this installation build the store*; it does not answer *did this
+installation ingest the evidence*, and there is nothing in the store or in the
+response from which the second could be recovered. `mcp/tools.py`'s
+`review_search` comment records the neighbouring reach in the same words — "a
+victim who never ran `review build`" is refused, which is T-19's face — and this
+entry is the face of a victim who **did** run it.
+
+**What holds, and it is not nothing.**
+
+| Control | What it covers here |
+| :-- | :-- |
+| SEC-15's triple on every served row (`contentClassification: untrusted-knowledge`, `mayContainInstructions: true`, `executable: false`) | attached at the row rather than per field, so a fabricated record carries it exactly as an ingested one does. The instruction it gives a client is **correct** for this content, which is the reason this entry is not graded higher |
+| No promotion path out of review evidence | `KnowledgeCandidate` is constructed nowhere in `src/` (pinned by `tests/unit/test_adr_0030_claims.py::test_nothing_in_the_shipped_package_constructs_a_knowledge_candidate`), so a fabricated record cannot become approved knowledge, cannot be indexed, and cannot be returned by `knowledge.search` or `knowledge.get` |
+| The surface no longer over-claims, and the population was derived rather than listed | the tool description and the response schema said the records were the ones `theurian review ingest` landed from public allowlisted repositories — and so, one layer down, did the served schema's own field descriptions, the domain record, the builder, the evidence record, the protocol page and this entry's T-6 sibling, each attributing a served value to that route without naming it. **The rule now, over every one of them:** a sentence asserting provenance or an ingestion guarantee for a field that can arrive clone-delivered either names the route it holds for, or says what the read actually checks — which is shape and the derived path, never authorship. The T-19 check is stated as being on the *store*, answering "did this installation build it" and never "who wrote the records" |
+| `reviewIngestionScope: "public-allowlisted"` is unaffected | it is a statement about *ingestion*, which really is allowlisted; it was never a statement about what is in `.theurian/review/`. Its published wording now says so itself rather than leaving a reader to take "every record it holds" as an inventory — the sentence names `theurian review ingest` as its subject on every surface that publishes or records the scope (`schemas/mcp/system-capabilities-response.schema.json`, `mcp/tools.py`, `docs/protocol/mcp-tools.md`, and ADR-0030 decision 2, where the correction is to the sentence and not to the decision) |
+
+**The residual, stated rather than argued away: a repository author can plant
+review evidence that a clone serves.** No control refuses it, and the surface's
+own honesty is what stands between a fabricated record and an agent that acts on
+it — which is assumption 4 of this document, the weakest one in it. It is the
+same shape as T-3, and it is graded **Medium** where T-3 is High for two reasons
+that are properties of this surface rather than preferences: the content never
+leaves the untrusted plane (the triple is unconditional and there is no promotion
+path), and no published value on this path is priced over records the caller did
+not receive (T-17's class is inapplicable: `q` is a literal substring test with no
+score, term weight or collection statistic — ADR-0030 decision 6). **It is not a
+disclosure at all**: nothing withheld is published, and the damage is fabricated
+content, which is the T-3/containment grading this document already applies to
+T-19's findings-family window.
+
+**What would raise it, so the grade is falsifiable rather than a label.** Any
+path that promotes a review record into approved knowledge or into an index; any
+surface that presents review evidence as governed rather than as untrusted; or a
+published value on this path computed over records the caller did not receive.
+
+**Non-goal for this slice, and unowned rather than deferred to a named
+milestone.** Verifying that *this installation* ingested a given evidence record
+— a signature over the record, or a per-record provenance anchor beside the
+store's — is not implemented and no issue owns it today; it is adjacent to
+[#575](https://github.com/theurian/theurian/issues/575), which is about a
+different question (what may be *ingested*), not about vouching for what is
+already on disk. Recording it as unowned is deliberate: an owed item whose owner
+is "a follow-up" is the owner-position defect ADR-0030 diagnoses, and naming a
+milestone nothing has scheduled would be the same defect with a number on it.
+
 ### TB-4: the filesystem and setup
 
 #### T-14 — Setup overwrites a user's configuration (Tampering, Medium)
@@ -6604,6 +6813,7 @@ fix.
 | T-21 | An alias key colliding with a live item id resolves a withheld item to an approved item's authority | I | Critical | Closed in 0.1.0.dev6 — non-resolving `get_item_exact` on the read gate, plus a whole-set write refusal (`AliasItemCollisionError`, `deprecated` exempt); ranked face held by T-18 (GHSA-vx8x-rjfj-9x54) |
 | T-22 | A canonical read's cost grows with the above-ceiling rows it withholds | I | Medium | Accepted residual, measured (0.20 µs/row on the scan, 0.54 µs/row on `knowledge.status`'s counts); flattening owned by [#338](https://github.com/theurian/theurian/issues/338), acceptance recorded on #119 |
 | T-23 | A revision's served content drifts under an unchanged revision id, and a stale index serves it past the gate | I | Critical | Closed in 0.1.0.dev13 — serve gate keyed on `served_content_hash(title, body)` both sides, `INDEX_SCHEMA_VERSION` 6 → 7 forced rebuild; a new face of the derived-state-trust class T-19 (GHSA-3f65-gr36-qqx8); leaf-excerpt only, the `raptorPath[].title` face stays the T-17a residual (GHSA-97q9-xxfg-33r6) |
+| T-24 | A repository ships its own `.theurian/review/` and a local build serves it as review history | T | Medium | Accepted residual, recorded. SEC-15's triple on every row and no promotion path out of the untrusted plane; the tool description and response schema state that the T-19 check is on the *store* and never on who wrote the records. Verifying evidence provenance is unowned, adjacent to [#575](https://github.com/theurian/theurian/issues/575) |
 
 ## Explicitly out of scope
 

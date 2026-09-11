@@ -4,15 +4,21 @@
 ``theurian review ingest`` does before they run it, and three of its sentences
 say something the tree can be asked about:
 
-- **Exit 1 carries either of two documents** — the run document, and
-  ``{error, remedy}`` when the command refused before any report existed. The
-  second shape has no ``clean`` field, so a caller scripting ``--json | jq
-  .clean`` reads a refusal as *absent* rather than as *refused*. Until
-  this branch corrected it the entry read *"1 when any record was withheld or
-  any pull request could not be read"* — one document where there are two — and
-  the command's own ``--help`` was understating it the same way. **The quoted
-  before-text is the citation**: a branch commit's sha is orphaned by the squash
-  that merges it, and a quotation survives.
+- **Exit 1 carries the run document, or ``{error, remedy}``, or both** — the run
+  document alone on stdout for a run that happened and was not clean,
+  ``{error, remedy}`` alone on stderr for a refusal that fired before any report
+  existed, and both when the records landed and the rebuild after them did not.
+  The refusal shape has no ``clean`` field, so a caller scripting ``--json | jq
+  .clean`` reads a refusal as *absent* rather than as *refused*; and a caller
+  reading only stdout can now see a document at exit 1. This row has caught the
+  entry understating that population **twice**. First it read *"1 when any record
+  was withheld or any pull request could not be read"* — one document where there
+  were two — and the command's own ``--help`` was understating it the same way.
+  Then it read *"1 on either of two documents"*, which stopped being true when
+  the post-landing rebuild moved into a ``try`` of its own and its three arms
+  began publishing the run document before failing. **The quoted before-texts are
+  the citation**: a branch commit's sha is orphaned by the squash that merges it,
+  and a quotation survives.
 - **A pull-request number that cannot be read is repository scope.** It sits in
   the halting enumeration, and the entry states the reason: ``--since`` is
   applied to a number, so a pull request whose number cannot be read is one no
@@ -142,24 +148,32 @@ def _assert_the_entry_states(label: str, document: str, fragment: str, fact_side
 #: reporting a safety it does not have.
 ENTRY_CLAIMS: Final[tuple[tuple[str, str, str, str], ...]] = (
     (
-        "exit 1 names both documents",
+        "exit 1 names all three shapes",
+        (
+            "**1 on the run document, or `{error, remedy}`, or both** — the run document "
+            "alone, on stdout, when the run happened and was not clean (a record `block` "
+            "withheld, or a pull request the listing or a fetch could not read); "
+            "`{error, remedy}` alone, on stderr, when the command refused before any "
+            "report existed; and **both** when the records landed and the rebuild that "
+            "follows them did not"
+        ),
+        # The understatement this row has now caught twice, in its second and
+        # narrower form. The first was exit 1 described as the non-clean run
+        # alone; this is the two-document wording, which was true until the
+        # rebuild moved into a `try` of its own and its three arms began
+        # publishing the run document before failing. A caller reading it would
+        # not expect a document on stdout beside a refusal on stderr.
         (
             "**1 on either of two documents**, the run document when the run happened "
             "and was not clean (a record `block` withheld, or a pull request the listing "
             "or a fetch could not read) and `{error, remedy}` when the command refused "
             "before any report existed, which carries no `clean` field at all"
         ),
-        # The understatement the command's own help carried until this branch:
-        # exit 1 described as the non-clean run alone, with the pre-report refusal
-        # -- and its missing `clean` field -- gone.
-        (
-            "**1 when the run happened and was not clean** (a record `block` withheld, "
-            "or a pull request the listing or a fetch could not read)"
-        ),
         (
             "`tests/integration/test_review_ingest_cli.py::"
-            "test_the_help_says_exit_one_carries_two_documents` and "
-            "`::test_an_unloadable_migration_is_reported_as_a_document`"
+            "test_the_help_says_which_documents_exit_one_carries`, "
+            "`::test_a_rebuild_that_fails_after_landing_still_publishes_the_run_document` "
+            "and `::test_an_unloadable_migration_is_reported_as_a_document`"
         ),
     ),
     (

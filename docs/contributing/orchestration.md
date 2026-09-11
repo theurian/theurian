@@ -47,8 +47,11 @@ excluded from the published documentation site for that reason.
   - Honest caveat: retrieval quality here is **unmeasured**. There is no
     golden-query baseline until [Phase A](../roadmap.md) ships one, and
     `review.findings` serves trailers from git history — it is not review
-    ingestion, which the server still reports as `reviewIngestion: false`. So
-    this step *supplements* the checklists; it does not replace them.
+    ingestion. That is `review.search`, a separate tool over the GitHub evidence
+    `theurian review ingest` landed, and it is what the server's
+    `reviewIngestion: true` (beside `reviewIngestionScope: "public-allowlisted"`)
+    announces. So this step *supplements* the checklists; it does not replace
+    them.
 - Write the acceptance criteria before dispatch, in EARS: a DON'T as
   *If \<condition>, the \<system> shall NOT \<behaviour>*, a behaviour example
   as Given-When-Then.

@@ -527,6 +527,7 @@ REACHED_BY: Final = {
     "cli.propose_commands::propose_accept": "propose accept",
     "cli.propose_commands::_draft": "propose",
     "cli.review_commands::review_ingest": "review ingest",
+    "cli.review_commands::review_build": "review build",
 }
 
 #: A valid `ProposalId` naming nothing, so `propose accept` gets past its own

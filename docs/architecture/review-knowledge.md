@@ -28,12 +28,19 @@ fetches pull requests, review threads, inline comments and resolution state by
 spawning the operator's `gh`, over public repositories the project has
 allowlisted. Slice 2 added the landing half: `theurian review ingest` screens
 each fetched record and writes what the gate clears under `.theurian/review/`.
-What is still missing is everything after that — `theurian ingest` reads local
-files only, no code path generates a candidate, and **no MCP tool** reaches any
-of it, so `system.capabilities` reports `reviewIngestion: false`, pinned by
-`test_capabilities_report_what_is_and_is_not_built`. So the sections below that
-describe *collection* — the landing stages, classification, candidate
-generation, provider access and privacy handling — describe a **design**, not
+Slice 3 added the serving half: `theurian review build` projects the files under
+`.theurian/review/` into a SQLite store — whatever put them there, since that
+directory is source rather than derived state and a clone may carry one
+([threat model T-24](../security/threat-model.md)) — and the `review.search` MCP
+tool reads that store back under the untrusted-content safety triple. So `system.capabilities` reports
+`reviewIngestion: true` beside `reviewIngestionScope: "public-allowlisted"`,
+both pinned by `test_capabilities_report_what_is_and_is_not_built` — a statement
+about the callable surface and nothing wider, since no MCP tool spawns `gh` and
+a fetch stays an operator's act. What is still missing is everything after
+serving — `theurian ingest` reads local files only, and no code path generates
+a candidate. So the sections below that describe *collection* — the landing
+stages, classification, candidate generation, provider access and privacy
+handling — describe a **design**, not
 what runs today. Three parts of it are the exception and are named as such where
 they appear: the fetch half of the first stage, the landing half beside it, and
 the ingestion-time privacy control the landing gate applies. Collection is
@@ -187,6 +194,15 @@ flowchart LR
 Evidence collection is reliable and cheap; interpretation is fragile and
 optional. Keeping them separate means a model outage costs you candidates, not
 your review history.
+
+**The rebuild that sits between them is wholesale, so its memory is linear in the
+corpus.** `theurian review build` — and the same rebuild `theurian review ingest`
+runs after it lands — reads every record under `.theurian/review/` and holds all
+of them at once, so the only bound on one build's footprint is how much evidence
+a project has. The measurement, its scope and what dominates it are recorded
+where the build makes that trade, in `ReviewSearchBuilder.build`'s docstring
+(`application/review_search_builder.py`). An incremental rebuild is the change
+that would bound it, and it is not designed.
 
 ## Privacy
 

@@ -1,11 +1,23 @@
-"""Syntax-tree keys shared by the one-opener claims (#526, #586).
+"""Syntax-tree keys shared by claims that read the shipped source (#526, #586).
 
-Two modules assert that every open of a database goes through one function --
-``connection.py::_connect`` for the state database, ``index_store.py::
-_connect_to`` for the index. The claim is the same shape in both, so the key that
-checks it lives here rather than being copied: a copy is a key that gets fixed in
-whichever file its author remembered, and round two found both copies wrong the
-same way.
+Two families live here, both for the same reason: a copy is a key that gets fixed
+in whichever file its author remembered, and round two of #586 found both copies
+of the first one wrong the same way.
+
+**The one-opener keys.** Two modules assert that every open of a database goes
+through one function -- ``connection.py::_connect`` for the state database,
+``index_store.py::_connect_to`` for the index. The claim is the same shape in
+both.
+
+**The write-path name-hygiene key.** :func:`private_side_effect_calls` is the
+structural reading of "what does this write refuse before it touches a name": a
+bare-statement call to one of the module's own private helpers, standing between
+the caller and a file. ``test_review_search_store_guards.py`` derives its
+``WRITE_PATH_HYGIENE`` census from it, and
+``test_threat_model_t19_claims.py`` reads the same census to ask *where in the
+write* the sidecar reap happens -- which is the claim T-19 gained when the
+"redundant defense-in-depth" sentence turned out not to generalise to a publish
+by ``os.replace``.
 
 Lives beside ``migration_fixtures`` and ``hang_guard`` at the tests root, which
 is what makes a bare ``from ast_keys import ...`` resolve from any test module.
@@ -14,6 +26,9 @@ is what makes a bare ``from ast_keys import ...`` resolve from any test module.
 from __future__ import annotations
 
 import ast
+import inspect
+import pathlib
+from types import ModuleType
 
 
 def opens_inside(tree: ast.Module, function_name: str, opens: set[int]) -> set[int]:
@@ -83,4 +98,53 @@ def opens_a_database(node: ast.Call) -> bool:
     return isinstance(target, ast.Name) and target.id in {"connect", "Connection"}
 
 
-__all__ = ["opens_a_database", "opens_inside"]
+def module_tree(module: ModuleType) -> ast.Module:
+    """*module*'s shipped source as a syntax tree.
+
+    Read from the file the import resolved to, so a pin cannot end up parsing a
+    copy of the source that is not the one the product runs.
+    """
+    return ast.parse(pathlib.Path(inspect.getfile(module)).read_text(encoding="utf-8"))
+
+
+def function_named(tree: ast.Module, name: str) -> ast.FunctionDef:
+    """The named function anywhere in *tree*, method or module level.
+
+    Raises:
+        LookupError: If *name* is not defined. That is the right failure: a
+            renamed function must not read as "the function has no guards".
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return node
+    raise LookupError(f"{name} is gone from the module this census reads")
+
+
+def private_side_effect_calls(module: ModuleType, function_name: str) -> frozenset[str]:
+    """Bare-statement calls to *module*'s own private helpers inside a function.
+
+    The structural shape of a name-hygiene guard: a call whose value nobody uses,
+    made to a helper this module defines, standing between the caller and a file.
+    ``_finding_rows(load.accepted)`` is assigned and therefore excluded; a
+    ``mkdir`` on ``self._path.parent`` is an attribute call rather than a call to
+    a module-level helper, and is a precondition rather than a refusal.
+    """
+    tree = module_tree(module)
+    private = {node.name for node in tree.body if isinstance(node, ast.FunctionDef)}
+    return frozenset(
+        node.value.func.id
+        for node in ast.walk(function_named(tree, function_name))
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id in private
+    )
+
+
+__all__ = [
+    "function_named",
+    "module_tree",
+    "opens_a_database",
+    "opens_inside",
+    "private_side_effect_calls",
+]

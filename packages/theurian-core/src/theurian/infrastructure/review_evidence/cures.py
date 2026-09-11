@@ -78,7 +78,7 @@ COLLISION_CURE: Final = (
 #: gets repeated.
 #:
 #: **"the directory the message names" is what this said, and two of its three
-#: sites name a file.** ``_relative_paths`` publishes it over a directory that
+#: sites name a file.** ``fingerprints`` publishes it over a directory that
 #: could not be listed; ``_temporary_refusal``'s errno fallback names
 #: ``<record>.writing`` and :meth:`~..store.ReviewEvidenceStore._write_one`'s
 #: rename arm names the record -- and for either of those the mode to look at is
@@ -88,6 +88,38 @@ UNWRITABLE_CURE: Final = (
     "message names -- if that path is a file, it is the directory holding it whose "
     "mode decides. `ls -ld .theurian/review` prints the mode and the owner. Then run "
     "the ingestion again."
+)
+
+#: What an operator does about something that is not a directory standing where
+#: ``.theurian/review/`` belongs.
+#:
+#: **It offers a move and never a removal**, which is this module's safety
+#: predicate met one level up from the record: whatever is at that path holds
+#: bytes or holds names -- a regular file, an archive somebody unpacked wrong, a
+#: directory link -- and nothing here can tell which or whose. The sibling cures
+#: below reach the same conclusion per *shape*; this one cannot ask, because the
+#: refusal that publishes it fires on ``Path.is_dir`` and never takes a mode.
+#: So the sentence is written for the widest case and says so.
+#:
+#: ``ls -ld`` rather than ``ls -l``: the subject is the path itself and not what
+#: a directory at it would contain, and ``ls -l`` on a directory lists its
+#: entries instead of describing it.
+#:
+#: **It names both verbs where every other cure here says "run the ingestion
+#: again", and the difference is which command the reader actually ran.** The
+#: sibling cures are published from the *write* path, which only ``theurian
+#: review ingest`` reaches. This one is published from the **read** walk, which
+#: ``theurian review build`` reaches too -- and that is the command a real run
+#: met it through (measured 2026-09-11 against a scratch project: `theurian
+#: review build` exit 1, this text on stderr). "Run the ingestion again" sends
+#: that reader to a different command than the one that refused.
+MISPLACED_ROOT_CURE: Final = (
+    "`ls -ld .theurian/review` prints what is at that path: something other than a "
+    "directory is standing where the review evidence tree belongs. Move it somewhere "
+    "outside `.theurian/`, then run `theurian review build` again -- or `theurian "
+    "review ingest`, if that is the command that refused. Do not delete it: nothing "
+    "here can tell what it holds or whose it is, and any review evidence that was "
+    "under that name has no rebuild (ADR-0030 decision 3)."
 )
 
 #: What a refusal says about a record whose repository could not be read out of

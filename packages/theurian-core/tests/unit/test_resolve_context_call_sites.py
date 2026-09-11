@@ -181,6 +181,13 @@ RESOLVE_CONTEXT_CALL_SITES = {
     # below; obligation 2 is
     # `test_review_ingest_cli.py::test_an_unloadable_migration_is_reported_as_a_document`.
     ("cli/review_commands.py", "review_ingest", "_require_project"),
+    # ADR-0030 slice 3, and the same shape as the line above it: `review build`
+    # reaches `resolve_context` only through `_require_project`, so obligation 1 is
+    # the parametrised scan's. Obligation 2 is
+    # `test_escaping_knowledge_dir_grading.py`, whose `REACHED_BY` now maps this
+    # function to `review build` and drives the doctored-tree refusal through the
+    # real command.
+    ("cli/review_commands.py", "review_build", "_require_project"),
 }
 
 #: The live scan, computed once at collection time rather than pinned by

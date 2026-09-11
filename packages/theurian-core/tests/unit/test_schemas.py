@@ -1254,3 +1254,211 @@ def test_the_published_finding_safety_triple_is_the_one_the_code_attaches() -> N
             f"{key!r} is optional in the schema, so a response missing the label "
             f"would validate -- the triple is only a control if it is required"
         )
+
+
+# -- Review-search response schema (ADR-0030 decision 6) ---------------------
+
+REVIEW_SEARCH_RESPONSE = "mcp/review-search-response.schema.json"
+
+
+def _review_record_items() -> dict[str, Any]:
+    schema = _load(REVIEW_SEARCH_RESPONSE)
+    items: dict[str, Any] = schema["properties"]["records"]["items"]
+    return items
+
+
+def _review_record_property(name: str) -> dict[str, Any]:
+    published: dict[str, Any] = _review_record_items()["properties"][name]
+    return published
+
+
+def test_every_thread_state_a_review_record_can_carry_is_published() -> None:
+    """The published vocabulary is recomputed from the enum, never transcribed.
+
+    ``threadState`` is a closed vocabulary, so a client may switch on it
+    exhaustively -- which is only safe while the published set is the same set the
+    domain admits, plus ``null`` for the two record kinds that have no thread state
+    at all. Compared against ``ReviewThreadState`` itself, so a member added there
+    reddens this rather than reaching a client as a value its schema forbade.
+    """
+    from theurian.domain.enums import ReviewThreadState
+
+    published = set(_review_record_property("threadState")["enum"])
+
+    assert published == {state.value for state in ReviewThreadState} | {None}
+
+
+def test_every_record_kind_a_review_record_can_carry_is_published() -> None:
+    """The same derivation for the three evidence kinds, as the layout spells them.
+
+    The kind is carried as the evidence layout's own directory name rather than
+    re-derived at serve time, so the published set is that enum's -- a fourth kind
+    cannot reach a client as a value the schema refuses.
+    """
+    from theurian.infrastructure.review_evidence.layout import EvidenceKind
+
+    assert set(_review_record_property("kind")["enum"]) == {kind.value for kind in EvidenceKind}
+
+
+def test_every_excerpt_channel_a_review_record_can_carry_is_published() -> None:
+    """``excerptChannel`` is the store's own channel enum, plus ``null``.
+
+    ``null`` exactly when ``excerpt`` is, which is a record carrying no text
+    fragment at all -- no shipped projection produces one, and the schema still
+    admits it because the store's own type does.
+    """
+    from theurian.domain.review_search import ReviewTextChannel
+
+    published = set(_review_record_property("excerptChannel")["enum"])
+
+    assert published == {channel.value for channel in ReviewTextChannel} | {None}
+
+
+def test_the_published_review_record_safety_triple_is_the_one_the_code_attaches() -> None:
+    """SEC-15: the schema's three labels are `mcp/results.SAFETY`, not a copy.
+
+    A schema that declared a different classification word, or left one of the
+    three optional, would let a client build a renderer that treats ingested review
+    text as trusted while the server labels it untrusted -- and nothing would
+    reject either side.
+    """
+    from theurian.mcp.results import SAFETY
+
+    items = _review_record_items()
+
+    for key, value in SAFETY.items():
+        assert items["properties"][key]["const"] == value, (
+            f"the schema publishes a different value for {key!r} than the code attaches"
+        )
+        assert key in items["required"], (
+            f"{key!r} is optional in the schema, so a response missing the label "
+            f"would validate -- the triple is only a control if it is required"
+        )
+
+
+def test_the_published_review_record_fields_are_the_ones_the_shaper_classifies() -> None:
+    """The schema's row and the shaper's trust classification are one population.
+
+    ``mcp/review_search.py`` sorts every published key onto one side of ADR-0030
+    decision 3's trust boundary. A key in the schema that the shaper has not
+    classified is a field nothing decided the trust class of; a classified key the
+    schema does not declare is a field `additionalProperties: false` would reject
+    off the wire. Both are this equality, and both are recomputed rather than
+    transcribed.
+    """
+    from theurian.mcp.results import SAFETY
+    from theurian.mcp.review_search import AUTHOR_CONTROLLED_FIELDS, PROVIDER_CONTROLLED_FIELDS
+
+    items = _review_record_items()
+    classified = AUTHOR_CONTROLLED_FIELDS | PROVIDER_CONTROLLED_FIELDS | set(SAFETY)
+
+    assert set(items["properties"]) == classified
+    assert set(items["required"]) == classified, (
+        "every key is always present on this surface -- a field that appears only "
+        "when set cannot be told apart from a server that predates it"
+    )
+
+
+def test_the_published_excerpt_bound_is_the_one_the_shaper_applies() -> None:
+    """The schema states a length in prose; the code owns the number.
+
+    The description tells an integrator that an untouched excerpt is at most N
+    characters and a cut one exactly N + 3, which is the arithmetic that lets them
+    tell the two apart. Recomputed from the constant so the sentence cannot drift
+    from the bound it describes.
+    """
+    from theurian.mcp.review_search import MAX_EXCERPT_CHARS, excerpt_fetch_chars
+
+    described = _review_record_property("excerpt")["description"]
+
+    assert f"{MAX_EXCERPT_CHARS} characters" in described
+    assert f"exactly {MAX_EXCERPT_CHARS + 3}" in described
+    assert excerpt_fetch_chars() == MAX_EXCERPT_CHARS + 1, (
+        "the read must fetch one character past the bound, or a value of exactly "
+        "the bound and a longer one arrive identical and nothing can mark the cut"
+    )
+
+
+# -- system.capabilities response schema (ADR-0030 decision 2, ADR-0025) -----
+
+CAPABILITIES_RESPONSE = "mcp/system-capabilities-response.schema.json"
+
+
+def test_the_published_ingestion_scope_is_the_constant_the_tool_emits() -> None:
+    """ADR-0030 decision 2: one constant, published as a `const` and not a string.
+
+    The scope's *value* is the contract, not merely its presence: it records that
+    ingestion covers public allowlisted repositories only, and a schema that had
+    relaxed it to a free string would let a build announce a wider scope than the
+    one that was reviewed. Recomputed from the tool's own source rather than
+    transcribed, so the two cannot drift.
+    """
+    import inspect
+
+    from theurian.mcp import tools as tools_module
+
+    published = _load(CAPABILITIES_RESPONSE)["properties"]["capabilities"]["properties"][
+        "reviewIngestionScope"
+    ]["const"]
+    source = inspect.getsource(tools_module)
+
+    assert f'"reviewIngestionScope": "{published}"' in source, (
+        f"the schema publishes {published!r} as the ingestion scope and "
+        f"`mcp/tools.py` emits something else"
+    )
+
+
+def test_the_scope_and_its_flag_are_both_required_or_neither_is_a_control() -> None:
+    """The pairing ADR-0030 decisions 2 and 6 state, held at the published contract.
+
+    A `reviewIngestion: true` with no scope tells a client that ingested review
+    content is reachable and omits the half that decides how to treat it. Making
+    either optional in the schema would let a response carrying only the flag
+    validate, which is the shape the pairing exists to forbid.
+    """
+    capabilities = _load(CAPABILITIES_RESPONSE)["properties"]["capabilities"]
+
+    assert {"reviewIngestion", "reviewIngestionScope"} <= set(capabilities["required"])
+    assert capabilities["additionalProperties"] is False, (
+        "an open capabilities object would accept a member nothing declared, which "
+        "is how a value describing deployment state reaches a client unremarked"
+    )
+
+
+def test_the_published_capability_block_names_no_sensitivity_level() -> None:
+    """ADR-0025 at the schema, not only at the response.
+
+    ``sensitivityEnforcement`` reports that the axis is enforced and never which
+    ceiling a deployment declares -- and a *schema* that declared a ceiling member
+    would tell an integrator to expect one, which is the same disclosure one step
+    earlier. The one place a `Sensitivity` word legitimately appears is
+    ``reviewIngestionScope``'s ``public-allowlisted``, a build constant, so that
+    key is excised before the sweep exactly as ``test_mcp_tools.py``'s own sweep
+    excises it -- and its value is pinned first, so the exemption stays one known
+    string rather than a hole.
+    """
+    import copy
+    import json as json_module
+
+    from theurian.domain.enums import Sensitivity
+
+    capabilities = copy.deepcopy(_load(CAPABILITIES_RESPONSE)["properties"]["capabilities"])
+    scope = capabilities["properties"]["reviewIngestionScope"]
+
+    assert scope["const"] == "public-allowlisted"
+    del capabilities["properties"]["reviewIngestionScope"]
+    capabilities["required"] = [
+        name for name in capabilities["required"] if name != "reviewIngestionScope"
+    ]
+
+    swept = json_module.dumps(capabilities).casefold()
+    named = sorted(level.value for level in Sensitivity if f'"{level.value}"' in swept)
+
+    assert not named, (
+        f"the published capability block declares {named} as a value, so a client "
+        f"is told to expect a ceiling word this surface must never send (ADR-0025). "
+        f"The one exemption is `reviewIngestionScope`, pinned to its build constant "
+        f"above and excised before this sweep because ADR-0030 decision 2 "
+        f"intentionally publishes a constant scope -- not because capability values "
+        f"generally bypass it."
+    )

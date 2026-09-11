@@ -612,6 +612,12 @@ CLI_NOT_SWEPT: Final = {
     "options to reach the point where it would write anything",
     "propose accept": "moves a migration file into .theurian/migrations/, which moves the "
     "state hash and so the database -- the same reason as `ingest`",
+    "review build": "never opens the canonical store: it reads the evidence files under "
+    ".theurian/review/ and writes a separate derived search store, so a corrupted canonical "
+    "cell cannot reach its output (ADR-0030 decision 3). Unlike `review ingest` it spawns "
+    "nothing and needs no allowlist -- what keeps it out of the sweep is that it writes into "
+    ".theurian/state/, which is the directory this suite corrupts and restores between "
+    "cases, so a run of it would be modifying the corpus the next case is measured against",
     "review ingest": "never opens the canonical store: it fetches review evidence over the "
     "operator's `gh` and writes it under .theurian/review/, which no canonical cell reaches "
     "and which is a different store in every sense (ADR-0030 decision 3). It would also "

@@ -30,6 +30,7 @@ repository's own ``.theurian/``.
 from __future__ import annotations
 
 import json
+import os
 import string
 import sys
 from dataclasses import replace
@@ -55,6 +56,7 @@ from theurian.domain.review import (
 from theurian.infrastructure.review_evidence import (
     EVIDENCE_FORMAT_VERSION,
     EvidenceKind,
+    EvidenceReader,
     EvidenceRecord,
     IngestionRun,
     ReviewEvidenceError,
@@ -269,6 +271,204 @@ def test_a_thread_with_no_file_path_round_trips_as_none(tmp_path: Path) -> None:
 def test_a_store_over_a_directory_that_does_not_exist_reads_as_empty(tmp_path: Path) -> None:
     """A project that has never ingested is not an error; it has no records."""
     assert _store(tmp_path).read_all() == ()
+
+
+def test_a_review_path_that_exists_and_is_not_a_directory_refuses(tmp_path: Path) -> None:
+    """RED means a corpus this build cannot enumerate is reported as an empty one.
+
+    The two conditions used to be one ``is_dir``: an absent review directory and
+    a review *path* occupied by something else both answered "no records". Only
+    the first of those is honest. The second is a tree this build cannot walk --
+    ``theurian review build`` published a store with nothing in it, ``review
+    ingest``'s landed-key read answered the empty set, and both exited 0 -- while
+    the reader's own ``Raises`` clause said a directory that cannot be listed
+    refuses.
+
+    The cure is held to the shape this package's cures are held to at the same
+    time: it names the path, it names a command that prints what is standing
+    there, and it offers a **move** rather than a deletion, because nothing at
+    this seam can tell what the occupying object holds or whose it is.
+    """
+    root = tmp_path / "repo"
+    (root / ".theurian").mkdir(parents=True)
+    _review_root(tmp_path).write_text("not a directory", encoding="utf-8")
+    store = ReviewEvidenceStore(ProjectPaths.of(root).review)
+
+    with pytest.raises(ReviewEvidenceError) as refused:
+        store.read_all()
+
+    assert "not a directory" in str(refused.value)
+    assert "ls -ld .theurian/review" in refused.value.remedy
+    assert "Do not delete it" in refused.value.remedy
+    # The verb the reader ran, not the verb the sibling cures were written for.
+    # This refusal comes off the *read* walk, so `theurian review build` reaches
+    # it as readily as `review ingest` does -- and a real run met it through the
+    # first of those.
+    assert "theurian review build" in refused.value.remedy
+
+
+# -- fingerprints: what a listing can tell without reading a file -------------
+
+
+def test_a_fingerprint_moves_when_a_record_is_rewritten(tmp_path: Path) -> None:
+    """RED means a rebuild cannot tell a refetched record from an untouched one.
+
+    ``ReviewSearchBuilder`` publishes a record only where the fingerprint taken
+    before its read equals the one taken at the publish, so what that comparison
+    can *see* is what decides whether a store can serve a body the evidence file
+    no longer carries. This is the producer's half: the same path, rewritten,
+    answers a different triple.
+
+    Asserted on the whole triple rather than on ``mtime_ns`` alone, because the
+    claim the builder rests on is "the fingerprints differ" and narrowing it here
+    to one slot would make this test about a field rather than about that claim.
+    """
+    store = _store(tmp_path)
+    original = _event(number=42)
+    store.write([original], run=RUN_ONE)
+    reader = EvidenceReader(_review_root(tmp_path))
+    before = dict(reader.fingerprints())
+    assert isinstance(original.payload, ReviewEvent)
+
+    store.write(
+        [replace(original, payload=replace(original.payload, title="Retitled upstream"))],
+        run=RUN_TWO,
+    )
+
+    after = dict(reader.fingerprints())
+    assert sorted(before) == sorted(after), "the rewrite landed somewhere else entirely"
+    assert before != after, (
+        "a rewritten record carries the fingerprint it had before, so a rebuild would "
+        "publish the body its read took as unchanged"
+    )
+
+
+def test_a_fingerprint_says_when_a_leaf_stopped_being_a_regular_file(tmp_path: Path) -> None:
+    """RED means the third slot is something nothing computes.
+
+    The listing selects a leaf by the suffix of its **name**, and a directory may
+    be named ``42.json`` as easily as a file may -- so the fingerprint carries
+    whether the leaf is a regular file, and this is what holds that it is
+    computed rather than constant. A builder-level case cannot: a directory put
+    where a file was carries its own ``mtime_ns``, its own size and its own inode
+    number, so the record is dropped whether the slot is honest or hardcoded
+    ``True``.
+
+    Both directions, so a producer that answered ``False`` for everything would
+    fail here too.
+    """
+    store = _store(tmp_path)
+    store.write([_event(number=42)], run=RUN_ONE)
+    reader = EvidenceReader(_review_root(tmp_path))
+    (path,) = reader.fingerprints()
+    leaf = _review_root(tmp_path) / path
+
+    assert reader.fingerprints()[path][3] is True, "a landed record is not a regular file"
+
+    leaf.unlink()
+    leaf.mkdir()
+
+    assert reader.fingerprints()[path][3] is False, (
+        "a directory standing where a record was still reads as a regular file, so the "
+        "slot is not asked of the filesystem"
+    )
+
+
+def test_a_fingerprint_moves_when_a_record_is_rewritten_with_its_timestamp_restored(
+    tmp_path: Path,
+) -> None:
+    """RED means a restored timestamp hides a rewrite, which is what the inode slot is for.
+
+    The producer's half of the fourth slot. ``mtime_ns`` and ``size`` witness a
+    rewrite only while nobody puts the timestamp back, and ``os.utime`` puts it
+    back to the nanosecond -- so a same-length rewrite followed by a restoration
+    is a changed file those two call unchanged, on a filesystem with the finest
+    timestamps there are.
+
+    The write shape is the one this store itself uses: a sibling temporary and a
+    rename, which resolves the name to a new inode. The premise is measured rather
+    than argued -- the first two slots really do come back identical here, so a
+    listing without the inode really would publish this file as unchanged.
+    """
+    store = _store(tmp_path)
+    store.write([_event(number=42)], run=RUN_ONE)
+    reader = EvidenceReader(_review_root(tmp_path))
+    (path,) = reader.fingerprints()
+    leaf = _review_root(tmp_path) / path
+    before_stat = leaf.stat()
+    before = reader.fingerprints()[path]
+
+    original = leaf.read_bytes()
+    edited = original.replace(b"Bound the retry budget", b"Overwritten upstream!!")
+    assert edited != original and len(edited) == before_stat.st_size, (
+        "the plant has to change the bytes and keep the length, or the size slot answers "
+        "and this case measures nothing about the inode"
+    )
+    sibling = leaf.with_name(leaf.name + ".hostile")
+    sibling.write_bytes(edited)
+    sibling.replace(leaf)
+    os.utime(leaf, ns=(before_stat.st_atime_ns, before_stat.st_mtime_ns))
+
+    after = reader.fingerprints()[path]
+    assert after[:2] == before[:2], (
+        "the premise: this platform did not restore the timestamp exactly, so the case is "
+        "not measuring the attack it names"
+    )
+    assert after != before, (
+        "a rewritten record carries the fingerprint it had before, so a rebuild would "
+        "publish the body its read took as unchanged"
+    )
+
+
+@_NEEDS_SYMLINKS
+def test_an_unstattable_leaf_answers_a_fingerprint_no_real_leaf_can(tmp_path: Path) -> None:
+    """RED means a leaf whose ``stat`` was refused can read as an unchanged file.
+
+    ``_fingerprint`` answers a sentinel rather than raising, because a dangling
+    symbolic link under the review directory must not turn a whole listing into a
+    refusal -- that listing runs under the project's write lock. What makes
+    answering safe is that the sentinel is a value **no real leaf can carry**: a
+    record that is a file at one capture and unstattable at the other is then
+    dropped by the same equality every other transition goes through, with no arm
+    of its own.
+
+    The control is the extreme a real leaf can actually reach rather than a
+    comfortable one. ``os.utime(ns=(-1, -1))`` gives a real regular file
+    ``st_mtime_ns == -1``, which is the sentinel's own first slot -- so the
+    distinctness rests on the two a real leaf cannot make negative, ``st_size``
+    and ``st_ino``, and it is those that are asserted. A sentinel edited to values
+    a ``stat`` could answer reddens here.
+    """
+    store = _store(tmp_path)
+    store.write([_event(number=42)], run=RUN_ONE)
+    root = _review_root(tmp_path)
+    reader = EvidenceReader(root)
+    (record_path,) = reader.fingerprints()
+    kind_directory = (root / record_path).parent
+    prefix = record_path.rsplit("/", 1)[0]
+
+    before_the_epoch = kind_directory / "43.json"
+    before_the_epoch.write_bytes(b"")
+    os.utime(before_the_epoch, ns=(-1, -1))
+    (kind_directory / "44.json").symlink_to(root / "nothing-is-here.json")
+
+    fingerprints = reader.fingerprints()
+    extreme = fingerprints[f"{prefix}/43.json"]
+    refused = fingerprints[f"{prefix}/44.json"]
+
+    assert extreme[0] == -1, (
+        "the premise: a real leaf can answer the sentinel's first slot, which is why the "
+        "distinctness may not rest on the timestamp"
+    )
+    assert refused != extreme and refused != fingerprints[record_path], (
+        "the refused leaf's fingerprint equals one a real leaf carries, so a file that "
+        "became unstattable between the two captures would be published as unchanged"
+    )
+    for slot, name in ((1, "st_size"), (2, "st_ino")):
+        assert refused[slot] < 0, f"the sentinel's {name} slot is a value a `stat` can answer"
+        for key, real in fingerprints.items():
+            if key != f"{prefix}/44.json":
+                assert real[slot] >= 0, f"a real leaf answered a negative {name}"
 
 
 def test_read_all_answers_in_one_order_whatever_order_the_records_arrived(

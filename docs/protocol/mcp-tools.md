@@ -3,22 +3,26 @@
 Protocol version: `theurian/v1`. Transport: Streamable HTTP at
 `http://127.0.0.1:7419/mcp`.
 
-Today, Core registers six callable MCP tools:
+Today, Core registers seven callable MCP tools:
 
 - `knowledge.search`
 - `knowledge.get`
 - `knowledge.status`
 - `project.list`
 - `review.findings`
+- `review.search`
 - `system.capabilities`
 
 `system.capabilities` is the runtime boundary for clients. In this build it
-reports `reviewFindings: true` — `review.findings` is callable — beside
-`writeTools: false`, `reviewIngestion: false`, and `traceability: false`; those
-three mean the write-intent, review-*history*, and traceability tools described
-below are designed protocol shape, not callable tools in the current server.
-`reviewIngestion: false` is a statement about *callable tools* and nothing wider:
-the review-history fetch path itself has shipped (see below).
+reports `reviewFindings: true` and `reviewIngestion: true` — `review.findings`
+and `review.search` are both callable — beside `writeTools: false` and
+`traceability: false`, which mean the write-intent and traceability tools
+described below are designed protocol shape, not callable tools in the current
+server. `reviewIngestion: true` is a statement about *callable tools* and nothing
+wider: it says an ingestion call surface exists that a client may call, published
+beside `reviewIngestionScope: "public-allowlisted"`, and it does not say a client
+may start an ingestion run — no tool spawns `gh`, and a fetch stays an operator's
+act through `theurian review ingest` (see below).
 
 ## Every project-scoped call names its project
 
@@ -337,28 +341,65 @@ The reasoning, the measurements and what remains uncovered are in
 
 ## Review
 
-One review tool is shipped. `review.findings` serves the `Review-Finding:`
-trailers a project's own git history carries, landed by `theurian findings
-build` and announced as `reviewFindings: true`
+Two review tools are shipped, and they read two different corpora.
+`review.findings` serves the `Review-Finding:` trailers a project's own git
+history carries, landed by `theurian findings build` and announced as
+`reviewFindings: true`
 ([ADR-0029](../adr/0029-review-findings-are-governed-knowledge.md)).
+`review.search` serves the review *evidence* under `.theurian/review/` — pull
+requests, review submissions and review threads — read back through the store
+`theurian review build` rebuilds
+([ADR-0030](../adr/0030-github-review-ingestion-spawns-gh.md) decision 6).
+`theurian review ingest` lands that evidence from GitHub, and a clone can
+deliver it too: `.theurian/review/` is source rather than derived state and is
+deliberately not git-ignored, so a project may commit its evidence and the build
+projects whatever is there. The provenance check on this path is on the *store*
+and answers "did this installation build it", never "who wrote the records"
+([threat model T-24](../security/threat-model.md)); every served row rides under
+the SEC-15 triple whatever its origin.
 
-Review *history* ingestion — GitHub threads, inline comments, resolution state —
-is **fetched but not served**: the adapter shipped with
-[ADR-0030](../adr/0030-github-review-ingestion-spawns-gh.md) slice 1, and none of
-the planned tools below is callable, so the server still reports
-`reviewIngestion: false`. Read that flag narrowly. It does **not** mean "this
-build cannot reach GitHub" — the fetch path exists, and with it SEC-10's
-repository allowlist, read and enforced before any process is spawned. From the
-serve slice it means *an ingestion call surface exists that a client may call*,
-published beside a scope field recording that ingestion covers public
-allowlisted repositories only. The two flags stay separate for the reason they
-always were: `reviewFindings` promises an offline read of local git trailers,
-and `reviewIngestion` is the one whose surface reaches GitHub-sourced content.
+The two flags stay separate for the reason they always were: `reviewFindings`
+promises an offline read of local git trailers, and `reviewIngestion` is the one
+whose surface reaches GitHub-sourced content. `reviewIngestion` reports `true`
+from this slice, and it is read as narrowly as its history requires. It never
+meant "this build can reach GitHub" — the fetch path shipped in slice 1, with
+SEC-10's repository allowlist read and enforced before any process is spawned,
+while the flag stayed `false`. It never meant "evidence lands on disk" — slice 2
+shipped `theurian review ingest`, and the flag stayed `false` for the same
+reason. What it reports, and all it has reported, is the MCP-callable surface:
+*an ingestion call surface exists that a client may call*, which `review.search`
+now is. It does **not** say a client may start an ingestion run; no tool spawns
+`gh`, [ADR-0013](../adr/0013-ai-writes-produce-proposals.md)
+keeps write intent off this surface, and a fetch is an operator's act through the
+CLI verb.
+
+It is published **with** `reviewIngestionScope: "public-allowlisted"` and never
+one without the other (ADR-0030 decisions 2 and 6): a `true` with no scope tells a
+client that ingested review content is reachable and omits the half that decides
+how to treat it. The scope is the narrow claim ADR-0030 makes — no
+advisory-private GitHub surface is ingested, and every record `theurian review
+ingest` landed was visible to the public repository's audience *at the moment it
+was ingested* — not the wider and false one that a public repository cannot carry
+sensitive content. The tense is load-bearing, and an edit and a delete are not the
+same case: an upstream **edit** reaches Theurian's copy on the next `theurian
+review ingest` run whose window covers the record, which refetches it, rewrites
+the file and counts it as `updated`; an upstream **delete** does not, because
+[ADR-0030](../adr/0030-github-review-ingestion-spawns-gh.md) decision 3 makes the
+files durable precisely so a deleted comment is not erased locally. The manual
+remediation — delete the evidence file, rebuild the store — is that second case's.
+The value is a build constant, identical in every deployment, which is what makes
+it publishable on a surface that resolves no project.
+
+It is a statement about *ingestion*, not an inventory of `.theurian/review/`:
+that directory is source and is not git-ignored, so a clone can carry evidence a
+repository author wrote, and nothing in this value or in a `review.search`
+response tells the two apart (threat model
+[T-24](../security/threat-model.md), an accepted residual).
 
 | Tool | Status | Purpose |
 | :-- | :-- | :-- |
 | `review.findings` | Shipped | Landed `Review-Finding:` trailers, filtered by reviewer, severity, commit or text |
-| `review.search` | Planned | Search review history |
+| `review.search` | Shipped | Review evidence under `.theurian/review/`, filtered by repository, pull request, author, file, thread state or literal text |
 | `review.getThread` | Planned | One thread with comments and resolution |
 | `review.findSimilar` | Planned | Threads resembling a described situation |
 | `review.getDecisions` | Planned | Decisions reached in review |
@@ -503,6 +544,176 @@ refused until `theurian findings build` runs locally**, however well-formed it i
 T-19). The refusal is the same constant an absent store gets, deliberately:
 naming this arm would tell whoever planted the store that the plant was detected,
 and the cure is the same local rebuild either way.
+
+### `review.search`
+
+Three keys, all always present. The contract is
+[`schemas/mcp/review-search-response.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/review-search-response.schema.json).
+
+```json
+{
+  "count": 1,
+  "truncated": false,
+  "records": [
+    {
+      "recordPath": "sha256-9f2c…/review-thread/PRRT_kwDO_test_node_0001.json",
+      "recordKey": "PRRT_kwDO_test_node_0001",
+      "kind": "review-thread",
+      "provider": "github",
+      "repository": "theurian/theurian",
+      "pullRequest": 569,
+      "threadState": "resolved",
+      "filePath": "packages/theurian-core/src/theurian/security/paths.py",
+      "sourceUri": "https://github.com/theurian/theurian/pull/569#discussion_r1",
+      "authorExternalId": "MDQ6VXNlcjE=",
+      "authorDisplayName": "github-advanced-security",
+      "excerpt": "This write target is not checked for a symbolic link.",
+      "excerptChannel": "comment",
+      "lastSeenRunId": "01K4YQ7N2B3C4D5E6F7G8H9JKM",
+      "lastSeenAt": "2026-09-05T09:35:33.000000+00:00",
+      "contentClassification": "untrusted-knowledge",
+      "mayContainInstructions": true,
+      "executable": false
+    }
+  ]
+}
+```
+
+Every optional argument is a filter, and all of them are ANDed:
+
+| Argument | Selects |
+| :-- | :-- |
+| `repository` | one repository, `owner/name`, **exact and case-sensitive** |
+| `pullRequest` | one pull-request number, at least 1 and at most `MAX_PULL_REQUEST` — the largest value its signed 64-bit column can hold |
+| `threadState` | one of `open`, `resolved`, `outdated`, `dismissed` |
+| `author` | one `authorExternalId`, exact |
+| `filePath` | one anchor path, exact |
+| `q` | a literal substring of the record's stored text, ASCII case folded |
+| `limit` | at most `MAX_REVIEW_SEARCH_LIMIT` (50), `DEFAULT_REVIEW_SEARCH_LIMIT` (20) by default |
+
+`projectId` is required, as it is for every project-scoped tool: many agents
+share one daemon, so an implicit default would resolve one agent's query against
+another's project
+([ADR-0002](../adr/0002-single-local-daemon-over-streamable-http.md)).
+
+Records come back in a **total, deterministic order the store owns** —
+repository, then pull request, then kind, then the record's own path. No key in
+that order is computed from the query, so `limit` truncates a defined sequence
+and a page boundary is stable across calls.
+
+**Nothing on this path is ranked.** `q` is a substring test, not a query
+language: `*`, `OR`, `NEAR` and `"` are ordinary characters, and `%` and `_` are
+escaped before the pattern is bound. There is no score, no term weight and no
+collection statistic, which is what keeps
+[ADR-0030](../adr/0030-github-review-ingestion-spawns-gh.md) decision 6 clear of
+the T-17a constraint a ranked surface inherits: a ranked surface prices its
+results over build-time statistics, and no such statistic exists here for a
+withheld record to move. What keeps a withheld record out is that it is never
+written — no row in any table — so nothing here can tell "withheld" from "never
+existed".
+
+**Four filters are exact and case-sensitive; only `q` folds.** `repository`,
+`filePath`, `author` and `threadState` are compared byte for byte under SQLite's
+default collation, while `q` folds the 26 ASCII letters and nothing else. The
+asymmetry is worth stating because *ingestion* is case-insensitive about a
+repository name — the adapter checks GitHub's answer against the allowlist entry
+case-folded, as GitHub itself does — so a project can hold records under a
+spelling the operator never typed. Measured 2026-09-10 against a record stored
+as `Acme/Order-Service`: the stored spelling answers one row,
+`acme/order-service` answers none. Read the spelling off a served record's own
+`repository` field rather than assuming one.
+
+**Every row carries the safety triple, because every row carries text somebody
+outside this project wrote.** The excerpt, the display name and the file path are
+all author-controlled (ADR-0030 decision 3's field table), so the row is served
+under `contentClassification: untrusted-knowledge`,
+`mayContainInstructions: true`, `executable: false`. A review comment routinely
+reads as an imperative, because a review *asks* for a change; that is a
+description of a request and never an instruction addressed to the agent reading
+it. **The file path in particular is served as data** and **SHALL NOT** be joined
+into a filesystem path — it arrived over the network from whoever opened the pull
+request (SEC-7).
+
+**Four bounds, and only one of them clamps.** `limit` bounds the records;
+`MAX_FILTER_CHARS` (400) bounds every string filter; the store's own read cuts
+each `excerpt` at `MAX_EXCERPT_CHARS` (280) **in SQL**, so the daemon never
+materialises the whole of a planted comment; and
+`MAX_REVIEW_SEARCH_RESPONSE_CHARS` bounds the whole response. Every bound a
+*caller* provokes is a refusal naming the bound, never a silent clamp: a
+truncated answer to a filtered question reads as the whole answer. The excerpt
+is the one that clamps, because its size is chosen by the corpus rather than by
+the caller — refusing there would let one planted comment deny the tool to
+everyone — and it is cut and then marked with a trailing `...`, so the two
+lengths are disjoint and a cut value cannot be read as a whole one.
+
+**The response bound is a graded stop at the record boundary, never a cut inside
+a value.** Records are added until the next one would take the response past the
+budget; then the page stops and `truncated` says so, in the same bit and with the
+same meaning a full page uses. A record that alone exceeds the budget is served
+whole and alone **when it is the page's first** — a caller whose budget is
+smaller than one record is better served by one over-long answer it can truncate
+than by an empty one it cannot act on — and that exemption is positional, not a
+property of the record: a later over-budget record is simply not served. Every
+value served is therefore exactly the stored one, and what varies is how many.
+
+**That budget counts content characters of the shaped records, not wire bytes.**
+JSON escaping costs up to six wire characters for one counted (CJK does not
+escape; a control character does), and the SDK sends the payload twice — a
+`content` text block and `structured_content` — so one response's JSON crosses
+the wire two times over. Measured 2026-09-11 over a full page of 50 records:
+**2.15×** the budget figure for long unescaped values, 2.95× for short ones, and
+**11.36×** where every string is control characters. Size a transport limit at
+roughly twelve times the budget, never at the budget itself.
+
+`count` sizes the returned array and is never a total before `limit`.
+`truncated` is one bit about this response's own boundary: the server reads one
+record past `limit` through the same read every served row comes from, discards
+it, and reports whether this response carries fewer records than that read
+returned. A **total matching count** was considered and rejected in its
+favour — it would be a number computed over records the caller did not receive.
+
+There are **two refusal envelopes**, and each is a constant. A caller whose
+request is outside a bound or a vocabulary is refused naming the bound, and a
+value inside the bound may be quoted back while one past it is reported by its
+length alone — no refusal here interpolates a caller's *number* at all, so there
+is no arm that can fail while rendering one. A caller arriving when the daemon is
+already answering `MAX_CONCURRENT_SEARCHES` (4) of these, after waiting
+`ADMISSION_WAIT_SECONDS` (1.0 s) for a permit, gets
+`REVIEW_SEARCH_CAPACITY_REFUSAL` — its own gate and its own message, because a
+caller refused here has not been refused by `knowledge.search`'s cap or
+`review.findings`'.
+
+**A store that cannot be served from is a refusal, never an empty response**, and
+it is one constant message — `REVIEW_SEARCH_UNAVAILABLE_REFUSAL`, naming
+`theurian review build` — for every cause: the store does not exist, it was built
+by a superseded schema or from a superseded evidence format, it cannot be read,
+or **this installation did not build it**. Distinguishing the arms would publish
+which one fired, and the provenance arm is where that costs something: telling
+"this store is not yours" apart from "there is no store" tells whoever planted it
+that the plant was detected. `count: 0` therefore means the filter matched
+nothing, never "nothing has been built here".
+
+That read also needs **write** access to `.theurian/state/`, which is not
+obvious from a tool that only reads: the store is a WAL database, so SQLite
+creates its `-wal` and `-shm` companions beside it on the first serving read even
+under `mode=ro`. Measured 2026-09-10 with the directory at `0o500` and the
+companions absent, the read fails with `attempt to write a readonly database` and
+reaches the caller as that same constant refusal — whose remedy will not fix a
+directory mode. An operator meeting it on a store they know they built should
+check the mode before rebuilding.
+
+**Where a record came from is not something this tool can vouch for**, and the
+response does not pretend otherwise. `theurian review ingest` lands evidence from
+public allowlisted repositories; a clone lands it too, because `.theurian/review/`
+is source rather than derived state and is deliberately not git-ignored. The
+provenance check is on the **store** — did this installation build it — and never
+on who wrote the records; the read inspects a file's shape and its derived path,
+not its authorship. So `recordKey`, `sourceUri`, `authorExternalId` and
+`lastSeenRunId` are the provider's own on a record this installation ingested and
+are whatever the file names on one that arrived with the repository (threat model
+[T-24](../security/threat-model.md), an accepted residual). Every row rides under
+the triple either way, which is what makes that residual acceptable rather than
+merely recorded.
 
 ## Specification
 

@@ -1399,3 +1399,411 @@ def test_the_findings_conformance_check_can_fail(
     for payload in rejected:
         with pytest.raises(ValidationError):
             validator.validate(payload)
+
+
+# -- review.search (ADR-0030 decision 6) ------------------------------------
+
+REVIEW_SEARCH_RESPONSE = "mcp/review-search-response.schema.json"
+
+
+def _land_review_evidence(root: pathlib.Path) -> None:
+    """Land a review corpus and project it, through the real writer and builder.
+
+    Through ``ProjectPaths.review_search_for(REVIEW_SEARCH_STORE_ID)`` and
+    ``cli/review_commands.evidence_entries`` -- the path and the mapping ``theurian
+    review build`` itself uses -- rather than shapes spelled here, so this cannot
+    keep passing if the reader and the builder ever stop agreeing on either.
+
+    One record of each kind, deliberately. The three published fields that are
+    ``null`` for some kinds and set for others -- ``threadState``, ``filePath``,
+    and the excerpt's channel -- have a document on each side only in a corpus that
+    carries all three, the rule ``schemas/README.md`` states for a disjunction.
+    """
+    from datetime import UTC, datetime
+
+    from theurian.application.project_service import (
+        REVIEW_SEARCH_STORE_ID,
+        BuildProvenance,
+        ProjectPaths,
+    )
+    from theurian.application.review_search_builder import (
+        ReviewSearchBuilder,
+        ReviewSearchBuildRequest,
+    )
+    from theurian.cli.review_commands import evidence_entries, evidence_fingerprints
+    from theurian.domain.enums import ReviewThreadState
+    from theurian.domain.identifiers import ProjectId
+    from theurian.domain.knowledge import SourceAnchor
+    from theurian.domain.review import (
+        ReviewComment,
+        ReviewEvent,
+        ReviewParticipant,
+        ReviewResolution,
+        ReviewSubmission,
+        ReviewThread,
+    )
+    from theurian.infrastructure.review_evidence import (
+        EvidenceRecord,
+        IngestionRun,
+        ReviewEvidenceStore,
+    )
+    from theurian.infrastructure.sqlite.review_search_store import SqliteReviewSearchStore
+
+    provider = "github"
+    repository = "acme/order-service"
+    project = ProjectId("demo")
+    run = IngestionRun("01K1AAAAAA01234567890ABCDE", datetime(2026, 9, 7, 9, 0, tzinfo=UTC))
+
+    def person(external_id: str, name: str) -> ReviewParticipant:
+        return ReviewParticipant(provider=provider, external_id=external_id, display_name=name)
+
+    def anchor(uri: str) -> SourceAnchor:
+        return SourceAnchor(
+            provider=provider,
+            source_uri=uri,
+            repository=repository,
+            commit_sha="a" * 40,
+            file_path="src/order.py",
+            line_start=10,
+            line_end=12,
+            external_id="PRRT_kwDOABCD",
+        )
+
+    records = (
+        EvidenceRecord(
+            provider=provider,
+            repository=repository,
+            anchor=anchor(f"https://github.com/{repository}/pull/42"),
+            payload=ReviewEvent(
+                project_id=project,
+                provider=provider,
+                repository=repository,
+                number=42,
+                title="Bound the retry budget",
+                body="署名付きトークンを持つ呼び出しだけを再試行する。",
+                author=person("USER_A", "Reviewer One"),
+                created_at=datetime(2026, 8, 1, 12, 0, tzinfo=UTC),
+                url=f"https://github.com/{repository}/pull/42",
+                head_commit="b" * 40,
+                base_commit="c" * 40,
+                head_ref_name="fix/retry-budget",
+                labels=("security",),
+                merged=True,
+                merge_commit="d" * 40,
+                merged_at=datetime(2026, 8, 2, 12, 0, tzinfo=UTC),
+                ci_successful=True,
+            ),
+        ),
+        EvidenceRecord(
+            provider=provider,
+            repository=repository,
+            anchor=anchor(f"https://github.com/{repository}/pull/42#pullrequestreview-1"),
+            payload=ReviewSubmission(
+                external_id="PRR_kwDOABCD1",
+                project_id=project,
+                event_key=f"{provider}:{repository}#42",
+                author=person("USER_B", "Reviewer Two"),
+                body="Approving; the budget is now bounded.",
+                state="APPROVED",
+                submitted_at=datetime(2026, 8, 1, 15, 0, tzinfo=UTC),
+            ),
+        ),
+        EvidenceRecord(
+            provider=provider,
+            repository=repository,
+            anchor=anchor(f"https://github.com/{repository}/pull/42#discussion_r1"),
+            payload=ReviewThread(
+                external_id="PRRT_kwDOABCD1",
+                project_id=project,
+                event_key=f"{provider}:{repository}#42",
+                file_path="src/order.py",
+                comments=(
+                    ReviewComment(
+                        external_id="IC_kwDO1",
+                        author=person("USER_A", "Reviewer One"),
+                        body="This retries forever.",
+                        created_at=datetime(2026, 8, 1, 13, 0, tzinfo=UTC),
+                    ),
+                ),
+                state=ReviewThreadState.RESOLVED,
+                resolution=ReviewResolution(
+                    state=ReviewThreadState.RESOLVED,
+                    resolved_by=person("USER_C", "Reviewer Three"),
+                    fix_commit="e" * 40,
+                ),
+                line_start=10,
+                line_end=12,
+            ),
+        ),
+    )
+
+    paths = ProjectPaths.of(root)
+    evidence = ReviewEvidenceStore(paths.review)
+    evidence.write(records, run=run)
+    store = SqliteReviewSearchStore(paths.review_search_for(REVIEW_SEARCH_STORE_ID))
+    ReviewSearchBuilder(
+        read_evidence=evidence_entries(evidence),
+        list_evidence_fingerprints=evidence_fingerprints(paths.review),
+        write=store.replace_all,
+    ).build(ReviewSearchBuildRequest(withheld_record_keys=frozenset()))
+    # `review.search` refuses a store this installation has no record of building
+    # (ADR-0004, SEC-7, T-19), so without this record every capture below would be
+    # a refusal rather than a response to validate.
+    BuildProvenance.default().record_review(paths.root, REVIEW_SEARCH_STORE_ID)
+
+
+async def _call_review_search(registry: Any, **arguments: Any) -> dict[str, Any]:
+    from theurian.daemon.runner import build_server
+
+    result = await build_server(registry).call_tool(
+        "review.search", {"projectId": "demo", **arguments}
+    )
+    structured = getattr(result, "structuredContent", None)
+    if structured is not None:
+        payload: dict[str, Any] = structured
+        return payload
+    content: Any = result.content  # type: ignore[union-attr]
+    loaded: dict[str, Any] = json.loads(content[0].text)
+    return loaded
+
+
+@pytest.fixture(scope="module")
+def review_search_responses(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> dict[str, dict[str, Any]]:
+    """Real ``review.search`` responses: a full read, a filtered one, an empty one.
+
+    Three captures because the schema makes three different promises and one
+    response cannot exercise them: rows with the nullable fields set and rows with
+    them null (the full read), the same shape under a filter, and ``count: 0`` with
+    an empty array -- the one a schema requiring ``minItems`` would reject.
+    """
+    from theurian.application.project_service import ProjectRegistry
+
+    tmp = tmp_path_factory.mktemp("review-search-conformance")
+    root = tmp / "demo"
+    root.mkdir()
+    data_dir = tmp / "datadir"
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setenv("THEURIAN_DATA_DIR", str(data_dir))
+    monkey.chdir(root)
+    try:
+        # `review.search` resolves through `_resolve`, so a registered, migrated
+        # project has to exist before the search store is reachable at all.
+        _build_conformance_project(root)
+        _land_review_evidence(root)
+        registry = ProjectRegistry.default(data_dir)
+        return {
+            "all": asyncio.run(_call_review_search(registry)),
+            "filtered": asyncio.run(_call_review_search(registry, threadState="resolved")),
+            "empty": asyncio.run(_call_review_search(registry, q="no record says this")),
+        }
+    finally:
+        monkey.undo()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("name", ["all", "filtered", "empty"])
+def test_a_real_review_search_response_validates_against_its_published_schema(
+    review_search_responses: dict[str, dict[str, Any]], name: str
+) -> None:
+    """The half a schema-shape test cannot do: compare the schema to real output.
+
+    ``additionalProperties: false`` fails a field nobody declared and ``required``
+    fails a declared field nothing emits, so this catches drift in either direction
+    on the newest surface -- the one with no installed base to notice for us.
+    """
+    _validator(REVIEW_SEARCH_RESPONSE).validate(review_search_responses[name])
+
+
+@pytest.mark.integration
+def test_the_review_search_captures_reach_both_sides_of_the_nullable_fields(
+    review_search_responses: dict[str, dict[str, Any]],
+) -> None:
+    """Guards the validation above, which three identical responses would satisfy.
+
+    An invariant with an ``or`` in it needs one document on each side, or the
+    constraint and the corpus share a blind spot and validate each other
+    (``schemas/README.md``). Here that is ``threadState`` and ``filePath``, which
+    only a thread carries, and ``excerptChannel``, whose three values need three
+    kinds of record to appear at all.
+    """
+    rows = review_search_responses["all"]["records"]
+
+    assert len(rows) == 3
+    assert {row["threadState"] for row in rows} == {"resolved", None}
+    assert {row["filePath"] for row in rows} == {"src/order.py", None}
+    assert {row["excerptChannel"] for row in rows} == {"title", "body", "comment"}
+    assert review_search_responses["filtered"]["count"] == 1
+    assert review_search_responses["empty"] == {"count": 0, "truncated": False, "records": []}
+
+
+@pytest.mark.integration
+def test_the_review_search_conformance_check_can_fail(
+    review_search_responses: dict[str, dict[str, Any]],
+) -> None:
+    """Guards both validations above: a schema loaded and never applied accepts all.
+
+    Each rejection is a different clause, and the three safety labels are checked
+    one at a time rather than as a group -- a schema that had quietly made
+    ``executable`` optional would still reject a response missing
+    ``contentClassification``, and the group check would not notice.
+    """
+    validator = _validator(REVIEW_SEARCH_RESPONSE)
+    response = review_search_responses["all"]
+    validator.validate(response)
+    row = response["records"][0]
+
+    rejected: tuple[dict[str, Any], ...] = (
+        {**response, "surprise": 1},
+        {key: value for key, value in response.items() if key != "count"},
+        {key: value for key, value in response.items() if key != "records"},
+        {**response, "records": [{**row, "labels": ["security"]}]},
+        {**response, "records": [{**row, "headRefName": "fix/retry-budget"}]},
+        {**response, "records": [{**row, "kind": "pull_request"}]},
+        {**response, "records": [{**row, "threadState": "RESOLVED"}]},
+        {**response, "records": [{**row, "excerptChannel": "description"}]},
+        {**response, "records": [{**row, "pullRequest": 0}]},
+        {**response, "records": [{**row, "executable": True}]},
+        {**response, "records": [{**row, "mayContainInstructions": False}]},
+        {**response, "records": [{**row, "contentClassification": "trusted"}]},
+        *(
+            {**response, "records": [{k: v for k, v in row.items() if k != label}]}
+            for label in ("contentClassification", "mayContainInstructions", "executable")
+        ),
+    )
+    for payload in rejected:
+        with pytest.raises(ValidationError):
+            validator.validate(payload)
+
+
+# -- system.capabilities (ADR-0030 decision 2, ADR-0025) --------------------
+
+CAPABILITIES_RESPONSE = "mcp/system-capabilities-response.schema.json"
+
+
+@pytest.fixture(scope="module")
+def capabilities_response(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
+    """The real ``system.capabilities`` response, captured once.
+
+    One capture, and one is enough here where three were needed for the review
+    surfaces: this tool takes no argument, resolves no project and reads nothing
+    off disk, so every call in a given build produces the same object. That is the
+    property the schema describes, and it is asserted below rather than assumed.
+    """
+    from theurian.application.project_service import ProjectRegistry
+
+    tmp = tmp_path_factory.mktemp("capabilities-conformance")
+    data_dir = tmp / "datadir"
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setenv("THEURIAN_DATA_DIR", str(data_dir))
+    try:
+        registry = ProjectRegistry.default(data_dir)
+        return asyncio.run(_call_capabilities(registry))
+    finally:
+        monkey.undo()
+
+
+async def _call_capabilities(registry: Any) -> dict[str, Any]:
+    from theurian.daemon.runner import build_server
+
+    result = await build_server(registry).call_tool("system.capabilities", {})
+    structured = getattr(result, "structuredContent", None)
+    if structured is not None:
+        payload: dict[str, Any] = structured
+        return payload
+    content: Any = result.content  # type: ignore[union-attr]
+    loaded: dict[str, Any] = json.loads(content[0].text)
+    return loaded
+
+
+@pytest.mark.integration
+def test_a_real_capabilities_response_validates_against_its_published_schema(
+    capabilities_response: dict[str, Any],
+) -> None:
+    """The half a schema-shape test cannot do: compare the schema to real output.
+
+    This response is what a client degrades against, so a field it carries that
+    nothing declares is undocumented protocol surface and a declared field it does
+    not send is a promise nothing keeps. ``additionalProperties: false`` at both
+    levels fails the first; ``required`` at both levels fails the second.
+    """
+    _validator(CAPABILITIES_RESPONSE).validate(capabilities_response)
+
+
+@pytest.mark.integration
+def test_the_capabilities_response_is_a_property_of_the_build_and_not_of_a_project(
+    capabilities_response: dict[str, Any], tmp_path: pathlib.Path
+) -> None:
+    """The schema's central claim, asserted rather than described.
+
+    Every value here is a build property: this tool resolves no project and passes
+    no authorization gate, so nothing it publishes may vary with what any
+    installation holds. Two calls against two different, separately-rooted data
+    directories -- one of them holding a registered project and one empty -- must
+    produce the identical object, byte for byte through the serializer.
+    """
+    from theurian.application.project_service import ProjectRegistry
+
+    other = tmp_path / "other-datadir"
+    monkey = pytest.MonkeyPatch()
+    monkey.setenv("THEURIAN_DATA_DIR", str(other))
+    try:
+        elsewhere = asyncio.run(_call_capabilities(ProjectRegistry.default(other)))
+    finally:
+        monkey.undo()
+
+    assert json.dumps(elsewhere, sort_keys=True) == json.dumps(
+        capabilities_response, sort_keys=True
+    ), (
+        "system.capabilities answered differently against a different data "
+        "directory, so something it publishes is a function of deployment state "
+        "rather than of the build -- which is exactly what a surface that resolves "
+        "no project and passes no gate must not carry (ADR-0025)"
+    )
+
+
+@pytest.mark.integration
+def test_the_capabilities_conformance_check_can_fail(
+    capabilities_response: dict[str, Any],
+) -> None:
+    """Guards the validation above: a schema loaded and never applied accepts all.
+
+    Each rejection is a different clause. ``reviewIngestionScope`` is checked in
+    both directions -- a wrong value and an absent key -- because it is the one
+    member whose *value* is the contract: ADR-0030 decision 2 publishes one
+    constant, and a schema that had relaxed it to a free string would let a build
+    announce a wider ingestion scope than the one that was reviewed.
+    """
+    validator = _validator(CAPABILITIES_RESPONSE)
+    response = capabilities_response
+    validator.validate(response)
+    capabilities = response["capabilities"]
+
+    rejected: tuple[dict[str, Any], ...] = (
+        {**response, "milestone": 8},
+        {key: value for key, value in response.items() if key != "capabilities"},
+        {key: value for key, value in response.items() if key != "note"},
+        {**response, "schemaVersion": "1"},
+        {**response, "capabilities": {**capabilities, "sensitivityCeiling": "internal"}},
+        {**response, "capabilities": {**capabilities, "knowledgeSearch": "vector"}},
+        {**response, "capabilities": {**capabilities, "writeTools": "false"}},
+        {**response, "capabilities": {**capabilities, "reviewIngestionScope": "any-repository"}},
+        {
+            **response,
+            "capabilities": {
+                key: value for key, value in capabilities.items() if key != "reviewIngestionScope"
+            },
+        },
+        {
+            **response,
+            "capabilities": {
+                key: value for key, value in capabilities.items() if key != "reviewIngestion"
+            },
+        },
+    )
+    for payload in rejected:
+        with pytest.raises(ValidationError):
+            validator.validate(payload)

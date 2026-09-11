@@ -54,11 +54,16 @@ exists anywhere in this path.
 **What reaches this code, and what does not.** ``theurian review ingest`` does,
 as of ADR-0030 slice 2: it composes this adapter, screens every record through
 the ingestion secret gate, and lands what the gate cleared as evidence files
-under ``.theurian/review/``. **No MCP tool exposes it**, so
-``system.capabilities`` still reports ``reviewIngestion: false`` -- read that
-narrowly, as the flag's own pin in ``tests/integration/test_mcp_tools.py`` says:
-it means *no ingestion call surface is callable by a client*, never *this build
-cannot reach GitHub*. Slice 3 adds the tool and flips it.
+under ``.theurian/review/``. **No MCP tool exposes it**, and slice 3 did not
+change that: what slice 3 registered is ``review.search``, a read over the store
+``theurian review build`` projects from those landed files, which starts no
+process and reaches no network. That tool is what moved ``system.capabilities``
+to ``reviewIngestion: true``, published beside
+``reviewIngestionScope: "public-allowlisted"`` -- read the flag as narrowly as
+its own pin in ``tests/integration/test_mcp_tools.py`` says: it means *an
+ingestion call surface exists that a client may call*, never *this build can
+reach GitHub*, which was already true for the two slices the flag spent on
+``false``. A fetch is still an operator's act through the CLI verb.
 """
 
 from __future__ import annotations

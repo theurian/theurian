@@ -10,6 +10,14 @@ all. A second face sat inside the handler grading the first:
 ``cures.repository_named_in`` re-parses the same bytes to name the repository,
 so composing the refusal raised the identical error again.
 
+**One observable no longer rests on this table at all**, and the difference is
+worth stating where the verdicts are: on ``review ingest``'s rebuild half the run
+document is published by a ``finally``, so *which* exception classes the arms
+below enumerate decides the refusal and not whether anything is published. That
+is #630's HIGH-1 -- an unenumerated ``ValueError`` took the document with it
+through three arms that each emitted it -- and it is why the rows for that
+function say "refuses" where they used to say "emits".
+
 Two arms were fixed and the rest are justified, and neither was decided by
 reading. The population came from a search::
 
@@ -30,7 +38,7 @@ which makes a newly-narrowed arm a red test rather than the next round's finding
 ``ast.ExceptHandler`` and on a call spelled ``suppress``, so an alias
 (``from contextlib import suppress as quietly``) is invisible to it, as is any
 other way of swallowing an exception -- ``Path.is_dir()``'s internal one is the
-member that already exists in this package, and ``_relative_paths``' row is
+member that already exists in this package, and ``fingerprints``' row is
 where it is written down. It also stops at this file set: a helper these modules
 call from elsewhere in the package carries its own arms and is not walked here.
 
@@ -100,26 +108,89 @@ _ACCOUNTED: Final[dict[str, str]] = {
     "reader.py:EvidenceReader._read_one:_FoldedPathError": (
         "a `ValueError` caught ahead of its own base, and only to change the cure"
     ),
-    "reader.py:EvidenceReader._relative_paths:OSError": (
-        "the walk's only calls that are not total are `Path.iterdir` and "
-        "`Path.is_dir`, and `OSError` is both contracts -- `is_dir` swallows its own "
-        "internally, which is the recorded residual: a directory that is really an "
-        "`ELOOP` reads as absent"
+    "reader.py:EvidenceReader.fingerprints:OSError": (
+        "the walk's directory-level calls that are not total: `Path.iterdir`, whose "
+        "contract is `OSError`, beside `Path.exists` and `Path.is_dir`, which swallow "
+        "their own internally -- the recorded residual, a directory that is really an "
+        "`ELOOP` reads as absent. The per-leaf `Path.stat` is *not* graded here; it has "
+        "its own arm below, because a leaf that cannot be stat'd must not turn a whole "
+        "listing into a refusal"
+    ),
+    "reader.py:_fingerprint:OSError": (
+        "one leaf's `Path.stat`, answered as `_UNSTATTABLE` rather than raised. A "
+        "dangling symbolic link under the review directory would otherwise refuse the "
+        "listing the publish runs under the write lock; the sentinel compares unequal "
+        "to every real fingerprint, so such a leaf is dropped by the same equality "
+        "every other transition goes through and `_read_one` is what names it"
     ),
     "reader.py:_stored:RecursionError": (
         "the fix. A `RuntimeError`, so outside every family the caller names and "
         "outside `TheurianError`; raised as the `ValueError` this function's other "
         "shape faults already are, which buys the cure the complement arm cannot"
     ),
+    # The PascalCase lock-class name is deliberately not spelled in this row: the
+    # whole-word token trips `test_connection_claims.py`'s one-process
+    # lock-construction census (#494), whose key is that name searched over each
+    # test file's whole text, comments included -- and a verdict table is not a
+    # member of the population that census is about. `test_adr_0018_claims.py`'s
+    # findings entry avoids it for the same reason.
+    "review_commands.py:_lock_write_section.section:OSError": (
+        "the project's write lock -- acquisition, body and release -- converted into "
+        "a `TheurianError` the commands below already grade. Nothing in the "
+        "acquisition reaches it today: both calls the lock makes before it has a "
+        "descriptor, its `mkdir` and its `open`, convert their own `OSError` into a "
+        "graded error naming the lock file with a better cure. It is kept as the "
+        "backstop a future acquisition step would otherwise escape through, exactly "
+        "as its findings twin is"
+    ),
+    "review_commands.py:review_build:OSError": (
+        "the provenance write, which is the one call on this path raising a bare "
+        "`OSError`: the store converts its own and the lock's are converted one arm "
+        "up. Graded separately from the arm above because its precondition is a "
+        "different directory -- `THEURIAN_DATA_DIR`, outside the repository -- so a "
+        "cure naming `.theurian/` would send a reader to the wrong one"
+    ),
+    "review_commands.py:review_build:ProjectPathEscapeError": (
+        "`review_ingest`'s arm, for the same reason: exit code 4, a containment "
+        "refusal carrying its own remedy about where a path points"
+    ),
+    "review_commands.py:review_build:TheurianError": (
+        "`review_ingest`'s arm, and deliberately not `Exception` for the same "
+        "reason: it is the class the store and the builder grade *into*, so widening "
+        "it would publish a defect in this process as an operator-facing refusal"
+    ),
+    "review_commands.py:review_ingest:OSError": (
+        "the provenance write reached through the post-landing rebuild, graded like "
+        "`review_build`'s. Its sentence differs in the clause that matters: it says "
+        "the records landed, because the evidence is durable before the rebuild "
+        "starts and an operator told only that a build failed would go looking for "
+        "records that are on disk. It decides the refusal only -- the run document "
+        "is already out by the time it runs, published by the `finally` around the "
+        "rebuild rather than by this arm"
+    ),
     "review_commands.py:review_ingest:ProjectPathEscapeError": (
         "narrows the arm below it to exit code 4, a containment refusal carrying its "
-        "own remedy about where a path points"
+        "own remedy about where a path points. **Two arms wear this spelling** since "
+        "the rebuild took a `try` of its own, and one verdict covers both because "
+        "this table is keyed by type expression rather than by position: before "
+        "landing it refuses with nothing to report, and in the rebuild half it "
+        "refuses after the `finally` has published the run document, because the "
+        "records are already on disk by then"
     ),
     "review_commands.py:review_ingest:TheurianError": (
-        "the observable's own mechanism, and deliberately not `Exception`: it is the "
-        "class both store seams grade *into*, so widening it here would publish a "
-        "defect in this process as an operator-facing refusal instead of fixing the "
-        "seam that let one through"
+        "the graded refusal for a rebuild that failed, and deliberately not "
+        "`Exception`: it is the class both store seams grade *into*, so widening it "
+        "here would publish a defect in this process as an operator-facing refusal "
+        "instead of fixing the seam that let one through. **Two arms wear this "
+        "spelling**, and the split is what #630's H-1 fixed: the fetch half has "
+        "nothing landed to report, while the rebuild half refuses only after the run "
+        "document is out -- one handler for both graded a failed rebuild as a command "
+        "that could not run, and threw away the `secretsWarned` and `findings` counts "
+        "of a `warn` run that had just landed a flagged record. **What publishes that "
+        "document is no longer this arm**: #630's HIGH-1 arrived as a `ValueError`, "
+        "outside all three arms and therefore outside all three emits, so the emit "
+        "moved into a `finally` no exception class can route around and these arms "
+        "kept the refusal alone"
     ),
     "review_ingest_service.py:ReviewIngestService._fetch:ReviewIngestRefusedError": (
         "the record-scope skip, narrow on purpose: the module's docstring records "

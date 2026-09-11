@@ -100,7 +100,9 @@ _BOX: Final = re.compile(r"[─-╿]")
 #: -- and check that the new one is in the sweep's output, not merely counted.
 #: 32 until ADR-0030 slice 2 added the ``review`` group and ``review ingest``,
 #: which are two paths and not one: the walk counts a group as a path of its own.
-COMMAND_COUNT: Final = 34
+#: 34 until slice 3 added ``review build``, which is one path -- the group it
+#: joins was already counted.
+COMMAND_COUNT: Final = 35
 
 #: Labels the walk must produce, one per branch it has. ``short_help`` and
 #: ``epilog`` are set by no command in the tree, so their branches are pinned by

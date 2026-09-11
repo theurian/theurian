@@ -1346,6 +1346,24 @@ KNOWN_LOCK_FAMILIES: Final[dict[str, str]] = {
     #     contention" would silently reopen #404 -- the state-database race this one
     #     lock exists to prevent -- so the shared lock is required, not incidental.
     "cli/findings_commands.py": STATE_DATABASE_LOCK,
+    # `review build`, and the rebuild `review ingest` runs after it lands, take the
+    # write lock on `paths.write_lock` -- the same canonical
+    # `.theurian/runtime/write.lock` the entry above describes, reached the same
+    # way. Every clause of that entry transfers unchanged, including the reason the
+    # PascalCase lock-class name is not spelled here, and two are specific to this
+    # file:
+    #
+    # (1) **It is the state-database family, not an index one.** The store it
+    #     guards is `review_search_for(...)` -> `.theurian/state/theurian-review-
+    #     <id>.sqlite`, a fourth database beside the migration state, so ADR-0018's
+    #     "there is no index write lock in the package" is untouched. Remedy (2).
+    # (2) **Two commands enter it, and they must keep sharing it with the other
+    #     three writers.** Both go through `rebuild_search_store`, so the hold is
+    #     one continuous section around the store's own publish -- never two
+    #     sequential holds (#468) -- and giving the review rebuild a lock file of
+    #     its own would take it out of the serialisation `migrate apply` and
+    #     `findings build` rely on.
+    "cli/review_commands.py": STATE_DATABASE_LOCK,
     "infrastructure/sqlite/connection.py": STATE_DATABASE_LOCK,
     "daemon/instance.py": SINGLE_INSTANCE_LOCK,
 }

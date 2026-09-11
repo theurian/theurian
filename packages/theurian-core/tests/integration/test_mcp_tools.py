@@ -9,6 +9,7 @@ same entry point the transport uses -- against a project built by the real CLI.
 from __future__ import annotations
 
 import contextlib
+import copy
 import functools
 import json
 import re
@@ -22,6 +23,7 @@ from typing import Any
 import pytest
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
+from mcp.types import CallToolResult
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
@@ -338,13 +340,24 @@ async def _call_on(server: MCPServer, tool: str, **arguments: Any) -> dict[str, 
     from two different grants and so cannot let the helper build one.
     """
     result = await server.call_tool(tool, arguments)
-    content: Any = result.content  # type: ignore[union-attr]
-    structured = getattr(result, "structuredContent", None)
-    if structured is not None:
-        payload: dict[str, Any] = structured
-        return payload
-    loaded: dict[str, Any] = json.loads(content[0].text)
-    return loaded
+    # `structured_content`, not `structuredContent`: the camelCase spelling is a
+    # serialisation alias and not an attribute, so a `getattr` for it returned the
+    # default on every call and this helper always took the text-block branch --
+    # the structured copy of every assertion in this module was unread.
+    assert isinstance(result, CallToolResult), (
+        f"`{tool}` answered with {type(result).__name__} rather than a tool result"
+    )
+
+    structured = result.structured_content
+
+    assert structured is not None, (
+        f"`{tool}` published no structured content, so this helper would fall back to "
+        f"the text block and every assertion below would range over one of the "
+        f"response's two copies without saying which"
+    )
+
+    payload: dict[str, Any] = structured
+    return payload
 
 
 # -- Authorization grants (#119) -------------------------------------------
@@ -1953,7 +1966,22 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
         "result as `nothing matched`, when it may mean `withheld by this "
         "deployment's ceiling`."
     )
-    serialized = json.dumps(result).casefold()
+    # **The live value first, then the excision.** `reviewIngestionScope` carries
+    # the word `public`, which is also a `Sensitivity` member, so the sweep below
+    # would fire on it. Pinning the value here before removing the key is what
+    # makes the exemption narrow rather than a hole: the key is asserted to hold
+    # exactly the one constant ADR-0030 decision 2 publishes, so a *different*
+    # value -- one that had started describing this deployment's own withholding
+    # -- fails here and never reaches the excision.
+    assert result["capabilities"]["reviewIngestionScope"] == "public-allowlisted", (
+        "the scope field must be the build constant ADR-0030 decision 2 publishes. "
+        "The sweep below excises this key, so a value that had drifted into "
+        "deployment state would be swept over rather than caught -- this pin is "
+        "what keeps the exemption to one known string."
+    )
+    swept = copy.deepcopy(result)
+    del swept["capabilities"]["reviewIngestionScope"]
+    serialized = json.dumps(swept).casefold()
     forbidden = ("ceiling", *(level.value for level in Sensitivity))
     leaked = sorted(word for word in forbidden if word in serialized)
     assert not leaked, (
@@ -1965,32 +1993,66 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
         f"(ADR-0025). Case-folded, and over the serialized response rather than "
         f"its keys, because that leak is as likely to arrive as a value, inside "
         f"`note`, or under a camel-cased key (`sensitivityCeiling`) as it is to "
-        f"arrive as a new top-level field the population tests would catch."
+        f"arrive as a new top-level field the population tests would catch.\n\n"
+        f"One key is excised before this sweep -- `capabilities."
+        f"reviewIngestionScope`, pinned to `public-allowlisted` immediately above "
+        f"-- and the exemption exists because ADR-0030 decision 2 **intentionally "
+        f"publishes a constant scope** whose value happens to contain the word "
+        f"`public`. It is the same string in every deployment of this build: "
+        f"policy shape, not deployment state, so it says nothing about what this "
+        f"installation is withholding. The exemption is NOT that capability values "
+        f"generally bypass the sweep -- every other value in this response is swept "
+        f"exactly as before, and a second key claiming the same exemption needs the "
+        f"same argument written out, not a second `del`."
     )
     assert result["capabilities"]["reviewFindings"] is True, (
         "`review.findings` is registered and callable: it serves the "
         "Review-Finding trailers `theurian findings build` landed in a project's "
         "store, under the SEC-15 triple (ADR-0029 phase-2 slice-3). The flag "
         "promises that one read and nothing else -- not GitHub, not review "
-        "threads, not any write intent, which is what `reviewIngestion` below "
-        "stays false for. A client reading `false` here would never call a tool "
-        "this build answers, which is the degradation this whole block exists to "
-        "let it get right."
+        "threads, not any write intent. `reviewIngestion` below is a different "
+        "`true` about a different corpus, and neither flag lets a client "
+        "conclude anything about the other's tool. A client reading `false` "
+        "here would never call a tool this build answers, which is the "
+        "degradation this whole block exists to let it get right."
     )
-    assert result["capabilities"]["reviewIngestion"] is False, (
-        "no tool ingests review *history*: `infrastructure/github/` holds the "
-        "ADR-0030 adapter and `theurian review ingest` now reaches it and lands "
-        "evidence files, but **no MCP tool does**, and a client reading `true` "
-        "would offer a call this server does not answer. Read the `false` "
-        "narrowly -- it says no ingestion call surface is callable, **not** that "
-        "this build cannot reach GitHub, which it can, and **not** that nothing "
-        "lands on disk, which the CLI verb does. `reviewFindings` above is a different thing "
-        "entirely: an offline read of local git trailers. What made T-7's "
-        "repository allowlist load-bearing was the adapter landing, not this flag "
-        "moving, and the allowlist is enforced now (`security/review_allowlist.py`, "
-        "consulted before any spawn); the scheme allowlist and private-network "
-        "rejection stay owed in the raw-URL context (#429). Flip this in the serve "
-        "slice, beside the scope field, not ahead of it."
+    assert result["capabilities"]["reviewIngestion"] is True, (
+        "the serve slice landed, so the narrowed meaning ADR-0030 decision 6 ties "
+        "this flag to is now satisfied: **an ingestion call surface exists that a "
+        "client may call** -- `review.search`, over whatever `theurian review build` "
+        "projected out of `.theurian/review/`: records `theurian review ingest` "
+        "landed, records delivered with the repository, or both. The read inspects a "
+        "file's shape and its derived path, never its authorship, so it does not "
+        "distinguish them and neither does this flag (T-24). Read it as narrowly "
+        "as its history requires. It never meant `this build can reach GitHub` (the "
+        "fetch path shipped in slice 1 while this stayed `false`) and it never meant "
+        "`evidence lands on disk` (slice 2's CLI verb, same). It reports the "
+        "MCP-callable surface and nothing wider, and it does **not** say a client "
+        "may start an ingestion run: no tool spawns `gh`, ADR-0013 keeps write "
+        "intent off this surface, and a fetch stays an operator's act through the "
+        "CLI verb. `reviewFindings` above is a different `true` about a different "
+        "corpus -- an offline read of local git trailers -- and neither flag lets a "
+        "client conclude anything about the other's tool."
+    )
+    assert result["capabilities"]["reviewIngestionScope"] == "public-allowlisted", (
+        "the flag above is published **with** its scope or not at all (ADR-0030 "
+        "decisions 2 and 6). A `true` with no scope tells a client that ingested "
+        "review content is reachable and leaves out the half that decides how to "
+        "treat it: public-only v1 ingests no advisory-private GitHub surface -- no "
+        "private repositories, no security advisories, no private forks -- and every "
+        "record **`theurian review ingest` landed** was visible to the public "
+        "repository's audience at the moment it was ingested. It is a statement "
+        "about ingestion, not an inventory of `.theurian/review/`: those files are "
+        "source rather than derived state, so a clone can carry evidence a "
+        "repository author wrote and nothing here, or in a `review.search` "
+        "response, distinguishes the two (T-24). The tense is load-bearing, and an "
+        "edit and a delete are not the same case: an upstream **edit** reaches "
+        "Theurian's copy on the next run whose window covers the record, which "
+        "refetches and rewrites it, while an upstream **delete** does not -- the "
+        "manual delete-the-file-and-rebuild remediation is that second case's. "
+        "Private-repository ingestion, with the `securityRelated` marking and the "
+        "uniform refusal it needs, is #575's -- and it is the change that would move "
+        "this value, which is why the value is pinned rather than merely present."
     )
     assert result["capabilities"]["traceability"] is False, (
         "no tool answers FR-T3's questions -- which code implements a spec, which "
@@ -2061,9 +2123,11 @@ async def test_the_capability_block_holds_exactly_the_flags_that_are_pinned(
     after it was written. A new capability would ship declared-but-unasserted,
     which is the state `reviewIngestion`, `traceability` and `knowledgeSearch`
     were each found in (#129) -- and a capability flag is a security statement
-    when it is `reviewIngestion`, whose published meaning narrowed with ADR-0030:
-    the `false` now says no ingestion call surface is callable, not that nothing
-    reaches GitHub.
+    when it is `reviewIngestion`, whose published meaning narrowed with ADR-0030
+    and then, with slice 3's serve tool, went `true` under that narrowed
+    reading: it says an ingestion call surface exists that a client may call,
+    never that this build can reach GitHub. A client that read it the wide way
+    would take the `true` as permission to expect a fetch.
 
     So this fails when a flag is added *and* when one is removed, and its message
     says what to do about it. The value of a new flag belongs in the test above;
@@ -2079,6 +2143,13 @@ async def test_the_capability_block_holds_exactly_the_flags_that_are_pinned(
         "sensitivityEnforcement",
         "reviewFindings",
         "reviewIngestion",
+        # Published **with** `reviewIngestion`, never one without the other
+        # (ADR-0030 decisions 2 and 6): a `true` with no scope tells a client that
+        # ingested review content is reachable and omits the half that decides how
+        # to treat it. Pinned here as a member so removing the scope while leaving
+        # the flag reddens, which is the pairing this population test is what
+        # enforces -- the value itself is pinned in the test above.
+        "reviewIngestionScope",
         "traceability",
         "writeTools",
     }, (

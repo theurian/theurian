@@ -413,6 +413,7 @@ def test_the_tool_set_is_read_only(running_daemon: Daemon) -> None:
         "knowledge.status",
         "project.list",
         "review.findings",
+        "review.search",
         "system.capabilities",
     ]
     for name in tools:

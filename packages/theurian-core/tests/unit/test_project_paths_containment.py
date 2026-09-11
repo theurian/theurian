@@ -28,6 +28,7 @@ import pytest
 
 from theurian.application.project_service import (
     KNOWLEDGE_DIR_ESCAPE_REMEDY,
+    BuildProvenance,
     ProjectError,
     ProjectPathEscapeError,
     ProjectPaths,
@@ -254,6 +255,7 @@ _HELPER_CALLS: dict[str, Callable[[ProjectPaths], Path]] = {
     "state_database_named": lambda p: p.state_database_named("theurian-state-abc123.sqlite"),
     "database_for": lambda p: p.database_for(_SAMPLE_STATE_HASH),
     "findings_for": lambda p: p.findings_for("01K1AAAAAA01234567890ABCDE"),
+    "review_search_for": lambda p: p.review_search_for("01K1AAAAAA01234567890ABCDE"),
 }
 
 #: The ``.theurian`` child whose symlink escape reaches each helper. A leaf helper
@@ -281,6 +283,7 @@ _ESCAPING_CHILD: dict[str, str] = {
     "state_database_named": "state",
     "database_for": "state",
     "findings_for": "state",
+    "review_search_for": "state",
 }
 
 #: The one helper deliberately contained by its *reader* rather than by
@@ -318,6 +321,14 @@ _READER_CONTAINED: set[str] = {"migrations"}
 #: checkout at exit 0. It now carries ``index_for``'s state-scoped check, so its
 #: refusal is its own with ``ACTIVE_POINTER_REMEDY``, and the ``self.state``
 #: access it makes first is what this sweep sees.
+#:
+#: ``review_search_for`` is absent for the same reason as those two, and it is
+#: the third member of that shape rather than a new case: ADR-0030 slice 3 gave it
+#: ``index_for``'s state-scoped check from the start, so an escaping ``state`` is
+#: refused by the ``self.state`` access it makes first -- which is the *directory*
+#: case, and therefore ``KNOWLEDGE_DIR_ESCAPE_REMEDY`` -- and an escaping store id
+#: is refused by its own check with ``REVIEW_SEARCH_STORE_REMEDY``. Only the first
+#: of the two is what this sweep drives.
 #:
 #: ``index_secret_scan`` joined on #329's merge, and the seam is worth naming: it
 #: is a hand-written classification of the helper list *as it stood*, so a helper
@@ -648,36 +659,47 @@ def test_a_symlinked_state_pointing_inside_the_root_writes_normally(tmp_path: Pa
 def test_the_findings_index_and_state_filename_prefixes_are_pairwise_disjoint(
     tmp_path: Path,
 ) -> None:
-    """The three artifacts sharing ``.theurian/state/`` are told apart by prefix (#396 T-4).
+    """The four artifacts sharing ``.theurian/state/`` are told apart by prefix (#396 T-4).
 
-    Every reader in ``.theurian/state/`` tells its own artifact apart from its two
+    Every reader in ``.theurian/state/`` tells its own artifact apart from its
     neighbours by filename prefix alone, never by opening the file first: ``index
     gc`` globs ``theurian-index-*`` and *must* skip the canonical
     ``theurian-state-*`` database beside it (``test_index_gc_cli.py``'s whole
     reason for existing), and ``_applied_migration_ids`` globs
     ``theurian-state-*`` and tries to open whatever matches as a canonical state
     database, silently treating an open failure as "nothing recorded there". A
-    findings store retargeted onto either neighbour's prefix would be picked up by
-    the wrong reader -- reclaimed as a stale index build, or opened and silently
-    ignored as an unreadable state database -- without either reader raising.
+    store retargeted onto a neighbour's prefix would be picked up by the wrong
+    reader -- reclaimed as a stale index build, or opened and silently ignored as
+    an unreadable state database -- without either reader raising.
 
-    ``findings_for``'s filename is pinned by exact value, driven through the real
-    method rather than a hand-built string, so a retargeted f-string moves this
-    assertion regardless of which neighbour's prefix it was pointed at. The other
-    two prefixes are read from their owning modules (``INDEX_FILENAME_PREFIX``,
-    ``_STATE_DATABASE_GLOB``) rather than restated as literals here, so a prefix
-    change made *only* in its owning module still fails this test if it collides.
+    **Four since ADR-0030 slice 3**, which added the review search store. The
+    number moves with the population on purpose: a fifth artifact that reused one
+    of these prefixes would be reclaimed or misread exactly as a third would have
+    been, so the assertion is over the whole set rather than over the pair somebody
+    remembered.
+
+    ``findings_for``'s and ``review_search_for``'s filenames are pinned by exact
+    value, driven through the real methods rather than hand-built strings, so a
+    retargeted f-string moves this assertion regardless of which neighbour's prefix
+    it was pointed at. The other two prefixes are read from their owning modules
+    (``INDEX_FILENAME_PREFIX``, ``_STATE_DATABASE_GLOB``) rather than restated as
+    literals here, so a prefix change made *only* in its owning module still fails
+    this test if it collides.
     """
     root = tmp_path / "repo"
     (root / ".theurian").mkdir(parents=True)
     paths = ProjectPaths.of(root)
 
     findings_name = paths.findings_for("local").name
+    review_name = paths.review_search_for("local").name
 
     assert findings_name == "theurian-findings-local.sqlite"
+    assert review_name == "theurian-review-local.sqlite"
 
     findings_prefix = "theurian-findings-"
+    review_prefix = "theurian-review-"
     assert findings_name == f"{findings_prefix}local.sqlite"
+    assert review_name == f"{review_prefix}local.sqlite"
     index_prefix = INDEX_FILENAME_PREFIX
     state_prefix = _STATE_DATABASE_GLOB.removesuffix("*.sqlite")
     assert state_prefix == "theurian-state-", (
@@ -685,11 +707,57 @@ def test_the_findings_index_and_state_filename_prefixes_are_pairwise_disjoint(
         f"got {_STATE_DATABASE_GLOB!r}, so the derived prefix is {state_prefix!r}"
     )
 
-    prefixes = (findings_prefix, index_prefix, state_prefix)
-    assert len(set(prefixes)) == 3, f"the three artifact prefixes are not distinct: {prefixes}"
+    prefixes = (findings_prefix, review_prefix, index_prefix, state_prefix)
+    assert len(set(prefixes)) == 4, f"the four artifact prefixes are not distinct: {prefixes}"
     assert not any(
         a != b and (a.startswith(b) or b.startswith(a)) for a in prefixes for b in prefixes
     ), (
         f"one artifact prefix is a prefix of another ({prefixes}), so a glob on "
         f"the shorter one would also match the other artifact's files"
     )
+
+
+def test_the_state_rebuild_tail_names_a_command_for_every_artifact_family() -> None:
+    """RED means removing `.theurian/state` leaves one artifact with no cure named.
+
+    ``derived_escape_remedy`` tells a reader to remove a whole subdirectory, and
+    the tail is the only place the response says what to run afterwards. Keying it
+    on the subdirectory cannot say *which* artifact the refused leaf was -- four
+    families resolve under ``state`` -- so the tail has to name the union, and a
+    union is only correct while it grows with the family list. It did not: the
+    review search store landed as the fourth family with the tail still naming
+    three, so a reader who removed ``state/`` rebuilt everything except their
+    review evidence's projection.
+
+    The population is read off :class:`BuildProvenance` -- one ``record_<family>``
+    and one ``has_<family>`` per family -- rather than listed here, so a fifth
+    family reddens this at the moment it lands. The command per family is derived
+    from the same token by the CLI's own convention (``theurian <family> build``);
+    ``state`` is the one exception, rebuilt by ``migrate apply`` and named
+    unconditionally because every escape under this subdirectory costs it.
+    """
+    recorders = {
+        name.removeprefix("record_") for name in vars(BuildProvenance) if name.startswith("record_")
+    }
+    checkers = {
+        name.removeprefix("has_") for name in vars(BuildProvenance) if name.startswith("has_")
+    }
+    assert recorders == checkers, (
+        f"`BuildProvenance` records {sorted(recorders)} and checks {sorted(checkers)}; "
+        f"until they agree there is no single family set for this tail to cover"
+    )
+    assert "state" in recorders, "the canonical state is not among the recorded families"
+
+    tail = derived_escape_remedy(".theurian", "state")
+
+    assert "`theurian migrate apply`" in tail, (
+        "the tail does not name the unconditional rebuild for the canonical state"
+    )
+    for family in sorted(recorders - {"state"}):
+        assert f"`theurian {family} build`" in tail, (
+            f"the `state` rebuild tail names no command for the `{family}` family. "
+            f"Add it -- `theurian {family} build` if that is the verb, and correct "
+            f"this derivation if it is not -- so a reader who removes "
+            f"`.theurian/state` is told how to rebuild every artifact it held.\n"
+            f"{tail}"
+        )
