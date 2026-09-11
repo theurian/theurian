@@ -2551,8 +2551,11 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 # tool here spawns `gh`, and none will without its own round:
                 # ADR-0013 keeps write intent off this surface, and a fetch is an
                 # operator's act through the CLI verb. What a client may do is
-                # call `review.search` and read what an operator already
-                # ingested.
+                # call `review.search` and read what `theurian review build`
+                # already projected -- the schema's own spelling, and not "what
+                # an operator already ingested": a clone-delivered record was
+                # never ingested here, and the read inspects a file's shape and
+                # its derived path rather than its provenance (T-24).
                 "reviewIngestion": True,
                 # **Published together with the flag above, never one without the
                 # other** (ADR-0030 decisions 2 and 6). A `true` with no scope
