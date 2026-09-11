@@ -1,7 +1,7 @@
 """What the changelog's review-ingest entry claims, held to the tree (ADR-0030, #479).
 
 ``packages/theurian-core/CHANGELOG.md`` is where an operator learns what
-``theurian review ingest`` does before they run it, and four of its sentences
+``theurian review ingest`` does before they run it, and five of its sentences
 say something the tree can be asked about:
 
 - **Exit 1 carries the run document, or ``{error, remedy}``, or both** — the run
@@ -35,6 +35,14 @@ say something the tree can be asked about:
   out of ``int`` landed outside all three and took the document with it. The drift
   this row guards is a reword *back* to the enumeration, which reads as the more
   precise sentence and carries the identical hole.
+- **The race remedy's guard is keyed on the publish-time listing, not on what the
+  read saw** (#636). This row is unlike the other four: the wording it replaces
+  was a recorded **defect**, not a narrower true claim. Until the guard was
+  rekeyed the entry told a reader that a whole-corpus deletion is refused and that
+  a build which read nothing empties a serving store -- both of which stopped
+  being true in the pull request that added this row. A revert reinstates a
+  description of a build that no longer exists, and a rebase against a branch
+  taken before the fix restores it mechanically.
 
 **Each claim is pinned from both sides, and the two sides fail differently on
 purpose.** The prose pins hold *spelling*: they are blind to whether the
@@ -58,6 +66,15 @@ that same file —
 ``test_a_rebuild_defect_outside_every_graded_arm_still_publishes_the_run_document``,
 which raises the exception class no arm names and asserts the document is out
 anyway. Each failure message below names the half that did not move.
+
+**The fifth row holds a record's wording and nothing else, and its reach is
+stated rather than assumed.** Its behaviour half is in two other modules --
+``tests/unit/test_review_search_builder_claims.py`` reads the guard's condition
+out of the syntax tree and asserts it names the publish-time capture, and
+``tests/integration/test_review_build_empty_publish.py`` drives both faces
+through the shipped CLI. This row would match word for word against a build
+keyed back on the read, and those two would go RED; nothing here can tell the
+difference, which is exactly why the halves are separate.
 
 **Both directions carry a positive control**, because a pin whose expected
 answer is "the fragment is still there" and a pin that has stopped looking read
@@ -254,6 +271,37 @@ ENTRY_CLAIMS: Final[tuple[tuple[str, str, str, str], ...]] = (
         (
             "`tests/integration/test_review_ingest_cli.py::"
             "test_a_rebuild_defect_outside_every_graded_arm_still_publishes_the_run_document`"
+        ),
+    ),
+    (
+        "the race remedy's guard is keyed on the publish-time listing",
+        (
+            "**The guard is keyed on the publish-time listing rather than on what the "
+            "read saw**, which is what separates a stale build from a corpus an "
+            "operator emptied on purpose: a whole-corpus deletion inside another "
+            "build's window publishes the empty store, honouring the only retention "
+            "remedy ADR-0030 decision 3 leaves."
+        ),
+        # The sentence this replaced, quoted from `1751236a`, and the reason the
+        # row exists at all: it is the *only* drift column here whose original was
+        # a recorded **defect** rather than a correct-but-narrower claim. A revert
+        # does not merely understate the build -- it reinstates a paragraph telling
+        # a reader that a deletion is refused and that a read-zero build empties a
+        # serving store, both of which stopped being true in this same PR. It is
+        # also the wording a rebase against a pre-fix branch would restore
+        # silently, which is the mechanical route this guards.
+        (
+            "**The guard is keyed on read-time facts, and that is a recorded defect "
+            "rather than a property** — a build that read zero records publishes its "
+            "empty store over rows a concurrent first landing had just built, and a "
+            "whole-corpus deletion inside another build's window is refused rather "
+            "than honoured until the operator re-runs."
+        ),
+        (
+            "`tests/unit/test_review_search_builder_claims.py::"
+            "test_the_empty_publish_guard_is_keyed_on_the_publish_time_capture`, with "
+            "the two faces driven by `tests/integration/"
+            "test_review_build_empty_publish.py`"
         ),
     ),
 )
