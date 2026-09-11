@@ -64,6 +64,21 @@ the project-relative ``.theurian/state/``; the plant goes RED again the moment a
 interpolation returns, and so does
 :func:`test_a_departed_raise_site_has_really_left_the_key`.
 
+**The two store guards changed what their containment arms publish at
+``c7da702e``, and no cell in this matrix moved** (re-measured 2026-09-12).
+``review.findings`` answers an escaping store leaf with ``PATH_ESCAPE_REFUSAL``
+and the escape cure rather than folding it into the availability constant,
+because that constant's cure -- ``theurian findings build`` -- resolves the same
+leaf through the same helper and exits 4 on it. ``review.search``'s guard grew
+the same arm for ``ProjectPathEscapeError``, but its *reachable* containment arm
+is the other one: ``review_search_for`` makes its own state-scoped check and
+raises the plain ``ProjectError`` beneath that class, whose message interpolates
+the resolved ``.theurian/state``, so that arm still folds -- and folding is what
+keeps the directory off this wire. Both are swept here, by
+``escaping-findings-leaf`` and by ``escaping-review-search-leaf``. What the
+overturn moves is which *cure* travels, never which paths do, which is why the
+invariant above is unchanged by it.
+
 **The population key is the point where the two spellings diverge**, not either
 path in full. The checkout is registered as ``<tmp>/demo`` and physically lives at
 ``<tmp>/opaque-elsewhere/real-demo``; the two agree up to ``<tmp>/`` and part at
@@ -120,7 +135,7 @@ import importlib
 import json
 import subprocess
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -133,6 +148,7 @@ from typer.testing import CliRunner
 from theurian.application import project_service
 from theurian.application.project_service import (
     FINDINGS_STORE_ID,
+    REVIEW_SEARCH_STORE_ID,
     BuildProvenance,
     ProjectPaths,
     ProjectRegistry,
@@ -147,9 +163,17 @@ from theurian.domain.review_finding import (
     ReviewerToken,
     ReviewFinding,
 )
+from theurian.domain.review_search import ReviewSearchLoad
 from theurian.infrastructure.sqlite.findings_store import SqliteReviewFindingStore
+from theurian.infrastructure.sqlite.review_search_store import SqliteReviewSearchStore
 from theurian.mcp.search import INDEX_POINTER_INVALID
-from theurian.mcp.tools import _CUT_MARKER, ToolError, _publishable_field
+from theurian.mcp.tools import (
+    _CUT_MARKER,
+    PATH_ESCAPE_REFUSAL,
+    REVIEW_SEARCH_UNAVAILABLE_REFUSAL,
+    ToolError,
+    _publishable_field,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -569,6 +593,57 @@ def _plant_escaping_findings_leaf(corpus: Corpus) -> PlantedPaths:
     return {"the directory the findings leaf escaped to": target_dir}
 
 
+def _plant_escaping_review_search_leaf(corpus: Corpus) -> PlantedPaths:
+    """The review search **store leaf** delivered as a link out of the tree.
+
+    The findings plant's twin at the tool beside it, and it is a *different raise
+    site*, which is why it is a plant of its own rather than a second case of the
+    same one. ``findings_for`` routes through ``ProjectPaths._contained`` and so
+    raises ``ProjectPathEscapeError``; ``review_search_for`` runs its own
+    state-scoped check and raises the plain ``ProjectError`` beneath it,
+    interpolating the resolved ``.theurian/state`` directory into the message.
+    Since ``c7da702e`` those two classes take different arms of
+    ``review.search``'s guard, so a plant that reached only the subclass would
+    leave the base arm's fold -- the thing that keeps that resolved directory off
+    this wire -- swept by nothing.
+
+    The store is built and recorded here rather than in the fixture: it is the
+    only plant that needs one, and a fourth derived database in every corpus
+    would be paid for by every other case.
+
+    **Provenance first, or the call never reaches the path.** ``review.search``
+    checks its build record before it asks for the store path at all (ADR-0004,
+    SEC-7, T-19), so without the record the tool refuses at the gate above and
+    this plant sweeps the absent-store arm while looking like a containment one.
+    """
+    paths = corpus.paths
+    leaf = paths.review_search_for(REVIEW_SEARCH_STORE_ID)
+    SqliteReviewSearchStore(leaf).replace_all(ReviewSearchLoad(records=()))
+    BuildProvenance.for_registry(corpus.registry).record_review(paths.root, REVIEW_SEARCH_STORE_ID)
+
+    target_dir = corpus.elsewhere / "escaped-review-search"
+    target_dir.mkdir()
+    target = target_dir / leaf.name
+    leaf.rename(target)
+    leaf.symlink_to(target)
+
+    assert not leaf.resolve().is_relative_to(paths.root), (
+        "the premise: the review search leaf must really resolve outside the project "
+        "root, or the containment refusal this plant drives never fires"
+    )
+    assert paths.state.resolve().is_relative_to(paths.root), (
+        "the premise: `.theurian/state` itself is healthy, so what refuses is "
+        "`review_search_for`'s own check and not `_resolve` a layer above it"
+    )
+    assert BuildProvenance.for_registry(corpus.registry).has_review(
+        paths.root, REVIEW_SEARCH_STORE_ID
+    ), (
+        "the premise: this installation's build record covers the store, so the call "
+        "reaches the containment check rather than stopping at the provenance gate"
+    )
+    return {"the directory the review search leaf escaped to": target_dir}
+
+
 def _plant_escaping_state_directory(corpus: Corpus) -> PlantedPaths:
     """``.theurian/state`` delivered as a link out of the tree.
 
@@ -702,6 +777,13 @@ PLANTS: Final = (
         "escaping-findings-leaf",
         _plant_escaping_findings_leaf,
         "`ProjectPaths._contained`, reached from `review.findings`' own body",
+    ),
+    Plant(
+        "escaping-review-search-leaf",
+        _plant_escaping_review_search_leaf,
+        "`ProjectPaths.review_search_for`'s own state-scoped check, reached from "
+        "`review.search`' body -- a plain `ProjectError`, folded into the availability "
+        "constant by the base arm of that guard",
     ),
     Plant(
         "escaping-state-directory",
@@ -841,6 +923,46 @@ async def test_an_escaping_index_pointer_is_served_rather_than_refused(corpus: C
     assert [row["itemId"] for row in served["structured_content"]["results"]] == [ITEM_ID], (
         f"the substring fallback returned no row, so `fallbackReason` is describing a "
         f"degrade that served nothing: {response}"
+    )
+
+
+@pytest.mark.asyncio
+@_NEEDS_SYMLINKS
+async def test_an_escaping_review_search_leaf_is_refused_by_the_arm_that_folds_it(
+    corpus: Corpus,
+) -> None:
+    """What the review-search plant's cell is an *absence* over, said positively.
+
+    The sweep asserts that no response names the resolved layout, and a plant that
+    never reaches its raise site satisfies that perfectly. This is what stops the
+    new plant from being a corpus the sweep walks past: the call must refuse, the
+    refusal must be the availability constant the base arm folds to -- not
+    ``PATH_ESCAPE_REFUSAL``, which is the *other* arm and would mean this plant is
+    driving the subclass rather than the base -- and it must not be the provenance
+    gate's refusal reached a step early, which the plant's own premise rules out.
+
+    Read through the sweep's own :func:`_response_text`, so this measures the same
+    bytes the plant's cells read rather than a friendlier second call.
+    """
+    _plant_escaping_review_search_leaf(corpus)
+    server = build_server(corpus.registry)
+
+    response = await _response_text(server, "review.search", {"projectId": PROJECT_ID})
+
+    assert REVIEW_SEARCH_UNAVAILABLE_REFUSAL in response, (
+        f"the escaping review search leaf did not reach the arm that folds it, so the "
+        f"sweep's cell for this plant asserts an absence over a call that never got "
+        f"there: {response}"
+    )
+    assert PATH_ESCAPE_REFUSAL not in response, (
+        f"the leaf took the escape arm, which is `ProjectPathEscapeError`'s -- so this "
+        f"plant is driving the subclass and `review_search_for`'s own plain "
+        f"`ProjectError` is still reached by nothing: {response}"
+    )
+    assert str(corpus.paths.state) not in response, (
+        f"the refusal carried the resolved `.theurian/state` directory that "
+        f"`review_search_for`'s message interpolates, which is the disclosure the fold "
+        f"exists to prevent (GHSA-97q9): {response}"
     )
 
 
@@ -1236,15 +1358,31 @@ DISPOSITIONS: Final[dict[str, Disposition]] = {
     ),
     "application/project_service.py::ProjectPaths.review_search_for#1": Disposition(
         because=(
-            "Held by `review.search`'s own guard, which answers "
-            "`REVIEW_SEARCH_UNAVAILABLE_REFUSAL` for every `TheurianError` from the "
-            "store path. No shipped composition reaches this raise -- `store_id` is a "
-            "constant -- so the guard is driven by monkeypatching the refusal in, which "
-            "is what keeps it from surviving its own deletion."
+            "Held by the **base** arm of `review.search`'s store-path guard, which "
+            "answers `REVIEW_SEARCH_UNAVAILABLE_REFUSAL` for a plain `ProjectError` and "
+            "so drops the resolved `.theurian/state` this message interpolates. "
+            "**Reached by data**, and two sentences here used to say otherwise: this "
+            "raise is `review_search_for`'s own state-scoped check, and an escaping "
+            "store *leaf* under a healthy `.theurian/state` takes it -- the "
+            "`escaping-review-search-leaf` plant, added when the claim was measured "
+            "false. What `store_id` being a constant rules out is a caller *choosing* "
+            "a name that escapes, which is a narrower statement than the one that "
+            "stood here. The patched-helper test below drives the same arm without a "
+            "corpus and pins the fold; the plant is what proves the arm is not "
+            "hypothetical. "
+            "It is also no longer true that this guard answers the constant for every "
+            "`TheurianError`: since `c7da702e` a `ProjectPathEscapeError` takes a "
+            "second arm that answers `PATH_ESCAPE_REFUSAL` and keeps `exc.remedy`. "
+            "That arm is a race-window backstop -- `_resolve` has read through "
+            "`paths.state` twice by then -- and is driven by "
+            "`test_an_escaping_store_path_answers_the_escape_constant_and_keeps_its_cure`."
         ),
+        plants=("escaping-review-search-leaf",),
         tests=(
             "integration/test_review_search_tool.py"
             "::test_a_project_path_that_stops_resolving_does_not_publish_the_operator_layout",
+            "integration/test_review_search_tool.py"
+            "::test_an_escaping_store_path_answers_the_escape_constant_and_keeps_its_cure",
         ),
     ),
     "application/project_service.py::ProjectPaths.state_database_named#1": Disposition(
@@ -1682,8 +1820,24 @@ def _called_names(*, methods_only: bool) -> frozenset[str]:
     ``daemon/runner.py`` calls it by bare name, which says nothing at all about
     :meth:`ProjectRegistry.register`.
     """
+    return _names_called_in(_scanned_modules(), methods_only=methods_only)
+
+
+def _names_called_in(modules: Mapping[str, ast.Module], *, methods_only: bool) -> frozenset[str]:
+    """The key applied to a given set of modules, so a control can hand it synthetic ones.
+
+    Split from :func:`_called_names` for the reason :func:`_sites_in` is split
+    from :func:`_resolved_path_raise_sites`, and the split is a fix rather than a
+    tidy-up (verdict pass, adversarial MEDIUM). Every citation this key serves
+    asserts an **absence** -- ``<name> not in called`` -- so a key that answered
+    the empty set satisfied all of them, and blinding it either way left the whole
+    suite green. There was no control because there was no seam to hand a
+    synthetic module to; this is that seam, and
+    :func:`test_the_out_of_reach_key_sees_a_serving_module_that_calls_the_name`
+    is the control.
+    """
     called: set[str] = set()
-    for module, tree in _scanned_modules().items():
+    for module, tree in modules.items():
         if Path(module).parts[0] not in _SERVING_PACKAGES:
             continue
         for node in ast.walk(tree):
@@ -1864,3 +2018,81 @@ def test_a_disposition_cites_only_things_that_exist(key: str) -> None:
             f"`theurian/mcp/` or `theurian/daemon/`, so the reason this site is outside "
             f"the class no longer holds -- it needs a plant or a guard"
         )
+
+
+#: Two dispositions whose whole argument is "no serving module calls this", one
+#: per spelling of the key. Named rather than searched for, so the control below
+#: fails if either argument is rewritten to rest on something else -- a control
+#: that hunted for *any* such entry would quietly stop controlling anything the
+#: day the last one changed shape.
+_OUT_OF_REACH: Final = {
+    False: (
+        "application/project_service.py::initialize_project#1",
+        "initialize_project",
+    ),
+    True: (
+        "application/project_service.py::ProjectRegistry.ids_for_root#1",
+        "ids_for_root",
+    ),
+}
+
+
+@pytest.mark.parametrize("methods_only", [False, True], ids=["any-call", "method-call"])
+def test_the_out_of_reach_key_sees_a_serving_module_that_calls_the_name(
+    methods_only: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The control the ``no_call_from_mcp`` citations never had (verdict pass, MEDIUM).
+
+    Four dispositions rest on "nothing under ``theurian/mcp/`` or
+    ``theurian/daemon/`` calls this", and every one of them is asserted as an
+    **absence**. An absence result is worth exactly what its key is worth, and
+    this key could be blinded in either direction with the whole suite still
+    green: answer the empty set and every citation passes; answer every name and
+    the ``methods_only`` distinction -- the one thing that keeps ``register``
+    honest -- stops existing without a single case noticing.
+
+    So this hands the shipped key a synthetic serving module that calls the name
+    a disposition says is uncalled, in both spellings, and then re-runs the
+    citation test itself over the same doctored population. Three separate ways to
+    fail, in order of how badly a blinded key would have to be broken: the key
+    sees the call, the key still tells a bare call from a method call, and the
+    citation test built on it reports the site as no longer out of reach.
+
+    Driven through :func:`_names_called_in` and then through
+    :func:`test_a_disposition_cites_only_things_that_exist` itself, rather than a
+    second copy of either, so what is controlled is the code that ships.
+    """
+    key, name = _OUT_OF_REACH[methods_only]
+    call = f"receiver.{name}(root)" if methods_only else f"{name}(root)"
+    synthetic = ast.parse(f"def _new_tool(root):\n    return {call}\n")
+
+    seen = _names_called_in({"mcp/new_tool.py": synthetic}, methods_only=methods_only)
+    outside_the_serving_packages = _names_called_in(
+        {"application/new_tool.py": synthetic}, methods_only=methods_only
+    )
+    bare_under_the_method_key = _names_called_in(
+        {"mcp/new_tool.py": ast.parse(f"def _new_tool(root):\n    return {name}(root)\n")},
+        methods_only=True,
+    )
+
+    assert name in seen, (
+        f"the key did not see `{call}` in a module under `theurian/mcp/`, so every "
+        f"disposition resting on it is asserting an absence nothing could contradict"
+    )
+    assert name not in outside_the_serving_packages, (
+        f"the key counted a call from outside `{_SERVING_PACKAGES}`, so 'no serving "
+        f"module calls this' would fail over the CLI, which calls all four by design"
+    )
+    assert name not in bare_under_the_method_key, (
+        "the method-only key counted a bare call, which is the distinction that keeps "
+        "`daemon/runner.py`'s call to `mcp/tools.py`'s own `register` from reading as a "
+        "call to `ProjectRegistry.register`"
+    )
+
+    # Patched in this module's own globals, which is where `_called_names` looks
+    # the scanner up -- so what runs below is the shipped citation test over a
+    # doctored population, not a re-implementation of its last two clauses.
+    monkeypatch.setitem(globals(), "_scanned_modules", lambda: {"mcp/new_tool.py": synthetic})
+
+    with pytest.raises(AssertionError, match=name):
+        test_a_disposition_cites_only_things_that_exist(key)

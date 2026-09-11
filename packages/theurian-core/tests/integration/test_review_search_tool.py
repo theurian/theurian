@@ -108,6 +108,7 @@ from theurian.mcp.tools import (
     ADMISSION_WAIT_SECONDS,
     FINDINGS_CAPACITY_REFUSAL,
     MAX_CONCURRENT_SEARCHES,
+    PATH_ESCAPE_REFUSAL,
     REVIEW_SEARCH_CAPACITY_REFUSAL,
     REVIEW_SEARCH_UNAVAILABLE_REFUSAL,
     SEARCH_CAPACITY_REFUSAL,
@@ -841,6 +842,46 @@ async def test_a_review_search_for_one_project_cannot_observe_the_other(
 # -- Refusal envelopes: one constant, never an empty result --------------------
 
 
+def test_the_unservable_refusal_is_pinned_word_for_word() -> None:
+    """The words themselves, which every other assertion here reads symbolically.
+
+    Every other assertion on this refusal names the constant, so every one of
+    them would hold if it were reworded to anything at all -- including something
+    that named which arm fired, or that dropped the rebuild a caller acts on.
+    This is the one place the sentence is compared against text written down
+    independently of it, so a change to it is a decision somebody makes rather
+    than a drift nothing notices. Its ``review.findings`` twin has carried this
+    pin since PR #504; this constant had none, and was reworded at ``c7da702e``
+    with nothing to notice.
+
+    **The pin arrives after that rewording, and the wording below is the new
+    one.** The text used to enumerate two causes -- "it has not been built, or it
+    was built by a superseded schema or from a superseded evidence format" -- and
+    two arms that really fire made the enumeration false: the store-id
+    containment arm, whose store was built here by the current schema and whose
+    refusal is about the path, and the ``0o500`` state directory the tool's own
+    docstring measures. What replaces it names no cause.
+
+    What the wording carries and must not lose: the rebuild a caller can act on
+    (``theurian review build``, *in the project*), the source it rebuilds from
+    (``.theurian/review/``, which is evidence and not a re-fetch), and the
+    closing sentence saying the message is a constant -- the sentence SEC-13
+    makes load-bearing, and the one a reader checks the message against.
+    """
+    assert REVIEW_SEARCH_UNAVAILABLE_REFUSAL == (
+        "This project has no review search store that can be served from here. Run "
+        "`theurian review build` in the project to rebuild it from the evidence files "
+        "under .theurian/review/. This refusal message is a constant: it carries "
+        "nothing from your request or from any project's contents."
+    ), (
+        "the constant `review.search` uses to refuse an unservable store has been "
+        "reworded. That is a published sentence: correct this pin in the same change, "
+        "and check that the new wording still carries the local rebuild remedy, still "
+        "names no cause -- the containment and mode arms make an enumeration false -- "
+        "and still says nothing about which arm refused (SEC-13)."
+    )
+
+
 @pytest.mark.asyncio
 async def test_a_project_with_no_review_search_store_is_refused_not_answered_empty(
     project: ProjectRegistry,
@@ -908,13 +949,31 @@ async def test_a_damaged_store_is_refused_with_the_same_constant(
 async def test_a_project_path_that_stops_resolving_does_not_publish_the_operator_layout(
     served: ProjectRegistry, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The one arm the shipped composition cannot reach, driven rather than assumed.
+    """The **base** arm, driven rather than assumed, and its fold is deliberate.
 
-    ``review_search_for``'s refusal names the resolved absolute ``.theurian/state``
+    ``review_search_for``'s own store-id containment check raises a plain
+    ``ProjectError`` whose message names the resolved absolute ``.theurian/state``
     directory -- correct on a terminal, the operator's machine layout on this
-    surface (GHSA-97q9). The tool converts it to the constant, and this is what
-    drives that conversion: a guard no input reaches is a guard that survives its
-    own deletion.
+    surface (GHSA-97q9). Nothing keys a substitution on that type, so folding the
+    message into the availability constant is what keeps the layout off the wire,
+    and this drives that fold: a guard no input reaches is a guard that survives
+    its own deletion.
+
+    **A plain ``ProjectError`` is the whole subject here.** Since ``c7da702e``
+    the guard splits by type, and a ``ProjectPathEscapeError`` takes the arm
+    beside this one instead --
+    :func:`test_an_escaping_store_path_answers_the_escape_constant_and_keeps_its_cure`
+    is that arm's driver. Raising the subclass here would drive that arm and
+    assert this one's outcome, which is the shape of a test that passes while its
+    subject is deleted.
+
+    Unreachable by data for a reason of its own, not the escape arm's: the store
+    id is :data:`REVIEW_SEARCH_STORE_ID`, a constant, so no caller can choose a
+    name that escapes. A planted escaping store *leaf* does reach the same raise
+    -- ``test_contained_path_envelope.py``'s ``review_search_for`` plant is that
+    shape -- which is why the disposition recorded for this site says the raise is
+    reached and the patch stands in for the id, rather than claiming nothing
+    reaches it.
     """
     from theurian.application.project_service import ProjectError
 
@@ -931,6 +990,76 @@ async def test_a_project_path_that_stops_resolving_does_not_publish_the_operator
 
     assert REVIEW_SEARCH_UNAVAILABLE_REFUSAL in message
     assert "secret-layout" not in message
+
+
+#: The cure the escape arm below must carry through, written here rather than
+#: taken from production: a remedy read off ``exc.remedy`` at assertion time
+#: would be the same object the guard forwarded, and would match whatever the
+#: guard did with it -- including dropping it and putting it back.
+_ESCAPE_CURE: Final = "Remove the link and run `theurian init`, then retry."
+
+
+@pytest.mark.asyncio
+async def test_an_escaping_store_path_answers_the_escape_constant_and_keeps_its_cure(
+    served: ProjectRegistry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The escape arm this guard grew at ``c7da702e``, and no data can reach it.
+
+    ``review_search_for`` can raise two classes and the guard now answers them
+    differently: a plain ``ProjectError`` folds into the availability constant
+    (the test above), and a :class:`ProjectPathEscapeError` answers
+    ``PATH_ESCAPE_REFUSAL`` with ``exc.remedy`` still attached. The second arm
+    exists because the fold's cure was measured unexecutable -- ``theurian review
+    build`` resolves the store through this same helper before it reads an
+    evidence file -- so an escape must arrive carrying something a caller can act
+    on.
+
+    **Nothing shipped reaches it, and no plant can.** ``self.state`` is the only
+    escape this helper can raise, and ``_resolve`` has read through
+    ``paths.state`` twice before this line, so an escaping ``.theurian/state``
+    refuses a layer up; a planted escaping store *leaf* takes the base arm above,
+    because the containment that catches it is ``review_search_for``'s own and
+    raises the base class. What is left is a race -- ``.theurian/state`` swapped
+    for a link between those reads and this one -- which is why the class is
+    raised through the helper directly. Deleting the arm sends the escape to the
+    base one, and this is what goes RED when it does.
+
+    Four things are asserted because they fail separately: the wire text is the
+    escape constant, the constant is not the availability one the base arm folds
+    to, the cure survived the substitution, and the operator's layout did not.
+    """
+    from theurian.application.project_service import ProjectPathEscapeError
+
+    def refuse(self: ProjectPaths, store_id: str) -> Path:
+        raise ProjectPathEscapeError(
+            f"/Users/someone/secret-layout/.theurian/state/theurian-review-{store_id}.sqlite "
+            f"resolves outside the project root /Users/someone/secret-layout, so a read or "
+            f"write through it would land outside the working tree.",
+            remedy=_ESCAPE_CURE,
+        )
+
+    monkeypatch.setattr(ProjectPaths, "review_search_for", refuse)
+
+    message = await _refusal(served)
+
+    assert PATH_ESCAPE_REFUSAL in message, (
+        f"the escape arm answered with something other than the constant "
+        f"`_with_remedy` substitutes, so the cure asserted below sits beside an "
+        f"unpinned sentence: {message}"
+    )
+    assert REVIEW_SEARCH_UNAVAILABLE_REFUSAL not in message, (
+        f"the escape took the base arm's fold, which is the state this arm was added "
+        f"to end: the caller is told to run a rebuild that meets the same refusal "
+        f"first: {message}"
+    )
+    assert _ESCAPE_CURE in message, (
+        f"the refusal reached the caller without the cure computed at the raise, so an "
+        f"agent is told a path escaped and given nothing to do about it: {message}"
+    )
+    assert "secret-layout" not in message, (
+        f"the refusal published the operator's resolved filesystem layout to an MCP "
+        f"caller (GHSA-97q9): {message}"
+    )
 
 
 # -- The admission gate: the busy path (T-6, SEC-8, #26) -----------------------

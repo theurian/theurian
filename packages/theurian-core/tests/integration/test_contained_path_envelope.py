@@ -175,6 +175,7 @@ from theurian.application import project_service
 from theurian.application.project_service import (
     FINDINGS_STORE_ID,
     KNOWLEDGE_DIR_ESCAPE_REMEDY,
+    REVIEW_SEARCH_STORE_ID,
     ProjectPaths,
     derived_escape_remedy,
 )
@@ -324,10 +325,11 @@ class Plant:
     started deriving the wrong path would move the plant with it and stay green.
 
     ``refuses`` and ``directory_refuses`` are measurements, stated exactly so the
-    sweep cannot go vacuous. A plant no command reaches asserts nothing, and four
-    of the plantable artefacts are in exactly that position -- so "no swept command
-    published a traceback" is a property a sweep over unreached plants satisfies
-    perfectly.
+    sweep cannot go vacuous. A plant no command reaches asserts nothing, and
+    several of the plantable artefacts are in exactly that position --
+    :data:`REACHES_NO_SWEPT_COMMAND` names which, as a set rather than as a count
+    nobody re-measures -- so "no swept command published a traceback" is a property
+    a sweep over unreached plants satisfies perfectly.
 
     ``outside_the_class_because`` is the other way a plant can look like coverage
     and be none: ``knowledge`` makes six commands exit 4 with a clean envelope,
@@ -397,11 +399,13 @@ _EVERY_STATE_READER: Final = frozenset(
     }
 )
 
-#: Every member the key derives, each with the artefact a clone can deliver at its
-#: path and the commands that artefact is measured to reach. Seventeen are
-#: ``ProjectPaths`` helpers with a path to plant at; ``initialize_project`` is the
-#: eighteenth and has none, so it carries its measured reason and sits out the
-#: sweeps (:data:`SWEPT_PLANTS`).
+#: Every member the key derives -- plus the ones :data:`_PLANTED_OUTSIDE_THE_KEY`
+#: names -- each with the artefact a clone can deliver at its path and the commands
+#: that artefact is measured to reach. All but one are paths to plant at;
+#: ``initialize_project`` is the exception and has none, so it carries its measured
+#: reason and sits out the sweeps (:data:`SWEPT_PLANTS`). Stated as a partition
+#: rather than as two counts, which is what a pair of numbers here had already
+#: drifted from by the time a nineteenth member arrived.
 #:
 #: Every number here was measured on ``491bded6`` (macOS 26.6, CPython 3.13.3) by
 #: running the whole matrix; none was inferred from reading a call graph, which is
@@ -624,11 +628,37 @@ PLANTS: Final = (
             "carry, and writes a separate derived store. The MCP `review.findings` "
             "tool reads it too, and that read is now guarded and driven elsewhere. "
             "In `test_review_findings_tool.py`, "
-            "`test_a_store_path_that_resolves_outside_the_project_answers_the_one_constant` "
-            "plants this exact escape and pins the one constant refusal it answers "
-            "with; `test_resolved_layout_never_crosses.py` sweeps the same plant "
+            "`test_a_store_path_that_resolves_outside_the_project_answers_the_escape_constant` "
+            "plants this exact escape and pins what it answers with -- since "
+            "`c7da702e` that is `PATH_ESCAPE_REFUSAL` beside the escape cure, not the "
+            "availability constant it used to fold into; "
+            "`test_resolved_layout_never_crosses.py` sweeps the same plant "
             "across every registered tool. The CLI half stays uncovered here, "
             "recorded rather than papered over."
+        ),
+    ),
+    Plant(
+        helper="review_search_for",
+        relative=f"state/theurian-review-{REVIEW_SEARCH_STORE_ID}.sqlite",
+        is_directory=False,
+        remedy=_DERIVED_STATE,
+        outside_the_class_because=(
+            "no swept command reaches it, and its refusal is not `_contained`'s. "
+            "`review build` is its only CLI consumer and is outside this sweep for "
+            "`findings build`'s reason: it writes a separate derived store, and it "
+            "reads `.theurian/review/`, which this corpus has no reason to carry. The "
+            "refusal itself belongs to `review_search_for`'s own state-scoped check -- "
+            "a plain `ProjectError` naming the resolved `.theurian/state`, not the "
+            "`ProjectPathEscapeError` `_contained` raises -- which is why this helper "
+            "is not in the key `contained_derived_helpers` derives (it reaches the "
+            "chokepoint only through `self.state`, exactly as `index_for` does) and is "
+            "planted here anyway, as the fourth `.theurian/state/` artifact family. "
+            "The MCP `review.search` consumer is driven elsewhere: "
+            "`test_resolved_layout_never_crosses.py`'s `escaping-review-search-leaf` "
+            "plant lands this exact escape across every registered tool, and "
+            "`test_an_escaping_review_search_leaf_is_refused_by_the_arm_that_folds_it` "
+            "pins which arm answers it. The CLI half stays uncovered here, recorded "
+            "rather than papered over."
         ),
     ),
     Plant(
@@ -687,6 +717,7 @@ REACHES_NO_SWEPT_COMMAND: Final = frozenset(
         "proposals",
         "proposals_local",
         "findings_for",
+        "review_search_for",
         "ingestion_manifest",
         "review",
     }
@@ -705,6 +736,22 @@ CONTAINMENT_PLANTS: Final = tuple(plant for plant in PLANTS if plant.in_the_cont
 #: exact -- a new one has to be classified rather than absorbed into whichever
 #: half the assertion happens to read first.
 _OUTSIDE_FOR_THEIR_OWN_REASON: Final = frozenset({"knowledge", "initialize_project"})
+
+#: Plants whose helper the key above does **not** derive, named here so the
+#: partition stays exact in both directions.
+#:
+#: ``review_search_for`` reaches the chokepoint only through ``self.state`` and
+#: makes its own state-scoped check afterwards, exactly as ``index_for`` does, so
+#: a key reading ``self._contained(...)`` call sites cannot see it. It is planted
+#: anyway because the artefact is real -- the fourth ``.theurian/state/`` family,
+#: and a path a clone can deliver as a link out of the tree like any other -- and
+#: an inventory of that directory that skipped it would be an inventory nobody
+#: could use to argue closure.
+#:
+#: Naming them is what keeps this from weakening the guard: a helper listed here
+#: that *starts* routing through ``_contained`` reddens, because the carve-out
+#: would then be describing a world that no longer holds.
+_PLANTED_OUTSIDE_THE_KEY: Final = frozenset({"review_search_for"})
 
 
 # -- The corpus and the sweep -----------------------------------------------
@@ -951,17 +998,33 @@ def test_every_contained_derived_helper_is_planted_or_excluded_with_a_reason() -
 
     Every plant kept out of the class carries the measured reason it is out, so an
     exclusion is a recorded coverage gap rather than a silent one -- and the two
-    kinds of exclusion are told apart, because they fail differently. Five helpers
-    no swept command reaches (a gap in this sweep's reach); ``knowledge`` is
-    reached and refused by a different guard (a gap in attribution, which an exit
-    code alone reads as coverage).
+    kinds of exclusion are told apart, because they fail differently. The helpers
+    no swept command reaches are :data:`REACHES_NO_SWEPT_COMMAND` (a gap in this
+    sweep's reach); ``knowledge`` is reached and refused by a different guard (a
+    gap in attribution, which an exit code alone reads as coverage).
     """
     planted = frozenset(PLANT_BY_HELPER)
+    derived = contained_derived_helpers()
 
-    assert planted == contained_derived_helpers(), (
+    # The carve-out is checked before the set equality it modifies. Asserted the
+    # other way round, a helper that *started* routing through `_contained` fails
+    # on "the planted set and the call sites have moved apart" with both of that
+    # message's differences empty -- measured by perturbation, and it says nothing
+    # about what actually happened.
+    assert not (_PLANTED_OUTSIDE_THE_KEY & derived), (
+        "a helper carved out of the key now routes through `_contained` after all, so "
+        "the carve-out describes a world that no longer holds -- delete the entry and "
+        f"let the key derive it: {sorted(_PLANTED_OUTSIDE_THE_KEY & derived)}"
+    )
+    assert planted >= _PLANTED_OUTSIDE_THE_KEY, (
+        "a helper named as planted-beyond-the-key has no plant, so the carve-out is "
+        f"excusing an absence: {sorted(_PLANTED_OUTSIDE_THE_KEY - planted)}"
+    )
+    assert planted - _PLANTED_OUTSIDE_THE_KEY == derived, (
         "the planted set and the `_contained` call sites in ProjectPaths have "
-        f"moved apart; unplanted helpers: {sorted(contained_derived_helpers() - planted)}, "
-        f"planted but no longer derived: {sorted(planted - contained_derived_helpers())}"
+        f"moved apart; unplanted helpers: {sorted(derived - planted)}, "
+        f"planted but no longer derived: "
+        f"{sorted(planted - _PLANTED_OUTSIDE_THE_KEY - derived)}"
     )
     assert planted >= REACHES_NO_SWEPT_COMMAND
     outside = {plant.helper for plant in PLANTS if not plant.in_the_containment_class}
@@ -1023,6 +1086,8 @@ def test_each_plant_sits_at_the_path_its_helper_derives(corpus: Path) -> None:
             return paths.database_for(state_hash)
         if plant.helper == "findings_for":
             return paths.findings_for(FINDINGS_STORE_ID)
+        if plant.helper == "review_search_for":
+            return paths.review_search_for(REVIEW_SEARCH_STORE_ID)
         found = getattr(paths, plant.helper)
         assert isinstance(found, Path)
         return found

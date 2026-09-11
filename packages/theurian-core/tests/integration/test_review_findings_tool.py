@@ -1629,23 +1629,46 @@ async def test_the_truncation_signal_is_computed_over_servable_rows_alone(
 def test_the_unservable_refusal_is_pinned_word_for_word() -> None:
     """The words themselves, which every other assertion here reads symbolically.
 
-    Every other assertion on this refusal reads the constant symbolically --
-    ``git grep -c 'assert FINDINGS_UNAVAILABLE_REFUSAL in ' -- <this file>``
-    answers 8 and the ``not in`` key answers 1, run 2026-09-11 -- and every one
-    of them would hold if the constant were reworded to anything at all,
-    including something that named which arm fired or that dropped the remedy
-    (PR #504 round 1, LOW). This is the one place the sentence is compared
-    against text written down independently of it, so changing it is a decision
-    somebody makes rather than a drift nothing notices.
+    Every other assertion on this refusal reads the constant symbolically, and
+    every one of them would hold if it were reworded to anything at all --
+    including something that named which arm fired, or that dropped the remedy
+    (PR #504 round 1, LOW). This is the one place the sentence is compared against
+    text written down independently of it, so changing it is a decision somebody
+    makes rather than a drift nothing notices.
+
+    **The population is the assertion lines in this file, and the key is anchored
+    so it cannot count this sentence** (verdict pass, adversarial LOW). The key
+    used to be quoted unanchored -- ``git grep -c 'assert
+    FINDINGS_UNAVAILABLE_REFUSAL in '`` -- which matches its own appearance in
+    this docstring, so the number it answered was one larger than the population
+    it described and nothing said which. The claimant reading itself is the trap
+    ``test_connection_claims.py::test_the_only_test_that_constructs_the_write_lock_runs_in_one_process``
+    records for its own key. Anchored at the start of a line past its indentation
+    it reads assertions only::
+
+        git grep -cE '^ +assert FINDINGS_UNAVAILABLE_REFUSAL in ' -- <this file>
+
+    which answered 7 on 2026-09-12, beside 1 for the ``not in`` spelling. The
+    count is a dated measurement of that population and not a thing this file
+    enforces: what matters is that every one of those lines is symbolic, which is
+    why this one is not.
 
     **The pin has fired once, and the wording below is the corrected one.** The
     text used to enumerate causes -- "it has not been built, or it was built by
-    a superseded schema or trailer grammar" -- and the containment arm made that
-    enumeration false: the store whose leaf escapes was built by this
-    installation and is recorded as built, which
-    ``test_a_store_path_that_resolves_outside_the_project_answers_the_one_constant``
-    asserts as a premise (``has_findings``) on the way to driving this refusal.
-    What replaces it names no cause.
+    a superseded schema or trailer grammar" -- and the containment arm, which
+    answered this constant at the time, made that enumeration false: the store
+    whose leaf escapes was built by this installation and is recorded as built,
+    which
+    ``test_a_store_path_that_resolves_outside_the_project_answers_the_escape_constant``
+    still asserts as its premise (``has_findings``). What replaced the
+    enumeration names no cause.
+
+    That arm has since left this constant altogether (``c7da702e``): an escaping
+    leaf answers ``PATH_ESCAPE_REFUSAL`` and the escape cure, because the rebuild
+    this text names meets the same refusal first. What is left is the set the
+    enumeration was ever true of -- the constant's own docstring names them -- and
+    the wording stays cause-free anyway, which is what kept it honest through the
+    arm's arrival and its departure alike.
 
     What the wording carries and must not lose: the remedy a caller can act on
     (``theurian findings build``, and *in the project*, since the cure is local
@@ -1920,40 +1943,50 @@ async def test_the_unservable_refusal_does_not_vary_with_what_the_store_holds(
 
 
 @pytest.mark.asyncio
-async def test_a_store_path_that_resolves_outside_the_project_answers_the_one_constant(
+async def test_a_store_path_that_resolves_outside_the_project_answers_the_escape_constant(
     project: ProjectRegistry, tmp_path: Path
 ) -> None:
-    """The availability envelope covers the escaping-leaf arm too (GHSA-97q9).
-
-    **The arm answers ``PATH_ESCAPE_REFUSAL`` and the escape cure as of this
-    commit, not ``FINDINGS_UNAVAILABLE_REFUSAL``**: the availability constant
-    published "run `theurian findings build`" for a fault that command meets
-    first, so the fold was overturned and ``_with_remedy``'s substitution took
-    its place. The assertions below are the ones that pin it; the paragraphs
-    after this one still narrate the fold, and re-tensing them belongs to the
-    round that owns this file's prose.
+    """The escaping-leaf arm answers the escape constant and keeps its cure (GHSA-97q9).
 
     ``findings_for`` routes through ``ProjectPaths._contained``, whose refusal
     names the absolute path it was asked for *and* the resolved project root --
     correct on a terminal, the operator's machine layout on this surface. Left to
     travel, that message reaches an MCP caller verbatim: ``ProjectPathEscapeError``
     is a ``TheurianError``, and the ``_forwarding`` seam republishes ``str(exc)``
-    by design. The tool answers the one constant instead, and this is what drives
-    that conversion -- a guard no data reaches is a guard that survives its own
+    by design. So the tool answers a constant instead, and this is what drives
+    that substitution -- a guard no data reaches is a guard that survives its own
     deletion. A message of its own would be a second input to the error channel
     SEC-13 keeps at one message, and a message carrying a path would be the layout
     itself.
+
+    **Which constant changed at ``c7da702e``, and the name of this test changed
+    with it.** The arm used to fold into ``FINDINGS_UNAVAILABLE_REFUSAL`` -- "the
+    one constant" the old name meant -- and that constant tells the caller to run
+    ``theurian findings build``, which resolves this same leaf through this same
+    helper ahead of any git read and exits 4 on it. The cure was a closed loop, so
+    the fold was overturned: ``_with_remedy`` substitutes
+    :data:`PATH_ESCAPE_REFUSAL` for the message and lets ``exc.remedy`` travel,
+    and what this test pins is that pair. The layout assertions below did not
+    move, because neither constant carries one.
 
     Reached through the shipped composition rather than a patch. The provenance
     gate above this line reads the installation's own build record, keyed on
     ``(root, store id)``, so it passes over a store this installation really
     built; what escapes is the **leaf**, a link force-added past ADR-0004's
     ignore -- the same ``git add -f`` reach :func:`_plant` models, here aimed at
-    where the file is rather than at what it holds. Its twin drives the identical
-    conversion for ``review.search`` with a patched ``review_search_for``
-    (``test_review_search_tool.py::test_a_project_path_that_stops_resolving_does_not_publish_the_operator_layout``);
-    this one plants the link, so the guard is driven by data rather than stood in
-    for.
+    where the file is rather than at what it holds.
+
+    **Its ``review.search`` twin is not the same arm, and that is measured rather
+    than assumed.** ``review_search_for`` makes its own state-scoped check and
+    raises the plain ``ProjectError`` beneath ``ProjectPathEscapeError``, so a
+    planted escaping leaf there takes that guard's *base* arm and still folds into
+    the availability constant
+    (``test_review_search_tool.py::test_a_project_path_that_stops_resolving_does_not_publish_the_operator_layout``
+    drives it with a patched helper, and
+    ``test_resolved_layout_never_crosses.py``'s ``escaping-review-search-leaf``
+    plant reaches it with data). The escape arm this test's tool grew has a twin
+    there, driven by a patched helper because no plant can reach it
+    (``::test_an_escaping_store_path_answers_the_escape_constant_and_keeps_its_cure``).
 
     ``test_contained_path_envelope.py`` records this consumer as outside its own
     sweep -- an MCP transport error is a different envelope contract from a

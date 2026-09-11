@@ -2421,7 +2421,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             # never reaches this line, while `provenance.has_findings` reads this
             # installation's out-of-tree build record keyed on `(root, store id)` rather
             # than the file. The plant is
-            # `test_a_store_path_that_resolves_outside_the_project_answers_the_one_constant`.
+            # `test_a_store_path_that_resolves_outside_the_project_answers_the_escape_constant`.
             raise _with_remedy(exc) from exc
         except ProjectError as exc:
             # The fail-closed base, unchanged and deliberately still here.
