@@ -70,16 +70,25 @@ from theurian.domain.review_search import (
 #: package that owns the files, and the composition root is where the two meet.
 ReadEvidence = Callable[[], tuple["EvidenceEntry", ...]]
 
-#: What a listing says about one evidence file: ``(mtime_ns, size, whether it is
-#: a regular file)``. Compared for equality and never interpreted here, so this
-#: layer names no filesystem concept beyond "the same file, unchanged".
+#: What a listing says about one evidence file: ``(mtime_ns, size, st_ino,
+#: whether it is a regular file)``. Compared for equality and never interpreted
+#: here, so this layer names no filesystem concept beyond "the same file,
+#: unchanged".
 #:
-#: **Three slots and not one**, because the transition each closes is a different
-#: one: ``mtime_ns`` and ``size`` say the bytes were rewritten, and the flag says
-#: the leaf stopped being a file at all -- a directory put in its place. The flag
-#: is what makes that last transition a fingerprint change *by construction*
-#: rather than one that depends on a timestamp having moved as well.
-EvidenceFingerprint = tuple[int, int, bool]
+#: **Four slots and not one**, because what each witnesses is different:
+#: ``mtime_ns`` and ``size`` say the bytes were rewritten, ``st_ino`` says the
+#: name resolves to a different file whatever its timestamp was restored to, and
+#: the flag says the leaf stopped being a file at all -- a directory put in its
+#: place. The flag is what makes that last transition a fingerprint change *by
+#: construction* rather than one resting on a number the filesystem is free to
+#: reallocate.
+#:
+#: ``st_ino`` is the fourth, and it was once judged redundant. The measurement
+#: that overturned that, the residual it does not close and the T-24 grading of
+#: that residual are recorded where the values are produced --
+#: :meth:`~theurian.infrastructure.review_evidence.reader.EvidenceReader
+#: .fingerprints`.
+EvidenceFingerprint = tuple[int, int, int, bool]
 
 #: What is on disk *right now*, keyed by the same relative paths
 #: :attr:`EvidenceEntry.relative_path` carries. A listing and never a read: it is
@@ -345,10 +354,16 @@ class ReviewSearchBuilder:
         whichever side of the read the first capture sits on.
 
         **Every transition a file can make across one build, and what each one
-        gets. The enumeration is the closure** -- it is over the *states* a path
-        can be in at the two captures, so it has no residue by construction, and
+        gets.** The enumeration is over the *states* a path can be in at the two
+        captures, which is what makes it exhaustive as a list of transitions, and
         it replaces a two-direction sentence that named deletion and addition and
-        silently left the middle three out:
+        silently left the middle three out. **What it is not is a closure over
+        what the build can *see*:** each transition below is detected through a
+        fingerprint, a fingerprint is a witness of state rather than the state,
+        and the one transition a ``stat`` cannot witness is recorded at
+        :meth:`~theurian.infrastructure.review_evidence.reader.EvidenceReader
+        .fingerprints` with its measurement and its threat-model grading. Read
+        this list as "what each transition gets, where the listing can tell":
 
         * **present -> absent.** Revalidated: the record is dropped. Deleting a
           file is the retention remedy ADR-0030 decision 3 leaves an operator,
@@ -363,10 +378,13 @@ class ReviewSearchBuilder:
           record is dropped rather than published with the body the read took. A
           store one rebuild behind costs a rebuild; a store serving the
           pre-update body of a record somebody has already corrected upstream
-          costs the correction.
+          costs the correction. Two of the four slots answer this one -- the size
+          and, for a same-length rewrite whose timestamp was restored, the inode
+          -- and the rewrite shape neither answers is the recorded residual.
         * **present -> not a regular file.** Revalidated by the fingerprint's
-          third slot, which is why that slot is in it: a leaf replaced by a
-          directory is a changed fingerprint whatever its timestamp says.
+          regular-file flag, which is why that slot is in it: a leaf replaced by a
+          directory is a changed fingerprint whatever its timestamp says and
+          whatever number the filesystem gave the new inode.
         * **present -> same content.** No-op: the fingerprints are equal and the
           record is published, which is every ordinary build.
 
@@ -407,7 +425,7 @@ class ReviewSearchBuilder:
         and an equality test over records already projected in memory. Re-reading
         here would put the parse per file back under the lock, which is the thing
         the split exists to avoid -- and hashing the content, which is what would
-        close the mtime-granularity residual
+        close the inode-preserving-rewrite residual
         :meth:`~theurian.infrastructure.review_evidence.reader.EvidenceReader.fingerprints`
         records, is a read of every file by another name.
 

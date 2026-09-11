@@ -245,10 +245,11 @@ def evidence_fingerprints(review_root: Path) -> ListEvidenceFingerprints:
     record or drop a live one.
 
     **This return annotation is what keeps the two spellings of a fingerprint from
-    drifting.** The reader names ``(mtime_ns, size, is a regular file)`` in its own
-    module and this layer names it in the application's, and neither imports the
-    other because a port and its adapter meet at a composition root (ADR-0003). A
-    slot that changed type or arity on one side is a type error on this line.
+    drifting.** The reader names ``(mtime_ns, size, st_ino, is a regular file)`` in
+    its own module and this layer names it in the application's, and neither
+    imports the other because a port and its adapter meet at a composition root
+    (ADR-0003). A slot that changed type or arity on one side is a type error on
+    this line -- which is how the inode slot was added to both at once.
 
     ``review_root`` is the same ``ProjectPaths.review`` the store is built on,
     already proved contained inside the project -- the precondition

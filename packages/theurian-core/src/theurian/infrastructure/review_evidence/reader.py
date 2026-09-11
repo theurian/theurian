@@ -58,10 +58,10 @@ from theurian.security.paths import read_source_file
 #: adds it.
 _KIND_DIRECTORIES: Final = frozenset(kind.value for kind in EvidenceKind)
 
-#: What a listing records about one evidence file: ``(mtime_ns, size, whether it
-#: is a regular file)``. Three values a ``stat`` answers, and nothing a parse
-#: would -- see :meth:`EvidenceReader.fingerprints` for what it is compared for
-#: and what it deliberately cannot tell apart.
+#: What a listing records about one evidence file: ``(mtime_ns, size, st_ino,
+#: whether it is a regular file)``. Four values a ``stat`` answers, and nothing a
+#: parse would -- see :meth:`EvidenceReader.fingerprints` for what it is compared
+#: for and what it deliberately cannot tell apart.
 #:
 #: The application layer names this shape too
 #: (``review_search_builder.EvidenceFingerprint``) and neither module imports the
@@ -71,16 +71,24 @@ _KIND_DIRECTORIES: Final = frozenset(kind.value for kind in EvidenceKind)
 #: evidence_fingerprints`` is annotated with the application's alias and returns
 #: this method, so a slot that changed type or arity on one side is a mypy error
 #: at that line.
-EvidenceFingerprint = tuple[int, int, bool]
+EvidenceFingerprint = tuple[int, int, int, bool]
 
 #: The fingerprint of a leaf whose ``stat`` was refused: no ``mtime_ns``, no
-#: size, and not a regular file.
+#: size, no inode number, and not a regular file.
 #:
 #: **Distinct from every fingerprint a real file can carry**, which is what makes
-#: it safe to compare rather than special-case: ``st_mtime_ns`` and ``st_size``
-#: are non-negative for anything that exists, so a leaf answering this at one
-#: capture and a real triple at another is a *change* by the same equality test
-#: every other transition goes through.
+#: it safe to compare rather than special-case: ``st_size`` and ``st_ino`` are
+#: non-negative for anything that exists, so a leaf answering this at one capture
+#: and a real tuple at another is a *change* by the same equality test every other
+#: transition goes through.
+#:
+#: **What carries that distinctness is the size and the inode, not the
+#: timestamp**, and the difference is measurable rather than pedantic: a real
+#: leaf *can* answer ``st_mtime_ns == -1``. Measured 2026-09-11 on APFS,
+#: ``os.utime(leaf, ns=(-1, -1))`` on an empty regular file answered
+#: ``(-1, 0, 857255493, True)``. ``test_review_evidence_store.py``'s
+#: ``test_an_unstattable_leaf_answers_a_fingerprint_no_real_leaf_can`` holds the
+#: distinctness against exactly that file.
 #:
 #: Answered rather than raised because a dangling symbolic link under the review
 #: directory would otherwise turn a whole listing into a refusal -- and that
@@ -88,7 +96,7 @@ EvidenceFingerprint = tuple[int, int, bool]
 #: leaf is not something to publish from" rather than "the corpus cannot be
 #: read". :meth:`_read_one` is what refuses such a file, by name, on the read
 #: side.
-_UNSTATTABLE: Final[EvidenceFingerprint] = (-1, -1, False)
+_UNSTATTABLE: Final[EvidenceFingerprint] = (-1, -1, -1, False)
 
 
 class _FoldedPathError(ValueError):
@@ -264,18 +272,66 @@ class EvidenceReader:
         per evidence file against the parse per file :meth:`read_all` does.
 
         **What a fingerprint can and cannot tell apart.** ``(mtime_ns, size,
-        is a regular file)`` distinguishes a file from anything that replaced it
-        at the same path in every case this build's own writer can produce:
+        st_ino, is a regular file)`` distinguishes a file from anything that
+        replaced it at the same path in every case this build's own writer can
+        produce, and a fingerprint is a **witness of state, never the state**: the
+        enumeration :meth:`~theurian.application.review_search_builder
+        .ReviewSearchBuilder.build` makes is over the states a path can be in, and
+        what is enumerated *here* is what a ``stat`` can witness about them. The
+        residual below is the gap between the two, and it is stated rather than
+        argued away.
+
         ``ReviewEvidenceStore`` publishes by ``os.replace`` from a sibling
         temporary, so a refetch moves ``mtime_ns`` whatever it does to the bytes.
         Measured 2026-09-11 on APFS: five back-to-back rewrites of one path with
         *identical* bytes answered five distinct ``st_mtime_ns`` values
         (``…813929295``, ``…813994210``, ``…814066292``, ``…814131540``,
-        ``…814195539``). What it cannot see is a same-size rewrite that lands
-        inside one tick of a filesystem whose timestamps are coarser than the
-        interval -- a one-second-resolution filesystem is where that is
-        reachable -- and no content hash is taken here because hashing every
-        landed file is a read, which is the thing this method exists not to do.
+        ``…814195539``).
+
+        **``st_ino`` is a fourth slot, and adding it overturns a recorded
+        decision.** What stood here was that three slots are a closure over the
+        transitions -- "``mtime_ns`` and ``size`` say the bytes were rewritten,
+        and the flag says the leaf stopped being a file at all" -- so a fourth
+        witnessed nothing new; the only residual recorded was "a same-size rewrite
+        that lands inside one tick of a filesystem whose timestamps are coarser
+        than the interval". That reasoning treated the timestamp as a value only
+        the *clock* sets. It is not: ``os.utime`` sets it to anything, to the
+        nanosecond, and a rewrite that restores it is a rewrite three slots call
+        unchanged on a filesystem with the finest timestamps there are. Measured
+        2026-09-11 on APFS, same-length bytes written through a sibling temporary
+        and ``os.replace``, then ``os.utime`` restoring the captured times:
+
+            before = (1789098900995949116, 35, 857255478, True)
+            after  = (1789098900995949116, 35, 857255479, True)
+
+        -- identical in ``(mtime_ns, size, is a regular file)``, different bytes
+        on disk, and the inode moved. The measurement outweighs the recorded
+        ground because the ground was about what *witnesses* a transition and the
+        attack is a transition none of the three witnessed: every rename-based
+        write allocates a new inode, which is what makes the fourth slot catch the
+        whole shape rather than one instance of it. This product's own writer is
+        rename-based, so a landed record rewritten by ``review ingest`` moves the
+        inode even where somebody restores its timestamp afterwards.
+
+        **The residual, measured on the same day and named rather than implied.**
+        A rewrite that keeps the inode -- ``open("r+b")`` in place, or ``cp -p``
+        over an existing destination, both measured answering an identical
+        four-slot fingerprint after the same ``os.utime`` restoration -- is
+        witnessed by nothing a ``stat`` answers, and no content hash is taken here
+        because hashing every landed file is a read, which is the thing this
+        method exists not to do. Two tool measurements are recorded beside them so
+        the class is not read wider than it was measured: ``rsync -a`` kept the
+        inode but truncated ``mtime_ns`` to the second, and ``tar -x`` moved the
+        inode and truncated the timestamp -- both are caught, for different
+        reasons. The coarse-filesystem case the old note recorded is unchanged and
+        is a member of this same residual.
+
+        Reaching that residual needs write access to ``.theurian/review/``, and an
+        actor with it can author an evidence record outright -- threat-model
+        **T-24**, whose whole entry is that this directory is source, is not
+        git-ignored, and may arrive with a clone. So the residual is inside an
+        accepted, recorded residual rather than beside it, and closing it would be
+        closing T-24 rather than this listing.
 
         **Finding folds; accepting does not** (round two, R2-C). Both selections
         here used to be byte comparisons against a filesystem that folds case, so
@@ -493,12 +549,23 @@ class EvidenceReader:
 
 
 def _fingerprint(leaf: Path) -> EvidenceFingerprint:
-    """One leaf's ``(mtime_ns, size, is a regular file)``, or :data:`_UNSTATTABLE`.
+    """One leaf's ``(mtime_ns, size, st_ino, is a regular file)``, or :data:`_UNSTATTABLE`.
 
     ``Path.stat`` follows symbolic links, matching ``read_source_file``'s own
-    ``stat``: what the third slot answers is therefore what the reader would
+    ``stat``: what the last two slots answer is therefore what the reader would
     *find* at that path, not what the directory entry is. A link to a regular
-    file fingerprints as a regular file because that is what a read of it gets.
+    file fingerprints as that file's inode and as a regular file, because that is
+    what a read of it gets.
+
+    **The regular-file flag is kept beside ``st_ino`` rather than folded into
+    it**, and the reason is what the two can each be said to hold. An inode
+    *number* is the filesystem's to reallocate once the name is gone -- nothing
+    promises a directory created where a file was gets a fresh one -- so with the
+    flag removed, ``present -> not a regular file`` would be a fingerprint change
+    by the allocator's choice rather than by construction. The flag is also the
+    slot the drop story names in words (``build``'s enumeration, and
+    ``test_review_evidence_store.py``'s producer-side pin), and the mode bits
+    reach this tuple nowhere else.
 
     The ``OSError`` arm is what keeps a dangling link from turning the whole
     listing into a refusal -- see :data:`_UNSTATTABLE`. It is deliberately the
@@ -509,7 +576,7 @@ def _fingerprint(leaf: Path) -> EvidenceFingerprint:
         status = leaf.stat()
     except OSError:
         return _UNSTATTABLE
-    return (status.st_mtime_ns, status.st_size, stat.S_ISREG(status.st_mode))
+    return (status.st_mtime_ns, status.st_size, status.st_ino, stat.S_ISREG(status.st_mode))
 
 
 def _payload_from_json(kind: EvidenceKind, value: object, where: str) -> EvidencePayload:

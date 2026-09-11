@@ -30,6 +30,7 @@ repository's own ``.theurian/``.
 from __future__ import annotations
 
 import json
+import os
 import string
 import sys
 from dataclasses import replace
@@ -349,8 +350,9 @@ def test_a_fingerprint_says_when_a_leaf_stopped_being_a_regular_file(tmp_path: P
     be named ``42.json`` as easily as a file may -- so the fingerprint carries
     whether the leaf is a regular file, and this is what holds that it is
     computed rather than constant. A builder-level case cannot: a directory put
-    where a file was carries its own ``mtime_ns`` and its own size, so the record
-    is dropped whether the slot is honest or hardcoded ``True``.
+    where a file was carries its own ``mtime_ns``, its own size and its own inode
+    number, so the record is dropped whether the slot is honest or hardcoded
+    ``True``.
 
     Both directions, so a producer that answered ``False`` for everything would
     fail here too.
@@ -361,15 +363,112 @@ def test_a_fingerprint_says_when_a_leaf_stopped_being_a_regular_file(tmp_path: P
     (path,) = reader.fingerprints()
     leaf = _review_root(tmp_path) / path
 
-    assert reader.fingerprints()[path][2] is True, "a landed record is not a regular file"
+    assert reader.fingerprints()[path][3] is True, "a landed record is not a regular file"
 
     leaf.unlink()
     leaf.mkdir()
 
-    assert reader.fingerprints()[path][2] is False, (
+    assert reader.fingerprints()[path][3] is False, (
         "a directory standing where a record was still reads as a regular file, so the "
         "slot is not asked of the filesystem"
     )
+
+
+def test_a_fingerprint_moves_when_a_record_is_rewritten_with_its_timestamp_restored(
+    tmp_path: Path,
+) -> None:
+    """RED means a restored timestamp hides a rewrite, which is what the inode slot is for.
+
+    The producer's half of the fourth slot. ``mtime_ns`` and ``size`` witness a
+    rewrite only while nobody puts the timestamp back, and ``os.utime`` puts it
+    back to the nanosecond -- so a same-length rewrite followed by a restoration
+    is a changed file those two call unchanged, on a filesystem with the finest
+    timestamps there are.
+
+    The write shape is the one this store itself uses: a sibling temporary and a
+    rename, which resolves the name to a new inode. The premise is measured rather
+    than argued -- the first two slots really do come back identical here, so a
+    listing without the inode really would publish this file as unchanged.
+    """
+    store = _store(tmp_path)
+    store.write([_event(number=42)], run=RUN_ONE)
+    reader = EvidenceReader(_review_root(tmp_path))
+    (path,) = reader.fingerprints()
+    leaf = _review_root(tmp_path) / path
+    before_stat = leaf.stat()
+    before = reader.fingerprints()[path]
+
+    original = leaf.read_bytes()
+    edited = original.replace(b"Bound the retry budget", b"Overwritten upstream!!")
+    assert edited != original and len(edited) == before_stat.st_size, (
+        "the plant has to change the bytes and keep the length, or the size slot answers "
+        "and this case measures nothing about the inode"
+    )
+    sibling = leaf.with_name(leaf.name + ".hostile")
+    sibling.write_bytes(edited)
+    sibling.replace(leaf)
+    os.utime(leaf, ns=(before_stat.st_atime_ns, before_stat.st_mtime_ns))
+
+    after = reader.fingerprints()[path]
+    assert after[:2] == before[:2], (
+        "the premise: this platform did not restore the timestamp exactly, so the case is "
+        "not measuring the attack it names"
+    )
+    assert after != before, (
+        "a rewritten record carries the fingerprint it had before, so a rebuild would "
+        "publish the body its read took as unchanged"
+    )
+
+
+@_NEEDS_SYMLINKS
+def test_an_unstattable_leaf_answers_a_fingerprint_no_real_leaf_can(tmp_path: Path) -> None:
+    """RED means a leaf whose ``stat`` was refused can read as an unchanged file.
+
+    ``_fingerprint`` answers a sentinel rather than raising, because a dangling
+    symbolic link under the review directory must not turn a whole listing into a
+    refusal -- that listing runs under the project's write lock. What makes
+    answering safe is that the sentinel is a value **no real leaf can carry**: a
+    record that is a file at one capture and unstattable at the other is then
+    dropped by the same equality every other transition goes through, with no arm
+    of its own.
+
+    The control is the extreme a real leaf can actually reach rather than a
+    comfortable one. ``os.utime(ns=(-1, -1))`` gives a real regular file
+    ``st_mtime_ns == -1``, which is the sentinel's own first slot -- so the
+    distinctness rests on the two a real leaf cannot make negative, ``st_size``
+    and ``st_ino``, and it is those that are asserted. A sentinel edited to values
+    a ``stat`` could answer reddens here.
+    """
+    store = _store(tmp_path)
+    store.write([_event(number=42)], run=RUN_ONE)
+    root = _review_root(tmp_path)
+    reader = EvidenceReader(root)
+    (record_path,) = reader.fingerprints()
+    kind_directory = (root / record_path).parent
+    prefix = record_path.rsplit("/", 1)[0]
+
+    before_the_epoch = kind_directory / "43.json"
+    before_the_epoch.write_bytes(b"")
+    os.utime(before_the_epoch, ns=(-1, -1))
+    (kind_directory / "44.json").symlink_to(root / "nothing-is-here.json")
+
+    fingerprints = reader.fingerprints()
+    extreme = fingerprints[f"{prefix}/43.json"]
+    refused = fingerprints[f"{prefix}/44.json"]
+
+    assert extreme[0] == -1, (
+        "the premise: a real leaf can answer the sentinel's first slot, which is why the "
+        "distinctness may not rest on the timestamp"
+    )
+    assert refused != extreme and refused != fingerprints[record_path], (
+        "the refused leaf's fingerprint equals one a real leaf carries, so a file that "
+        "became unstattable between the two captures would be published as unchanged"
+    )
+    for slot, name in ((1, "st_size"), (2, "st_ino")):
+        assert refused[slot] < 0, f"the sentinel's {name} slot is a value a `stat` can answer"
+        for key, real in fingerprints.items():
+            if key != f"{prefix}/44.json":
+                assert real[slot] >= 0, f"a real leaf answered a negative {name}"
 
 
 def test_read_all_answers_in_one_order_whatever_order_the_records_arrived(

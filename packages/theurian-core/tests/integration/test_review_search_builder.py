@@ -26,8 +26,13 @@ Five claims, and each fails on its own:
   was *rewritten* in that window out of the store with the body the read took.
   Every transition a path can make across one build has a case in this section:
   present to absent, absent to present, present to different content, present to
-  a directory, and present to the same content -- the last two of those being
-  the closure the enumeration is, not a sample of it.
+  a directory, and present to the same content. The transitions are enumerated
+  over *states*; what a build detects them **through** is a fingerprint, which is
+  a witness of state and not the state -- so the one rewrite shape a ``stat``
+  cannot witness has a case of its own here too, asserting the behaviour the
+  reader records as a residual rather than wishing it away. And a build that can
+  keep none of what it read refuses instead of publishing an empty store, which
+  is that section's whole-corpus end.
 * **A rebuild reproduces.** Delete the store, run the builder again over the same
   files, and it comes back equal -- ADR-0030's owed test 4, whose write-and-read
   half slice 2 already held and which needed a store to delete.
@@ -42,6 +47,7 @@ repository's own ``.theurian/``.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 from collections.abc import Callable, Iterator
@@ -559,26 +565,28 @@ def test_the_fingerprint_slot_that_says_regular_file_decides_on_its_own() -> Non
     """RED means the case above rests on a timestamp having moved as well.
 
     The integration case cannot hold this: a directory put where a file was
-    carries its own ``mtime_ns`` and its own size, so the record is dropped
-    whether or not the third slot exists. What makes ``present -> not a regular
-    file`` a revalidated transition **by construction** rather than by accident of
-    two other values is that the flag is part of the fingerprint, and the only way
-    to demonstrate that is to hold the other two still.
+    carries its own ``mtime_ns``, its own size and its own inode number, so the
+    record is dropped whether or not the flag exists. What makes ``present -> not
+    a regular file`` a revalidated transition **by construction** rather than by
+    accident of three other values is that the flag is part of the fingerprint,
+    and the only way to demonstrate that is to hold the other three still -- the
+    inode included, because an inode number is the filesystem's to reallocate once
+    a name is unlinked and nothing promises the directory gets a fresh one.
 
     ``_unchanged`` is reached by name deliberately: it is the predicate the
     publish applies, so a fix that moved the check back out of it would redden
     here rather than leaving this passing over a helper nothing calls.
     """
     path = "sha256-abc/pull-request/42.json"
-    a_file = {path: (1_700_000_000_000_000_000, 512, True)}
-    not_a_file = {path: (1_700_000_000_000_000_000, 512, False)}
+    a_file = {path: (1_700_000_000_000_000_000, 512, 4_242, True)}
+    not_a_file = {path: (1_700_000_000_000_000_000, 512, 4_242, False)}
 
     assert _unchanged(path, a_file, a_file), (
         "an unchanged fingerprint is not publishable, so the predicate drops every record"
     )
     assert not _unchanged(path, a_file, not_a_file), (
-        "the same mtime and the same size at a path that stopped being a regular file "
-        "read as unchanged, so the third slot decides nothing"
+        "the same mtime, size and inode at a path that stopped being a regular file "
+        "read as unchanged, so the regular-file slot decides nothing"
     )
     assert not _unchanged(path, a_file, {}), "a vanished path read as unchanged"
     assert not _unchanged(path, {}, a_file), (
@@ -636,6 +644,153 @@ def test_a_refetch_that_rewrites_identical_bytes_is_dropped_and_returns_next_bui
         "the over-drop is permanent rather than one rebuild long"
     )
     assert second == {"records": 2, "withheld": 0}
+
+
+#: The one edit both timestamp-restoration cases plant, and its replacement. The
+#: two are the **same length** so the size slot cannot answer, and the helper
+#: below asserts that rather than trusting this line to stay true.
+_ORIGINAL_TITLE: Final = b"Bound the retry budget"
+_REWRITTEN_TITLE: Final = b"Overwritten upstream!!"
+
+
+def _rewrite_with_the_timestamp_restored(leaf: Path, *, in_place: bool) -> None:
+    """Rewrite ``leaf`` to the same length and put its timestamps back exactly.
+
+    The attack ``mtime_ns`` and ``size`` cannot see. A timestamp is not a value
+    only the clock sets: ``os.utime`` sets it to the nanosecond, so a rewrite that
+    restores the captured one is invisible to those two slots on a filesystem with
+    the finest timestamps there are -- no coarse clock needed.
+
+    ``in_place`` chooses the **write shape**, which is what decides whether the
+    inode moves, and both are asserted here rather than described: a rename-based
+    write -- the shape this product's own evidence store uses -- publishes a new
+    inode, and an in-place write keeps the one it had. That difference is the
+    whole of what the two cases below drive, and it is the premise of each.
+    """
+    before = leaf.stat()
+    original = leaf.read_bytes()
+    edited = original.replace(_ORIGINAL_TITLE, _REWRITTEN_TITLE)
+    assert edited != original and len(edited) == before.st_size, (
+        "the plant has to change the bytes without changing the length, or the size slot "
+        "answers and neither case measures what it says it does"
+    )
+
+    if in_place:
+        with leaf.open("r+b") as handle:
+            handle.write(edited)
+    else:
+        sibling = leaf.with_name(leaf.name + ".hostile")
+        sibling.write_bytes(edited)
+        sibling.replace(leaf)
+    os.utime(leaf, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+    after = leaf.stat()
+    assert (after.st_mtime_ns, after.st_size) == (before.st_mtime_ns, before.st_size), (
+        "the premise: this platform did not restore the timestamp exactly, so the plant is "
+        "visible to the two slots these cases exist to defeat"
+    )
+    assert (after.st_ino == before.st_ino) is in_place, (
+        "the premise: a rename-based write must move the inode and an in-place write must "
+        "keep it, and this platform did the other thing"
+    )
+
+
+def test_a_rewrite_that_restores_the_timestamp_is_dropped_because_the_inode_moved(
+    tmp_path: Path,
+) -> None:
+    """RED means a rewritten body is republished past ``mtime_ns`` and ``size``.
+
+    The rewrite case above rests on the timestamp moving, and a timestamp moves
+    only while nobody puts it back. ``os.utime`` puts it back to the nanosecond,
+    so a same-length rewrite followed by a restoration is a changed file that two
+    of the four slots call unchanged -- and the record would be published with the
+    body the read took, which is the very defect the revalidation exists to stop,
+    wearing a different plant.
+
+    What catches it is ``st_ino``: the write lands through a sibling temporary and
+    ``os.replace``, which is how this product's own evidence store publishes, and
+    every rename-based write resolves the name to a **new inode**. The helper
+    asserts that premise on this platform rather than assuming it.
+
+    The complement is asserted in the same case, so a build that published nothing
+    at all cannot pass, and the next build converges on the rewritten body -- the
+    drop is one build long, as it is for every other transition here.
+    """
+    paths = _project(tmp_path)
+    evidence = _landed(paths, _event(), _thread())
+    landed = _landed_by_kind(paths)["pull-request"]
+
+    store, report = _build(
+        paths,
+        evidence,
+        withheld=frozenset(),
+        write_section=_write_section_that(
+            lambda: _rewrite_with_the_timestamp_restored(landed, in_place=False)
+        ),
+    )
+
+    stored = _every_stored_value(store)
+    assert "Bound the retry budget" not in stored, (
+        "the store serves the body the read took, past a rewrite that restored the "
+        "timestamp -- the fingerprint saw the same mtime and the same size and published"
+    )
+    assert "This retries forever." in stored, "the record nothing touched is missing too"
+    assert report == {"records": 1, "withheld": 0}
+
+    rebuilt, second = _build(paths, evidence, withheld=frozenset())
+
+    assert "Overwritten upstream!!" in _every_stored_value(rebuilt)
+    assert second == {"records": 2, "withheld": 0}
+
+
+def test_an_in_place_rewrite_that_restores_the_timestamp_is_published_as_recorded(
+    tmp_path: Path,
+) -> None:
+    """The residual, asserted rather than implied -- and it is not a wish.
+
+    A fingerprint is a witness of state and not the state. The one rewrite shape
+    no ``stat`` witnesses is an **in-place** write -- ``open("r+b")``, or ``cp -p``
+    over an existing destination -- followed by a timestamp restoration: the bytes
+    change, the length does not, the timestamp is put back and the inode is the
+    one it always was. All four slots agree, and the record is published with the
+    body the read took while the file on disk carries another.
+
+    That is what this case asserts, because a residual nobody writes down is read
+    as absent. Closing it means hashing every landed file, which is a read of the
+    whole corpus under the project's write lock -- the one thing the read/write
+    split exists to keep out.
+
+    **Its grading is threat-model T-24, not a new class.** Reaching it needs write
+    access to ``.theurian/review/``, and an actor with that can author an evidence
+    record outright: the directory is *source*, is not git-ignored, and may arrive
+    with a clone. So this behaviour sits inside an accepted, recorded residual.
+
+    RED here means the residual moved -- most likely because somebody added a
+    content hash. That is a welcome change and it makes this case a lie, so the
+    case has to be rewritten with it rather than deleted quietly.
+    """
+    paths = _project(tmp_path)
+    evidence = _landed(paths, _event(), _thread())
+    landed = _landed_by_kind(paths)["pull-request"]
+
+    store, report = _build(
+        paths,
+        evidence,
+        withheld=frozenset(),
+        write_section=_write_section_that(
+            lambda: _rewrite_with_the_timestamp_restored(landed, in_place=True)
+        ),
+    )
+
+    assert _REWRITTEN_TITLE in landed.read_bytes(), (
+        "the premise: the file on disk has to carry the edited body, or there is no "
+        "divergence between the store and the disk to record"
+    )
+    assert "Bound the retry budget" in _every_stored_value(store), (
+        "the store no longer serves the body the read took, so the recorded residual has "
+        "moved -- re-measure it and rewrite this case, which is documentation"
+    )
+    assert report == {"records": 2, "withheld": 0}
 
 
 def test_a_file_that_lands_after_the_read_arrives_with_the_next_build(tmp_path: Path) -> None:
