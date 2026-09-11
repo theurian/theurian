@@ -24,11 +24,15 @@ And three lifecycle cases that are not about content at all:
 
 * **A rebuild that fails must leave the previous store serving**, because the
   alternative is an operator losing a working store to a bad record. Driven at
-  both seams and with its cost written down: at the adapter, with a load built by
-  hand, and at the operator's own path, where the evidence has moved past a store
-  that keeps answering as though it had not. Nothing on the read side marks that
-  store stale, so the refusal is the whole of the signal and the case asserts it
-  names the file.
+  three seams and with its cost written down: at the adapter, with a load built by
+  hand; at the operator's own path, where the evidence has moved past a store
+  that keeps answering as though it had not; and at the corpus moving underneath
+  a build, where every record the read found was rewritten before it could
+  publish and publishing the empty result would have replaced a serving store
+  with one indistinguishable from a project that has no evidence. Nothing on the
+  read side marks a store stale, so the refusal is the whole of the signal, and
+  the first two cases assert it names the file while the third asserts it carries
+  the command to re-run.
 * **A rebuild that succeeds must publish by swapping a name, never by rewriting
   the live file.** That is ``replace_all``'s stated atomicity, and the inode the
   published name resolves to afterwards is the only fingerprint of it a
