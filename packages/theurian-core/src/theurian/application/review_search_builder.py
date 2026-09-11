@@ -199,9 +199,12 @@ class ReviewSearchBuildError(TheurianError):
 #: operator to wait for a run that did not exist. The re-run terminates whatever
 #: moved the files, so one cure still covers the whole class.
 #:
-#: An operator who emptied the corpus on purpose used to reach this text for the
-#: same reason. That build publishes the empty store now -- the *corpus gone at the
-#: publish* arm of :meth:`ReviewSearchBuilder.build`'s case table.
+#: An operator who emptied the corpus used to reach this text for the same reason.
+#: That build publishes the empty store now **when the corpus is gone at the
+#: publish** -- that arm of :meth:`ReviewSearchBuilder.build`'s case table. The
+#: condition is not decoration: where another writer lands a record inside the same
+#: window the corpus is *not* gone at the publish, the build refuses, and this cure
+#: names a writer who is really there.
 _RACE_CURE: Final = (
     "Another writer was changing files under .theurian/review/ while this build was "
     "reading that directory: a concurrent `theurian review ingest` or `theurian "
@@ -458,10 +461,10 @@ class ReviewSearchBuilder:
         -- a store that answers with no hits is indistinguishable from a project
         with no evidence -- so a refusal is the whole of it, and refusing is what
         leaves the previous store serving, because this layer publishes by
-        replacement and never by emptying. But an empty corpus wears the same
-        shape and is *lawful*: deleting evidence files is the retention remedy
-        ADR-0030 decision 3 leaves an operator, and a build that refuses there
-        goes on serving records somebody took out.
+        replacement and never by emptying. But a corpus that is **gone** wears the
+        same shape and is *lawful*: deleting evidence files is the retention remedy
+        ADR-0030 decision 3 leaves an operator, and a build that refuses where the
+        corpus is gone goes on serving records somebody took out.
 
         **So the decision is a function of the publish-time capture and the
         withholding outcome, and of nothing the read alone saw.** What the read
@@ -489,21 +492,28 @@ class ReviewSearchBuilder:
         **The withholding arm is behavioural indistinguishability, not a hidden
         count.** This build publishes ``withheld`` to whoever ran it, so the number
         is not a secret from its caller; what must not differ is what the build
-        *does*. An all-withheld build does what a corpus **emptied on purpose**
-        does -- publishes an empty store, exit 0, same rows, same ``records`` -- so
-        refusing on that arm would make the refusal itself the signal: an error
-        that fires for one input and not the other.
+        *does*. An all-withheld build does what a build whose corpus is **gone at
+        the publish** does -- publishes an empty store, same rows, same
+        ``records`` -- so refusing on that arm would make the refusal itself the
+        signal: an error that fires for one input and not the other. That is the
+        first row of the table above paired with the second, and it is the pairing
+        stated on the axis this method can read.
 
-        **Against a corpus that never held the records, the pairing is narrower,
-        and the gap is recorded rather than argued away.** While a landing is in
-        flight the two worlds separate, and what separates them is the refusal
-        rather than any published field. Measured 2026-09-11 through this method
-        over the real evidence store, with one record landing inside the write
-        section: an all-withheld build -- two records read, both withheld --
-        published at exit 0 with ``{'records': 0, 'withheld': 2}``, while a build
-        whose corpus never held those records read nothing and met the read-zero
-        refusal at exit 1. It is bounded today by the shipped withheld set being
-        empty: ``git grep -n 'ReviewSearchBuildRequest(' --
+        **Against a corpus that is still there while this build read nothing, the
+        pairing does not hold, and the gap is recorded rather than argued away.**
+        What a build sees of a corpus it read nothing from is ``entries == ()``,
+        and nothing in that says whether the records never existed or an operator
+        deleted them -- so those are one input here, not two, and a deletion whose
+        window a writer lands into meets the same refusal a never-existed corpus
+        does. Measured 2026-09-11 by driving this method over the real evidence
+        store, with one record landing inside the write section: an all-withheld
+        build -- two records read, both withheld -- **returned** ``{'records': 0,
+        'withheld': 2}``, while a build over a corpus holding none of those records
+        **raised** the read-zero refusal, byte-identical in detail and remedy to
+        the same build over a corpus an operator had just emptied. What separates
+        them is the refusal, not any published field. It is bounded today by the
+        shipped withheld set being empty: ``git grep -n
+        'ReviewSearchBuildRequest(' --
         packages/theurian-core/src ':!*review_search_builder.py'`` answers **one**
         line, ``review_commands.py``'s ``frozenset()``, which both ``review
         ingest`` and ``review build`` reach through ``rebuild_search_store`` -- so
@@ -606,19 +616,24 @@ class ReviewSearchBuilder:
             )
             # Keyed on `at_the_publish` -- what is on disk *now* -- and never on
             # what the read saw. An empty load is a defect only where the corpus
-            # is still there to have filled it: a corpus gone at the publish is an
-            # operator's deletion, and publishing it is how the deletion is
-            # honoured. Keying this on the read-time projection instead got both
-            # ends of that wrong at once -- it refused the deletion and it let a
-            # build that read nothing empty a store somebody had just filled.
+            # is still there to have filled it; a corpus gone at the publish has
+            # nothing left to publish from, and publishing empty is what honours a
+            # deletion -- decision 3's only retention remedy -- without this method
+            # having to know that a deletion is what happened. Keying this on the
+            # read-time projection instead got both ends wrong at once: it refused
+            # the corpus that was gone, and it let a build that read nothing empty
+            # a store somebody had just filled.
             #
             # The withholding arm is behavioural indistinguishability rather than
             # a hidden count -- `withheld` is published to the caller in the
-            # return below. An all-withheld build must *do* what a corpus emptied
-            # on purpose does, or the refusal becomes an error that fires for one
-            # input and not the other. That is the pairing this arm holds; against
-            # a corpus that never held the records it holds only while no landing
-            # is in flight, which the docstring records as a measured residual --
+            # return below. An all-withheld build must *do* what a build whose
+            # corpus is gone at the publish does, or the refusal becomes an error
+            # that fires for one input and not the other. That is the pairing this
+            # arm holds, and it is stated on the listing axis because that is the
+            # axis this method can read: a corpus still present while the read
+            # found nothing is the *other* input, and whether it never held the
+            # records or an operator deleted them is not something `entries` can
+            # say. The docstring records that gap as a measured residual --
             # bounded by the shipped withheld set being empty, owned by #575.
             every_record_withheld = bool(entries) and not kept
             if at_the_publish and not load.records and not every_record_withheld:

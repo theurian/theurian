@@ -596,9 +596,10 @@ def review_build(as_json: JsonOption = False) -> None:
     thrown away.
 
     Exit codes: 0 when the store was rebuilt -- including a rebuild that publishes
-    an *empty* store, which is what a corpus you emptied on purpose gets. Deleting
-    files under .theurian/review/ is the only retention remedy there is, so a
-    rebuild that refused there would go on serving the records you removed. 1 when
+    an *empty* store, which is what a corpus that is gone when the build reaches its
+    publish gets. Deleting files under .theurian/review/ is the only retention
+    remedy there is, so a rebuild that refused there would go on serving the records
+    you removed. 1 when
     the store was not rebuilt -- a record this build cannot store (the message
     names the file), a corpus that is still there when this build reaches its
     publish while the build has nothing left it can publish from it (its whole read
