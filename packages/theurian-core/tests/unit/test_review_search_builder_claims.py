@@ -186,6 +186,17 @@ def test_the_empty_publish_guard_is_keyed_on_the_publish_time_capture() -> None:
     collaborators -- and this is the structural half: it says the anchor those
     cases rest on is still the anchor, in the file, rather than re-deriving it
     from behaviour.
+
+    **What it holds is the condition's *names*, and that is a floor rather than a
+    proof** (round one, adversarial). The check reads the identifiers in the
+    ``if``'s test, so a rekey written *into* that expression is caught -- and one
+    written a line above it is not: hoisting ``read_time_key = bool(projected)``
+    and conjoining the name restores the pre-#636 behaviour while the condition
+    still names ``at_the_publish`` and names nothing on the read list. That
+    mutation was run, and only the driving cases went RED. So this arm and those
+    cases are not two views of one claim: this one says the anchor is still
+    written where the decision is taken, and they say the decision is still the
+    right one. Neither is redundant and neither is sufficient.
     """
     tree = ast.parse(BUILDER.read_text(encoding="utf-8"), filename=BUILDER.name)
 
@@ -252,12 +263,21 @@ _THE_RECORDED_DECISION: Final = (
 #: reads like a working one, which is the rule
 #: ``test_review_ingest_changelog_claims.py`` records.
 #:
-#: The last row is the issue reference itself. ``#636`` stood in this file twice as
-#: a *live* citation -- "owns the fix", "until it lands" -- describing a defect
-#: the build still had. The fix is in the file now, so a reappearance of that link
-#: means either the paragraph was reverted wholesale or somebody is citing a closed
-#: issue as an open one; both leave a reader believing the two faces are still
-#: reachable.
+#: The last two rows are the issue reference, and they are the **disposition
+#: phrasings** rather than the link. ``#636`` stood in this file as a *live*
+#: citation -- "owns the fix" twice, and "until it lands" once -- each describing
+#: a defect the build still had.
+#:
+#: **The link alone was the row until round one, and it over-pinned** (code review
+#: and adversarial, same face). A record may cite a closed issue perfectly
+#: honestly: "the read-time key, which #636 recorded as a defect" is a sentence
+#: this file could reasonably carry, and it would have reddened here under a
+#: message telling its author the paragraph had been reverted -- a pin that is
+#: wrong *and* misdiagnoses. The trade is stated rather than hidden: what is
+#: forbidden now is the phrasing that says the defect is **open**, so a live
+#: citation spelled some third way is not caught and the sibling rows above are
+#: what stand in that case. That is the direction to err in -- a pin that cries
+#: wolf is one the next author deletes.
 _SUPERSEDED_WORDING: Final[tuple[tuple[str, str], ...]] = (
     (
         "the read-time key, stated as the rule",
@@ -268,8 +288,12 @@ _SUPERSEDED_WORDING: Final[tuple[tuple[str, str], ...]] = (
         "**A build that kept nothing it read publishes nothing at all.**",
     ),
     (
-        "the open-issue citation for the defect this file now closes",
-        "[#636](https://github.com/theurian/theurian/issues/636)",
+        "the citation that says the defect is still open",
+        "[#636](https://github.com/theurian/theurian/issues/636) owns the fix",
+    ),
+    (
+        "the sentence that told a reader to wait for the fix",
+        "Until it lands, the two bullets above are what this guard does",
     ),
 )
 

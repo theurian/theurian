@@ -1948,12 +1948,22 @@ async def test_the_equality_filters_are_exact_while_q_folds_ascii_case(
 #: The heading that opens this tool's section of the protocol reference, and the
 #: one that ends it.
 #:
-#: The read is **scoped to the section** rather than to the file, for the reason
-#: the numbers themselves give: ``MAX_FILTER_CHARS`` is 400 here and 200 on
-#: ``review.findings``, which is the same identifier standing for two different
-#: bounds a few hundred lines apart. A file-wide search for a sentence naming that
-#: constant can match the wrong tool's paragraph and report a bound as published
-#: when what is published is another surface's.
+#: The read is **scoped to the section** rather than to the file, and the reason
+#: written here first was false: it said ``MAX_FILTER_CHARS`` stands for two
+#: different bounds a few hundred lines apart, where the page spells that constant
+#: **once** (measured 2026-09-11, ``grep -c MAX_FILTER_CHARS
+#: docs/protocol/mcp-tools.md`` answers 1) -- ``review.findings``'s own 200 is
+#: prose, *"is bounded at 200 characters"*, which no fragment below could ever
+#: match. So the scoping buys nothing against today's page, and round one found it
+#: unheld into the bargain: widening it to the whole file left every assertion
+#: green.
+#:
+#: It is kept, and :func:`test_the_scoped_section_excludes_the_sibling_tool` is
+#: what makes it real. What it is for is the *next* page rather than this one: two
+#: tool sections already publish a bound under the same name with different values,
+#: so the first time the sibling's is spelled as a constant a file-wide search
+#: reports a bound as published when what is published is another surface's -- and
+#: it is what makes a failure message name a section rather than a file.
 _REVIEW_SEARCH_SECTION: Final = "### `review.search`"
 _NEXT_SECTION: Final = "### `project.list`"
 
@@ -1970,6 +1980,45 @@ def _published_review_search_section() -> str:
     start = document.index(_REVIEW_SEARCH_SECTION)
     end = document.index(_NEXT_SECTION, start)
     return " ".join(document[start:end].split())
+
+
+def test_the_scoped_section_excludes_the_sibling_tool() -> None:
+    """The bounds pin's scoping, held rather than described (round one, adversarial).
+
+    :func:`_published_review_search_section` slices one tool's section out of a
+    page that documents six, and the arm below reads its bounds from that slice.
+    Nothing held the slice: widening it to the whole file left every assertion
+    green, because no fragment there happens to appear twice today. A structural
+    choice nothing checks is a structural choice the next edit removes -- and it
+    removes silently, since the pin goes on passing.
+
+    So the boundary is asserted directly: the slice has to be a strict part of the
+    page and it has to stop before the sibling section. Both halves are needed. A
+    slice that ran to the end of the file satisfies "shorter than the document" the
+    moment anything precedes ``review.search``, and one that collapsed to nothing
+    satisfies "does not contain the sibling" perfectly.
+    """
+    document = (REPO_ROOT / "docs/protocol/mcp-tools.md").read_text(encoding="utf-8")
+    section = _published_review_search_section()
+
+    assert _REVIEW_SEARCH_SECTION in section, (
+        "the slice does not start at `review.search`'s own heading, so what the bounds "
+        "pin reads is some other part of the page"
+    )
+    assert len(section) < len(" ".join(document.split())), (
+        "the slice is the whole page, so the bounds pin is a file-wide search wearing "
+        "a section's name"
+    )
+    # One heading on each side, which is the two ways a slice goes wrong:
+    # `review.findings` precedes `review.search` on the page, so a slice that
+    # started too early carries it; `project.list` follows, so a slice that ran
+    # past its end carries that. Both sections publish bounds of their own.
+    for elsewhere in ("### `review.findings`", _NEXT_SECTION):
+        assert elsewhere not in section, (
+            f"the `review.search` slice reaches into {elsewhere}, so a bound published "
+            f"by another tool can satisfy a fragment this pin means to read off this "
+            f"one -- which is the only thing the scoping is for"
+        )
 
 
 def test_the_published_review_search_bounds_are_the_bounds_this_build_enforces() -> None:

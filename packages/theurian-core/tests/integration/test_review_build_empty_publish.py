@@ -58,6 +58,7 @@ touches this repository's own ``.theurian/`` or the developer's own machine; no
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import subprocess
 from collections.abc import Callable, Iterator
@@ -97,16 +98,27 @@ LANDED_RECORDS: Final = 3
 
 
 def _git(root: Path, *args: str) -> None:
-    """One git command under a configuration this module, not the developer, owns."""
+    """One git command under a configuration this module, not the developer, owns.
+
+    ``test_findings_build_cli.py``'s ``_git`` is the precedent and this now matches
+    it: the environment is **merged over** ``os.environ`` rather than replaced, and
+    the two config variables are set to :data:`os.devnull`. Round one found this
+    helper doing neither -- a replaced environment with a hand-written ``PATH`` of
+    three directories and a literal ``/dev/null``. Both are the kind of divergence
+    that reads as deliberate and is not: the ``PATH`` decides which ``git`` runs,
+    so a runner whose git lives anywhere else fails here for a reason that has
+    nothing to do with review evidence, and ``/dev/null`` is a POSIX path on a
+    module whose other paths all come from ``Path``.
+    """
     subprocess.run(  # noqa: S603
         ["git", *args],  # noqa: S607 - git resolved via PATH, args are test-controlled
         cwd=root,
         check=True,
         capture_output=True,
         env={
-            "GIT_CONFIG_GLOBAL": "/dev/null",
-            "GIT_CONFIG_SYSTEM": "/dev/null",
-            "PATH": "/usr/bin:/bin:/usr/local/bin",
+            **os.environ,
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
         },
     )
 

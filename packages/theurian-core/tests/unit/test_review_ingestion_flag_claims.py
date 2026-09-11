@@ -123,7 +123,14 @@ _ROADMAP: Final = REPO_ROOT / "docs/roadmap.md"
 _README: Final = REPO_ROOT / "README.md"
 _CORE_CHANGELOG: Final = REPO_ROOT / "packages/theurian-core/CHANGELOG.md"
 
-#: The flag whose meaning all eight records state.
+#: The flag whose meaning all ten records state.
+#:
+#: **Ten, and the arithmetic is written down because this number has now gone
+#: stale once**: the four "it never meant" sites (:data:`_NEVER_MEANT_SITES`) plus
+#: the seven narrations (:data:`_ERA_NARRATIONS`), less ``test_mcp_tools.py``,
+#: which is in both. It is the same ten the ``Pure:`` sentence counts, and the two
+#: are the path constants above -- so a record joining either population moves
+#: both sentences, and this note is what says so.
 _FLAG: Final = "reviewIngestion"
 
 #: A "it never meant X" clause, with the quoted subject captured.

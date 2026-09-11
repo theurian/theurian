@@ -323,14 +323,20 @@ def test_the_changelog_entry_still_states_the_claim(
     reader has no reason to believe the property holds at all. The change after
     that removes the property, and nothing objects.
 
-    Every fragment held here entered the changelog on **this branch**, and two of
-    the three replaced a sentence that had been wrong rather than merely absent:
-    the exit-code population named one document where there are two, and the
-    containment paragraph called the split *"by call site"* and put record scope
-    at the per-pull-request fetch alone, which left the listing seam — and with
-    it the number — described nowhere. Newly corrected wording is the wording
-    most easily lost in the next rewrite, because nobody rereads what was just
-    written.
+    **Rows land here because a sentence was corrected, and a correction is the
+    wording most easily lost in the next rewrite** -- it is freshly right and
+    nobody rereads what was just written. Several of the rows replaced a sentence
+    that was *wrong* rather than merely absent: the exit-code population named one
+    document where there are two; the containment paragraph called the split *"by
+    call site"* and put record scope at the per-pull-request fetch alone, which
+    left the listing seam — and with it the number — described nowhere; and the
+    race remedy described a guard keyed on the read, which #636 had already
+    recorded as a defect.
+
+    No count is given for how many, and that is deliberate: this paragraph carried
+    one (*"two of the three"*) and it went stale the first time a row was added,
+    which is the failure the whole module exists to catch, one level up. The rows
+    are :data:`ENTRY_CLAIMS` and the examples above are examples.
 
     **Each correction is cited by the text it replaced rather than by a commit**
     (round two). "The commit before this one" is an ambiguous referent as soon as
