@@ -1,7 +1,7 @@
 """What the changelog's review-ingest entry claims, held to the tree (ADR-0030, #479).
 
 ``packages/theurian-core/CHANGELOG.md`` is where an operator learns what
-``theurian review ingest`` does before they run it, and three of its sentences
+``theurian review ingest`` does before they run it, and four of its sentences
 say something the tree can be asked about:
 
 - **Exit 1 carries the run document, or ``{error, remedy}``, or both** — the run
@@ -28,6 +28,13 @@ say something the tree can be asked about:
   secret landed anyway.** ``clean`` reads ``true`` and ``refused`` is empty, both
   honest and both silent about the credential just written into
   ``.theurian/review/``.
+- **The run document's emit is owed by a ``finally``, not by an enumeration of
+  ``except`` arms.** That clause is what makes the "both" of the first claim a
+  guarantee rather than a list of the failures somebody has already met: three
+  enumerated arms each published the document before failing, and a ``ValueError``
+  out of ``int`` landed outside all three and took the document with it. The drift
+  this row guards is a reword *back* to the enumeration, which reads as the more
+  precise sentence and carries the identical hole.
 
 **Each claim is pinned from both sides, and the two sides fail differently on
 purpose.** The prose pins hold *spelling*: they are blind to whether the
@@ -46,8 +53,11 @@ the prose half. The fact side of the second lives where the mechanism does —
 ``test_an_unreadable_pull_request_number_denies_the_window_rather_than_being_skipped``
 — because only a real adapter driving a real spawn can be said to have denied a
 window. The first claim's behaviour half is the command's own exit-code tests in
-``tests/integration/test_review_ingest_cli.py``; each failure message below names
-the half that did not move.
+``tests/integration/test_review_ingest_cli.py``, and the fourth's is one case in
+that same file —
+``test_a_rebuild_defect_outside_every_graded_arm_still_publishes_the_run_document``,
+which raises the exception class no arm names and asserts the document is out
+anyway. Each failure message below names the half that did not move.
 
 **Both directions carry a positive control**, because a pin whose expected
 answer is "the fragment is still there" and a pin that has stopped looking read
@@ -221,6 +231,30 @@ ENTRY_CLAIMS: Final[tuple[tuple[str, str, str, str], ...]] = (
             "finding count to see that a secret landed anyway.**"
         ),
         "`test_the_run_document_publishes_the_field_this_entry_names` in this module",
+    ),
+    (
+        "the emit is owed by a `finally` and not by an enumeration",
+        (
+            "because that rebuild sits in a `try` of its own whose `finally` publishes "
+            "the run document before any failure leaves the command"
+        ),
+        # The wording this replaced, and the hole it described. Three enumerated
+        # `except` arms each published the document before failing, which is true
+        # of every exception class somebody had already met and false of the one
+        # nobody had: a `ValueError` out of `int` landed outside all three and took
+        # the run document with it (#630's HIGH-1). A reword back to an
+        # enumeration is the same promise with the same hole, and it reads as the
+        # *more* precise sentence -- it names a number and three named arms --
+        # which is why the drift column is written as the one somebody would
+        # plausibly restore rather than as an obvious weakening.
+        (
+            "because that rebuild sits in a `try` of its own whose three `except` arms "
+            "each publish the run document before they fail"
+        ),
+        (
+            "`tests/integration/test_review_ingest_cli.py::"
+            "test_a_rebuild_defect_outside_every_graded_arm_still_publishes_the_run_document`"
+        ),
     ),
 )
 

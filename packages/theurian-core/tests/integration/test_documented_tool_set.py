@@ -352,8 +352,11 @@ def test_the_protocol_document_lists_exactly_the_tools_the_built_server_register
 
     The list is taken as the block *after* the claim rather than by searching the
     file for tool names, because the rest of that document names planned tools
-    too — ``review.search``, ``knowledge.trace`` — and a file-wide scan would
-    report those as registrations the server is missing.
+    too — ``knowledge.trace`` — and a file-wide scan would report those as
+    registrations the server is missing. ``review.search`` stood beside it here
+    and has been registered since ADR-0030 slice 3, which is the way an example
+    of a *planned* tool goes stale: the example is correct on the day it is
+    written and the tool ships.
     """
     registered = _registered(empty_registry)
     claim, listed = _mcp_tools_list()

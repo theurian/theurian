@@ -117,6 +117,11 @@ pytestmark = pytest.mark.integration
 
 runner = CliRunner()
 
+#: ``parents[4]`` is ``.../tests/integration/`` -> ``tests`` -> ``theurian-core``
+#: -> ``packages`` -> repo root, the reckoning ``test_review_findings_tool.py``
+#: uses to reach the same published document.
+REPO_ROOT: Final = Path(__file__).resolve().parents[4]
+
 MIGRATION_ID = "01K1AAAAAA01234567890ABCDE"
 REVISION_ID = "01K1AAAREV01234567890ABCDE"
 BODY = "# Authentication policy\n\nEvery call carries a signed token.\n"
@@ -1934,4 +1939,105 @@ async def test_the_equality_filters_are_exact_while_q_folds_ascii_case(
     assert text_exact["count"] == text_folded["count"] > 0, (
         "`q` is a LIKE and folds ASCII case; if it stopped, the docstring's "
         "asymmetry is no longer the one being described"
+    )
+
+
+# -- the published bounds, recomputed from the constants ----------------------
+
+
+#: The heading that opens this tool's section of the protocol reference, and the
+#: one that ends it.
+#:
+#: The read is **scoped to the section** rather than to the file, for the reason
+#: the numbers themselves give: ``MAX_FILTER_CHARS`` is 400 here and 200 on
+#: ``review.findings``, which is the same identifier standing for two different
+#: bounds a few hundred lines apart. A file-wide search for a sentence naming that
+#: constant can match the wrong tool's paragraph and report a bound as published
+#: when what is published is another surface's.
+_REVIEW_SEARCH_SECTION: Final = "### `review.search`"
+_NEXT_SECTION: Final = "### `project.list`"
+
+
+def _published_review_search_section() -> str:
+    """``docs/protocol/mcp-tools.md``'s ``review.search`` section, soft wraps folded.
+
+    Flattened because two of the three sentences below wrap in the source -- "the
+    store's own read cuts / each `excerpt` at" breaks mid-clause -- and an
+    unflattened search would report a bound as missing from a page that carries
+    it word for word.
+    """
+    document = (REPO_ROOT / "docs/protocol/mcp-tools.md").read_text(encoding="utf-8")
+    start = document.index(_REVIEW_SEARCH_SECTION)
+    end = document.index(_NEXT_SECTION, start)
+    return " ".join(document[start:end].split())
+
+
+def test_the_published_review_search_bounds_are_the_bounds_this_build_enforces() -> None:
+    """RED means the protocol page tells a client a number this build does not use.
+
+    Three of ``review.search``'s four bounds are published as numbers, and until
+    this pin nothing held any of them: the schema holds *shapes*, and a schema
+    that accepts an integer ``limit`` accepts it whatever the cap behind it is.
+    So a cap raised, a default lowered or a filter bound widened left the page
+    describing a build that does not exist, and every one of those is a change a
+    caller acts on -- ``limit`` sizes its paging, ``MAX_FILTER_CHARS`` is where
+    its ``q`` starts being refused, and ``MAX_EXCERPT_CHARS`` is how it tells a
+    cut excerpt from a whole one. ``test_review_findings_tool.py``'s limit-row pin
+    is the same instrument over the sibling tool, written after three such
+    mutations survived the whole suite there.
+
+    Each expectation is **recomputed from the live constant**, never transcribed:
+    a transcribed number is a second place for the bound to live, and the first
+    edit moves one of the two.
+
+    The fourth bound is named on the page and carries no number, deliberately, and
+    that is asserted too rather than left as an omission a reader might read as
+    drift: ``MAX_REVIEW_SEARCH_RESPONSE_CHARS`` is *derived* from the other three,
+    so printing it would publish a figure that moves whenever any of them does --
+    and the page's own paragraph about what that budget costs on the wire is a
+    measured multiple rather than a constant.
+    """
+    section = _published_review_search_section()
+
+    row = (
+        f"| `limit` | at most `MAX_REVIEW_SEARCH_LIMIT` ({MAX_REVIEW_SEARCH_LIMIT}), "
+        f"`DEFAULT_REVIEW_SEARCH_LIMIT` ({DEFAULT_REVIEW_SEARCH_LIMIT}) by default |"
+    )
+    assert row in section, (
+        f"docs/protocol/mcp-tools.md's `review.search` section does not carry "
+        f"{row!r}. Either a bound moved and the published table now describes a build "
+        f"that does not exist, or the row was reworded -- in which case update this "
+        f"pin *and* check that the new wording still states both numbers. A client "
+        f"reads this row to size its own paging, and a page whose cap is not the cap "
+        f"has told it something false about how much of an answer it received."
+    )
+    filters = f"`MAX_FILTER_CHARS` ({MAX_FILTER_CHARS}) bounds every string filter"
+    assert filters in section, (
+        f"docs/protocol/mcp-tools.md's `review.search` section does not carry "
+        f"{filters!r}. That bound is an amplification control as well as a filter "
+        f"length: it decides how long a caller-controlled string this surface quotes "
+        f"back in a refusal, and it is 400 here against 200 on `review.findings` -- so "
+        f"a caller who read the other tool's number would size its `q` wrong in the "
+        f"direction that gets refused."
+    )
+    excerpt = f"each `excerpt` at `MAX_EXCERPT_CHARS` ({MAX_EXCERPT_CHARS}) **in SQL**"
+    assert excerpt in section, (
+        f"docs/protocol/mcp-tools.md's `review.search` section does not carry "
+        f"{excerpt!r}. This is the one bound on this surface that *clamps* rather "
+        f"than refuses, so the published number is the whole of how a client tells a "
+        f"cut excerpt from a whole one -- and `in SQL` is the claim that the daemon "
+        f"never materialises the rest of a planted comment, not merely that it does "
+        f"not serve it."
+    )
+    assert "`MAX_REVIEW_SEARCH_RESPONSE_CHARS` bounds the whole response" in section, (
+        "docs/protocol/mcp-tools.md's `review.search` section no longer names the "
+        "response budget at all, so a caller reading the bounds paragraph counts three "
+        "where there are four and sizes a transport limit against the wrong one"
+    )
+    assert str(MAX_REVIEW_SEARCH_RESPONSE_CHARS) not in section, (
+        f"the page now prints the response budget as a number "
+        f"({MAX_REVIEW_SEARCH_RESPONSE_CHARS}). It is derived from the three bounds "
+        f"above, so a printed figure is a fourth place to keep in step and goes stale "
+        f"whenever any of them moves. If it is published on purpose, recompute it here "
+        f"from the constant rather than transcribing it."
     )

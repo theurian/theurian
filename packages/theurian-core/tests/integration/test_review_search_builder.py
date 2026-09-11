@@ -1102,6 +1102,250 @@ def test_a_build_that_withheld_everything_it_read_publishes_the_empty_store(
     assert store.dump() == ()
 
 
+def test_a_build_that_read_nothing_while_a_landing_filled_the_corpus_refuses(
+    tmp_path: Path,
+) -> None:
+    """#636 face 1, at the builder. RED means a first landing is silently emptied.
+
+    The row the case table reaches through *neither* of the two above: the read
+    found nothing, the corpus is there at the publish, and withholding is not why
+    the load is empty. It is a build that started in front of a landing --
+    queueing on the write lock behind that landing's own rebuild and publishing
+    last -- and keyed on what the **read** found it looked lawful, because a read
+    of nothing over a corpus of nothing is exactly what an un-ingested project
+    produces. Keyed on the publish-time listing it is another writer's window, and
+    refusing is what leaves the landing's rows where they are.
+
+    The store is filled, emptied and refilled on purpose rather than seeded once:
+    what makes the sting observable is that the rows this build would have
+    replaced were published by somebody else *after* its read, so they have to be
+    absent while it reads and present when it publishes.
+
+    Three assertions, each failing on its own. The build refuses. The refusal is
+    the read-nothing arm rather than the stale-read one -- a build with no count
+    to give must not be handed a sentence about what it read. And the rows the
+    concurrent landing published are still served, which is the whole of what
+    refusing buys.
+    """
+    paths = _project(tmp_path)
+    evidence = _landed(paths, _event(), _thread())
+    store, seeded = _build(paths, evidence, withheld=frozenset())
+    assert seeded == {"records": 2, "withheld": 0}
+    served = _every_stored_value(store)
+    for landed in paths.review.rglob("*.json"):
+        landed.unlink()
+
+    def land_the_records_again() -> None:
+        evidence.write((_event(), _thread()), run=RUN)
+
+    with pytest.raises(ReviewSearchBuildError) as excinfo:
+        _build(
+            paths,
+            evidence,
+            withheld=frozenset(),
+            write_section=_write_section_that(land_the_records_again),
+        )
+
+    assert "read no evidence records" in str(excinfo.value), (
+        f"a build that read nothing is told what its read went stale about: {excinfo.value}"
+    )
+    assert "of them" not in str(excinfo.value), (
+        f"the refusal counts a read that found nothing, which dresses a build that "
+        f"started too early as one whose corpus moved: {excinfo.value}"
+    )
+    assert _every_stored_value(store) == served, (
+        "the build that read nothing replaced the store the landing had just built, "
+        "and no reader can tell that store from a project with no evidence at all"
+    )
+
+
+def test_a_build_that_kept_none_of_what_it_read_publishes_when_the_corpus_is_gone(
+    tmp_path: Path,
+) -> None:
+    """#636 face 2, at the builder. RED means a deletion is refused and then undone.
+
+    The complement of the keep-none refusal above, and the two differ in one
+    thing: what the listing taken **inside the write section** found. A build that
+    read records and kept none of them because every file went away is not a build
+    whose read went stale -- it is a build watching an operator exercise ADR-0030
+    decision 3's only retention remedy, and refusing there leaves the store
+    serving every record they just removed, under a cure telling them to wait for
+    a concurrent run that does not exist.
+
+    Written as the second half of a build that had published rows, so the empty
+    publish is observably a *replacement*; and the read's own count is asserted,
+    because a build that read nothing over an already-empty corpus publishes the
+    identical empty store and would make this case green without ever reaching the
+    row it names.
+    """
+    paths = _project(tmp_path)
+    evidence = _landed(paths, _event(), _thread())
+    store, seeded = _build(paths, evidence, withheld=frozenset())
+    assert seeded == {"records": 2, "withheld": 0}
+    assert "Bound the retry budget" in _every_stored_value(store)
+
+    def delete_every_record() -> None:
+        for landed in paths.review.rglob("*.json"):
+            landed.unlink()
+
+    emptied, report = _build(
+        paths,
+        evidence,
+        withheld=frozenset(),
+        write_section=_write_section_that(delete_every_record),
+    )
+
+    assert report == {"records": 0, "withheld": 0}, (
+        "the premise: this build has to have read the two records and kept neither, "
+        "or it is the read-nothing row rather than the deletion row"
+    )
+    assert emptied.dump() == (), (
+        "the store still serves records whose evidence files an operator deleted "
+        "inside this build's own window -- decision 3's retention remedy, refused and "
+        "then silently undone by the next rebuild"
+    )
+
+
+def test_a_build_that_withheld_everything_publishes_whether_the_files_are_there_or_not(
+    tmp_path: Path,
+) -> None:
+    """The withholding arm does not consult the listing, and that is the point.
+
+    ``every_record_withheld`` is computed from the read and the withheld set
+    alone, so an all-withheld build publishes the empty store under *both*
+    listings -- the files still on disk, and the files gone. A guard that took the
+    listing into account on this arm would refuse one of the two, and the refusal
+    would then be an error that fires for one input and not the other: exactly the
+    bit ``withheld_record_keys``' physical absence exists to keep out of every
+    observable.
+
+    The corpus-present half has a case of its own above; this drives the pair, so
+    a change that made the arm conditional on the listing reddens here rather than
+    leaving the two halves green in separate files.
+    """
+    every_key = frozenset({"42", "PRRT_kwDO_test_node_0001"})
+
+    present = _project(tmp_path, "present")
+    still_there = _landed(present, _event(), _thread())
+    gone = _project(tmp_path, "gone")
+    deleted_at_the_publish = _landed(gone, _event(), _thread())
+
+    def delete_every_record() -> None:
+        for landed in gone.review.rglob("*.json"):
+            landed.unlink()
+
+    with_files, with_files_report = _build(present, still_there, withheld=every_key)
+    without_files, without_files_report = _build(
+        gone,
+        deleted_at_the_publish,
+        withheld=every_key,
+        write_section=_write_section_that(delete_every_record),
+    )
+
+    assert with_files_report == without_files_report == {"records": 0, "withheld": 2}
+    assert with_files.dump() == without_files.dump() == ()
+    assert list(present.review.rglob("*.json")), (
+        "the premise: the first build's files have to still be on disk, or both halves "
+        "drove the corpus-gone listing and the pair demonstrates nothing"
+    )
+
+
+def test_an_all_withheld_build_and_a_purpose_emptied_corpus_are_one_observable(
+    tmp_path: Path,
+) -> None:
+    """AC-3, the disclosure pin: the refusal never tells the two apart.
+
+    Two projects. One holds two records and is asked to withhold both; the other
+    held the same two and an operator deleted them. Each has an empty load for a
+    different reason, and **nothing a caller can observe may separate them**: a
+    guard that refused the withheld one would make the refusal itself the signal
+    that there was something to withhold -- an error that fires for one input and
+    not the other, which is the family this store's physical-absence design exists
+    to close.
+
+    So the two are compared as *behaviour* rather than field by field: neither
+    raises, the stores dump equal, and the reports agree on every key but
+    ``withheld`` -- which is a function of the caller's own set and of files on
+    the caller's own disk, and is published to whoever ran the build.
+
+    The premise is asserted in both directions, because a pairing between two
+    builds that were secretly the same build proves nothing: the withheld project
+    still has its files and the emptied one has none.
+    """
+    withholding = _project(tmp_path, "withholding")
+    withheld_corpus = _landed(withholding, _event(), _thread())
+    emptied = _project(tmp_path, "emptied")
+    emptied_corpus = _landed(emptied, _event(), _thread())
+    for landed in emptied.review.rglob("*.json"):
+        landed.unlink()
+
+    assert list(withholding.review.rglob("*.json")) and not list(emptied.review.rglob("*.json")), (
+        "the premise: one corpus has to be on disk and the other gone, or the two "
+        "builds below are the same build twice"
+    )
+
+    withheld_store, withheld_report = _build(
+        withholding, withheld_corpus, withheld=frozenset({"42", "PRRT_kwDO_test_node_0001"})
+    )
+    emptied_store, emptied_report = _build(emptied, emptied_corpus, withheld=frozenset())
+
+    assert withheld_store.dump() == emptied_store.dump() == ()
+    assert sorted(withheld_report) == sorted(emptied_report), (
+        f"the two builds publish different keys -- {sorted(withheld_report)} against "
+        f"{sorted(emptied_report)} -- so a caller can tell a withheld corpus from an "
+        f"emptied one by the shape of the report alone"
+    )
+    assert {key: value for key, value in withheld_report.items() if key != "withheld"} == {
+        key: value for key, value in emptied_report.items() if key != "withheld"
+    }, (
+        f"the two builds differ in something other than `withheld`: {withheld_report} "
+        f"against {emptied_report}. `withheld` is the caller's own set counted back to "
+        f"them; every other observable has to be the same, or the build's behaviour is "
+        f"what says a record was withheld"
+    )
+
+
+def test_the_refusal_counts_what_the_build_could_have_published_not_what_it_read(
+    tmp_path: Path,
+) -> None:
+    """RED means an operator is sent looking for a discrepancy this build never had.
+
+    The stale-read arm names a number, and which number it is matters. A build
+    that withheld some of what it read could never have published those records,
+    so printing the read's own total beside a directory an operator is about to go
+    and look at describes a mismatch that was never going to exist. The count is
+    taken **after** withholding -- the records this build held and would have
+    written.
+
+    Three records read, two of them withheld, and the one survivor rewritten
+    inside the write section: the build could have published one, kept none, and
+    the corpus is still there. So the refusal says one, and the read's own three
+    must not appear anywhere in it.
+    """
+    paths = _project(tmp_path)
+    evidence = _landed(paths, _event(), _submission(), _thread())
+
+    def refetch_the_one_survivor() -> None:
+        evidence.write((_retitled(),), run=RUN)
+
+    with pytest.raises(ReviewSearchBuildError) as excinfo:
+        _build(
+            paths,
+            evidence,
+            withheld=frozenset({"PRR_kwDOABCD1", "PRRT_kwDO_test_node_0001"}),
+            write_section=_write_section_that(refetch_the_one_survivor),
+        )
+
+    assert "1 of them" in str(excinfo.value), (
+        f"the refusal does not report the post-withholding count: {excinfo.value}"
+    )
+    assert "3 of them" not in str(excinfo.value), (
+        f"the refusal reports what the read found rather than what this build could "
+        f"have published, which sends an operator looking for two records it was never "
+        f"going to write: {excinfo.value}"
+    )
+
+
 # -- rebuild is the durability story ------------------------------------------
 
 

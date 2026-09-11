@@ -18,7 +18,7 @@ recurs by exactly the same route: somebody rewords one site.
 :func:`test_the_four_sites_spell_the_never_meant_sentences_one_way` compares the
 four extracted sets, so a site moving alone reddens whichever way it moved.
 
-**Five records narrate the value, both ways round.** ``review/__init__.py`` and
+**Seven records narrate the value, both ways round.** ``review/__init__.py`` and
 ``infrastructure/github/__init__.py`` were re-tensed when slice 3 flipped the
 flag -- unpinned, which the flipping commit recorded as owed rather than leaving
 silent. The third is the flag's own pin: ``test_mcp_tools.py`` asserted
@@ -37,23 +37,34 @@ follows (PR #504). An ADR's *Context* and *Decision* sections are the opposite -
 record what was true when the decision was taken, and ADR-0030's ``false``
 sentences are correct there and are deliberately not in this population.
 
+The sixth and seventh are the two records a person meets *before* any of the
+above, and they were outside every sweep this module has run: ``README.md``'s
+"AI proposes, humans approve" row and ``packages/theurian-core/CHANGELOG.md``'s
+`gh`-adapter entry. Both were re-tensed by the flipping commit -- the README row
+from "reports ``reviewIngestion: false`` while no *MCP* tool exposes either half"
+and the adapter entry from "so ``system.capabilities`` still reports
+``reviewIngestion: false``" -- and both then stood unpinned, in the two documents
+with the widest readership in the repository. The changelog row is **not** scoped
+to ``[Unreleased]``, for ``test_review_ingest_changelog_claims.py``'s reason: a
+release cut moves that entry into a dated section without changing a word.
+
 A prose pin alone would keep the ``true``-era wording against a build that had
 flipped back; a value pin alone would keep the value against records still
 describing the ``false`` era. So the fact side is the value read out of
 ``mcp/tools.py``'s own capability dict, and it *selects* which wording each
-record must carry and which it must not. Flip the flag and all five are RED
+record must carry and which it must not. Flip the flag and all seven are RED
 until they are re-tensed; re-tense one backwards and it is RED until the flag
 moves.
 
-**Narrates, not mentions.** Many records name this flag; these five tell a
+**Narrates, not mentions.** Many records name this flag; these seven tell a
 reader what its value *is* and reason from it, which is what makes them false
 rather than merely dated when it moves. The population is enumerated rather than
-derived -- a sixth narration would not redden this -- and that is the honest
-bound, with the answer being to add it here in the change that writes it. Two
+derived -- an eighth narration would not redden this -- and that is the honest
+bound, with the answer being to add it here in the change that writes it. Three
 rounds have now added a row after the fact, which is the cost of an enumeration
 and is recorded rather than argued away: a derived population, keyed on the
 narrating spellings across the whole corpus, is the shape that would not need
-the third.
+the fourth.
 
 **Each site is read the way its own reader reads it.** A Python comment through
 ``tokenize``, because comments are not in a syntax tree; a test's assertion
@@ -80,7 +91,7 @@ held by ``tests/integration/test_mcp_tools.py`` and
 ``tests/integration/test_wire_contract.py``. Every arm here would pass against a
 daemon that registered nothing and declared ``true``.
 
-Pure: it reads eight repository files -- two of them twice, for two different
+Pure: it reads ten repository files -- two of them twice, for two different
 claims -- and opens no database, no socket and no temporary directory.
 """
 
@@ -91,6 +102,7 @@ import json
 import pathlib
 import re
 import tokenize
+from collections.abc import Callable
 from typing import Final
 
 import pytest
@@ -108,6 +120,8 @@ _GITHUB_PACKAGE: Final = (
 )
 _BOUNDARY_ADR: Final = REPO_ROOT / "docs/adr/0026-evidence-plane-not-control-plane.md"
 _ROADMAP: Final = REPO_ROOT / "docs/roadmap.md"
+_README: Final = REPO_ROOT / "README.md"
+_CORE_CHANGELOG: Final = REPO_ROOT / "packages/theurian-core/CHANGELOG.md"
 
 #: The flag whose meaning all eight records state.
 _FLAG: Final = "reviewIngestion"
@@ -350,9 +364,16 @@ def test_the_four_sites_spell_the_never_meant_sentences_one_way() -> None:
 #: Each record that **narrates** the flag's value, what it must say, and what it
 #: must not, per published value.
 #:
-#: Narrates rather than mentions: these five tell a reader what the value *is*
+#: Narrates rather than mentions: these seven tell a reader what the value *is*
 #: and reason from it, so they go false the moment it moves, while the many
 #: records that merely name the flag do not.
+#:
+#: **The last two are read whole rather than scoped to their own section**, and
+#: the fragments are long enough to be unambiguous in a file that is. The core
+#: changelog in particular carries several historical ``reviewIngestion: false``
+#: sentences that are correct as records of the releases they describe, so what
+#: the ``false`` column quotes is the adapter entry's *own* sentence and not the
+#: bare value.
 #:
 #: **The third row is the same defect twice over.** ``test_mcp_tools.py``
 #: asserted ``reviewIngestion is True`` while one docstring narrated "the `false`
@@ -426,7 +447,54 @@ _ERA_NARRATIONS: Final[tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]], 
             "evaluation harness.",
         ),
     ),
+    (
+        "README.md (the AI-proposes-humans-approve row)",
+        "readme",
+        (
+            "`system.capabilities` reports `reviewIngestion: true` beside "
+            '`reviewIngestionScope: "public-allowlisted"`, which says an ingestion call '
+            "surface exists that a client may call",
+            "none spawns `gh`, none lands a file",
+        ),
+        (
+            "`system.capabilities` reports `reviewIngestion: false` while no *MCP* tool "
+            "exposes either half.",
+        ),
+    ),
+    (
+        "packages/theurian-core/CHANGELOG.md (the `gh`-adapter entry)",
+        "core-changelog",
+        (
+            "which is a statement about the callable surface (`review.search`, a read "
+            "over what `theurian review build` projected out of `.theurian/review/`) "
+            "and not about this adapter.",
+            '**Not "a read over what an operator ingested"**',
+        ),
+        (
+            "`theurian review ingest` is what reaches this code; **no MCP tool does**, "
+            "so `system.capabilities` still reports `reviewIngestion: false`.",
+        ),
+    ),
 )
+
+
+#: One extractor per narrating record, keyed by the row's own reader name.
+#:
+#: A mapping rather than a chain of returns: the population has grown twice since
+#: this was two branches, and each growth added a branch that looked like the one
+#: above it. A missing key raises here, naming the reader, where a trailing
+#: ``return`` silently handed the new row the *last* extractor's text -- which
+#: would be a row asserting sentences against a file it does not describe, and
+#: green for the wrong reason.
+_ERA_READERS: Final[dict[str, Callable[[], str]]] = {
+    "review-package": lambda: _package_docstring(_REVIEW_PACKAGE),
+    "github-package": lambda: _package_docstring(_GITHUB_PACKAGE),
+    "boundary-adr": lambda: _markdown_prose(_BOUNDARY_ADR),
+    "roadmap": lambda: _markdown_prose(_ROADMAP),
+    "readme": lambda: _markdown_prose(_README),
+    "core-changelog": lambda: _markdown_prose(_CORE_CHANGELOG),
+    "flag-pin": lambda: _string_constants(_FLAG_PIN),
+}
 
 
 def _era_text(reader: str) -> str:
@@ -437,15 +505,12 @@ def _era_text(reader: str) -> str:
     of them written as implicitly concatenated literals with the claim broken
     across two of them.
     """
-    if reader == "review-package":
-        return _package_docstring(_REVIEW_PACKAGE)
-    if reader == "github-package":
-        return _package_docstring(_GITHUB_PACKAGE)
-    if reader == "boundary-adr":
-        return _markdown_prose(_BOUNDARY_ADR)
-    if reader == "roadmap":
-        return _markdown_prose(_ROADMAP)
-    return _string_constants(_FLAG_PIN)
+    assert reader in _ERA_READERS, (
+        f"`{reader}` names no extractor, so the row that asked for it would be "
+        f"asserting its sentences against another record's text. The readers are "
+        f"{sorted(_ERA_READERS)}"
+    )
+    return _ERA_READERS[reader]()
 
 
 def _assert_states_the_era(label: str, text: str, published: object) -> None:
