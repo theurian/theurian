@@ -62,7 +62,7 @@ from theurian.application.review_search_builder import (
     ReviewSearchBuilder,
     ReviewSearchBuildRequest,
 )
-from theurian.cli.review_commands import evidence_entries, evidence_paths
+from theurian.cli.review_commands import evidence_entries, evidence_fingerprints
 from theurian.domain.enums import ReviewThreadState
 from theurian.domain.errors import DomainError
 from theurian.domain.identifiers import ProjectId
@@ -603,7 +603,7 @@ def test_operator_shaped_text_survives_the_landing_and_the_build_byte_for_byte(
     store = SqliteReviewSearchStore(paths.review_search_for("local"))
     ReviewSearchBuilder(
         read_evidence=evidence_entries(evidence),
-        list_evidence_paths=evidence_paths(paths.review),
+        list_evidence_fingerprints=evidence_fingerprints(paths.review),
         write=store.replace_all,
     ).build(ReviewSearchBuildRequest(withheld_record_keys=frozenset()))
 

@@ -70,7 +70,7 @@ from theurian.application.review_search_builder import (
     ReviewSearchBuildError,
     ReviewSearchBuildRequest,
 )
-from theurian.cli.review_commands import evidence_entries, evidence_paths
+from theurian.cli.review_commands import evidence_entries, evidence_fingerprints
 from theurian.domain.enums import ReviewThreadState
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.knowledge import SourceAnchor
@@ -235,7 +235,7 @@ class _Project:
     def build(self) -> dict[str, object]:
         builder = ReviewSearchBuilder(
             read_evidence=evidence_entries(self.evidence),
-            list_evidence_paths=evidence_paths(self.paths.review),
+            list_evidence_fingerprints=evidence_fingerprints(self.paths.review),
             write=self.store.replace_all,
         )
         return builder.build(ReviewSearchBuildRequest(withheld_record_keys=frozenset()))

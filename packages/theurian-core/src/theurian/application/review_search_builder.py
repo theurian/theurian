@@ -9,9 +9,9 @@ injection, so a build is exercised without naming a filesystem layout or SQLite
 **The direction of the dependency is the whole point of this module's shape.**
 The evidence files are the source and this layer may not name the package that
 reads them, so the build takes three callables -- :data:`ReadEvidence`,
-:data:`ListEvidencePaths` and :data:`WriteReviewSearchStore` -- and the
+:data:`ListEvidenceFingerprints` and :data:`WriteReviewSearchStore` -- and the
 composition root binds ``ReviewEvidenceStore.read_all``,
-``EvidenceReader.relative_paths`` and ``SqliteReviewSearchStore.replace_all`` to
+``EvidenceReader.fingerprints`` and ``SqliteReviewSearchStore.replace_all`` to
 them in that order -- the shape ``review_ingest_service`` already uses for the
 landing seam, and the reason :class:`EvidenceEntry` exists rather than the
 store's own record type.
@@ -43,7 +43,7 @@ opened the pull request.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -70,16 +70,29 @@ from theurian.domain.review_search import (
 #: package that owns the files, and the composition root is where the two meet.
 ReadEvidence = Callable[[], tuple["EvidenceEntry", ...]]
 
-#: Which evidence files exist *right now*, as the same relative paths
+#: What a listing says about one evidence file: ``(mtime_ns, size, whether it is
+#: a regular file)``. Compared for equality and never interpreted here, so this
+#: layer names no filesystem concept beyond "the same file, unchanged".
+#:
+#: **Three slots and not one**, because the transition each closes is a different
+#: one: ``mtime_ns`` and ``size`` say the bytes were rewritten, and the flag says
+#: the leaf stopped being a file at all -- a directory put in its place. The flag
+#: is what makes that last transition a fingerprint change *by construction*
+#: rather than one that depends on a timestamp having moved as well.
+EvidenceFingerprint = tuple[int, int, bool]
+
+#: What is on disk *right now*, keyed by the same relative paths
 #: :attr:`EvidenceEntry.relative_path` carries. A listing and never a read: it is
 #: called with the project's write lock held, where a parse per file is exactly
 #: what :meth:`ReviewSearchBuilder.build`'s read/write split exists to keep out.
+#: A ``stat`` per leaf is not a parse -- it answers from the inode and opens
+#: nothing.
 #:
 #: Bound to the walk the record read goes through rather than to one written for
 #: this check, so the set a publish drops against is the set a re-read would
 #: enumerate. Two walks with their own opinions about which directories count
 #: would drop a live record the moment they drifted.
-ListEvidencePaths = Callable[[], frozenset[str]]
+ListEvidenceFingerprints = Callable[[], Mapping[str, EvidenceFingerprint]]
 
 #: How a built load becomes durable. Bound to a store already addressed to a path,
 #: so this layer never names a file: an application service that knew where the
@@ -239,10 +252,11 @@ class ReviewSearchBuilder:
         read_evidence: ReadEvidence,
         # No default, for `withheld_record_keys`' reason turned the other way up:
         # a builder that could be constructed without this one revalidates against
-        # nothing and republishes a deleted record, which is the defect the
-        # parameter exists to close. Every construction site therefore states its
-        # listing, and every test that builds runs the check over a real directory.
-        list_evidence_paths: ListEvidencePaths,
+        # nothing and republishes a deleted or rewritten record, which is the
+        # defect the parameter exists to close. Every construction site therefore
+        # states its listing, and every test that builds runs the check over a
+        # real directory.
+        list_evidence_fingerprints: ListEvidenceFingerprints,
         write: WriteReviewSearchStore,
         # `nullcontext`, so a test driving a builder against a private temporary
         # path gets the same behaviour without inventing a lock file. The shipped
@@ -250,7 +264,7 @@ class ReviewSearchBuilder:
         write_section: WriteSection = nullcontext,
     ) -> None:
         self._read_evidence = read_evidence
-        self._list_evidence_paths = list_evidence_paths
+        self._list_evidence_fingerprints = list_evidence_fingerprints
         self._write = write
         self._write_section = write_section
 
@@ -277,33 +291,71 @@ class ReviewSearchBuilder:
         git read, and one continuous hold over the publish rather than two
         sequential holds (#468).
 
-        Two rebuilds can therefore read the directory at different instants, and
-        the one that read *earlier* may publish *later*. In the **deletion**
-        direction that is not a store one refetch behind but a removal undone:
-        deleting a file is the retention remedy ADR-0030 decision 3 leaves an
-        operator, since ``.theurian/review/`` is source and no refetch rebuilds
-        it, so a record republished from a stale read puts back content somebody
-        took out -- with both commands exiting 0 and nothing saying so. The
-        membership check below is what closes it, and
+        Two rebuilds, or a rebuild and a concurrent ``review ingest``, can
+        therefore touch the directory at different instants, and the one that read
+        *earlier* may publish *later*. So the build fingerprints the directory
+        **before** the read and again inside the section, and publishes only the
+        records whose fingerprint did not move.
+
+        **The order is load-bearing, and it is the whole reason the first call
+        sits where it does.** A fingerprint taken *after* the read describes the
+        directory a change has already happened to: for a change that landed
+        while the read was in flight -- the widest of this build's three windows,
+        since the read is a parse per evidence file -- it would match the one
+        taken at the publish, the comparison would say nothing moved, and the
+        build would publish the body the read took before the change. That is the
+        defect this closes rather than one it introduces. Fingerprint, then read,
+        then fingerprint again; ``test_review_search_builder.py``'s
+        ``test_a_record_rewritten_between_the_read_and_the_publish_is_not_republished``
+        is what reddens when the two calls swap places, and it is the only case
+        there that does -- a change made after the read returns is caught
+        whichever side of the read the first capture sits on.
+
+        **Every transition a file can make across one build, and what each one
+        gets. The enumeration is the closure** -- it is over the *states* a path
+        can be in at the two captures, so it has no residue by construction, and
+        it replaces a two-direction sentence that named deletion and addition and
+        silently left the middle three out:
+
+        * **present -> absent.** Revalidated: the record is dropped. Deleting a
+          file is the retention remedy ADR-0030 decision 3 leaves an operator,
+          since ``.theurian/review/`` is source and no refetch rebuilds it, so a
+          record republished from a stale read puts back content somebody took
+          out -- with both commands exiting 0 and nothing saying so.
+        * **absent -> present.** One refetch behind, by design. Noticing a file
+          that landed after the first capture is not enough -- it would have to be
+          *read*, and that is the parse this must not hold -- so it arrives with
+          the next rebuild, which converges.
+        * **present -> different content.** Revalidated by the fingerprint: the
+          record is dropped rather than published with the body the read took. A
+          store one rebuild behind costs a rebuild; a store serving the
+          pre-update body of a record somebody has already corrected upstream
+          costs the correction.
+        * **present -> not a regular file.** Revalidated by the fingerprint's
+          third slot, which is why that slot is in it: a leaf replaced by a
+          directory is a changed fingerprint whatever its timestamp says.
+        * **present -> same content.** No-op: the fingerprints are equal and the
+          record is published, which is every ordinary build.
+
+        **Over-dropping is the failure direction this chooses, and it is
+        reachable.** A benign refetch that rewrites a record with byte-identical
+        content still moves ``mtime_ns``, so its record is dropped from *this*
+        build even though nothing about it changed. That is fail-closed and it
+        converges: the record is absent until the next rebuild, and ``review
+        ingest`` runs one itself after every landing.
         ``test_review_search_builder.py``'s
-        ``test_a_record_deleted_between_the_read_and_the_publish_is_not_republished``
-        is what fails when it stops running inside the section.
+        ``test_a_refetch_that_rewrites_identical_bytes_is_dropped_and_returns_next_build``
+        asserts that behaviour rather than leaving it described.
 
-        **The check is a listing, not a second read**, which is what keeps the
-        paragraph above true: :data:`ListEvidencePaths` opens no file and decodes
-        nothing, so the hold is a directory walk plus a set membership test over
-        records already projected in memory. Re-reading here would put the parse
-        per file back under the lock, which is the thing the split exists to
-        avoid.
-
-        **The addition direction stays one rebuild behind, on purpose.** A file
-        that landed after the read is not picked up inside the section, because
-        noticing it is not enough -- it would have to be *read*, and that is the
-        parse this must not hold. So a new record is absent until the next
-        rebuild, which converges;
-        ``test_a_file_that_lands_after_the_read_arrives_with_the_next_build``
-        pins both halves. A store briefly missing a record that exists costs a
-        rebuild; a store that resurrects a deleted one costs the deletion.
+        **The check is a listing, not a second read**, which is what keeps all of
+        the above payable: :data:`ListEvidenceFingerprints` opens no file and
+        decodes nothing, so each hold is a directory walk plus a ``stat`` per leaf
+        and an equality test over records already projected in memory. Re-reading
+        here would put the parse per file back under the lock, which is the thing
+        the split exists to avoid -- and hashing the content, which is what would
+        close the mtime-granularity residual
+        :meth:`~theurian.infrastructure.review_evidence.reader.EvidenceReader.fingerprints`
+        records, is a read of every file by another name.
 
         Raises:
             ReviewSearchBuildError: If a landed record carries a value this build
@@ -322,6 +374,11 @@ class ReviewSearchBuilder:
                 written, which is the direction to fail in: publishing without
                 knowing what is on disk is how the deletion above comes back.
         """
+        # **Before the read**, and the docstring's ordering paragraph is why: a
+        # fingerprint taken after it describes a directory a change made *during*
+        # the read has already happened to, matches the one taken at the publish,
+        # and lets the pre-update body through as unchanged.
+        before_the_read = self._list_evidence_fingerprints()
         entries = self._read_evidence()
         kept = tuple(
             entry for entry in entries if entry.record_key not in request.withheld_record_keys
@@ -331,11 +388,13 @@ class ReviewSearchBuilder:
             # Inside the section and immediately before the write, so what is
             # published is keyed on what is on disk at publish time rather than at
             # read time. A record withheld above never reaches here at all, so a
-            # key that is both withheld and deleted is out for the first reason.
-            still_on_disk = self._list_evidence_paths()
+            # key that is both withheld and changed is out for the first reason.
+            at_the_publish = self._list_evidence_fingerprints()
             load = ReviewSearchLoad(
                 records=tuple(
-                    record for record in projected if record.relative_path in still_on_disk
+                    record
+                    for record in projected
+                    if _unchanged(record.relative_path, before_the_read, at_the_publish)
                 )
             )
             self._write(load)
@@ -349,8 +408,8 @@ class ReviewSearchBuilder:
         # scan rather than to describe a number.
         return {
             # What was published, which is the read's records minus the withheld
-            # ones minus any whose file went away before the write. So the two
-            # counts stop summing to what the read found exactly when the
+            # ones minus any whose file moved between the two fingerprints. So the
+            # two counts stop summing to what the read found exactly when the
             # revalidation above drops something -- a window narrow enough that no
             # third key is published for it, and wide enough that this note is
             # cheaper than the next reader deriving the missing one.
@@ -361,6 +420,38 @@ class ReviewSearchBuilder:
             # command; the shipped callers pass an empty set, so it is always 0.
             "withheld": len(entries) - len(kept),
         }
+
+
+def _unchanged(
+    relative_path: str,
+    before_the_read: Mapping[str, EvidenceFingerprint],
+    at_the_publish: Mapping[str, EvidenceFingerprint],
+) -> bool:
+    """Whether one record's file is the same file, unmoved, at both captures.
+
+    **One predicate over the two captures rather than a check per transition**,
+    which is what makes :meth:`ReviewSearchBuilder.build`'s enumeration a closure
+    and not a list: a transition nobody thought of is a fingerprint that differs,
+    and a fingerprint that differs is a drop. Adding a slot to
+    :data:`EvidenceFingerprint` therefore widens what this sees without touching
+    this function.
+
+    Both directions of *absence* are drops, and they are not the same case. A path
+    absent at the publish is a file that went away -- the deletion this exists for.
+    A path absent *before the read* is a file that landed inside the build's own
+    window: it was read and projected, but nothing observed it before the read, so
+    there is no fingerprint the publish-time one can be compared against and
+    publishing it would be publishing a record on the strength of one observation.
+    It arrives with the next rebuild, which is the same one-refetch-behind
+    treatment a file that lands after the read gets.
+
+    ``at_the_publish.get`` returning ``None`` never compares equal to a real
+    fingerprint, so the vanished case falls out of the equality rather than
+    needing an arm of its own -- but the *before* side does need one, because two
+    ``None``\\ s would compare equal and publish a record neither capture saw.
+    """
+    captured = before_the_read.get(relative_path)
+    return captured is not None and at_the_publish.get(relative_path) == captured
 
 
 def _projected(entry: EvidenceEntry) -> ReviewSearchRecord:
@@ -614,7 +705,8 @@ def _refuse_untransportable(record: ReviewSearchRecord) -> None:
 
 __all__ = [
     "EvidenceEntry",
-    "ListEvidencePaths",
+    "EvidenceFingerprint",
+    "ListEvidenceFingerprints",
     "ReadEvidence",
     "ReviewSearchBuildError",
     "ReviewSearchBuildRequest",

@@ -68,7 +68,7 @@ from theurian.application.review_search_builder import (
     ReviewSearchBuildRequest,
 )
 from theurian.cli.main import app
-from theurian.cli.review_commands import evidence_entries, evidence_paths
+from theurian.cli.review_commands import evidence_entries, evidence_fingerprints
 from theurian.daemon.runner import build_server
 from theurian.domain.enums import ReviewThreadState
 from theurian.domain.identifiers import ProjectId
@@ -359,7 +359,7 @@ def _land_and_build(
     store = SqliteReviewSearchStore(paths.review_search_for(REVIEW_SEARCH_STORE_ID))
     ReviewSearchBuilder(
         read_evidence=evidence_entries(evidence),
-        list_evidence_paths=evidence_paths(paths.review),
+        list_evidence_fingerprints=evidence_fingerprints(paths.review),
         write=store.replace_all,
     ).build(ReviewSearchBuildRequest(withheld_record_keys=withheld))
     if record_provenance:

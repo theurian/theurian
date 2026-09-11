@@ -18,13 +18,16 @@ Five claims, and each fails on its own:
   dumped-value form, against the store built from a corpus that never held K --
   the one-query-two-corpora shape, at the store level. The MCP-level version of
   the same closure is a later commit's.
-* **A record deleted between the read and the publish is not republished.** The
-  evidence read is outside the project's write lock, so a rebuild can hold a
-  corpus older than the disk; the membership check inside the section is what
-  keeps a deletion -- ADR-0030 decision 3's only retention remedy -- from being
-  silently undone. The opposite direction is asserted in the same section: a file
-  that lands *after* the read is absent until the next build, because picking it
-  up would mean parsing it under the lock.
+* **A record whose file moved between the read and the publish is not
+  republished.** The evidence read is outside the project's write lock, so a
+  rebuild can hold a corpus older than the disk; the fingerprint comparison
+  around the read is what keeps a deletion -- ADR-0030 decision 3's only
+  retention remedy -- from being silently undone, and what keeps a record that
+  was *rewritten* in that window out of the store with the body the read took.
+  Every transition a path can make across one build has a case in this section:
+  present to absent, absent to present, present to different content, present to
+  a directory, and present to the same content -- the last two of those being
+  the closure the enumeration is, not a sample of it.
 * **A rebuild reproduces.** Delete the store, run the builder again over the same
   files, and it comes back equal -- ADR-0030's owed test 4, whose write-and-read
   half slice 2 already held and which needed a store to delete.
@@ -43,6 +46,7 @@ import sqlite3
 import sys
 from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager, nullcontext
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
@@ -53,11 +57,13 @@ from theurian.application.findings_builder import WriteSection
 from theurian.application.project_service import ProjectPaths
 from theurian.application.review_search_builder import (
     EvidenceEntry,
+    ReadEvidence,
     ReviewSearchBuilder,
     ReviewSearchBuildError,
     ReviewSearchBuildRequest,
+    _unchanged,
 )
-from theurian.cli.review_commands import evidence_entries, evidence_paths
+from theurian.cli.review_commands import evidence_entries, evidence_fingerprints
 from theurian.domain.enums import ReviewThreadState
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.knowledge import SourceAnchor
@@ -199,30 +205,58 @@ def _landed(paths: ProjectPaths, *records: EvidenceRecord) -> ReviewEvidenceStor
     return store
 
 
+def _read_that_then(read: ReadEvidence, act: Callable[[], None]) -> ReadEvidence:
+    """The evidence read, with ``act`` run after it has its bytes and before it returns.
+
+    **The instant the fingerprint ordering is about, and the only one that tells
+    the two orders apart.** A change made after the read returns is caught
+    whichever side of the read the first fingerprint sits on, because both
+    fingerprints are then taken around it. A change that lands *while the read is
+    in flight* is not: the entries carry the pre-change bytes and the disk carries
+    the post-change ones the moment the read returns, so a fingerprint taken
+    after the read already describes the changed file and matches the one taken
+    at the publish.
+
+    That window is also the widest of the build's three -- the read is a parse per
+    evidence file, where the other two phases are a directory walk and a store
+    write -- so it is where a concurrent ``review ingest`` is most likely to land.
+    """
+
+    def read_then() -> tuple[EvidenceEntry, ...]:
+        entries = read()
+        act()
+        return entries
+
+    return read_then
+
+
 def _build(
     paths: ProjectPaths,
     evidence: ReviewEvidenceStore,
     *,
     withheld: frozenset[str],
     write_section: WriteSection = nullcontext,
+    during_read: Callable[[], None] | None = None,
 ) -> tuple[SqliteReviewSearchStore, dict[str, object]]:
     """One build, exactly as the composition root composes it, minus the lock file.
 
-    ``evidence_entries`` and ``evidence_paths`` are imported from the CLI rather
-    than re-implemented here: that nine-field mapping is the thing under test as
-    much as the builder is, and the second binds the same directory walk the read
-    goes through, so a test that listed the files itself would pass over a
-    composition root that had stopped carrying a field or started listing a
+    ``evidence_entries`` and ``evidence_fingerprints`` are imported from the CLI
+    rather than re-implemented here: that nine-field mapping is the thing under
+    test as much as the builder is, and the second binds the same directory walk
+    the read goes through, so a test that listed the files itself would pass over
+    a composition root that had stopped carrying a field or started listing a
     different set.
 
-    ``write_section`` defaults to the builder's own ``nullcontext`` and is a
-    parameter for the two race cases below, which need to change the directory at
-    a named instant *inside* the section rather than around the call.
+    ``write_section`` and ``during_read`` are the two instants the race cases
+    below need, and they are not interchangeable: the first changes the directory
+    *inside* the write section, the second changes it while the read is still in
+    flight. :func:`_read_that_then` records which claim each one can drive.
     """
     store = SqliteReviewSearchStore(paths.review_search_for("local"))
+    read: ReadEvidence = evidence_entries(evidence)
     builder = ReviewSearchBuilder(
-        read_evidence=evidence_entries(evidence),
-        list_evidence_paths=evidence_paths(paths.review),
+        read_evidence=read if during_read is None else _read_that_then(read, during_read),
+        list_evidence_fingerprints=evidence_fingerprints(paths.review),
         write=store.replace_all,
         write_section=write_section,
     )
@@ -405,6 +439,203 @@ def test_a_record_deleted_between_the_read_and_the_publish_is_not_republished(
         assert trace not in stored, f"a withheld and deleted record's {trace!r} is in the store"
     assert "Bound the retry budget" in stored, "the record that survived is missing too"
     assert report == {"records": 1, "withheld": 1}
+
+
+def _retitled(number: int = 42) -> EvidenceRecord:
+    """The same pull-request record with one field edited upstream.
+
+    ``dataclasses.replace`` on the payload rather than a second constructor call,
+    so everything that decides the record's *path* -- provider, repository, kind,
+    number -- is carried over by construction. A refetch has to land on the same
+    file for the race below to be a race at all, and building a second record by
+    hand is how that silently stops being true.
+    """
+    original = _event(number)
+    assert isinstance(original.payload, ReviewEvent)
+    return replace(original, payload=replace(original.payload, title="Retitled upstream"))
+
+
+def test_a_record_rewritten_between_the_read_and_the_publish_is_not_republished(
+    tmp_path: Path,
+) -> None:
+    """RED means the store serves a body the evidence file no longer carries.
+
+    The update face of the same window the deletion case above covers, and the
+    one a membership check cannot see: the file is present at the publish under
+    the identical path, so "is it still on disk" answers yes while the bytes
+    behind it are somebody's correction. ``ReviewEvidenceStore`` *updates* a
+    record whose content changed upstream -- ``review ingest`` does exactly this
+    on every refetch -- so the writer this races against is the product's own.
+
+    Both directions, because either alone would pass over the wrong fix. The
+    pre-update title must be absent from this build's store: publishing it is
+    serving a body that exists nowhere on disk, under a ``lastSeenRun`` stamp
+    that says it was observed. And the post-update title must be there after the
+    **next** build: a revalidation that dropped the record for ever would trade
+    one defect for a store that never converges.
+
+    **The edit lands while the read is in flight**, which is what makes this the
+    case that holds the fingerprint *ordering* and not only the comparison: see
+    :func:`_read_that_then`. Moving the build's first capture to after the read
+    leaves every other case here green and turns this one red.
+
+    The thread is the complement in both builds, so a build that published
+    nothing at all cannot pass here.
+    """
+    paths = _project(tmp_path)
+    evidence = _landed(paths, _event(), _thread())
+
+    def edit_the_pull_request() -> None:
+        evidence.write((_retitled(),), run=RUN)
+
+    store, report = _build(
+        paths,
+        evidence,
+        withheld=frozenset(),
+        during_read=edit_the_pull_request,
+    )
+
+    stored = _every_stored_value(store)
+    assert "Bound the retry budget" not in stored, (
+        "the store serves the title the read took, which the evidence file no longer "
+        "carries -- the record was rewritten before anything was published"
+    )
+    assert "Retitled upstream" not in stored, (
+        "the post-update body was published without being read, which needs a parse "
+        "under the write lock"
+    )
+    assert "This retries forever." in stored, "the record nothing touched is missing too"
+    assert report == {"records": 1, "withheld": 0}
+
+    rebuilt, second = _build(paths, evidence, withheld=frozenset())
+
+    stored_again = _every_stored_value(rebuilt)
+    assert "Retitled upstream" in stored_again, (
+        "the next rebuild did not converge on the edited record, so the revalidation "
+        "drops it for ever rather than for one build"
+    )
+    assert "Bound the retry budget" not in stored_again
+    assert second == {"records": 2, "withheld": 0}
+
+
+def test_a_leaf_replaced_by_a_directory_between_the_read_and_the_publish_is_dropped(
+    tmp_path: Path,
+) -> None:
+    """RED means a record survives its file stopping being a file.
+
+    The walk that lists evidence selects a leaf by the **suffix of its name**, and
+    a directory may be named ``42.json`` as easily as a file may. So a path that
+    is present at both captures, and is a directory at the second, is a path a
+    membership check reports as still there -- which is why the fingerprint
+    carries whether the leaf is a regular file and not only when it last changed.
+
+    The thread is the complement, so a build that published nothing cannot pass.
+    """
+    paths = _project(tmp_path)
+    evidence = _landed(paths, _event(), _thread())
+    landed = _landed_by_kind(paths)
+
+    def replace_the_leaf_with_a_directory() -> None:
+        landed["pull-request"].unlink()
+        landed["pull-request"].mkdir()
+
+    store, report = _build(
+        paths,
+        evidence,
+        withheld=frozenset(),
+        write_section=_write_section_that(replace_the_leaf_with_a_directory),
+    )
+
+    stored = _every_stored_value(store)
+    assert "Bound the retry budget" not in stored, (
+        "a record whose leaf is now a directory was published from the copy the read "
+        "took, so the listing saw a name and not a file"
+    )
+    assert "This retries forever." in stored, "the record nothing touched is missing too"
+    assert report == {"records": 1, "withheld": 0}
+
+
+def test_the_fingerprint_slot_that_says_regular_file_decides_on_its_own() -> None:
+    """RED means the case above rests on a timestamp having moved as well.
+
+    The integration case cannot hold this: a directory put where a file was
+    carries its own ``mtime_ns`` and its own size, so the record is dropped
+    whether or not the third slot exists. What makes ``present -> not a regular
+    file`` a revalidated transition **by construction** rather than by accident of
+    two other values is that the flag is part of the fingerprint, and the only way
+    to demonstrate that is to hold the other two still.
+
+    ``_unchanged`` is reached by name deliberately: it is the predicate the
+    publish applies, so a fix that moved the check back out of it would redden
+    here rather than leaving this passing over a helper nothing calls.
+    """
+    path = "sha256-abc/pull-request/42.json"
+    a_file = {path: (1_700_000_000_000_000_000, 512, True)}
+    not_a_file = {path: (1_700_000_000_000_000_000, 512, False)}
+
+    assert _unchanged(path, a_file, a_file), (
+        "an unchanged fingerprint is not publishable, so the predicate drops every record"
+    )
+    assert not _unchanged(path, a_file, not_a_file), (
+        "the same mtime and the same size at a path that stopped being a regular file "
+        "read as unchanged, so the third slot decides nothing"
+    )
+    assert not _unchanged(path, a_file, {}), "a vanished path read as unchanged"
+    assert not _unchanged(path, {}, a_file), (
+        "a path nothing observed before the read was published on the strength of one observation"
+    )
+
+
+def test_a_refetch_that_rewrites_identical_bytes_is_dropped_and_returns_next_build(
+    tmp_path: Path,
+) -> None:
+    """The documented over-drop: fail-closed, and it converges.
+
+    A refetch that finds a record unchanged upstream still *rewrites* its file,
+    and ``mtime_ns`` moves even where every byte is the same -- asserted here on
+    the bytes rather than assumed, so a store that started writing a differing
+    stamp would not let this case quietly become the update case above.
+
+    The fingerprint cannot tell that rewrite from a content change without
+    reading the file, which is the thing the read/write split exists to keep out
+    from under the lock. So the record is dropped, and this test records that
+    behaviour rather than wishing it away: it costs one rebuild, and ``review
+    ingest`` runs one itself after every landing.
+
+    RED in the second half means the over-drop is permanent, which is a different
+    defect from the one it was accepted as.
+    """
+    paths = _project(tmp_path)
+    evidence = _landed(paths, _event(), _thread())
+    landed = _landed_by_kind(paths)["pull-request"]
+    before = landed.read_bytes()
+
+    def refetch_the_same_record() -> None:
+        evidence.write((_event(),), run=RUN)
+        assert landed.read_bytes() == before, (
+            "the refetch changed the bytes, so this case is the content-change case "
+            "and no longer measures the benign one"
+        )
+
+    store, report = _build(
+        paths,
+        evidence,
+        withheld=frozenset(),
+        write_section=_write_section_that(refetch_the_same_record),
+    )
+
+    assert "Bound the retry budget" not in _every_stored_value(store), (
+        "a record rewritten with identical bytes was published, so the revalidation "
+        "is reading content it must not read under the lock"
+    )
+    assert report == {"records": 1, "withheld": 0}
+
+    rebuilt, second = _build(paths, evidence, withheld=frozenset())
+
+    assert "Bound the retry budget" in _every_stored_value(rebuilt), (
+        "the over-drop is permanent rather than one rebuild long"
+    )
+    assert second == {"records": 2, "withheld": 0}
 
 
 def test_a_file_that_lands_after_the_read_arrives_with_the_next_build(tmp_path: Path) -> None:

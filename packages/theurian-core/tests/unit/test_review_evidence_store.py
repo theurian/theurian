@@ -55,6 +55,7 @@ from theurian.domain.review import (
 from theurian.infrastructure.review_evidence import (
     EVIDENCE_FORMAT_VERSION,
     EvidenceKind,
+    EvidenceReader,
     EvidenceRecord,
     IngestionRun,
     ReviewEvidenceError,
@@ -269,6 +270,101 @@ def test_a_thread_with_no_file_path_round_trips_as_none(tmp_path: Path) -> None:
 def test_a_store_over_a_directory_that_does_not_exist_reads_as_empty(tmp_path: Path) -> None:
     """A project that has never ingested is not an error; it has no records."""
     assert _store(tmp_path).read_all() == ()
+
+
+def test_a_review_path_that_exists_and_is_not_a_directory_refuses(tmp_path: Path) -> None:
+    """RED means a corpus this build cannot enumerate is reported as an empty one.
+
+    The two conditions used to be one ``is_dir``: an absent review directory and
+    a review *path* occupied by something else both answered "no records". Only
+    the first of those is honest. The second is a tree this build cannot walk --
+    ``theurian review build`` published a store with nothing in it, ``review
+    ingest``'s landed-key read answered the empty set, and both exited 0 -- while
+    the reader's own ``Raises`` clause said a directory that cannot be listed
+    refuses.
+
+    The cure is held to the shape this package's cures are held to at the same
+    time: it names the path, it names a command that prints what is standing
+    there, and it offers a **move** rather than a deletion, because nothing at
+    this seam can tell what the occupying object holds or whose it is.
+    """
+    root = tmp_path / "repo"
+    (root / ".theurian").mkdir(parents=True)
+    _review_root(tmp_path).write_text("not a directory", encoding="utf-8")
+    store = ReviewEvidenceStore(ProjectPaths.of(root).review)
+
+    with pytest.raises(ReviewEvidenceError) as refused:
+        store.read_all()
+
+    assert "not a directory" in str(refused.value)
+    assert "ls -ld .theurian/review" in refused.value.remedy
+    assert "Do not delete it" in refused.value.remedy
+
+
+# -- fingerprints: what a listing can tell without reading a file -------------
+
+
+def test_a_fingerprint_moves_when_a_record_is_rewritten(tmp_path: Path) -> None:
+    """RED means a rebuild cannot tell a refetched record from an untouched one.
+
+    ``ReviewSearchBuilder`` publishes a record only where the fingerprint taken
+    before its read equals the one taken at the publish, so what that comparison
+    can *see* is what decides whether a store can serve a body the evidence file
+    no longer carries. This is the producer's half: the same path, rewritten,
+    answers a different triple.
+
+    Asserted on the whole triple rather than on ``mtime_ns`` alone, because the
+    claim the builder rests on is "the fingerprints differ" and narrowing it here
+    to one slot would make this test about a field rather than about that claim.
+    """
+    store = _store(tmp_path)
+    original = _event(number=42)
+    store.write([original], run=RUN_ONE)
+    reader = EvidenceReader(_review_root(tmp_path))
+    before = dict(reader.fingerprints())
+    assert isinstance(original.payload, ReviewEvent)
+
+    store.write(
+        [replace(original, payload=replace(original.payload, title="Retitled upstream"))],
+        run=RUN_TWO,
+    )
+
+    after = dict(reader.fingerprints())
+    assert sorted(before) == sorted(after), "the rewrite landed somewhere else entirely"
+    assert before != after, (
+        "a rewritten record carries the fingerprint it had before, so a rebuild would "
+        "publish the body its read took as unchanged"
+    )
+
+
+def test_a_fingerprint_says_when_a_leaf_stopped_being_a_regular_file(tmp_path: Path) -> None:
+    """RED means the third slot is something nothing computes.
+
+    The listing selects a leaf by the suffix of its **name**, and a directory may
+    be named ``42.json`` as easily as a file may -- so the fingerprint carries
+    whether the leaf is a regular file, and this is what holds that it is
+    computed rather than constant. A builder-level case cannot: a directory put
+    where a file was carries its own ``mtime_ns`` and its own size, so the record
+    is dropped whether the slot is honest or hardcoded ``True``.
+
+    Both directions, so a producer that answered ``False`` for everything would
+    fail here too.
+    """
+    store = _store(tmp_path)
+    store.write([_event(number=42)], run=RUN_ONE)
+    reader = EvidenceReader(_review_root(tmp_path))
+    (path,) = reader.fingerprints()
+    leaf = _review_root(tmp_path) / path
+
+    assert reader.fingerprints()[path][2] is True, "a landed record is not a regular file"
+
+    leaf.unlink()
+    leaf.mkdir()
+
+    assert reader.fingerprints()[path][2] is False, (
+        "a directory standing where a record was still reads as a regular file, so the "
+        "slot is not asked of the filesystem"
+    )
 
 
 def test_read_all_answers_in_one_order_whatever_order_the_records_arrived(

@@ -11,6 +11,8 @@ delegates here, so a caller still has both halves on one class.
 from __future__ import annotations
 
 import json
+import stat
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, Final, final
@@ -29,6 +31,7 @@ from theurian.infrastructure.review_evidence.codec import (
     thread_from_json,
 )
 from theurian.infrastructure.review_evidence.cures import (
+    MISPLACED_ROOT_CURE,
     UNNAMED_REPOSITORY,
     UNREADABLE_CURE,
     UNWRITABLE_CURE,
@@ -50,10 +53,42 @@ from theurian.infrastructure.review_evidence.run import IngestionRun
 from theurian.infrastructure.review_evidence.spellings import first_differing_component
 from theurian.security.paths import read_source_file
 
-#: The directory names :meth:`EvidenceReader.relative_paths` walks, derived from
+#: The directory names :meth:`EvidenceReader.fingerprints` walks, derived from
 #: the enum rather than listed, so a fourth kind is walked by the change that
 #: adds it.
 _KIND_DIRECTORIES: Final = frozenset(kind.value for kind in EvidenceKind)
+
+#: What a listing records about one evidence file: ``(mtime_ns, size, whether it
+#: is a regular file)``. Three values a ``stat`` answers, and nothing a parse
+#: would -- see :meth:`EvidenceReader.fingerprints` for what it is compared for
+#: and what it deliberately cannot tell apart.
+#:
+#: The application layer names this shape too
+#: (``review_search_builder.EvidenceFingerprint``) and neither module imports the
+#: other, because the composition root is where a port and its adapter meet
+#: (ADR-0003). What keeps the two from drifting about *which slot is which* is
+#: not a shared import but the binding itself: ``review_commands.
+#: evidence_fingerprints`` is annotated with the application's alias and returns
+#: this method, so a slot that changed type or arity on one side is a mypy error
+#: at that line.
+EvidenceFingerprint = tuple[int, int, bool]
+
+#: The fingerprint of a leaf whose ``stat`` was refused: no ``mtime_ns``, no
+#: size, and not a regular file.
+#:
+#: **Distinct from every fingerprint a real file can carry**, which is what makes
+#: it safe to compare rather than special-case: ``st_mtime_ns`` and ``st_size``
+#: are non-negative for anything that exists, so a leaf answering this at one
+#: capture and a real triple at another is a *change* by the same equality test
+#: every other transition goes through.
+#:
+#: Answered rather than raised because a dangling symbolic link under the review
+#: directory would otherwise turn a whole listing into a refusal -- and that
+#: listing runs under the project's write lock, where the honest answer is "this
+#: leaf is not something to publish from" rather than "the corpus cannot be
+#: read". :meth:`_read_one` is what refuses such a file, by name, on the read
+#: side.
+_UNSTATTABLE: Final[EvidenceFingerprint] = (-1, -1, False)
 
 
 class _FoldedPathError(ValueError):
@@ -170,7 +205,28 @@ class EvidenceReader:
         return tuple(self._read_one(relative) for relative in sorted(self.relative_paths()))
 
     def relative_paths(self) -> frozenset[str]:
-        """Every ``.json`` leaf exactly two directories below the review root.
+        """Which ``.json`` leaves exist, without what :meth:`fingerprints` says about them.
+
+        The membership view of the one walk, kept as its own name because that is
+        all :meth:`read_all` asks: a ``frozenset`` because the strings are unique
+        by construction anyway -- one directory cannot hold two entries of one
+        name, so no composition of three of them repeats -- and :meth:`read_all`
+        sorts it back into the total order it promises.
+
+        **Derived from :meth:`fingerprints` rather than walking again**, which is
+        the rule :data:`~theurian.application.review_search_builder
+        .ListEvidenceFingerprints` states from the other side: two walks with
+        their own opinions about which directories count would drop a live record
+        the moment they drifted. Everything the walk decides -- the depth, the
+        kind directories, the suffix, the case folding -- is stated once, there.
+
+        Raises:
+            ReviewEvidenceError: Whatever :meth:`fingerprints` raises, unchanged.
+        """
+        return frozenset(self.fingerprints())
+
+    def fingerprints(self) -> Mapping[str, EvidenceFingerprint]:
+        """Every ``.json`` leaf exactly two directories below the review root, stat'd.
 
         Two levels exactly, because that is the layout
         :func:`~theurian.infrastructure.review_evidence.layout.record_path`
@@ -179,26 +235,47 @@ class EvidenceReader:
         read -- a project may keep a ``README`` beside its evidence, and refusing
         one would make the directory this product's rather than the project's.
 
-        **Public because a derived build has to ask what still exists without
+        **Public because a derived build has to ask what is on disk without
         reading it.**
         :meth:`~theurian.application.review_search_builder.ReviewSearchBuilder.build`
         reads the evidence outside the project's write lock and publishes inside
-        it, so it revalidates membership against this listing immediately before
-        the write -- a record whose file was deleted in between must not be
-        republished. This is the seam that makes that check ask the *same* walk
+        it, so it calls this once on each side of the read and publishes only the
+        records whose fingerprint did not move -- a record whose file was deleted,
+        rewritten or replaced in between must not be republished from the copy the
+        read took. This is the seam that makes that check ask the *same* walk
         :meth:`read_all` reads through, rather than a second enumeration with its
         own opinion about which directories count and which suffix is a record.
 
-        It opens no file and decodes nothing, which is what makes it callable
-        under that lock at all: the only calls below that touch the filesystem are
-        ``Path.iterdir`` and ``Path.is_dir`` -- the same two
-        ``tests/unit/test_review_evidence_exception_keys.py`` records this method's
-        ``OSError`` arm against.
+        **It opens no file and decodes nothing**, which is what makes it callable
+        under that lock at all: the calls below that touch the filesystem are
+        ``Path.exists``, ``Path.is_dir``, ``Path.iterdir`` and one ``Path.stat``
+        per leaf -- every one of them an answer from the directory entry or the
+        inode, and none of them a read of a byte of content.
+        ``tests/unit/test_review_evidence_exception_keys.py`` records this
+        method's ``OSError`` arm and :func:`_fingerprint`'s against that list.
 
-        A ``frozenset`` because membership is what the caller asks of it, and the
-        strings are unique by construction anyway -- one directory cannot hold two
-        entries of one name, so no composition of three of them repeats.
-        :meth:`read_all` sorts it back into the total order it promises.
+        **``Path.stat`` per leaf rather than ``os.scandir``**, which looks like
+        the cheaper spelling and is not on the platforms this ships to: CPython
+        fills a ``DirEntry``'s ``is_dir``/``is_file`` from the directory entry's
+        own ``d_type``, but ``DirEntry.stat()`` issues the same ``stat`` syscall
+        ``Path.stat`` does everywhere except Windows -- and ``mtime_ns`` and
+        ``size`` are exactly what no ``d_type`` carries. The walk therefore keeps
+        the ``iterdir`` shape it already had, and the added cost is one ``stat``
+        per evidence file against the parse per file :meth:`read_all` does.
+
+        **What a fingerprint can and cannot tell apart.** ``(mtime_ns, size,
+        is a regular file)`` distinguishes a file from anything that replaced it
+        at the same path in every case this build's own writer can produce:
+        ``ReviewEvidenceStore`` publishes by ``os.replace`` from a sibling
+        temporary, so a refetch moves ``mtime_ns`` whatever it does to the bytes.
+        Measured 2026-09-11 on APFS: five back-to-back rewrites of one path with
+        *identical* bytes answered five distinct ``st_mtime_ns`` values
+        (``…813929295``, ``…813994210``, ``…814066292``, ``…814131540``,
+        ``…814195539``). What it cannot see is a same-size rewrite that lands
+        inside one tick of a filesystem whose timestamps are coarser than the
+        interval -- a one-second-resolution filesystem is where that is
+        reachable -- and no content hash is taken here because hashing every
+        landed file is a read, which is the thing this method exists not to do.
 
         **Finding folds; accepting does not** (round two, R2-C). Both selections
         here used to be byte comparisons against a filesystem that folds case, so
@@ -219,27 +296,46 @@ class EvidenceReader:
         directory at all.
 
         Raises:
-            ReviewEvidenceError: If the review directory cannot be listed. The
-                caller under the write lock publishes nothing in that case, which
-                is the direction to fail in: a build that could not learn what is
-                on disk and wrote anyway would be the one that reverts a deletion.
+            ReviewEvidenceError: If the review directory cannot be listed, **or
+                if something that is not a directory is standing where it
+                belongs**. The second arm is the one an absent directory used to
+                be answered by: a path that does not exist is an empty corpus,
+                which is the honest answer before a first run, but a path that
+                *does* exist and is a regular file is a corpus this build cannot
+                enumerate and reporting it as empty published a store with no
+                records in it and exit 0. The caller under the write lock
+                publishes nothing in either case, which is the direction to fail
+                in: a build that could not learn what is on disk and wrote anyway
+                would be the one that reverts a deletion.
         """
+        if not self._root.exists():
+            # An absent review directory is an empty corpus -- the honest answer
+            # before a first ingestion run, and the one `review build` must give
+            # rather than refusing a project that has simply not ingested
+            # anything. `exists` swallows its own `OSError`, so a root behind an
+            # unreadable parent reads as absent here too; that is the same
+            # residual `is_dir` carried before it.
+            return {}
         if not self._root.is_dir():
-            return frozenset()
+            raise ReviewEvidenceError(
+                "The review directory is not a directory: something else is standing "
+                "at `.theurian/review`, so no evidence record can be listed.",
+                remedy=MISPLACED_ROOT_CURE,
+            )
         try:
             # `kind_directory` rather than `kind`: the name `kind` is an
             # `EvidenceKind` everywhere else in this package, and a `Path` bound
             # to it here made `kind.name` read as the enum's member name when it
             # is the directory's.
-            return frozenset(
-                f"{repository.name}/{kind_directory.name}/{leaf.name}"
+            return {
+                f"{repository.name}/{kind_directory.name}/{leaf.name}": _fingerprint(leaf)
                 for repository in self._root.iterdir()
                 if repository.is_dir()
                 for kind_directory in repository.iterdir()
                 if kind_directory.is_dir() and kind_directory.name.casefold() in _KIND_DIRECTORIES
                 for leaf in kind_directory.iterdir()
                 if leaf.name.casefold().endswith(EVIDENCE_SUFFIX)
-            )
+            }
         except OSError as exc:
             raise ReviewEvidenceError(
                 "The review directory could not be listed: "
@@ -394,6 +490,26 @@ class EvidenceReader:
             f"way this build does not recognise: {type(exc).__name__}.",
             remedy=UNREADABLE_CURE,
         )
+
+
+def _fingerprint(leaf: Path) -> EvidenceFingerprint:
+    """One leaf's ``(mtime_ns, size, is a regular file)``, or :data:`_UNSTATTABLE`.
+
+    ``Path.stat`` follows symbolic links, matching ``read_source_file``'s own
+    ``stat``: what the third slot answers is therefore what the reader would
+    *find* at that path, not what the directory entry is. A link to a regular
+    file fingerprints as a regular file because that is what a read of it gets.
+
+    The ``OSError`` arm is what keeps a dangling link from turning the whole
+    listing into a refusal -- see :data:`_UNSTATTABLE`. It is deliberately the
+    only per-leaf arm: an ``OSError`` raised by ``iterdir`` is about the
+    *directory* and belongs to the caller's own arm, which names it.
+    """
+    try:
+        status = leaf.stat()
+    except OSError:
+        return _UNSTATTABLE
+    return (status.st_mtime_ns, status.st_size, stat.S_ISREG(status.st_mode))
 
 
 def _payload_from_json(kind: EvidenceKind, value: object, where: str) -> EvidencePayload:

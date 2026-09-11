@@ -68,7 +68,7 @@ from theurian.application.review_ingest_service import (
 )
 from theurian.application.review_search_builder import (
     EvidenceEntry,
-    ListEvidencePaths,
+    ListEvidenceFingerprints,
     ReadEvidence,
     ReviewSearchBuilder,
     ReviewSearchBuildRequest,
@@ -203,9 +203,9 @@ def evidence_entries(store: ReviewEvidenceStore) -> ReadEvidence:
     ``read_all`` is the only seam used that *reads a record*, deliberately: the
     evidence package's reader is reached through the store's own method rather
     than constructed here, so there stays exactly one way this product reads a
-    landed record and one place its refusals are worded. :func:`evidence_paths`
-    is the sibling that constructs the reader directly, and it may because it
-    opens no file at all.
+    landed record and one place its refusals are worded.
+    :func:`evidence_fingerprints` is the sibling that constructs the reader
+    directly, and it may because it opens no file at all.
     """
 
     def read() -> tuple[EvidenceEntry, ...]:
@@ -227,14 +227,15 @@ def evidence_entries(store: ReviewEvidenceStore) -> ReadEvidence:
     return read
 
 
-def evidence_paths(review_root: Path) -> ListEvidencePaths:
-    """Bind the evidence reader's own walk as the build's membership check.
+def evidence_fingerprints(review_root: Path) -> ListEvidenceFingerprints:
+    """Bind the evidence reader's own walk as the build's revalidation.
 
     :func:`evidence_entries`' companion, and the reason the two are separate: this
-    one is called with the project's write lock held, immediately before the
-    publish, to drop any record whose file has gone away since the read. It must
-    therefore be a *listing* -- ``relative_paths`` opens no file -- where the other
-    is a parse per record.
+    one is called twice around the read -- once before it and once with the
+    project's write lock held, immediately before the publish -- to drop any
+    record whose file went away, was rewritten, or stopped being a file in
+    between. It must therefore be a *listing* -- ``fingerprints`` opens no file
+    and answers each leaf from its inode -- where the other is a parse per record.
 
     Bound to :class:`EvidenceReader`'s walk rather than to a listing written here,
     so the set a publish is checked against is the set a re-read would enumerate.
@@ -243,11 +244,17 @@ def evidence_paths(review_root: Path) -> ListEvidencePaths:
     first time one of those drifted the build would either resurrect a deleted
     record or drop a live one.
 
+    **This return annotation is what keeps the two spellings of a fingerprint from
+    drifting.** The reader names ``(mtime_ns, size, is a regular file)`` in its own
+    module and this layer names it in the application's, and neither imports the
+    other because a port and its adapter meet at a composition root (ADR-0003). A
+    slot that changed type or arity on one side is a type error on this line.
+
     ``review_root`` is the same ``ProjectPaths.review`` the store is built on,
     already proved contained inside the project -- the precondition
     :class:`EvidenceReader` states in its own ``Args``.
     """
-    return EvidenceReader(review_root).relative_paths
+    return EvidenceReader(review_root).fingerprints
 
 
 def _lock_write_section(lock_path: Path) -> WriteSection:
@@ -306,7 +313,7 @@ def rebuild_search_store(paths: ProjectPaths) -> dict[str, object]:
     store_path = paths.review_search_for(REVIEW_SEARCH_STORE_ID)
     builder = ReviewSearchBuilder(
         read_evidence=evidence_entries(ReviewEvidenceStore(paths.review)),
-        list_evidence_paths=evidence_paths(paths.review),
+        list_evidence_fingerprints=evidence_fingerprints(paths.review),
         write=SqliteReviewSearchStore(store_path).replace_all,
         write_section=_lock_write_section(paths.write_lock),
     )

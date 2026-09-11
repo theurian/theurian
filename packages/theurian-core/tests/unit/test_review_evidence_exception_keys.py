@@ -38,7 +38,7 @@ which makes a newly-narrowed arm a red test rather than the next round's finding
 ``ast.ExceptHandler`` and on a call spelled ``suppress``, so an alias
 (``from contextlib import suppress as quietly``) is invisible to it, as is any
 other way of swallowing an exception -- ``Path.is_dir()``'s internal one is the
-member that already exists in this package, and ``relative_paths``' row is
+member that already exists in this package, and ``fingerprints``' row is
 where it is written down. It also stops at this file set: a helper these modules
 call from elsewhere in the package carries its own arms and is not walked here.
 
@@ -108,11 +108,20 @@ _ACCOUNTED: Final[dict[str, str]] = {
     "reader.py:EvidenceReader._read_one:_FoldedPathError": (
         "a `ValueError` caught ahead of its own base, and only to change the cure"
     ),
-    "reader.py:EvidenceReader.relative_paths:OSError": (
-        "the walk's only calls that are not total are `Path.iterdir` and "
-        "`Path.is_dir`, and `OSError` is both contracts -- `is_dir` swallows its own "
-        "internally, which is the recorded residual: a directory that is really an "
-        "`ELOOP` reads as absent"
+    "reader.py:EvidenceReader.fingerprints:OSError": (
+        "the walk's directory-level calls that are not total: `Path.iterdir`, whose "
+        "contract is `OSError`, beside `Path.exists` and `Path.is_dir`, which swallow "
+        "their own internally -- the recorded residual, a directory that is really an "
+        "`ELOOP` reads as absent. The per-leaf `Path.stat` is *not* graded here; it has "
+        "its own arm below, because a leaf that cannot be stat'd must not turn a whole "
+        "listing into a refusal"
+    ),
+    "reader.py:_fingerprint:OSError": (
+        "one leaf's `Path.stat`, answered as `_UNSTATTABLE` rather than raised. A "
+        "dangling symbolic link under the review directory would otherwise refuse the "
+        "listing the publish runs under the write lock; the sentinel compares unequal "
+        "to every real fingerprint, so such a leaf is dropped by the same equality "
+        "every other transition goes through and `_read_one` is what names it"
     ),
     "reader.py:_stored:RecursionError": (
         "the fix. A `RuntimeError`, so outside every family the caller names and "

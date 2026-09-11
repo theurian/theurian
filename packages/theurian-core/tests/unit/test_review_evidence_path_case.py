@@ -5,16 +5,20 @@ independent brute-force probes, and the closure stopped there -- at the *leaf*.
 The **directory** components fold too, and three sites compared them byte-wise
 against a filesystem that does not:
 
-* ``relative_paths``' ``kind_directory.name in _KIND_DIRECTORIES``, so a
+* the evidence walk's ``kind_directory.name in _KIND_DIRECTORIES``, so a
   planted ``Pull-Request/`` made every record written into it invisible to every
   later read -- ``new=1, kept=0`` on every run for ever, and slice 3's store
   built from a corpus quietly smaller than the disk;
-* ``relative_paths``' ``leaf.name.endswith(EVIDENCE_SUFFIX)``, the same face one
+* the same walk's ``leaf.name.endswith(EVIDENCE_SUFFIX)``, the same face one
   level down: a planted ``42.JSON`` swallows the bytes of a record derived as
   ``42.json`` and keeps its own spelling (measured on APFS);
 * ``mkdir(exist_ok=True)`` and ``os.replace``, which do not compare anything in
   Python at all -- the *filesystem* resolves the name, and that is precisely why
   a ``raise``-site or comparison-site enumeration is the wrong population here.
+
+That walk is ``EvidenceReader.fingerprints``; ``relative_paths`` is its
+membership view and does no selecting of its own, so naming the walk is what
+keeps these two bullets pointing at the code that makes the selections.
 
 The rule the fix applies, in one line: **fold to find, byte-compare to accept.**
 Finding folds so a case-variant is never invisible; accepting stays byte-wise so
@@ -207,13 +211,19 @@ _ACCOUNTED: Final[dict[str, str]] = {
     ),
     "reader.py:kind_directory.is_dir": (
         "a shape question, not a name one. It swallows its own `OSError`, so an "
-        "`ELOOP` directory reads as absent -- recorded at `relative_paths`"
+        "`ELOOP` directory reads as absent -- recorded at `fingerprints`"
     ),
     "reader.py:kind_directory.iterdir": "the read walk's third level; folds to find, below",
     "reader.py:kind_directory.name": "folded before the membership test, so a variant is found",
     "reader.py:kind_directory.name.casefold": "the folded membership test itself -- the fix",
     "reader.py:leaf.name": "folded before the suffix test, so a variant is found",
     "reader.py:leaf.name.casefold": "the folded suffix test itself -- the fix",
+    "reader.py:leaf.stat": (
+        "not a name question at all: the leaf has already been selected by the folded "
+        "suffix test above, and this reads `mtime_ns`, `size` and the file type out of "
+        "its inode so a publish can tell the file the read saw from one that replaced "
+        "it. It follows symbolic links, matching the reader's own `read_source_file`"
+    ),
     "reader.py:record.relative_path.casefold": (
         "`_stored` telling a case difference apart from a genuinely misfiled record, "
         "so the two get different cures. The byte comparison one line above it is "
@@ -232,9 +242,16 @@ _ACCOUNTED: Final[dict[str, str]] = {
         "carried into the path verbatim and compared by `_stored` against the derived "
         "one, which refuses a case difference by name"
     ),
+    "reader.py:self._root.exists": (
+        "whether there is anything at the review path at all; an absent one reads as "
+        "an empty corpus, which is the honest answer before a first run. It swallows "
+        "its own `OSError`, so a root behind an unreadable parent reads as absent too "
+        "-- the same residual `is_dir` carried when it asked this question"
+    ),
     "reader.py:self._root.is_dir": (
-        "whether there is a review directory to walk at all; an absent one reads as "
-        "an empty corpus, which is the honest answer before a first run"
+        "asked only of a path that exists, and a shape question rather than a name "
+        "one: something that is there and is not a directory is a corpus this build "
+        "cannot enumerate, so it refuses rather than reporting an empty one"
     ),
     "reader.py:self._root.iterdir": "the read walk's first level",
     "records.py:self.anchor": ("not a `Path`: `EvidenceRecord.anchor` again, in `__post_init__`"),
@@ -470,7 +487,7 @@ def test_the_kind_directory_names_are_their_own_casefold() -> None:
     shouted = [kind.value for kind in EvidenceKind if kind.value != kind.value.casefold()]
 
     assert not shouted, (
-        f"{shouted} are not their own casefold, so `relative_paths`' folded membership "
+        f"{shouted} are not their own casefold, so `fingerprints`' folded membership "
         "test no longer recognises the directories this build writes."
     )
 
