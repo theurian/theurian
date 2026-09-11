@@ -603,10 +603,23 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
     # **No row replaces it, measured rather than assumed.** After the rewrite
     # **five sentences** in governed prose carry a #636 cite -- the sweep's own
     # unit, one row per sentence per number, counting 8 raw occurrences across
-    # them: ADR-0030:1642 and :1657, `packages/theurian-core/CHANGELOG.md`:520,
-    # :1217 and :1265. `_in_owner_position` is False for **all five**, so none is
-    # judged. Driven through :func:`classify` on the sentences as they stand, at
-    # all three states the number can take::
+    # them. Named by wording and not by line number, which is what the first
+    # draft of this note did: every one of its five numbers had already drifted
+    # by the time a reviewer read it, because each sits below prose the same
+    # branch was still editing. Each fragment below sits on one source line and
+    # occurs exactly once in its file, so `git grep -F` finds it:
+    #
+    #     docs/adr/0030-github-review-ingestion-spawns-gh.md
+    #         `was filed rather than fixed`
+    #         `is not re-run there`
+    #     packages/theurian-core/CHANGELOG.md
+    #         `described the read-time key`
+    #         `read nothing emptied a store`
+    #         `That module states its own cost`
+    #
+    # `_in_owner_position` is False for **all five**, so none is judged. Driven
+    # through :func:`classify` on the sentences as they stand, at all three
+    # states the number can take::
     #
     #     (absent from the tracker)  history x4, unmarked x1   judged=0
     #     issue:closed               history x4, unmarked x1   judged=0

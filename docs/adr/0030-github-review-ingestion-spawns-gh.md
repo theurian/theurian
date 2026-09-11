@@ -1667,8 +1667,23 @@ and
 `::test_a_build_that_kept_none_of_what_it_read_publishes_when_the_corpus_is_gone`,
 the withholding arm is
 `::test_a_build_that_withheld_everything_publishes_whether_the_files_are_there_or_not`
-with `::test_an_all_withheld_build_and_a_purpose_emptied_corpus_are_one_observable`,
-and the key itself is pinned from both sides by
+with `::test_an_all_withheld_build_and_a_purpose_emptied_corpus_are_one_observable`.
+**That pairing's "one observable" is three named ones and not every observable**,
+so this record states the bound rather than the phrase: what an all-withheld
+build and a purpose-emptied corpus may not differ in is whether the build raises,
+what the store holds, and what the report publishes — every key of it but
+`withheld`.
+**Duration is outside that claim and was measured, not argued away**: the
+all-withheld build parses every evidence file and the emptied corpus parses none,
+so the two differ by **1.75× at 60 records and 29.8× at 200** (measured
+2026-09-11 in round one by the security and adversarial reviewers respectively),
+a margin that grows with the corpus because the mechanism is N JSON parses
+against zero. It is not a channel: the only party who can time this build is the
+party who ran `theurian review build` in their own working tree and can read
+`.theurian/review/` directly, and no MCP tool reaches the build at all —
+`review.search` reads the store the build produced. What would re-grade it is a
+caller able to provoke a build without reading the corpus, and none exists.
+The key itself is pinned from both sides by
 `unit/test_review_search_builder_claims.py::test_the_empty_publish_guard_is_keyed_on_the_publish_time_capture`
 and `::test_the_build_records_the_decision_its_guard_makes`.
 
