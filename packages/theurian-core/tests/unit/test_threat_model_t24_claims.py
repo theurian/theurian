@@ -85,6 +85,7 @@ from __future__ import annotations
 import ast
 import pathlib
 import re
+from collections.abc import Mapping
 from typing import Final
 
 import pytest
@@ -883,6 +884,49 @@ def test_the_census_key_carries_exactly_the_branches_that_were_judged() -> None:
     )
 
 
+def _fallen(census: Mapping[str, int], floors: Mapping[str, int]) -> dict[str, tuple[int, int]]:
+    """Every recorded branch contributing fewer matches than it was recorded with.
+
+    ``census.get(branch, 0)`` rather than ``census[branch]``, and the default is
+    the whole of what this helper is separately held to. The **loudest** way for a
+    branch to fall below its floor is to be deleted from the key -- and a deleted
+    branch is absent from the census, so indexing it raises a ``KeyError`` where
+    this is supposed to report, and any default at or above the floor would make
+    that loudest failure the one arm that says nothing.
+
+    Its own case is :func:`test_a_branch_missing_from_the_census_is_reported_at_zero`,
+    because no corpus this repository holds can make a recorded branch absent
+    while the roster arm is green.
+    """
+    return {
+        branch: (census.get(branch, 0), floor)
+        for branch, floor in floors.items()
+        if census.get(branch, 0) < floor
+    }
+
+
+def test_a_branch_missing_from_the_census_is_reported_at_zero() -> None:
+    """RED means deleting a branch from the key goes past the floor arm in silence.
+
+    The floor arm's default is unreachable over the live key: the roster arm holds
+    the two rosters equal, so every recorded branch is measured and
+    ``census.get``'s default never fires. That makes it exactly the kind of line
+    that can be changed without any case noticing -- and changing it to anything
+    at or above the floor turns a deleted branch from the arm's loudest finding
+    into its quietest.
+
+    Two directions, because a default that always reported would be the other
+    defect: a branch that is present and at its floor must not be reported.
+    """
+    assert _fallen({}, {"at ingestion": 7}) == {"at ingestion": (0, 7)}, (
+        "a branch the census never measured -- which is what a branch deleted from the "
+        "key looks like from here -- was not reported as having fallen to zero"
+    )
+    assert _fallen({"at ingestion": 7}, {"at ingestion": 7}) == {}, (
+        "a branch sitting exactly at its recorded floor was reported as fallen"
+    )
+
+
 def test_no_branch_of_the_census_key_stops_contributing_the_hits_it_was_recorded_with() -> None:
     """RED means one spelling of the over-claim went unwatched while the total held.
 
@@ -905,18 +949,7 @@ def test_no_branch_of_the_census_key_stops_contributing_the_hits_it_was_recorded
     floor are the surface census's business, which reports them per file as
     unjudged growth; hits below are this one's.
     """
-    census = _branch_census()
-
-    # `get` rather than `[]` on both halves. The loudest way for a branch to fall
-    # below its floor is to be deleted from the key, and a deleted branch is
-    # absent from the census -- indexing it raises a `KeyError` where this is
-    # supposed to report, and a `KeyError` is a RED that says nothing about what
-    # to do with it.
-    fallen = {
-        branch: (census.get(branch, 0), floor)
-        for branch, floor in _JUDGED_BRANCH_FLOOR.items()
-        if census.get(branch, 0) < floor
-    }
+    fallen = _fallen(_branch_census(), _JUDGED_BRANCH_FLOOR)
 
     assert not fallen, (
         "a branch of the T-24 census key contributes fewer matches than it was "

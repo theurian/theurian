@@ -211,8 +211,15 @@ def _landed(paths: ProjectPaths, *records: EvidenceRecord) -> ReviewEvidenceStor
     return store
 
 
-def _read_that_then(read: ReadEvidence, act: Callable[[], None]) -> ReadEvidence:
-    """The evidence read, with ``act`` run after it has its bytes and before it returns.
+#: One act around the evidence read, already bound to the instant it runs at.
+#: The two constructors below are the two instants, and a case names the one it
+#: means rather than passing an act and a flag -- which is what kept
+#: :func:`_build`'s signature from growing a parameter per instant.
+_ReadHook = Callable[[ReadEvidence], ReadEvidence]
+
+
+def _while_the_read_is_in_flight(act: Callable[[], None]) -> _ReadHook:
+    """Run ``act`` after the read has its bytes and before it returns.
 
     **The instant the fingerprint ordering is about, and the only one that tells
     the two orders apart.** A change made after the read returns is caught
@@ -228,12 +235,36 @@ def _read_that_then(read: ReadEvidence, act: Callable[[], None]) -> ReadEvidence
     write -- so it is where a concurrent ``review ingest`` is most likely to land.
     """
 
-    def read_then() -> tuple[EvidenceEntry, ...]:
-        entries = read()
-        act()
-        return entries
+    def hook(read: ReadEvidence) -> ReadEvidence:
+        def read_then() -> tuple[EvidenceEntry, ...]:
+            entries = read()
+            act()
+            return entries
 
-    return read_then
+        return read_then
+
+    return hook
+
+
+def _after_the_first_capture(act: Callable[[], None]) -> _ReadHook:
+    """Run ``act`` after the first fingerprint and before the read enumerates.
+
+    The third instant, and the only one that puts a record in the build's hands
+    that the **first** fingerprint never saw: the capture is taken before the read
+    is called, so a file landing here is read and projected while
+    ``before_the_read`` has no entry for it at all.
+    :func:`_while_the_read_is_in_flight`'s act runs one step later and cannot
+    produce that state, because by then the read has already enumerated.
+    """
+
+    def hook(read: ReadEvidence) -> ReadEvidence:
+        def read_after() -> tuple[EvidenceEntry, ...]:
+            act()
+            return read()
+
+        return read_after
+
+    return hook
 
 
 def _build(
@@ -242,7 +273,7 @@ def _build(
     *,
     withheld: frozenset[str],
     write_section: WriteSection = nullcontext,
-    during_read: Callable[[], None] | None = None,
+    read_hook: _ReadHook | None = None,
 ) -> tuple[SqliteReviewSearchStore, dict[str, object]]:
     """One build, exactly as the composition root composes it, minus the lock file.
 
@@ -253,15 +284,17 @@ def _build(
     a composition root that had stopped carrying a field or started listing a
     different set.
 
-    ``write_section`` and ``during_read`` are the two instants the race cases
-    below need, and they are not interchangeable: the first changes the directory
-    *inside* the write section, the second changes it while the read is still in
-    flight. :func:`_read_that_then` records which claim each one can drive.
+    ``write_section`` and ``read_hook`` are the three instants the race cases
+    below need, and none of them is interchangeable with another: the section
+    changes the directory *inside* the write section, and the two hook
+    constructors -- :func:`_while_the_read_is_in_flight` and
+    :func:`_after_the_first_capture` -- change it while the read is in flight and
+    between the first capture and the read. Each records which claim it can drive.
     """
     store = SqliteReviewSearchStore(paths.review_search_for("local"))
     read: ReadEvidence = evidence_entries(evidence)
     builder = ReviewSearchBuilder(
-        read_evidence=read if during_read is None else _read_that_then(read, during_read),
+        read_evidence=read if read_hook is None else read_hook(read),
         list_evidence_fingerprints=evidence_fingerprints(paths.review),
         write=store.replace_all,
         write_section=write_section,
@@ -482,7 +515,7 @@ def test_a_record_rewritten_between_the_read_and_the_publish_is_not_republished(
 
     **The edit lands while the read is in flight**, which is what makes this the
     case that holds the fingerprint *ordering* and not only the comparison: see
-    :func:`_read_that_then`. Moving the build's first capture to after the read
+    :func:`_while_the_read_is_in_flight`. Moving the build's first capture to after the read
     leaves every other case here green and turns this one red.
 
     The thread is the complement in both builds, so a build that published
@@ -498,7 +531,7 @@ def test_a_record_rewritten_between_the_read_and_the_publish_is_not_republished(
         paths,
         evidence,
         withheld=frozenset(),
-        during_read=edit_the_pull_request,
+        read_hook=_while_the_read_is_in_flight(edit_the_pull_request),
     )
 
     stored = _every_stored_value(store)
@@ -591,6 +624,80 @@ def test_the_fingerprint_slot_that_says_regular_file_decides_on_its_own() -> Non
     assert not _unchanged(path, a_file, {}), "a vanished path read as unchanged"
     assert not _unchanged(path, {}, a_file), (
         "a path nothing observed before the read was published on the strength of one observation"
+    )
+
+
+def test_the_fingerprint_slot_that_says_how_big_the_file_is_decides_on_its_own() -> None:
+    """RED means a length change rides through on the other three slots agreeing.
+
+    The size slot is the one an in-place rewrite cannot hide: a write through the
+    same descriptor keeps the inode and ``os.utime`` puts the timestamp back, so
+    for a rewrite that *changes the length* the size is the only slot left saying
+    anything. Holding the other three still is the only way to show that it
+    decides, and no builder-level case can -- every plant that changes a file's
+    size through this store's own writer moves the timestamp and the inode too.
+
+    ``_unchanged`` is reached by name for the reason its sibling case gives: it is
+    the predicate the publish applies.
+    """
+    path = "sha256-abc/pull-request/42.json"
+    at_one_length = {path: (1_700_000_000_000_000_000, 512, 4_242, True)}
+    at_another = {path: (1_700_000_000_000_000_000, 513, 4_242, True)}
+
+    assert _unchanged(path, at_one_length, at_one_length), (
+        "an unchanged fingerprint is not publishable, so the predicate drops every record"
+    )
+    assert not _unchanged(path, at_one_length, at_another), (
+        "the same mtime, the same inode and a different size read as unchanged, so the "
+        "size slot decides nothing"
+    )
+
+
+def test_a_file_that_landed_inside_the_read_and_went_away_before_the_publish_is_dropped(
+    tmp_path: Path,
+) -> None:
+    """RED means a record **neither** capture ever saw is published.
+
+    The arm ``_unchanged``'s ``captured is not None`` exists for, and the one the
+    other absence cases cannot reach. A file that lands after the first
+    fingerprint and before the read is read and projected, so it is in the
+    builder's hands; delete it before the publish and *both* captures have no
+    entry for it. Two ``None``\\ s compare equal, so without that guard the record
+    is published on the strength of no observation at all -- from a file that was
+    on disk for less than one build and is not there now.
+
+    The complement is asserted in the same case, so a build that published nothing
+    cannot pass, and the predicate's own arm is asserted beside the behaviour
+    because deleting the guard is what makes both of them wrong at once.
+    """
+    paths = _project(tmp_path)
+    evidence = _landed(paths, _event())
+
+    def land_a_thread() -> None:
+        evidence.write((_thread(),), run=RUN)
+
+    def delete_the_thread() -> None:
+        _landed_by_kind(paths)["review-thread"].unlink()
+
+    store, report = _build(
+        paths,
+        evidence,
+        withheld=frozenset(),
+        read_hook=_after_the_first_capture(land_a_thread),
+        write_section=_write_section_that(delete_the_thread),
+    )
+
+    stored = _every_stored_value(store)
+    assert "This retries forever." not in stored, (
+        "a record that neither fingerprint observed was published: it landed inside the "
+        "read's own window and was deleted before the publish, so nothing ever saw it as "
+        "a file on disk at a moment this build could publish from"
+    )
+    assert "Bound the retry budget" in stored, "the record nothing touched is missing too"
+    assert report == {"records": 1, "withheld": 0}
+    assert not _unchanged("sha256-abc/pull-request/42.json", {}, {}), (
+        "the predicate calls a path neither capture holds unchanged, which is two `None`s "
+        "compared for equality"
     )
 
 
