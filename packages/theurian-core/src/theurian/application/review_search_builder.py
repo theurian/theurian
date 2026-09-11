@@ -160,12 +160,16 @@ _MAX_NUMBER_DIGITS: Final = len(str(MAX_STORED_PULL_REQUEST))
 
 
 class ReviewSearchBuildError(TheurianError):
-    """One evidence record could not be projected into the search store.
+    """A build could not produce the store, and every member carries a cure.
 
-    Always names the evidence file, because that is the artefact an operator has
-    to look at: the store is derived and rebuilding it will fail the same way
-    until the record is fixed. Carries a remedy naming that file and the command
-    to re-run once it is.
+    **Two kinds, and what they name differs because what an operator must act on
+    differs.** A refusal about one record names the *evidence file*, because the
+    store is derived and rebuilding it will fail the same way until that record is
+    fixed -- see :func:`_record_cure`, whose remedy names the file and the command
+    to re-run once it is corrected. The build-wide refusal
+    :func:`_emptied_by_a_race` raises names no file on purpose: every file it read
+    is implicated and none of them is at fault, so its cure (:data:`_RACE_CURE`)
+    names the directory two writers were both touching and the command to re-run.
     """
 
     def __init__(self, detail: str, *, remedy: str) -> None:
