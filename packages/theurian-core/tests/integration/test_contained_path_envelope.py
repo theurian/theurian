@@ -648,7 +648,8 @@ PLANTS: Final = (
             "`findings build`'s reason: it writes a separate derived store, and it "
             "reads `.theurian/review/`, which this corpus has no reason to carry. The "
             "refusal itself belongs to `review_search_for`'s own state-scoped check -- "
-            "a plain `ProjectError` naming the resolved `.theurian/state`, not the "
+            "a plain `ProjectError` naming the store's file and the project-relative "
+            "`.theurian/state/`, not the "
             "`ProjectPathEscapeError` `_contained` raises -- which is why this helper "
             "is not in the key `contained_derived_helpers` derives (it reaches the "
             "chokepoint only through `self.state`, exactly as `index_for` does) and is "
@@ -656,8 +657,8 @@ PLANTS: Final = (
             "The MCP `review.search` consumer is driven elsewhere: "
             "`test_resolved_layout_never_crosses.py`'s `escaping-review-search-leaf` "
             "plant lands this exact escape across every registered tool, and "
-            "`test_an_escaping_review_search_leaf_is_refused_by_the_arm_that_folds_it` "
-            "pins which arm answers it. The CLI half stays uncovered here, recorded "
+            "`test_an_escaping_review_search_leaf_is_refused_by_the_raise_site_this_plant_aims_at` "
+            "pins which refusal answers it. The CLI half stays uncovered here, recorded "
             "rather than papered over."
         ),
     ),

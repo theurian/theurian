@@ -64,20 +64,21 @@ the project-relative ``.theurian/state/``; the plant goes RED again the moment a
 interpolation returns, and so does
 :func:`test_a_departed_raise_site_has_really_left_the_key`.
 
-**The two store guards changed what their containment arms publish at
-``c7da702e``, and no cell in this matrix moved** (re-measured 2026-09-12).
-``review.findings`` answers an escaping store leaf with ``PATH_ESCAPE_REFUSAL``
-and the escape cure rather than folding it into the availability constant,
-because that constant's cure -- ``theurian findings build`` -- resolves the same
-leaf through the same helper and exits 4 on it. ``review.search``'s guard grew
-the same arm for ``ProjectPathEscapeError``, but its *reachable* containment arm
-is the other one: ``review_search_for`` makes its own state-scoped check and
-raises the plain ``ProjectError`` beneath that class, whose message interpolates
-the resolved ``.theurian/state``, so that arm still folds -- and folding is what
-keeps the directory off this wire. Both are swept here, by
-``escaping-findings-leaf`` and by ``escaping-review-search-leaf``. What the
-overturn moves is which *cure* travels, never which paths do, which is why the
-invariant above is unchanged by it.
+**The two store guards stopped folding their containment refusals into their
+availability constants, and no cell in this matrix moved.** ``review.findings``
+answered an escaping store leaf with ``PATH_ESCAPE_REFUSAL`` and the escape cure
+from ``c7da702e``, because that constant's cure -- ``theurian findings build`` --
+resolves the same leaf through the same helper and exits 4 on it.
+``review.search``'s *reachable* containment refusal is the other one:
+``review_search_for`` makes its own state-scoped check and raises the plain
+``ProjectError`` beneath that class, and that one kept folding while its message
+interpolated the resolved ``.theurian/state``, since folding was then the only
+thing keeping the directory off this wire. The message is built from the store's
+file name and a relative literal now, so the raise site left this file's
+population (:data:`DEPARTED`) and the guard forwards it with its cure. Both
+plants stay -- ``escaping-findings-leaf`` and ``escaping-review-search-leaf`` --
+and neither change moves which paths cross, only which cure does, which is why
+the invariant above is unchanged by them.
 
 **The population key is the point where the two spellings diverge**, not either
 path in full. The checkout is registered as ``<tmp>/demo`` and physically lives at
@@ -148,6 +149,7 @@ from typer.testing import CliRunner
 from theurian.application import project_service
 from theurian.application.project_service import (
     FINDINGS_STORE_ID,
+    REVIEW_SEARCH_STORE_FILENAME,
     REVIEW_SEARCH_STORE_ID,
     BuildProvenance,
     ProjectPaths,
@@ -600,12 +602,13 @@ def _plant_escaping_review_search_leaf(corpus: Corpus) -> PlantedPaths:
     site*, which is why it is a plant of its own rather than a second case of the
     same one. ``findings_for`` routes through ``ProjectPaths._contained`` and so
     raises ``ProjectPathEscapeError``; ``review_search_for`` runs its own
-    state-scoped check and raises the plain ``ProjectError`` beneath it,
-    interpolating the resolved ``.theurian/state`` directory into the message.
-    Since ``c7da702e`` those two classes take different arms of
-    ``review.search``'s guard, so a plant that reached only the subclass would
-    leave the base arm's fold -- the thing that keeps that resolved directory off
-    this wire -- swept by nothing.
+    state-scoped check and raises the plain ``ProjectError`` beneath it. That
+    message used to interpolate the resolved ``.theurian/state`` directory and is
+    now built from the store's file name and a project-relative literal, which is
+    why it left this file's population and took its disposition into
+    :data:`DEPARTED`. The plant stays: a refusal that is layout-free *by
+    construction* is a claim about the source, and this is what still reads the
+    wire.
 
     The store is built and recorded here rather than in the fixture: it is the
     only plant that needs one, and a fourth derived database in every corpus
@@ -782,8 +785,8 @@ PLANTS: Final = (
         "escaping-review-search-leaf",
         _plant_escaping_review_search_leaf,
         "`ProjectPaths.review_search_for`'s own state-scoped check, reached from "
-        "`review.search`' body -- a plain `ProjectError`, folded into the availability "
-        "constant by the base arm of that guard",
+        "`review.search`' body -- a plain `ProjectError`, published by that guard as its "
+        "own message beside its own cure",
     ),
     Plant(
         "escaping-state-directory",
@@ -928,18 +931,20 @@ async def test_an_escaping_index_pointer_is_served_rather_than_refused(corpus: C
 
 @pytest.mark.asyncio
 @_NEEDS_SYMLINKS
-async def test_an_escaping_review_search_leaf_is_refused_by_the_arm_that_folds_it(
+async def test_an_escaping_review_search_leaf_is_refused_by_the_raise_site_this_plant_aims_at(
     corpus: Corpus,
 ) -> None:
     """What the review-search plant's cell is an *absence* over, said positively.
 
     The sweep asserts that no response names the resolved layout, and a plant that
     never reaches its raise site satisfies that perfectly. This is what stops the
-    new plant from being a corpus the sweep walks past: the call must refuse, the
-    refusal must be the availability constant the base arm folds to -- not
-    ``PATH_ESCAPE_REFUSAL``, which is the *other* arm and would mean this plant is
-    driving the subclass rather than the base -- and it must not be the provenance
-    gate's refusal reached a step early, which the plant's own premise rules out.
+    plant from being a corpus the sweep walks past: the call must refuse, the
+    refusal must be ``review_search_for``'s own -- it names the store file, which
+    no other refusal on this path does -- and not ``PATH_ESCAPE_REFUSAL``, which
+    is what ``_with_remedy`` substitutes for the ``ProjectPathEscapeError`` beside
+    it and would mean this plant is driving the subclass. Nor may it be the
+    provenance gate's refusal reached a step early, which the plant's own premise
+    rules out and which the availability constant is now the sole mark of.
 
     Read through the sweep's own :func:`_response_text`, so this measures the same
     bytes the plant's cells read rather than a friendlier second call.
@@ -949,20 +954,25 @@ async def test_an_escaping_review_search_leaf_is_refused_by_the_arm_that_folds_i
 
     response = await _response_text(server, "review.search", {"projectId": PROJECT_ID})
 
-    assert REVIEW_SEARCH_UNAVAILABLE_REFUSAL in response, (
-        f"the escaping review search leaf did not reach the arm that folds it, so the "
-        f"sweep's cell for this plant asserts an absence over a call that never got "
-        f"there: {response}"
+    assert REVIEW_SEARCH_STORE_FILENAME in response, (
+        f"the escaping review search leaf did not reach `review_search_for`'s own "
+        f"check, so the sweep's cell for this plant asserts an absence over a call that "
+        f"never got there: {response}"
+    )
+    assert REVIEW_SEARCH_UNAVAILABLE_REFUSAL not in response, (
+        f"the refusal was folded into the availability constant, whose cure meets this "
+        f"same fault first -- and the plant would then be sweeping the provenance gate's "
+        f"words rather than the containment refusal's: {response}"
     )
     assert PATH_ESCAPE_REFUSAL not in response, (
-        f"the leaf took the escape arm, which is `ProjectPathEscapeError`'s -- so this "
-        f"plant is driving the subclass and `review_search_for`'s own plain "
-        f"`ProjectError` is still reached by nothing: {response}"
+        f"the leaf took the escape class's substitution -- so this plant is driving "
+        f"`ProjectPathEscapeError` and `review_search_for`'s own plain `ProjectError` is "
+        f"still reached by nothing: {response}"
     )
     assert str(corpus.paths.state) not in response, (
         f"the refusal carried the resolved `.theurian/state` directory that "
-        f"`review_search_for`'s message interpolates, which is the disclosure the fold "
-        f"exists to prevent (GHSA-97q9): {response}"
+        f"`review_search_for`'s message used to interpolate, which is the disclosure "
+        f"that departure closed (GHSA-97q9): {response}"
     )
 
 
@@ -1356,35 +1366,6 @@ DISPOSITIONS: Final[dict[str, Disposition]] = {
             "::test_a_rejected_pointer_does_not_echo_the_path_it_rejected",
         ),
     ),
-    "application/project_service.py::ProjectPaths.review_search_for#1": Disposition(
-        because=(
-            "Held by the **base** arm of `review.search`'s store-path guard, which "
-            "answers `REVIEW_SEARCH_UNAVAILABLE_REFUSAL` for a plain `ProjectError` and "
-            "so drops the resolved `.theurian/state` this message interpolates. "
-            "**Reached by data**, and two sentences here used to say otherwise: this "
-            "raise is `review_search_for`'s own state-scoped check, and an escaping "
-            "store *leaf* under a healthy `.theurian/state` takes it -- the "
-            "`escaping-review-search-leaf` plant, added when the claim was measured "
-            "false. What `store_id` being a constant rules out is a caller *choosing* "
-            "a name that escapes, which is a narrower statement than the one that "
-            "stood here. The patched-helper test below drives the same arm without a "
-            "corpus and pins the fold; the plant is what proves the arm is not "
-            "hypothetical. "
-            "It is also no longer true that this guard answers the constant for every "
-            "`TheurianError`: since `c7da702e` a `ProjectPathEscapeError` takes a "
-            "second arm that answers `PATH_ESCAPE_REFUSAL` and keeps `exc.remedy`. "
-            "That arm is a race-window backstop -- `_resolve` has read through "
-            "`paths.state` twice by then -- and is driven by "
-            "`test_an_escaping_store_path_answers_the_escape_constant_and_keeps_its_cure`."
-        ),
-        plants=("escaping-review-search-leaf",),
-        tests=(
-            "integration/test_review_search_tool.py"
-            "::test_a_project_path_that_stops_resolving_does_not_publish_the_operator_layout",
-            "integration/test_review_search_tool.py"
-            "::test_an_escaping_store_path_answers_the_escape_constant_and_keeps_its_cure",
-        ),
-    ),
     "application/project_service.py::ProjectPaths.state_database_named#1": Disposition(
         because=(
             "Held by the state-database envelope: `active.json`'s `databaseFilename` is "
@@ -1445,6 +1426,27 @@ DISPOSITIONS: Final[dict[str, Disposition]] = {
 #: *absent* from the measured population, so re-introducing an interpolation
 #: reddens rather than quietly re-joining a set nobody re-reads.
 DEPARTED: Final[dict[str, Disposition]] = {
+    "application/project_service.py::ProjectPaths.review_search_for#1": Disposition(
+        because=(
+            "Left the key when the state-scoped check's refusal stopped interpolating "
+            "the resolved `.theurian/state` and began naming the store's own file "
+            "beside the project-relative `.theurian/state/`. It still raises and the "
+            "`escaping-review-search-leaf` plant still drives it -- what it no longer "
+            "does is interpolate a path. That departure is what let `review.search`'s "
+            "guard stop folding this refusal into `REVIEW_SEARCH_UNAVAILABLE_REFUSAL`: "
+            "the fold suppressed the layout and the cure alike, and the constant's own "
+            "cure -- `theurian review build` -- resolves the same leaf through the same "
+            "helper and exits 1 on it, so a caller who ran it came back to a "
+            "byte-identical refusal."
+        ),
+        plants=("escaping-review-search-leaf",),
+        tests=(
+            "integration/test_review_search_tool.py"
+            "::test_an_escaping_store_leaf_publishes_its_own_refusal_and_the_cure_that_clears_it",
+            "integration/test_published_cures_are_executable.py"
+            "::test_a_published_cure_moves_the_caller_off_the_refusal_that_published_it",
+        ),
+    ),
     "application/project_service.py::verify_state_provenance#1": Disposition(
         because=(
             "Left the key at 74e32a21, where the refusal became the module constant "

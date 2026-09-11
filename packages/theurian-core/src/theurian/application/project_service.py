@@ -204,18 +204,73 @@ FINDINGS_STORE_ID: Final = "local"
 #: report a missing store for a project that has one.
 REVIEW_SEARCH_STORE_ID: Final = "local"
 
+
+def _review_search_store_filename(store_id: str) -> str:
+    """The name the review search store is written and read under.
+
+    One spelling for two callers that must not drift:
+    :meth:`ProjectPaths.review_search_for`, which derives the path, and
+    :data:`REVIEW_SEARCH_STORE_FILENAME`, which the refusal and the cure below
+    name. Two literals would eventually send a reader to remove a file nothing
+    writes -- :data:`FINDINGS_STORE_ID`'s note records the same failure for the
+    id itself.
+    """
+    return f"theurian-review-{store_id}.sqlite"
+
+
+#: The file this project's one review search store lives in. Derived from
+#: :data:`REVIEW_SEARCH_STORE_ID` rather than typed out, so the cure below names
+#: the file ``theurian review build`` really writes.
+REVIEW_SEARCH_STORE_FILENAME: Final = _review_search_store_filename(REVIEW_SEARCH_STORE_ID)
+
 #: The cure when the review search store cannot be named at all -- a store id that
 #: resolves outside ``.theurian/state/``, or that is not a usable filename.
 #:
-#: It names a rebuild rather than a repair because the store is derived (ADR-0004)
-#: and its source, the evidence files under ``.theurian/review/``, is still on
-#: disk. It deliberately does **not** tell anyone to delete anything under
+#: **The removal is published as something to run, and that is the fix for a
+#: closed loop** (verdict pass, adversarial HIGH). This used to open "Remove the
+#: file this names from .theurian/state/" -- prose, naming no file -- and back it
+#: with ``theurian review build``. The backticked spans are what an automated
+#: consumer lifts out of a cure, which is the key
+#: ``test_published_cures_are_executable.py`` runs a published cure by, and the
+#: one command this text backticked resolves the store through
+#: :meth:`ProjectPaths.review_search_for` before it reads an evidence file: it
+#: meets the same fault that produced the refusal and hands the caller back a
+#: byte-identical one. The removal is the step that clears it, so the removal is
+#: named as a command, over the file :data:`REVIEW_SEARCH_STORE_FILENAME` spells.
+#:
+#: **The operand is this module's own constant, never the id that was refused.**
+#: By the time this text is read, that id is a string that climbed out of
+#: ``.theurian/state/``, and ``rm`` is not a command to build out of input like
+#: that. What the cure names is the file ``theurian review build`` writes, which
+#: is the file to clear for the one id this composition passes --
+#: :meth:`ProjectPaths.review_search_for` records why that id is a constant, and
+#: the day a pointer supplies it this cure has to be keyed on the refused file
+#: instead.
+#:
+#: **``rm`` alone, with no ``rm -rf`` twin, and the shape argument is what makes
+#: that safe.** :func:`derived_escape_remedy` publishes both forms because it
+#: names a *directory*, which plain ``rm`` cannot remove and whose link form
+#: ``rm -rf`` follows through a trailing slash. This names a leaf, and a
+#: directory sitting at it reaches neither arm that carries this cure: it
+#: resolves inside ``.theurian/state/``, so the containment arm does not fire,
+#: and it makes ``resolve`` raise nothing, so the unusable-name arm does not
+#: either. What is left is a link -- which holds no bytes of its own -- and a
+#: regular file, and plain ``rm`` removes both without the force ``-rf`` adds.
+#:
+#: **What the removal costs is stated for each of those two shapes rather than
+#: waved past**: nothing for a link, and for the store itself only a projection
+#: the next command rebuilds from the evidence files still on disk (ADR-0004). It
+#: deliberately does **not** tell anyone to delete anything under
 #: ``.theurian/review/``: that directory is the source and has no rebuild
 #: (ADR-0030 decision 3).
 REVIEW_SEARCH_STORE_REMEDY: Final = (
-    "Remove the file this names from .theurian/state/ and run `theurian review build` "
-    "to rebuild the search store from the evidence files under .theurian/review/. "
-    "The evidence files are the source and are not touched by a rebuild."
+    f"Remove `.theurian/state/{REVIEW_SEARCH_STORE_FILENAME}` if it is there -- run "
+    f"`rm .theurian/state/{REVIEW_SEARCH_STORE_FILENAME}` -- then run `theurian review "
+    f"build` to rebuild the search store from the evidence files under .theurian/review/. "
+    f"A clone can deliver that file as a symbolic link pointing out of the working tree: "
+    f"removing a link costs nothing, and removing the store itself costs only the "
+    f"projection the rebuild recreates. The evidence files are the source and are not "
+    f"touched by a rebuild."
 )
 
 #: The half of "rename a project" that is easy to omit and impossible to notice.
@@ -1614,8 +1669,9 @@ class ProjectPaths:
                 the project, which the ``self.state`` access below refuses first.
         """
         state = self.state  # one `_contained`; an escaping `state` refuses here
+        filename = _review_search_store_filename(store_id)
         try:
-            candidate = (state / f"theurian-review-{store_id}.sqlite").resolve()
+            candidate = (state / filename).resolve()
             contained = candidate.is_relative_to(state.resolve())
         except (ValueError, OSError) as exc:
             raise ProjectError(
@@ -1623,8 +1679,30 @@ class ProjectPaths:
                 remedy=REVIEW_SEARCH_STORE_REMEDY,
             ) from exc
         if not contained:
+            # **Layout-free by construction, which is why the boundary above this
+            # needs no fold for it** (GHSA-97q9, and the closed loop that fold
+            # cost: verdict pass, adversarial HIGH). This message used to end
+            # *"resolves outside {state}"* -- the resolved `.theurian/state`, and
+            # for a project registered through a symbolic link the physical
+            # directory behind `rootPath`, which no tool publishes. `review.search`
+            # answered the whole refusal with an availability constant to keep that
+            # string off the wire, and the constant's cure -- `theurian review
+            # build` -- resolves this same file through this same method and exits
+            # 1 on the fault that produced the refusal, so the caller was handed
+            # back a byte-identical refusal. While the message carried a location,
+            # the fold was the only place to fix that; the message no longer does,
+            # and the cure crosses beside it.
+            #
+            # Two things are named and neither is a path this process resolved: the
+            # store's own file name, built from `store_id` by the same helper that
+            # built the candidate above, and the project-relative
+            # `.theurian/state/`, spelled as `REVIEW_SEARCH_STORE_REMEDY` spells
+            # it. The docstring above records why `store_id` is a constant in this
+            # composition; `!r` is what keeps it escape-safe whatever supplies it
+            # later.
             raise ProjectError(
-                f"The review search store id {store_id!r} resolves outside {state}.",
+                f"The review search store file {filename!r} does not resolve to a "
+                f"location inside .theurian/state/.",
                 remedy=REVIEW_SEARCH_STORE_REMEDY,
             )
         return candidate

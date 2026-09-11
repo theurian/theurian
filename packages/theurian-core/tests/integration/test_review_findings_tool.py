@@ -1976,16 +1976,18 @@ async def test_a_store_path_that_resolves_outside_the_project_answers_the_escape
     ignore -- the same ``git add -f`` reach :func:`_plant` models, here aimed at
     where the file is rather than at what it holds.
 
-    **Its ``review.search`` twin is not the same arm, and that is measured rather
-    than assumed.** ``review_search_for`` makes its own state-scoped check and
-    raises the plain ``ProjectError`` beneath ``ProjectPathEscapeError``, so a
-    planted escaping leaf there takes that guard's *base* arm and still folds into
-    the availability constant
-    (``test_review_search_tool.py::test_a_project_path_that_stops_resolving_does_not_publish_the_operator_layout``
-    drives it with a patched helper, and
-    ``test_resolved_layout_never_crosses.py``'s ``escaping-review-search-leaf``
-    plant reaches it with data). The escape arm this test's tool grew has a twin
-    there, driven by a patched helper because no plant can reach it
+    **Its ``review.search`` twin is not the same refusal, and that is measured
+    rather than assumed.** ``review_search_for`` makes its own state-scoped check
+    and raises the plain ``ProjectError`` beneath ``ProjectPathEscapeError``, so a
+    planted escaping leaf there is answered with *that* refusal's own text --
+    which names the store's file rather than a resolved directory -- beside
+    ``REVIEW_SEARCH_STORE_REMEDY``, rather than with the constant this tool
+    substitutes
+    (``test_review_search_tool.py::test_an_escaping_store_leaf_publishes_its_own_refusal_and_the_cure_that_clears_it``
+    drives it with a plant, and ``test_resolved_layout_never_crosses.py``'s
+    ``escaping-review-search-leaf`` plant sweeps it across every registered tool).
+    The escape class this test's tool meets has a twin there, driven by a patched
+    helper because no plant can reach it
     (``::test_an_escaping_store_path_answers_the_escape_constant_and_keeps_its_cure``).
 
     ``test_contained_path_envelope.py`` records this consumer as outside its own

@@ -39,14 +39,17 @@ requires each to be claimed by an entry in :data:`ARMS`. A new unavailability
 constant therefore fails this file until somebody either ratchets it or records,
 in writing, why it is not ratcheted.
 
-**Four of the eight arms are recorded rather than ratcheted, and each carries the
-measured reason** -- this file's stated coverage gaps, in writing rather than in
-silence. One of them is an open defect: ``review.search``'s escaping-store-leaf
-arm publishes a cure that exits 1 on the plant that produced it and leaves the
-caller on a byte-identical refusal, which is the very shape ``c7da702e``
-overturned at the tool next door. It is measured by
-:func:`test_the_recorded_closed_loop_is_still_closed`, which goes RED the day it
-is fixed.
+**Three of the eight arms are recorded rather than ratcheted** -- ``len(RECORDED)``
+of ``len(ARMS)``, and each carries the measured reason: this file's stated
+coverage gaps, in writing rather than in silence. A fourth left that list:
+``review.search``'s escaping-store-leaf arm published a cure that exited 1 on the
+plant that produced it and left the caller on a byte-identical refusal -- the
+shape ``c7da702e`` overturned at the tool next door, recorded here beside a test
+that went RED the day it was fixed. The fix has two halves and the ratchet runs
+both: the refusal names the store's own file instead of the resolved state
+directory, so the guard forwards it rather than folding it into the availability
+constant, and the cure it carries names the removal as a command rather than as
+prose.
 
 **Nothing here touches the developer's machine.** ``HOME`` and
 ``THEURIAN_DATA_DIR`` are redirected into ``tmp_path`` before the first CLI call;
@@ -472,6 +475,24 @@ _STATE_ESCAPE_CURE: Final = (
     "theurian review build",
 )
 
+#: What ``review_search_for``'s own state-scoped check says, written out here for
+#: ``Arm.refusal``'s reason: assembled from ``REVIEW_SEARCH_STORE_FILENAME`` and
+#: the raise site's own wording, it would follow that raise site wherever it went
+#: -- including back to naming the operator's resolved state directory.
+_REVIEW_SEARCH_LEAF_REFUSAL: Final = (
+    "The review search store file 'theurian-review-local.sqlite' does not resolve to a "
+    "location inside .theurian/state/."
+)
+
+#: And what its cure publishes. Two commands, in this order: the rebuild alone is
+#: the closed loop this file was written for -- it resolves the planted leaf
+#: through the same helper and exits 1 -- so the ``rm`` before it is the step that
+#: makes the cure a cure.
+_REVIEW_SEARCH_LEAF_CURE: Final = (
+    "rm .theurian/state/theurian-review-local.sqlite",
+    "theurian review build",
+)
+
 ARMS: Final = (
     Arm(
         name="the findings store's leaf escapes the project",
@@ -519,26 +540,9 @@ ARMS: Final = (
         arguments={},
         builds=("review",),
         plant=_plant_review_search_leaf,
-        refusal=REVIEW_SEARCH_UNAVAILABLE_REFUSAL,
-        cure_source="tools.REVIEW_SEARCH_UNAVAILABLE_REFUSAL",
-        publishes=("theurian review build",),
-        serves_after_the_cure=False,
-        outside_the_ratchet_because=(
-            "its cure is a closed loop, measured on this branch and open. "
-            "`review_search_for`'s store-id containment raises a plain `ProjectError` -- "
-            "not the `ProjectPathEscapeError` the leaf beside it raises -- so "
-            "`review.search`'s base arm folds it into the availability constant, whose "
-            "cure is `theurian review build`; that command resolves this same leaf "
-            "through this same helper before it reads an evidence file and exits 1 on "
-            "it, and the refusal after the cure is byte-identical to the one before. It "
-            "is the shape `c7da702e` overturned at the findings twin, at the one arm "
-            "that commit's type split deliberately left folded. The CLI publishes the "
-            "step the fold drops -- `REVIEW_SEARCH_STORE_REMEDY` says to remove the "
-            "file first -- so the cure exists and this surface does not print it. "
-            "`test_the_recorded_closed_loop_is_still_closed` measures all of it and "
-            "goes RED the day it is fixed, which is when this entry moves into the "
-            "ratchet."
-        ),
+        refusal=_REVIEW_SEARCH_LEAF_REFUSAL,
+        cure_source="project_service.REVIEW_SEARCH_STORE_REMEDY",
+        publishes=_REVIEW_SEARCH_LEAF_CURE,
     ),
     Arm(
         name="the knowledge directory escapes the project",
@@ -819,55 +823,11 @@ async def test_a_published_cure_moves_the_caller_off_the_refusal_that_published_
     )
 
 
-# -- The two recorded gaps, measured ------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_the_recorded_closed_loop_is_still_closed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """``review.search``'s store-leaf arm publishes a cure that meets the same fault.
-
-    A recorded gap with no measurement behind it is a sentence. This is the
-    measurement: the arm fires, its refusal is the availability constant and
-    carries no layout, the command that constant names exits non-zero on the
-    plant that produced it, and the refusal afterwards is **byte-identical** to
-    the one before.
-
-    **This test is RED the day the arm is fixed, and that is its purpose.** The
-    fix is the one ``c7da702e`` made at the findings twin -- a cure that survives
-    the fold -- and when it lands, this case fails, the arm moves out of
-    :data:`RECORDED` into the ratchet, and this test is deleted. Until then the
-    gap cannot be closed by accident or reported as coverage.
-    """
-    arm = ARM_BY_NAME["the review search store's leaf escapes the project"]
-    assert not arm.is_ratcheted, "this arm is ratcheted now, so this test has outlived its subject"
-    corpus = _build_corpus(tmp_path, monkeypatch, builds=arm.builds)
-    outside = tmp_path / "outside-the-checkout"
-    outside.mkdir()
-    arm.plant(corpus, outside)
-
-    before = await _ask(corpus, arm)
-    steps = await _run_the_cure(corpus.root, published_commands(before.message))
-    after = await _ask(corpus, arm)
-
-    assert REVIEW_SEARCH_UNAVAILABLE_REFUSAL in before.message
-    assert str(ProjectPaths.of(corpus.root).state) not in before.message, (
-        "the containment refusal published the operator's resolved state directory "
-        "(GHSA-97q9), which is the disclosure the fold exists to prevent"
-    )
-    assert [step.exit_code for step in steps] != [0 for _ in steps], (
-        f"the published cure now succeeds against the plant that produced the refusal, "
-        f"so this arm may be curable: {[(s.command, s.exit_code) for s in steps]}"
-    )
-    assert after == before, (
-        f"the loop is no longer closed -- move this arm into the ratchet and delete "
-        f"this test. Steps: {[(s.command, s.exit_code) for s in steps]}"
-    )
+# -- The recorded gap that is measured rather than run ------------------------
 
 
 def test_the_knowledge_directory_cure_names_its_decisive_step_in_prose() -> None:
-    """The other recorded gap, measured on the text rather than by running it.
+    """The one recorded gap whose subject is text, measured rather than run.
 
     ``KNOWLEDGE_DIR_ESCAPE_REMEDY``'s decisive act -- removing the link -- is
     words, and the only thing it backticks is ``theurian init``, which meets the
