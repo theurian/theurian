@@ -47,14 +47,18 @@ used, and compared against the census that judged it: a new matching phrase has
 no judgement behind it and fails. It cannot decide whether a sentence is honest
 -- that is a reading -- but an unjudged member can no longer be added silently.
 
-**The key is applied to unwrapped text.** That is a correction to how the
-population was derived, and it came from a round attacking the derivation rather
-than the sentences. A key applied line by line cannot see a phrase a soft wrap
-split -- ``as the provider`` ending one comment line and ``resolved it`` opening
-the next is invisible to it, and two of this tree's sentences are written exactly
-that way -- so the surfaces are folded first: line breaks, the ``#`` comment
-markers a continuation line carries, and the escaped newline a JSON string has to
-wrap with.
+**The key is applied to unwrapped text, and every branch of it carries its own
+floor.** Both are corrections to how that population was derived, and both came
+from a round attacking the derivation rather than the sentences. A key applied
+line by line cannot see a phrase a soft wrap split -- ``as the provider`` ending
+one comment line and ``resolved it`` opening the next is invisible to it, and
+two of this tree's sentences are written exactly that way -- so the surfaces are
+folded first: line breaks, the ``#`` comment markers a continuation line carries,
+and the escaped newline a JSON string has to wrap with. And a total that only has
+to stay large is satisfied by a key most of whose alternation has stopped
+matching anything, so each branch is recorded with the hits it contributes and
+held to them: a branch deleted from the key, or one whose sentences were reworded
+away, reddens on its own rather than disappearing into a total.
 
 **Both sides are pinned, and they fail differently.** The fact arms read the
 live symbols and one syntax tree; the prose arms read the entry and the
@@ -415,6 +419,10 @@ _AUTHORITY_SURFACES: Final = (
 #: direction for a ratchet: it costs a judgement on a sentence that turns out to be
 #: fine, and the alternative -- a key narrow enough to be quiet -- is a key that
 #: misses the sentence nobody thought to spell out.
+#:
+#: Its top-level branches are split back out by :func:`_key_branches` and each is
+#: held to its own floor, so the over-approximation cannot quietly become the only
+#: part of this key that still matches anything.
 _OVER_CLAIM_TERMS: Final = re.compile(
     r"at ingestion|Theurian (itself )?(wrote|writes)|written by Theurian|never received"
     r"|not received|allowlist|secret scan|was visible to|public[- ]allowlisted"
@@ -643,7 +651,7 @@ def test_the_key_reads_a_term_split_by_each_break_this_population_uses(
         f"{label}: unwrapping recovered nothing, and `{term}` was planted across the "
         f"break.\n\n`_unwrapped` has stopped folding this break, so every sentence on "
         f"an authority surface that wraps this way is invisible to `_authority_census` "
-        f"-- which reports the absence as a clean surface."
+        f"and to `_branch_census` -- and both report the absence as a clean surface."
     )
     assert match.group(0).lower() == term, (
         f"{label}: unwrapping recovered {match.group(0)!r} where `{term}` was planted. "
@@ -718,4 +726,254 @@ def test_no_unjudged_sentence_joins_the_t24_authority_population() -> None:
         "actually checks** -- shape and the derived path, never authorship. Then "
         "record the new count in `_JUDGED_CENSUS` in the same commit, so the next "
         "reader can see it was judged rather than absorbed."
+    )
+
+
+# -- and the key's own branches, held one at a time ----------------------------
+
+
+def _key_branches(pattern: str) -> tuple[str, ...]:
+    """*pattern* split on its top-level ``|``, each branch as it is written.
+
+    Derived rather than transcribed, so the roster below is the shipped key's
+    roster and not a second list somebody kept in step. A hand-written copy would
+    agree with the key on the day it was written and then stop, which is exactly
+    the drift the arms underneath exist to report.
+
+    Depth-aware on three counts, and each of them is a silent mis-split rather
+    than a loud one. A ``|`` inside a group belongs to that group
+    (``(wrote|writes)``), a ``|`` inside a character class is a literal, and an
+    escaped ``\\|`` is a literal too. Split naively and the roster fills with
+    fragments like ``Theurian (itself )?(wrote`` -- which does not even compile,
+    but a fragment that *does* compile would just count the wrong thing.
+
+    Nothing is stripped from a branch: leading and trailing spaces are part of a
+    regex, so trimming them would change what a branch matches while leaving the
+    roster looking unchanged.
+    """
+    branches: list[str] = []
+    current: list[str] = []
+    depth = 0
+    in_class = False
+    escaped = False
+
+    for char in pattern:
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif in_class:
+            in_class = char != "]"
+        elif char == "[":
+            in_class = True
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif char == "|" and depth == 0:
+            branches.append("".join(current))
+            current = []
+            continue
+        current.append(char)
+
+    branches.append("".join(current))
+    return tuple(branches)
+
+
+#: What each branch of the key contributes on its own, measured 2026-09-11 over
+#: the same unwrapped surfaces :func:`_authority_census` reads.
+#:
+#: **Why a per-branch floor and not the total.** The total says the key still
+#: matches a lot of things. It does not say the key still matches *the things it
+#: was built to match*. Measured by deleting each branch from the key in turn and
+#: running this module as the commit before this one left it, **fifteen of the
+#: nineteen go unnoticed**. Four are caught, and the total's own reasoning
+#: accounts for exactly one of them: ``allowlist``, which alone carries 60 of the
+#: 100 matches. The other three -- ``as the provider resolved``, ``landed by`` and
+#: ``already ingested`` -- are caught incidentally, because
+#: :data:`_WRAPPED_TERM_CASES` happens to plant those real terms, which is
+#: coverage nobody chose and nobody would notice losing. A branch is what encodes
+#: one spelling an over-claiming sentence reaches for, and a branch that has
+#: stopped matching is a spelling nothing is watching any more.
+#:
+#: **Five of these stand at zero, and that is recorded rather than hidden**:
+#: ``never received``, ``not received``, ``every record held``,
+#: ``the adapter record`` and ``pseudonymised at landing``. The census that closed
+#: this class rewrote the sentences they were written for, so their floors can
+#: only be vacuous. They are kept because the key aims at the *next* sentence, not
+#: only at today's, and the roster arm is what holds them: deleting one is RED
+#: there even though it cannot be RED here.
+#:
+#: **These sum to 115 against the surface census's 100**, and the 15 is not a
+#: discrepancy: ``allowlist`` is a substring of ``public-allowlisted``. The whole
+#: key returns one match per position and prefers the longer branch where both
+#: could start; measured branch by branch, those fifteen occurrences are counted
+#: by each. Recorded so the next reader does not take the two totals for two
+#: measurements of the same thing.
+_JUDGED_BRANCH_FLOOR: Final[dict[str, int]] = {
+    "at ingestion": 7,
+    "Theurian (itself )?(wrote|writes)": 3,
+    "written by Theurian": 1,
+    "never received": 0,
+    "not received": 0,
+    "allowlist": 60,
+    "secret scan": 6,
+    "was visible to": 3,
+    "public[- ]allowlisted": 15,
+    "every record it holds": 2,
+    "every record held": 0,
+    "an author chose": 1,
+    "provider's own": 7,
+    "as the provider resolved": 2,
+    "the adapter record": 0,
+    "the ingestion (adapter|run|path|scan)": 4,
+    "landed by": 3,
+    "already ingested": 1,
+    "pseudonymised at landing": 0,
+}
+
+
+def _branch_census() -> dict[str, int]:
+    """Matches per top-level branch of the live key, over the same unwrapped text.
+
+    Keyed by the branch as the key spells it, and derived from
+    :data:`_OVER_CLAIM_TERMS` rather than from :data:`_JUDGED_BRANCH_FLOOR` --
+    which is what makes deleting a branch visible. Ask each recorded branch
+    directly instead and a branch removed from the shipped key would still be
+    counted, by a regex only this module still holds.
+    """
+    texts = [_unwrapped(path.read_text(encoding="utf-8")) for path in _surface_files()]
+
+    counted: dict[str, int] = {}
+    for branch in _key_branches(_OVER_CLAIM_TERMS.pattern):
+        compiled = re.compile(branch, re.IGNORECASE)
+        counted[branch] = sum(1 for text in texts for _ in compiled.finditer(text))
+    return counted
+
+
+def test_the_census_key_carries_exactly_the_branches_that_were_judged() -> None:
+    """RED means a spelling entered or left the key without anyone judging it.
+
+    This is the arm that holds the five branches matching nothing today. Their
+    floor below is zero and therefore vacuous, so without a roster they could be
+    dropped from the key in a tidy-up and nothing in this module would notice --
+    and the key would quietly stop watching for five of the spellings the closing
+    census wrote it to watch for.
+
+    It fails in both directions on purpose. A branch **gone** is a spelling no
+    longer watched; a branch **arrived** is a spelling whose contribution nobody
+    has measured, which is how a floor gets recorded at whatever the tree happened
+    to hold rather than at what was judged.
+    """
+    live = set(_key_branches(_OVER_CLAIM_TERMS.pattern))
+    recorded = set(_JUDGED_BRANCH_FLOOR)
+
+    assert live == recorded, (
+        "the T-24 census key's branches no longer match the roster that was judged:\n"
+        + "".join(f"\n  GONE     {branch!r}" for branch in sorted(recorded - live))
+        + "".join(f"\n  ARRIVED  {branch!r}" for branch in sorted(live - recorded))
+        + "\n\nA GONE branch is a spelling the key has stopped watching for. Five of "
+        "the recorded branches match nothing in the tree today and are kept for the "
+        "next sentence rather than for this one, so this is the only arm that can "
+        "say they went -- restore the branch, or record here why the spelling is no "
+        "longer worth watching.\n\nAn ARRIVED branch has no measured contribution "
+        "behind it. Run the branch over the authority surfaces, judge what it "
+        "matches against T-24's control-table rule, and record the count in "
+        "`_JUDGED_BRANCH_FLOOR` in the same commit."
+    )
+
+
+def test_no_branch_of_the_census_key_stops_contributing_the_hits_it_was_recorded_with() -> None:
+    """RED means one spelling of the over-claim went unwatched while the total held.
+
+    The total is a poor guard on a key whose branches are this unevenly weighted.
+    ``allowlist`` carries 60 of the 100 matches, so deleting any other branch
+    moves the total by a few per cent at most -- inside the slack
+    :func:`test_the_authority_surfaces_still_carry_the_sentences_the_key_was_built_for`
+    deliberately leaves for prose to move in. Eighteen of the nineteen branches
+    can be deleted with that premise still green; the sweep recorded beside
+    :data:`_JUDGED_BRANCH_FLOOR` puts the number that went unnoticed by the whole
+    module at fifteen.
+
+    So each branch is held to what it was recorded contributing. Two different
+    things redden it, and both are the same defect seen from either end: the
+    branch was removed from the key, or the sentences it matched were reworded
+    until it matched nothing. Either way a spelling the closing census decided was
+    worth watching has stopped being watched.
+
+    Direction matters and only one direction is held. Hits **above** the recorded
+    floor are the surface census's business, which reports them per file as
+    unjudged growth; hits below are this one's.
+    """
+    census = _branch_census()
+
+    # `get` rather than `[]` on both halves. The loudest way for a branch to fall
+    # below its floor is to be deleted from the key, and a deleted branch is
+    # absent from the census -- indexing it raises a `KeyError` where this is
+    # supposed to report, and a `KeyError` is a RED that says nothing about what
+    # to do with it.
+    fallen = {
+        branch: (census.get(branch, 0), floor)
+        for branch, floor in _JUDGED_BRANCH_FLOOR.items()
+        if census.get(branch, 0) < floor
+    }
+
+    assert not fallen, (
+        "a branch of the T-24 census key contributes fewer matches than it was "
+        "recorded contributing:\n"
+        + "".join(
+            f"\n  {branch!r}: {now} matches, {then} recorded"
+            for branch, (now, then) in sorted(fallen.items())
+        )
+        + "\n\nEither the branch was narrowed or removed -- in which case the key has "
+        "stopped watching for that spelling of the over-claim -- or the sentences it "
+        "matched were reworded away. The second is usually good news and still has to "
+        "be recorded: check that the rewording did not simply move the claim into a "
+        "spelling no branch covers, then lower the floor in `_JUDGED_BRANCH_FLOOR` in "
+        "the same commit, so the next reader sees a judged number rather than a "
+        "shrinking one."
+    )
+
+
+#: A pattern with every shape :func:`_key_branches` has to split around, and the
+#: branches it has to produce. Synthetic, because the shipped key happens to
+#: carry no ``|`` inside a character class and no escaped one at all -- so a
+#: splitter that mishandled either would agree with the roster today and split a
+#: future branch wrong, silently.
+_SPLITTER_CASE: Final = (
+    r"plain|grouped (one|two)|nested ((a|b)|c)|class [a|b]|escaped \||last",
+    (
+        "plain",
+        "grouped (one|two)",
+        "nested ((a|b)|c)",
+        "class [a|b]",
+        r"escaped \|",
+        "last",
+    ),
+)
+
+
+def test_the_branch_splitter_keeps_alternations_inside_groups_and_classes_intact() -> None:
+    """The premise under both branch arms: the roster has to be the real roster.
+
+    :func:`_key_branches` is where a wrong answer is quietest. Split one branch
+    too many and the roster arm reddens loudly on the next run, which is fine.
+    Split one too *few* -- fold two spellings into a single branch -- and the
+    roster still matches, the floors still add up, and one of the two spellings is
+    no longer separately held by anything.
+
+    Driven against a synthetic pattern rather than the shipped key, so the
+    splitter is exercised on shapes the key does not carry today: a ``|`` inside a
+    character class and an escaped ``|`` are both literals, and both are what a
+    naive split gets wrong first.
+    """
+    pattern, expected = _SPLITTER_CASE
+
+    assert _key_branches(pattern) == expected, (
+        f"`_key_branches` split the control pattern into "
+        f"{list(_key_branches(pattern))}, expected {list(expected)}.\n\n"
+        f"Both branch arms read their roster from this function, so a wrong split "
+        f"makes them agree about the wrong thing: `_JUDGED_BRANCH_FLOOR` would be "
+        f"re-recorded against whatever it produced, and the spellings it merged or "
+        f"tore apart would stop being held one at a time."
     )
