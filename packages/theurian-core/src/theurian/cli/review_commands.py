@@ -595,10 +595,12 @@ def review_build(as_json: JsonOption = False) -> None:
     thrown away.
 
     Exit codes: 0 when the store was rebuilt. 1 when it was not -- a record this
-    build cannot store (the message names the file), an unwritable
-    .theurian/state, another process holding the write lock past the timeout, or a
-    provenance record this installation could not write. 4 when a path under
-    .theurian/ could not be proved to stay inside the working tree.
+    build cannot store (the message names the file), a corpus that changed under
+    this build so completely that it could keep none of what it read (another
+    ingest or build was running; re-run this one), an unwritable .theurian/state,
+    another process holding the write lock past the timeout, or a provenance
+    record this installation could not write. 4 when a path under .theurian/ could
+    not be proved to stay inside the working tree.
     """
     from theurian.cli.commands import (  # noqa: PLC0415 - cycle
         _emit,

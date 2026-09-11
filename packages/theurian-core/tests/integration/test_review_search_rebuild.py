@@ -56,7 +56,8 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -64,6 +65,7 @@ from typing import Any, Final, override
 
 import pytest
 
+from theurian.application.findings_builder import WriteSection
 from theurian.application.project_service import ProjectPaths
 from theurian.application.review_search_builder import (
     ReviewSearchBuilder,
@@ -232,11 +234,19 @@ class _Project:
     def land(self, records: Sequence[EvidenceRecord], *, run: IngestionRun) -> None:
         self.evidence.write(tuple(records), run=run)
 
-    def build(self) -> dict[str, object]:
+    def build(self, *, write_section: WriteSection = nullcontext) -> dict[str, object]:
+        """One rebuild, composed as the CLI composes it minus the lock file.
+
+        ``write_section`` is how a case puts another writer *inside* this build's
+        publish window: the default is the real composition's shape with no lock
+        file, and a case that passes one runs it at the instant the build has read
+        the evidence and is about to publish.
+        """
         builder = ReviewSearchBuilder(
             read_evidence=evidence_entries(self.evidence),
             list_evidence_fingerprints=evidence_fingerprints(self.paths.review),
             write=self.store.replace_all,
+            write_section=write_section,
         )
         return builder.build(ReviewSearchBuildRequest(withheld_record_keys=frozenset()))
 
@@ -690,6 +700,70 @@ def test_a_failed_rebuild_keeps_serving_a_store_the_evidence_has_moved_past(
         "go and fix -- a caller reading the store gets no signal at all"
     )
     assert "theurian review build" in excinfo.value.remedy
+
+
+def test_a_stale_rebuild_that_would_empty_the_store_refuses_and_the_previous_store_serves(
+    tmp_path: Path,
+) -> None:
+    """RED means a store with rows in it is replaced by one with none, at exit 0.
+
+    The two cases above fail a rebuild on a *record* -- a value the store cannot
+    hold, or a file an operator has to go and fix. This one fails on the corpus
+    moving underneath: the evidence read is outside the project's write lock, so
+    of two overlapping runs the one that read *earlier* can publish *later*, and
+    if every record it read was rewritten in between, the load it assembled is
+    empty. Publishing it replaces a store that was answering with one that answers
+    nothing -- and a store with no rows is exactly what a project with no evidence
+    serves, so nothing downstream could tell the two apart.
+
+    The plant is the product's own writer, not a synthetic one: ``evidence.write``
+    is what ``theurian review ingest`` calls for a record whose content changed
+    upstream, and re-landing the whole corpus inside the publish window is a
+    refetch of a repository where everything moved.
+
+    What the refusal has to leave behind is asserted through the **served
+    answers**, because that is what a caller receives: every query in
+    :data:`COMPARED` answers exactly as it did before the build that refused, and
+    ``_assert_every_query_answered`` is what stops "unchanged" from being
+    satisfied by two stores that both answer nothing.
+    """
+    project = _project(tmp_path)
+    project.land(_corpus(), run=FIRST_RUN)
+    project.build()
+    before = _served(project.store)
+    _assert_every_query_answered(before)
+
+    @contextmanager
+    def refetch_the_whole_corpus() -> Iterator[None]:
+        project.land(_corpus(), run=SECOND_RUN)
+        yield
+
+    with pytest.raises(ReviewSearchBuildError) as excinfo:
+        project.build(write_section=refetch_the_whole_corpus)
+
+    assert _served(project.store) == before, (
+        "the stale rebuild published: a build that could keep none of what it read "
+        "replaced a serving store, and what it put there answers like a project that "
+        "has no review evidence at all"
+    )
+    assert len(project.store.search(ReviewSearchQuery(limit=50), text_chars=TEXT_CHARS)) == 3, (
+        "the store answers with no rows after the refusal, which is the state the "
+        "refusal exists to prevent -- the equality above is satisfied by two empty "
+        "stores, and this is what says the surviving one is the one that was serving"
+    )
+    assert not project.store.building_path.exists(), (
+        "the refusal left its working file behind, and the next build would open and "
+        "extend it rather than starting from empty"
+    )
+    assert "theurian review build" in excinfo.value.remedy, (
+        "the refusal is the whole of the signal -- nothing on the read side says the "
+        "store is one build behind -- so it has to carry the command to re-run"
+    )
+
+    assert project.build() == {"records": 3, "withheld": 0}, (
+        "the next build did not converge on the corpus that was rewritten, so the guard "
+        "costs a project its store rather than costing it one build"
+    )
 
 
 def test_the_working_name_a_rebuild_assembles_under_is_a_sibling_of_the_published_one(

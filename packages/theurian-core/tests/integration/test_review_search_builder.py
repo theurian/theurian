@@ -676,6 +676,170 @@ def test_a_file_that_lands_after_the_read_arrives_with_the_next_build(tmp_path: 
     )
 
 
+# -- a build that can keep nothing it read -------------------------------------
+
+
+def test_a_build_that_can_keep_none_of_what_it_read_refuses_rather_than_emptying_the_store(
+    tmp_path: Path,
+) -> None:
+    """RED means a stale rebuild replaces a serving store with an empty one, at exit 0.
+
+    The window every case above is about, taken to its whole-corpus end. The read
+    is outside the write lock, so a concurrent ``review ingest`` can rewrite
+    *every* landed record while this build is reading them -- which is what a
+    refetch of a repository whose records all changed upstream does -- and the
+    revalidation then correctly drops all of them. Dropping all of them is not the
+    defect; publishing the result is. The build would replace a store that was
+    serving with one holding no rows and exit 0, and no reader can tell that store
+    from a project that has no evidence at all.
+
+    So the build refuses, inside the write section and before the write, which is
+    what leaves the previous store exactly where it was: this layer publishes by
+    replacement and never by emptying.
+
+    Three assertions, because each of them fails on its own. The refusal is
+    graded and carries the retry -- a plain ``TheurianError`` is what both CLI
+    arms already publish. The store still answers with the rows it had, which is
+    the whole point of refusing. And the *next* build converges on the rewritten
+    corpus, so the refusal costs one build rather than wedging a project whose
+    evidence legitimately moved.
+    """
+    paths = _project(tmp_path)
+    evidence = _landed(paths, _event(), _thread())
+    store, first = _build(paths, evidence, withheld=frozenset())
+    assert first == {"records": 2, "withheld": 0}
+    before = _every_stored_value(store)
+
+    def refetch_every_record() -> None:
+        evidence.write((_retitled(), _thread()), run=RUN)
+
+    with pytest.raises(ReviewSearchBuildError) as excinfo:
+        _build(
+            paths,
+            evidence,
+            withheld=frozenset(),
+            write_section=_write_section_that(refetch_every_record),
+        )
+
+    assert "2 of them" in str(excinfo.value), (
+        f"the refusal does not say how much it read and could not keep: {excinfo.value}"
+    )
+    assert ".theurian/review/" in str(excinfo.value)
+    assert "theurian review build" in excinfo.value.remedy
+    assert "review ingest" in excinfo.value.remedy, (
+        "the cure does not name the concurrent writer, so an operator reads a corrupted "
+        "corpus where the real cause is two runs overlapping"
+    )
+    assert _every_stored_value(store) == before, (
+        "the build that refused changed what is stored: refusing is what keeps the "
+        "previous store serving, and it must not have published on the way out"
+    )
+
+    rebuilt, second = _build(paths, evidence, withheld=frozenset())
+
+    assert second == {"records": 2, "withheld": 0}, (
+        "the next build did not converge on the corpus the refusal was about, so the "
+        "guard wedges a project rather than costing it one build"
+    )
+    assert "Retitled upstream" in _every_stored_value(rebuilt)
+
+
+def test_a_corpus_emptied_on_purpose_publishes_the_empty_store(tmp_path: Path) -> None:
+    """The lawful arm of the same guard, and the reason it is keyed on the read.
+
+    Deleting evidence files is the retention remedy ADR-0030 decision 3 leaves an
+    operator, and deleting *all* of them is a corpus of nothing -- which a build
+    must publish, or the store goes on serving records whose files an operator
+    took out. That is the case the guard must not catch: the refusal above is
+    about a build whose own read is entirely stale, and a read that finds zero
+    records is not stale, it is an answer about the disk.
+
+    Written as the second half of a build that had published rows, so the empty
+    publish is observably a *replacement* and not a first build that happened to
+    have nothing to do.
+    """
+    paths = _project(tmp_path)
+    evidence = _landed(paths, _event(), _thread())
+    store, first = _build(paths, evidence, withheld=frozenset())
+    assert first == {"records": 2, "withheld": 0}
+    for landed in paths.review.rglob("*.json"):
+        landed.unlink()
+
+    emptied, report = _build(paths, evidence, withheld=frozenset())
+
+    assert report == {"records": 0, "withheld": 0}
+    assert emptied.dump() == (), (
+        "the store still serves records whose evidence files an operator deleted, which "
+        "is the retention remedy decision 3 leaves them, silently undone"
+    )
+    assert "Bound the retry budget" not in _every_stored_value(store)
+
+
+def test_a_build_that_keeps_some_of_what_it_read_publishes_the_rest(tmp_path: Path) -> None:
+    """The guard's other boundary: a partial drop is not a refusal.
+
+    Two records, one of them rewritten inside the write section. The rewritten one
+    is dropped -- that is
+    ``test_a_record_rewritten_between_the_read_and_the_publish_is_not_republished``'s
+    claim -- and the *other* one must still be published, because a guard that
+    fired on any drop at all would refuse every ordinary build that raced a
+    single-record refetch and leave a store frozen at whatever it last held.
+
+    RED here means the refusal's condition is "something was dropped" rather than
+    "nothing survived".
+    """
+    paths = _project(tmp_path)
+    evidence = _landed(paths, _event(), _thread())
+
+    def refetch_one_record() -> None:
+        evidence.write((_retitled(),), run=RUN)
+
+    store, report = _build(
+        paths,
+        evidence,
+        withheld=frozenset(),
+        write_section=_write_section_that(refetch_one_record),
+    )
+
+    assert report == {"records": 1, "withheld": 0}
+    stored = _every_stored_value(store)
+    assert "This retries forever." in stored, "the record nothing touched was dropped too"
+    assert "Bound the retry budget" not in stored
+
+
+def test_a_build_that_withheld_everything_it_read_publishes_the_empty_store(
+    tmp_path: Path,
+) -> None:
+    """RED means the refusal itself says that a withheld record exists.
+
+    The guard counts what survived *withholding*, not what was read, and this is
+    the case that difference is for. A build asked to withhold every record it
+    read has nothing to publish for a reason the caller chose; refusing there
+    would make the refusal a signal that there was something to withhold --
+    exactly the bit :attr:`ReviewSearchBuildRequest.withheld_record_keys`' physical
+    absence exists to keep out of the store, arriving through an error instead.
+
+    So this build publishes the empty store, and what it publishes is
+    indistinguishable from the empty corpus above: same rows, same counts but for
+    ``withheld``, which is a function of the caller's own set.
+    """
+    paths = _project(tmp_path)
+    evidence = _landed(paths, _event(), _thread())
+    # A pull request is keyed by its number and a thread by its node id --
+    # `EvidenceRecord.record_key`'s two arms, spelled here rather than derived so
+    # a key that changed shape reddens the premise below rather than quietly
+    # withholding nothing.
+    every_key = frozenset({"42", "PRRT_kwDO_test_node_0001"})
+
+    store, report = _build(paths, evidence, withheld=every_key)
+
+    assert report == {"records": 0, "withheld": 2}, (
+        "the premise: both records have to be withheld, or this is not the all-withheld "
+        "case the guard has to let through"
+    )
+    assert store.dump() == ()
+
+
 # -- rebuild is the durability story ------------------------------------------
 
 

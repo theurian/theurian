@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -35,6 +36,7 @@ import pytest
 from fakes import CannedReviewProvider, ReadKey
 from typer.testing import CliRunner
 
+from theurian.application.findings_builder import WriteSection
 from theurian.application.project_service import ProjectPathEscapeError, ProjectPaths
 from theurian.application.review_landing_gate import REDACTED_DISPLAY_NAME
 from theurian.cli import review_commands
@@ -455,6 +457,79 @@ def test_a_provenance_write_that_fails_publishes_the_run_document_and_exits_one(
         f"the cure sends the operator to the wrong directory: {refusal['remedy']}"
     )
     assert len(_landed(project)) == 3
+
+
+def test_a_rebuild_overtaken_by_another_writer_refuses_after_publishing_the_run_document(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stale-rebuild refusal, reaching an operator through the command that runs it.
+
+    ``ReviewSearchBuilder`` refuses rather than publishing an empty store when the
+    revalidation keeps none of the records its read found -- a rebuild whose whole
+    corpus was rewritten by an overlapping writer while it was reading. That
+    refusal is a ``TheurianError`` with a remedy, so this asserts it reaches the
+    ingest path's *existing* arms rather than needing a new one: the ``finally``
+    publishes the run document first, the ``except TheurianError`` turns the
+    refusal into ``{error, remedy}`` on stderr, and the exit code is 1.
+
+    The overlapping writer is planted where one really is: inside the build's
+    write section, which is the window between the two fingerprint captures. Every
+    landed record is rewritten with its own bytes -- the benign refetch
+    ``test_review_search_builder.py`` documents as an over-drop -- so the corpus
+    is intact on disk and every record is dropped, which is the state the guard is
+    about. The real lock is still taken, because the wrapper delegates to the
+    section the composition root builds rather than replacing it.
+
+    The records landing and the store not being written are both asserted: the
+    evidence is durable before the rebuild starts, and an operator told only that
+    a build failed would go looking for records that are on disk.
+    """
+    _settings(project, policy="warn")
+    _install(
+        monkeypatch,
+        _canned((_event(42),), threads={42: (_thread(_event(42), file_path=f"src/{SECRET}.py"),)}),
+    )
+    real_section = review_commands._lock_write_section
+
+    def overtaken(lock_path: Path) -> WriteSection:
+        inner = real_section(lock_path)
+
+        @contextmanager
+        def section() -> Iterator[None]:
+            for landed in (project / ".theurian" / "review").rglob("*.json"):
+                landed.write_bytes(landed.read_bytes())
+            with inner():
+                yield
+
+        return section
+
+    monkeypatch.setattr(review_commands, "_lock_write_section", overtaken)
+
+    result = runner.invoke(app, ["review", "ingest", REPOSITORY, "--json"], catch_exceptions=False)
+
+    assert result.exit_code == 1
+    document = json.loads(result.stdout)
+    assert document["landed"]["total"] == 3
+    assert document["secretsWarned"] is True, (
+        "the run landed a flagged record under `warn`, and no later command recomputes it"
+    )
+    assert "searchStore" not in document, (
+        "the block describes a store that was written, and this rebuild refused"
+    )
+    refusal = json.loads(result.stderr)
+    assert set(refusal) == {"error", "remedy"}
+    assert "3 of them" in refusal["error"], (
+        f"the refusal does not say how much the build read and could not keep: {refusal}"
+    )
+    assert "could not be rebuilt" in refusal["error"], (
+        "the ingest half's own sentence is missing, so the operator is not told the "
+        "records landed and only the derived store is behind"
+    )
+    assert "`theurian review build`" in refusal["remedy"]
+    assert "review ingest" in refusal["remedy"], (
+        "the cure does not name the concurrent writer, which is the cause here"
+    )
+    assert len(_landed(project)) == 3, "the refusal cost evidence, which nothing here may do"
 
 
 def test_a_rebuild_defect_outside_every_graded_arm_still_publishes_the_run_document(

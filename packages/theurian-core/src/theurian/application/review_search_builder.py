@@ -164,6 +164,39 @@ class ReviewSearchBuildError(TheurianError):
         super().__init__(detail)
 
 
+#: The cure for a build whose whole read was overtaken between the read and the
+#: publish. It names the directory two writers were both touching, the command to
+#: re-run, and what this build did **not** do -- because the first question an
+#: operator asks about a refusal on a derived store is whether the source moved.
+#:
+#: A retry is the cure here where :func:`_record_cure` refuses to offer one alone:
+#: that refusal is about a record that will fail the same way on every build until
+#: somebody edits it, and this one is about a window that has already closed.
+_RACE_CURE: Final = (
+    "Another writer -- a concurrent `theurian review ingest` or `theurian review "
+    "build` -- was changing files under .theurian/review/ while this build was "
+    "reading them. Let that run finish, then run `theurian review build` again: it "
+    "reads the corpus as it is now and publishes it. This build wrote nothing, and "
+    "it neither moved nor removed anything under .theurian/review/."
+)
+
+
+def _emptied_by_a_race(read: int) -> str:
+    """The refusal a build raises rather than publishing an empty store.
+
+    Names the count it read, because that number is the whole difference between
+    this refusal and an honest empty build: a corpus somebody emptied on purpose
+    reads as zero records and publishes, and this message can only be composed
+    where the read found some.
+    """
+    return (
+        f"Every evidence record this build read -- {read} of them -- was rewritten, "
+        f"removed or replaced under .theurian/review/ before this build reached its "
+        f"publish, so the store it assembled holds nothing. Nothing was published: "
+        f"the store that was serving before this build is the one still serving."
+    )
+
+
 def _record_cure(relative_path: str) -> str:
     """The cure for a landed record this build cannot project.
 
@@ -340,12 +373,33 @@ class ReviewSearchBuilder:
         **Over-dropping is the failure direction this chooses, and it is
         reachable.** A benign refetch that rewrites a record with byte-identical
         content still moves ``mtime_ns``, so its record is dropped from *this*
-        build even though nothing about it changed. That is fail-closed and it
-        converges: the record is absent until the next rebuild, and ``review
-        ingest`` runs one itself after every landing.
+        build even though nothing about it changed. That is fail-closed, and what
+        it costs is bounded by the guard below rather than by a promise that it
+        comes back: **a build that drops *some* of what it read publishes the
+        rest, and each dropped record is one refetch behind until a later rebuild
+        reads it; a build that can keep *none* of what it read refuses.**
         ``test_review_search_builder.py``'s
         ``test_a_refetch_that_rewrites_identical_bytes_is_dropped_and_returns_next_build``
-        asserts that behaviour rather than leaving it described.
+        holds the partial case, including its return on the next build.
+
+        **A build that kept nothing it read publishes nothing at all.** The
+        drop-and-converge story above is a story about *records*, and it is false
+        of the store the instant every record is dropped: the stale reader
+        publishes last, replaces a store that was serving with one holding no
+        rows, and exits 0. There is no signal on the read side -- a store that
+        answers with no hits is indistinguishable from a project with no evidence
+        -- so the refusal is the whole of it, and refusing is what leaves the
+        previous store serving, because this layer publishes by replacement and
+        never by emptying.
+
+        The condition is **read some, kept none**, and both halves are load-
+        bearing. A corpus somebody legitimately emptied converges through the
+        *next* build, which reads zero records and publishes the empty store: an
+        empty read is an answer about the disk, where an empty keep is only ever a
+        statement about this build's own window. And the count is taken after
+        withholding, so a caller that withheld everything it read publishes an
+        empty store rather than meeting a refusal that would itself disclose that
+        there was something to withhold.
 
         **The check is a listing, not a second read**, which is what keeps all of
         the above payable: :data:`ListEvidenceFingerprints` opens no file and
@@ -367,6 +421,13 @@ class ReviewSearchBuilder:
                 holds, arrives. Each names the evidence file. Raised before the
                 write section is entered, so a corpus this build cannot project
                 never takes the project's write lock at all.
+
+                **Or if the revalidation kept none of the records the read
+                found**, which is the guard above: raised inside the write section
+                and before the write, so the previous store is left serving. This
+                one names no file -- every file it read is implicated and none of
+                them is at fault -- and its cure is the retry ``_record_cure``
+                deliberately refuses to offer on its own.
             TheurianError: Whatever the reader, the listing or the writer raises,
                 unchanged. Each carries its own remedy about its own artefact, and
                 the read side's in particular is about a file this layer never
@@ -397,6 +458,15 @@ class ReviewSearchBuilder:
                     if _unchanged(record.relative_path, before_the_read, at_the_publish)
                 )
             )
+            # Keyed on the *revalidation* dropping everything, never on the load
+            # being empty: a build asked to withhold every record it read has
+            # nothing to publish for a reason the caller chose, and refusing there
+            # would make the refusal itself say that withheld records exist -- the
+            # one thing `withheld_record_keys`' physical absence is for. So the
+            # premise is `projected`, which is what survived the withholding, and
+            # the count in the message is the same number.
+            if projected and not load.records:
+                raise ReviewSearchBuildError(_emptied_by_a_race(len(projected)), remedy=_RACE_CURE)
             self._write(load)
         # Two counts and no third. A per-repository count was drafted here and
         # dropped: its dict key would have been the string `"repositories"`, which
