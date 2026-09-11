@@ -1641,11 +1641,36 @@ and says so. Paths are `packages/theurian-core/tests/`.
 **The slice closed at round five under the fixed-round-budget ruling, with one
 HIGH open and release-gating** (2026-09-11). CRITICAL was zero throughout;
 [#636](https://github.com/theurian/theurian/issues/636) — the empty-publish guard
-keying on read-time facts while the build holds the publish-time listing that
-decides them — was filed rather than fixed, is the first post-merge item, and the
-0.2.0 cut does not happen until it is fixed and re-verified. It touches none of
-the discharges below: no arm of the two-corpora equality, the triple, the flag,
-SEC-13 or the bound-input battery rests on that guard.
+keying on read-time facts while the build held the publish-time listing that
+decides them — was filed rather than fixed and was the first post-merge item. It
+touched none of the discharges below: no arm of the two-corpora equality, the
+triple, the flag, SEC-13 or the bound-input battery rests on that guard.
+
+**That HIGH is discharged, so the 0.2.0 cut is no longer waiting on it**
+([PR #637](https://github.com/theurian/theurian/pull/637)). The guard is keyed on
+`at_the_publish` — the listing taken inside the write section — together with the
+withholding outcome, and on nothing the read alone saw, which is what separates a
+stale build from an operator's deletion: a build that read nothing while the
+corpus is there at the publish refuses instead of emptying a store a landing had
+just filled, and a corpus emptied whole inside another build's window publishes
+the empty store instead of being refused while the store goes on serving records
+whose files are gone. Both faces are driven through the shipped CLI by
+`integration/test_review_build_empty_publish.py::test_a_build_that_read_nothing_refuses_rather_than_emptying_a_store_a_landing_just_filled`
+and
+`::test_a_corpus_an_operator_emptied_inside_the_window_is_published_rather_than_refused`,
+which hold the read-to-publish window open with a barrier at the read seam and
+assert what the read returned rather than relying on a race; the two-process
+reproduction that filed the issue is #636's own and is not re-run there, which
+that module states as its cost. The rows nothing else reached are
+`integration/test_review_search_builder.py::test_a_build_that_read_nothing_while_a_landing_filled_the_corpus_refuses`
+and
+`::test_a_build_that_kept_none_of_what_it_read_publishes_when_the_corpus_is_gone`,
+the withholding arm is
+`::test_a_build_that_withheld_everything_publishes_whether_the_files_are_there_or_not`
+with `::test_an_all_withheld_build_and_a_purpose_emptied_corpus_are_one_observable`,
+and the key itself is pinned from both sides by
+`unit/test_review_search_builder_claims.py::test_the_empty_publish_guard_is_keyed_on_the_publish_time_capture`
+and `::test_the_build_records_the_decision_its_guard_makes`.
 
 - **Landed in slice 3 — every author-controlled field carries the SEC-15 triple,
   bound by import.**
