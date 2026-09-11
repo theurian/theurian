@@ -1508,6 +1508,16 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         try:
             verify_state_provenance(paths, active, provenance)
         except ProjectError as exc:
+            # The plain fold, and deliberately *not* a bespoke message like
+            # `state_database_named`'s above. What arrives here is already
+            # layout-free: that refusal is a constant naming the project-relative
+            # `.theurian/state/` (GHSA-97q9, closed at the raise site rather than
+            # at this seam, so a second caller inherits the suppression instead of
+            # inheriting the disclosure). There is nothing left for a handler to
+            # suppress -- and a bespoke wording would be keyed on this *clause*
+            # rather than on a cause, so it would have to stay true of whatever is
+            # raised under it later, where the fold keeps each refusal's own
+            # message beside its own cure.
             raise _with_remedy(exc) from exc
 
         return paths, database, active

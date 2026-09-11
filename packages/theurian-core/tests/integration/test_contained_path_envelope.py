@@ -612,8 +612,13 @@ PLANTS: Final = (
             "and is outside this sweep: it "
             "reads `refs/remotes/origin/main`, which this corpus has no reason to "
             "carry, and writes a separate derived store. The MCP `review.findings` "
-            "tool reads it too, on a surface this file does not drive. A real "
-            "coverage gap, recorded rather than papered over."
+            "tool reads it too, and that read is now guarded and driven elsewhere. "
+            "In `test_review_findings_tool.py`, "
+            "`test_a_store_path_that_resolves_outside_the_project_answers_the_one_constant` "
+            "plants this exact escape and pins the one constant refusal it answers "
+            "with; `test_resolved_layout_never_crosses.py` sweeps the same plant "
+            "across every registered tool. The CLI half stays uncovered here, "
+            "recorded rather than papered over."
         ),
     ),
     Plant(

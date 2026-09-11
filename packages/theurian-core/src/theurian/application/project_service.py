@@ -130,6 +130,44 @@ UNBUILT_STATE_REMEDY: Final = (
     "derived state must never be version-controlled (ADR-0004)."
 )
 
+#: What :func:`verify_state_provenance` refuses with. Interpolates nothing.
+#:
+#: **The path this used to name was the operator's resolved filesystem layout**
+#: (GHSA-97q9). It read ``f"The derived knowledge state under {paths.state} ..."``,
+#: and :attr:`ProjectPaths.state` is built from a *resolved* root -- so for a
+#: project registered through a symbolic link it named the physical directory
+#: behind ``rootPath``, which is a string ``project.list`` does not hand out: that
+#: tool republishes the registry's own spelling verbatim
+#: (``_publishable_field(e.get("rootPath", ""))``). This refusal has one consumer
+#: and it is that same surface: ``git grep -n 'verify_state_provenance(paths' --
+#: packages/theurian-core/src`` answers two lines, this note's quotation of the
+#: key and the call in ``mcp/tools.py``'s ``_resolve`` -- which every
+#: project-scoped tool resolves through. So the interpolation reached only readers
+#: it was a disclosure to.
+#:
+#: **A constant here, rather than a suppressing handler at that call site**, which
+#: was the other shape available. A handler covers the seam it is written on, and
+#: a second caller would inherit the message without it; the guard belongs in the
+#: thing that renders the claim, and a string with no ``f`` prefix has nothing left
+#: to re-acquire a path through. A reader for whom the layout is *not* a
+#: disclosure holds ``paths`` at its own call site and can name the directory
+#: itself -- ``cli/index_commands.py``'s twin refusal for this same condition
+#: names no path at all.
+#:
+#: Spells the directory as :data:`UNBUILT_STATE_REMEDY` above does, so the refusal
+#: and its cure name one location rather than two spellings of it. The class-level
+#: claim -- that no response from any registered tool carries the resolved layout
+#: -- is not asserted here; it is measured by
+#: ``tests/integration/test_resolved_layout_never_crosses.py``, whose
+#: ``delivered-state`` plant is the cell this constant turns green and which goes
+#: RED if an interpolation returns.
+_UNBUILT_STATE_REFUSAL: Final = (
+    "This project's derived knowledge state under .theurian/state/ was not built by this "
+    "Theurian installation, so it will not be served. It was delivered with the project "
+    "rather than rebuilt here from the Git-tracked migrations, which is exactly what an "
+    "untrusted repository must not be able to do (ADR-0004)."
+)
+
 #: The one review-finding store a project has (ADR-0029 phase-2).
 #:
 #: Findings are a wholesale projection of the repository's public history, so a
@@ -3244,14 +3282,10 @@ def verify_state_provenance(
 
     Raises:
         ProjectError: If no out-of-tree record shows this installation built the
-            state the in-tree pointer names. Carries :data:`UNBUILT_STATE_REMEDY`;
-            quotes no cell content, only the state directory's own path.
+            state the in-tree pointer names. The message is
+            :data:`_UNBUILT_STATE_REFUSAL` and the cure is
+            :data:`UNBUILT_STATE_REMEDY` -- both constants, so neither can quote a
+            cell, a pointer field, or a path on the machine serving the request.
     """
     if not provenance.has_state(paths.root, str(active.state_hash)):
-        raise ProjectError(
-            f"The derived knowledge state under {paths.state} was not built by this "
-            f"Theurian installation, so it will not be served. It was delivered with the "
-            f"project rather than rebuilt here from the Git-tracked migrations, which is "
-            f"exactly what an untrusted repository must not be able to do (ADR-0004).",
-            remedy=UNBUILT_STATE_REMEDY,
-        )
+        raise ProjectError(_UNBUILT_STATE_REFUSAL, remedy=UNBUILT_STATE_REMEDY)
