@@ -1895,6 +1895,86 @@ async def test_the_unservable_refusal_does_not_vary_with_what_the_store_holds(
     assert FINDINGS_UNAVAILABLE_REFUSAL in messages.pop()
 
 
+@pytest.mark.asyncio
+async def test_a_store_path_that_resolves_outside_the_project_answers_the_one_constant(
+    project: ProjectRegistry, tmp_path: Path
+) -> None:
+    """The availability envelope covers the escaping-leaf arm too (GHSA-97q9).
+
+    ``findings_for`` routes through ``ProjectPaths._contained``, whose refusal
+    names the absolute path it was asked for *and* the resolved project root --
+    correct on a terminal, the operator's machine layout on this surface. Left to
+    travel, that message reaches an MCP caller verbatim: ``ProjectPathEscapeError``
+    is a ``TheurianError``, and the ``_forwarding`` seam republishes ``str(exc)``
+    by design. The tool answers the one constant instead, and this is what drives
+    that conversion -- a guard no data reaches is a guard that survives its own
+    deletion. A message of its own would be a second input to the error channel
+    SEC-13 keeps at one message, and a message carrying a path would be the layout
+    itself.
+
+    Reached through the shipped composition rather than a patch. The provenance
+    gate above this line reads the installation's own build record, keyed on
+    ``(root, store id)``, so it passes over a store this installation really
+    built; what escapes is the **leaf**, a link force-added past ADR-0004's
+    ignore -- the same ``git add -f`` reach :func:`_plant` models, here aimed at
+    where the file is rather than at what it holds. Its twin drives the identical
+    conversion for ``review.search`` with a patched ``review_search_for``
+    (``test_review_search_tool.py::test_a_project_path_that_stops_resolving_does_not_publish_the_operator_layout``);
+    this one plants the link, so the guard is driven by data rather than stood in
+    for.
+
+    ``test_contained_path_envelope.py`` records this consumer as outside its own
+    sweep -- an MCP transport error is a different envelope contract from a
+    ``--json`` document -- which is why the arm is driven here.
+
+    Four path candidates are searched for, not the two ``_contain`` happens to
+    name: what must not reach the wire is the layout, so a refusal that named
+    where the link pointed, or the directory the checkout sits in, would be the
+    same disclosure through a different substring.
+    """
+    store = _land(project)
+    leaf = _store_path(project)
+    root = Path(project.load()["demo"]["rootPath"])
+    outside = tmp_path / "outside-the-checkout"
+    outside.mkdir()
+    target = outside / leaf.name
+    leaf.rename(target)
+    leaf.symlink_to(target)
+    assert leaf.resolve() == target.resolve(), "the premise: the planted link is live"
+    assert not leaf.resolve().is_relative_to(root.resolve()), (
+        "the premise: the store leaf must really resolve outside the project root, or "
+        "the containment refusal this test drives never fires"
+    )
+    assert store.dump().findings, (
+        "the premise: the link reaches a readable, landed store, so what refuses "
+        "below is containment and not a store that cannot be read"
+    )
+    assert BuildProvenance.for_registry(project).has_findings(root, FINDINGS_STORE_ID), (
+        "the premise: this installation's build record still covers the store, so the "
+        "call reaches the containment check rather than stopping at the provenance gate"
+    )
+
+    message = await _call_failing(project, projectId="demo")
+
+    # `in`, not `==`: the SDK prefixes a failing tool's message with "Error
+    # executing tool review.findings: ", which is the transport's and constant.
+    assert FINDINGS_UNAVAILABLE_REFUSAL in message
+    published = {
+        name: value
+        for name, value in (
+            ("the store path the link sits at", str(leaf)),
+            ("the target the link escaped to", str(target.resolve())),
+            ("the resolved project root", str(root.resolve())),
+            ("the temporary tree this run was given", str(tmp_path.resolve())),
+        )
+        if value in message
+    }
+    assert not published, (
+        f"the refusal published the operator's filesystem layout to an MCP caller "
+        f"(GHSA-97q9): {published}\n{message}"
+    )
+
+
 # -- AC-4: bounds and vocabularies ------------------------------------------
 
 

@@ -203,21 +203,33 @@ FINDINGS_CAPACITY_REFUSAL: Final = (
 
 #: What `review.findings` answers when the store cannot be served from: it does
 #: not exist, this installation did not build it (ADR-0004, SEC-7), it was built
-#: by a superseded schema or trailer grammar, or it cannot be read.
+#: by a superseded schema or trailer grammar, or it cannot be read. It is also
+#: what a store path that cannot be contained answers with -- a leaf resolving
+#: outside the project root, which `ProjectPaths.findings_for` refuses before the
+#: file is opened -- so that arm cannot publish an operator's absolute layout
+#: either (GHSA-97q9), the trade `REVIEW_SEARCH_UNAVAILABLE_REFUSAL` records for
+#: the tool beside this one.
 #:
 #: "It has not been built" in the text below is read as *has not been built here*,
 #: which is what lets one sentence cover the second cause as honestly as the
 #: first: a store delivered with a repository is one this installation has no
 #: record of building, and the cure for it is the same local rebuild.
 #:
-#: **One message for all four, and it is a constant.** It interpolates nothing --
-#: not the project, not the filters, not the file, and above all nothing read
+#: **One message for all of them, and it is a constant.** It interpolates nothing
+#: -- not the project, not the filters, not the file, and above all nothing read
 #: from the store -- so it cannot become the "an error that fires for one input
 #: and not another" channel SEC-13 closes elsewhere (the same discipline
-#: `SEARCH_CAPACITY_REFUSAL` holds). Distinguishing the four arms would publish
+#: `SEARCH_CAPACITY_REFUSAL` holds). Distinguishing the arms would publish
 #: which of them fired, which is a statement about a file the caller cannot read
 #: and buys nothing: the cure is the same rebuild for each, because the store is
-#: a projection of git history (ADR-0004). The provenance arm is the one where
+#: a projection of git history (ADR-0004). The containment arm keeps that bargain
+#: from the other side rather than breaking it: `theurian findings build` resolves
+#: the same leaf through the same helper, ahead of any git read
+#: (`cli/findings_commands.py`), so the operator who runs the cure meets the
+#: containment refusal on a terminal instead -- measured 2026-09-11 on a planted
+#: escaping leaf, exit 4, naming the leaf, the resolved root and the remove-and-
+#: rebuild cure, which is the right answer to whoever has the checkout and is the
+#: machine layout to whoever does not. The provenance arm is the one where
 #: distinguishing would cost something rather than merely buying nothing: telling
 #: "this store is not yours" apart from "there is no store" tells whoever planted
 #: it that the plant was detected, and tells the victim a story about a file only
@@ -2098,7 +2110,8 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 a filter is outside its bound or vocabulary (see
                 :mod:`theurian.mcp.findings`), or if the store cannot be served
                 from -- one constant message for that last case, whichever of its
-                four causes fired (:data:`FINDINGS_UNAVAILABLE_REFUSAL`).
+                causes fired (:data:`FINDINGS_UNAVAILABLE_REFUSAL`), the store
+                path's own containment among them.
         """
         # Bounds first, before the registry is read and before any file is
         # touched: a refused request costs the daemon nothing (T-6), and the
@@ -2147,7 +2160,36 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         #
         # Reach premise: see ADR-0029's landing note (slice-3) for what
         # `origin/main` is trusted to mean on a clone of the private fork.
-        store = SqliteReviewFindingStore(paths.findings_for(FINDINGS_STORE_ID))
+        try:
+            store_path = paths.findings_for(FINDINGS_STORE_ID)
+        except ProjectError as exc:
+            # **The refusal is answered, never republished**, for the reason
+            # `_resolve`'s `state_database_named` arm gives: `_contain`'s message names
+            # the absolute path it was handed *and* the resolved project root, which is
+            # the operator's machine layout on this surface (GHSA-97q9). Left alone it
+            # does travel -- `ProjectPathEscapeError` is a `TheurianError`, and
+            # `_forwarding` republishes `str(exc)` by design, dropping only the remedy.
+            # A refusal of its own would also be a second input to the channel this
+            # tool's one constant closes: it would say which arm of the availability
+            # envelope fired, about a file the caller cannot read.
+            #
+            # Driven by data, where the `review.search` twin's guard is driven by a
+            # patched helper. `findings_for` runs one containment over the *whole* path,
+            # leaf included, so what arrives here is the store leaf itself swapped for a
+            # link out of the tree -- force-added past ADR-0004's ignore. Neither gate
+            # above intercepts that: `_resolve` resolves `.theurian/state` before it
+            # returns (the active pointer's containment and `state_database_named`'s
+            # both go through it), so an escaping state *directory* refuses there and
+            # never reaches this line, while `provenance.has_findings` reads this
+            # installation's out-of-tree build record keyed on `(root, store id)` rather
+            # than the file. The plant is
+            # `test_a_store_path_that_resolves_outside_the_project_answers_the_one_constant`.
+            #
+            # `ProjectError`, the base, and not the `ProjectPathEscapeError` `_contain`
+            # raises today: the catch is keyed on what may cross this boundary, not on
+            # which subclass currently does.
+            raise ToolError(FINDINGS_UNAVAILABLE_REFUSAL) from exc
+        store = SqliteReviewFindingStore(store_path)
 
         # Admission-gated, like `knowledge.search` and for the same reason (T-6,
         # SEC-8, #26): this block is the only work a caller can make this daemon
