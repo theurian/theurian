@@ -595,13 +595,21 @@ def review_build(as_json: JsonOption = False) -> None:
     received evidence through git, and for the operator whose store was damaged or
     thrown away.
 
-    Exit codes: 0 when the store was rebuilt. 1 when it was not -- a record this
-    build cannot store (the message names the file), a corpus that changed under
-    this build so completely that it could keep none of what it read (another
-    ingest or build was running; re-run this one), an unwritable .theurian/state,
-    another process holding the write lock past the timeout, or a provenance
-    record this installation could not write. 4 when a path under .theurian/ could
-    not be proved to stay inside the working tree.
+    Exit codes: 0 when the store was rebuilt -- including a rebuild that publishes
+    an *empty* store, which is what a corpus that is gone when the build reaches its
+    publish gets. Deleting files under .theurian/review/ is the only retention
+    remedy there is, so a rebuild that refused there would go on serving the records
+    you removed. 1 when
+    the store was not rebuilt -- a record this build cannot store (the message
+    names the file), a corpus that is still there when this build reaches its
+    publish while the build has nothing left it can publish from it (its whole read
+    went stale, or it read nothing while records were landing; either way something
+    else was writing .theurian/review/ underneath it -- another theurian run, or a
+    git checkout or pull over the tracked directory -- so let that finish and re-run
+    this one), an unwritable .theurian/state, another process holding the write lock
+    past the timeout, or a provenance record this installation could not write. 4
+    when a path under .theurian/ could not be proved to stay inside the working
+    tree.
     """
     from theurian.cli.commands import (  # noqa: PLC0415 - cycle
         _emit,

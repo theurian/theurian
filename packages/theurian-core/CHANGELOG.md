@@ -500,22 +500,31 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   record outright — so it sits inside threat-model **T-24** rather than beside it.
 
   **`theurian review build` and `theurian review ingest` can now exit 1 with a
-  race remedy.** When the revalidation keeps **none** of the records the read
-  found, the build refuses instead of publishing an empty store over one that was
-  serving, and the refusal names how many records it read, says nothing was
-  published and nothing under `.theurian/review/` was moved or removed, and tells
-  the operator to let the other run finish and re-run `theurian review build`. On
-  the ingest path that refusal arrives *after* the run document: the records are
-  already durable, so stdout carries the landing report and stderr carries
-  `{error, remedy}`. **The guard is keyed on read-time facts, and that is a
-  recorded defect rather than a property** — a build that read zero records
-  publishes its empty store over rows a concurrent first landing had just built,
-  and a whole-corpus deletion inside another build's window is refused rather
-  than honoured until the operator re-runs.
-  [#636](https://github.com/theurian/theurian/issues/636) owns the fix and
-  carries its closure shape; the docstring at
-  `application/review_search_builder.py` states the same bound where the guard
-  lives.
+  race remedy.** The refusal fires where the corpus is still on disk at the
+  publish and the build has nothing to put in the store for any reason but
+  withholding. Two shapes reach it — a read that found records and kept none of
+  them, and a read that found none at all while the corpus was there — and in
+  both the build refuses rather than replacing a serving store with an empty one.
+  The refusal says nothing was published and nothing under `.theurian/review/`
+  was moved or removed, and tells the operator to let the other run finish and
+  re-run `theurian review build`; where the read found something it names how
+  many records the build **could have published**, which is the count after
+  withholding rather than the read's own total. On the ingest path that refusal
+  arrives *after* the run document: the records are already durable, so stdout
+  carries the landing report and stderr carries `{error, remedy}`.
+
+  **The guard is keyed on the publish-time listing rather than on what the read
+  saw**, which is what separates a stale build from a build whose corpus is
+  **gone at the publish**: a whole-corpus deletion publishes the empty store
+  where the corpus is gone when the build reaches its publish, honouring the only
+  retention remedy ADR-0030 decision 3 leaves. Where another writer lands a
+  record inside that same window the corpus is not gone at the publish, so that
+  build refuses and the rows the earlier one published go on serving.
+  What stood here described the read-time key and recorded it as a defect
+  ([#636](https://github.com/theurian/theurian/issues/636)); that defect is fixed
+  under *Fixed* in this same section, before any release carried it. The
+  docstring at `application/review_search_builder.py` carries the whole case
+  table where the guard lives.
 
   **Threat-model bookkeeping, because this slice moved two entries.**
   `review.search` is recorded as **T-6's fifth query-side member**, with the
@@ -1207,6 +1216,83 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `RegistryFailureArm`, and each arm's own instructions are executed against a
   planted instance of its condition with the recovery measured, so a cure whose
   steps do not lift the refusal they name fails rather than reading well.
+
+- **A review build that read nothing emptied a store a concurrent landing had
+  just filled, and a corpus an operator deleted whole was refused rather than
+  honoured** ([#636](https://github.com/theurian/theurian/issues/636)).
+  `ReviewSearchBuilder.build` makes one decision no row of its revalidation table
+  covers — whether a *store* is published at all when the load it assembled is
+  empty — and it keyed that decision on `projected`, the read-time projection,
+  while the build already held `at_the_publish`, the directory listing taken
+  inside the write section. One keying error, two faces, and both change what an
+  operator sees:
+
+  - A build whose read found **zero** records has an empty projection, so the
+    guard never fired. Starting in front of a first landing and queueing on the
+    write lock behind that landing's own rebuild, it replaced the freshly built
+    store with an empty one, at exit 0 and silently. It refuses now, and refusing
+    is what leaves the landed rows serving.
+  - An operator deleting **every** evidence file inside another build's
+    read-to-publish window made the guard fire — revalidation drops every record
+    the read took — so that build refused, the store went on serving records
+    whose files are gone, and the cure told the operator to let a concurrent run
+    finish when there was no concurrent run. That build publishes the empty store
+    now **where the corpus is gone at the publish**, which is what honours the
+    deletion ADR-0030 decision 3 leaves as the only retention remedy. The
+    condition is the whole of it: let another writer land a record inside the same
+    window and the corpus is not gone at the publish, so the build refuses and the
+    rows the earlier one published go on serving.
+
+  **The decision is now a function of the publish-time capture and the
+  withholding outcome, and of nothing the read alone saw**: refuse where
+  `at_the_publish` is non-empty, the load is empty, and withholding is not what
+  emptied it. An empty listing fails the revalidation for every record the read
+  took, so the publishing arm cannot smuggle a survivor past a deletion.
+
+  **The non-disclosure arm does not move, and it is stated on the listing axis.**
+  A build asked to withhold every record it read still publishes the empty store
+  and exits 0, observably identical to a build whose corpus is **gone at the
+  publish** — refusing there would make the refusal itself an error that fires for
+  one input and not the other. The pairing is not with an operator's intent, which
+  this build cannot read: a read that found nothing arrives as `entries == ()`
+  whether the records never existed or somebody had just deleted them, so those
+  are one input and not two, and an emptied corpus that a writer lands into inside
+  the window is the *refusing* world rather than the publishing one.
+
+  **The refusal's count moved with the key.** A build that read nothing is handed
+  a sentence about the corpus rather than about its read, and the arm that does
+  print a count describes it as what the build *could have published*: that
+  number was always the post-withholding one, and calling it the read's total was
+  wrong whenever anything had been withheld.
+
+  Neither face reached a release — `theurian review build` is new in this same
+  `[Unreleased]` section — so there is no version to upgrade from. Both are
+  driven through the shipped CLI by
+  `tests/integration/test_review_build_empty_publish.py::test_a_build_that_read_nothing_refuses_rather_than_emptying_a_store_a_landing_just_filled`
+  and
+  `::test_a_corpus_an_operator_emptied_inside_the_window_is_published_rather_than_refused`,
+  which hold the read-to-publish window open with a barrier at the read seam and
+  assert what the read returned, so each case records which row of the table it
+  drove; the third world — the same deletion with a writer landing inside that
+  window, which refuses and leaves the earlier store serving — is
+  `::test_a_build_over_an_emptied_corpus_a_writer_landed_into_refuses_and_leaves_the_store`.
+  That module states its own cost: it does not demonstrate the window
+  across two OS processes, which is #636's own reproduction. The rows nothing
+  else reached are
+  `tests/integration/test_review_search_builder.py::test_a_build_that_read_nothing_while_a_landing_filled_the_corpus_refuses`
+  and
+  `::test_a_build_that_kept_none_of_what_it_read_publishes_when_the_corpus_is_gone`;
+  the withholding arm is
+  `::test_a_build_that_withheld_everything_publishes_whether_the_files_are_there_or_not`
+  with
+  `::test_an_all_withheld_build_and_a_purpose_emptied_corpus_are_one_observable`;
+  the count is
+  `::test_the_refusal_counts_what_the_build_could_have_published_not_what_it_read`;
+  and the key itself is pinned from both sides by
+  `tests/unit/test_review_search_builder_claims.py::test_the_empty_publish_guard_is_keyed_on_the_publish_time_capture`
+  — an AST arm reading what the guard's condition names — and
+  `::test_the_build_records_the_decision_its_guard_makes`, which holds the
+  recorded decision and the three superseded sentences it replaced.
 
 ## [0.1.0] - 2026-09-05
 

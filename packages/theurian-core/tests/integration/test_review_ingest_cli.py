@@ -465,8 +465,12 @@ def test_a_rebuild_overtaken_by_another_writer_refuses_after_publishing_the_run_
     """The stale-rebuild refusal, reaching an operator through the command that runs it.
 
     ``ReviewSearchBuilder`` refuses rather than publishing an empty store when the
-    revalidation keeps none of the records its read found -- a rebuild whose whole
-    corpus was rewritten by an overlapping writer while it was reading. That
+    revalidation keeps none of the records its read found **and the corpus is
+    still on disk at the publish** -- a rebuild whose whole corpus was rewritten
+    by an overlapping writer while it was reading. What decides is the listing
+    taken inside the write section and not the read: a corpus an operator emptied
+    whole in that same window gets the empty store *published* (#636), so the
+    condition below is not "kept nothing". That
     refusal is a ``TheurianError`` with a remedy, so this asserts it reaches the
     ingest path's *existing* arms rather than needing a new one: the ``finally``
     publishes the run document first, the ``except TheurianError`` turns the

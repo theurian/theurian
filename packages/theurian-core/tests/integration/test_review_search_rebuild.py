@@ -746,9 +746,10 @@ def test_a_stale_rebuild_that_would_empty_the_store_refuses_and_the_previous_sto
         project.build(write_section=refetch_the_whole_corpus)
 
     assert _served(project.store) == before, (
-        "the stale rebuild published: a build that could keep none of what it read "
-        "replaced a serving store, and what it put there answers like a project that "
-        "has no review evidence at all"
+        "the stale rebuild published: a build that could keep none of what it read, "
+        "with every one of those files still on disk at the publish, replaced a "
+        "serving store, and what it put there answers like a project that has no "
+        "review evidence at all"
     )
     assert len(project.store.search(ReviewSearchQuery(limit=50), text_chars=TEXT_CHARS)) == 3, (
         "the store answers with no rows after the refusal, which is the state the "

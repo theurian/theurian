@@ -1,6 +1,6 @@
-"""What ADR-0030's record claims about slice 2, held against the tree (#479).
+"""What ADR-0030's record claims, held against the tree (#479).
 
-Three claims live here, and they have one thing in common: each is a sentence a
+Four claims live here, and they have one thing in common: each is a sentence a
 reader takes as settled, in a document nothing was checking.
 
 - **The Compliance section names the test that discharges each owed item.** A
@@ -19,12 +19,27 @@ reader takes as settled, in a document nothing was checking.
   landed file, and that is a claim about the source tree rather than about a
   policy: what makes it true is that no code exists which could delete or rewrite
   a record the run did not fetch.
+- **The slice-3 round record's HIGH is discharged, and the release gate it held
+  is withdrawn** (#636). A round record mixes history with claims about the
+  future, and only the second kind goes stale: "the 0.2.0 cut does not happen
+  until it is fixed and re-verified" was true when the round closed and false the
+  moment the guard was rekeyed.
+  :func:`test_the_slice_three_round_record_states_the_discharge_it_owes` holds the
+  discharge and refuses both withdrawn clauses.
 
-**Every one of the three is asserted from both sides.** The document has to keep
+**The first three are asserted from both sides *here*.** The document has to keep
 saying it (a fragment pin, which holds spelling and is blind to truth), and the
 tree has to keep making it true (a scan, which is blind to the document). Neither
 half is sufficient, which is the split ``test_config_key_call_sites.py`` records
 at length and the reason its rows are not folded into one test here.
+
+**The fourth has no fact side in this module, and its reach is stated rather than
+left to be inferred.** It holds the *record's* wording; what the guard is keyed
+on is held by ``unit/test_review_search_builder_claims.py``, which reads the
+condition out of the syntax tree, and the behaviour by
+``integration/test_review_build_empty_publish.py``, which drives both faces
+through the shipped CLI. Every fragment of the fourth claim would match word for
+word against a build whose guard had been keyed back on the read.
 
 **The scans' bound, stated once.** They read names out of syntax trees. A
 construction reached through ``getattr``, a deletion spelled through
@@ -290,6 +305,185 @@ def test_the_resolver_would_report_a_name_no_test_file_defines() -> None:
         f"`test_every_test_the_compliance_section_names_resolves` means nothing "
         f"until this is fixed."
     )
+
+
+# ---------------------------------------------------------------------------
+# The slice-3 round record: a HIGH discharged, and the release gate it withdrew.
+# ---------------------------------------------------------------------------
+#
+# The Compliance section is a *round record*, and a round record has two kinds of
+# sentence in it. What was true when the round closed -- round five under the
+# fixed-round-budget ruling, CRITICAL zero throughout, one HIGH filed rather than
+# fixed -- is history and stays in the past tense whatever happens next. What the
+# round said about the *future* is not history: "the 0.2.0 cut does not happen
+# until it is fixed and re-verified" and "is the first post-merge item" were
+# present-tense claims about a release that had not been cut, and they went stale
+# the moment the HIGH was discharged in this same pull request.
+#
+# A stale gate in a governed record is worse than an absent one. It is what a
+# release manager reads to decide whether 0.2.0 may be cut, so a paragraph still
+# naming an open blocker holds a release over a defect that was fixed -- and the
+# same paragraph is what a rebase against a branch taken before the fix restores
+# without a conflict, because nothing else in the file moved.
+
+
+#: What the round record has to say now that the HIGH is discharged.
+#:
+#: Two fragments, because each carries a different half and each can be lost on
+#: its own: the *disposition* (the gate is withdrawn, with the pull request that
+#: withdrew it) and the *substance* (what the guard is now keyed on). A paragraph
+#: carrying only the first tells a reader the blocker is gone and nothing about
+#: what replaced it.
+_SLICE_THREE_DISCHARGE: Final[tuple[str, ...]] = (
+    "**That HIGH is discharged, so the 0.2.0 cut is no longer waiting on it**",
+    (
+        "The guard is keyed on `at_the_publish` — the listing taken inside the write "
+        "section — together with the withholding outcome, and on nothing the read "
+        "alone saw"
+    ),
+)
+
+#: The two present-tense claims the discharge withdrew, quoted from `1751236a`
+#: rather than invented -- the citation rule
+#: ``test_review_ingest_changelog_claims.py`` records, since a branch sha is
+#: orphaned by the squash that merges it and a quotation survives.
+#:
+#: Each is spelled as the **clause**, not as the whole sentence, because the
+#: sentence around them was rewritten rather than deleted: the live paragraph
+#: still names #636, still says it was filed rather than fixed, and still says it
+#: touched none of the discharges. What changed is the tense and these two
+#: clauses, so a fragment spanning more than the clause would be reporting the
+#: rewrite instead of the reversion.
+_WITHDRAWN_GATES: Final[tuple[tuple[str, str], ...]] = (
+    (
+        "the release gate",
+        "the 0.2.0 cut does not happen until it is fixed and re-verified",
+    ),
+    (
+        "the post-merge ordering claim",
+        "is the first post-merge item",
+    ),
+)
+
+
+def _assert_the_round_record_states_the_discharge(section: str) -> None:
+    """The check, in one place so both positive controls drive the same path.
+
+    A helper rather than an inline pair of loops, for the reason
+    ``test_review_ingest_changelog_claims.py`` records: a control that re-derived
+    an approximation of the comparison could pass while the real one had stopped
+    looking.
+    """
+    for fragment in _SLICE_THREE_DISCHARGE:
+        assert fragment in section, (
+            f"ADR-0030's Compliance section no longer states:\n\n  {fragment}\n\n"
+            f"This is the RECORD half and it is blind to behaviour. Without it the "
+            f"slice-3 round record describes a HIGH that is still open and still "
+            f"gating the 0.2.0 cut, which is what a release manager reads the section "
+            f"to find out.\n\n"
+            f"The behaviour half is `unit/test_review_search_builder_claims.py::"
+            f"test_the_empty_publish_guard_is_keyed_on_the_publish_time_capture` and "
+            f"the two faces in `integration/test_review_build_empty_publish.py`. "
+            f"GREEN there means the guard is right and this wording is what gets "
+            f"restored."
+        )
+    for label, withdrawn in _WITHDRAWN_GATES:
+        assert withdrawn not in section, (
+            f"ADR-0030's Compliance section carries {label} again:\n\n  {withdrawn}\n\n"
+            f"That clause was a present-tense claim about a release that had not been "
+            f"cut, and the HIGH it names was discharged in PR #637. Left standing it "
+            f"holds 0.2.0 over a defect that is fixed. If the guard really was keyed "
+            f"back on the read, the behaviour half named above is RED too and the code "
+            f"is what gets restored -- not this paragraph."
+        )
+
+
+def test_the_slice_three_round_record_states_the_discharge_it_owes() -> None:
+    """RED means the round record still gates a release on a discharged HIGH.
+
+    **What this holds is the record's wording, and only that.** Every fragment
+    here would match against a build whose guard had been keyed back on the read,
+    and the paragraph would then be a true-looking sentence about a defect that
+    had come back. The behaviour is held elsewhere and deliberately so:
+    ``unit/test_review_search_builder_claims.py`` reads the guard's condition out
+    of the syntax tree, and ``integration/test_review_build_empty_publish.py``
+    drives both faces through the shipped CLI.
+
+    Both directions, because either can move on its own. The discharge has to be
+    stated, and neither withdrawn gate may come back -- and the second is the
+    likelier failure, since the paragraph they lived in was rewritten in place
+    rather than deleted, so a rebase against a pre-fix branch restores them with
+    no conflict to notice.
+
+    The premise comes first. The section is located by the same resolver the
+    reference arms use, and a section that could not be found is an empty string
+    -- in which every ``not in`` above passes and every ``in`` fails for a reason
+    that has nothing to do with the document's wording.
+    """
+    section = _compliance_section(ADR_0030.read_text(encoding="utf-8"))
+
+    assert section, (
+        "ADR-0030's `## Compliance` section could not be located, so the discharge "
+        "below would be checked against an empty string"
+    )
+
+    _assert_the_round_record_states_the_discharge(_collapsed(section))
+
+
+@pytest.mark.parametrize(
+    ("label", "withdrawn"),
+    _WITHDRAWN_GATES,
+    ids=[case[0] for case in _WITHDRAWN_GATES],
+)
+def test_the_round_record_pin_reports_each_withdrawn_gate(label: str, withdrawn: str) -> None:
+    """The positive control for the absence direction: each clause can go RED.
+
+    A row asserting a sentence is *absent* is satisfied by a document nobody is
+    reading, by a clause that was never spelled the way the document spells it,
+    and by a checker that stopped looking -- all three silently, and all three
+    most convincingly at the moment they stop working.
+
+    So each withdrawn clause is planted into a copy of the live section and the
+    same checker is asked about it. Nothing under ``docs/`` is written. The guard
+    before the plant is what makes the row mean something: the clause must not
+    already be there, or the plant is a no-op and the RED below would be the pin's
+    own arm firing on the real document.
+    """
+    live = _collapsed(_compliance_section(ADR_0030.read_text(encoding="utf-8")))
+
+    assert withdrawn not in live, (
+        f"{label}: the section already carries this clause, so the plant below changes "
+        f"nothing -- and `test_the_slice_three_round_record_states_the_discharge_it_owes` "
+        f"is the RED that matters"
+    )
+    with pytest.raises(AssertionError, match="carries"):
+        _assert_the_round_record_states_the_discharge(f"{live} {withdrawn}")
+
+
+def test_the_round_record_pin_reports_a_missing_discharge() -> None:
+    """The positive control for the presence direction, over the real paragraph.
+
+    The other half of the same worry. An assertion that a sentence is present
+    passes against a checker that stopped comparing, and the section is read from
+    a file that could have been reshaped under it -- so the live text is used and
+    each discharge fragment is removed from it in turn, which is what a revert of
+    the paragraph to its pre-#637 form would leave behind.
+
+    Driven per fragment rather than over both at once: a checker that had come to
+    require only the first would stay green against a paragraph that had lost the
+    second, and the second is the one carrying what the guard is keyed on.
+    """
+    live = _collapsed(_compliance_section(ADR_0030.read_text(encoding="utf-8")))
+
+    for fragment in _SLICE_THREE_DISCHARGE:
+        reverted = live.replace(fragment, "")
+
+        assert reverted != live, (
+            f"removing {fragment!r} changed nothing, so this control exercised the "
+            f"checker over the document unmodified"
+        )
+        with pytest.raises(AssertionError, match="no longer states"):
+            _assert_the_round_record_states_the_discharge(reverted)
 
 
 # ---------------------------------------------------------------------------

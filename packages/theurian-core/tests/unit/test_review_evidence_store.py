@@ -374,6 +374,55 @@ def test_a_fingerprint_says_when_a_leaf_stopped_being_a_regular_file(tmp_path: P
     )
 
 
+def test_a_fingerprints_size_slot_is_the_leafs_own_byte_count(tmp_path: Path) -> None:
+    """RED means the second slot is a number nothing on disk decides.
+
+    The producer's half of the size slot, and it had none. Every builder-level
+    case that moves a file's length moves its timestamp and its inode with it, so
+    a producer answering a constant -- ``0``, or another leaf's length -- is
+    dropped by the other three slots and the whole suite stays green: replacing
+    ``st_size`` with ``0`` survived it twice. What that costs is the one shape the
+    slot is the only witness of, recorded at ``_fingerprint`` and at
+    ``review_search_builder.build``: an in-place rewrite whose timestamp is
+    restored and whose length changed, where ``mtime_ns`` and ``st_ino`` both say
+    nothing happened.
+
+    So the slot is read against the filesystem twice over. A leaf of a length no
+    landed record has is planted, and its slot must be exactly that many bytes;
+    and the landed record's own slot must be the ``st_size`` a ``stat`` answers
+    for it. The two lengths are asserted different first, because a producer
+    reporting one leaf's size for every leaf would satisfy either assertion alone
+    on a corpus where the two happened to match.
+    """
+    store = _store(tmp_path)
+    store.write([_event(number=42)], run=RUN_ONE)
+    root = _review_root(tmp_path)
+    reader = EvidenceReader(root)
+    (record_path,) = reader.fingerprints()
+    prefix = record_path.rsplit("/", 1)[0]
+
+    # 4,099 bytes: an odd length no JSON document this store writes has, so the
+    # planted leaf's slot cannot agree with the landed record's by accident.
+    planted_bytes = b"x" * 4099
+    (root / record_path).parent.joinpath("43.json").write_bytes(planted_bytes)
+
+    fingerprints = reader.fingerprints()
+
+    assert fingerprints[record_path][1] != len(planted_bytes), (
+        "the premise: the landed record happens to be exactly as long as the planted "
+        "leaf, so a producer answering one size for every leaf would pass below"
+    )
+    assert fingerprints[f"{prefix}/43.json"][1] == len(planted_bytes), (
+        f"a leaf of {len(planted_bytes)} bytes fingerprints as "
+        f"{fingerprints[f'{prefix}/43.json'][1]} bytes, so the size slot is not the "
+        f"file's length -- and a same-inode, timestamp-restored rewrite that changes "
+        f"the length is then witnessed by nothing at all"
+    )
+    assert fingerprints[record_path][1] == (root / record_path).stat().st_size, (
+        "the landed record's size slot is not the `st_size` a `stat` answers for it"
+    )
+
+
 def test_a_fingerprint_moves_when_a_record_is_rewritten_with_its_timestamp_restored(
     tmp_path: Path,
 ) -> None:
