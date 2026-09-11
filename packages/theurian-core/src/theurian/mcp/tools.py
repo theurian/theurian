@@ -211,10 +211,18 @@ FINDINGS_CAPACITY_REFUSAL: Final = (
 #: either (GHSA-97q9), the trade `REVIEW_SEARCH_UNAVAILABLE_REFUSAL` records for
 #: the tool beside this one.
 #:
-#: "It has not been built" in the text below is read as *has not been built here*,
-#: which is what lets one sentence cover the second cause as honestly as the
-#: first: a store delivered with a repository is one this installation has no
-#: record of building, and the cure for it is the same local rebuild.
+#: **The text below names no cause, and that is what makes it honest for every
+#: arm** (round one, code review). It used to enumerate two -- "it has not been
+#: built, or it was built by a superseded schema or trailer grammar" -- with "has
+#: not been built" read as *has not been built here*, a stretch that covered the
+#: provenance arm because a store delivered with a repository is one this
+#: installation has no record of building. The containment arm broke the
+#: enumeration rather than stretching it: that store **was** built here and is
+#: recorded as built, which the driving test asserts
+#: (``has_findings`` true beside a leaf that escapes), so the sentence told the
+#: caller a cause that had not fired. What is true of all of them is that
+#: nothing servable is here, and that the cure is the same local rebuild; the
+#: text says those two things and stops.
 #:
 #: **One message for all of them, and it is a constant.** It interpolates nothing
 #: -- not the project, not the filters, not the file, and above all nothing read
@@ -240,8 +248,7 @@ FINDINGS_CAPACITY_REFUSAL: Final = (
 #: has been built here" read as "this project has no findings" is a false absence
 #: a caller acts on.
 FINDINGS_UNAVAILABLE_REFUSAL: Final = (
-    "This project has no review-finding store that can be served: it has not been "
-    "built, or it was built by a superseded schema or trailer grammar. Run "
+    "This project has no review-finding store that can be served from here. Run "
     "`theurian findings build` in the project to rebuild it from git history. This "
     "refusal message is a constant: it carries nothing from your request or from "
     "any project's contents."
@@ -293,19 +300,48 @@ REVIEW_SEARCH_UNAVAILABLE_REFUSAL: Final = (
 
 
 #: What a containment refusal says on this surface, in place of the message
-#: :class:`ProjectPathEscapeError` was built with. :func:`_with_remedy` swaps it
-#: in and appends the exception's own ``remedy``, so the cure still travels.
+#: :class:`ProjectPathEscapeError` was built with.
+#:
+#: **Substituted at both tool boundaries, which is two places and not one.**
+#: :func:`_with_remedy` swaps it in for the refusals :func:`register`'s bodies
+#: catch themselves, and appends the exception's own ``remedy`` so the cure
+#: still travels; :func:`_forwarding` swaps it in for a refusal raised below a
+#: tool body that no such catch sits in front of, and appends nothing, for the
+#: parity reason its own docstring gives. A seam with only one of the two let
+#: an escaping ``.theurian/state/active-index.json`` out through
+#: ``knowledge.search`` (round one, security and code review) -- so the pair is
+#: the unit, and a third boundary would need this substitution to be added to
+#: it.
 #:
 #: That message is :func:`~theurian.application.project_service._contain`'s or
 #: :meth:`ProjectPaths.of`'s -- *"<leaf> resolves outside the project root
-#: <root>"* -- and both halves are **resolved absolute paths**: correct on a
-#: terminal, where the reader owns the checkout, and the operator's machine
-#: layout on this one (GHSA-97q9). *Resolved* is the word that does the work. For
-#: a project registered through a symbolic link that root is not the ``rootPath``
-#: the registry records and ``project.list`` republishes verbatim
+#: <root>"* -- and the two halves are not the same kind of thing. **The root
+#: half is the resolved project root at every one of the four raise sites**:
+#: ``_contain`` interpolates ``resolved_root`` and ``of`` interpolates
+#: ``resolved``, and each is that function's own ``root.resolve()``. The leaf
+#: half differs by site -- ``_contain`` interpolates ``path``, the absolute
+#: location a helper asked for, while ``of`` interpolates ``directory``, the
+#: *relative* knowledge-directory name (``.theurian`` by default), which names
+#: nothing about the machine.
+#:
+#: So it is the root half that *resolved* does the work on, and one resolved
+#: root is disclosure enough -- which is why the suppression covers ``of``'s
+#: pair as well as ``_contain``'s, rather than only the site with two paths in
+#: it. (Round one, code review: the sentence this replaces said both halves
+#: were resolved absolute paths, which was never true of ``of``'s pair.) A
+#: resolved root is correct on a terminal, where the reader owns the checkout,
+#: and the operator's machine layout on this one (GHSA-97q9). For a project
+#: registered through a symbolic link it is not even the ``rootPath`` the
+#: registry records and ``project.list`` republishes verbatim
 #: (``_publishable_field(e.get("rootPath", ""))``, below): it is the physical
 #: directory behind it, and a caller reading ``project.list`` was not given that
 #: string.
+#:
+#: Two of the four say *"does not resolve to a location inside"* instead and
+#: append ``str(exc)`` -- the ``(OSError, ValueError)`` arm in each function,
+#: whose cause can carry a path of its own. The constant replaces the **whole**
+#: message at both boundaries, so nothing those two arms word differently
+#: reaches this wire either.
 #:
 #: **It interpolates nothing** -- no path, no project id, nothing off the
 #: exception -- so it cannot vary with *which* path escaped: an escaping
@@ -333,8 +369,8 @@ REVIEW_SEARCH_UNAVAILABLE_REFUSAL: Final = (
 #: Says less than the same refusal does on a terminal, on purpose, and what makes
 #: that affordable is who can act on it: the reader holding the checkout, for whom
 #: ``cli/commands.py``'s ``_fail_a_path_escape`` publishes ``str(exc)`` beside the
-#: same remedy -- both paths included, to someone the paths are not a disclosure
-#: to.
+#: same remedy -- the message whole, resolved root and all, to someone that root
+#: is not a disclosure to.
 PATH_ESCAPE_REFUSAL: Final = (
     "This project's knowledge directory, or a path Theurian derived under it, does "
     "not resolve to a location inside the project root."
@@ -515,8 +551,8 @@ def _forwarding[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
     ``ToolError``, and so are treated by mcp >= 2.1 as crashes. Their remedies
     reached callers under 2.0.0 and stopped under 2.1 (issue #491).
 
-    **Parity, not enrichment.** The wrapper raises ``ToolError(str(exc))`` and
-    nothing more, because ``str(exc)`` is exactly what mcp 2.0.0's blanket
+    **Parity, not enrichment.** The wrapper raises ``ToolError(str(exc))``, and
+    adds nothing to it, because ``str(exc)`` is exactly what mcp 2.0.0's blanket
     ``except Exception`` arm folded into ``Error executing tool {name}: {e}``.
     Deliberately *not* ``_with_remedy``'s fold: ``exc.remedy`` was dropped by
     2.0.0 too, so adding it here would publish text this wire has never
@@ -527,6 +563,44 @@ def _forwarding[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
     ``StateDatabaseUnreadableError``'s own docstring is written against: it
     carries the failing exception's *type* and never the corrupted cell, and
     that stays true because this wrapper only passes its message through).
+
+    **A containment refusal crosses as the constant, and that is a narrowing**
+    (GHSA-97q9). :class:`ProjectPathEscapeError` is the one ``TheurianError``
+    whose message is the operator's filesystem layout rather than a description
+    of it -- :data:`PATH_ESCAPE_REFUSAL` records which half of that message is
+    what -- so the arm below substitutes the constant for ``str(exc)``. It
+    takes *off* the wire and puts nothing on it, which is the direction the
+    paragraph above forbids widening in: ``exc.remedy`` still stays behind
+    here, unlike at :func:`_with_remedy`, because parity forbids restoring a
+    field 2.0.0 dropped.
+
+    **The two substitutions are a pair, and this seam is the half that was
+    missing.** ``_with_remedy`` converts a ``ProjectError`` the tool bodies in
+    :func:`register` catch themselves; this seam converts what no such catch
+    sits in front of. ``knowledge.search``'s index-pointer read was the second
+    kind: measured 2026-09-11 against ``build_server``, a
+    ``.theurian/state/active-index.json`` delivered as a link out of the tree
+    reached the caller through here as ``<leaf> resolves outside the project
+    root <resolved root>``, at the one boundary that had no substitution.
+
+    **It is a backstop, and as of this commit nothing shipped reaches it.** That
+    same read now converts the refusal at its own consumer --
+    :func:`~theurian.mcp.search._published_index` answers ``pointer-invalid``,
+    which serves a degraded result instead of refusing, and is the better answer
+    for a derived artefact. Which leaves this arm covering the shape the round
+    actually found: a refusal raised below a tool body that nobody thought to
+    catch. Measured rather than assumed -- ``pytest --cov=theurian.mcp.tools
+    --cov-report=term-missing`` over ``test_resolved_layout_never_crosses.py``,
+    ``test_review_findings_tool.py``, ``test_escaping_knowledge_dir_grading.py``,
+    ``test_contained_path_envelope.py`` and ``test_mcp_tools.py`` (2026-09-11,
+    400 passed) reports the ``raise`` below among its missing lines -- a line
+    number is not quoted here because every edit to this docstring moves it. No
+    plant in those sweeps drives it, so nothing there would notice its deletion.
+    **It therefore still owes a driving test** -- one that raises the class
+    through the seam directly, in
+    ``tests/unit/test_tool_error_type_contract.py``, whose
+    ``_forwarding(raises)()`` fixture map is the harness for exactly that and
+    does not yet hold this class.
 
     **Scoped to ``TheurianError`` alone.** A ``TypeError`` or a bare
     ``sqlite3.Error`` is a crash, not a refusal, and upstream's decision to keep
@@ -544,6 +618,12 @@ def _forwarding[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
             result = fn(*args, **kwargs)
         except ToolError:
             raise
+        except ProjectPathEscapeError as exc:
+            # Ahead of the arm below, because it is a `TheurianError` and would
+            # otherwise take it. The remedy is left behind on purpose: this seam
+            # restores what mcp 2.0.0 published and no more, so the cure travels
+            # only from the boundary that already folded it in.
+            raise ToolError(PATH_ESCAPE_REFUSAL) from exc
         except TheurianError as exc:
             raise ToolError(str(exc)) from exc
         if inspect.isawaitable(result) or inspect.isasyncgen(result):
@@ -1160,11 +1240,14 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         **A containment refusal crosses as its cure alone** (GHSA-97q9).
         :class:`ProjectPathEscapeError` is raised with
         :func:`~theurian.application.project_service._contain`'s or
-        :meth:`ProjectPaths.of`'s own message, and those name **resolved**
-        absolute paths -- the operator's machine layout on this surface, and for
-        a project registered through a symbolic link not even the ``rootPath``
-        the registry records. So the message component is replaced by
-        :data:`PATH_ESCAPE_REFUSAL` and only ``exc.remedy`` travels.
+        :meth:`ProjectPaths.of`'s own message, and each of those names the
+        **resolved** project root -- the operator's machine layout on this
+        surface, and for a project registered through a symbolic link not even
+        the ``rootPath`` the registry records. (Which half of the message that
+        root is, and what the other half holds at each site, is
+        :data:`PATH_ESCAPE_REFUSAL`'s to record; it is not two absolute paths
+        everywhere, as a sentence here used to say.) So the message component is
+        replaced by :data:`PATH_ESCAPE_REFUSAL` and only ``exc.remedy`` travels.
         ``state_database_named``'s handler in :func:`_resolve` already holds that
         rule for its own neighbour, and the message half is the half they share:
         that handler drops the remedy as well, because *its* cure is keyed on a
@@ -1182,8 +1265,13 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         # such refusal passes.
         #
         # The constant needs neither treatment -- it is this module's own text,
-        # escape-safe and 128 characters -- so it is substituted rather than
-        # bounded, and the `if part` filter still drops a remedy that is empty.
+        # ASCII-only and well under `_MAX_MESSAGE_CHARS` -- so it is substituted
+        # rather than bounded, and the `if part` filter still drops a remedy
+        # that is empty. Said as a relation to the bound and not as a count: the
+        # "128 characters" this replaces was hand-copied, and a count in a
+        # comment is one rewording of the constant away from being false (round
+        # one, code review LOW). Anything checking it recomputes `len()` from
+        # the constant rather than reading a number here.
         message = (
             PATH_ESCAPE_REFUSAL
             if isinstance(exc, ProjectPathEscapeError)
@@ -1415,8 +1503,9 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             # second cause arrives through the same line.** `read_active_state`
             # resolves `paths.active_pointer` *above* its own `try`, so an
             # escaping `.theurian/state` raises `ProjectPathEscapeError` straight
-            # through it, carrying `_contain`'s two resolved absolute paths rather
-            # than the project-relative text `_under_the_project` builds for the
+            # through it, carrying `_contain`'s pair -- the absolute leaf it was
+            # asked for and the resolved project root -- rather than the
+            # project-relative text `_under_the_project` builds for the
             # unreadable-pointer arm. `_with_remedy` keeps the message for the
             # arm this note was written for and suppresses it for the containment
             # one; the cure `_escape_remedy` keyed on `state` still reaches the

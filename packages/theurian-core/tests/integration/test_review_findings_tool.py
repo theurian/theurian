@@ -1612,28 +1612,36 @@ async def test_the_truncation_signal_is_computed_over_servable_rows_alone(
 # -- AC-3: the store cannot be served from ----------------------------------
 
 
-def test_the_unservable_refusal_says_what_it_has_always_said() -> None:
+def test_the_unservable_refusal_is_pinned_word_for_word() -> None:
     """The words themselves, which every other assertion here reads symbolically.
 
-    Every other assertion on this refusal reads the constant symbolically -- six
-    ``FINDINGS_UNAVAILABLE_REFUSAL in ...`` checks and one ``not in``, measured in
-    this file on 2026-09-03 -- and every one of them would hold if the constant
-    were reworded to anything at all, including something that named which of the
-    four causes fired or that dropped the remedy (PR #504 round 1, LOW). This is
-    the one place the sentence is compared against text written down
-    independently of it, so changing it is a decision somebody makes rather than
-    a drift nothing notices.
+    Every other assertion on this refusal reads the constant symbolically --
+    ``git grep -c 'assert FINDINGS_UNAVAILABLE_REFUSAL in ' -- <this file>``
+    answers 8 and the ``not in`` key answers 1, run 2026-09-11 -- and every one
+    of them would hold if the constant were reworded to anything at all,
+    including something that named which arm fired or that dropped the remedy
+    (PR #504 round 1, LOW). This is the one place the sentence is compared
+    against text written down independently of it, so changing it is a decision
+    somebody makes rather than a drift nothing notices.
+
+    **The pin has fired once, and the wording below is the corrected one.** The
+    text used to enumerate causes -- "it has not been built, or it was built by
+    a superseded schema or trailer grammar" -- and the containment arm made that
+    enumeration false: the store whose leaf escapes was built by this
+    installation and is recorded as built, which
+    ``test_a_store_path_that_resolves_outside_the_project_answers_the_one_constant``
+    asserts as a premise (``has_findings``) on the way to driving this refusal.
+    What replaces it names no cause.
 
     What the wording carries and must not lose: the remedy a caller can act on
     (``theurian findings build``, and *in the project*, since the cure is local
-    even when the store arrived with the repository), the "it has not been built"
-    reading that covers the provenance arm without naming it, and the closing
-    sentence that says the message is a constant -- the sentence SEC-13 makes
-    load-bearing, and the one a reader checks the message against.
+    even when the store arrived with the repository), the closing sentence that
+    says the message is a constant -- the sentence SEC-13 makes load-bearing,
+    and the one a reader checks the message against -- and its silence about
+    which arm fired.
     """
     assert FINDINGS_UNAVAILABLE_REFUSAL == (
-        "This project has no review-finding store that can be served: it has not been "
-        "built, or it was built by a superseded schema or trailer grammar. Run "
+        "This project has no review-finding store that can be served from here. Run "
         "`theurian findings build` in the project to rebuild it from git history. This "
         "refusal message is a constant: it carries nothing from your request or from "
         "any project's contents."
@@ -1642,7 +1650,7 @@ def test_the_unservable_refusal_says_what_it_has_always_said() -> None:
         "reworded. "
         "That is a published sentence: correct this pin in the same change, and check "
         "that the new wording still carries the local rebuild remedy and still says "
-        "nothing about which of the four causes fired (SEC-13)."
+        "nothing about which arm refused (SEC-13)."
     )
 
 

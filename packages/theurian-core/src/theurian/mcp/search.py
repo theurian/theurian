@@ -71,6 +71,7 @@ from theurian.application.authorization import ProfileVerdict, recorded_flavor_v
 from theurian.application.project_service import (
     INDEX_POINTER_REMEDY,
     BuildProvenance,
+    ProjectPathEscapeError,
     ProjectPaths,
     read_active_index_pointer,
 )
@@ -357,8 +358,23 @@ def _published_index(  # noqa: PLR0911 - one return per distinguishable fallback
 ) -> _PublishedIndex | Fallback:
     """Locate the index this project publishes, or say why there is not one.
 
-    Never raises. Every failure here is a missing optimisation, and the caller
-    answers from the canonical store instead.
+    Every failure below is a missing optimisation, answered with a
+    :class:`Fallback` so the caller serves from the canonical store instead. The
+    two steps that touch the filesystem are the ones that could refuse rather
+    than answer, and each is converted where it is called: the pointer read
+    immediately below, and :func:`_searchable_file` inside itself.
+
+    **That first conversion is new, and "Never raises." is what this paragraph
+    replaces** (round one, security and code review). The sentence was false:
+    :func:`~theurian.application.project_service.read_active_index_pointer`
+    resolves ``active-index.json`` before it has a file to read, so a pointer
+    delivered as a link out of the tree raised
+    :class:`ProjectPathEscapeError` straight through here -- measured
+    2026-09-11 through ``build_server``, ``knowledge.search`` answered with both
+    resolved paths in it (GHSA-97q9). Converted here rather than absorbed in the
+    reader, because the reader's other callers are the CLI commands that
+    deliberately *do* refuse on it: its docstring carries that split and the
+    measurement behind it.
 
     ``visible_sensitivities`` is the deployment's grant, and it is checked against
     the *build* rather than against any row: which levels a build was allowed to
@@ -366,7 +382,17 @@ def _published_index(  # noqa: PLR0911 - one return per distinguishable fallback
     whose flavor disagrees with the grant in force is stood aside whole rather
     than filtered.
     """
-    pointer = read_active_index_pointer(paths)
+    try:
+        pointer = read_active_index_pointer(paths)
+    except ProjectPathEscapeError:
+        # `_POINTER_INVALID` and not a reason of its own: to a caller this *is*
+        # a pointer that does not name a usable build, and the cure is the same
+        # one -- delete the file, rebuild. The refusal's own message is dropped
+        # rather than passed through, for the reason `mcp/tools.py`'s
+        # `PATH_ESCAPE_REFUSAL` records: its halves are the operator's resolved
+        # layout, and this reply goes to a client. The same discipline
+        # `_searchable_file`'s handler already holds one branch down.
+        return _POINTER_INVALID
     if pointer.payload is None:
         # A pointer file that does not name a build — truncated, empty, a JSON
         # array, an object without `indexBuildId` — is reported apart from

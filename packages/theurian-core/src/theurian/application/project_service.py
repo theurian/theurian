@@ -155,7 +155,16 @@ UNBUILT_STATE_REMEDY: Final = (
 #: names no path at all.
 #:
 #: Spells the directory as :data:`UNBUILT_STATE_REMEDY` above does, so the refusal
-#: and its cure name one location rather than two spellings of it. The class-level
+#: and its cure name one location rather than two spellings of it. **That spelling
+#: is hardcoded where the old message derived it** (round one, code review LOW):
+#: ``.theurian/state/`` is written out here, so a deployment that renamed its
+#: knowledge directory reads a relative path it does not have -- correct only
+#: while the default holds. It is the trade :data:`UNBUILT_STATE_REMEDY` already
+#: makes one constant up, taken for the same reason: deriving it means
+#: interpolating from ``paths``, and interpolating from ``paths`` is what put the
+#: operator's resolved layout on this wire. A relative name that is wrong for a
+#: renamed directory sends a reader to a path that is not there; the derived form
+#: sent every reader the operator's machine layout. The class-level
 #: claim -- that no response from any registered tool carries the resolved layout
 #: -- is not asserted here; it is measured by
 #: ``tests/integration/test_resolved_layout_never_crosses.py``, whose
@@ -2257,10 +2266,37 @@ class ActiveIndexPointer:
 def read_active_index_pointer(paths: ProjectPaths) -> ActiveIndexPointer:
     """Read the published retrieval index pointer, distinguishing its failures.
 
-    Never raises. The index is derived (ADR-0004), so every problem here is a
-    missing optimisation and the caller answers without one — but it still has
-    to be able to say *which* problem, because that is what decides the remedy
-    it prints.
+    Every problem *with the file* is answered rather than raised: the index is
+    derived (ADR-0004), so a pointer that cannot be interpreted is a missing
+    optimisation and the caller answers without one — but it still has to be
+    able to say *which* problem, because that is what decides the remedy it
+    prints. The ``except`` below names the failures that get that treatment.
+
+    **One failure is not answered here, and it is not a file problem: the
+    containment refusal raised while deriving the path** (round one, security
+    and code review, correcting a "Never raises." this replaces).
+    :attr:`ProjectPaths.active_index_pointer` resolves before this function has
+    a file to probe, so a ``.theurian/state`` or an ``active-index.json``
+    delivered as a link out of the tree leaves here as
+    :class:`ProjectPathEscapeError`. **Deliberately: the CLI grades it, and
+    absorbing it here was measured undoing #525.** Widening the ``except``
+    below by that one type and running
+    ``tests/integration/test_contained_path_envelope.py`` (2026-09-11, on this
+    branch) turned three of its cases red for the ``active_index_pointer``
+    plant alone -- ``{'no longer refusing': ['index status', 'migrate apply',
+    'project status']}``, ``containment refusals graded something other than 4:
+    {('active_index_pointer', 'index gc'): 1}``, and ``index gc`` publishing
+    the delete-the-pointer cure in place of the cure for what escaped. That
+    split of one class across two exit codes is the thing #525 unified. What a
+    path leaving the working tree means cannot be said by a reader of its
+    contents, and "delete the pointer" is the wrong cure for a
+    ``.theurian/state`` that escaped.
+
+    The MCP surface makes the opposite trade for the same refusal, and makes it
+    at its own consumer: :func:`~theurian.mcp.search._published_index` converts
+    it to ``pointer-invalid`` there, because a tool caller is not the reader who
+    owns the checkout and the paths inside the message are the operator's
+    layout (GHSA-97q9).
 
     ``indexBuildId`` is required, not merely read. A pointer without one names no
     build, so it is not a usable pointer; accepting it built a path out of an
