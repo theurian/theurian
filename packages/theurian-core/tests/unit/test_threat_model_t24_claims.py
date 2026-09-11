@@ -43,9 +43,18 @@ checks -- shape and the derived path, never authorship. That closure was reached
 by deriving the sentences rather than fixing the ones a review quoted, and a
 closure of that shape decays through the *next* sentence somebody writes. So the
 population is re-derived here every run from the surfaces and the key the census
-used, and compared against the census that judged it: a new matching line has no
-judgement behind it and fails. It cannot decide whether a sentence is honest --
-that is a reading -- but an unjudged member can no longer be added silently.
+used, and compared against the census that judged it: a new matching phrase has
+no judgement behind it and fails. It cannot decide whether a sentence is honest
+-- that is a reading -- but an unjudged member can no longer be added silently.
+
+**The key is applied to unwrapped text.** That is a correction to how the
+population was derived, and it came from a round attacking the derivation rather
+than the sentences. A key applied line by line cannot see a phrase a soft wrap
+split -- ``as the provider`` ending one comment line and ``resolved it`` opening
+the next is invisible to it, and two of this tree's sentences are written exactly
+that way -- so the surfaces are folded first: line breaks, the ``#`` comment
+markers a continuation line carries, and the escaped newline a JSON string has to
+wrap with.
 
 **Both sides are pinned, and they fail differently.** The fact arms read the
 live symbols and one syntax tree; the prose arms read the entry and the
@@ -63,7 +72,8 @@ rather than pass on the absence half.
 
 Pure in the sense the other claim pins are: one document read as text, one module
 read as a syntax tree, two modules read for their symbols, and the thirteen
-authority surfaces read as lines -- no database, socket or temporary directory.
+authority surfaces read as unwrapped text -- no database, socket or temporary
+directory.
 """
 
 from __future__ import annotations
@@ -396,8 +406,9 @@ _AUTHORITY_SURFACES: Final = (
 )
 
 #: The spellings a provenance or ingestion-guarantee sentence reaches for. Case-
-#: insensitive, matched per line, and the same alternation the closing census ran
-#: -- so a member this pin reports is a member that census judged.
+#: insensitive, applied to each surface's unwrapped text, and the same alternation
+#: the closing census ran -- so a member this pin reports is a member that census
+#: judged.
 #:
 #: **Deliberately an over-approximation.** ``allowlist`` and ``secret scan`` catch
 #: knowledge-side sentences that are out of the class entirely. That is the right
@@ -413,22 +424,78 @@ _OVER_CLAIM_TERMS: Final = re.compile(
     re.IGNORECASE,
 )
 
-#: Matching lines per surface, measured 2026-09-11 at the commit that adds this
-#: arm, after the census's own rewordings landed. Seventy-seven lines; the closing
-#: census reported eighty-four **before** it rewrote the sentences that carried
-#: ``every record it holds`` and its siblings, which is the difference.
+#: The line starts a wrapped sentence carries in this population. A continuation
+#: line keeps its comment marker, so folding whitespace alone leaves
+#: ``as the provider #: resolved it`` -- a phrase the key cannot see and a reader
+#: reads as one sentence. Both the Sphinx attribute form and a plain comment are
+#: stripped; a Markdown heading's ``#`` is stripped too, which is harmless because
+#: a heading is never the middle of a wrapped phrase.
+_CONTINUATION_MARKER: Final = re.compile(r"(?m)^[ \t]*#:?[ \t]?")
+
+#: How a JSON string wraps, since it cannot carry a raw newline. **No shipped
+#: schema in the population carries one today**, so this fold is driven by
+#: :func:`test_the_key_reads_a_term_split_by_each_break_this_population_uses`'s
+#: synthetic row rather than by the tree -- recorded rather than left to look
+#: like a measured effect, because a fold nothing reaches would survive its own
+#: deletion. It is kept because the three schemas are in the population and an
+#: escaped newline is the only way a description of theirs can wrap.
+_JSON_BREAK: Final = "\\n"
+
+
+def _unwrapped(text: str) -> str:
+    """*text* with every break this population wraps at folded to one space.
+
+    Named apart from ``test_review_search_store_claims.py``'s ``_flattened``
+    deliberately, though the whitespace half is the same technique. That one
+    folds soft wraps and stops there, because it resolves ``file.py::test_name``
+    citations and a comment marker never sits inside one. This one also has to
+    drop the marker a continuation line carries and the escaped newline a JSON
+    string wraps with, because the key below ranges over Python comment blocks
+    and schema descriptions. Two names rather than one function with a flag, so
+    neither module can be loosened by an edit made for the other.
+
+    Case and markup are preserved for the sibling's reason: the key is applied
+    case-insensitively by its own flag, and folding case here would hide which
+    spelling a surface actually carries from anyone reading a failure.
+    """
+    return " ".join(_CONTINUATION_MARKER.sub(" ", text.replace(_JSON_BREAK, " ")).split())
+
+
+#: Matching phrases per surface, measured 2026-09-11 at the commit that moves this
+#: arm onto unwrapped text.
+#:
+#: **Phrases, not lines**, because a surface folded to one string has one line.
+#: The unit change is most of the difference from the line-keyed figures this
+#: replaced, and the two effects are worth separating rather than reporting as one
+#: jump: the same key over the same tree found 78 matching *lines*, 98 matches
+#: once a line carrying two of them counted two, and 100 once the surfaces were
+#: unwrapped. So the fold itself is worth two matches -- both the phrase
+#: ``as the provider resolved``, split across a ``#:`` wrap in
+#: ``domain/review_search.py`` and in ``review_evidence/records.py``, and both
+#: judged **honest**: each names the route it holds for (*on the ingest route*,
+#: *on the run that fetched it*) and each sits under a class docstring that says
+#: in as many words that these attributions describe the run and not a record read
+#: back. Under the line key that whole branch counted zero, which is the blindness
+#: this derivation change exists to end.
+#:
+#: ``mcp/tools.py`` reads 9 rather than the 8 the line-keyed census recorded: the
+#: commit that aligned the ``reviewIngestion`` comment with the provenance the
+#: read makes added a line quoting ``an operator already ingested`` **in order to
+#: reject it**, and did not move the census. Judged honest -- the sentence around
+#: it names what the read inspects, a file's shape and its derived path -- and
+#: recorded here, which is also what takes this arm back to green.
 _JUDGED_CENSUS: Final[dict[str, int]] = {
-    "docs/security/threat-model.md": 27,
+    "docs/security/threat-model.md": 34,
+    "schemas/config/project-config.schema.json": 10,
+    "packages/theurian-core/src/theurian/mcp/tools.py": 9,
+    "schemas/mcp/review-search-response.schema.json": 9,
     "docs/architecture/review-knowledge.md": 8,
-    "packages/theurian-core/src/theurian/mcp/tools.py": 8,
-    "schemas/mcp/review-search-response.schema.json": 7,
+    "schemas/mcp/system-capabilities-response.schema.json": 7,
     "docs/protocol/mcp-tools.md": 5,
+    "packages/theurian-core/src/theurian/domain/review_search.py": 5,
     "packages/theurian-core/src/theurian/application/review_search_builder.py": 4,
-    "schemas/config/project-config.schema.json": 4,
-    "packages/theurian-core/src/theurian/domain/review_search.py": 3,
-    "packages/theurian-core/src/theurian/infrastructure/review_evidence/records.py": 3,
+    "packages/theurian-core/src/theurian/infrastructure/review_evidence/records.py": 4,
     "plugins/claude-code/commands/ingest.md": 3,
-    "schemas/mcp/system-capabilities-response.schema.json": 3,
     "packages/theurian-core/src/theurian/infrastructure/review_evidence/layout.py": 1,
     "packages/theurian-core/src/theurian/infrastructure/sqlite/review_search_store.py": 1,
 }
@@ -455,14 +522,17 @@ def _surface_files() -> list[pathlib.Path]:
 
 
 def _authority_census() -> dict[str, int]:
-    """Matching lines per surface, keyed by repository-relative path."""
+    """Matching phrases per surface, keyed by repository-relative path.
+
+    Each surface is unwrapped before the key is applied, so a phrase a soft wrap
+    split is counted where a reader reads it. ``finditer`` rather than
+    ``findall`` because the key carries groups and ``findall`` would then return
+    them instead of the matches.
+    """
     counted: dict[str, int] = {}
     for path in _surface_files():
-        hits = sum(
-            1
-            for line in path.read_text(encoding="utf-8").splitlines()
-            if _OVER_CLAIM_TERMS.search(line)
-        )
+        text = _unwrapped(path.read_text(encoding="utf-8"))
+        hits = sum(1 for _ in _OVER_CLAIM_TERMS.finditer(text))
         if hits:
             counted[path.relative_to(REPO_ROOT).as_posix()] = hits
     return counted
@@ -480,11 +550,11 @@ def test_the_authority_surfaces_still_carry_the_sentences_the_key_was_built_for(
     """
     census = _authority_census()
 
-    assert sum(census.values()) > 50, (
-        f"the population key matched {sum(census.values())} lines across "
-        f"{len(census)} surfaces. It matched 77 when it was written, so a figure this "
-        f"small means the key has stopped reading the surfaces it names rather than "
-        f"that the sentences went away"
+    assert sum(census.values()) > 65, (
+        f"the population key matched {sum(census.values())} phrases across "
+        f"{len(census)} surfaces. It matched 100 when it was moved onto unwrapped "
+        f"text, so a figure this small means the key has stopped reading the surfaces "
+        f"it names rather than that the sentences went away"
     )
     for surface in (
         "docs/security/threat-model.md",
@@ -494,6 +564,92 @@ def test_the_authority_surfaces_still_carry_the_sentences_the_key_was_built_for(
             f"`{surface}` matched nothing. That is where the over-claiming sentences were "
             f"found, so a zero here is the key going blind, not the surface going quiet"
         )
+
+
+#: One real key term per break this population wraps at, split the way that break
+#: splits it, with the term the unwrapped text has to yield.
+#:
+#: Real terms and real break forms, not a synthetic regex against synthetic text:
+#: the failure being controlled for is ``_unwrapped`` quietly folding one break and
+#: not another, and a row written against a made-up key would be green while the
+#: shipped key stayed blind.
+#:
+#: The JSON row is the one no surface drives. No schema in the population carries
+#: an escaped newline today, so without this row that fold could be deleted and
+#: every other arm here would stay green -- which is the shape of guard this
+#: project has been burned by. The three schemas are in the population and a JSON
+#: string cannot wrap any other way, so the fold is kept and this is what holds it.
+_WRAPPED_TERM_CASES: Final[tuple[tuple[str, str, str], ...]] = (
+    (
+        "a bare soft wrap, the way a docstring or a Markdown paragraph wraps",
+        "The repository the record names -- as the provider\nresolved it on the ingest route.",
+        "as the provider resolved",
+    ),
+    (
+        "a `#:` attribute-doc block, the way two of this tree's sentences wrap",
+        "    #: The repository the record names -- as the provider\n"
+        "    #: resolved it on the ingest route.",
+        "as the provider resolved",
+    ),
+    (
+        "a `#` comment block",
+        "    # call `review.search` and read what an operator already\n"
+        "    # ingested -- which is the wording this comment goes on to reject.",
+        "already ingested",
+    ),
+    (
+        "a JSON description's escaped newline",
+        '  "description": "Every record the store serves was landed\\nby '
+        '`theurian review ingest`."',
+        "landed by",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("label", "wrapped", "term"),
+    _WRAPPED_TERM_CASES,
+    ids=[case[0] for case in _WRAPPED_TERM_CASES],
+)
+def test_the_key_reads_a_term_split_by_each_break_this_population_uses(
+    label: str, wrapped: str, term: str
+) -> None:
+    """The premise under the census: the key has to survive a soft wrap.
+
+    A census applied line by line is blind to every term an editor's wrap
+    happened to split, and blind silently -- the surface's count simply does not
+    include it, and a count that is too low reads exactly like a surface with
+    fewer sentences on it. That was not hypothetical: ``as the provider
+    resolved`` matched **nothing** in the whole population under the line key,
+    while two authority surfaces carried it across a ``#:`` wrap.
+
+    So each break this population actually wraps at is planted through the
+    middle of a real key term and the key is asked twice. The negative half is
+    what makes the row mean anything: the unfolded text must **not** match, so a
+    row cannot pass by planting a term that was never split in the first place.
+
+    This holds the derivation, not the tree. Whether the sentences on those
+    surfaces are honest is a reading, recorded in ``_JUDGED_CENSUS``'s note.
+    """
+    assert not _OVER_CLAIM_TERMS.search(wrapped), (
+        f"{label}: the key already matches the text with the break still in it, so "
+        f"this row exercises nothing. The term has to be split by the break, or the "
+        f"green below says only that the key matches unsplit text"
+    )
+
+    match = _OVER_CLAIM_TERMS.search(_unwrapped(wrapped))
+
+    assert match is not None, (
+        f"{label}: unwrapping recovered nothing, and `{term}` was planted across the "
+        f"break.\n\n`_unwrapped` has stopped folding this break, so every sentence on "
+        f"an authority surface that wraps this way is invisible to `_authority_census` "
+        f"-- which reports the absence as a clean surface."
+    )
+    assert match.group(0).lower() == term, (
+        f"{label}: unwrapping recovered {match.group(0)!r} where `{term}` was planted. "
+        f"Another branch of the key reached this text first, so the row no longer "
+        f"demonstrates that the break is folded"
+    )
 
 
 def test_no_unjudged_sentence_joins_the_t24_authority_population() -> None:
@@ -513,7 +669,7 @@ def test_no_unjudged_sentence_joins_the_t24_authority_population() -> None:
     so, because the sentence reads exactly like the ones already there.
 
     So the **population** is derived here every run and compared against the census
-    that judged it. A new matching line in any authority surface has no judgement
+    that judged it. A new matching phrase in any authority surface has no judgement
     behind it and fails, naming the file and the rule to judge it by. This does not
     and cannot decide whether the wording is honest -- that is a reading -- but it
     makes an unjudged member impossible to add silently, which is the part that was
@@ -522,9 +678,16 @@ def test_no_unjudged_sentence_joins_the_t24_authority_population() -> None:
     **What it costs, recorded rather than claimed away.** The key is an over-
     approximation, so an out-of-class edit -- a knowledge-side ``allowlist``
     sentence -- reddens too, and the answer is to judge it and move the number. And
-    a reword that removes one matching line while adding another leaves the count
-    where it was: this arm holds the population's *size* per surface, not its text,
-    and pinning eighty-odd sentences verbatim would break on a line wrap.
+    a reword that removes one matching phrase while adding another leaves the count
+    where it was: this arm holds the population's *size* per surface, not its text.
+    Pinning a hundred sentences verbatim is the alternative, and it is not a
+    stricter version of this -- it is a different pin, RED on every rewrap, which is
+    why the size is what is held.
+
+    **Counting phrases rather than lines is what makes a soft wrap invisible to an
+    editor and visible here.** The surface is unwrapped first, so a term split
+    across two comment lines counts, and a sentence rewrapped without being changed
+    does not move the number.
 
     Paired with the fact side, which is held elsewhere and not restated here: the
     served field classification (``AUTHOR_CONTROLLED_FIELDS`` and
@@ -542,10 +705,10 @@ def test_no_unjudged_sentence_joins_the_t24_authority_population() -> None:
     }
 
     assert not grown, (
-        "an authority surface gained a line matching the T-24 provenance key, and "
+        "an authority surface gained a phrase matching the T-24 provenance key, and "
         "nothing has judged it:\n"
         + "".join(
-            f"\n  {surface}: {now} lines, {then} judged"
+            f"\n  {surface}: {now} matches, {then} judged"
             for surface, (now, then) in sorted(grown.items())
         )
         + "\n\nJudge the new sentence against T-24's control-table rule: a sentence "
