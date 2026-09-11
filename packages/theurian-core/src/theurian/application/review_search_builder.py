@@ -188,37 +188,50 @@ class ReviewSearchBuildError(TheurianError):
 #: that refusal is about a record that will fail the same way on every build until
 #: somebody edits it, and this one is about a window that has already closed.
 #:
-#: **What it tells an operator to wait for is a concurrent writer, so it may only
-#: be attached where there is one.** An operator who emptied the corpus on purpose
-#: used to reach this text and be told to let a run finish that did not exist.
-#: That build publishes the empty store now -- the *corpus gone at the publish*
-#: arm of :meth:`ReviewSearchBuilder.build`'s case table -- and both arms that
-#: still refuse are another writer's.
+#: **"Another writer" is wider than a second ``theurian`` run, and the class this
+#: names has to be that wide.** ``.theurian/review/`` is source and is not
+#: git-ignored (threat-model T-24), so a git operation over the tracked directory
+#: moves every file in it with no theurian process involved anywhere. Measured
+#: 2026-09-11: a real ``git checkout`` of a branch carrying a different revision of
+#: the evidence, run inside the write section, produced this refusal with zero
+#: theurian runs in the window -- which the earlier wording attributed to "a
+#: concurrent ``theurian review ingest`` or ``theurian review build``", sending an
+#: operator to wait for a run that did not exist. The re-run terminates whatever
+#: moved the files, so one cure still covers the whole class.
+#:
+#: An operator who emptied the corpus on purpose used to reach this text for the
+#: same reason. That build publishes the empty store now -- the *corpus gone at the
+#: publish* arm of :meth:`ReviewSearchBuilder.build`'s case table.
 _RACE_CURE: Final = (
-    "Another writer -- a concurrent `theurian review ingest` or `theurian review "
-    "build` -- was changing files under .theurian/review/ while this build was "
-    "reading that directory. Let that run finish, then run `theurian review build` "
+    "Another writer was changing files under .theurian/review/ while this build was "
+    "reading that directory: a concurrent `theurian review ingest` or `theurian "
+    "review build`, or a git operation over the tracked directory -- a checkout, a "
+    "pull, or a clone being updated. Let it finish, then run `theurian review build` "
     "again: it reads the corpus as it is now and publishes it. This build wrote "
     "nothing, and it neither moved nor removed anything under .theurian/review/."
 )
 
 
-def _emptied_by_a_race(*, read: int, could_have_published: int) -> str:
+def _emptied_by_a_race(*, read_found_nothing: bool, could_have_published: int) -> str:
     """The refusal a build raises rather than emptying a store the corpus still fills.
 
-    **Two arms, chosen by ``read``**, because a build that read *nothing* must not
-    be handed a sentence about what it read: the build that started in front of a
-    landing has no count to give, and "0 of them" would dress a read that found
-    nothing as a read that went stale.
+    **Two arms**, because a build that read *nothing* must not be handed a sentence
+    about what it read: the build that started in front of a landing has no count to
+    give, and "0 of them" would dress a read that found nothing as a read that went
+    stale.
 
-    ``could_have_published`` is the count taken **after** withholding -- the records
-    this build held and would have written -- and the message describes it as that.
-    The read's own count is the wrong number to print beside a directory an operator
-    is about to go and look at: a build that withheld some of what it read could
-    never have published those, so naming the read's total would send them looking
-    for a discrepancy this build was never going to land.
+    **A flag and not the read's count**, which is structural rather than stylistic.
+    The read's total is a **pre-withholding** number and the one number this message
+    may print is the post-withholding one -- a build that withheld some of what it
+    read could never have published those, so naming the read's total would send an
+    operator looking for a discrepancy this build was never going to land. Taking a
+    ``bool`` means no pre-withholding count is in scope here at all, so a later edit
+    cannot print one by reaching for the parameter that was already to hand.
+
+    ``could_have_published`` is that post-withholding count -- the records this build
+    held and would have written -- and the message describes it as exactly that.
     """
-    if read == 0:
+    if read_found_nothing:
         return (
             "This build read no evidence records, and .theurian/review/ holds evidence "
             "its read never saw, so the store it assembled holds nothing while the "
@@ -476,13 +489,28 @@ class ReviewSearchBuilder:
         **The withholding arm is behavioural indistinguishability, not a hidden
         count.** This build publishes ``withheld`` to whoever ran it, so the number
         is not a secret from its caller; what must not differ is what the build
-        *does*. An all-withheld build and a corpus emptied on purpose both publish
-        an empty store and exit 0 -- same rows, same ``records``, same exit code --
-        so nothing downstream of the build can tell a withheld record from one that
-        never existed, which is the by-construction property
-        :attr:`ReviewSearchBuildRequest.withheld_record_keys` exists for. Refusing
-        on that arm would make the refusal itself the signal: an error that fires
-        for one input and not the other.
+        *does*. An all-withheld build does what a corpus **emptied on purpose**
+        does -- publishes an empty store, exit 0, same rows, same ``records`` -- so
+        refusing on that arm would make the refusal itself the signal: an error
+        that fires for one input and not the other.
+
+        **Against a corpus that never held the records, the pairing is narrower,
+        and the gap is recorded rather than argued away.** While a landing is in
+        flight the two worlds separate, and what separates them is the refusal
+        rather than any published field. Measured 2026-09-11 through this method
+        over the real evidence store, with one record landing inside the write
+        section: an all-withheld build -- two records read, both withheld --
+        published at exit 0 with ``{'records': 0, 'withheld': 2}``, while a build
+        whose corpus never held those records read nothing and met the read-zero
+        refusal at exit 1. It is bounded today by the shipped withheld set being
+        empty: ``git grep -n 'ReviewSearchBuildRequest(' --
+        packages/theurian-core/src ':!*review_search_builder.py'`` answers **one**
+        line, ``review_commands.py``'s ``frozenset()``, which both ``review
+        ingest`` and ``review build`` reach through ``rebuild_search_store`` -- so
+        no shipped build takes the all-withheld arm at all. Owned by
+        [#575](https://github.com/theurian/theurian/issues/575), whose comment
+        records this residual: the change that first computes a non-empty withheld
+        set is the change that has to close it.
 
         **The check is a listing, not a second read**, which is what keeps all of
         the above payable: :data:`ListEvidenceFingerprints` opens no file and
@@ -536,6 +564,22 @@ class ReviewSearchBuilder:
                 opened. A listing that refuses ends the build with nothing
                 written, which is the direction to fail in: publishing without
                 knowing what is on disk is how the deletion above comes back.
+
+                **One member of that class is this method's own, and it is
+                recorded rather than guarded.**
+                :class:`~theurian.domain.review_search.ReviewSearchLoad` refuses
+                two records claiming one ``relative_path``, and that check runs
+                where the load is built -- *inside* the write section. A
+                :data:`ReadEvidence` that answered with a duplicate path would
+                therefore end the build with an ``InvariantViolationError``, which
+                carries no remedy, so an operator would get the CLI's backstop cure
+                instead of one naming a file. The shipped reader cannot produce it:
+                ``EvidenceReader.read_all`` iterates
+                ``sorted(self.relative_paths())`` and that is a ``frozenset``, so
+                the paths are unique before any record is read. It is a contract on
+                the injected callable rather than an arm, because an arm no input
+                can reach would need a faked reader to fire and would then be a
+                guard tested only against its own test.
         """
         # **Before the read**, and the docstring's ordering paragraph is why: a
         # fingerprint taken after it describes a directory a change made *during*
@@ -570,15 +614,19 @@ class ReviewSearchBuilder:
             #
             # The withholding arm is behavioural indistinguishability rather than
             # a hidden count -- `withheld` is published to the caller in the
-            # return below. An all-withheld build must *do* what a purpose-emptied
-            # corpus does, or the refusal becomes an error that fires for one
-            # input and not the other, which is the one bit
-            # `withheld_record_keys`' physical absence exists to keep out of every
-            # observable.
+            # return below. An all-withheld build must *do* what a corpus emptied
+            # on purpose does, or the refusal becomes an error that fires for one
+            # input and not the other. That is the pairing this arm holds; against
+            # a corpus that never held the records it holds only while no landing
+            # is in flight, which the docstring records as a measured residual --
+            # bounded by the shipped withheld set being empty, owned by #575.
             every_record_withheld = bool(entries) and not kept
             if at_the_publish and not load.records and not every_record_withheld:
                 raise ReviewSearchBuildError(
-                    _emptied_by_a_race(read=len(entries), could_have_published=len(projected)),
+                    _emptied_by_a_race(
+                        read_found_nothing=not entries,
+                        could_have_published=len(projected),
+                    ),
                     remedy=_RACE_CURE,
                 )
             self._write(load)
