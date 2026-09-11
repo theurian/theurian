@@ -263,8 +263,31 @@ def _lock_write_section(lock_path: Path) -> WriteSection:
     ``findings_commands._lock_write_section``'s twin, converting into this
     package's own error class so a failure carries the review rebuild's cure
     rather than the findings one. The ``except OSError`` spans acquisition, body
-    **and** release; each phase is quiet for its own reason, and those reasons are
-    recorded in full on the findings twin.
+    **and** release; each phase is quiet for its own reason.
+
+    **The acquisition and release reasons are the twin's**, unchanged, and are
+    recorded in full there: both calls ``WriteLock.held`` makes before it has a
+    descriptor convert their own ``OSError`` into a ``TheurianError`` naming the
+    lock file, and the release clauses run after the publish is already durable.
+
+    **The body reason is this section's own, because this body is not the twin's.**
+    The findings section says "the one thing run inside is ``replace_all``"; this
+    one runs **two** calls, and neither lets a bare ``OSError`` out:
+
+    - :meth:`~theurian.infrastructure.review_evidence.reader.EvidenceReader.fingerprints`,
+      the publish-time half of the builder's revalidation. Its directory walk
+      converts its own ``OSError`` into a ``ReviewEvidenceError`` -- a
+      ``TheurianError``, so it passes this handler untouched and reaches the
+      command's own ``except TheurianError`` with a cure about the review
+      directory rather than about the lock. The per-leaf ``stat`` raises nothing
+      at all: it answers a sentinel, so one unreadable leaf cannot refuse a
+      listing taken under the lock.
+    - ``SqliteReviewSearchStore.replace_all``, which converts the complement of
+      ``TheurianError`` before any of it escapes.
+
+    A ``WriteLockTimeoutError`` is a ``TheurianError`` and not an ``OSError``, so
+    it passes straight through with the lock-specific remedy #404 R1-5 gave it --
+    the twin's sentence, and still true here.
     """
 
     @contextmanager
