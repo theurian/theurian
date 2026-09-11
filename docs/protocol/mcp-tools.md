@@ -545,6 +545,176 @@ T-19). The refusal is the same constant an absent store gets, deliberately:
 naming this arm would tell whoever planted the store that the plant was detected,
 and the cure is the same local rebuild either way.
 
+### `review.search`
+
+Three keys, all always present. The contract is
+[`schemas/mcp/review-search-response.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/review-search-response.schema.json).
+
+```json
+{
+  "count": 1,
+  "truncated": false,
+  "records": [
+    {
+      "recordPath": "sha256-9f2c…/review-thread/PRRT_kwDO_test_node_0001.json",
+      "recordKey": "PRRT_kwDO_test_node_0001",
+      "kind": "review-thread",
+      "provider": "github",
+      "repository": "theurian/theurian",
+      "pullRequest": 569,
+      "threadState": "resolved",
+      "filePath": "packages/theurian-core/src/theurian/security/paths.py",
+      "sourceUri": "https://github.com/theurian/theurian/pull/569#discussion_r1",
+      "authorExternalId": "MDQ6VXNlcjE=",
+      "authorDisplayName": "github-advanced-security",
+      "excerpt": "This write target is not checked for a symbolic link.",
+      "excerptChannel": "comment",
+      "lastSeenRunId": "01K4YQ7N2B3C4D5E6F7G8H9JKM",
+      "lastSeenAt": "2026-09-05T09:35:33.000000+00:00",
+      "contentClassification": "untrusted-knowledge",
+      "mayContainInstructions": true,
+      "executable": false
+    }
+  ]
+}
+```
+
+Every optional argument is a filter, and all of them are ANDed:
+
+| Argument | Selects |
+| :-- | :-- |
+| `repository` | one repository, `owner/name`, **exact and case-sensitive** |
+| `pullRequest` | one pull-request number, at least 1 and at most `MAX_PULL_REQUEST` — the largest value its signed 64-bit column can hold |
+| `threadState` | one of `open`, `resolved`, `outdated`, `dismissed` |
+| `author` | one `authorExternalId`, exact |
+| `filePath` | one anchor path, exact |
+| `q` | a literal substring of the record's stored text, ASCII case folded |
+| `limit` | at most `MAX_REVIEW_SEARCH_LIMIT` (50), `DEFAULT_REVIEW_SEARCH_LIMIT` (20) by default |
+
+`projectId` is required, as it is for every project-scoped tool: many agents
+share one daemon, so an implicit default would resolve one agent's query against
+another's project
+([ADR-0002](../adr/0002-single-local-daemon-over-streamable-http.md)).
+
+Records come back in a **total, deterministic order the store owns** —
+repository, then pull request, then kind, then the record's own path. No key in
+that order is computed from the query, so `limit` truncates a defined sequence
+and a page boundary is stable across calls.
+
+**Nothing on this path is ranked.** `q` is a substring test, not a query
+language: `*`, `OR`, `NEAR` and `"` are ordinary characters, and `%` and `_` are
+escaped before the pattern is bound. There is no score, no term weight and no
+collection statistic, which is what keeps
+[ADR-0030](../adr/0030-github-review-ingestion-spawns-gh.md) decision 6 clear of
+the T-17a constraint a ranked surface inherits: a ranked surface prices its
+results over build-time statistics, and no such statistic exists here for a
+withheld record to move. What keeps a withheld record out is that it is never
+written — no row in any table — so nothing here can tell "withheld" from "never
+existed".
+
+**Four filters are exact and case-sensitive; only `q` folds.** `repository`,
+`filePath`, `author` and `threadState` are compared byte for byte under SQLite's
+default collation, while `q` folds the 26 ASCII letters and nothing else. The
+asymmetry is worth stating because *ingestion* is case-insensitive about a
+repository name — the adapter checks GitHub's answer against the allowlist entry
+case-folded, as GitHub itself does — so a project can hold records under a
+spelling the operator never typed. Measured 2026-09-10 against a record stored
+as `Acme/Order-Service`: the stored spelling answers one row,
+`acme/order-service` answers none. Read the spelling off a served record's own
+`repository` field rather than assuming one.
+
+**Every row carries the safety triple, because every row carries text somebody
+outside this project wrote.** The excerpt, the display name and the file path are
+all author-controlled (ADR-0030 decision 3's field table), so the row is served
+under `contentClassification: untrusted-knowledge`,
+`mayContainInstructions: true`, `executable: false`. A review comment routinely
+reads as an imperative, because a review *asks* for a change; that is a
+description of a request and never an instruction addressed to the agent reading
+it. **The file path in particular is served as data** and **SHALL NOT** be joined
+into a filesystem path — it arrived over the network from whoever opened the pull
+request (SEC-7).
+
+**Four bounds, and only one of them clamps.** `limit` bounds the records;
+`MAX_FILTER_CHARS` (400) bounds every string filter; the store's own read cuts
+each `excerpt` at `MAX_EXCERPT_CHARS` (280) **in SQL**, so the daemon never
+materialises the whole of a planted comment; and
+`MAX_REVIEW_SEARCH_RESPONSE_CHARS` bounds the whole response. Every bound a
+*caller* provokes is a refusal naming the bound, never a silent clamp: a
+truncated answer to a filtered question reads as the whole answer. The excerpt
+is the one that clamps, because its size is chosen by the corpus rather than by
+the caller — refusing there would let one planted comment deny the tool to
+everyone — and it is cut and then marked with a trailing `...`, so the two
+lengths are disjoint and a cut value cannot be read as a whole one.
+
+**The response bound is a graded stop at the record boundary, never a cut inside
+a value.** Records are added until the next one would take the response past the
+budget; then the page stops and `truncated` says so, in the same bit and with the
+same meaning a full page uses. A record that alone exceeds the budget is served
+whole and alone **when it is the page's first** — a caller whose budget is
+smaller than one record is better served by one over-long answer it can truncate
+than by an empty one it cannot act on — and that exemption is positional, not a
+property of the record: a later over-budget record is simply not served. Every
+value served is therefore exactly the stored one, and what varies is how many.
+
+**That budget counts content characters of the shaped records, not wire bytes.**
+JSON escaping costs up to six wire characters for one counted (CJK does not
+escape; a control character does), and the SDK sends the payload twice — a
+`content` text block and `structured_content` — so one response's JSON crosses
+the wire two times over. Measured 2026-09-11 over a full page of 50 records:
+**2.15×** the budget figure for long unescaped values, 2.95× for short ones, and
+**11.36×** where every string is control characters. Size a transport limit at
+roughly twelve times the budget, never at the budget itself.
+
+`count` sizes the returned array and is never a total before `limit`.
+`truncated` is one bit about this response's own boundary: the server reads one
+record past `limit` through the same read every served row comes from, discards
+it, and reports whether this response carries fewer records than that read
+returned. A **total matching count** was considered and rejected in its
+favour — it would be a number computed over records the caller did not receive.
+
+There are **two refusal envelopes**, and each is a constant. A caller whose
+request is outside a bound or a vocabulary is refused naming the bound, and a
+value inside the bound may be quoted back while one past it is reported by its
+length alone — no refusal here interpolates a caller's *number* at all, so there
+is no arm that can fail while rendering one. A caller arriving when the daemon is
+already answering `MAX_CONCURRENT_SEARCHES` (4) of these, after waiting
+`ADMISSION_WAIT_SECONDS` (1.0 s) for a permit, gets
+`REVIEW_SEARCH_CAPACITY_REFUSAL` — its own gate and its own message, because a
+caller refused here has not been refused by `knowledge.search`'s cap or
+`review.findings`'.
+
+**A store that cannot be served from is a refusal, never an empty response**, and
+it is one constant message — `REVIEW_SEARCH_UNAVAILABLE_REFUSAL`, naming
+`theurian review build` — for every cause: the store does not exist, it was built
+by a superseded schema or from a superseded evidence format, it cannot be read,
+or **this installation did not build it**. Distinguishing the arms would publish
+which one fired, and the provenance arm is where that costs something: telling
+"this store is not yours" apart from "there is no store" tells whoever planted it
+that the plant was detected. `count: 0` therefore means the filter matched
+nothing, never "nothing has been built here".
+
+That read also needs **write** access to `.theurian/state/`, which is not
+obvious from a tool that only reads: the store is a WAL database, so SQLite
+creates its `-wal` and `-shm` companions beside it on the first serving read even
+under `mode=ro`. Measured 2026-09-10 with the directory at `0o500` and the
+companions absent, the read fails with `attempt to write a readonly database` and
+reaches the caller as that same constant refusal — whose remedy will not fix a
+directory mode. An operator meeting it on a store they know they built should
+check the mode before rebuilding.
+
+**Where a record came from is not something this tool can vouch for**, and the
+response does not pretend otherwise. `theurian review ingest` lands evidence from
+public allowlisted repositories; a clone lands it too, because `.theurian/review/`
+is source rather than derived state and is deliberately not git-ignored. The
+provenance check is on the **store** — did this installation build it — and never
+on who wrote the records; the read inspects a file's shape and its derived path,
+not its authorship. So `recordKey`, `sourceUri`, `authorExternalId` and
+`lastSeenRunId` are the provider's own on a record this installation ingested and
+are whatever the file names on one that arrived with the repository (threat model
+[T-24](../security/threat-model.md), an accepted residual). Every row rides under
+the triple either way, which is what makes that residual acceptable rather than
+merely recorded.
+
 ## Specification
 
 Specification-specific MCP tools are planned, not shipped. Specification content

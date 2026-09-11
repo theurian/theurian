@@ -493,6 +493,26 @@ def _unwrapped(text: str) -> str:
 #: reject it**, and did not move the census. Judged honest -- the sentence around
 #: it names what the read inspects, a file's shape and its derived path -- and
 #: recorded here, which is also what takes this arm back to green.
+#:
+#: ``docs/protocol/mcp-tools.md`` reads 8 rather than 5 since the milestone docs
+#: pass added that page's ``review.search`` section. Three new phrases, each read
+#: against the control-table rule and each **judged honest**:
+#:
+#: * ``allowlist``, in *"the adapter checks GitHub's answer against the allowlist
+#:   entry case-folded"* -- a sentence about the **ingest adapter**, said in a
+#:   paragraph whose subject is why a stored spelling can differ from the one an
+#:   operator typed. It attributes nothing to a served record;
+#: * ``public allowlisted``, in *"``theurian review ingest`` lands evidence from
+#:   public allowlisted repositories; a clone lands it too"* -- both routes named
+#:   in one sentence, followed by what the read actually checks;
+#: * ``provider's own``, in *"are the provider's own on a record this installation
+#:   ingested and are whatever the file names on one that arrived with the
+#:   repository"* -- the route named on both sides, which is the form this rule
+#:   asks for.
+#:
+#: The two over-approximating branches (``allowlist``, and ``public-allowlisted``
+#: as its longer sibling) doing exactly what their note predicts: costing a
+#: judgement on a sentence that turns out to be fine.
 _JUDGED_CENSUS: Final[dict[str, int]] = {
     "docs/security/threat-model.md": 34,
     "schemas/config/project-config.schema.json": 10,
@@ -500,7 +520,7 @@ _JUDGED_CENSUS: Final[dict[str, int]] = {
     "schemas/mcp/review-search-response.schema.json": 9,
     "docs/architecture/review-knowledge.md": 8,
     "schemas/mcp/system-capabilities-response.schema.json": 7,
-    "docs/protocol/mcp-tools.md": 5,
+    "docs/protocol/mcp-tools.md": 8,
     "packages/theurian-core/src/theurian/domain/review_search.py": 5,
     "packages/theurian-core/src/theurian/application/review_search_builder.py": 4,
     "packages/theurian-core/src/theurian/infrastructure/review_evidence/records.py": 4,
