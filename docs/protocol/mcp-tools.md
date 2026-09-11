@@ -545,6 +545,22 @@ T-19). The refusal is the same constant an absent store gets, deliberately:
 naming this arm would tell whoever planted the store that the plant was detected,
 and the cure is the same local rebuild either way.
 
+**A store path that does not resolve inside the project root is answered apart
+from that constant.** `.theurian/state/theurian-findings-local.sqlite` delivered
+as a symbolic link out of the working tree — `git add -f` puts a link past the
+ignore as readily as a file — is refused with `PATH_ESCAPE_REFUSAL`, carrying the
+cure for what escaped: remove it, run `theurian migrate apply`, and rebuild the
+derived artifacts. It is answered apart because the rebuild
+`FINDINGS_UNAVAILABLE_REFUSAL` names cannot clear it — `theurian findings build`
+resolves the same leaf through the same helper and meets the same refusal before
+it reads git — so one message for both would send a caller to a command that
+returns them to where they started. `PATH_ESCAPE_REFUSAL` interpolates nothing
+and so does not say *which* path escaped; the cure beside it names the derived
+subdirectory, drawn from Theurian's own fixed vocabulary, and both are
+project-relative. The containment behind it is anchored to the **project root**,
+where `review.search`'s equivalent check is anchored to `.theurian/state/` —
+which is why the two tools answer an escaping store file with different text.
+
 ### `review.search`
 
 Three keys, all always present. The contract is
@@ -672,35 +688,52 @@ it, and reports whether this response carries fewer records than that read
 returned. A **total matching count** was considered and rejected in its
 favour — it would be a number computed over records the caller did not receive.
 
-There are **two refusal envelopes**, and each is a constant. A caller whose
-request is outside a bound or a vocabulary is refused naming the bound, and a
-value inside the bound may be quoted back while one past it is reported by its
-length alone — no refusal here interpolates a caller's *number* at all, so there
-is no arm that can fail while rendering one. A caller arriving when the daemon is
-already answering `MAX_CONCURRENT_SEARCHES` (4) of these, after waiting
+**Two refusal envelopes answer the request itself**, and neither carries anything
+read out of the store. A caller whose request is outside a bound or a vocabulary
+is refused naming the bound, and a value inside the bound may be quoted back
+while one past it is reported by its length alone — no refusal here interpolates
+a caller's *number* at all, so there is no arm that can fail while rendering one.
+A caller arriving when the daemon is already answering
+`MAX_CONCURRENT_SEARCHES` (4) of these, after waiting
 `ADMISSION_WAIT_SECONDS` (1.0 s) for a permit, gets
 `REVIEW_SEARCH_CAPACITY_REFUSAL` — its own gate and its own message, because a
 caller refused here has not been refused by `knowledge.search`'s cap or
 `review.findings`'.
 
 **A store that cannot be served from is a refusal, never an empty response**, and
-it is one constant message — `REVIEW_SEARCH_UNAVAILABLE_REFUSAL`, naming
-`theurian review build` — for every cause: the store does not exist, it was built
-by a superseded schema or from a superseded evidence format, it cannot be read,
-or **this installation did not build it**. Distinguishing the arms would publish
-which one fired, and the provenance arm is where that costs something: telling
-"this store is not yours" apart from "there is no store" tells whoever planted it
-that the plant was detected. `count: 0` therefore means the filter matched
-nothing, never "nothing has been built here".
+which text a caller gets turns on whether the fault is in the store or in the
+path to it.
+
+`REVIEW_SEARCH_UNAVAILABLE_REFUSAL` — one constant message naming `theurian
+review build` — answers every fault in the store itself: it does not exist, it
+carries no build stamp, it was built by a superseded schema or from a superseded
+evidence format, it cannot be read, a value in a row it returned is damaged, or
+**this installation did not build it**. The message names none of them.
+Distinguishing the arms would publish which one fired, and the provenance arm is
+where that costs something: telling "this store is not yours" apart from "there
+is no store" tells whoever planted it that the plant was detected. `count: 0`
+therefore means the filter matched nothing, never "nothing has been built here".
+
+**A store path that does not resolve inside `.theurian/state/` is answered apart
+from that constant**, because the rebuild the constant names cannot clear it:
+`theurian review build` resolves the store through the same helper before it
+reads an evidence file, so it meets the same refusal first. That refusal names
+the store's own filename and the project-relative `.theurian/state/` and nothing
+else, and it travels with a cure that removes that file and then rebuilds — the
+`rm` is the step the rebuild cannot perform for itself, and removing the file
+costs only the projection the rebuild recreates from `.theurian/review/`.
+`.theurian/state` *itself* resolving outside the project root is refused earlier,
+while the project is being resolved, and reaches every project-scoped tool — not
+this one alone — as `PATH_ESCAPE_REFUSAL` beside the cure for what escaped.
 
 That read also needs **write** access to `.theurian/state/`, which is not
 obvious from a tool that only reads: the store is a WAL database, so SQLite
 creates its `-wal` and `-shm` companions beside it on the first serving read even
 under `mode=ro`. Measured 2026-09-10 with the directory at `0o500` and the
 companions absent, the read fails with `attempt to write a readonly database` and
-reaches the caller as that same constant refusal — whose remedy will not fix a
-directory mode. An operator meeting it on a store they know they built should
-check the mode before rebuilding.
+reaches the caller as `REVIEW_SEARCH_UNAVAILABLE_REFUSAL` — whose remedy will not
+fix a directory mode. An operator meeting it on a store they know they built
+should check the mode before rebuilding.
 
 **Where a record came from is not something this tool can vouch for**, and the
 response does not pretend otherwise. `theurian review ingest` lands evidence from
