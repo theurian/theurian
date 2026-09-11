@@ -371,14 +371,31 @@ the same subject.
 makes the evidence files durable precisely so an upstream delete does not erase
 the record — which means *"visible to the public audience"* is true at ingestion
 time and can stop being true afterwards, when an author edits or deletes a
-comment upstream. This ADR does not pretend otherwise, and it does not build a
-propagation path either: an upstream delete does not reach Theurian's copy, and
-there is no mechanism that would notice one. **The remediation path exists and is
-manual**: delete the evidence file and rebuild the derived store, which is
+comment upstream. This ADR does not pretend otherwise. **The two cases part
+there, and only one of them is the residual.** An upstream *edit* does reach
+Theurian's copy: decision 3's writer rewrites a record whose content changed and
+`ReviewIngestReport` counts it `updated`, so the next `theurian review ingest`
+run whose window covers the record brings the edit with it. An upstream *delete*
+does not — that is the retention decision itself, and no mechanism here would
+notice one. **The remediation path exists and is manual**, and it is the delete
+case's: delete the evidence file and rebuild the derived store, which is
 exactly the operation decision 3's files-as-source shape already supports (the
 store is rebuilt from the files, so removing a file removes the record from every
-surface). A capability that would make it automatic is not designed here and is
-listed in *What this does not close*.
+surface). A capability that would make *deletion* automatic is not designed here
+and is listed in *What this does not close*.
+
+**The sentence above read "it does not build a propagation path either" until
+2026-09-11, and that was wrong for edits.** Its colon-clause named only delete,
+but the sentence it followed had enumerated "edits or deletes", so the generic
+half read as covering both — and the surfaces that publish this scope spelled it
+out that way, as "an upstream edit or delete does not reach Theurian's copy". The
+capabilities schema, `mcp/tools.py`, `docs/protocol/mcp-tools.md` and the flag's
+own pin in `tests/integration/test_mcp_tools.py` are corrected in the same
+commit, and they were corrected against the *measured* behaviour:
+`tests/unit/test_review_evidence_store.py::test_a_refetch_rewrites_a_record_whose_content_changed_upstream`
+has pinned the update since slice 2. As with the `it holds` correction above, the
+decision is unchanged — retention is still what decision 3 chooses — and what was
+wrong was a sentence about how the corpus behaves.
 
 **The private-repository arm stays owed, and it keeps a named owner.** ADR-0029
 assigned it to this arm: a finding marked `securityRelated` at ingestion time,
@@ -977,10 +994,14 @@ Two inherited controls are named so the serve slice does not rediscover them:
 7. **What `gh` does after the vector is handed over.** Clause 8's version floor
    bounds *which* binary, not its behaviour; the residual is recorded in decision
    1 and in *Consequences → Negative*.
-8. **Propagating an upstream edit or delete into the evidence files.** Decision 2
+8. **Propagating an upstream *delete* into the evidence files.** Decision 2
    records the retention residual and the manual remediation — delete the file,
    rebuild the derived store; a capability that *notices* an upstream deletion and
-   acts on it is not designed here.
+   acts on it is not designed here. An upstream **edit** is not in this item and
+   never was: a refetch rewrites the record and reports it `updated`. The heading
+   read "an upstream edit or delete" until 2026-09-11, matching the widening
+   decision 2 records above and describing as unbuilt something the write path
+   already does.
 9. **Headless environment-token authentication.** Excluded from clause 4's
    constant by decision, not by omission: identity comes from the operator's
    persisted `gh` login. Admitting a token variable is a decision with its own

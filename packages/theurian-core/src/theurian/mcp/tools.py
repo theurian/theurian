@@ -2563,9 +2563,17 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 # no security advisories, no private forks -- and every record
                 # `theurian review ingest` landed was visible to the public
                 # repository's audience at the moment it was ingested. The tense
-                # is load-bearing and the residual is retention: an upstream edit
-                # or delete does not reach Theurian's copy, and the remediation is
-                # manual (delete the evidence file, rebuild the store).
+                # is load-bearing and the residual is retention -- and an edit and
+                # a delete are not the same case. An upstream **edit** does reach
+                # Theurian's copy: the next run whose window covers the record
+                # refetches it, rewrites the file and counts it `updated`
+                # (`ReviewIngestReport.updated`, pinned by
+                # `test_review_evidence_store.py`'s
+                # `test_a_refetch_rewrites_a_record_whose_content_changed_upstream`).
+                # An upstream **delete** does not, because decision 3 makes the
+                # files durable precisely so a deleted comment is not erased
+                # locally. The manual remediation -- delete the evidence file,
+                # rebuild the store -- is that second case's.
                 #
                 # **A statement about ingestion, not an inventory of
                 # `.theurian/review/`.** Those files are source, not derived

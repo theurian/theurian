@@ -380,10 +380,15 @@ how to treat it. The scope is the narrow claim ADR-0030 makes — no
 advisory-private GitHub surface is ingested, and every record `theurian review
 ingest` landed was visible to the public repository's audience *at the moment it
 was ingested* — not the wider and false one that a public repository cannot carry
-sensitive content. The tense is load-bearing: an upstream edit or delete does not
-reach Theurian's copy, and the remediation is manual (delete the evidence file,
-rebuild the store). The value is a build constant, identical in every deployment,
-which is what makes it publishable on a surface that resolves no project.
+sensitive content. The tense is load-bearing, and an edit and a delete are not the
+same case: an upstream **edit** reaches Theurian's copy on the next `theurian
+review ingest` run whose window covers the record, which refetches it, rewrites
+the file and counts it as `updated`; an upstream **delete** does not, because
+[ADR-0030](../adr/0030-github-review-ingestion-spawns-gh.md) decision 3 makes the
+files durable precisely so a deleted comment is not erased locally. The manual
+remediation — delete the evidence file, rebuild the store — is that second case's.
+The value is a build constant, identical in every deployment, which is what makes
+it publishable on a surface that resolves no project.
 
 It is a statement about *ingestion*, not an inventory of `.theurian/review/`:
 that directory is source and is not git-ignored, so a clone can carry evidence a
