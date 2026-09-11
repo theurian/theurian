@@ -1670,19 +1670,31 @@ the withholding arm is
 with `::test_an_all_withheld_build_and_a_purpose_emptied_corpus_are_one_observable`.
 **That pairing's "one observable" is three named ones and not every observable**,
 so this record states the bound rather than the phrase: what an all-withheld
-build and a purpose-emptied corpus may not differ in is whether the build raises,
-what the store holds, and what the report publishes — every key of it but
-`withheld`.
+build and a build whose corpus is **gone at the publish** may not differ in is
+whether the build raises, what the store holds, and what the report publishes —
+every key of it but `withheld`. **The axis is the listing and not an operator's
+intent**, which is the axis the guard reads: a corpus still there while the read
+found nothing is the *refusing* input, and whether it never held the records or
+somebody had just emptied it is not something `entries` can say. The case
+standing on that row is
+`integration/test_review_build_empty_publish.py::test_a_build_over_an_emptied_corpus_a_writer_landed_into_refuses_and_leaves_the_store`.
+
 **Duration is outside that claim and was measured, not argued away**: the
-all-withheld build parses every evidence file and the emptied corpus parses none,
-so the two differ by **1.75× at 60 records and 29.8× at 200** (measured
-2026-09-11 in round one by the security and adversarial reviewers respectively),
-a margin that grows with the corpus because the mechanism is N JSON parses
-against zero. It is not a channel: the only party who can time this build is the
-party who ran `theurian review build` in their own working tree and can read
-`.theurian/review/` directly, and no MCP tool reaches the build at all —
-`review.search` reads the store the build produced. What would re-grade it is a
-caller able to provoke a build without reading the corpus, and none exists.
+all-withheld build parses every evidence file and a corpus that is gone has
+nothing to parse, so the two differ in duration. **Two figures were taken in
+round one, and they are two instruments rather than two points on one curve.**
+**1.75× at 60 records** is wall-clock over the shipped CLI, where a
+process-startup floor of roughly 27 ms sits in both numerator and denominator and
+dilutes the ratio (security review's instrument); **29.8× at 200 records** is the
+builder method driven directly, with no process to start (adversarial review's
+harness). Neither number extrapolates to the other's instrument, and no curve is
+claimed here. It is not a channel: the only parties that can time this build are
+the ones that ran `theurian review build` or `theurian review ingest` in their
+own working tree — both reach it through `review_commands.rebuild_search_store` —
+and either can read `.theurian/review/` directly, while no MCP tool reaches the
+build at all (`review.search` reads the store a build produced). What would
+re-grade it is a caller able to provoke a build without reading the corpus, and
+none exists.
 The key itself is pinned from both sides by
 `unit/test_review_search_builder_claims.py::test_the_empty_publish_guard_is_keyed_on_the_publish_time_capture`
 and `::test_the_build_records_the_decision_its_guard_makes`.

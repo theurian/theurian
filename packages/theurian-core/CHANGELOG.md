@@ -1234,8 +1234,11 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
     the read took — so that build refused, the store went on serving records
     whose files are gone, and the cure told the operator to let a concurrent run
     finish when there was no concurrent run. That build publishes the empty store
-    now, which is what honours the deletion ADR-0030 decision 3 leaves as the
-    only retention remedy.
+    now **where the corpus is gone at the publish**, which is what honours the
+    deletion ADR-0030 decision 3 leaves as the only retention remedy. The
+    condition is the whole of it: let another writer land a record inside the same
+    window and the corpus is not gone at the publish, so the build refuses and the
+    rows the earlier one published go on serving.
 
   **The decision is now a function of the publish-time capture and the
   withholding outcome, and of nothing the read alone saw**: refuse where
@@ -1243,10 +1246,15 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   emptied it. An empty listing fails the revalidation for every record the read
   took, so the publishing arm cannot smuggle a survivor past a deletion.
 
-  **The non-disclosure arm does not move.** A build asked to withhold every
-  record it read still publishes the empty store and exits 0, observably
-  identical to a corpus emptied on purpose — refusing there would make the
-  refusal itself an error that fires for one input and not the other.
+  **The non-disclosure arm does not move, and it is stated on the listing axis.**
+  A build asked to withhold every record it read still publishes the empty store
+  and exits 0, observably identical to a build whose corpus is **gone at the
+  publish** — refusing there would make the refusal itself an error that fires for
+  one input and not the other. The pairing is not with an operator's intent, which
+  this build cannot read: a read that found nothing arrives as `entries == ()`
+  whether the records never existed or somebody had just deleted them, so those
+  are one input and not two, and an emptied corpus that a writer lands into inside
+  the window is the *refusing* world rather than the publishing one.
 
   **The refusal's count moved with the key.** A build that read nothing is handed
   a sentence about the corpus rather than about its read, and the arm that does
@@ -1262,7 +1270,10 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `::test_a_corpus_an_operator_emptied_inside_the_window_is_published_rather_than_refused`,
   which hold the read-to-publish window open with a barrier at the read seam and
   assert what the read returned, so each case records which row of the table it
-  drove. That module states its own cost: it does not demonstrate the window
+  drove; the third world — the same deletion with a writer landing inside that
+  window, which refuses and leaves the earlier store serving — is
+  `::test_a_build_over_an_emptied_corpus_a_writer_landed_into_refuses_and_leaves_the_store`.
+  That module states its own cost: it does not demonstrate the window
   across two OS processes, which is #636's own reproduction. The rows nothing
   else reached are
   `tests/integration/test_review_search_builder.py::test_a_build_that_read_nothing_while_a_landing_filled_the_corpus_refuses`
