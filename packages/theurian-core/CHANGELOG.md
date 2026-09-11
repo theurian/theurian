@@ -35,7 +35,12 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   a fetch stays an operator's act. `system.capabilities` reports
   `reviewIngestion: true` beside `reviewIngestionScope: "public-allowlisted"`,
   which is a statement about the callable surface (`review.search`, a read over
-  what was already ingested) and not about this adapter.
+  what `theurian review build` projected out of `.theurian/review/`) and not
+  about this adapter. **Not "a read over what an operator ingested"**: that
+  directory is source rather than derived state and is not git-ignored, so a
+  clone can deliver records this installation never fetched, and the read
+  inspects a file's shape and its derived path rather than its provenance
+  (threat-model T-24).
 - **`theurian review ingest OWNER/REPO`, the command that reaches it** (ADR-0030
   decisions 3 and 4, part of
   [#479](https://github.com/theurian/theurian/issues/479)). A new `review` Typer
@@ -51,8 +56,13 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   record `block` withheld, or a pull request the listing or a fetch could not
   read); `{error, remedy}` alone, on stderr, when the command refused before any
   report existed; and **both** when the records landed and the rebuild that
-  follows them did not, because that rebuild sits in a `try` of its own and every
-  arm in it publishes the run document before it fails. The `{error, remedy}`
+  follows them did not, because that rebuild sits in a `try` of its own whose
+  `finally` publishes the run document before any failure leaves the command.
+  That was three enumerated `except` arms until a `ValueError` out of `int`
+  landed outside all three and took the document with it; the emit is now owed by
+  one `finally` and by nothing an enumeration can miss, and the inner `try` still
+  has no handler, so a defect in this process stays loud — it just leaves after
+  the document is out. The `{error, remedy}`
   shape carries no `clean` field at all, so a caller scripting `--json | jq
   .clean` has to allow for a run that published nothing on stdout. And 4 when a
   path under `.theurian/` could not be proved to stay inside the working tree —
@@ -358,6 +368,164 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   as it already held the pattern. Until this, a 4,000-character entry satisfied
   the published contract and was refused unread by the reader that claims to
   enforce it.
+- **`review.search`: a project's review evidence is readable over MCP, and
+  `theurian review build` is what makes it readable** (ADR-0030 decision 6, part
+  of [#479](https://github.com/theurian/theurian/issues/479)). A **fourth derived
+  SQLite store** joins the canonical state, the retrieval index and the findings
+  store under `.theurian/state/`, built wholesale from the JSON records under
+  `.theurian/review/` and serving pull requests, review submissions and review
+  threads filtered by repository, pull request, author, file path, thread state
+  or literal text. `theurian review build` derives it and fetches nothing — no
+  `gh` is spawned, no repository is contacted, no allowlist is consulted — so it
+  is the command for a clone that already carries its project's evidence;
+  `theurian review ingest` runs the same rebuild after it lands, so a run never
+  leaves the store describing the corpus as it was before it.
+
+  **Deleting the store costs a rebuild, not data** (ADR-0004). The evidence files
+  are the source and nothing on this path writes to, moves or removes one. The
+  reverse does not hold — a deleted record under `.theurian/review/` is evidence
+  no refetch recovers — which is why the rebuild is one-directional by
+  construction rather than by a rule somebody has to remember.
+
+  **Nothing on this path ranks anything, and that is what keeps T-17a out of the
+  slice.** `q` is a literal substring test over the stored fragments, not a query
+  language: `*`, `OR`, `NEAR` and `"` are ordinary characters, and `%` and `_`
+  are escaped before the pattern is bound. There is no score, no term weight and
+  no collection statistic — so there is no build-time statistic a withheld record
+  could move, which is the constraint a ranked review surface would inherit. What
+  keeps a withheld record out is that it is never written: it contributes no row
+  to any table, so nothing published can tell "withheld" from "never existed".
+  The equality filters (`repository`, `filePath`, `author`, `threadState`) are
+  byte-for-byte under SQLite's default collation while `q` folds the 26 ASCII
+  letters, and the asymmetry is stated rather than smoothed: *ingestion* matches a
+  repository name case-insensitively, so a project can hold records under a
+  spelling the operator never typed. Measured 2026-09-10 against a record stored
+  as `Acme/Order-Service`: the stored spelling answers one row, `acme/order-service`
+  answers none.
+
+  **Bounded in four dimensions, and the response bound is the one that was
+  missing.** `limit` bounds the records (50 maximum, 20 by default, a refusal
+  rather than a clamp); the store's own read cuts each **excerpt** in SQL at
+  `MAX_EXCERPT_CHARS` + 1 characters, so a planted comment cannot size the
+  daemon's footprint; `MAX_REVIEW_SEARCH_RESPONSE_CHARS` bounds the **whole
+  response**, stopping the page at a record boundary and reporting it through the
+  same `truncated` bit a full page uses; and a third `AdmissionGate` bounds how
+  many of these run at once, refusing with a constant message when it is full.
+  Only the excerpt was bounded when the tool was first written, and it was the
+  cheap field to bound: `authorDisplayName` and `filePath` are author-controlled
+  and crossed uncut. Measured 2026-09-10, 50 hits each carrying a 1 MiB
+  `filePath` and a 1 MiB `authorDisplayName`: **104,904,775 JSON characters in
+  one response**, against the 14,050 the prose declared.
+
+  **That budget counts content characters of the shaped records, not wire
+  bytes**, and the gap is not small: JSON escaping costs up to six wire
+  characters for one counted, and the SDK sends the payload twice — a `content`
+  text block and `structured_content`. Measured 2026-09-11 over a full page of 50
+  records: **2.15×** the budget figure for long unescaped values, 2.95× for short
+  ones, and **11.36×** where every string is control characters. Size a transport
+  limit at roughly twelve times the budget, never at the budget itself.
+
+  **Every served row rides under the SEC-15 triple, and the triple is imported**
+  — `theurian.mcp.results.SAFETY` splatted in, never three literals respelled, so
+  one surface cannot drift into labelling while another does not. A review
+  comment routinely reads as an imperative, because a review *asks* for a change;
+  the row says `contentClassification: untrusted-knowledge`,
+  `mayContainInstructions: true`, `executable: false`, and the file path in
+  particular is served as **data** and is joined into no filesystem path (SEC-7).
+
+  **Served only if this installation built the store** (ADR-0004, SEC-7,
+  threat-model T-19). The store is derived and git-ignored, so a repository
+  contributor can force-add a fabricated one past that ignore — correct schema,
+  current stamp, rows carrying comments nobody wrote — and presence on disk is
+  therefore not evidence of anything. A store with no out-of-tree provenance
+  record is refused with the **same constant message** an absent, stale or
+  unreadable one gets, so a plant and a missing store are indistinguishable, and
+  the cure names `theurian review build` either way. The check runs *before* the
+  file is opened.
+
+  **The store's read also needs write access to `.theurian/state/`**, which is
+  not obvious from a tool that only reads: it is a WAL database, so SQLite
+  creates the `-wal` and `-shm` companions beside it on the first serving read
+  even under `mode=ro`. Measured 2026-09-10 with the directory at `0o500` and the
+  companions absent, the read fails with `attempt to write a readonly database`
+  and reaches the caller as that same constant refusal — whose remedy will not
+  fix a directory mode.
+
+  **`system.capabilities` reports `reviewIngestion: true`, published together
+  with `reviewIngestionScope: "public-allowlisted"` and never one without the
+  other.** The flag's meaning is narrower than its history suggests and is worth
+  reading as narrowly as it is written: it has never meant "this build can reach
+  GitHub" (the fetch path shipped two slices earlier while the flag read `false`)
+  and never meant "evidence lands on disk" (`theurian review ingest` shipped one
+  slice earlier, same `false`). What it reports is the MCP-callable surface, and
+  `review.search` is the first thing to move it. It does **not** say a client may
+  start an ingestion run: no tool spawns `gh`, ADR-0013 keeps write intent off
+  this surface, and a fetch stays an operator's act through the CLI verb.
+
+  **Two new wire schemas**, `schemas/mcp/review-search-response.schema.json` and
+  `schemas/mcp/system-capabilities-response.schema.json` — the second published
+  for the first time, because the capability block is now a contract a client
+  degrades against rather than a convenience.
+
+  **The rebuild revalidates what it read, and drops what moved.** The evidence
+  read happens outside the project's write lock and the publish inside it, so two
+  rebuilds — or a rebuild and a concurrent `theurian review ingest` — can touch
+  the directory at different instants and the one that read *earlier* may publish
+  *later*. The build therefore fingerprints the directory before the read and
+  again immediately before the write, and publishes only the records whose
+  fingerprint did not move: a record deleted, rewritten or replaced in between is
+  dropped rather than republished from the copy the read took. Deleting an
+  evidence file is the only retention remedy ADR-0030 decision 3 leaves an
+  operator, so republishing one from a stale read would put back content somebody
+  took out, with both commands exiting 0 and nothing saying so. The cost is
+  fail-closed and reachable: a refetch that rewrites a record with byte-identical
+  content still moves its timestamp, so that record is dropped from *this* build
+  and returns with the next one.
+
+  **A fingerprint is four slots, and the fourth overturns a recorded decision.**
+  `(mtime_ns, size, st_ino, is-a-regular-file)`. Three of them were recorded as a
+  closure over the transitions, on the reasoning that a rewrite always moves the
+  timestamp — which treated the timestamp as a value only the clock sets.
+  `os.utime` sets it to anything, to the nanosecond. Measured 2026-09-11 on APFS,
+  same-length bytes written through a sibling temporary and `os.replace` with the
+  captured times restored afterwards: identical in `(mtime_ns, size,
+  is-a-regular-file)`, different bytes on disk, and the inode moved. The
+  measurement outweighs the recorded ground because the ground was about what
+  *witnesses* a transition and the attack is a transition none of the three
+  witnessed. The residual is named rather than implied and is keyed on the
+  **write shape**, not on the tool: an in-place `open("r+b")` and a `cp -p` over
+  the destination keep the inode and are witnessed by nothing a `stat` answers,
+  while a sibling-plus-`os.replace` and a `tar -x` move it. Reaching that residual
+  needs write access to `.theurian/review/`, and an actor with it can author a
+  record outright — so it sits inside threat-model **T-24** rather than beside it.
+
+  **`theurian review build` and `theurian review ingest` can now exit 1 with a
+  race remedy.** When the revalidation keeps **none** of the records the read
+  found, the build refuses instead of publishing an empty store over one that was
+  serving, and the refusal names how many records it read, says nothing was
+  published and nothing under `.theurian/review/` was moved or removed, and tells
+  the operator to let the other run finish and re-run `theurian review build`. On
+  the ingest path that refusal arrives *after* the run document: the records are
+  already durable, so stdout carries the landing report and stderr carries
+  `{error, remedy}`. **The guard is keyed on read-time facts, and that is a
+  recorded defect rather than a property** — a build that read zero records
+  publishes its empty store over rows a concurrent first landing had just built,
+  and a whole-corpus deletion inside another build's window is refused rather
+  than honoured until the operator re-runs.
+  [#636](https://github.com/theurian/theurian/issues/636) owns the fix and
+  carries its closure shape; the docstring at
+  `application/review_search_builder.py` states the same bound where the guard
+  lives.
+
+  **Threat-model bookkeeping, because this slice moved two entries.**
+  `review.search` is recorded as **T-6's fifth query-side member**, with the
+  bounds table above, the two amplification measurement sets that are deliberately
+  not divided by each other, and the per-query wall-clock bound recorded as *not
+  taken* with its three grounds. And **T-24** is new: `.theurian/review/` is
+  source, is not git-ignored, and a clone can therefore deliver evidence a
+  repository author wrote, which `theurian review build` projects like any other —
+  accepted as a recorded residual, with the SEC-15 triple on every row and the
+  T-19 check stated as being on the *store* and never on who wrote the records.
 
 ### Changed
 
