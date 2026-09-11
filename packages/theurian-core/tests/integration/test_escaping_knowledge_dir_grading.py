@@ -102,6 +102,20 @@ _NEEDS_SYMLINKS = pytest.mark.skipif(
 #: a moved test file fails loudly instead of sweeping an empty tree.
 SOURCE_ROOT: Final = Path(__file__).resolve().parents[2] / "src" / "theurian"
 
+#: A sentence out of :data:`~theurian.mcp.tools.PATH_ESCAPE_REFUSAL`, written out
+#: rather than sliced off the constant.
+#:
+#: ``PATH_ESCAPE_REFUSAL in message`` is true of **every** message once the
+#: constant is ``""``, and round one measured exactly that: emptied, the suite
+#: stayed green while every caller who met a containment refusal was handed a
+#: message with no words in it. This is the assertion that fails then -- measured
+#: 2026-09-11 on this branch, emptying the constant turns this face, the face
+#: beside it and the seam's unit case RED together.
+#:
+#: Written out in each of those three files rather than shared: three pins reading
+#: from one place are one edit away from being no pin at all.
+PATH_ESCAPE_SENTENCE: Final = "does not resolve to a location inside the project root"
+
 _MIGRATION_ID: Final = "01K1AAAAAA01234567890ABCDE"
 _REVISION_ID: Final = "01K1AAAREV01234567890ABCDE"
 _BODY: Final = "# Authentication policy\n\nEvery call carries a signed token.\n"
@@ -1305,6 +1319,10 @@ async def test_the_mcp_surface_publishes_the_cure_for_an_escaping_knowledge_dire
     assert PATH_ESCAPE_REFUSAL in message, (
         f"{tool}: the refusal did not survive the tool boundary as the one constant "
         f"`_with_remedy` substitutes for a `ProjectPathEscapeError`'s own message: {message}"
+    )
+    assert PATH_ESCAPE_SENTENCE in message, (
+        f"{tool}: the constant crossed the boundary without saying what went wrong, so "
+        f"the assertion above is satisfied by a refusal carrying no words at all: {message}"
     )
     assert KNOWLEDGE_DIR_ESCAPE_REMEDY in message, (
         f"{tool}: the refusal crossed the tool boundary without its cure, so an "

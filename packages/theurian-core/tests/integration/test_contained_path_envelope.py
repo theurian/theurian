@@ -525,6 +525,16 @@ PLANTS: Final = (
         relative="state/active-index.json",
         is_directory=False,
         remedy=_DERIVED_STATE,
+        # These five are the **CLI** grading, and they stay what they were: the
+        # reader holding the checkout is told a path escaped and given the cure.
+        # The MCP surface makes the opposite trade for the same plant and makes
+        # it at its own consumer -- `mcp/search.py`'s `_published_index` converts
+        # the refusal to the `index-pointer-invalid` fallback, so
+        # `knowledge.search` serves a degraded scan rather than refusing
+        # (GHSA-97q9, the paths in the message are the operator's layout).
+        # `read_active_index_pointer` deliberately keeps raising, because
+        # absorbing it there was measured undoing #525 in three of the cases
+        # below.
         refuses=frozenset(
             {"index build", "index gc", "index status", "migrate apply", "project status"}
         ),

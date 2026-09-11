@@ -108,6 +108,20 @@ ORIGIN_MAIN: Final = "refs/remotes/origin/main"
 #: ``packages``. The same reckoning ``test_mcp_tools.py`` uses.
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
+#: A sentence out of :data:`~theurian.mcp.tools.PATH_ESCAPE_REFUSAL`, written out
+#: rather than sliced off the constant.
+#:
+#: ``PATH_ESCAPE_REFUSAL in message`` is true of **every** message once the
+#: constant is ``""``, and round one measured exactly that: emptied, the suite
+#: stayed green while every caller who met a containment refusal was handed a
+#: message with no words in it. This is the assertion that fails then -- measured
+#: 2026-09-11 on this branch, emptying the constant turns this face, the face
+#: beside it and the seam's unit case RED together.
+#:
+#: Written out in each of those three files rather than shared: three pins reading
+#: from one place are one edit away from being no pin at all.
+PATH_ESCAPE_SENTENCE: Final = "does not resolve to a location inside the project root"
+
 runner = CliRunner()
 
 MIGRATION_ID = "01K1AAAAAA01234567890ABCDE"
@@ -2038,11 +2052,20 @@ async def test_an_escaping_state_directory_is_refused_without_naming_the_resolve
     function renders ``f"{knowledge_directory_name}/{subdirectory}"`` -- a
     *basename* (``.theurian``) and a relative child name (``state``). Neither
     argument can carry an absolute path, so dropping the message while keeping
-    ``exc.remedy`` costs the caller nothing actionable. Both halves are asserted:
-    the literal sentence an operator reads, and the whole cure compared against
-    the shipped function's own output, so a reworded remedy moves both sides
-    together while a remedy that started interpolating a path is caught by the
-    population above.
+    ``exc.remedy`` costs the caller nothing actionable.
+
+    **The cure is asserted twice, and the two assertions fail in opposite
+    directions** (round one, code review LOW: the second looks like a strict
+    subset of the first, and today it is). ``derived_escape_remedy(...) in
+    message`` recomputes the whole cure from the shipped function, so it follows
+    any rewording and catches a cure that arrived cut down. ``"Remove
+    `.theurian/state`" in message`` is a **literal**, so it follows nothing: it is
+    what goes RED when the cure is reworded into something that no longer opens
+    with the one act an operator has to perform. A test that recomputed both sides
+    would call a silently reworded remedy correct, which is the vacuity
+    :data:`PATH_ESCAPE_SENTENCE` exists for one paragraph up. A remedy that
+    started interpolating a path is caught by the population sweep above rather
+    than by either of these.
 
     **What the message half is, and not only what it is not.**
     :data:`~theurian.mcp.tools.PATH_ESCAPE_REFUSAL` is asserted present beside the
@@ -2051,6 +2074,15 @@ async def test_an_escaping_state_directory_is_refused_without_naming_the_resolve
     cure for a fault nobody named -- satisfied every other assertion here. The
     absence sweep says no layout crossed; this says the caller was still told what
     went wrong.
+
+    **And a second measurement said that assertion was not enough on its own**
+    (round one, adversarial). ``PATH_ESCAPE_REFUSAL in message`` is true of every
+    message once the constant is ``""``, and emptied, the suite stayed green while
+    every containment refusal reached its caller wordless. So
+    :data:`PATH_ESCAPE_SENTENCE` -- a literal out of the constant, written out in
+    this file -- is asserted beside it, and the emptying is RED here as of this
+    commit. The pair is what holds the message half: the constant says *this* text
+    and not another, the literal says the text still says something.
 
     RED at ``68d8ee19``, where the message named
     ``<resolved-root>/.theurian/state/active.json`` and ``<resolved-root>``.
@@ -2098,6 +2130,10 @@ async def test_an_escaping_state_directory_is_refused_without_naming_the_resolve
         f"the message half arrived as something other than the one constant "
         f"`_with_remedy` substitutes, so what is asserted below is a cure beside an "
         f"unpinned sentence: {message}"
+    )
+    assert PATH_ESCAPE_SENTENCE in message, (
+        f"the constant reached the caller without saying what went wrong, so the "
+        f"assertion above is satisfied by a refusal carrying no words at all: {message}"
     )
     assert "Remove `.theurian/state`" in message, (
         f"the refusal reached the caller without the one act that resolves it, so an "
