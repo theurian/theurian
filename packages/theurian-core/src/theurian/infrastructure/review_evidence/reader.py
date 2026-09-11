@@ -314,17 +314,23 @@ class EvidenceReader:
         inode even where somebody restores its timestamp afterwards.
 
         **The residual, measured on the same day and named rather than implied.**
-        A rewrite that keeps the inode -- ``open("r+b")`` in place, or ``cp -p``
-        over an existing destination, both measured answering an identical
-        four-slot fingerprint after the same ``os.utime`` restoration -- is
-        witnessed by nothing a ``stat`` answers, and no content hash is taken here
-        because hashing every landed file is a read, which is the thing this
-        method exists not to do. Two tool measurements are recorded beside them so
-        the class is not read wider than it was measured: ``rsync -a`` kept the
-        inode but truncated ``mtime_ns`` to the second, and ``tar -x`` moved the
-        inode and truncated the timestamp -- both are caught, for different
-        reasons. The coarse-filesystem case the old note recorded is unchanged and
-        is a member of this same residual.
+        What decides is the **write shape**, not the tool, and each row below is
+        one run of the sequence this paragraph describes -- capture the stat,
+        rewrite to the same length with different bytes, ``os.utime`` the captured
+        times back, stat again (2026-09-11, APFS):
+
+            open("r+b") in place        inode kept    all four slots equal
+            cp -p over the destination  inode kept    all four slots equal
+            sibling + os.replace        inode moved   fingerprint differs
+            tar -x over the member      inode moved   fingerprint differs
+
+        The first two are the residual: witnessed by nothing a ``stat`` answers,
+        and no content hash is taken here because hashing every landed file is a
+        read, which is the thing this method exists not to do. The coarse-
+        filesystem case the old note recorded is a member of the same residual,
+        reached by a different route. ``rsync -a`` is deliberately **not** in the
+        table: two runs of it disagreed about whether it transferred at all under
+        its own quick check, so nothing here is claimed about it.
 
         Reaching that residual needs write access to ``.theurian/review/``, and an
         actor with it can author an evidence record outright -- threat-model
