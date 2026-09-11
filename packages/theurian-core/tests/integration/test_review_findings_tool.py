@@ -1925,6 +1925,14 @@ async def test_a_store_path_that_resolves_outside_the_project_answers_the_one_co
 ) -> None:
     """The availability envelope covers the escaping-leaf arm too (GHSA-97q9).
 
+    **The arm answers ``PATH_ESCAPE_REFUSAL`` and the escape cure as of this
+    commit, not ``FINDINGS_UNAVAILABLE_REFUSAL``**: the availability constant
+    published "run `theurian findings build`" for a fault that command meets
+    first, so the fold was overturned and ``_with_remedy``'s substitution took
+    its place. The assertions below are the ones that pin it; the paragraphs
+    after this one still narrate the fold, and re-tensing them belongs to the
+    round that owns this file's prose.
+
     ``findings_for`` routes through ``ProjectPaths._contained``, whose refusal
     names the absolute path it was asked for *and* the resolved project root --
     correct on a terminal, the operator's machine layout on this surface. Left to
@@ -1982,7 +1990,19 @@ async def test_a_store_path_that_resolves_outside_the_project_answers_the_one_co
 
     # `in`, not `==`: the SDK prefixes a failing tool's message with "Error
     # executing tool review.findings: ", which is the transport's and constant.
-    assert FINDINGS_UNAVAILABLE_REFUSAL in message
+    assert PATH_ESCAPE_REFUSAL in message, (
+        f"the message half arrived as something other than the one constant "
+        f"`_with_remedy` substitutes, so what is asserted below is a cure beside an "
+        f"unpinned sentence: {message}"
+    )
+    assert PATH_ESCAPE_SENTENCE in message, (
+        f"the constant reached the caller without saying what went wrong, so the "
+        f"assertion above is satisfied by a refusal carrying no words at all: {message}"
+    )
+    assert "Remove `.theurian/state`" in message, (
+        f"the refusal reached the caller without the one act that resolves it, so an "
+        f"agent is told a path escaped and given nothing to do about it: {message}"
+    )
     published = {
         name: value
         for name, value in (

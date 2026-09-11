@@ -2279,12 +2279,19 @@ def read_active_index_pointer(paths: ProjectPaths) -> ActiveIndexPointer:
     a file to probe, so a ``.theurian/state`` or an ``active-index.json``
     delivered as a link out of the tree leaves here as
     :class:`ProjectPathEscapeError`. **Deliberately: the CLI grades it, and
-    absorbing it here was measured undoing #525.** Widening the ``except``
-    below by that one type and running
-    ``tests/integration/test_contained_path_envelope.py`` (2026-09-11, on this
-    branch) turned three of its cases red for the ``active_index_pointer``
-    plant alone -- ``{'no longer refusing': ['index status', 'migrate apply',
-    'project status']}``, ``containment refusals graded something other than 4:
+    absorbing it here was measured undoing #525.**
+
+    The recipe that reproduces that measurement is **two edits, not one**: move
+    the ``pointer =`` resolution below into the ``try`` *and* widen the
+    ``except`` by :class:`ProjectPathEscapeError`. Widening the ``except``
+    alone changes nothing, because the resolution that raises sits above the
+    ``try`` -- which is the whole reason the refusal escapes this function, and
+    a sentence here used to publish that half-recipe as the reproduction
+    (verdict pass, adversarial MEDIUM). Under the two-edit recipe,
+    ``tests/integration/test_contained_path_envelope.py`` turns three of its
+    cases red for the ``active_index_pointer`` plant alone -- ``{'no longer
+    refusing': ['index status', 'migrate apply', 'project status']}``,
+    ``containment refusals graded something other than 4:
     {('active_index_pointer', 'index gc'): 1}``, and ``index gc`` publishing
     the delete-the-pointer cure in place of the cure for what escaped. That
     split of one class across two exit codes is the thing #525 unified. What a

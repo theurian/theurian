@@ -359,10 +359,15 @@ def _published_index(  # noqa: PLR0911 - one return per distinguishable fallback
     """Locate the index this project publishes, or say why there is not one.
 
     Every failure below is a missing optimisation, answered with a
-    :class:`Fallback` so the caller serves from the canonical store instead. The
-    two steps that touch the filesystem are the ones that could refuse rather
-    than answer, and each is converted where it is called: the pointer read
-    immediately below, and :func:`_searchable_file` inside itself.
+    :class:`Fallback` so the caller serves from the canonical store instead. Two
+    steps can refuse rather than answer, and each is converted where it is
+    called: the pointer read immediately below, and :func:`_searchable_file`
+    inside itself. The key is *can refuse*, and a sentence here used to say
+    *touches the filesystem*, which is a larger set: ``provenance.has_index``
+    further down reads a file too and answers ``False`` instead of raising,
+    because :meth:`BuildProvenance._load` catches its read's ``OSError``,
+    ``JSONDecodeError`` and ``UnicodeDecodeError`` and answers with an empty
+    record (fail closed).
 
     **That first conversion is new, and "Never raises." is what this paragraph
     replaces** (round one, security and code review). The sentence was false:
