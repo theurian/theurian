@@ -366,8 +366,27 @@ class ReviewSearchBuilder:
         fingerprint, a fingerprint is a witness of state rather than the state,
         and the one transition a ``stat`` cannot witness is recorded at
         :meth:`~theurian.infrastructure.review_evidence.reader.EvidenceReader
-        .fingerprints` with its measurement and its threat-model grading. Read
-        this list as "what each transition gets, where the listing can tell":
+        .fingerprints` with its measurement and its threat-model grading.
+
+        **And it is not a closure over what the build *publishes*.** Every row
+        below says what happens to one record whose path both captures can be
+        compared for. Whether a *store* is published is decided one level up, by
+        the empty-keep guard further down, and that guard reads the **read-time**
+        projection rather than the publish-time listing this build already holds
+        -- so two measured cases sit outside every row here:
+
+        * a build whose read found **no** records has no row to enumerate at all,
+          and publishes its empty store over whatever landed in the meantime;
+        * a corpus emptied **whole** inside this build's window matches the first
+          row for every record it read, and is then refused rather than
+          published, so this build does not honour the deletion.
+
+        Both are faces of one class, and
+        [#636](https://github.com/theurian/theurian/issues/636) owns the fix --
+        keying the decision on ``at_the_publish``, which is already in hand at
+        the publish. Until it lands, read this list as "what each transition gets
+        for one record, where the listing can tell, in a build that read
+        something and does publish":
 
         * **present -> absent.** Revalidated: the record is dropped. Deleting a
           file is the retention remedy ADR-0030 decision 3 leaves an operator,
@@ -414,14 +433,39 @@ class ReviewSearchBuilder:
         previous store serving, because this layer publishes by replacement and
         never by emptying.
 
-        The condition is **read some, kept none**, and both halves are load-
-        bearing. A corpus somebody legitimately emptied converges through the
-        *next* build, which reads zero records and publishes the empty store: an
-        empty read is an answer about the disk, where an empty keep is only ever a
-        statement about this build's own window. And the count is taken after
-        withholding, so a caller that withheld everything it read publishes an
+        The condition is **read some, kept none**, and the count is taken after
+        withholding -- so a caller that withheld everything it read publishes an
         empty store rather than meeting a refusal that would itself disclose that
-        there was something to withhold.
+        there was something to withhold. That half holds.
+
+        **The other half does not, and the bound is stated here rather than
+        argued away.** What stood here was that an empty *read* is an answer
+        about the disk while an empty *keep* is only ever a statement about this
+        build's own window, and that a corpus somebody legitimately emptied
+        therefore converges through the next build. Both were measured false in
+        PR #630's fifth round, and for one reason: the condition is keyed on what
+        the read saw, while the listing that would separate these cases --
+        ``at_the_publish`` -- is already in hand at the publish.
+
+        * A build that read **zero** records is not answering about the disk
+          either. It can be a build that started before the first records landed;
+          queueing on the write lock behind that landing's own rebuild and
+          publishing last, it replaces the freshly built store with an empty one
+          at exit 0 (6/6 trials, real ``theurian review build`` processes against
+          the real write lock).
+        * A corpus emptied **whole** inside another build's window makes this
+          guard fire, so that build refuses instead of publishing the empty store
+          the deletion asked for, and the previous store keeps serving records an
+          operator has deleted. The refusal is loud -- exit 1, with a cure naming
+          the re-run -- and the documented re-run does complete the withdrawal,
+          which is what bounds this rather than a claim that it cannot happen.
+
+        [#636](https://github.com/theurian/theurian/issues/636) owns the fix and
+        carries the closure shape (decide on the second capture: corpus gone at
+        publish -> publish the empty store; corpus present and the load empty for
+        any reason but withholding -> refuse). Until it lands, the two bullets
+        above are what this guard does, and neither is a reason to publish
+        without revalidating.
 
         **The check is a listing, not a second read**, which is what keeps all of
         the above payable: :data:`ListEvidenceFingerprints` opens no file and
