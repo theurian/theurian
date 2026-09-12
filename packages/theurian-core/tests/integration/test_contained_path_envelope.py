@@ -1655,7 +1655,13 @@ def test_an_escaping_review_directory_is_cured_by_removing_the_link_not_by_init(
     be: :meth:`ProjectPaths.of` has already contained ``.theurian`` by the time
     ``review`` is resolved, so the only object that can make this path escape is
     a link *at* ``review`` itself -- and plain ``rm`` removes a link without the
-    force ``-rf`` adds. Offering ``-rf`` would be worse than redundant: ADR-0030
+    force ``-rf`` adds. That "at ``review`` itself" is a dated property of the
+    helper population rather than a law, and
+    ``tests/unit/test_project_paths_containment.py::
+    test_exactly_one_contained_helper_resolves_under_the_review_evidence_directory``
+    is what holds it: a helper resolving something *beneath* ``review`` would put
+    the link at an interior component, where ``rm .theurian/review`` names the
+    wrong object. Offering ``-rf`` would be worse than redundant: ADR-0030
     decision 3 makes review evidence canonical with no replayable source, so a
     reader who reaches for the force arm over a real directory destroys records
     no rebuild recovers. The trailing slash is absent for the measured reason
@@ -1666,11 +1672,22 @@ def test_an_escaping_review_directory_is_cured_by_removing_the_link_not_by_init(
     review ingest`` is the writer; naming it is what turns "remove this" into a
     cure a reader can finish.
 
-    RED before the fix: an escaping ``.theurian/review`` publishes
-    ``KNOWLEDGE_DIR_ESCAPE_REMEDY``, which fails every predicate below except
-    none. The sibling pins that must move with the fix are
-    ``PLANTS``' ``review`` entry in this file and
-    ``tests/unit/test_project_paths_containment.py::
+    **The cure names relative paths only, asserted here rather than inferred
+    from the equality a sibling test makes** (GHSA-97q9). A remedy crosses the
+    MCP boundary unmodified, so an absolute path interpolated into it would
+    publish the operator's layout to a caller that never learns it any other
+    way. ``review_escape_remedy`` takes the knowledge directory's *basename* and
+    nothing that came out of a ``resolve()``; the two assertions below say so
+    against this run's own throwaway root, which is the only form of the claim
+    that goes RED when a later edit reaches for ``self.knowledge_dir`` instead.
+
+    RED before the fix: an escaping ``.theurian/review`` published
+    ``KNOWLEDGE_DIR_ESCAPE_REMEDY``, which fails all five predicates below.
+    ``PLANTS``' ``review`` entry is tied to the shipped cure at the end of this
+    test rather than merely named -- reverting that field to
+    ``KNOWLEDGE_DIR_ESCAPE_REMEDY`` at 8900eaea left this file at 19 passed,
+    because ``review`` reaches no swept command and so no sweep reads it. The
+    other sibling pin is ``tests/unit/test_project_paths_containment.py::
     test_every_path_helper_refuses_when_a_committed_symlink_escapes_under_it``.
     """
     root = tmp_path / "repo"
@@ -1728,6 +1745,30 @@ def test_an_escaping_review_directory_is_cured_by_removing_the_link_not_by_init(
         "predicates:\n"
         + "\n".join(f"  - {label}: {why}" for label, why in misdirecting)
         + f"\n\nthe text it publishes is:\n  {remedy!r}"
+    )
+
+    assert str(root) not in remedy, (
+        f"the cure interpolates the project root: {remedy!r}. A remedy crosses the MCP "
+        "boundary unmodified, so this publishes the operator's layout to a caller that "
+        "learns it no other way (GHSA-97q9). The cure takes the knowledge directory's "
+        "basename, never a resolved path."
+    )
+    assert str(tmp_path) not in remedy, (
+        f"the cure interpolates an absolute path from this run: {remedy!r}. Asserted "
+        "separately from the root because a cure could name the *parent* -- the "
+        "checkout's neighbour, or the temporary directory a test runs in -- without "
+        "naming the root itself, and that discloses the layout just as well."
+    )
+
+    assert PLANT_BY_HELPER["review"].remedy == remedy, (
+        "the `review` plant's ledger entry records a cure the product no longer "
+        f"publishes:\n  ledger: {PLANT_BY_HELPER['review'].remedy!r}\n  shipped: "
+        f"{remedy!r}\n\nThat field is the per-plant expectation the remedy sweep reads, "
+        "and for this plant nothing reads it: `review` is in "
+        "`REACHES_NO_SWEPT_COMMAND` and outside `CONTAINMENT_PLANTS`, so reverting it "
+        "to `KNOWLEDGE_DIR_ESCAPE_REMEDY` at 8900eaea left this file at 19 passed. It "
+        "is tied to the shipped text here, where the text is measured, so the ledger "
+        "cannot describe a cure that has moved on without it."
     )
 
 
