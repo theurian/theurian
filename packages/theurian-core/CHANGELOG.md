@@ -12,6 +12,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-12
+
 ### Fixed
 
 - **The one `LIMIT_EXCEEDED` cure now answers every refusal that reaches it**
