@@ -81,7 +81,10 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   reached for the force arm over a real directory would destroy records no
   rebuild recovers. The carve-out is keyed on the first path component at any
   depth, so a helper resolving something *beneath* the evidence directory
-  inherits this cure rather than falling back to the old one.
+  inherits this **arm** rather than falling back to the old cure. What it
+  inherits is the routing, not a cure already written for it: the `rm` names the
+  evidence directory itself, so whoever adds that helper revisits the cure text
+  in the same change.
 
 ## [0.2.0] - 2026-09-12
 
