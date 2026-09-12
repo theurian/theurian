@@ -12,6 +12,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-12
+
 ### Added
 
 - **A GitHub review-ingestion adapter, and the SEC-10 controls that had to land
@@ -1293,6 +1295,35 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   — an AST arm reading what the guard's condition names — and
   `::test_the_build_records_the_decision_its_guard_makes`, which holds the
   recorded decision and the three superseded sentences it replaced.
+
+### Security
+
+- **GHSA-923w-f36f-jcfq: MCP error responses could disclose the operator's
+  resolved filesystem layout.** Five error paths built refusal text from
+  exception messages interpolating resolved absolute paths — the physical
+  location of the project root and of files under `.theurian/state/`. For a
+  project registered through a spelling that differs from its physical
+  location (for example, a project moved behind a symbolic link), those
+  refusals disclosed the resolved layout, which `project.list` deliberately
+  does not publish. Reaching them required an authenticated localhost MCP
+  session plus a repository-delivered artifact (a symbolic link or derived
+  state force-added past the ADR-0004 ignore). No governed knowledge content
+  and no credential was disclosed. Fixed by holding every containment and
+  provenance refusal on the MCP surface to a constant that interpolates
+  nothing, carried beside an executable cure built from Theurian's own fixed
+  vocabulary; an escaping index pointer now degrades `knowledge.search` to
+  its substring fallback (`fallbackReason: "index-pointer-invalid"`) instead
+  of refusing. The class is pinned by an enumerated-population test over
+  path-interpolating raise sites, a behavioral sweep asserting no
+  resolved-form string appears in any MCP response, and an executable-cure
+  ratchet that runs every cure a refusal publishes. **BREAKING — wire-text
+  changes a consumer notices:** `FINDINGS_UNAVAILABLE_REFUSAL` and
+  `REVIEW_SEARCH_UNAVAILABLE_REFUSAL` are reworded cause-free; the
+  containment arms of `review.findings` and `review.search` answer the
+  escape constant (or the store-file refusal) with the remove-and-rebuild
+  cure instead of the availability constant; and `theurian review build` at
+  exit 1 names relative locations with a runnable `rm` instead of a resolved
+  path.
 
 ## [0.1.0] - 2026-09-05
 
