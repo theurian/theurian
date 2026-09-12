@@ -132,7 +132,7 @@ re-deriving. **So a universal is written next to a key, or it is not written.**
 Caught eight times across PR #569's two rounds (round one: code-review
 H-1/H-2/H-3; round two: security HIGH-1/HIGH-2/HIGH-3, adversarial OOP-1,
 code-review HIGH-2), every one on the no-new-universal-prose family the brief
-had enumerated. Three bars:
+had enumerated. The bars:
 
 - Write it **only** beside a named test that goes RED when it is false, or a
   pasted measurement with the key that produced it; otherwise narrow it to the
@@ -158,6 +158,23 @@ had enumerated. Three bars:
   red. Before committing any command+output pair, run the command one final
   time against the text as committed and copy what it printed; if that differs
   from what you meant to claim, the claim changes — the paste never does.
+- **A total the key does not literally print is not keyed.** Re-running a key
+  protects its printed output and nothing computed from it — classification
+  and fan-out happen in your head after the grep, and that is where the number
+  goes wrong while the paste beside it stays true. Burned in from PR #647,
+  three times in one cluster: a `_contained` key pasted in its `git grep -c`
+  form — a single number — hand-partitioned into totals that could not all be
+  true at once (round-1 H-2); "Three cures now, not two" written with its arm
+  key in another module entirely (round-1 L-4); "six sites are eight faces"
+  where the byte cap fans through a shared helper into three seams the
+  sentence counted as two, against that comment's own nine-landing-place
+  enumeration (round-2 H-2). Two of the three fixes deleted the total and let
+  the enumeration carry the claim; round-1 H-2's fix kept its classification
+  and made it re-runnable instead — **a classification may be stated only when its predicate
+  sits beside the key, so a reader can re-run both**; a derived number over a
+  paste of something else is not keyed. (`theurian-docs.md` carries the
+  docs-side form of this family: every count is a pasted derivation with its
+  scope beside it.)
 
 ## Before you report done
 
