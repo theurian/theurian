@@ -529,8 +529,9 @@ def review_escape_remedy(knowledge_directory_name: str) -> str:
         f"link and deletes what it points at while leaving the link in place. Plain "
         f"`rm` removes the link and touches nothing at its target. Nothing has to be "
         f"recreated by hand afterwards -- the evidence store makes the directory again "
-        f"at the next `theurian review ingest`, and until then `theurian review build` "
-        f"and `theurian review search` read the absent directory as an empty corpus."
+        f"at the next `theurian review ingest`, and until then an absent directory is "
+        f"read as an empty corpus rather than as a fault, so `theurian review build` "
+        f"still answers."
     )
 
 
