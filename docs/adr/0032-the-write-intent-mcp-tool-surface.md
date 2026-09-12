@@ -289,7 +289,10 @@ that admits `restoreItem` has to bring three things with it:
    item. That is already the operation's *documented* meaning:
    `docs/protocol/migrations.md:86` gives `restoreItem` as "Undo a
    deprecation", which the engine does not enforce. That mismatch is
-   pre-existing, is not created here, and is being filed as its own issue.
+   pre-existing, is not created here, and is recorded on
+   [#272](https://github.com/theurian/theurian/issues/272) — the
+   status-transition-graph ADR candidate that owns the enforcement — in
+   [its 2026-09-12 comment](https://github.com/theurian/theurian/issues/272#issuecomment-5646294018).
 2. **A wire-required `reason`**, in the shape `opChangeSensitivity` already
    uses, so the human reading the pull request is told why an item is coming
    back.
