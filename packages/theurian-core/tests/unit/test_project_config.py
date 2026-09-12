@@ -20,8 +20,10 @@ Marked ``unit`` and writes only under ``tmp_path``.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
+from typing import Final
 
 import pytest
 
@@ -29,6 +31,7 @@ from theurian.domain.errors import ProjectConfigError
 from theurian.security.paths import MAX_SOURCE_FILE_BYTES
 from theurian.security.project_config import (
     PROJECT_CONFIG_FILE,
+    SECRET_SCAN_KEY,
     SecretScanPolicy,
     read_secret_scan_policy,
 )
@@ -131,6 +134,83 @@ def test_a_bare_off_is_refused_with_the_quoting_cure(tmp_path: Path, spelling: s
     assert '"off"' in caught.value.remedy, (
         f"the remedy for a bare `{spelling}` does not name the quoted spelling that works: "
         f"{caught.value.remedy!r}"
+    )
+
+
+#: The spelling a cure names, read out of the published remedy rather than out of
+#: a literal written here. ``SECRET_SCAN_KEY`` composes the pattern for the reason
+#: the constant exists: the one place that has to match the published contract is
+#: visible in a diff. The backtick before the key is load-bearing -- it is what
+#: keeps this off ``security.secretScan``, which the same remedy also names.
+_CURED_SPELLING: Final = re.compile(rf"`{re.escape(SECRET_SCAN_KEY)}:\s*([^`]+)`")
+
+
+@pytest.mark.parametrize("spelling", ["off", "no", "false"])
+def test_an_unquoted_falsey_policy_refuses_and_names_a_spelling_that_works(
+    tmp_path: Path, spelling: str
+) -> None:
+    """The cure for #614, held to being a cure rather than to being a sentence.
+
+    Two failures, and they are not one. **The first is silent disablement**:
+    PyYAML implements YAML 1.1, so ``secretScan: off`` -- and ``no``, and
+    ``false`` -- arrives as the boolean ``False``, and the tempting repair is to
+    read that back as :attr:`SecretScanPolicy.OFF`. It must not be: the three
+    spellings are indistinguishable once parsed, so an operator who wrote ``no``
+    about something else would have the secret scan turned off for them, in the
+    one direction where a wrong guess weakens a security control. The
+    ``pytest.raises`` here is what goes RED the day the reader starts coercing,
+    which is why it is asserted rather than assumed from the exception the other
+    assertions read a remedy off.
+
+    **The second is a remedy that echoes the operator's own spelling** (#614's
+    title). ``read_secret_scan_policy`` refuses with *"is False, which is not a
+    policy this build recognises"* and a valid-values list containing ``off`` --
+    so a remedy without the quoting clause tells the reader to write what they
+    believe they already wrote, and the round trip teaches nothing.
+
+    So this does not stop at the text. It reads the spelling **out of the remedy
+    the reader just published**, writes that back into the file, and requires the
+    answer to have moved to :attr:`SecretScanPolicy.OFF` -- the discipline
+    ``tests/integration/test_published_cures_are_executable.py`` records, applied
+    to the one cure on this path. A cure whose named spelling does not select the
+    policy it claims to is the failure that survives every text assertion.
+
+    Division of labour with its neighbour: ``test_a_bare_off_is_refused_with_the
+    _quoting_cure`` pins that the quoted form is *named*; this pins that the named
+    form is a *fix*, and that the refusal is a refusal.
+    """
+    root, config = _project(tmp_path, f"security:\n  secretScan: {spelling}\n")
+
+    with pytest.raises(ProjectConfigError) as caught:
+        read_secret_scan_policy(root, config)
+    remedy = caught.value.remedy
+
+    assert "quoted" in remedy, (
+        f"the remedy for a bare `{spelling}` never says the value has to be quoted, so a "
+        f"reader who copied `{spelling}` out of the schema is told to write it again: {remedy!r}"
+    )
+    named = _CURED_SPELLING.search(remedy)
+    assert named is not None, (
+        f"the remedy for a bare `{spelling}` names no `{SECRET_SCAN_KEY}: <value>` spelling to "
+        f"write instead: {remedy!r}"
+    )
+    cured = named.group(1)
+    assert cured != spelling, (
+        f"the remedy hands back the operator's own spelling `{cured}`, which is the bare form "
+        f"YAML 1.1 already read as a boolean -- following it lands on this same refusal"
+    )
+    config.write_text(f"security:\n  secretScan: {cured}\n", encoding="utf-8")
+    try:
+        cured_policy = read_secret_scan_policy(root, config)
+    except ProjectConfigError as refused:  # pragma: no cover - the RED branch
+        pytest.fail(
+            f"the remedy told the reader to write `{SECRET_SCAN_KEY}: {cured}`, and following "
+            f"it lands on another refusal: {refused}"
+        )
+    assert cured_policy is SecretScanPolicy.OFF, (
+        f"the remedy told the reader to write `{SECRET_SCAN_KEY}: {cured}`, and that selects "
+        f"{cured_policy.value!r} rather than {SecretScanPolicy.OFF.value!r}: the published cure "
+        f"does not cure"
     )
 
 
