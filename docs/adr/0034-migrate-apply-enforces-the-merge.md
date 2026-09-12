@@ -192,9 +192,12 @@ table who can put a migration in front of this command, and they are not worth
 the same. That table lists **six**; the two outside this control are *a visited
 web page*, which the Origin/Host check stops at TB-1 and which reaches no
 filesystem, and *an external system (GitHub)*, whose capability is "supplies
-review content" and which authors no migration. The four that remain:
+review content" and which authors no migration. The four that remain, named
+here in this control's terms rather than the table's — in row order they are
+*Another local process*, *An AI agent*, *A repository contributor* (the one
+spelling that is verbatim) and *The user*:
 
-| Actor (threat model's own table) | What the floor costs them | Worth |
+| Actor (mapped from the threat model's actors table) | What the floor costs them | Worth |
 | :-- | :-- | :-- |
 | An untrusted same-UID process | `git add && git commit` — two commands it can already run, since it has the user's account | **A speed bump.** It converts a silent apply into one that leaves a commit in the repository, and nothing more. Said plainly here rather than implied away by the ADR's title |
 | An MCP client, through the write-intent tools (ADR-0032) | Nothing today; **everything once slice B4's draft-only facade lands** — at which point it cannot reach `.theurian/migrations/` at all, because the tools write under `.theurian/proposals/` and the distance to the applied directory is a human's `propose accept` plus a merge | **Real, and it is the reason this is a Phase B precondition** — *conditional on that facade*. See the note below the table; this is the actor whose population Phase B multiplies |
@@ -211,7 +214,8 @@ to the application-layer movers. Its measurement is that
 `test_no_registered_tool_can_reach_a_canonical_write`'s forbidden set is 17
 names and contains neither `draft`, `accept` nor `_commit`, so a tool holding a
 `ProposalService` and calling `accept()` passes the sweep green while `_commit`
-writes into `.theurian/migrations/`. Round 2 of this pull request's review
+writes into `.theurian/migrations/`.
+[Round 2 of this pull request's review](https://github.com/theurian/theurian/pull/649#issuecomment-5646284747)
 records that gap as "driven with a positive control (accept/`_commit` pass
 green; `append_revision` caught)". Until B4's facade lands, this row's worth is
 the plan's, not the tree's.
@@ -460,14 +464,38 @@ decision 1's floor does not prove a merge into a protected branch.
 
   **103 `git init` sites in 58 files; 42 of those files drive `migrate apply`**,
   and each such harness needs a commit (or the decision-2 flag) once decision 1
-  lands, because `git init` alone leaves the migration untracked. Only **5**
-  files resolve and spawn the installed binary at all. **Two keys, two limits.**
-  The first counts *invocation sites*, not fixtures — a file with three harnesses
-  contributes three; so 103 is an upper bound on the harnesses and 58 a lower
-  one. The second is a file-level overlap: a file that git-inits in one fixture
+  lands, because `git init` alone leaves the migration untracked. **Six** files
+  spawn a `theurian` console script: the five the `shutil.which` key above
+  finds, plus `tests/integration/test_session_start_hook.py` under
+  `packages/theurian-core/`, whose `_REAL_THEURIAN` is
+  `Path(sys.executable).parent / "theurian"` and so escapes that key. Under the
+  widened key:
+
+  ```console
+  $ git grep -lE 'shutil\.which\("theurian"\)|sys\.executable\)\.parent / "theurian"' \
+      -- 'packages/theurian-core/tests' 'tests' | wc -l
+         6
+  ```
+
+  The sixth file drives `migrate apply` (`:756`) and commits before it does —
+  `_register_a_fresh_project` (`:688-704`) runs `git add -A` then
+  `git commit -q -m init` before the apply — so decision 1 leaves it alone and
+  the conclusion above is unmoved.
+
+  **Three keys, three limits.** The first counts *invocation sites*, not
+  fixtures — a file with three harnesses contributes three; so 103 is an upper
+  bound on the harnesses and 58 a lower one.
+  The second is a file-level overlap: a file that git-inits in one fixture
   and drives `migrate apply` from an unrelated one is counted, so 42 is the
   upper bound on the files that actually need the change. The remaining 16 files
-  contain no `"migrate"` token at all, checked one by one.
+  contain no `"migrate"` token at all, checked one by one. The third is that
+  every key here matches a *spelling*: the git-init key matches
+  `["git", "init"` and `_git(... "init"` and nothing else, so the same file that
+  escaped the binary key escapes this one too — its `_init_git_repo` builds
+  `[str(_GIT), "init", ...]` from `shutil.which("git")`. The miss runs one way:
+  103 and 42 bound what the key matched, not the tree, so neither is an upper
+  bound on the work slice B3 costs; 58 stays a floor on the harnesses, now with
+  more slack than the key can see.
 - **One of the two fixtures the earlier draft named does not drive the CLI.**
   `tests/integration/test_mcp_tools.py`'s `registry` fixture (:267-291) does
   `git init -q` and then calls `_run("init")`, and `_run` (:294-296) is
@@ -568,7 +596,8 @@ Measured now, and reproducible from this ADR (2026-09-12, `be977ea7`):
   does not move.
 - The test tree holds **103** `git init` invocation sites in **58** files, of
   which **42** also drive `migrate apply`, and **5** files resolve the installed
-  binary with `shutil.which("theurian")`. Keys and their two recorded limits are
+  binary with `shutil.which("theurian")` — **6** under the widened key that also
+  admits `Path(sys.executable).parent`. Keys and their three recorded limits are
   in *Consequences → Negative*. `tests/integration/test_mcp_tools.py`'s
   `registry` fixture drives Typer's in-process `CliRunner` (`_run`, :294-296),
   **not** the installed binary; `tests/e2e/test_daemon_single_instance.py`'s
