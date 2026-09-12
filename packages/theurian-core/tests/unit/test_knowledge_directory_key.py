@@ -96,6 +96,30 @@ COMPATIBILITY_PRINCIPLE: Final = (
     "failure."
 )
 
+#: How to read which cures render the knowledge directory's name into a shell
+#: command, instead of naming them.
+#:
+#: Both sites below used to name ``derived_escape_remedy`` as *the* function that
+#: does it. That was true when it was written and false by #602, which added
+#: ``review_escape_remedy`` beside it -- in a pull request that had no reason to
+#: re-read this module, which is exactly how the instruction below would have been
+#: followed to a half-quoted product. So the population is read rather than
+#: transcribed, the way ``mcp/tools.py``'s ``PATH_ESCAPE_REFUSAL`` note reads the
+#: same arms.
+#:
+#: Run against this tree on 2026-09-12 the key printed ``derived_escape_remedy``
+#: and ``review_escape_remedy``. It is scoped by its pathspec to the module it asks
+#: about, so quoting it in this file cannot make it match itself, and its pattern
+#: is spelled on one line -- a key folded mid-regex does not run when it is copied
+#: out. It keys on the parameter name those cures share, which is therefore
+#: load-bearing: a later cure taking the directory's name under another spelling
+#: joins that convention or is found instead by ``git grep -n 'knowledge_dir\.name'
+#: -- packages/theurian-core/src``.
+BASENAME_RENDERING_CURES_KEY: Final = (
+    "git grep -nE '^def [a-z_]+\\(knowledge_directory_name' -- "
+    "packages/theurian-core/src/theurian/application/project_service.py"
+)
+
 #: A configuration written while the key was published as a setting, with the
 #: value the schema's own ``default`` told its author to expect.
 LEGACY_CARRYING: Final = f"""\
@@ -216,11 +240,16 @@ def test_a_configuration_written_while_the_key_was_a_setting_still_validates(
         ("the schema's own former default", ".theurian"),
         ("another directory name", "knowledge-base"),
         # A name with spaces is the value that would matter first if the key were
-        # ever honoured: `derived_escape_remedy` renders the directory into an
-        # `rm` command, and an unquoted name with a space splits into three wrong
-        # paths there. Nothing honours the key, so this row asserts the path does
-        # not move -- and it is the tripwire that reddens on the day it does,
-        # while the quoting is still one line away (#533).
+        # ever honoured: the escape cures render the directory's name straight into
+        # shell commands, and this name splits into three operands in every one of
+        # them. Measured 2026-09-12 by calling them with it -- `rm my knowledge
+        # dir/state` parses as `rm`, `my`, `knowledge`, `dir/state`, and
+        # `ls -l my knowledge dir/review` the same way. Which cures those are is
+        # read with BASENAME_RENDERING_CURES_KEY rather than listed here, because
+        # the sentence that listed one of them went false inside the pull request
+        # that added the second. Nothing honours the key, so this row asserts the
+        # path does not move -- and it is the tripwire that reddens on the day it
+        # does, while the quoting is still one line away in each cure (#533).
         ("a name that would need quoting in a rendered command", "my knowledge dir"),
     ],
 )
@@ -250,9 +279,12 @@ def test_a_config_naming_another_knowledge_directory_moves_no_path(
         f"a config naming {label} moved the knowledge directory to "
         f"{paths.knowledge_dir}. If `{KEY}` has been wired through, three things "
         f"land together: a `pattern` on the published key so the name is bounded, "
-        f"`shlex.quote` on the path `derived_escape_remedy` renders into an `rm` "
-        f"command, and the changelog correction saying the key is a setting again "
-        f"(#533)."
+        f"`shlex.quote` on the path *every* cure this key prints renders into a "
+        f"shell command -- `{BASENAME_RENDERING_CURES_KEY}` -- and the changelog "
+        f"correction saying the key is a setting again (#533). Read that "
+        f"population rather than trusting a list: this line named only "
+        f"`derived_escape_remedy` until #602 added a second cure, which would "
+        f"have left one of them rendering an unquoted name."
     )
 
 
