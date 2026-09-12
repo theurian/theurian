@@ -655,6 +655,38 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
     # the row. This is the second of the four reconciliation directions the
     # `SUSPECTS` docstring names: an entry the sweep no longer produces means the
     # cite was repointed, and the row goes with it.
+    #
+    # The same open-owner class as the four #575 rows above, met at the #597 cure
+    # entry, and the first member whose owner was filed by the very branch that
+    # wrote the sentence. It sits in `[Unreleased]`, so the release-record clear
+    # does not reach it -- round one's M-j -- and it is judged like any other
+    # governed prose.
+    #
+    # Driven through :func:`classify` on the sentence as it stands, at all three
+    # states the number can take::
+    #
+    #     (absent from the tracker)  SUSPECT      <- the offline run, and this row
+    #     issue:closed               SUSPECT
+    #     issue:open                 open owner   <- a live run produces no row
+    #
+    # `owner_pos=True` and no historical marker in all three, so nothing but the
+    # tracker state moves the verdict. This row is therefore stale under a live
+    # run today, exactly as the #575 rows are, and it is deleted by the commit
+    # that refreshes `tracker-state.json` (#576) rather than by one of its own.
+    (
+        "packages/theurian-core/CHANGELOG.md",
+        "656",
+        "carries its grade and its summary and not its remedy",
+        "correct -- open owner, snapshot-age false positive",
+        "The #597 cure entry hands the per-record arm's delivery gap to #656: a skipped "
+        "pull request's entry in the run document carries the refusal's grade and its "
+        "summary and not its remedy, and the sentence says so rather than implying the "
+        "cure is already readable there. #656 was filed 2026-09-12 with this branch's "
+        "review round and read OPEN the same day (`gh issue view 656`); it is absent "
+        "from the 2026-09-03 snapshot because it postdates it, so the offline run reads "
+        "a live owner as no owner. Not an owner defect: this is the recorded-owner form "
+        "this audit exists to require.",
+    ),
     (
         "docs/security/threat-model.md",
         "349",
