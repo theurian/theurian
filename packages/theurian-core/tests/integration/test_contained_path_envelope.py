@@ -1677,9 +1677,19 @@ def test_an_escaping_review_directory_is_cured_by_removing_the_link_not_by_init(
     MCP boundary unmodified, so an absolute path interpolated into it would
     publish the operator's layout to a caller that never learns it any other
     way. ``review_escape_remedy`` takes the knowledge directory's *basename* and
-    nothing that came out of a ``resolve()``; the two assertions below say so
-    against this run's own throwaway root, which is the only form of the claim
-    that goes RED when a later edit reaches for ``self.knowledge_dir`` instead.
+    nothing that came out of a ``resolve()``, and the two assertions below say so
+    against this run's own throwaway root.
+
+    **What they add is the *additive* leak, and that is the whole of their
+    reach.** An edit that swaps the basename for ``self.knowledge_dir`` --
+    rendering ``rm /abs/repo/.theurian/review`` -- never reaches them: the
+    ``says `rm .theurian/review``` predicate above fails first, because the
+    relative spelling stops being a substring of the cure. That substitution is
+    therefore already held, and reporting it here would be claiming a catch the
+    earlier predicate makes. What nothing else holds is a cure that keeps every
+    predicate satisfied and *appends* the layout -- one clause more, saying where
+    the directory is -- which leaves all five green and is caught only by asking
+    directly whether the operator's paths are in the text.
 
     RED before the fix: an escaping ``.theurian/review`` published
     ``KNOWLEDGE_DIR_ESCAPE_REMEDY``, which fails all five predicates below.

@@ -655,16 +655,27 @@ def _contained_sites() -> list[tuple[str, tuple[str, ...] | None]]:
     entries. The path is relative to ``self.knowledge_dir``.
 
     ``None`` means this reader cannot say which directory the site resolves
-    under: the argument does not start at ``self.knowledge_dir``, it adds no
-    component at all, or its **first** component is assembled at run time. That is
-    the over-approximating answer on purpose -- such a site could be the one
-    resolving under the evidence directory, so it fails the guard in the test
-    rather than dropping out of the count.
+    under: the call passes no positional argument, the argument does not start at
+    ``self.knowledge_dir``, it adds no component at all, or its **first**
+    component is assembled at run time. That is the over-approximating answer on
+    purpose -- such a site could be the one resolving under the evidence
+    directory, so it fails the guard in the test rather than dropping out of the
+    count.
 
     A later component that is not static is :data:`_NOT_STATIC` rather than an
     unreadable site. It cannot change *which* directory the path is under, and
     keeping its position is what lets the equality below tell ``review`` from
     ``review / <filename>``.
+
+    **Two shapes reached the chokepoint and left this reader silent, and neither
+    exists in the class today** -- which is why they were closed rather than
+    recorded. An ``async def`` member was skipped by the member filter, so a
+    coroutine helper resolving ``review/<x>`` would have been invisible to the
+    ratchet while inheriting the arm exactly like any other. And a call spelled
+    ``self._contained(path=...)`` has no ``args`` at all: the old shape test read
+    ``call.args`` as a truthiness guard and *dropped* such a call, which is the
+    one disposition a reader of "fails the guard rather than dropping out" would
+    not expect. Both now answer ``None`` and fail the guard.
     """
     source_file = inspect.getsourcefile(project_service)
     assert source_file is not None, "project_service must be importable from source"
@@ -677,7 +688,7 @@ def _contained_sites() -> list[tuple[str, tuple[str, ...] | None]]:
 
     sites: list[tuple[str, tuple[str, ...] | None]] = []
     for member in class_def.body:
-        if not isinstance(member, ast.FunctionDef):
+        if not isinstance(member, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
         for call in ast.walk(member):
             if not (
@@ -686,8 +697,13 @@ def _contained_sites() -> list[tuple[str, tuple[str, ...] | None]]:
                 and call.func.attr == "_contained"
                 and isinstance(call.func.value, ast.Name)
                 and call.func.value.id == "self"
-                and call.args
             ):
+                continue
+            if not call.args:
+                # Keyword-only, so there is no expression here to read a first
+                # component out of. Unreadable rather than absent: the path it
+                # passes could be the one under the evidence directory.
+                sites.append((member.name, None))
                 continue
             operands = _truediv_operands(call.args[0])
             base, *components = operands

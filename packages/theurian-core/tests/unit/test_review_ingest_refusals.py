@@ -150,7 +150,9 @@ def test_the_limit_cure_routes_by_where_the_refusal_landed() -> None:
       that the record landed truncated; it did neither, and "this pull request
       was skipped and the rest were ingested" is the only sentence that
       distinguishes those. It is also the word this test splits the cure on, so
-      its absence takes the ``pages`` predicate down with it.
+      its absence takes the ``pages`` predicate down with it -- and a *second*
+      occurrence fails the anchor guard below, because then the cut point would
+      be a choice this test made rather than one the cure states.
     * ``per-record`` -- RED means the second arm is unnamed, so a reader who
       cannot make the refusal go away by any choice of ``limit`` has nothing to
       tell them why, and no reason to stop trying.
@@ -159,7 +161,10 @@ def test_the_limit_cure_routes_by_where_the_refusal_landed() -> None:
       of the cure after ``skipped`` rather than against the whole text, because
       the run-ended half says "over fewer pages" too: a predicate over the whole
       cure would stay green with the per-record pages clause deleted, which is
-      the always-true shape this file exists to refuse.
+      the always-true shape this file exists to refuse. That half is identified
+      by a guard rather than by position -- one landing-place marker, with the
+      run-ended arm before it -- so reordering the arms reddens the guard instead
+      of silently pointing this predicate at the wrong one.
     * **not** ``the cap the summary above names`` -- RED means the misdirection
       is back. For the 51-label pull request the summary names **50**, which is
       the *label* cap; a reader following that clause literally clamps ``limit``
@@ -172,11 +177,29 @@ def test_the_limit_cure_routes_by_where_the_refusal_landed() -> None:
     ``tests/unit/test_gh_argument_vector.py`` pins them.
     """
     cure = REMEDIES[RefusalGrade.LIMIT_EXCEEDED]
-    # Everything after the word naming where a per-record refusal lands, which is
-    # the axis the cure routes on. Empty when that word is absent, so the
-    # `pages` predicate below fails alongside the `skipped` one rather than
-    # reporting a half-truth about a cure that has lost its second arm entirely.
-    per_record_arm = cure.partition("skipped")[2]
+    # The two arms, split at the word naming where a per-record refusal lands.
+    # Empty tail when that word is absent, so the `pages` predicate below fails
+    # alongside the `skipped` one rather than reporting a half-truth about a cure
+    # that has lost its second arm entirely.
+    run_ended_arm, _, per_record_arm = cure.partition("skipped")
+
+    # `partition` cuts at a *position*, and the predicate built on it claims
+    # something about an *arm*. These two are what keep the one standing for the
+    # other: exactly one landing-place marker, so the cut point is not a choice,
+    # and the run-ended arm on the near side of it, so the tail is the per-record
+    # arm rather than whichever arm happens to come second. Without them a cure
+    # whose arms were reordered would hand `pages` the run-ended half -- which
+    # says "over fewer pages" -- and the predicate would pass with the per-record
+    # face deleted, which is precisely the always-true shape it exists to refuse.
+    assert cure.count("skipped") == 1 and "ended the run" in run_ended_arm, (
+        "the cure's arms are not in the shape the `pages` predicate below reads them "
+        f"in: `skipped` occurs {cure.count('skipped')} times, and the text before the "
+        f"first occurrence {'does' if 'ended the run' in run_ended_arm else 'does not'} "
+        "describe the refusal that ended the run. Re-anchor that predicate on the "
+        "per-record arm as the cure now spells it -- do not leave it reading a "
+        "position, because on the run-ended half it passes for the wrong reason.\n\n"
+        f"the text it publishes is:\n  {cure!r}"
+    )
 
     broken = [
         (label, why)

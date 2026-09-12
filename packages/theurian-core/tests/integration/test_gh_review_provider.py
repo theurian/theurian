@@ -976,6 +976,70 @@ async def test_a_read_stops_at_the_limit_rather_than_one_past_it(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("limit", "expected"),
+    (
+        (3, 3),
+        (limits.PAGE_SIZE, limits.PAGE_SIZE),
+        (limits.MAX_PULL_REQUESTS, limits.PAGE_SIZE),
+    ),
+    ids=("under the page size", "the page size exactly", "the recorded cap"),
+)
+async def test_the_listing_asks_for_the_smaller_of_its_page_size_and_the_limit(
+    tmp_path: pathlib.Path, fake_gh: FakeGh, limit: int, expected: int
+) -> None:
+    """``min(PAGE_SIZE, limit)`` is load-bearing prose in four places and was driven by none.
+
+    The expression decides what ``$first`` one listing page asks for, and four
+    records now reason from it: the ``LIMIT_EXCEEDED`` cure's run-ended arm, which
+    tells a reader that a page refused for its size is answered by a ``limit``
+    below the page size and that a larger one *sends the identical request*; the
+    routing comment above ``REMEDIES``' row for that grade; ``DEFAULT_PULL_REQUESTS``
+    in ``cli/review_commands.py``, which is ``PAGE_SIZE`` because that is the
+    largest default costing a single request *here*; and the changelog entry, held
+    verbatim by ``tests/unit/test_review_ingest_changelog_claims.py``. Regressing
+    this to a bare ``PAGE_SIZE`` falsifies all four in one character and is exactly
+    the misdirection #597 removed -- a reader lowering ``limit`` and meeting a
+    byte-identical refusal.
+
+    **Nothing drove it.** ``tests/unit/test_gh_argument_vector.py`` pins
+    ``first: 50`` as an *input* it hands the vector builder, so it answers what the
+    builder does with a number and not which number the listing chooses; every
+    other driver here asks for more pull requests than the planted page carries, so
+    the two sides of the ``min`` return the same value and the expression is never
+    observed. This reads ``$first`` off the argv a real child reported receiving.
+
+    **Both sides, because either alone is half a pin.** At ``limit=3`` a regression
+    to ``PAGE_SIZE`` sends 50; at the recorded cap a regression to a bare ``limit``
+    sends 500. The middle case is the boundary, where the two agree and neither
+    mutation shows -- carried anyway, because a ``<`` that became ``<=`` somewhere
+    downstream of this choice would show there and nowhere else.
+    """
+    fake_gh.answer("prs", 1, _pull_requests())
+    provider = _provider(tmp_path, fake_gh)
+
+    await _listed(provider, limit=limit)
+    argv = fake_gh.argv(3)
+    asked_for = [element for element in argv if element.startswith("first=")]
+
+    assert "owner=acme" in argv, (
+        f"invocation 3 is not the pull-request listing: {argv}. The two probes run "
+        f"once per adapter, so the listing is the third spawn; a fourth probe would "
+        f"move it and the assertion below would be read off the wrong request."
+    )
+    assert asked_for == [f"first={expected}"], (
+        f"the listing asked for {asked_for} with "
+        f"`limit={limit}` and `PAGE_SIZE={limits.PAGE_SIZE}`; `min(PAGE_SIZE, limit)` "
+        f"is `first={expected}`.\n\n"
+        f"Four records reason from that expression -- the `LIMIT_EXCEEDED` cure's "
+        f"run-ended arm, the routing comment above its `REMEDIES` row, "
+        f"`DEFAULT_PULL_REQUESTS`, and the changelog entry -- and all four are false "
+        f"the moment this is RED. Correct them in the same commit as the change, or "
+        f"restore the expression."
+    )
+
+
+@pytest.mark.asyncio
 async def test_a_response_that_never_stops_paging_is_stopped_by_the_page_cap(
     tmp_path: pathlib.Path, fake_gh: FakeGh
 ) -> None:
