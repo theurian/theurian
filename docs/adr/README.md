@@ -38,6 +38,7 @@ alternatives that were rejected and why.
 | [0028](0028-a-local-proposal-is-a-different-directory.md) | Proposals stay committable; a local proposal is a different directory | accepted |
 | [0029](0029-review-findings-are-governed-knowledge.md) | Review findings are governed knowledge, ingested from commit trailers | accepted |
 | [0030](0030-github-review-ingestion-spawns-gh.md) | Review ingestion spawns `gh`, over public allowlisted repositories only | proposed |
+| [0031](0031-mcp-input-is-schema-validated-in-middleware.md) | MCP tool input is validated against its published schema, in middleware | proposed |
 
 ## Writing a new ADR
 
