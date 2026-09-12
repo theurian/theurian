@@ -450,8 +450,8 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
         "member whose retraction sits two blocks down rather than one, and it is what "
         "sets `_SUPERSESSION_REACH`.",
     ),
-    # The four rows below -- one in ADR-0029, two in ADR-0030, one in the threat
-    # model -- are one member of
+    # The five rows below -- one in ADR-0029, two in ADR-0030, one in ADR-0033,
+    # one in the threat model -- are one member of
     # a class this ledger did not have before: a cite whose owner is **open**, read
     # as dead only because the offline snapshot is older than the issue.
     # `tracker_state` answers from
@@ -459,29 +459,42 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
     # reproducibility), that file was measured 2026-09-03 at `01aa2479`, and
     # `states()` returns `(absent from the tracker)` for anything filed since --
     # which `classify` treats exactly like `issue:closed`. A live run verdicts
-    # all four correct. The standing problem is the snapshot ageing out from
+    # all five correct. The standing problem is the snapshot ageing out from
     # under this audit, filed as
     # https://github.com/theurian/theurian/issues/576; these rows record the
     # reading, they do not fix that.
     #
     # **They are stale under a live run today, not at some future refresh.** With
     # #575 and #579 read open -- which any run without `--offline` does -- the sweep
-    # stops producing the four rows and the reconciliation reports them in the
-    # *stale* direction. Driven through :func:`ledger_drift` against a state table
-    # with those two open::
+    # stops producing the five rows and the reconciliation reports them in the
+    # *stale* direction. Driven through :func:`ledger_drift` against the judged
+    # population and a state table with those two open::
     #
-    #     unrecorded=0 stale=4 drift=0 ambiguous=0
+    #     unrecorded=0 stale=5 drift=0 ambiguous=0
     #       STALE -> docs/adr/0030-github-review-ingestion-...md #575 'it is owned by'
     #       STALE -> docs/adr/0029-review-findings-are-gove...md #575 'which has advisory
     #                context), not to this source'
     #       STALE -> docs/adr/0030-github-review-ingestion-...md #575 'owed table names
     #                #575 rather than this ADR'
+    #       STALE -> docs/adr/0033-knowledge-candidate-gen...md #575 'Private-repository
+    #                ingestion and the'
     #       STALE -> docs/security/threat-model.md #575 'no issue owns it today'
     #
-    # Re-run 2026-09-11, on the text as committed, with the threat-model row in
-    # place; the fourth line is the row that commit added. The paste is wrapped at
-    # this file's column, and only there -- the two wrapped lines are one line of
-    # output each.
+    # Re-run 2026-09-12, on the text as committed, with the ADR-0033 row in
+    # place; the **fourth entry** is the row this branch added. Driving the same
+    # reconciliation with ADR-0033 removed from both sides -- the shape before
+    # this branch -- answers `unrecorded=0 stale=4 drift=0 ambiguous=0` with the
+    # other four entries unchanged.
+    #
+    # The paste is edited in exactly two ways and in no others: the ADR paths are
+    # abbreviated with `...`, and **three of the five entries are wrapped** at
+    # this file's comment column. Each of those three occupies two physical lines
+    # here and is one line of output; the other two fit on one line each. So the
+    # eight physical lines above are five lines of output, which is the
+    # `stale=5` on the line before them -- and only five of those eight carry
+    # the `STALE` token, since the other three are continuations. Counted as
+    # entries, not as lines: the lines-arithmetic form of this sentence has now
+    # been got wrong three times in this repository.
     #
     # So the documented no-flag invocation in this module's own header exits 1 on
     # this branch **now**; `--offline` is the form the census test runs and the form
@@ -559,6 +572,32 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
         "`_PROXIMITY` -- so no row is owed for the table, and adding one would read as "
         "stale. Its owed-item *prose* at :735 is a member, and has its own row above.",
     ),
+    # The fourth member of the snapshot-age class, added by the Phase B design
+    # ADRs (0031-0034). ADR-0033 is the candidate-generation design, and its
+    # *What this does not close* list hands the private-repository arm to the
+    # same owner the three rows above name -- so the sweep produces a fourth
+    # sentence in the same shape, and the ledger owes it a fourth row rather
+    # than the ADR owing a reworded sentence. Rewording to leave the population
+    # would be the dodge this audit exists to catch: naming a live owner is the
+    # form it requires.
+    (
+        "docs/adr/0033-knowledge-candidate-generation.md",
+        "575",
+        "Private-repository ingestion and the",
+        "correct -- open owner, snapshot-age false positive",
+        "ADR-0033's *What this does not close* item 1, which hands private-repository "
+        "ingestion and the `securityRelated` marking to #575 -- the same arm ADR-0029 "
+        "and ADR-0030 hand to it, cited the same way. Same reading as the three rows "
+        "above: #575 read OPEN and `phase-b` on 2026-09-12 (`gh issue view 575`, title "
+        "*Private-repository review ingestion: securityRelated marking at ingest, "
+        "uniform refusal at serve*), and it is absent from the 2026-09-03 snapshot "
+        "because it postdates it, so the offline run reads a live owner as no owner. "
+        "The fragment is the item's opening words, which occur once in that file "
+        "(`git grep -cF 'Private-repository ingestion and the' -- "
+        "docs/adr/0033-*.md` answers 1); decision 5's own "
+        "`Private-repository ingestion is where a withheld class first exists` is a "
+        "different sentence and does not contain it, so this row covers one member.",
+    ),
     # The same class met at a sentence that **disclaims** ownership, which is why
     # it gets a row of its own rather than sharing the reasoning above. T-24's
     # non-goal paragraph says an owed item is deliberately *unowned*, and the
@@ -581,7 +620,7 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
         "refuses. It is here twice over: the owner key cannot see the negation beside "
         "the cite, and #575 was filed 2026-09-05 and read OPEN, `phase-b`, on "
         "2026-09-11 (`gh issue view 575`), so the 2026-09-03 snapshot reads a live "
-        "issue as no issue. Like the three rows above it, a live run stops producing "
+        "issue as no issue. Like the four rows above it, a live run stops producing "
         "this one.",
     ),
     # The #636 row that stood here is gone, and -- like the #586 row below -- not

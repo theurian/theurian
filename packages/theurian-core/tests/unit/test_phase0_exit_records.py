@@ -32,10 +32,13 @@ here. The supported-versions series is checked against the live version in
   nav label names no count, and that every ADR-count the roadmap states is either
   the live count or carried beside a dated/sha anchor that frames it as a
   measurement. They do **not** hold that any ADR's *content* is right.
-- Row 10's *literal* ``Still owed`` count is pinned; its *concept* count (22) and
-  seven-opener spread are recorded-only, because the concept key is a human
-  classification of seven hand-identified section spellings — encoding it here
+- Row 10's *literal* ``Still owed`` count is pinned; its *concept* count and its
+  opener spread are recorded-only, because the concept key is a hand
+  classification of the spellings that open an obligation — encoding it here
   would re-litigate that judgement on every ADR edit rather than measure a fact.
+  Neither figure is restated here, so this file holds no copy of them to rot; the
+  cell states the key that reproduces the concept count, which is what makes a
+  recorded-only figure attackable.
 - The SECURITY.md pin holds that no version literal sits in the supported-versions
   table's Version column — the one place #552's own reasoning names as where "dev0
   is current" would return. It **cannot** hold that the supported *window* is
@@ -233,8 +236,11 @@ def test_every_roadmap_adr_count_is_the_live_count_or_a_dated_measurement() -> N
     it reddens when a *bare* present-tense count is written that disagrees with the
     tree, which is the shape row 7 shipped.
 
-    The key detects drift: a planted ``30 ADRs`` in an unanchored block goes RED
-    against the live count of 29 (measured while writing this).
+    The key detects drift: a planted ADR count that differs from the live one,
+    in an unanchored block, goes RED. The live figure is read from the tree and
+    named in the assertion message, so this docstring carries no number of its
+    own to go stale -- the same reason the row-10 recomputation below quotes its
+    figures out of the cell instead of restating them.
     """
     live = _live_adr_count()
     unanchored: list[str] = []
@@ -295,15 +301,21 @@ def test_the_roadmap_raptor_row_counts_the_forest_sites_it_names() -> None:
 
 
 def test_the_roadmap_still_owed_row_counts_the_literal_sections() -> None:
-    """Row 10's literal ``15 of 30`` is recomputed under its own exact-string key.
+    """Row 10's first ``N of D`` is recomputed under its own exact-string key.
+
+    The figures are read out of the cell rather than restated here, so this
+    docstring carries no number of its own to go stale: the cell is the record,
+    and this is the recomputation.
 
     Row 10 states two figures — a literal ``Still owed`` count under an exact
-    heading, and a wider concept count across seven opener spellings. Only the
+    heading, and a wider concept count across several opener spellings. Only the
     literal one is recomputed here: it is a single ``git grep`` and cannot argue.
     The concept count and the opener spread are recorded-only, and deliberately —
-    the concept is a human classification of seven hand-identified spellings, and
-    encoding it here would re-run that judgement on every ADR edit rather than
-    measure a fact (this module's docstring records the split).
+    the concept is a hand classification of the spellings that open an
+    obligation, and encoding it here would re-run that judgement on every ADR
+    edit rather than measure a fact (this module's docstring records the split).
+    The cell states the key that reproduces it, so the figure is attackable even
+    though nothing here recomputes it.
 
     Both halves of the ``N of D`` are pinned: the numerator against the grep, and
     the denominator against the live ADR count, so the fraction cannot drift on
