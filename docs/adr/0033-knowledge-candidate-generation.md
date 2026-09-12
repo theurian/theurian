@@ -474,10 +474,13 @@ control that makes it survivable is FR-V4, which no classifier changes.
   literal `True`:
 
   ```console
-  $ git grep -n "PromotionGate(" -- packages tests tools docs schemas
-  docs/architecture/review-knowledge.md:171:    gate=PromotionGate(...),  # an unmet gate raises at construction
-  packages/theurian-core/tests/unit/test_project_and_traceability.py:569:    return PromotionGate(**base)  # type: ignore[arg-type]
+  $ git grep -n "PromotionGate(" be977ea7 -- packages tests tools docs schemas | cut -d: -f2,3
+  docs/architecture/review-knowledge.md:171
+  packages/theurian-core/tests/unit/test_project_and_traceability.py:569
   ```
+
+  The key takes the sha because this paragraph names the symbol, so an unanchored
+  run against `HEAD` returns this ADR's own sentences as well.
 
   The first is a prose example. The second is `_gate()`
   (`tests/unit/test_project_and_traceability.py:555-569`), whose `base` is
@@ -633,8 +636,10 @@ Measured now, and reproducible from this ADR (2026-09-12, `be977ea7`):
   field that could carry one. The codec reads it back through
   `_optional_string`, which validates that it is a string and nothing more.
 - **The suite builds a `PromotionGate` in exactly one place, from literal
-  booleans.** `git grep -n "PromotionGate(" -- packages tests tools docs schemas`
-  answers two lines: a prose example in
+  booleans.**
+  `git grep -n "PromotionGate(" be977ea7 -- packages tests tools docs schemas`
+  answers two lines — anchored, because this ADR now names the symbol itself:
+  a prose example in
   `docs/architecture/review-knowledge.md:171`, and
   `tests/unit/test_project_and_traceability.py:569`, the return of `_gate()`
   (`:555-569`), whose `base` is `dict.fromkeys((…seven signal names…), True)`.
