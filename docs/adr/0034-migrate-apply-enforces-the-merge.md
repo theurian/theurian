@@ -69,9 +69,14 @@ object:
 ```console
 $ git grep -n "last_seen_commit" be977ea7 -- packages/theurian-core/src | wc -l
        8
+$ git grep -l "last_seen_commit" be977ea7 -- packages/theurian-core/src | wc -l
+       4
 ```
 
-Eight sites across five files, none of them a comparison.
+Eight sites across **four** files, none of them a comparison — `cli/commands.py`
+(two writes), `domain/project.py` (the field), `infrastructure/sqlite/schema.py`
+(the column) and `infrastructure/sqlite/store.py` (three upsert lines and the
+read-back).
 
 **Call 1 is the one that decides something, and the earlier draft of this
 document did not count it at all.** `find_git_root` is the read `resolve_context`
@@ -182,17 +187,35 @@ file that was **never committed at all** — the gap an agent, a script or a
 mistaken `mv` reaches.
 
 **Whose reach it narrows, actor by actor** — because "closes the gap" is not one
-statement, it is three, and only two of them are worth much:
+statement, it is four, one per actor in `docs/security/threat-model.md`'s own
+table who can author a migration, and they are not worth the same:
 
 | Actor (threat model's own table) | What the floor costs them | Worth |
 | :-- | :-- | :-- |
 | An untrusted same-UID process | `git add && git commit` — two commands it can already run, since it has the user's account | **A speed bump.** It converts a silent apply into one that leaves a commit in the repository, and nothing more. Said plainly here rather than implied away by the ADR's title |
-| An MCP client, through the write-intent tools (ADR-0032) | Everything: it cannot reach `.theurian/migrations/` at all. The tools write under `.theurian/proposals/`, and the distance to the applied directory is a human's `propose accept` plus a merge | **Real, and it is the reason this is a Phase B precondition.** This is the actor whose population Phase B multiplies |
+| An MCP client, through the write-intent tools (ADR-0032) | Nothing today; **everything once slice B4's draft-only facade lands** — at which point it cannot reach `.theurian/migrations/` at all, because the tools write under `.theurian/proposals/` and the distance to the applied directory is a human's `propose accept` plus a merge | **Real, and it is the reason this is a Phase B precondition** — *conditional on that facade*. See the note below the table; this is the actor whose population Phase B multiplies |
+| A repository contributor | Nothing. A migration that reached the working tree through a merged pull request is tracked and byte-identical to `HEAD` **by construction**, so it passes the check by definition | **Zero, and that is the row that shows what the floor is.** Decision 1's predicate asks *committed*, and a contributor's migration is committed; the control that stands between this actor and approved knowledge is the human reviewing the pull request, which is ADR-0013 point 4 and not this ADR |
 | A human operator mid-development | One flag on the command (decision 2) | **The intended user of the escape hatch**, not a defeat of the control |
 
-The Positive section below is scoped to the middle row for that reason: the last
-unenforced link gets a check against the actor Phase B is about to add, and a
-speed bump against the actor who was already inside the boundary.
+**The MCP-client row states a property that does not hold yet, and the
+conditioning is the point.** `.theurian/migrations/` is unreachable to that
+caller only when nothing it can call can write there.
+[ADR-0032](0032-the-write-intent-mcp-tool-surface.md) decision 8 records that
+this is **not** today's state and names the two controls slice B4 owes for it: a
+draft-only facade at the MCP composition root, and the forbidden-name set grown
+to the application-layer movers. Its measurement is that
+`test_no_registered_tool_can_reach_a_canonical_write`'s forbidden set is 17
+names and contains neither `draft`, `accept` nor `_commit`, so a tool holding a
+`ProposalService` and calling `accept()` passes the sweep green while `_commit`
+writes into `.theurian/migrations/`. Round 2 of this pull request's review
+records that gap as "driven with a positive control (accept/`_commit` pass
+green; `append_revision` caught)". Until B4's facade lands, this row's worth is
+the plan's, not the tree's.
+
+The Positive section below is scoped to that row for that reason — and is scoped
+the same conditional way: the last unenforced link gets a check against the
+actor Phase B is about to add **once that actor is contained**, and a speed bump
+against the actor who was already inside the boundary.
 
 ### 2. There is one escape hatch, it is a flag, and using it is visible
 
@@ -292,9 +315,13 @@ handed a URL or a remote, there is a timeout, and a test goes red when any of
 those stops holding. **The new site reaches no network**, which is the same
 answer `trailer_source.py` gives.
 
-**Three records move with the set, and the coupling is measured rather than
-assumed.** `docs/security/threat-model.md`'s T-7 spawn bullet spells the number
-word **four** and names each of the four module paths, and
+**One record and two pins move with the set, and the coupling is measured rather
+than assumed.** The record is `docs/security/threat-model.md`'s T-7 spawn
+bullet, which spells the number word **four** and names each of the four module
+paths; the pins are `PROCESS_SPAWN_SITES`'s own equality and the test that holds
+the bullet against it. Counting the two tests as one record is what an earlier
+draft did, and it makes the owed work read as smaller than it is — a prose edit
+and two test edits, not one of each.
 `tests/unit/test_threat_model_t7_claims.py::test_the_t7_spawn_bullet_names_every_pinned_spawn_site_and_spells_how_many`
 derives both sides independently — the fact side from `PROCESS_SPAWN_SITES`, the
 prose side from the entry — so the bullet reddens the moment the set grows.
@@ -362,11 +389,16 @@ decision 1's floor does not prove a merge into a protected branch.
 ### Positive
 
 - **The last unenforced link in ADR-0013's chain gets a check against the actor
-  Phase B adds.** Proposal → PR → human merge → `migrate apply` is enforced
-  structurally at the MCP end already; this closes the end that was pure
-  convention, for the caller that cannot reach `.theurian/migrations/` at all.
-  Against the untrusted same-UID process it is a speed bump, and decision 1's
-  actor table says so rather than letting this bullet imply otherwise.
+  Phase B adds.** Proposal → PR → human merge → `migrate apply` closes the end
+  that was pure convention. **The MCP end is *not* enforced structurally today**
+  and this bullet used to say it was: the containment that keeps an MCP client
+  out of `.theurian/migrations/` is ADR-0032 decision 8's draft-only facade,
+  which slice B4 owes and nothing in the tree holds — decision 1's actor table
+  and its note say so. So the honest form of this bullet is that the two
+  changes are worth their price **together**: B4 contains the caller, B3 checks
+  the directory, and either one alone leaves a path. Against the untrusted
+  same-UID process it is a speed bump either way, and against a repository
+  contributor it is nothing at all.
 - **Phase B's stated precondition is satisfied by a change rather than by a
   plan.** The threat model's own lesson applies here — "an owner has to be the
   change that would implement the control, and an epic in the right milestone is
@@ -404,13 +436,44 @@ decision 1's floor does not prove a merge into a protected branch.
   delivers, and the alternatives table's engine-seat row is where that trade was
   made.
 - **Every temporary-directory harness that runs the CLI must `git init` first**,
-  which is decision 3's pre-existing cost rather than one this ADR adds. Both
-  suites that drive the real CLI already pay it — the `registry` fixture in
-  `tests/integration/test_mcp_tools.py` and the `running_daemon` fixture in
-  `tests/e2e/test_daemon_single_instance.py` each run `git init -q` before
-  `theurian init` — and a slice-B3 fixture will additionally need a **commit**,
-  because `git init` alone leaves the migration untracked and the new check
-  refuses it.
+  which is decision 3's pre-existing cost rather than one this ADR adds — and
+  the population that pays it is two orders larger than "both suites that drive
+  the real CLI", which is what an earlier draft of this bullet said. Measured
+  over the test tree with one key per figure:
+
+  ```console
+  $ K='\["git", "init"|_git\([^)]*"init"'
+  $ git grep -n -E "$K" -- 'packages/theurian-core/tests' 'tests' | wc -l
+       103
+  $ git grep -l -E "$K" -- 'packages/theurian-core/tests' 'tests' | wc -l
+        58
+  $ git grep -l -E '"migrate", "apply"' \
+      -- $(git grep -l -E "$K" -- 'packages/theurian-core/tests' 'tests') | wc -l
+        42
+  $ git grep -l 'shutil.which("theurian")' -- 'packages/theurian-core/tests' 'tests' | wc -l
+         5
+  ```
+
+  **103 `git init` sites in 58 files; 42 of those files drive `migrate apply`**,
+  and each such harness needs a commit (or the decision-2 flag) once decision 1
+  lands, because `git init` alone leaves the migration untracked. Only **5**
+  files resolve and spawn the installed binary at all. **Two keys, two limits.**
+  The first counts *invocation sites*, not fixtures — a file with three harnesses
+  contributes three; so 103 is an upper bound on the harnesses and 58 a lower
+  one. The second is a file-level overlap: a file that git-inits in one fixture
+  and drives `migrate apply` from an unrelated one is counted, so 42 is the
+  upper bound on the files that actually need the change. The remaining 16 files
+  contain no `"migrate"` token at all, checked one by one.
+- **One of the two fixtures the earlier draft named does not drive the CLI.**
+  `tests/integration/test_mcp_tools.py`'s `registry` fixture (:267-291) does
+  `git init -q` and then calls `_run("init")`, and `_run` (:294-296) is
+  `runner.invoke(app, [*args, "--json"])` — Typer's in-process `CliRunner`, in
+  the test process, spawning nothing. `tests/e2e/test_daemon_single_instance.py`'s
+  `running_daemon` (:92-110) is the one that spawns: its `cli` closure runs
+  `subprocess.run([THEURIAN, *args], ...)` against `shutil.which("theurian")`.
+  The distinction matters to slice B3 because a check implemented in the CLI
+  layer is exercised by both, while a check that shelled out would be exercised
+  by neither in the in-process harnesses.
 
 ### Neutral
 
@@ -477,9 +540,10 @@ Measured now, and reproducible from this ADR (2026-09-12, `be977ea7`):
   three descriptive reads the `Project` construction in `cli/commands.py` makes
   and compares to nothing.
   `git grep -n "last_seen_commit" be977ea7 -- packages/theurian-core/src`
-  returns **8** lines across five files (a write in `project register`, the
+  returns **8** lines across **4** files (a write in `project register`, the
   write here, the domain field, the schema column, three upsert lines and the
-  read-back), and none is a comparison.
+  read-back — the first two both in `cli/commands.py`), and none is a
+  comparison.
 - **A directory that is not a git repository already refuses**, from
   `resolve_context` and not from any flag: one `rev-parse --show-toplevel`, exit
   1, no project, nothing written. Driven against the shipped CLI in the same
@@ -498,6 +562,18 @@ Measured now, and reproducible from this ADR (2026-09-12, `be977ea7`):
 - The merge-unenforced prose population is **11 lines across 7 files**, key and
   measured exclusion above, of which **1 file** is a dated release section that
   does not move.
+- The test tree holds **103** `git init` invocation sites in **58** files, of
+  which **42** also drive `migrate apply`, and **5** files resolve the installed
+  binary with `shutil.which("theurian")`. Keys and their two recorded limits are
+  in *Consequences → Negative*. `tests/integration/test_mcp_tools.py`'s
+  `registry` fixture drives Typer's in-process `CliRunner` (`_run`, :294-296),
+  **not** the installed binary; `tests/e2e/test_daemon_single_instance.py`'s
+  `running_daemon` (:92-110) is the one that spawns it.
+- **An MCP client's containment is ADR-0032 decision 8's owed facade, not a
+  property of the tree.** That ADR's measurement is that the canonical-write
+  sweep's forbidden set is 17 names containing neither `draft`, `accept` nor
+  `_commit`, so decision 1's actor table conditions the MCP-client row on slice
+  B4 rather than asserting it.
 
 Still owed, with the milestone that will satisfy it:
 
