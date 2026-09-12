@@ -15,10 +15,11 @@
   [ADR-0032](0032-the-write-intent-mcp-tool-surface.md) (the surface this tool
   joins additively)
 
-**This ADR records a decision and ships no code.** No tool registers, no gate
-type changes, no candidate is constructed; the diff is confined to `docs/`. What
-slice B5 owes is named in *Compliance*, including the **pins this change will
-deliberately move**.
+**This ADR records a decision and ships no behaviour.** No tool registers, no
+gate type changes, no candidate is constructed. The non-`docs/` changes it does
+carry are named in *Compliance* — a ledger row in `tools/audit/`, and nothing
+that runs at runtime. What slice B5 owes is named there too, including the
+**pins this change will deliberately move**.
 
 **Every repository fact below was measured on 2026-09-12 against `be977ea7`**,
 which is reachable from `origin/main`.
@@ -78,6 +79,29 @@ verification and packaging:
    `trustLevel: inferred`, which the candidate type already fixes with
    `init=False`.
 
+**A `KnowledgeCandidate` is not a `ProposalRequest`, and the gap is four fields
+wide.** The candidate carries fifteen fields and the request sixteen, and they
+do not nest: ADR-0032 decision 1 has its own wire-to-request table for the same
+reason, and this is the one for this tool.
+
+| `ProposalRequest` field | Where it comes from |
+| :-- | :-- |
+| `item_id` | `KnowledgeCandidate.proposed_item_id` |
+| `title`, `body`, `kind` | the same-named candidate fields — the caller's generalization (decision 1) |
+| `source_anchors` | `KnowledgeCandidate.evidence`, which is `tuple[SourceAnchor, ...]` |
+| `evidence` | **built, not copied.** `proposal.Evidence` needs `agent_id`, `task_id`, `model` and `reasoning`, none of which the candidate carries; they come from the tool's own `evidence` input, exactly as ADR-0032's tools take them. Its `anchors` are the candidate's `evidence` again — the one-field-fills-two shape ADR-0032 decision 1 records |
+| `owner` | **not on the candidate.** Caller-supplied, like the generalization itself |
+| `description` | **not on the candidate.** Caller-supplied; a candidate's `category` and `source_thread_id` are provenance, not a description |
+| `content_type` | **not on the candidate.** Fixed to `text/markdown` for this tool — a generalization is prose, and there is no file whose suffix could say otherwise (ADR-0032 decision 2) |
+| `author` | **decided here.** The migration schema defines it as "Identity of the human who authored this change. Agent-generated proposals record the agent separately in `evidence.json`". So `author` is the caller-supplied human-attributable identity the wire input requires, **distinct from `evidence.agentId`**, and the two are never filled from each other |
+| `labels`, `scope_paths`, `namespace`, `trust_level`, `sensitivity`, `expected_revision` | as ADR-0032 decision 1 has them |
+
+`KnowledgeCandidate.generator_model` stays what its type says it is: `str | None`
+recording the caller's *declared* model, provenance rather than a control.
+Theurian runs no model (decision 1), so there is nothing for it to record on its
+own behalf, and the field is filled from the same `evidence.model` the caller
+supplies.
+
 **This resolves ADR-0009's question in the direction the product already
 leans.** Every model-dependent capability sits behind a port with an in-tree
 deterministic default, and the honest reading of ADR-0009's Milestone 5
@@ -114,31 +138,94 @@ therefore written here rather than left to a reader's inference:
 
 | Theurian computes | Theurian does not compute |
 | :-- | :-- |
-| gate recomputation from the stored record (decision 3) | the generalization text — the candidate's `title` and `body` |
-| candidate construction, with `trustLevel: inferred` fixed by the type | the `category` judgement (decision 6) |
+| gate recomputation from the stored record, five signals (decision 3) | the generalization text — the candidate's `title` and `body` |
+| verification of the caller's `fixCommit` against the local repository (decision 3) | the `category` judgement (decision 6) |
+| candidate construction, with `trustLevel: inferred` fixed by the type | whether the generalization is a *fair reading* of the thread — FR-V4's human does that |
 | the proposal directory, through `ProposalService.draft()` | any summarization, ranking or rewriting of the thread |
 
 The tool's own description, its input schema description and this table say the
 same thing, and slice B5 owes the property that they agree.
 
-### 3. Gate signals are recomputed from the ingested record, never supplied by the caller
+### 3. No gate signal is a caller's assertion, and the seven split three ways by *how* each is established
 
-The seven `PromotionGate` signals — `pull_request_merged`, `thread_resolved`,
-`fix_commit_present`, `not_dismissed_or_outdated`, `ci_successful`,
-`generalizable`, `has_evidence` — are read out of the stored evidence record.
-**None of them is a wire input.**
+The rule this decision enforces is **not** "every signal is read out of the
+stored record". That statement was in an earlier draft of this ADR and it is
+false of one signal, which is enough to have shipped a tool that refuses every
+call. The rule is the one underneath it: **no signal is satisfied by the caller
+saying so.** There is more than one way to meet that, and the seven signals use
+three.
 
-The reason is direct: a caller-asserted gate is a forgeable promotion signal.
-The gate's stated job, in `review-knowledge.md`'s own words, is to answer
-*"should someone look at this?"* on **observed facts**, "not a model's opinion,
-so the decision is auditable". A gate the caller fills is a gate the caller
-decides, and the tool would then be a proposal generator with a ceremony
-attached.
+| Signal | How it is established |
+| :-- | :-- |
+| `pull_request_merged` | **Recomputed** from the stored record |
+| `thread_resolved` | **Recomputed** from the stored record |
+| `not_dismissed_or_outdated` | **Recomputed** from the stored record |
+| `has_evidence` | **Recomputed** from the stored record |
+| `ci_successful` | **Recomputed**, tri-state — decision 4 |
+| `fix_commit_present` | **Supplied and verified**: the caller names a commit; Theurian checks it against the local repository |
+| `generalizable` | **Satisfied by the submission itself**: offering a generalization *is* the claim the gate forwards |
 
-`generalizable` is the one that looks like a judgement and is not treated as a
-caller input either. Whether it is derived from stored structure or is refused
-as underivable in v1 is slice B5's to settle against the record's actual
-fields — what this ADR fixes is that **the caller does not assert it**.
+The reason no signal is a bare caller assertion is direct: a caller-asserted gate
+is a forgeable promotion signal. The gate's stated job, in
+`review-knowledge.md`'s own words, is to answer *"should someone look at this?"*
+on **observed facts**, "not a model's opinion, so the decision is auditable". A
+gate the caller fills is a gate the caller decides, and the tool would be a
+proposal generator with a ceremony attached.
+
+#### `fix_commit_present` is supplied and verified, because the adapter has never produced one
+
+**The measurement that forced this.** `ReviewResolution.fix_commit` is
+`str | None` (`domain/review.py`), and the shipped GitHub adapter never assigns
+it: `review_provider.py` builds every thread's `ReviewResolution` with `state`
+and `resolved_by` and nothing else, and the `REVIEW_THREADS` GraphQL document
+(`infrastructure/github/queries.py`) selects no field that could carry a fix
+commit — `PullRequestReviewThread` records none, the same shape ADR-0030
+decision 5 met for `resolvedAt`. Every ingested thread therefore has
+`fix_commit is None`, so a gate that read the signal off the record would
+**refuse every ingested thread**, for ever, and the tool's only reachable
+behaviour would be a refusal.
+
+**The one route to a truthy signal today is worse than that.** A hand-authored
+evidence file reaches `fix_commit` through the codec's `_optional_string`
+(`infrastructure/review_evidence/codec.py`), which checks that the value is a
+string and nothing else — not a SHA, not a commit that exists. So the earlier
+draft's rule inverted its own anti-forgery rationale: the honest ingested record
+fails the gate, and a fabricated file passes it.
+
+**The decision.** The caller names a commit SHA on the wire, and **Theurian
+verifies it against the local git repository before the gate passes**: the
+commit exists, and — where the stored thread carries a `file_path` — that commit
+touches that path. The signal is satisfied by the verification, not by the
+caller's word, so the anti-forgery rationale survives intact. This is the same
+posture as decision 1: the caller supplies what only it knows, and Theurian
+checks what can be checked.
+
+The residual is stated rather than implied: a **hand-authored stored record**
+can still fabricate `fix_commit`, which is T-24's accepted residual — a review
+evidence directory is source rather than derived state, and this ADR does not
+change that. What B5's verification closes is the *wire* path, where the caller
+is the untrusted party.
+
+#### `generalizable` is satisfied by the submission
+
+This is the signal that looks like a judgement, and the underivable branch the
+earlier draft left open — *derive it from stored structure, or refuse it as
+underivable in v1* — is settled here rather than carried, because one arm of it
+ships a tool that structurally cannot produce a candidate while
+`writeTools: true` advertises it. That is a false capability claim, which is the
+defect ADR-0026 exists to prevent.
+
+The resolution is that there is nothing to derive. Decision 1 has the caller
+author the generalization; a call that carries a title and a body **is** the
+claim that this thread generalizes, and the gate's job is to decide whether the
+claim reaches a human, not to adjudicate it. FR-V4 — a human reviews every
+candidate — is what grades the claim, and `review-knowledge.md` already prices a
+wrong one at "a reviewer's one-line correction".
+
+So `generalizable` is satisfied by a well-formed submission and is **not a wire
+field**: there is no boolean the caller sets, which is what keeps it off the
+forgeable list. A caller cannot assert it *false* either, which costs nothing —
+a caller who does not think a thread generalizes does not call the tool.
 
 ### 4. `ci_successful` becomes tri-state, and unknown is treated as UNMET **and named**
 
@@ -155,11 +242,21 @@ satisfy the gate.** The refusal names `ci_successful` among the unmet signals,
 which `PromotionGate.unmet()` already does for a `False` — so the caller is told
 *which* signal to obtain rather than being told the thread is unsuitable.
 
-The asymmetry is the point. Unknown and failed are both unmet, and they are not
-the same message: a failed CI run says *this thread's fix did not pass*, and an
-unknown one says *nobody has told Theurian whether it did*. Flattening them into
-one boolean at the adapter is what loses that, which is why the flattening moves
-out of the adapter and into the gate's own type.
+**Unknown and failed get different refusal text, and the mechanism is named
+because `unmet()` cannot produce it.** `unmet()` returns the *names* of the
+signals that are falsy (`domain/review.py`), and `None` and `False` are both
+falsy — so it reports `"ci_successful"` for either and the two messages would be
+identical. The distinction therefore comes from a second read: the refusal
+composes its sentence for `ci_successful` by looking at the stored tri-state
+value, `None` giving *nobody has told Theurian whether this thread's fix passed*
+and `False` giving *this thread's fix did not pass*. Two sentences from one
+unmet name.
+
+That is worth its cost because the two are different instructions to the caller:
+one says go and get a CI result, the other says this thread is not a candidate.
+Flattening them into one boolean at the adapter is what loses that, which is why
+the flattening moves out of the adapter and into the gate's own type — and why
+the tri-state has to reach the message and not only the predicate.
 
 ### 5. The refusal must not become a withheld-versus-absent oracle, and the shape is designed now
 
@@ -179,12 +276,23 @@ So the refusal shape is fixed **now**, while it costs nothing, rather than
 retrofitted onto a shipped surface later:
 
 > A thread outside the caller's view refuses **indistinguishably** from a
-> thread that does not exist. A gate-signal refusal is reachable only for a
-> thread the caller may see.
+> thread that does not exist — in its text **and in how long it takes**. A
+> gate-signal refusal is reachable only for a thread the caller may see.
 
 This is the disclosure family Milestone 5 enumerated as *an error that fires for
 one input and not another*, and naming it as a family rather than as a case is
-what stops the sibling from being met as a surprise. The serving layer already
+what stops the sibling from being met as a surprise.
+
+**The duration half is in the bind rather than in a residual, and the reason is
+that the asymmetry is structural.** Recomputing a gate for a withheld thread
+loads the record, reads five signals and verifies a commit against git;
+answering for an id that names nothing does none of that. The second is
+strictly less work, so a caller timing two calls learns which ids exist — the
+*duration* family Milestone 5 met as a surprise on the retrieval side. Binding
+it now costs a sentence and an owed measurement; retrofitting it means proving a
+timing property about a shipped refusal path. ADR-0030's form — record the reach
+and accept it — is the alternative, and it is not taken here because there is
+nothing shipped yet to price it against. The serving layer already
 holds the analogous property for `review.search`, which is the shape to follow:
 `tests/integration/test_review_search_tool.py::test_a_bad_filter_is_refused_the_same_way_whether_or_not_the_project_resolves`
 and
@@ -227,9 +335,10 @@ control that makes it survivable is FR-V4, which no classifier changes.
   core's runtime dependency list is unchanged, and a project with no model
   configuration is not handed a degraded generator — it is handed a tool its own
   agent drives.
-- **The gate stays auditable.** Every signal is read from the record, so "why
-  was no candidate generated?" is answered with facts rather than with an
-  opinion, which is the property `review-knowledge.md` claims for it.
+- **The gate stays auditable.** Every signal is established by something a
+  reader can check afterwards — a stored record, or a commit in the repository —
+  so "why was no candidate generated?" is answered with facts rather than with
+  an opinion, which is the property `review-knowledge.md` claims for it.
 - **Unknown CI stops being unrepresentable.** ADR-0030's open question closes in
   the direction that neither fabricates a measurement nor promotes unverified
   work.
@@ -259,6 +368,19 @@ control that makes it survivable is FR-V4, which no classifier changes.
   from `bool` to `bool | None` is a breaking change to the domain model, and
   `is_satisfied` / `unmet()` read it. The migration cost is measurable at
   implementation time and is not assumed away here.
+- **The whole suite's satisfied-gate fixtures were built on a value the adapter
+  has never produced**, and that is why this survived design review.
+  `git grep -c 'fix_commit="e" \* 40' -- packages tests` returns **9 lines
+  across 6 files**; a fabricated forty-`e` string is what every green gate in
+  the suite is standing on, so nothing went red when a design assumed the
+  adapter supplied one. Slice B5 owes at least one
+  gate test driven from a record the **real adapter shape** produces — that is,
+  with `fix_commit` absent — so the next design that leans on this field meets
+  the truth rather than the fixture.
+- **A verification step adds a git read to the candidate path.** `fixCommit`'s
+  check reads the local repository, which is work the tool did not previously
+  do, and it is inside the two-corpora timing bind (decision 5) rather than
+  outside it.
 
 ### Neutral
 
@@ -276,8 +398,12 @@ control that makes it survivable is FR-V4, which no classifier changes.
    [#575](https://github.com/theurian/theurian/issues/575). Decision 5 designs
    the refusal *shape* for the day that class exists; it does not build the
    class.
-2. **How `generalizable` is derived.** Slice B5 settles it against the record's
-   fields, within the constraint that the caller does not assert it.
+2. **Whether a fabricated `fix_commit` in a hand-authored stored record is
+   detected.** It is not, and that is T-24's accepted residual: a review evidence
+   directory is source rather than derived state, so a clone can deliver records
+   this installation never fetched. Decision 3's verification covers the **wire**
+   path, where the caller is the untrusted party; it does not vouch for
+   `.theurian/review/`, and nothing in this ADR claims it does.
 3. **The other four planned `review.*` tools** — `getThread`, `findSimilar`,
    `getDecisions`, `listUnresolved`. Unchanged by this ADR.
 4. **Automatic candidate quality scoring.** `docs/roadmap.md`'s Phase B
@@ -294,7 +420,12 @@ control that makes it survivable is FR-V4, which no classifier changes.
 | Alternative | Why rejected |
 | :-- | :-- |
 | **Theurian orchestrates a model behind an ADR-0009 port, with an in-tree default** | Every other port's in-tree default is deterministic and grounded — the extractive summarizer "never hallucinates because it never generates", the identity reranker preserves order. There is no deterministic default for *write a rule that generalizes this thread*: a default that produced text would be fabricating the one thing the caller was supposed to supply, and a default that produced nothing would make the whole capability configuration-gated. ADR-0009's Milestone 5 amendment is the precedent for grading an in-tree default honestly rather than calling it usable. |
-| **Accept the gate signals as wire inputs, trusting the caller** | A forgeable promotion signal. FR-V4 would still stop auto-approval, so nothing becomes approved knowledge — but the gate's stated purpose is to decide what is *worth a human's attention*, and a caller-filled gate makes that decision the caller's. The result is a proposal generator with a gate-shaped ceremony, which is worse than no gate because it reads as a check. |
+| **Accept the gate signals as wire inputs, trusting the caller** | A forgeable promotion signal. FR-V4 would still stop auto-approval, so nothing becomes approved knowledge — but the gate's stated purpose is to decide what is *worth a human's attention*, and a caller-filled gate makes that decision the caller's. The result is a proposal generator with a gate-shaped ceremony, which is worse than no gate because it reads as a check. `fixCommit` is not this: a supplied value Theurian *verifies against git* is satisfied by the verification, not by the assertion. |
+| **Read `fix_commit_present` off the stored record, as an earlier draft of this ADR said** | Measured false: the adapter never assigns `fix_commit`, so every ingested thread would refuse and the tool's only reachable behaviour would be a refusal. The one route to a truthy signal is a hand-authored evidence file the codec accepts unvalidated — so the rule would admit the fabricated record and refuse the honest one, inverting its own rationale. |
+| **Extend ingestion to fetch a fix commit** | GitHub's thread object records none — the same shape ADR-0030 decision 5 met for `resolvedAt`, where "a required field filled by the adapter is a fabricated measurement". There is no field to select; inventing one (the PR's `mergeCommit`, say) would answer a different question, since a merge commit is the pull request's and `fix_commit_present` is the thread's. |
+| **Drop `fix_commit_present` from the gate** | It weakens FR-V4's gate by one signal to avoid designing one, and the signal is the one that distinguishes *a conversation was resolved* from *something was changed because of it*. Removing a check because its input is hard to obtain is how a gate becomes a ceremony. |
+| **Make `fixCommit` tri-state, with unknown treated as unmet (decision 4's shape)** | It is decision 4's shape applied where decision 4's premise does not hold. `ci_successful` is unknown for *some* threads; `fix_commit` is unknown for **all** of them, so tri-state-unknown-unmet refuses every thread — the measured defect, reached by a different route. |
+| **Derive `generalizable` from stored structure, or refuse it as underivable in v1** | The second arm ships a tool that structurally cannot produce a candidate while `system.capabilities` advertises `writeTools: true` — a false capability claim, the defect ADR-0026 exists to prevent. The first arm has nothing to derive from: the record carries a thread, and whether it generalizes is not in it. Decision 3 settles it instead: the submission is the claim, and FR-V4 grades it. |
 | **Keep `ci_successful` a required `bool` and have the adapter fill it** | This is exactly the shape ADR-0030 rejected for `resolved_at`: "A required field filled by the adapter is a fabricated measurement that every downstream consumer reads as real." Filling unknown with `True` promotes unverified work; filling it with `False` reports a failure that did not happen. The rejection is quoted rather than re-derived because it is the same defect one field over. |
 | **Treat unknown CI as satisfying the gate** | The gate would promote a thread whose fix nobody has seen pass, and it would do so silently — the caller could not tell the difference between a green run and no run at all. The gate exists to decide whether a thread has earned a human's attention; "we do not know" has not earned it. |
 | **Invent a new tool name now that the semantics are settled** | `review.generateKnowledgeCandidate` is published as planned in `docs/protocol/mcp-tools.md`. ADR-0030 rejected the same move for `review.search` on the ground that a tool name is a wire contract; decision 2 carries the name honesty in prose instead, which is where a semantics clarification belongs. |
@@ -324,15 +455,35 @@ Measured now, and reproducible from this ADR (2026-09-12, `be977ea7`):
   `ReviewEvent.ci_successful` is `bool | None` (`domain/review.py`), which is
   the asymmetry decision 4 closes.
 - `KnowledgeCandidate` refuses construction with no evidence, an empty body and
-  an unmet gate, and `trust_level` is `init=False`
-  (`domain/review.py`, `__post_init__`), each already pinned in
-  `tests/unit/test_project_and_traceability.py` —
-  `::test_candidate_without_evidence_is_rejected_at_generation`,
-  `::test_candidate_with_an_empty_body_is_rejected`,
-  `::test_candidate_with_an_unmet_gate_is_rejected` and
-  `::test_candidate_has_no_self_approval_method`. **These four stay true after
-  this change** and are named here so nobody mistakes them for pins slice B5
-  must move.
+  an unmet gate — each pinned in `tests/unit/test_project_and_traceability.py`
+  by `::test_candidate_without_evidence_is_rejected_at_generation`,
+  `::test_candidate_with_an_empty_body_is_rejected` and
+  `::test_candidate_with_an_unmet_gate_is_rejected`, all three reading
+  `KnowledgeCandidate.__post_init__`.
+- **`trust_level` is `init=False` on the *field declaration*, not a check.**
+  `trust_level: TrustLevel = field(default=TrustLevel.INFERRED, init=False)`
+  (`domain/review.py`), and the pin is
+  `tests/unit/test_project_and_traceability.py::test_a_candidate_cannot_be_constructed_with_a_trust_level`,
+  which expects a `TypeError` naming `trust_level`. Its own docstring records
+  why the distinction matters: "`__post_init__` never looks at it, so a
+  candidate claiming review-level trust is refused by the *signature* rather
+  than by a check", and dropping `init=False` keeps the sibling
+  `::test_candidate_is_always_inferred_never_reviewed` green while
+  `KnowledgeCandidate(trust_level=TrustLevel.REVIEWED)` starts working — a
+  mutation that survived the whole suite (#129).
+- `::test_candidate_has_no_self_approval_method` pins something else again —
+  that no `approve`/`promote`/`publish` attribute exists and `CandidateStatus`
+  has no `AUTO_APPROVED` member. **All five above stay true after this change**
+  and are named here so nobody mistakes them for pins slice B5 must move.
+- `ReviewResolution.fix_commit` is **never assigned by the shipped adapter**:
+  `infrastructure/github/review_provider.py` constructs each thread's
+  `ReviewResolution` with `state` and `resolved_by` only, and
+  `infrastructure/github/queries.py`'s `REVIEW_THREADS` document selects no
+  field that could carry one. The codec reads it back through
+  `_optional_string`, which validates that it is a string and nothing more.
+- The suite's satisfied-gate fixtures hand-write the value the adapter has never
+  produced: `git grep -c 'fix_commit="e" \* 40' -- packages tests` returns **9
+  lines across 6 files**.
 
 **One non-`docs/` file moved with this ADR, and it is named rather than
 counted.** *What this does not close* item 1 names the live owner of the
@@ -368,28 +519,62 @@ Still owed, with the milestone that will satisfy it:
   `tests/integration/test_review_ingest_is_model_free.py::test_no_callable_in_the_built_pipeline_reaches_a_model`,
   with its planted-model controls — **and with the same recorded bound**, that a
   provider resolved through a factory one level down is invisible to it.
-- **Slice B5 — the gate is recomputed and never read off the request
+- **Slice B5 — the five recomputed signals are never read off the request
   (decision 3).** Owed: a test that plants gate-shaped fields in the wire input
   and asserts they change no signal, with the control that a change to the
   *stored record* does change one — without the control, a generator that
-  ignored the whole gate would pass.
-- **Slice B5 — unknown CI is unmet and named (decision 4).** Owed: a thread
-  whose stored `ci_successful` is `None` refuses, and the refusal names
-  `ci_successful` among the unmet signals; with a sibling asserting a definite
-  `False` refuses too, and a definite `True` proceeds — three inputs, because
-  two of them would not distinguish "unknown is unmet" from "the gate ignores
-  this signal".
+  ignored the whole gate would pass. Scoped to the five recomputed signals,
+  because `fixCommit` *is* a wire field and `generalizable` is not a field at
+  all.
+- **Slice B5 — `fixCommit` is verified, not trusted (decision 3).** Owed, in
+  order of what each separates: a commit that does not exist in the repository
+  refuses; a commit that exists but does not touch the thread's `file_path`
+  refuses; a commit that exists and touches it passes. The middle case is the
+  one that distinguishes verification from a mere existence check, and without
+  it an implementation that only ran `cat-file -e` would pass. Plus the control
+  that the check reads the **local** repository and reaches no network — the
+  shape `tests/unit/test_network_call_sites.py` already holds for spawn sites,
+  since a verification step is a candidate for a sixth one.
+- **Slice B5 — at least one gate test is driven from a record the real adapter
+  shape produces.** That is, a `ReviewResolution` built the way
+  `review_provider.py` builds one, with `fix_commit` **absent**. The suite's
+  nine hand-written `fix_commit="e" * 40` fixtures are why a false premise about
+  this field survived design review, and a suite that only ever sees the
+  fabricated value cannot catch the next one.
+- **Slice B5 — `generalizable` is satisfied by the submission and is not a wire
+  field (decision 3).** Owed: the structural property that the published input
+  schema declares no `generalizable`, and a driving case that a well-formed
+  submission over a thread meeting the other six signals produces a candidate —
+  the positive control the earlier draft's underivable branch would have made
+  unreachable.
+- **Slice B5 — unknown CI is unmet and named, and its message differs from
+  failed (decision 4).** Owed: a thread whose stored `ci_successful` is `None`
+  refuses, and the refusal names `ci_successful` among the unmet signals; a
+  sibling asserting a definite `False` refuses too; a definite `True` proceeds —
+  three inputs, because two of them would not distinguish "unknown is unmet"
+  from "the gate ignores this signal". **A fourth assertion is what separates
+  this decision from the rejected adapter-flattening alternative**: the `None`
+  and `False` refusals must not be the same string, since `unmet()` returns the
+  same name for both. Without it, an implementation that flattened `None` to
+  `False` at the adapter — the alternative this ADR rejects — passes all three.
 - **Slice B5 — the refusal is not a withheld-versus-absent oracle
   (decision 5).** Owed: one battery of requests answered identically over a
   corpus that **held** withheld threads and one that **never did**, at the tool
   layer, covering responses **and refusals**, with the control that the battery
   actually reaches the withheld threads. The fixture is synthetic, and that is
   the only way to have a withheld row in a corpus whose scope excludes them.
-- **Slice B5 — the candidate lands as an ordinary proposal (decision 1).**
-  Owed: a test that the proposal a generated candidate produces is one
-  `theurian propose accept` accepts, driven through the shipped commands; and
-  that its `trustLevel` is `inferred` on the written migration, not only on the
-  in-memory object.
+  **The battery's equality covers duration as well as text**, because a gate
+  recompute plus a commit verification is strictly more work than a miss on an
+  id that names nothing. Owed with its instrument named on both sides, so the
+  measurement is not a wall-clock number nobody can reproduce.
+- **Slice B5 — the candidate lands as an ordinary proposal, through the mapping
+  decision 1 states.** Owed: a test that the proposal a generated candidate
+  produces is one `theurian propose accept` accepts, driven through the shipped
+  commands; that its `trustLevel` is `inferred` on the written migration, not
+  only on the in-memory object; and that the migration's `author` is the
+  caller's human-attributable identity while `evidence.json`'s `agentId` is the
+  agent's — the two never filled from each other, which is what the migration
+  schema's own `author` description requires.
 - **Slice B5 — the name-honesty split is stated on every surface that
   describes the tool (decision 2).** Owed: the tool description, the published
   input schema's description and this ADR's table agreeing that Theurian does
