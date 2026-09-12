@@ -64,16 +64,19 @@ schema in the tree, so `[tool-context.schema.json]` is what holds its
 A third, `::test_every_published_project_id_pattern_admits_exactly_what_projectid_constructs`,
 holds its `projectId` pattern against `ProjectId` and does not move.
 
-The population under the ADR's own key is **five** hits, not four:
+The population under the ADR's own key is **five** hits, not four — and the key
+carries its frame, because ADR-0032 has since added hits of its own and a reader
+running this against `HEAD` gets a different number for a reason that has
+nothing to do with SEC-12:
 
 ```console
-$ git grep -n "tool-context" -- packages schemas docs tools \
-    | grep -v '^docs/adr/0031' | grep -v '^docs/work-logs/'
-docs/protocol/mcp-tools.md:50:          the link
-packages/theurian-core/tests/unit/test_schemas.py:294:  the literal-document test
-packages/theurian-core/tests/unit/test_schemas.py:781:  the ProjectId-pattern face
-schemas/README.md:98:                        the row that records the absence
-schemas/mcp/tool-context.schema.json:3:       the schema's own `$id`
+$ git grep -n "tool-context" be977ea7 -- packages schemas docs tools \
+    | grep -v ':docs/adr/0031' | grep -v ':docs/work-logs/'
+docs/protocol/mcp-tools.md:50            the link
+packages/theurian-core/tests/unit/test_schemas.py:294    the literal-document test
+packages/theurian-core/tests/unit/test_schemas.py:781    the ProjectId-pattern face
+schemas/README.md:98                     the row that records the absence
+schemas/mcp/tool-context.schema.json:3   the schema's own `$id`
 ```
 
 The fifth is the file naming itself. **The conclusion is unchanged and is the
@@ -444,9 +447,11 @@ Measured now, and reproducible from this ADR (2026-09-12, `be977ea7`):
   response-fragment schemas and one input-side contract,
   `tool-context.schema.json`. **No per-tool input schema exists**, and the one
   input schema that does has **no reader under `src/`** —
-  `git grep -n "tool-context" -- packages schemas docs tools` returns five hits
-  outside this ADR: a link, two test references, the `schemas/README.md` row
-  that records the absence, and the file's own `$id`.
+  `git grep -n "tool-context" be977ea7 -- packages schemas docs tools` returns
+  five hits outside this ADR: a link, two test references, the
+  `schemas/README.md` row that records the absence, and the file's own `$id`.
+  The key takes the sha because ADR-0032 added four hits of its own after this
+  frame, none of them a reader.
 - The SDK's argument model sets no `extra="forbid"`:
   `grep -rho 'extra="forbid"' .venv/lib/python3.13/site-packages/mcp_types/ | wc -l`
   answers **0** over the whole package, and `ArgModelBase`'s own config is
