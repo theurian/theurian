@@ -56,30 +56,57 @@ to compare", and the one test it names,
 validates two literal documents against the schema rather than validating any
 real call.
 
-**That row names one test where two hold properties of this file**, which slice
-B2 needs to know because the second one moves.
-`::test_object_schemas_reject_unknown_properties` is parametrized over every
-schema in the tree, so `[tool-context.schema.json]` is what holds its
-`additionalProperties: false` — and decision 1's composition moves that keyword.
-A third, `::test_every_published_project_id_pattern_admits_exactly_what_projectid_constructs`,
-holds its `projectId` pattern against `ProjectId` and does not move.
-
-The population under the ADR's own key is **five** hits, not four — and the key
-carries its frame, because ADR-0032 has since added hits of its own and a reader
-running this against `HEAD` gets a different number for a reason that has
-nothing to do with SEC-12:
+**That row names one test where five hold properties of this file**, which slice
+B2 needs to know because one of the five moves. Four of them are parametrized
+over the schema tree and name the file in their node id; the fifth loads it by
+literal path and does not. Collected:
 
 ```console
-$ git grep -n "tool-context" be977ea7 -- packages schemas docs tools \
-    | grep -v ':docs/adr/0031' | grep -v ':docs/work-logs/'
-docs/protocol/mcp-tools.md:50            the link
-packages/theurian-core/tests/unit/test_schemas.py:294    the literal-document test
-packages/theurian-core/tests/unit/test_schemas.py:781    the ProjectId-pattern face
-schemas/README.md:98                     the row that records the absence
-schemas/mcp/tool-context.schema.json:3   the schema's own `$id`
+$ uv run --frozen python -m pytest packages/theurian-core/tests/unit/test_schemas.py \
+    --collect-only -q | grep -i "tool.context"
+.../test_schemas.py::test_schema_is_valid_draft_2020_12[tool-context.schema.json]
+.../test_schemas.py::test_schema_declares_an_id_and_title[tool-context.schema.json]
+.../test_schemas.py::test_object_schemas_reject_unknown_properties[tool-context.schema.json]
+.../test_schemas.py::test_every_published_project_id_pattern_admits_exactly_what_projectid_constructs[mcp/tool-context.schema.json-('properties', 'projectId')]
 ```
 
-The fifth is the file naming itself. **The conclusion is unchanged and is the
+(The node-id prefix is abbreviated to `.../`; nothing else is edited.) The fifth
+is `::test_project_id_is_required_on_every_tool_call`, which builds a validator
+from `_load("mcp/tool-context.schema.json")` at `test_schemas.py:294` — a
+literal, so no node id carries the filename and the collection key cannot see
+it. `git grep -n "tool-context" -- packages/theurian-core/tests` returns exactly
+two lines, `:294` and `:781`, which is the other half of the derivation.
+
+**Only `::test_object_schemas_reject_unknown_properties[tool-context.schema.json]`
+moves.** It asserts that every top-level object schema sets
+`additionalProperties: false`, and decision 1's composition moves that keyword
+off this file. The other four hold shape, `$id`/title, the `projectId` pattern
+against `ProjectId`, and the required-`projectId` property, none of which
+decision 1 touches.
+
+The population of *references* to the file under the ADR's own key is **five**
+hits, not four — and the key carries its frame, because ADR-0032 has since added
+hits of its own and a reader running this against `HEAD` gets a different number
+for a reason that has nothing to do with SEC-12:
+
+```console
+$ git grep -n "tool-context" be977ea7 -- packages schemas docs tools | cut -d: -f2,3
+docs/protocol/mcp-tools.md:50
+packages/theurian-core/tests/unit/test_schemas.py:294
+packages/theurian-core/tests/unit/test_schemas.py:781
+schemas/README.md:98
+schemas/mcp/tool-context.schema.json:3
+```
+
+In order: the protocol page's link, the literal-document test, the
+`projectId`-pattern face's parametrization entry, the `schemas/README.md` row
+that records the absence, and the schema's own `$id`. (The `cut` drops the
+`be977ea7:` prefix and the matched line; nothing is annotated in place of it.)
+**No filter is applied and none is needed at this frame** — an earlier draft
+piped this through `grep -v ':docs/adr/0031'` and `grep -v ':docs/work-logs/'`,
+and both are no-ops here: this ADR did not exist at `be977ea7` and the work logs
+carry no hit, so the count is 5 with or without them. A reader running the key
+against `HEAD` does need both filters. **The conclusion is unchanged and is the
 one that matters: no code path under `src/` names it.**
 
 So SEC-12 costs two things, and the first is smaller than it looks: a
@@ -207,9 +234,14 @@ what an implementer would do without this table.
 
 **The alternative stays available**: inline the four context properties in each
 per-tool schema, keeping `additionalProperties: false` and duplicating the
-context four keys at a time. It costs a fifth published copy of the `projectId`
-pattern — `_PROJECT_ID_FACES` already tracks five — and the duplication is what
-`$ref` exists to avoid, so it is the fallback rather than the plan.
+context four keys at a time. Its cost is **one further published copy of the
+`projectId` pattern per per-tool schema**, not one in total —
+`_PROJECT_ID_FACES` (`tests/unit/test_schemas.py:779-788`) already tracks
+**five** faces and pins each against `ProjectId`, so the first inlined schema
+makes a sixth and the seven tools registered today
+(`grep -c '@_tool(' packages/theurian-core/src/theurian/mcp/tools.py` → **7**)
+would take it to **twelve**. The duplication is what `$ref` exists to avoid, and
+at that multiplier it is the fallback rather than the plan.
 
 ### 2. The validation seat is an SDK `ServerMiddleware`, wired where the server is built
 
@@ -326,12 +358,20 @@ domain the annotation does not, and **may not** admit what the handler refuses.
 The SDK sets no `additionalProperties` on any tool's derived schema. Driven
 against the built server:
 
+```python
+# over build_server(...)._tool_manager.list_tools(), sorted by name
+for tool in sorted(tools, key=lambda t: t.name):
+    print(f"{tool.name:22}{tool.parameters.get('additionalProperties', '<absent>')}")
+```
+
 ```console
-$ for each of the 7 registered tools: inputSchema.get("additionalProperties")
-  knowledge.search       <absent>     review.findings      <absent>
-  knowledge.get          <absent>     review.search        <absent>
-  knowledge.status       <absent>     system.capabilities  <absent>
-  project.list           <absent>
+knowledge.get         <absent>
+knowledge.search      <absent>
+knowledge.status      <absent>
+project.list          <absent>
+review.findings       <absent>
+review.search         <absent>
+system.capabilities   <absent>
 tools with no additionalProperties: 7 of 7
 ```
 
@@ -448,10 +488,22 @@ Measured now, and reproducible from this ADR (2026-09-12, `be977ea7`):
   `tool-context.schema.json`. **No per-tool input schema exists**, and the one
   input schema that does has **no reader under `src/`** —
   `git grep -n "tool-context" be977ea7 -- packages schemas docs tools` returns
-  five hits outside this ADR: a link, two test references, the
+  five hits, needing no filter at that frame: a link, two test references, the
   `schemas/README.md` row that records the absence, and the file's own `$id`.
   The key takes the sha because ADR-0032 added four hits of its own after this
   frame, none of them a reader.
+- **Five tests hold a property of `tool-context.schema.json`**, not the one
+  `schemas/README.md`'s row names: four collected node ids over `test_schemas.py`'s
+  parametrized suites (`--collect-only -q | grep -i "tool.context"`, key in
+  *Context*), plus `::test_project_id_is_required_on_every_tool_call`, which
+  loads the path as a literal at `test_schemas.py:294` and so names it in no node
+  id. Exactly one of the five —
+  `::test_object_schemas_reject_unknown_properties[tool-context.schema.json]` —
+  moves with decision 1's composition.
+- `_PROJECT_ID_FACES` (`tests/unit/test_schemas.py:779-788`) holds **5**
+  published `projectId` pattern faces, and **7** tools are registered
+  (`grep -c '@_tool(' .../mcp/tools.py`), which is the multiplier that prices
+  decision 1's inline alternative at twelve faces rather than six.
 - The SDK's argument model sets no `extra="forbid"`:
   `grep -rho 'extra="forbid"' .venv/lib/python3.13/site-packages/mcp_types/ | wc -l`
   answers **0** over the whole package, and `ArgModelBase`'s own config is
@@ -518,10 +570,20 @@ Still owed, with the milestone that will satisfy it:
   "nothing, and nothing should: it describes tool *input*, so there is no
   response to compare", which is true of a *response* check and false of this
   one. Owed: the row rewritten to name what now reads the schema, in the same
-  commit — and to name **both** tests that hold properties of the file, since it
-  names one today and
-  `::test_object_schemas_reject_unknown_properties[tool-context.schema.json]`
-  is the one decision 1's composition moves.
+  commit — and to stop naming **one** test where **five** hold properties of the
+  file. The honest form is the *command*, not a list, because four of the five
+  arrive by parametrization and a sixth would join the same way:
+
+  ```console
+  $ uv run --frozen python -m pytest .../test_schemas.py --collect-only -q \
+      | grep -i "tool.context"
+  ```
+
+  plus `::test_project_id_is_required_on_every_tool_call`, which loads the path
+  as a literal at `test_schemas.py:294` and therefore appears in no node id.
+  `::test_object_schemas_reject_unknown_properties[tool-context.schema.json]` is
+  the one of the five that decision 1's composition moves; the row must say
+  which, or a reader takes "five tests" as five things to rewrite.
 - **Slice B2 — the closure pin moves with the closure, and is rewritten rather
   than deleted.** Moving `additionalProperties: false` off
   `tool-context.schema.json` takes
