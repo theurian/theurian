@@ -12,6 +12,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-13
+
 ### Fixed
 
 - **The one `LIMIT_EXCEEDED` cure now answers every refusal that reaches it**
@@ -9991,7 +9993,26 @@ error is the one reading the release notes to decide whether to upgrade.
 - Migration `contentFile` paths are rejected at both schema and runtime level if
   they escape the project root.
 
-[Unreleased]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev2...main
+[Unreleased]: https://github.com/theurian/theurian/compare/core-v0.2.1...main
+[0.2.1]: https://github.com/theurian/theurian/compare/core-v0.2.0...core-v0.2.1
+[0.2.0]: https://github.com/theurian/theurian/compare/core-v0.1.0...core-v0.2.0
+[0.1.0]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev18...core-v0.1.0
+[0.1.0.dev18]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev17...core-v0.1.0.dev18
+[0.1.0.dev17]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev16...core-v0.1.0.dev17
+[0.1.0.dev16]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev15...core-v0.1.0.dev16
+[0.1.0.dev15]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev14...core-v0.1.0.dev15
+[0.1.0.dev14]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev13...core-v0.1.0.dev14
+[0.1.0.dev13]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev12...core-v0.1.0.dev13
+[0.1.0.dev12]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev11...core-v0.1.0.dev12
+[0.1.0.dev11]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev10...core-v0.1.0.dev11
+[0.1.0.dev10]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev9...core-v0.1.0.dev10
+[0.1.0.dev9]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev8...core-v0.1.0.dev9
+[0.1.0.dev8]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev7...core-v0.1.0.dev8
+[0.1.0.dev7]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev6...core-v0.1.0.dev7
+[0.1.0.dev6]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev5...core-v0.1.0.dev6
+[0.1.0.dev5]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev4...core-v0.1.0.dev5
+[0.1.0.dev4]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev3...core-v0.1.0.dev4
+[0.1.0.dev3]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev2...core-v0.1.0.dev3
 [0.1.0.dev2]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev1...core-v0.1.0.dev2
 [0.1.0.dev1]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev0...core-v0.1.0.dev1
 [0.1.0.dev0]: https://github.com/theurian/theurian/releases/tag/core-v0.1.0.dev0

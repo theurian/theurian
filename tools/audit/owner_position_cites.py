@@ -658,11 +658,11 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
     #
     # The same open-owner class as the four #575 rows above, met at the #597 cure
     # entry, and the first member whose owner was filed by the very branch that
-    # wrote the sentence. It sits in `[Unreleased]`, so the release-record clear
-    # does not reach it -- round one's M-j -- and it is judged like any other
-    # governed prose.
+    # wrote the sentence. Up to the 0.2.1 cut it sat in `[Unreleased]`, so the
+    # release-record clear did not reach it -- round one's M-j -- and it was
+    # judged like any other governed prose.
     #
-    # Driven through :func:`classify` on the sentence as it stands, at all three
+    # Driven through :func:`classify` on the sentence as it stood, at all three
     # states the number can take::
     #
     #     (absent from the tracker)  SUSPECT      <- the offline run, and this row
@@ -670,23 +670,21 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
     #     issue:open                 open owner   <- a live run produces no row
     #
     # `owner_pos=True` and no historical marker in all three, so nothing but the
-    # tracker state moves the verdict. This row is therefore stale under a live
-    # run today, exactly as the #575 rows are, and it is deleted by the commit
-    # that refreshes `tracker-state.json` (#576) rather than by one of its own.
-    (
-        "packages/theurian-core/CHANGELOG.md",
-        "656",
-        "carries its grade and its summary and not its remedy",
-        "correct -- open owner, snapshot-age false positive",
-        "The #597 cure entry hands the per-record arm's delivery gap to #656: a skipped "
-        "pull request's entry in the run document carries the refusal's grade and its "
-        "summary and not its remedy, and the sentence says so rather than implying the "
-        "cure is already readable there. #656 was filed 2026-09-12 with this branch's "
-        "review round and read OPEN the same day (`gh issue view 656`); it is absent "
-        "from the 2026-09-03 snapshot because it postdates it, so the offline run reads "
-        "a live owner as no owner. Not an owner defect: this is the recorded-owner form "
-        "this audit exists to require.",
-    ),
+    # tracker state moved the verdict. That made the row stale under a live run,
+    # exactly as the #575 rows are, and it read as owed to the commit that
+    # refreshes `tracker-state.json` (#576) -- but the 0.2.1 cut reached it first.
+    #
+    # The #656 row that stood here is gone with the 0.2.1 cut, and not because
+    # the sentence or its owner moved: dating the entries by inserting
+    # `## [0.2.1] - 2026-09-13` above them put the #597 cure entry inside a
+    # dated section, and a dated section is history rather than a live claim
+    # (round one's M-j, recorded above), so the sweep no longer produces the
+    # row. The judgment it carried -- correct, open owner, snapshot-age false
+    # positive (#656 filed 2026-09-12, postdating the 2026-09-03 snapshot; the
+    # #597 cure entry hands the per-record arm's delivery gap to it, which is
+    # the recorded-owner form this audit exists to require, not an owner
+    # defect) -- was true up to the cut and is preserved here as the same
+    # in-place record the #592, #586 and #636 deletions left.
     (
         "docs/security/threat-model.md",
         "349",
