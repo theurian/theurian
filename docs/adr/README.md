@@ -40,6 +40,7 @@ alternatives that were rejected and why.
 | [0030](0030-github-review-ingestion-spawns-gh.md) | Review ingestion spawns `gh`, over public allowlisted repositories only | proposed |
 | [0031](0031-mcp-input-is-schema-validated-in-middleware.md) | MCP tool input is validated against its published schema, in middleware | proposed |
 | [0032](0032-the-write-intent-mcp-tool-surface.md) | The write-intent MCP tool surface, and when `writeTools` flips | proposed |
+| [0033](0033-knowledge-candidate-generation.md) | Candidate generation: the caller is the model; Theurian verifies the gate | proposed |
 
 ## Writing a new ADR
 
