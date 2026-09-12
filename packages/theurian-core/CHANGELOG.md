@@ -9993,7 +9993,10 @@ error is the one reading the release notes to decide whether to upgrade.
 - Migration `contentFile` paths are rejected at both schema and runtime level if
   they escape the project root.
 
-[Unreleased]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev2...main
+[Unreleased]: https://github.com/theurian/theurian/compare/core-v0.2.1...main
+[0.2.1]: https://github.com/theurian/theurian/compare/core-v0.2.0...core-v0.2.1
+[0.2.0]: https://github.com/theurian/theurian/compare/core-v0.1.0...core-v0.2.0
+[0.1.0]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev2...core-v0.1.0
 [0.1.0.dev2]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev1...core-v0.1.0.dev2
 [0.1.0.dev1]: https://github.com/theurian/theurian/compare/core-v0.1.0.dev0...core-v0.1.0.dev1
 [0.1.0.dev0]: https://github.com/theurian/theurian/releases/tag/core-v0.1.0.dev0

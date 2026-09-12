@@ -675,16 +675,16 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
     # refreshes `tracker-state.json` (#576) -- but the 0.2.1 cut reached it first.
     #
     # The #656 row that stood here is gone with the 0.2.1 cut, and not because
-    # the sentence or its owner moved: renaming `[Unreleased]` to
-    # `[0.2.1] - 2026-09-12` put the #597 cure entry inside a dated section, and
-    # a dated section is history rather than a live claim (round one's M-j,
-    # recorded above), so the sweep no longer produces the row. The judgment it
-    # carried -- correct, open owner, snapshot-age false positive (#656 filed
-    # 2026-09-12, postdating the 2026-09-03 snapshot; the #597 cure entry hands
-    # the per-record arm's delivery gap to it, which is the recorded-owner form
-    # this audit exists to require, not an owner defect) -- was true up to the
-    # cut and is preserved here as the same in-place record the #592, #586 and
-    # #636 deletions left.
+    # the sentence or its owner moved: dating the entries by inserting
+    # `## [0.2.1] - 2026-09-12` above them put the #597 cure entry inside a
+    # dated section, and a dated section is history rather than a live claim
+    # (round one's M-j, recorded above), so the sweep no longer produces the
+    # row. The judgment it carried -- correct, open owner, snapshot-age false
+    # positive (#656 filed 2026-09-12, postdating the 2026-09-03 snapshot; the
+    # #597 cure entry hands the per-record arm's delivery gap to it, which is
+    # the recorded-owner form this audit exists to require, not an owner
+    # defect) -- was true up to the cut and is preserved here as the same
+    # in-place record the #592, #586 and #636 deletions left.
     (
         "docs/security/threat-model.md",
         "349",
