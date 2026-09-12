@@ -53,6 +53,7 @@ from theurian.application.project_service import (
     BuildProvenance,
     ProjectPaths,
     ProjectRegistry,
+    derived_escape_remedy,
 )
 from theurian.cli.main import app
 from theurian.daemon.runner import build_server
@@ -86,6 +87,7 @@ from theurian.mcp.tools import (
     FINDINGS_UNAVAILABLE_REFUSAL,
     MAX_CONCURRENT_SEARCHES,
     MAX_QUERY_CHARS,
+    PATH_ESCAPE_REFUSAL,
 )
 
 pytestmark = pytest.mark.integration
@@ -105,6 +107,20 @@ ORIGIN_MAIN: Final = "refs/remotes/origin/main"
 #: Four parents up: ``integration`` -> ``tests`` -> ``theurian-core`` ->
 #: ``packages``. The same reckoning ``test_mcp_tools.py`` uses.
 REPO_ROOT = Path(__file__).resolve().parents[4]
+
+#: A sentence out of :data:`~theurian.mcp.tools.PATH_ESCAPE_REFUSAL`, written out
+#: rather than sliced off the constant.
+#:
+#: ``PATH_ESCAPE_REFUSAL in message`` is true of **every** message once the
+#: constant is ``""``, and round one measured exactly that: emptied, the suite
+#: stayed green while every caller who met a containment refusal was handed a
+#: message with no words in it. This is the assertion that fails then -- measured
+#: 2026-09-11 on this branch, emptying the constant turns this face, the face
+#: beside it and the seam's unit case RED together.
+#:
+#: Written out in each of those three files rather than shared: three pins reading
+#: from one place are one edit away from being no pin at all.
+PATH_ESCAPE_SENTENCE: Final = "does not resolve to a location inside the project root"
 
 runner = CliRunner()
 
@@ -1610,28 +1626,59 @@ async def test_the_truncation_signal_is_computed_over_servable_rows_alone(
 # -- AC-3: the store cannot be served from ----------------------------------
 
 
-def test_the_unservable_refusal_says_what_it_has_always_said() -> None:
+def test_the_unservable_refusal_is_pinned_word_for_word() -> None:
     """The words themselves, which every other assertion here reads symbolically.
 
-    Every other assertion on this refusal reads the constant symbolically -- six
-    ``FINDINGS_UNAVAILABLE_REFUSAL in ...`` checks and one ``not in``, measured in
-    this file on 2026-09-03 -- and every one of them would hold if the constant
-    were reworded to anything at all, including something that named which of the
-    four causes fired or that dropped the remedy (PR #504 round 1, LOW). This is
-    the one place the sentence is compared against text written down
-    independently of it, so changing it is a decision somebody makes rather than
-    a drift nothing notices.
+    Every other assertion on this refusal reads the constant symbolically, and
+    every one of them would hold if it were reworded to anything at all --
+    including something that named which arm fired, or that dropped the remedy
+    (PR #504 round 1, LOW). This is the one place the sentence is compared against
+    text written down independently of it, so changing it is a decision somebody
+    makes rather than a drift nothing notices.
+
+    **The population is the assertion lines in this file, and the key is anchored
+    so it cannot count this sentence** (verdict pass, adversarial LOW). The key
+    used to be quoted unanchored -- ``git grep -c 'assert
+    FINDINGS_UNAVAILABLE_REFUSAL in '`` -- which matches its own appearance in
+    this docstring, so the number it answered was one larger than the population
+    it described and nothing said which. The claimant reading itself is the trap
+    ``test_connection_claims.py::test_the_only_test_that_constructs_the_write_lock_runs_in_one_process``
+    records for its own key. Anchored at the start of a line past its indentation
+    it reads assertions only::
+
+        git grep -cE '^ +assert FINDINGS_UNAVAILABLE_REFUSAL in ' -- <this file>
+
+    which answered 7 on 2026-09-12, beside 1 for the ``not in`` spelling. The
+    count is a dated measurement of that population and not a thing this file
+    enforces: what matters is that every one of those lines is symbolic, which is
+    why this one is not.
+
+    **The pin has fired once, and the wording below is the corrected one.** The
+    text used to enumerate causes -- "it has not been built, or it was built by
+    a superseded schema or trailer grammar" -- and the containment arm, which
+    answered this constant at the time, made that enumeration false: the store
+    whose leaf escapes was built by this installation and is recorded as built,
+    which
+    ``test_a_store_path_that_resolves_outside_the_project_answers_the_escape_constant``
+    still asserts as its premise (``has_findings``). What replaced the
+    enumeration names no cause.
+
+    That arm has since left this constant altogether (``c7da702e``): an escaping
+    leaf answers ``PATH_ESCAPE_REFUSAL`` and the escape cure, because the rebuild
+    this text names meets the same refusal first. What is left is the set the
+    enumeration was ever true of -- the constant's own docstring names them -- and
+    the wording stays cause-free anyway, which is what kept it honest through the
+    arm's arrival and its departure alike.
 
     What the wording carries and must not lose: the remedy a caller can act on
     (``theurian findings build``, and *in the project*, since the cure is local
-    even when the store arrived with the repository), the "it has not been built"
-    reading that covers the provenance arm without naming it, and the closing
-    sentence that says the message is a constant -- the sentence SEC-13 makes
-    load-bearing, and the one a reader checks the message against.
+    even when the store arrived with the repository), the closing sentence that
+    says the message is a constant -- the sentence SEC-13 makes load-bearing,
+    and the one a reader checks the message against -- and its silence about
+    which arm fired.
     """
     assert FINDINGS_UNAVAILABLE_REFUSAL == (
-        "This project has no review-finding store that can be served: it has not been "
-        "built, or it was built by a superseded schema or trailer grammar. Run "
+        "This project has no review-finding store that can be served from here. Run "
         "`theurian findings build` in the project to rebuild it from git history. This "
         "refusal message is a constant: it carries nothing from your request or from "
         "any project's contents."
@@ -1640,7 +1687,7 @@ def test_the_unservable_refusal_says_what_it_has_always_said() -> None:
         "reworded. "
         "That is a published sentence: correct this pin in the same change, and check "
         "that the new wording still carries the local rebuild remedy and still says "
-        "nothing about which of the four causes fired (SEC-13)."
+        "nothing about which arm refused (SEC-13)."
     )
 
 
@@ -1893,6 +1940,281 @@ async def test_the_unservable_refusal_does_not_vary_with_what_the_store_holds(
 
     assert len(messages) == 1, f"the refusal varied with the store's content: {messages}"
     assert FINDINGS_UNAVAILABLE_REFUSAL in messages.pop()
+
+
+@pytest.mark.asyncio
+async def test_a_store_path_that_resolves_outside_the_project_answers_the_escape_constant(
+    project: ProjectRegistry, tmp_path: Path
+) -> None:
+    """The escaping-leaf arm answers the escape constant and keeps its cure (GHSA-97q9).
+
+    ``findings_for`` routes through ``ProjectPaths._contained``, whose refusal
+    names the absolute path it was asked for *and* the resolved project root --
+    correct on a terminal, the operator's machine layout on this surface. Left to
+    travel, that message reaches an MCP caller verbatim: ``ProjectPathEscapeError``
+    is a ``TheurianError``, and the ``_forwarding`` seam republishes ``str(exc)``
+    by design. So the tool answers a constant instead, and this is what drives
+    that substitution -- a guard no data reaches is a guard that survives its own
+    deletion. A message of its own would be a second input to the error channel
+    SEC-13 keeps at one message, and a message carrying a path would be the layout
+    itself.
+
+    **Which constant changed at ``c7da702e``, and the name of this test changed
+    with it.** The arm used to fold into ``FINDINGS_UNAVAILABLE_REFUSAL`` -- "the
+    one constant" the old name meant -- and that constant tells the caller to run
+    ``theurian findings build``, which resolves this same leaf through this same
+    helper ahead of any git read and exits 4 on it. The cure was a closed loop, so
+    the fold was overturned: ``_with_remedy`` substitutes
+    :data:`PATH_ESCAPE_REFUSAL` for the message and lets ``exc.remedy`` travel,
+    and what this test pins is that pair. The layout assertions below did not
+    move, because neither constant carries one.
+
+    Reached through the shipped composition rather than a patch. The provenance
+    gate above this line reads the installation's own build record, keyed on
+    ``(root, store id)``, so it passes over a store this installation really
+    built; what escapes is the **leaf**, a link force-added past ADR-0004's
+    ignore -- the same ``git add -f`` reach :func:`_plant` models, here aimed at
+    where the file is rather than at what it holds.
+
+    **Its ``review.search`` twin is not the same refusal, and that is measured
+    rather than assumed.** ``review_search_for`` makes its own state-scoped check
+    and raises the plain ``ProjectError`` beneath ``ProjectPathEscapeError``, so a
+    planted escaping leaf there is answered with *that* refusal's own text --
+    which names the store's file rather than a resolved directory -- beside
+    ``REVIEW_SEARCH_STORE_REMEDY``, rather than with the constant this tool
+    substitutes
+    (``test_review_search_tool.py::test_an_escaping_store_leaf_publishes_its_own_refusal_and_the_cure_that_clears_it``
+    drives it with a plant, and ``test_resolved_layout_never_crosses.py``'s
+    ``escaping-review-search-leaf`` plant sweeps it across every registered tool).
+    The escape class this test's tool meets has a twin there, driven by a patched
+    helper because no plant can reach it
+    (``::test_an_escaping_store_path_answers_the_escape_constant_and_keeps_its_cure``).
+
+    ``test_contained_path_envelope.py`` records this consumer as outside its own
+    sweep -- an MCP transport error is a different envelope contract from a
+    ``--json`` document -- which is why the arm is driven here.
+
+    Four path candidates are searched for, not the two ``_contain`` happens to
+    name: what must not reach the wire is the layout, so a refusal that named
+    where the link pointed, or the directory the checkout sits in, would be the
+    same disclosure through a different substring.
+    """
+    store = _land(project)
+    leaf = _store_path(project)
+    root = Path(project.load()["demo"]["rootPath"])
+    outside = tmp_path / "outside-the-checkout"
+    outside.mkdir()
+    target = outside / leaf.name
+    leaf.rename(target)
+    leaf.symlink_to(target)
+    assert leaf.resolve() == target.resolve(), "the premise: the planted link is live"
+    assert not leaf.resolve().is_relative_to(root.resolve()), (
+        "the premise: the store leaf must really resolve outside the project root, or "
+        "the containment refusal this test drives never fires"
+    )
+    assert store.dump().findings, (
+        "the premise: the link reaches a readable, landed store, so what refuses "
+        "below is containment and not a store that cannot be read"
+    )
+    assert BuildProvenance.for_registry(project).has_findings(root, FINDINGS_STORE_ID), (
+        "the premise: this installation's build record still covers the store, so the "
+        "call reaches the containment check rather than stopping at the provenance gate"
+    )
+
+    message = await _call_failing(project, projectId="demo")
+
+    # `in`, not `==`: the SDK prefixes a failing tool's message with "Error
+    # executing tool review.findings: ", which is the transport's and constant.
+    assert PATH_ESCAPE_REFUSAL in message, (
+        f"the message half arrived as something other than the one constant "
+        f"`_with_remedy` substitutes, so what is asserted below is a cure beside an "
+        f"unpinned sentence: {message}"
+    )
+    assert PATH_ESCAPE_SENTENCE in message, (
+        f"the constant reached the caller without saying what went wrong, so the "
+        f"assertion above is satisfied by a refusal carrying no words at all: {message}"
+    )
+    assert "Remove `.theurian/state`" in message, (
+        f"the refusal reached the caller without the one act that resolves it, so an "
+        f"agent is told a path escaped and given nothing to do about it: {message}"
+    )
+    published = {
+        name: value
+        for name, value in (
+            ("the store path the link sits at", str(leaf)),
+            ("the target the link escaped to", str(target.resolve())),
+            ("the resolved project root", str(root.resolve())),
+            ("the temporary tree this run was given", str(tmp_path.resolve())),
+        )
+        if value in message
+    }
+    assert not published, (
+        f"the refusal published the operator's filesystem layout to an MCP caller "
+        f"(GHSA-97q9): {published}\n{message}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_escaping_state_directory_is_refused_without_naming_the_resolved_layout(
+    project: ProjectRegistry, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same envelope one layer up, at ``_resolve`` rather than at this tool.
+
+    The face above plants an escaping findings **leaf** and is answered inside
+    ``review.findings``' own body. This one plants an escaping
+    ``.theurian/state`` **directory**, which refuses a layer earlier -- in
+    ``_resolve``, where ``read_active_state``'s handler answers
+    ``_with_remedy(exc)``. That fold keeps ``str(exc)``, and a
+    ``ProjectPathEscapeError``'s message is ``_contain``'s own: *"<leaf> resolves
+    outside the project root <root>"*, two absolute paths. So a tool taught the
+    constant for its own store path still published the operator's layout through
+    the resolve it shares with every other project-scoped tool.
+
+    **The seam is ``_resolve`` and the reach is every tool that resolves through
+    it.** ``knowledge.search``, ``knowledge.get``, ``knowledge.status``,
+    ``review.findings`` and ``review.search`` each call it, so what is under test
+    is one handler rather than one tool. It is driven through ``review.findings``
+    because this file already builds the registered, migrated,
+    provenance-recorded checkout the refusal has to be reached *past*
+    (``_check_out``, ``_land``) -- the envelope ``_resolve`` publishes is the same
+    on all five.
+
+    **The project is moved behind a symbolic link on purpose, and that is the
+    differential.** Left in place, the root the message names is the same string
+    the registry records and ``project.list`` already publishes, so an absence
+    assertion could not tell "no layout" from "a layout this caller was given
+    anyway". Moved, ``ProjectPaths.of`` resolves the registered spelling and every
+    path in the message is the **resolved** form -- the operator's physical
+    layout, which no Theurian surface publishes to an MCP caller. What this test
+    pins is that the response never names that form.
+
+    **The assertion is over the whole absolute-path population, not over that
+    pair.** ``str(tmp_path.resolve())`` is a prefix of every path this run can
+    produce, so it fires for a disclosure through any substring at all, and the
+    four named candidates beside it exist to say *which* one leaked. The
+    registered spelling is in the set and carries no teeth here: measured at
+    ``68d8ee19`` it was already absent, because ``ProjectPaths.of`` resolves the
+    root before a single path is built. It is asserted because the invariant is
+    "no absolute path in the message component", not "not the resolved one".
+    Whether the registered spelling may be published by *other* branches of this
+    surface is a separate question with its own answer -- the no-built-knowledge-
+    state refusal a few lines below in ``_resolve`` publishes ``rootPath`` through
+    ``_publishable``, deliberately -- and this test does not settle it.
+
+    **The cure survives, and it is layout-free by construction rather than by
+    luck.** ``ProjectPaths._escape_remedy`` keys this refusal to
+    ``derived_escape_remedy(self.knowledge_dir.name, parts[0])``, and that
+    function renders ``f"{knowledge_directory_name}/{subdirectory}"`` -- a
+    *basename* (``.theurian``) and a relative child name (``state``). Neither
+    argument can carry an absolute path, so dropping the message while keeping
+    ``exc.remedy`` costs the caller nothing actionable.
+
+    **The cure is asserted twice, and the two assertions fail in opposite
+    directions** (round one, code review LOW: the second looks like a strict
+    subset of the first, and today it is). ``derived_escape_remedy(...) in
+    message`` recomputes the whole cure from the shipped function, so it follows
+    any rewording and catches a cure that arrived cut down. ``"Remove
+    `.theurian/state`" in message`` is a **literal**, so it follows nothing: it is
+    what goes RED when the cure is reworded into something that no longer opens
+    with the one act an operator has to perform. A test that recomputed both sides
+    would call a silently reworded remedy correct, which is the vacuity
+    :data:`PATH_ESCAPE_SENTENCE` exists for one paragraph up. A remedy that
+    started interpolating a path is caught by the population sweep above rather
+    than by either of these.
+
+    **What the message half is, and not only what it is not.**
+    :data:`~theurian.mcp.tools.PATH_ESCAPE_REFUSAL` is asserted present beside the
+    absence sweep, because the two do not imply each other: measured 2026-09-11, a
+    ``_with_remedy`` that dropped the message half entirely -- leaving the caller a
+    cure for a fault nobody named -- satisfied every other assertion here. The
+    absence sweep says no layout crossed; this says the caller was still told what
+    went wrong.
+
+    **And a second measurement said that assertion was not enough on its own**
+    (round one, adversarial). ``PATH_ESCAPE_REFUSAL in message`` is true of every
+    message once the constant is ``""``, and emptied, the suite stayed green while
+    every containment refusal reached its caller wordless. So
+    :data:`PATH_ESCAPE_SENTENCE` -- a literal out of the constant, written out in
+    this file -- is asserted beside it, and the emptying is RED here as of this
+    commit. The pair is what holds the message half: the constant says *this* text
+    and not another, the literal says the text still says something.
+
+    RED at ``68d8ee19``, where the message named
+    ``<resolved-root>/.theurian/state/active.json`` and ``<resolved-root>``.
+    """
+    _land(project)
+    served = await _call(project, projectId="demo")
+    assert served["count"] == 3, (
+        "the premise: this project serves before the plant, so what refuses below is "
+        "the escaping state directory and not an unresolvable project or an unbuilt store"
+    )
+
+    registered = Path(project.load()["demo"]["rootPath"])
+    monkeypatch.chdir(tmp_path)  # step out of the tree before moving it
+    elsewhere = tmp_path / "opaque-elsewhere"
+    elsewhere.mkdir()
+    physical = elsewhere / "real-demo"
+    registered.rename(physical)
+    registered.symlink_to(physical)
+    paths = ProjectPaths.of(registered)
+    state = paths.knowledge_dir / "state"
+    outside_state = tmp_path / "outside-state"
+    state.rename(outside_state)
+    state.symlink_to(outside_state)
+
+    assert paths.root != registered, (
+        "the premise: the registered spelling must resolve to a different directory, "
+        "or the resolved form this test looks for is the string the registry already "
+        "publishes and the differential is vacuous"
+    )
+    assert state.resolve() == outside_state.resolve(), "the premise: the planted link is live"
+    assert not state.resolve().is_relative_to(paths.root), (
+        "the premise: `.theurian/state` must really resolve outside the project root, "
+        "or the containment refusal this test drives never fires"
+    )
+    assert (outside_state / "active.json").exists(), (
+        "the premise: the state directory's contents moved with it, so what refuses "
+        "below is containment and not a pointer that is simply gone"
+    )
+
+    message = await _call_failing(project, projectId="demo")
+
+    # `in`, not `==`: the SDK prefixes a failing tool's message with "Error
+    # executing tool review.findings: ", which is the transport's and constant.
+    assert PATH_ESCAPE_REFUSAL in message, (
+        f"the message half arrived as something other than the one constant "
+        f"`_with_remedy` substitutes, so what is asserted below is a cure beside an "
+        f"unpinned sentence: {message}"
+    )
+    assert PATH_ESCAPE_SENTENCE in message, (
+        f"the constant reached the caller without saying what went wrong, so the "
+        f"assertion above is satisfied by a refusal carrying no words at all: {message}"
+    )
+    assert "Remove `.theurian/state`" in message, (
+        f"the refusal reached the caller without the one act that resolves it, so an "
+        f"agent is told a path escaped and given nothing to do about it: {message}"
+    )
+    assert derived_escape_remedy(paths.knowledge_dir.name, "state") in message, (
+        f"the cure arrived cut down rather than whole, so the operator is missing part "
+        f"of what `ProjectPaths._escape_remedy` published for this path: {message}"
+    )
+    leaf = paths.knowledge_dir / "state" / "active.json"
+    published = {
+        name: value
+        for name, value in (
+            ("the resolved project root", str(paths.root)),
+            ("the resolved state pointer under it", str(leaf)),
+            ("the directory the state link escaped to", str(outside_state.resolve())),
+            ("the registered spelling of the root", str(registered)),
+            ("the temporary tree this run was given", str(tmp_path.resolve())),
+        )
+        if value in message
+    }
+    assert not published, (
+        f"`_resolve` published the operator's resolved filesystem layout to an MCP "
+        f"caller (GHSA-97q9), through a seam the store-path guard above does not "
+        f"cover: {published}\n{message}"
+    )
 
 
 # -- AC-4: bounds and vocabularies ------------------------------------------

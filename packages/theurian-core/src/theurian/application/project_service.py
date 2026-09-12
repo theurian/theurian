@@ -130,6 +130,53 @@ UNBUILT_STATE_REMEDY: Final = (
     "derived state must never be version-controlled (ADR-0004)."
 )
 
+#: What :func:`verify_state_provenance` refuses with. Interpolates nothing.
+#:
+#: **The path this used to name was the operator's resolved filesystem layout**
+#: (GHSA-97q9). It read ``f"The derived knowledge state under {paths.state} ..."``,
+#: and :attr:`ProjectPaths.state` is built from a *resolved* root -- so for a
+#: project registered through a symbolic link it named the physical directory
+#: behind ``rootPath``, which is a string ``project.list`` does not hand out: that
+#: tool republishes the registry's own spelling verbatim
+#: (``_publishable_field(e.get("rootPath", ""))``). This refusal has one consumer
+#: and it is that same surface: ``git grep -n 'verify_state_provenance(paths' --
+#: packages/theurian-core/src`` answers two lines, this note's quotation of the
+#: key and the call in ``mcp/tools.py``'s ``_resolve`` -- which every
+#: project-scoped tool resolves through. So the interpolation reached only readers
+#: it was a disclosure to.
+#:
+#: **A constant here, rather than a suppressing handler at that call site**, which
+#: was the other shape available. A handler covers the seam it is written on, and
+#: a second caller would inherit the message without it; the guard belongs in the
+#: thing that renders the claim, and a string with no ``f`` prefix has nothing left
+#: to re-acquire a path through. A reader for whom the layout is *not* a
+#: disclosure holds ``paths`` at its own call site and can name the directory
+#: itself -- ``cli/index_commands.py``'s twin refusal for this same condition
+#: names no path at all.
+#:
+#: Spells the directory as :data:`UNBUILT_STATE_REMEDY` above does, so the refusal
+#: and its cure name one location rather than two spellings of it. **That spelling
+#: is hardcoded where the old message derived it** (round one, code review LOW):
+#: ``.theurian/state/`` is written out here, so a deployment that renamed its
+#: knowledge directory reads a relative path it does not have -- correct only
+#: while the default holds. It is the trade :data:`UNBUILT_STATE_REMEDY` already
+#: makes one constant up, taken for the same reason: deriving it means
+#: interpolating from ``paths``, and interpolating from ``paths`` is what put the
+#: operator's resolved layout on this wire. A relative name that is wrong for a
+#: renamed directory sends a reader to a path that is not there; the derived form
+#: sent every reader the operator's machine layout. The class-level
+#: claim -- that no response from any registered tool carries the resolved layout
+#: -- is not asserted here; it is measured by
+#: ``tests/integration/test_resolved_layout_never_crosses.py``, whose
+#: ``delivered-state`` plant is the cell this constant turns green and which goes
+#: RED if an interpolation returns.
+_UNBUILT_STATE_REFUSAL: Final = (
+    "This project's derived knowledge state under .theurian/state/ was not built by this "
+    "Theurian installation, so it will not be served. It was delivered with the project "
+    "rather than rebuilt here from the Git-tracked migrations, which is exactly what an "
+    "untrusted repository must not be able to do (ADR-0004)."
+)
+
 #: The one review-finding store a project has (ADR-0029 phase-2).
 #:
 #: Findings are a wholesale projection of the repository's public history, so a
@@ -157,18 +204,73 @@ FINDINGS_STORE_ID: Final = "local"
 #: report a missing store for a project that has one.
 REVIEW_SEARCH_STORE_ID: Final = "local"
 
+
+def _review_search_store_filename(store_id: str) -> str:
+    """The name the review search store is written and read under.
+
+    One spelling for two callers that must not drift:
+    :meth:`ProjectPaths.review_search_for`, which derives the path, and
+    :data:`REVIEW_SEARCH_STORE_FILENAME`, which the refusal and the cure below
+    name. Two literals would eventually send a reader to remove a file nothing
+    writes -- :data:`FINDINGS_STORE_ID`'s note records the same failure for the
+    id itself.
+    """
+    return f"theurian-review-{store_id}.sqlite"
+
+
+#: The file this project's one review search store lives in. Derived from
+#: :data:`REVIEW_SEARCH_STORE_ID` rather than typed out, so the cure below names
+#: the file ``theurian review build`` really writes.
+REVIEW_SEARCH_STORE_FILENAME: Final = _review_search_store_filename(REVIEW_SEARCH_STORE_ID)
+
 #: The cure when the review search store cannot be named at all -- a store id that
 #: resolves outside ``.theurian/state/``, or that is not a usable filename.
 #:
-#: It names a rebuild rather than a repair because the store is derived (ADR-0004)
-#: and its source, the evidence files under ``.theurian/review/``, is still on
-#: disk. It deliberately does **not** tell anyone to delete anything under
+#: **The removal is published as something to run, and that is the fix for a
+#: closed loop** (verdict pass, adversarial HIGH). This used to open "Remove the
+#: file this names from .theurian/state/" -- prose, naming no file -- and back it
+#: with ``theurian review build``. The backticked spans are what an automated
+#: consumer lifts out of a cure, which is the key
+#: ``test_published_cures_are_executable.py`` runs a published cure by, and the
+#: one command this text backticked resolves the store through
+#: :meth:`ProjectPaths.review_search_for` before it reads an evidence file: it
+#: meets the same fault that produced the refusal and hands the caller back a
+#: byte-identical one. The removal is the step that clears it, so the removal is
+#: named as a command, over the file :data:`REVIEW_SEARCH_STORE_FILENAME` spells.
+#:
+#: **The operand is this module's own constant, never the id that was refused.**
+#: By the time this text is read, that id is a string that climbed out of
+#: ``.theurian/state/``, and ``rm`` is not a command to build out of input like
+#: that. What the cure names is the file ``theurian review build`` writes, which
+#: is the file to clear for the one id this composition passes --
+#: :meth:`ProjectPaths.review_search_for` records why that id is a constant, and
+#: the day a pointer supplies it this cure has to be keyed on the refused file
+#: instead.
+#:
+#: **``rm`` alone, with no ``rm -rf`` twin, and the shape argument is what makes
+#: that safe.** :func:`derived_escape_remedy` publishes both forms because it
+#: names a *directory*, which plain ``rm`` cannot remove and whose link form
+#: ``rm -rf`` follows through a trailing slash. This names a leaf, and a
+#: directory sitting at it reaches neither arm that carries this cure: it
+#: resolves inside ``.theurian/state/``, so the containment arm does not fire,
+#: and it makes ``resolve`` raise nothing, so the unusable-name arm does not
+#: either. What is left is a link -- which holds no bytes of its own -- and a
+#: regular file, and plain ``rm`` removes both without the force ``-rf`` adds.
+#:
+#: **What the removal costs is stated for each of those two shapes rather than
+#: waved past**: nothing for a link, and for the store itself only a projection
+#: the next command rebuilds from the evidence files still on disk (ADR-0004). It
+#: deliberately does **not** tell anyone to delete anything under
 #: ``.theurian/review/``: that directory is the source and has no rebuild
 #: (ADR-0030 decision 3).
 REVIEW_SEARCH_STORE_REMEDY: Final = (
-    "Remove the file this names from .theurian/state/ and run `theurian review build` "
-    "to rebuild the search store from the evidence files under .theurian/review/. "
-    "The evidence files are the source and are not touched by a rebuild."
+    f"Remove `.theurian/state/{REVIEW_SEARCH_STORE_FILENAME}` if it is there -- run "
+    f"`rm .theurian/state/{REVIEW_SEARCH_STORE_FILENAME}` -- then run `theurian review "
+    f"build` to rebuild the search store from the evidence files under .theurian/review/. "
+    f"A clone can deliver that file as a symbolic link pointing out of the working tree: "
+    f"removing a link costs nothing, and removing the store itself costs only the "
+    f"projection the rebuild recreates. The evidence files are the source and are not "
+    f"touched by a rebuild."
 )
 
 #: The half of "rename a project" that is easy to omit and impossible to notice.
@@ -1567,8 +1669,9 @@ class ProjectPaths:
                 the project, which the ``self.state`` access below refuses first.
         """
         state = self.state  # one `_contained`; an escaping `state` refuses here
+        filename = _review_search_store_filename(store_id)
         try:
-            candidate = (state / f"theurian-review-{store_id}.sqlite").resolve()
+            candidate = (state / filename).resolve()
             contained = candidate.is_relative_to(state.resolve())
         except (ValueError, OSError) as exc:
             raise ProjectError(
@@ -1576,8 +1679,30 @@ class ProjectPaths:
                 remedy=REVIEW_SEARCH_STORE_REMEDY,
             ) from exc
         if not contained:
+            # **Layout-free by construction, which is why the boundary above this
+            # needs no fold for it** (GHSA-97q9, and the closed loop that fold
+            # cost: verdict pass, adversarial HIGH). This message used to end
+            # *"resolves outside {state}"* -- the resolved `.theurian/state`, and
+            # for a project registered through a symbolic link the physical
+            # directory behind `rootPath`, which no tool publishes. `review.search`
+            # answered the whole refusal with an availability constant to keep that
+            # string off the wire, and the constant's cure -- `theurian review
+            # build` -- resolves this same file through this same method and exits
+            # 1 on the fault that produced the refusal, so the caller was handed
+            # back a byte-identical refusal. While the message carried a location,
+            # the fold was the only place to fix that; the message no longer does,
+            # and the cure crosses beside it.
+            #
+            # Two things are named and neither is a path this process resolved: the
+            # store's own file name, built from `store_id` by the same helper that
+            # built the candidate above, and the project-relative
+            # `.theurian/state/`, spelled as `REVIEW_SEARCH_STORE_REMEDY` spells
+            # it. The docstring above records why `store_id` is a constant in this
+            # composition; `!r` is what keeps it escape-safe whatever supplies it
+            # later.
             raise ProjectError(
-                f"The review search store id {store_id!r} resolves outside {state}.",
+                f"The review search store file {filename!r} does not resolve to a "
+                f"location inside .theurian/state/.",
                 remedy=REVIEW_SEARCH_STORE_REMEDY,
             )
         return candidate
@@ -2219,10 +2344,44 @@ class ActiveIndexPointer:
 def read_active_index_pointer(paths: ProjectPaths) -> ActiveIndexPointer:
     """Read the published retrieval index pointer, distinguishing its failures.
 
-    Never raises. The index is derived (ADR-0004), so every problem here is a
-    missing optimisation and the caller answers without one — but it still has
-    to be able to say *which* problem, because that is what decides the remedy
-    it prints.
+    Every problem *with the file* is answered rather than raised: the index is
+    derived (ADR-0004), so a pointer that cannot be interpreted is a missing
+    optimisation and the caller answers without one — but it still has to be
+    able to say *which* problem, because that is what decides the remedy it
+    prints. The ``except`` below names the failures that get that treatment.
+
+    **One failure is not answered here, and it is not a file problem: the
+    containment refusal raised while deriving the path** (round one, security
+    and code review, correcting a "Never raises." this replaces).
+    :attr:`ProjectPaths.active_index_pointer` resolves before this function has
+    a file to probe, so a ``.theurian/state`` or an ``active-index.json``
+    delivered as a link out of the tree leaves here as
+    :class:`ProjectPathEscapeError`. **Deliberately: the CLI grades it, and
+    absorbing it here was measured undoing #525.**
+
+    The recipe that reproduces that measurement is **two edits, not one**: move
+    the ``pointer =`` resolution below into the ``try`` *and* widen the
+    ``except`` by :class:`ProjectPathEscapeError`. Widening the ``except``
+    alone changes nothing, because the resolution that raises sits above the
+    ``try`` -- which is the whole reason the refusal escapes this function, and
+    a sentence here used to publish that half-recipe as the reproduction
+    (verdict pass, adversarial MEDIUM). Under the two-edit recipe,
+    ``tests/integration/test_contained_path_envelope.py`` turns three of its
+    cases red for the ``active_index_pointer`` plant alone -- ``{'no longer
+    refusing': ['index status', 'migrate apply', 'project status']}``,
+    ``containment refusals graded something other than 4:
+    {('active_index_pointer', 'index gc'): 1}``, and ``index gc`` publishing
+    the delete-the-pointer cure in place of the cure for what escaped. That
+    split of one class across two exit codes is the thing #525 unified. What a
+    path leaving the working tree means cannot be said by a reader of its
+    contents, and "delete the pointer" is the wrong cure for a
+    ``.theurian/state`` that escaped.
+
+    The MCP surface makes the opposite trade for the same refusal, and makes it
+    at its own consumer: :func:`~theurian.mcp.search._published_index` converts
+    it to ``pointer-invalid`` there, because a tool caller is not the reader who
+    owns the checkout and the paths inside the message are the operator's
+    layout (GHSA-97q9).
 
     ``indexBuildId`` is required, not merely read. A pointer without one names no
     build, so it is not a usable pointer; accepting it built a path out of an
@@ -3244,14 +3403,10 @@ def verify_state_provenance(
 
     Raises:
         ProjectError: If no out-of-tree record shows this installation built the
-            state the in-tree pointer names. Carries :data:`UNBUILT_STATE_REMEDY`;
-            quotes no cell content, only the state directory's own path.
+            state the in-tree pointer names. The message is
+            :data:`_UNBUILT_STATE_REFUSAL` and the cure is
+            :data:`UNBUILT_STATE_REMEDY` -- both constants, so neither can quote a
+            cell, a pointer field, or a path on the machine serving the request.
     """
     if not provenance.has_state(paths.root, str(active.state_hash)):
-        raise ProjectError(
-            f"The derived knowledge state under {paths.state} was not built by this "
-            f"Theurian installation, so it will not be served. It was delivered with the "
-            f"project rather than rebuilt here from the Git-tracked migrations, which is "
-            f"exactly what an untrusted repository must not be able to do (ADR-0004).",
-            remedy=UNBUILT_STATE_REMEDY,
-        )
+        raise ProjectError(_UNBUILT_STATE_REFUSAL, remedy=UNBUILT_STATE_REMEDY)

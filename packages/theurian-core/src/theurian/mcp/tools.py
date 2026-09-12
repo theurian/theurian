@@ -41,6 +41,7 @@ from theurian.application.project_service import (
     REVIEW_SEARCH_STORE_ID,
     BuildProvenance,
     ProjectError,
+    ProjectPathEscapeError,
     ProjectPaths,
     ProjectRegistry,
     read_active_state,
@@ -205,30 +206,55 @@ FINDINGS_CAPACITY_REFUSAL: Final = (
 #: not exist, this installation did not build it (ADR-0004, SEC-7), it was built
 #: by a superseded schema or trailer grammar, or it cannot be read.
 #:
-#: "It has not been built" in the text below is read as *has not been built here*,
-#: which is what lets one sentence cover the second cause as honestly as the
-#: first: a store delivered with a repository is one this installation has no
-#: record of building, and the cure for it is the same local rebuild.
+#: **The containment arm has left this constant, and the paragraph that put it
+#: here is what took it away again** (verdict pass, adversarial HIGH). A store
+#: leaf resolving outside the project root now answers
+#: :data:`PATH_ESCAPE_REFUSAL` and the escape cure, at `review_findings`' own
+#: guard in :func:`register`, which records the overturn and its reasoning. The
+#: sentences below were written while that arm folded in here; each is true of
+#: the narrower set it now covers, and the one that turned on the containment
+#: arm says so where it stood.
 #:
-#: **One message for all four, and it is a constant.** It interpolates nothing --
-#: not the project, not the filters, not the file, and above all nothing read
+#: **The text below names no cause, and that is what makes it honest for every
+#: arm** (round one, code review). It used to enumerate two -- "it has not been
+#: built, or it was built by a superseded schema or trailer grammar" -- with "has
+#: not been built" read as *has not been built here*, a stretch that covered the
+#: provenance arm because a store delivered with a repository is one this
+#: installation has no record of building. The containment arm broke the
+#: enumeration rather than stretching it: that store **was** built here and is
+#: recorded as built, so the sentence told the caller a cause that had not fired.
+#: That arm is now answered elsewhere, which shrinks the claim back to the set it
+#: was ever true of -- the four above, where nothing servable is here and the
+#: cure really is the same local rebuild. The text says those two things and
+#: stops, which is what kept it honest through the arm's arrival and departure
+#: alike.
+#:
+#: **One message for all of them, and it is a constant.** It interpolates nothing
+#: -- not the project, not the filters, not the file, and above all nothing read
 #: from the store -- so it cannot become the "an error that fires for one input
 #: and not another" channel SEC-13 closes elsewhere (the same discipline
-#: `SEARCH_CAPACITY_REFUSAL` holds). Distinguishing the four arms would publish
+#: `SEARCH_CAPACITY_REFUSAL` holds). Distinguishing the arms would publish
 #: which of them fired, which is a statement about a file the caller cannot read
 #: and buys nothing: the cure is the same rebuild for each, because the store is
-#: a projection of git history (ADR-0004). The provenance arm is the one where
-#: distinguishing would cost something rather than merely buying nothing: telling
-#: "this store is not yours" apart from "there is no store" tells whoever planted
-#: it that the plant was detected, and tells the victim a story about a file only
-#: the attacker wrote.
+#: a projection of git history (ADR-0004). **"Buys nothing" is what the
+#: containment arm could not satisfy, and the fold's own note recorded the
+#: measurement that proves it.** `theurian findings build` resolves the same leaf
+#: through the same helper, ahead of any git read (`cli/findings_commands.py`),
+#: so an operator sent here by this text meets the containment refusal at exit 4
+#: and is returned to where they started -- the closed loop
+#: :func:`~theurian.application.project_service.derived_escape_remedy` was
+#: written against (#483 round one, H-1). The cure is not the same rebuild for
+#: that arm, so one message for it too was a cure that could not run. The
+#: provenance arm is the one where distinguishing would cost something rather
+#: than merely buying nothing: telling "this store is not yours" apart from
+#: "there is no store" tells whoever planted it that the plant was detected, and
+#: tells the victim a story about a file only the attacker wrote.
 #:
 #: An empty result would be the alternative and is deliberately not it: "nothing
 #: has been built here" read as "this project has no findings" is a false absence
 #: a caller acts on.
 FINDINGS_UNAVAILABLE_REFUSAL: Final = (
-    "This project has no review-finding store that can be served: it has not been "
-    "built, or it was built by a superseded schema or trailer grammar. Run "
+    "This project has no review-finding store that can be served from here. Run "
     "`theurian findings build` in the project to rebuild it from git history. This "
     "refusal message is a constant: it carries nothing from your request or from "
     "any project's contents."
@@ -251,8 +277,31 @@ REVIEW_SEARCH_CAPACITY_REFUSAL: Final = (
 #: What `review.search` answers when the store cannot be served from: it does not
 #: exist, this installation did not build it (ADR-0004, SEC-7, T-19), it was built
 #: by a superseded schema or from a superseded evidence format, or it cannot be
-#: read. It is also what a project path that stops resolving answers with, so that
-#: arm cannot publish an operator's absolute layout (GHSA-97q9).
+#: read.
+#:
+#: **No containment refusal folds into this constant any more** (verdict pass,
+#: adversarial HIGH; the same overturn
+#: :data:`FINDINGS_UNAVAILABLE_REFUSAL` records at the tool next door). A store
+#: path that does not resolve inside `.theurian/state/` crosses as its own message
+#: beside its own cure now, whichever of the two checks refused it -- the
+#: `_contain` chokepoint a level up, or
+#: :meth:`ProjectPaths.review_search_for`'s own state-scoped one, which used to
+#: fold in here because its message interpolated the resolved state directory
+#: (GHSA-97q9). That interpolation is gone, so the fold suppressed nothing and
+#: cost the caller the `rm` step this constant's rebuild cannot perform. The guard
+#: in :func:`register`'s `review_search` body records the whole of it.
+#:
+#: **The text below names no cause, and the two it used to name were false of
+#: arms that really fire** (verdict pass, adversarial MEDIUM; the same correction
+#: :data:`FINDINGS_UNAVAILABLE_REFUSAL` took one round earlier). It read "it has
+#: not been built, or it was built by a superseded schema or from a superseded
+#: evidence format" -- and the mode arm the tool's own docstring measures is
+#: neither of those: a `0o500` state directory makes a WAL read fail on a store
+#: that is present and current. The store-id containment arm broke the same
+#: enumeration while it folded in here, and has since left; what remains is the
+#: set the claim was ever true of. What is true of every arm is that nothing
+#: servable is here and that the cure is the same local rebuild; the text says
+#: those two things and stops.
 #:
 #: **One message for all of them, and it is a constant.** It interpolates nothing
 #: -- not the project, not the filters, not the file, and above all nothing read
@@ -271,11 +320,88 @@ REVIEW_SEARCH_CAPACITY_REFUSAL: Final = (
 #: been built here" as "this project's review history is empty" is a false absence
 #: a caller acts on, which is why the two are different answers rather than one.
 REVIEW_SEARCH_UNAVAILABLE_REFUSAL: Final = (
-    "This project has no review search store that can be served: it has not been "
-    "built, or it was built by a superseded schema or from a superseded evidence "
-    "format. Run `theurian review build` in the project to rebuild it from the "
-    "evidence files under .theurian/review/. This refusal message is a constant: it "
-    "carries nothing from your request or from any project's contents."
+    "This project has no review search store that can be served from here. Run "
+    "`theurian review build` in the project to rebuild it from the evidence files "
+    "under .theurian/review/. This refusal message is a constant: it carries "
+    "nothing from your request or from any project's contents."
+)
+
+
+#: What a containment refusal says on this surface, in place of the message
+#: :class:`ProjectPathEscapeError` was built with.
+#:
+#: **Substituted at both tool boundaries, which is two places and not one.**
+#: :func:`_with_remedy` swaps it in for the refusals :func:`register`'s bodies
+#: catch themselves, and appends the exception's own ``remedy`` so the cure
+#: still travels; :func:`_forwarding` swaps it in for a refusal raised below a
+#: tool body that no such catch sits in front of, and appends nothing, for the
+#: parity reason its own docstring gives. A seam with only one of the two let
+#: an escaping ``.theurian/state/active-index.json`` out through
+#: ``knowledge.search`` (round one, security and code review) -- so the pair is
+#: the unit, and a third boundary would need this substitution to be added to
+#: it.
+#:
+#: That message is :func:`~theurian.application.project_service._contain`'s or
+#: :meth:`ProjectPaths.of`'s -- *"<leaf> resolves outside the project root
+#: <root>"* -- and the two halves are not the same kind of thing. **The root
+#: half is the resolved project root at every one of the four raise sites**:
+#: ``_contain`` interpolates ``resolved_root`` and ``of`` interpolates
+#: ``resolved``, and each is that function's own ``root.resolve()``. The leaf
+#: half differs by site -- ``_contain`` interpolates ``path``, the absolute
+#: location a helper asked for, while ``of`` interpolates ``directory``, the
+#: *relative* knowledge-directory name (``.theurian`` by default), which names
+#: nothing about the machine.
+#:
+#: So it is the root half that *resolved* does the work on, and one resolved
+#: root is disclosure enough -- which is why the suppression covers ``of``'s
+#: pair as well as ``_contain``'s, rather than only the site with two paths in
+#: it. (Round one, code review: the sentence this replaces said both halves
+#: were resolved absolute paths, which was never true of ``of``'s pair.) A
+#: resolved root is correct on a terminal, where the reader owns the checkout,
+#: and the operator's machine layout on this one (GHSA-97q9). For a project
+#: registered through a symbolic link it is not even the ``rootPath`` the
+#: registry records and ``project.list`` republishes verbatim
+#: (``_publishable_field(e.get("rootPath", ""))``, below): it is the physical
+#: directory behind it, and a caller reading ``project.list`` was not given that
+#: string.
+#:
+#: Two of the four say *"does not resolve to a location inside"* instead and
+#: append ``str(exc)`` -- the ``(OSError, ValueError)`` arm in each function,
+#: whose cause can carry a path of its own. The constant replaces the **whole**
+#: message at both boundaries, so nothing those two arms word differently
+#: reaches this wire either.
+#:
+#: **It interpolates nothing** -- no path, no project id, nothing off the
+#: exception -- so it cannot vary with *which* path escaped: an escaping
+#: ``.theurian`` and an escaping ``.theurian/state`` produce the same string
+#: here. What still differs between those two is the remedy beside it.
+#:
+#: That variance is a smaller thing than the message's would be. The population is
+#: the raise sites of the class, and the key that answers it without reading its
+#: own quotation is ``git grep -nE 'ProjectPathEscapeError\($' --
+#: packages/theurian-core/src``: run 2026-09-11 it printed four lines, two in
+#: ``_contain`` and two in :meth:`ProjectPaths.of`. Each passes a remedy built
+#: from relative names alone -- ``KNOWLEDGE_DIR_ESCAPE_REMEDY``, a constant, for
+#: ``of``'s pair, and for ``_contain``'s whatever
+#: :meth:`ProjectPaths._escape_remedy` chooses between that constant and
+#: ``derived_escape_remedy``, which renders
+#: ``f"{knowledge_directory_name}/{subdirectory}"`` from a *basename*
+#: (``.theurian``) and a member of ``DERIVED_SUBDIRECTORIES``. That function has
+#: one caller, ``derived_escape_remedy(self.knowledge_dir.name, parts[0])``, and
+#: neither argument can carry an absolute path. So the remedy's variance names
+#: which derived subdirectory the link sits at or below, drawn from Theurian's
+#: own fixed vocabulary, and never a location on the machine.
+#: ``cli/commands.py``'s ``_fail_a_path_escape`` enumerates the same four sites
+#: for the neighbouring question of whether a remedy can arrive empty.
+#:
+#: Says less than the same refusal does on a terminal, on purpose, and what makes
+#: that affordable is who can act on it: the reader holding the checkout, for whom
+#: ``cli/commands.py``'s ``_fail_a_path_escape`` publishes ``str(exc)`` beside the
+#: same remedy -- the message whole, resolved root and all, to someone that root
+#: is not a disclosure to.
+PATH_ESCAPE_REFUSAL: Final = (
+    "This project's knowledge directory, or a path Theurian derived under it, does "
+    "not resolve to a location inside the project root."
 )
 
 
@@ -453,8 +579,8 @@ def _forwarding[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
     ``ToolError``, and so are treated by mcp >= 2.1 as crashes. Their remedies
     reached callers under 2.0.0 and stopped under 2.1 (issue #491).
 
-    **Parity, not enrichment.** The wrapper raises ``ToolError(str(exc))`` and
-    nothing more, because ``str(exc)`` is exactly what mcp 2.0.0's blanket
+    **Parity, not enrichment.** The wrapper raises ``ToolError(str(exc))``, and
+    adds nothing to it, because ``str(exc)`` is exactly what mcp 2.0.0's blanket
     ``except Exception`` arm folded into ``Error executing tool {name}: {e}``.
     Deliberately *not* ``_with_remedy``'s fold: ``exc.remedy`` was dropped by
     2.0.0 too, so adding it here would publish text this wire has never
@@ -465,6 +591,48 @@ def _forwarding[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
     ``StateDatabaseUnreadableError``'s own docstring is written against: it
     carries the failing exception's *type* and never the corrupted cell, and
     that stays true because this wrapper only passes its message through).
+
+    **A containment refusal crosses as the constant, and that is a narrowing**
+    (GHSA-97q9). :class:`ProjectPathEscapeError` is the one ``TheurianError``
+    whose message is the operator's filesystem layout rather than a description
+    of it -- :data:`PATH_ESCAPE_REFUSAL` records which half of that message is
+    what -- so the arm below substitutes the constant for ``str(exc)``. It
+    takes *off* the wire and puts nothing on it, which is the direction the
+    paragraph above forbids widening in: ``exc.remedy`` still stays behind
+    here, unlike at :func:`_with_remedy`, because parity forbids restoring a
+    field 2.0.0 dropped.
+
+    **The two substitutions are a pair, and this seam is the half that was
+    missing.** ``_with_remedy`` converts a ``ProjectError`` the tool bodies in
+    :func:`register` catch themselves; this seam converts what no such catch
+    sits in front of. ``knowledge.search``'s index-pointer read was the second
+    kind: measured 2026-09-11 against ``build_server``, a
+    ``.theurian/state/active-index.json`` delivered as a link out of the tree
+    reached the caller through here as ``<leaf> resolves outside the project
+    root <resolved root>``, at the one boundary that had no substitution.
+
+    **It is a backstop: no shipped composition reaches it, and a unit case
+    drives it anyway.** That same read now converts the refusal at its own
+    consumer -- :func:`~theurian.mcp.search._published_index` answers
+    ``pointer-invalid``, which serves a degraded result instead of refusing, and
+    is the better answer for a derived artefact. Which leaves this arm covering
+    the shape the round actually found: a refusal raised below a tool body that
+    nobody thought to catch. Measured rather than assumed -- a
+    ``pytest --cov=theurian.mcp.tools --cov-report=term-missing`` run over
+    ``test_resolved_layout_never_crosses.py``, ``test_review_findings_tool.py``,
+    ``test_escaping_knowledge_dir_grading.py``,
+    ``test_contained_path_envelope.py`` and ``test_mcp_tools.py`` reported the
+    ``raise`` below among its missing lines, so no plant in those sweeps drives
+    it and none of them would notice its deletion.
+
+    The driving test this paragraph used to owe landed at ``5ccfbbb9``:
+    ``tests/unit/test_tool_error_type_contract.py``'s
+    ``test_a_containment_refusal_crosses_the_seam_as_the_constant_and_nothing_else``
+    raises the class through ``_forwarding(raises)()`` directly and asserts the
+    four things that fail separately -- the wire text *is* the constant, the
+    constant still says something, the operator's layout is gone, and
+    ``exc.remedy`` stayed behind. So deleting the arm below is RED in that file,
+    which is what the coverage run above says the integration sweeps cannot do.
 
     **Scoped to ``TheurianError`` alone.** A ``TypeError`` or a bare
     ``sqlite3.Error`` is a crash, not a refusal, and upstream's decision to keep
@@ -482,6 +650,12 @@ def _forwarding[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
             result = fn(*args, **kwargs)
         except ToolError:
             raise
+        except ProjectPathEscapeError as exc:
+            # Ahead of the arm below, because it is a `TheurianError` and would
+            # otherwise take it. The remedy is left behind on purpose: this seam
+            # restores what mcp 2.0.0 published and no more, so the cure travels
+            # only from the boundary that already folded it in.
+            raise ToolError(PATH_ESCAPE_REFUSAL) from exc
         except TheurianError as exc:
             raise ToolError(str(exc)) from exc
         if inspect.isawaitable(result) or inspect.isasyncgen(result):
@@ -1094,6 +1268,25 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         arrive the same way, from the same layer, and lost their remedy to the
         same line of SDK code. One fold, applied wherever a ``ProjectError``
         would otherwise cross the tool boundary.
+
+        **A containment refusal crosses as its cure alone** (GHSA-97q9).
+        :class:`ProjectPathEscapeError` is raised with
+        :func:`~theurian.application.project_service._contain`'s or
+        :meth:`ProjectPaths.of`'s own message, and each of those names the
+        **resolved** project root -- the operator's machine layout on this
+        surface, and for a project registered through a symbolic link not even
+        the ``rootPath`` the registry records. (Which half of the message that
+        root is, and what the other half holds at each site, is
+        :data:`PATH_ESCAPE_REFUSAL`'s to record; it is not two absolute paths
+        everywhere, as a sentence here used to say.) So the message component is
+        replaced by :data:`PATH_ESCAPE_REFUSAL` and only ``exc.remedy`` travels.
+        ``state_database_named``'s handler in :func:`_resolve` already holds that
+        rule for its own neighbour, and the message half is the half they share:
+        that handler drops the remedy as well, because *its* cure is keyed on a
+        cause the call site did not ask with, while every cure arriving at this
+        branch is keyed on exactly what escaped and is built from relative names
+        (:data:`PATH_ESCAPE_REFUSAL` carries the key that enumerates them).
+        Every other ``ProjectError`` takes the fold below unchanged.
         """
         # Bounded on the way out (round two, adversarial H-2). Everything this
         # wraps is a `ProjectError` built somewhere else, and two of them
@@ -1102,9 +1295,21 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         # field verbatim. `!r` at those sites makes them escape-safe and leaves
         # them length-unbounded, so the bound is applied here, once, where every
         # such refusal passes.
-        return ToolError(
-            " ".join(part for part in (_bounded_message(str(exc)), exc.remedy) if part)
+        #
+        # The constant needs neither treatment -- it is this module's own text,
+        # ASCII-only and well under `_MAX_MESSAGE_CHARS` -- so it is substituted
+        # rather than bounded, and the `if part` filter still drops a remedy
+        # that is empty. Said as a relation to the bound and not as a count: the
+        # "128 characters" this replaces was hand-copied, and a count in a
+        # comment is one rewording of the constant away from being false (round
+        # one, code review LOW). Anything checking it recomputes `len()` from
+        # the constant rather than reading a number here.
+        message = (
+            PATH_ESCAPE_REFUSAL
+            if isinstance(exc, ProjectPathEscapeError)
+            else _bounded_message(str(exc))
         )
+        return ToolError(" ".join(part for part in (message, exc.remedy) if part))
 
     def _registry_snapshot() -> tuple[dict[str, dict[str, str]], tuple[str, ...]]:
         """The registry's two halves: what loaded, and what was skipped.
@@ -1283,20 +1488,32 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         # the one resolve on this path that was not (#550). `of`'s join check
         # refuses a `.theurian` a clone delivered as a link out of the working
         # tree; raised from here it reached `_forwarding`, which republishes
-        # `str(exc)` and drops `.remedy` *by design* -- so an agent was told
-        # ".theurian resolves outside the project root …" and given no next
-        # action, while the leaf face of the identical root cause arrived one line
-        # below through `_with_remedy` carrying "Remove `.theurian/state` …".
+        # `str(exc)` and drops `.remedy` *by design* -- so an agent was told a path
+        # had escaped and given no next action, while the leaf face of the
+        # identical root cause arrived one line below through `_with_remedy`
+        # carrying "Remove `.theurian/state` …".
         #
-        # `_with_remedy` and not the message-suppressing treatment
-        # `state_database_named`'s handler gives its neighbour, because both of
-        # that one's reasons are false here. The absolute path this message names
-        # is `rootPath` itself, which the "no built knowledge state" refusal three
-        # lines below already publishes to this same caller through `_publishable`,
-        # and `project.list` publishes for every registered project; the entry's
-        # own `rootPath` is not withheld from the grant that named the project.
-        # (`_unresolvable` names project *ids*, not `rootPath` -- so it is not the
-        # precedent, the no-built-state refusal is.) And the remedy is
+        # **What crossed here was a resolved path, and the note this replaces said
+        # otherwise.** It recorded that `_with_remedy` could fold `of`'s message in
+        # because "the absolute path this message names is `rootPath` itself",
+        # which the no-built-knowledge-state refusal three lines below publishes
+        # through `_publishable` and `project.list` publishes for every registered
+        # project. `of` interpolates `root.resolve()`, not the registry's string:
+        # for a project registered through a symbolic link the message names the
+        # physical directory behind `rootPath`, which neither of those two surfaces
+        # hands out (`project.list` republishes `e.get("rootPath", "")`; the
+        # refusal below interpolates `entry['rootPath']`). Measured 2026-09-11
+        # through `build_server`, a registration whose `rootPath` is a link and a
+        # `.theurian` planted as a link out of the tree: `of` refuses with
+        # ".theurian resolves outside the project root <the physical directory>",
+        # which is what the pre-change fold published and is a string the registry
+        # does not hold. `knowledge.status` on that plant now answers
+        # `PATH_ESCAPE_REFUSAL` and the remedy, with no absolute path in it.
+        #
+        # So the suppression `state_database_named`'s handler gives its neighbour
+        # now covers this arm too, and it is applied at `_with_remedy` rather than
+        # here -- one funnel, so a call site written later inherits it instead of
+        # inheriting the fold. The cure is what survives, and it is the right one:
         # `KNOWLEDGE_DIR_ESCAPE_REMEDY`, keyed on the knowledge directory -- which
         # is exactly what escaped here, rather than the mis-keyed cure a pointer's
         # own `../` would have earned.
@@ -1313,6 +1530,18 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             # reached the agent as `'utf-8' codec can't decode byte 0xb9 in
             # position 15`: an OS-level string, naming no file and no next
             # action, in answer to a question about a project.
+            #
+            # **That reasoning was recorded for the pointer's own failures, and a
+            # second cause arrives through the same line.** `read_active_state`
+            # resolves `paths.active_pointer` *above* its own `try`, so an
+            # escaping `.theurian/state` raises `ProjectPathEscapeError` straight
+            # through it, carrying `_contain`'s pair -- the absolute leaf it was
+            # asked for and the resolved project root -- rather than the
+            # project-relative text `_under_the_project` builds for the
+            # unreadable-pointer arm. `_with_remedy` keeps the message for the
+            # arm this note was written for and suppresses it for the containment
+            # one; the cure `_escape_remedy` keyed on `state` still reaches the
+            # caller, which is the half that was ever actionable.
             raise _with_remedy(exc) from exc
         if active is None:
             msg = (
@@ -1400,6 +1629,16 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         try:
             verify_state_provenance(paths, active, provenance)
         except ProjectError as exc:
+            # The plain fold, and deliberately *not* a bespoke message like
+            # `state_database_named`'s above. What arrives here is already
+            # layout-free: that refusal is a constant naming the project-relative
+            # `.theurian/state/` (GHSA-97q9, closed at the raise site rather than
+            # at this seam, so a second caller inherits the suppression instead of
+            # inheriting the disclosure). There is nothing left for a handler to
+            # suppress -- and a bespoke wording would be keyed on this *clause*
+            # rather than on a cause, so it would have to stay true of whatever is
+            # raised under it later, where the fold keeps each refusal's own
+            # message beside its own cure.
             raise _with_remedy(exc) from exc
 
         return paths, database, active
@@ -2098,7 +2337,10 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 a filter is outside its bound or vocabulary (see
                 :mod:`theurian.mcp.findings`), or if the store cannot be served
                 from -- one constant message for that last case, whichever of its
-                four causes fired (:data:`FINDINGS_UNAVAILABLE_REFUSAL`).
+                causes fired (:data:`FINDINGS_UNAVAILABLE_REFUSAL`). The store
+                path's own containment is **not** one of them: it answers
+                :data:`PATH_ESCAPE_REFUSAL` and the escape cure, because the
+                rebuild this constant names meets that same refusal first.
         """
         # Bounds first, before the registry is read and before any file is
         # touched: a refused request costs the daemon nothing (T-6), and the
@@ -2147,7 +2389,61 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         #
         # Reach premise: see ADR-0029's landing note (slice-3) for what
         # `origin/main` is trusted to mean on a clone of the private fork.
-        store = SqliteReviewFindingStore(paths.findings_for(FINDINGS_STORE_ID))
+        try:
+            store_path = paths.findings_for(FINDINGS_STORE_ID)
+        except ProjectPathEscapeError as exc:
+            # **The message is answered, the cure travels**, which is the split
+            # `review_search`'s twin guard records in full -- the same overturn,
+            # reasoned there once rather than twice. In short: folding this arm into
+            # `FINDINGS_UNAVAILABLE_REFUSAL` published "Run `theurian findings build`"
+            # for a fault that command meets first. `findings_build` resolves this
+            # same leaf through this same helper ahead of any git read, and
+            # `_fail_a_path_escape` exits 4 on it, so the cure returned the caller to
+            # where they started; `exc.remedy` -- `derived_escape_remedy`'s
+            # remove-then-rebuild for `.theurian/state` -- was computed at the raise
+            # and thrown away here.
+            #
+            # **The response this now publishes is one the same caller could already
+            # obtain, measured rather than argued.** In a sandbox at this commit, a
+            # planted escaping store leaf and a planted escaping `.theurian/state`
+            # -- the second refused a layer up, in `_resolve` -- produced
+            # byte-identical `review.findings` refusals: `PATH_ESCAPE_REFUSAL`
+            # followed by `derived_escape_remedy('.theurian', 'state')`, which is
+            # what `_escape_remedy` keys for both. So the arm adds no string to this
+            # wire that its neighbour did not already put there. The same run ran
+            # the published cure end to end: `rm -rf .theurian/state`, `theurian
+            # migrate apply`, `theurian findings build`, each exit 0, and
+            # `review.findings` served again -- against `theurian findings build`
+            # alone at exit 4 on the unrepaired plant.
+            #
+            # Driven by data, where the `review.search` twin's guard is driven by a
+            # patched helper. `findings_for` runs one containment over the *whole* path,
+            # leaf included, so what arrives here is the store leaf itself swapped for a
+            # link out of the tree -- force-added past ADR-0004's ignore. Neither gate
+            # above intercepts that: `_resolve` resolves `.theurian/state` before it
+            # returns (the active pointer's containment and `state_database_named`'s
+            # both go through it), so an escaping state *directory* refuses there and
+            # never reaches this line, while `provenance.has_findings` reads this
+            # installation's out-of-tree build record keyed on `(root, store id)` rather
+            # than the file. The plant is
+            # `test_a_store_path_that_resolves_outside_the_project_answers_the_escape_constant`.
+            raise _with_remedy(exc) from exc
+        except ProjectError as exc:
+            # The fail-closed base, unchanged and deliberately still here.
+            # `findings_for` routes through `ProjectPaths._contained`, whose only
+            # exit is the subclass above, so nothing reaches this line today -- the
+            # catch is keyed on what may cross this boundary, not on which subclass
+            # currently does, and a plain `ProjectError` added to that helper later
+            # must not become the `_forwarding` seam's `str(exc)`. It answers the
+            # availability constant rather than `_with_remedy` because the refusal
+            # it would forward is unwritten: `_with_remedy` keys its substitution
+            # on `ProjectPathEscapeError` alone, so a plain `ProjectError` crosses
+            # carrying whatever message it was built with, and nobody has built one
+            # here to read. `review_search`'s guard forwards its own base for the
+            # opposite reason -- that raise site exists, and is layout-free by
+            # construction (`ProjectPaths.review_search_for`).
+            raise ToolError(FINDINGS_UNAVAILABLE_REFUSAL) from exc
+        store = SqliteReviewFindingStore(store_path)
 
         # Admission-gated, like `knowledge.search` and for the same reason (T-6,
         # SEC-8, #26): this block is the only work a caller can make this daemon
@@ -2355,6 +2651,10 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 (:data:`REVIEW_SEARCH_CAPACITY_REFUSAL`), or if the store cannot be
                 served from -- one constant message for that last case, whichever
                 of its causes fired (:data:`REVIEW_SEARCH_UNAVAILABLE_REFUSAL`).
+                A store path that does not resolve inside ``.theurian/state/`` is
+                answered apart from those, carrying the cure that clears it,
+                because the rebuild this constant names meets that same refusal
+                first.
         """
         # Bounds first, before the registry is read and before any file is
         # touched: a refused request costs the daemon nothing (T-6), and the
@@ -2402,16 +2702,54 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         try:
             store_path = paths.review_search_for(REVIEW_SEARCH_STORE_ID)
         except ProjectError as exc:
-            # **Neither the message nor the remedy is passed through**, for the
-            # reason `_resolve`'s `state_database_named` arm gives: this refusal
-            # names the resolved absolute `.theurian/state` directory, which is the
-            # operator's machine layout on this surface (GHSA-97q9). Unreachable
-            # through the shipped composition -- the store id is a constant, and
-            # `_resolve` has already read through `paths.state` twice by this line
-            # -- so what is left is a `.theurian/state` swapped for an escaping
-            # link between those reads and this one, and the constant is the
-            # fail-closed answer to it.
-            raise ToolError(REVIEW_SEARCH_UNAVAILABLE_REFUSAL) from exc
+            # **Both classes this method raises cross carrying a cure, and one arm
+            # is what that takes.** `_with_remedy` is where the type key lives:
+            # it substitutes `PATH_ESCAPE_REFUSAL` for a
+            # `ProjectPathEscapeError`'s message -- which is `_contain`'s, naming
+            # the resolved project root -- forwards any other `ProjectError`'s own
+            # message, and appends `exc.remedy` either way. A second arm spelling
+            # the subclass out would be a branch with the same body, reading as
+            # though it still decided something.
+            #
+            # **The catch is not decoration.** Without it the refusal reaches the
+            # `_forwarding` seam, which republishes `str(exc)` and leaves
+            # `exc.remedy` behind -- an agent told a path escaped and handed
+            # nothing to do about it.
+            #
+            # *What changed, and why the fold is gone.* `c7da702e` overturned the
+            # fold into `REVIEW_SEARCH_UNAVAILABLE_REFUSAL` for
+            # `ProjectPathEscapeError` alone, and recorded that the plain
+            # `ProjectError` beneath it had to keep folding: `review_search_for`'s
+            # own state-scoped check interpolated the resolved `.theurian/state`,
+            # and nothing keys a substitution on that class. That premise is
+            # discharged at the raise site, which now names the store's file and
+            # the project-relative `.theurian/state/` and nothing else. So the fold
+            # suppressed no layout and cost the caller the one step that clears the
+            # fault: it dropped `REVIEW_SEARCH_STORE_REMEDY`, whose `rm` is exactly
+            # what `theurian review build` cannot do for itself -- that command
+            # resolves this store through this same method before it reads an
+            # evidence file, so the fold's own cure returned the caller to a
+            # byte-identical refusal (verdict pass, adversarial HIGH).
+            #
+            # *What the arm publishes is a class this wire already carries.* An
+            # escaping `.theurian/state` refuses a layer up, in `_resolve`, and
+            # reaches every project-scoped tool as `PATH_ESCAPE_REFUSAL` beside a
+            # cure `_escape_remedy` chose; a caller learns "a path under this
+            # project escaped" there whatever this guard does. The availability
+            # constant stays where distinguishing would cost something: the
+            # provenance check above it, where telling "this store is not yours"
+            # apart from "there is no store" tells whoever planted it that the
+            # plant was detected.
+            #
+            # *What guards the next one.* A plain `ProjectError` that starts
+            # interpolating a resolved path does not arrive here quietly:
+            # `test_resolved_layout_never_crosses.py`'s
+            # `test_every_resolved_path_refusal_has_a_recorded_disposition` derives
+            # the interpolating raise sites from the source and reddens on one with
+            # no disposition, and that file's `escaping-review-search-leaf` plant
+            # sweeps what this arm really publishes for the one refusal data can
+            # reach it with.
+            raise _with_remedy(exc) from exc
         store = SqliteReviewSearchStore(store_path)
 
         # Admission-gated, like `knowledge.search` and `review.findings` and for

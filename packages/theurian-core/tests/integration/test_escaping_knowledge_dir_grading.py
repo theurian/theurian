@@ -87,6 +87,7 @@ from theurian.cli.commands import EXIT_STATE_ERROR
 from theurian.cli.main import app
 from theurian.daemon.runner import build_server
 from theurian.domain.enums import Sensitivity
+from theurian.mcp.tools import PATH_ESCAPE_REFUSAL
 
 pytestmark = pytest.mark.integration
 
@@ -100,6 +101,20 @@ _NEEDS_SYMLINKS = pytest.mark.skipif(
 #: theurian-core, then down into the package. Computed rather than written out so
 #: a moved test file fails loudly instead of sweeping an empty tree.
 SOURCE_ROOT: Final = Path(__file__).resolve().parents[2] / "src" / "theurian"
+
+#: A sentence out of :data:`~theurian.mcp.tools.PATH_ESCAPE_REFUSAL`, written out
+#: rather than sliced off the constant.
+#:
+#: ``PATH_ESCAPE_REFUSAL in message`` is true of **every** message once the
+#: constant is ``""``, and round one measured exactly that: emptied, the suite
+#: stayed green while every caller who met a containment refusal was handed a
+#: message with no words in it. This is the assertion that fails then -- measured
+#: 2026-09-11 on this branch, emptying the constant turns this face, the face
+#: beside it and the seam's unit case RED together.
+#:
+#: Written out in each of those three files rather than shared: three pins reading
+#: from one place are one edit away from being no pin at all.
+PATH_ESCAPE_SENTENCE: Final = "does not resolve to a location inside the project root"
 
 _MIGRATION_ID: Final = "01K1AAAAAA01234567890ABCDE"
 _REVISION_ID: Final = "01K1AAAREV01234567890ABCDE"
@@ -1224,27 +1239,63 @@ _KNOWLEDGE_TOOLS: Final[tuple[tuple[str, dict[str, Any]], ...]] = (
 async def test_the_mcp_surface_publishes_the_cure_for_an_escaping_knowledge_directory(
     tool: str, extra: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``mcp.tools::_resolve``'s half, and it is a dropped cure rather than a code.
+    """``mcp.tools::_resolve``'s half: the cure crosses, the layout does not.
 
-    RED at ``8372cc8c``: the resolve sat outside every ``try`` in ``_resolve``, so
-    its ``ProjectError`` escaped to ``_forwarding`` -- which republishes
-    ``str(exc)`` and drops ``.remedy`` deliberately, because its whole
-    justification is changing nothing about what the wire carries. The agent
-    received *".theurian resolves outside the project root …"* and no next action,
-    while the ``read_active_state`` call one line below reached the same caller
-    through ``_with_remedy`` carrying "Remove ``.theurian/state`` …" for the leaf
-    face of the identical root cause.
+    The ``ProjectPaths.of`` arm of the containment envelope, driven over every
+    knowledge tool. Two things are pinned, and each was false at a different
+    commit:
+
+    **The cure travels.** RED at ``8372cc8c``, where the resolve sat outside every
+    ``try`` in ``_resolve``, so its ``ProjectError`` escaped to ``_forwarding`` --
+    which republishes ``str(exc)`` and drops ``.remedy`` deliberately, because its
+    whole justification is changing nothing about what the wire carries. The agent
+    was told a path escaped and given no next action, while the
+    ``read_active_state`` call one line below reached the same caller through
+    ``_with_remedy`` carrying "Remove ``.theurian/state`` …" for the leaf face of
+    the identical root cause.
+
+    **And it travels alone.** RED at ``68d8ee19``, where the message half that
+    then crossed was :meth:`ProjectPaths.of`'s own -- *"{directory} resolves
+    outside the project root {resolved}, so every file …"*, whose second
+    interpolation is the root after ``.resolve()``. That is the operator's
+    **resolved** filesystem layout, published to an MCP caller by a refusal (the
+    GHSA-97q9 class). ``_with_remedy`` now substitutes
+    :data:`~theurian.mcp.tools.PATH_ESCAPE_REFUSAL` for that message wherever a
+    ``ProjectPathEscapeError`` crosses the tool boundary, so what this test asserts
+    is the constant, byte-identical, and the **absence of any absolute path**.
+
+    The cure is layout-free by construction rather than by luck:
+    :meth:`ProjectPaths.of` keys both of its raises to
+    :data:`KNOWLEDGE_DIR_ESCAPE_REMEDY`, a module constant that interpolates
+    nothing at all, so dropping the message costs the caller nothing actionable.
+
+    **The absence assertion is over the whole absolute-path population**, not over
+    the pair the old message happened to name: ``str(tmp_path.resolve())`` is a
+    prefix of every path this corpus can build -- the checkout, the plant's target,
+    ``HOME`` and the data directory alike -- so it fires for a disclosure through
+    any substring at all, and the named candidates beside it say *which* one
+    leaked.
+
+    **This corpus registers ``demo`` by its real path**, so the registered spelling
+    and the resolved form coincide here: :func:`_build_corpus` ``mkdir``s a true
+    directory under ``tmp_path``, and pytest's temporary root is itself already
+    resolved (measured 2026-09-11, Darwin 25.6). The assertion below therefore
+    covers the registered-spelling-equals-resolved case; the differential where the
+    two differ -- a root registered through a symbolic link, where the resolved
+    form is a string the registry does not hold -- is pinned by the face beside
+    this one, in ``test_review_findings_tool.py``:
+    ``test_an_escaping_state_directory_is_refused_without_naming_the_resolved_layout``.
 
     Driven through ``server.call_tool`` -- the entry point the transport uses --
     rather than by calling ``_resolve``: what is under test is what crosses the
-    tool boundary, and the boundary is where the remedy was being lost. Over all
-    three knowledge tools, because ``_resolve`` runs on every one of them and the
-    docstring says so.
+    tool boundary, and the boundary is where both the remedy was being lost and the
+    layout was being published. Over all three knowledge tools, because
+    ``_resolve`` runs on every one of them and the docstring says so.
     """
     with pytest.MonkeyPatch.context() as patch:
         root = _build_corpus(tmp_path, patch)
         data_dir = tmp_path / "datadir"
-        _escape_the_knowledge_directory(root)
+        outside = _escape_the_knowledge_directory(root)
         registry = ProjectRegistry.default(data_dir)
 
     monkeypatch.setenv("THEURIAN_DATA_DIR", str(data_dir))
@@ -1265,12 +1316,31 @@ async def test_the_mcp_surface_publishes_the_cure_for_an_escaping_knowledge_dire
         await server.call_tool(tool, {"projectId": "demo", **extra})
 
     message = str(excinfo.value)
-    assert "resolves outside the project root" in message, (
-        f"{tool}: the refusal did not survive the tool boundary at all: {message}"
+    assert PATH_ESCAPE_REFUSAL in message, (
+        f"{tool}: the refusal did not survive the tool boundary as the one constant "
+        f"`_with_remedy` substitutes for a `ProjectPathEscapeError`'s own message: {message}"
+    )
+    assert PATH_ESCAPE_SENTENCE in message, (
+        f"{tool}: the constant crossed the boundary without saying what went wrong, so "
+        f"the assertion above is satisfied by a refusal carrying no words at all: {message}"
     )
     assert KNOWLEDGE_DIR_ESCAPE_REMEDY in message, (
         f"{tool}: the refusal crossed the tool boundary without its cure, so an "
         f"agent is told a path escaped and given nothing to do about it: {message}"
+    )
+    published = {
+        name: value
+        for name, value in (
+            ("the resolved project root", str(root.resolve())),
+            ("the registered spelling of the root", str(root)),
+            ("the directory the knowledge link escaped to", str(outside.resolve())),
+            ("the temporary tree this run was given", str(tmp_path.resolve())),
+        )
+        if value in message
+    }
+    assert not published, (
+        f"{tool}: the refusal published the operator's resolved filesystem layout to an "
+        f"MCP caller (GHSA-97q9): {published}\n{message}"
     )
 
 

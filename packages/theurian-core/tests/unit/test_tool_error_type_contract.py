@@ -50,7 +50,7 @@ import functools
 import inspect
 import pathlib
 from collections.abc import AsyncIterator, Iterator
-from typing import Any
+from typing import Any, Final
 
 import pytest
 from mcp.server import MCPServer
@@ -58,7 +58,7 @@ from mcp.server.mcpserver.exceptions import ResourceError as SdkResourceError
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 
 import theurian.mcp.tools as tools_module
-from theurian.application.project_service import ProjectError
+from theurian.application.project_service import ProjectError, ProjectPathEscapeError
 from theurian.domain.errors import TheurianError
 from theurian.infrastructure.sqlite.connection import (
     SchemaVersionMismatchError,
@@ -67,6 +67,7 @@ from theurian.infrastructure.sqlite.connection import (
 )
 from theurian.mcp.tools import (
     DEFERRED_RESULT_REFUSAL,
+    PATH_ESCAPE_REFUSAL,
     ToolError,
     _forwarding,
     _tool,
@@ -74,6 +75,21 @@ from theurian.mcp.tools import (
 )
 
 pytestmark = pytest.mark.unit
+
+#: A sentence out of :data:`~theurian.mcp.tools.PATH_ESCAPE_REFUSAL`, written out
+#: rather than sliced off the constant.
+#:
+#: An assertion that only compares against the imported constant says "the wire
+#: text is whatever the constant is", which is true of the empty string -- and
+#: round one measured it: emptied to ``""``, ``PATH_ESCAPE_REFUSAL`` left the suite
+#: green while every caller who hit a containment refusal received a message with
+#: no words in it. A literal is what fails when the constant stops saying
+#: anything; measured 2026-09-11 on this branch, the same emptying turns this
+#: case and the two integration faces RED together.
+#:
+#: Written out in each of those three files rather than shared: three pins reading
+#: from one place are one edit away from being no pin at all.
+PATH_ESCAPE_SENTENCE: Final = "does not resolve to a location inside the project root"
 
 
 def test_a_tool_error_is_a_theurian_error() -> None:
@@ -192,10 +208,18 @@ def test_a_2_1_shaped_dispatcher_forwards_the_message() -> None:
 #: write-intent tool (ADR-0013), and ``git grep write_transaction`` over
 #: ``mcp/``, ``retrieval_service.py`` and ``project_service.py`` returns nothing,
 #: so nothing here can take the write lock. It is pinned anyway because the
-#: property under test belongs to ``_forwarding`` -- which converts any
-#: ``TheurianError`` -- rather than to the reachable subset, and because the day
-#: a write tool is added is the day the reachable subset changes without this
-#: file being touched.
+#: property under test belongs to ``_forwarding`` -- which converts every
+#: ``TheurianError`` it is handed -- rather than to the reachable subset, and
+#: because the day a write tool is added is the day the reachable subset changes
+#: without this file being touched.
+#:
+#: **Forwarding the text unchanged is the rule for every subclass but one, so one
+#: subclass is deliberately absent from this map.** Since the containment
+#: backstop landed, ``ProjectPathEscapeError`` crosses this seam as
+#: :data:`~theurian.mcp.tools.PATH_ESCAPE_REFUSAL` rather than as its own message
+#: (GHSA-97q9), so a fixture here would fail the byte-identity below for the right
+#: reason and say the wrong thing about it. It has its own case instead:
+#: :func:`test_a_containment_refusal_crosses_the_seam_as_the_constant_and_nothing_else`.
 #: ``ProjectError`` is built *with* a remedy on purpose, and it is the only
 #: fixture here that has one. A first draft of this file gave it none, and a
 #: mutation that folded ``exc.remedy`` into the forwarded message -- the exact
@@ -309,6 +333,63 @@ def test_the_seam_adds_no_identifier_of_its_own(name: str) -> None:
             "the seam folded in `remedy`, which mcp 2.0.0 dropped -- that is new "
             "information on the wire, not restored information"
         )
+
+
+def test_a_containment_refusal_crosses_the_seam_as_the_constant_and_nothing_else() -> None:
+    """The one subclass the seam substitutes rather than forwards (GHSA-97q9).
+
+    ``_forwarding``'s rule is parity -- restore ``str(exc)``, add nothing -- and
+    ``ProjectPathEscapeError`` is the exception to it, because its message is the
+    operator's filesystem layout rather than a description of one. An escaping
+    ``.theurian/state/active-index.json`` reached ``knowledge.search`` through
+    this seam and republished the resolved project root, at the one tool boundary
+    that had no substitution; the arm that closes that is what this drives.
+
+    **It is driven here because nothing shipped reaches it.**
+    :func:`~theurian.mcp.search._published_index` now converts the same refusal at
+    its own consumer, so the arm is a backstop for a refusal raised below a tool
+    body that no ``except`` sits in front of -- a shape that exists and that no
+    current composition produces. A guard no input reaches is a guard that
+    survives its own deletion: this file's ``_forwarding(raises)()`` harness is
+    the one place the class can be raised through the seam directly, and until
+    this case it did not hold it.
+
+    Four assertions, because each fails on its own: the wire text **is** the
+    constant and not a message with the constant in it; it really carries the
+    constant's words, which an equality against an emptied constant would not
+    say; the operator's layout is gone; and ``exc.remedy`` stayed behind, which is
+    the half that distinguishes this seam from ``_with_remedy`` -- mcp 2.0.0
+    dropped the remedy, so folding it in here would publish text this wire has
+    never carried.
+    """
+    original = ProjectPathEscapeError(
+        "/Users/someone/secret-layout/.theurian/state/active-index.json resolves outside "
+        "the project root /Users/someone/secret-layout, so a read or write through it "
+        "would land outside the working tree.",
+        remedy="Remove `.theurian/state` -- run `rm .theurian/state` if it is a symbolic link.",
+    )
+
+    def raises() -> None:
+        raise original
+
+    with pytest.raises(ToolError) as converted:
+        _forwarding(raises)()
+
+    text = str(converted.value)
+    assert text == PATH_ESCAPE_REFUSAL, (
+        "the containment refusal crossed the seam as something other than the one "
+        "constant, so the operator's resolved layout is on the wire again"
+    )
+    assert PATH_ESCAPE_SENTENCE in text, (
+        "the constant no longer says what it is for, so the equality above is pinning "
+        "a string with no words in it"
+    )
+    assert "secret-layout" not in text, "the seam published the operator's filesystem layout"
+    assert original.remedy not in text, (
+        "the seam folded in `remedy`, which mcp 2.0.0 dropped -- `_with_remedy` restores "
+        "it at the boundary that already did, and parity forbids it here"
+    )
+    assert converted.value.__cause__ is original
 
 
 def test_a_refusal_this_module_already_worded_passes_through_untouched() -> None:
