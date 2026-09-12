@@ -638,18 +638,15 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
     # description and threat-model:5899 become DEAD OWNER rows needing a live
     # owner each. That is why this entry recorded a row rather than refreshing:
     # the refresh owes two repointings that are nobody's business here.
-    (
-        "packages/theurian-core/CHANGELOG.md",
-        "592",
-        "rather than this entry",
-        "correct -- open owner, snapshot-age false positive",
-        "#533's entry hands the eight sibling defaults -- a `default` with neither a "
-        "reader nor a test pinning it to the product's constant -- to #592, in owner "
-        "position. #592 was filed 2026-09-07 and read OPEN the same day (`gh issue view "
-        "592`); it is absent from the 2026-09-03 snapshot because it postdates it, so "
-        "the offline run reads a live owner as no owner. Not an owner defect: naming the "
-        "sweep's issue is what kept #533's own scope to one key.",
-    ),
+    # The #592 row that stood here is gone with the 0.2.0 cut, and not because
+    # the sentence or its owner moved: renaming `[Unreleased]` to
+    # `[0.2.0] - 2026-09-12` put #533's entry inside a dated section, and a
+    # dated section is history rather than a live claim (round one's M-j,
+    # recorded above), so the sweep no longer produces the row. The judgment it
+    # carried -- correct, open owner, snapshot-age false positive (#592 filed
+    # 2026-09-07, postdating the 2026-09-03 snapshot) -- was true up to the cut
+    # and is preserved here as the same in-place record the #586 and #636
+    # deletions left.
     # The #586 row that stood here is gone, and *not* because the tracker
     # snapshot moved: T-6's first accepted residual no longer names #586 as the
     # owner of anything. That bound landed, so the paragraph states the improved

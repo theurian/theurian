@@ -356,8 +356,8 @@ Pre-1.0, only an artifact's latest MINOR release receives security fixes. Once
 | :-- | :-- | :-- |
 | Claude Code plugin | 0.1.x | ✅ |
 | Claude Code plugin | < 0.1 | ❌ |
-| Theurian Core | 0.1.x | ✅ |
-| Theurian Core | < 0.1 | ❌ |
+| Theurian Core | 0.2.x | ✅ |
+| Theurian Core | < 0.2 | ❌ |
 
 **The rows name a MINOR series, not a version, because a fix never arrives as the
 version that carried the defect.** PyPI does not re-accept a filename it already

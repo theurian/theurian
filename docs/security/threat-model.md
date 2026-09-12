@@ -6692,6 +6692,45 @@ milestone nothing has scheduled would be the same defect with a number on it.
 
 ### TB-4: the filesystem and setup
 
+#### T-25 — An MCP error response names the operator's resolved filesystem layout (Information disclosure, High — closed in 0.2.0)
+
+**Threat.** A local, authenticated MCP caller reads tool refusals whose text
+interpolates resolved absolute paths (the physical project root, files under
+`.theurian/state/`). For a project registered through a spelling that differs
+from its physical location, this disclosed the resolved layout — metadata
+`project.list` deliberately withholds (it publishes the registered spelling
+only). The realistic attacker ships the trigger inside a repository the
+operator indexes: a symbolic link or derived state force-added past the
+ADR-0004 ignore. Five error paths carried the class; all were present in
+0.1.0 and the dev line.
+
+**Severity.** High as a finding (operator layout metadata, not governed
+content — CRITICAL anchors to disclosure of withheld knowledge content, which
+this class never reached). Fixed in 0.2.0; advisory GHSA-923w-f36f-jcfq
+published with the release.
+
+**Controls.** Every containment and provenance refusal crosses both tool
+boundaries (`_with_remedy`, `_forwarding`) as a constant interpolating
+nothing, beside a cure built from fixed vocabulary; the raise sites that
+carried resolved paths now build their messages from relative names.
+Standing instruments, each with positive controls: the enumerated-population
+test over path-interpolating raise sites
+(`test_resolved_layout_never_crosses.py`, per-member dispositions,
+fail-closed on new members), the behavioral sweep over server-introspected
+tools and dispositioned plants asserting no resolved-form string in any
+response (same file, divergence-point key), and the executable-cure ratchet
+(`test_published_cures_are_executable.py`) requiring every published cure to
+move the caller off the refusal that published it.
+
+**Residual.** Timing and duration channels are outside the response-content
+invariant and remain tracked by the observable-families table. The daemon's
+`/health` endpoint publishes the data directory unauthenticated by design
+(T-2's territory); the sweep's key excludes it for that recorded reason.
+Remaining recorded gaps: two published cures nothing executes yet
+(`ACTIVE_POINTER_REMEDY`, `INTEGRITY_REMEDY`, recorded as data in the
+ratchet file), the knowledge-directory cure's decisive step being prose, and
+an ungraded inside-tree-symlink observation held for its own measurement.
+
 #### T-14 — Setup overwrites a user's configuration (Tampering, Medium)
 
 **Controls, the MCP configuration:** merge, never replace; timestamped backup;
@@ -6814,6 +6853,7 @@ fix.
 | T-22 | A canonical read's cost grows with the above-ceiling rows it withholds | I | Medium | Accepted residual, measured (0.20 µs/row on the scan, 0.54 µs/row on `knowledge.status`'s counts); flattening owned by [#338](https://github.com/theurian/theurian/issues/338), acceptance recorded on #119 |
 | T-23 | A revision's served content drifts under an unchanged revision id, and a stale index serves it past the gate | I | Critical | Closed in 0.1.0.dev13 — serve gate keyed on `served_content_hash(title, body)` both sides, `INDEX_SCHEMA_VERSION` 6 → 7 forced rebuild; a new face of the derived-state-trust class T-19 (GHSA-3f65-gr36-qqx8); leaf-excerpt only, the `raptorPath[].title` face stays the T-17a residual (GHSA-97q9-xxfg-33r6) |
 | T-24 | A repository ships its own `.theurian/review/` and a local build serves it as review history | T | Medium | Accepted residual, recorded. SEC-15's triple on every row and no promotion path out of the untrusted plane; the tool description and response schema state that the T-19 check is on the *store* and never on who wrote the records. Verifying evidence provenance is unowned, adjacent to [#575](https://github.com/theurian/theurian/issues/575) |
+| T-25 | An MCP error response names the operator's resolved filesystem layout | I | High | Closed in 0.2.0 — GHSA-923w-f36f-jcfq. Constant refusals interpolating nothing across both tool boundaries, executable cures from fixed vocabulary; pinned by the raise-site population test, the no-resolved-form response sweep and the executable-cure ratchet |
 
 ## Explicitly out of scope
 

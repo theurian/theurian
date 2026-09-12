@@ -123,13 +123,17 @@ jobs:
     runs-on: ubuntu-latest
     # #104: observed p95 ~4.5 min over 30 runs, which alone would suggest
     # ~18 min (4x). Set higher instead: the three steps below already carry
-    # a combined step-level budget of 25 min (10 + 10 + 5), added for the
+    # a combined step-level budget of 30 min (10 + 15 + 5), added for the
     # network-sandbox invariant this job proves, + checkout/setup overhead
     # (measured max 0.12 min). A job-level timeout tighter than the steps it
     # wraps would fire before those steps ever could -- and a future step
-    # added to this job cannot be sized as if 25 + its own minutes were the
+    # added to this job cannot be sized as if 30 + its own minutes were the
     # whole budget; the overhead is real and already spoken for.
-    timeout-minutes: 30
+    #
+    # That is why this moved 30 -> 35 with the suite step's 10 -> 15: at 30 the
+    # job ceiling had become exactly the step sum, so the overhead above would
+    # have made the job fire first and the step budgets unreachable.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
         with:
@@ -154,8 +158,18 @@ jobs:
       # global `iptables -P OUTPUT DROP`. That policy would also sever the
       # runner's own connection to GitHub, hanging the job until it is killed --
       # a failure mode that says nothing about whether the tests need network.
+      #
+      # The timeout below bounds that hang, not the suite: 15 rather than the
+      # 10 set when this step was written (5513d84c, Milestone 1). The suite
+      # has outgrown 10 -- the same `-m 'not e2e'` selection measured 478s at
+      # the 0.1.0 cut (run 33942378921), 574s on main (run 34607118047), and
+      # 609.87s GREEN here while the 600s cap killed the step at 612s (run
+      # 34664677569), taking the sandbox proof below down with it as `skipped`.
+      # A step that reports a hung sandbox as a failed suite is the one thing
+      # this budget exists to prevent, so it is sized off the measurement with
+      # margin, not off runner luck. The durable fix is a faster suite.
       - name: Run the suite with no network access
-        timeout-minutes: 10
+        timeout-minutes: 15
         run: |
           # Resolved in the outer shell: `sudo` resets PATH, so the inner shell
           # cannot find uv on its own.

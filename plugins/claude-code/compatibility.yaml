@@ -25,6 +25,6 @@ coreCompatibility:
   minimum: 0.1.0-dev.0
   # Pre-1.0, a MINOR bump of Core may break the protocol, so the ceiling is the
   # next MINOR. Post-1.0 it becomes the next MAJOR.
-  maximumExclusive: 0.2.0
+  maximumExclusive: 0.3.0
 
 protocolVersion: theurian/v1
