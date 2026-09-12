@@ -188,7 +188,11 @@ mistaken `mv` reaches.
 
 **Whose reach it narrows, actor by actor** — because "closes the gap" is not one
 statement, it is four, one per actor in `docs/security/threat-model.md`'s own
-table who can author a migration, and they are not worth the same:
+table who can put a migration in front of this command, and they are not worth
+the same. That table lists **six**; the two outside this control are *a visited
+web page*, which the Origin/Host check stops at TB-1 and which reaches no
+filesystem, and *an external system (GitHub)*, whose capability is "supplies
+review content" and which authors no migration. The four that remain:
 
 | Actor (threat model's own table) | What the floor costs them | Worth |
 | :-- | :-- | :-- |
