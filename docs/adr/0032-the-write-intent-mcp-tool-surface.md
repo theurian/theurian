@@ -313,9 +313,37 @@ nothing else. So an agent's colliding `addAlias` is written, reviewed by a human
 and then refused at `accept` — the shape ADR-0013's INV-8 note names, where a
 document "is schema-valid and then exits 4" after a person has already spent the
 review. Slice B4 owes whether the operations path runs the whole-set guards at
-generation as well, which is a cost question (the guard needs the landed set)
-and not a safety one. It is named here so it is a decision rather than a
-discovery.
+generation as well. It is named here so it is a decision rather than a
+discovery — **and it is a disclosure question as well as a cost one**, which an
+earlier draft of this ADR got wrong by calling it "a cost question … and not a
+safety one".
+
+**The guard's refusal is an existence-and-status oracle, measured in the
+refusal's own construction.** `AliasItemCollisionError`
+(`domain/errors.py:197-240`) renders both the colliding item id and its status —
+the first two of the message's four lines, verbatim:
+
+```python
+# domain/errors.py:236-237
+f"{migration_id}: addAlias {alias} -> {alias_target} collides with knowledge item "
+f"{alias} (status {item_status}). An alias key and an item id must be distinct: a "
+```
+
+and `item_status` is computed over the **unfiltered** landed set.
+`_alias_item_collisions` (`application/migration_alias_guards.py:124-144`) reads
+`_final_item_statuses(migration_set)` — a fold over every operation in
+`MigrationSet.ordered(...)` with no status filter and no sensitivity filter — and
+yields the status straight into the error. So running the guard at generation
+would answer, for an alias key the caller chose, *does an item with this id
+exist, and what status is it in* — including `rejected`, the status
+`domain/enums.py:206-219` records as reachable through no flag. The guard's own
+docstring already names the dangerous case ("a `rejected` item is the dangerous
+case"); what is new here is that the refusal **publishes** it.
+
+That does not settle which way slice B4 should go: refusing late is the cost
+ADR-0013's INV-8 note prices, and refusing early is the oracle above. What it
+settles is that the decision is bound by decision 6's rule and cannot be made on
+cost alone.
 
 Three reasons for the content split, in order of weight:
 
@@ -469,11 +497,28 @@ caller may not read — a `rejected` item, an item above the deployment's
 sensitivity ceiling (#119, ADR-0025) — and a refusal that distinguishes
 *withheld* from *absent* is a disclosure channel, which is the family
 [ADR-0033](0033-knowledge-candidate-generation.md) decision 5 designs the same
-shape for on its sibling surface. The bind:
+shape for on its sibling surface. **The bind is over the surface, not over one
+tool**, because both tools take item ids and both have refusals that are
+computed over unfiltered sets — `proposeChange` through `_check_expected_revision`
+(below) and `generateMigrationDraft` through the alias guard's
+`AliasItemCollisionError` (decision 3, if the guard runs at generation):
 
-> For an item outside the caller's view, `knowledge.proposeChange` refuses
-> **indistinguishably** from an item that does not exist, and the refusal text
-> carries **no current-revision id** for such an item.
+> For an item outside the caller's view, **every write-intent tool on this
+> surface** refuses **indistinguishably** from an item that does not exist. Such
+> a refusal carries **no current-revision id** and **no status**.
+
+The status half is not a generalisation for its own sake: it is the one value
+the alias guard's refusal publishes and `_check_expected_revision`'s does not,
+and a bind written only against the revision id would have left it out.
+
+**The authority is the existing gate pair, not a second comparison.** "Outside
+the caller's view" means what `may_surface` and `may_disclose` (`domain/enums.py`)
+say it means, and the caller-scoped lookup this decision owes *consults* them
+rather than reimplementing the test. The reason is recorded in
+`may_surface`'s own docstring — the index builder used to inline the two
+comparisons "which is one copy of a security rule too many" — and it is enforced
+by the equality pins named in *Compliance*, which fail on an addition as well as
+a removal.
 
 **The mechanism this binds is already in the tree, and it is named rather than
 inferred.** `expectedRevision` (decision 1) puts `_check_expected_revision`
@@ -504,7 +549,9 @@ lookup rather than from remembering to redact a message.
 is the whole remedy of an optimistic-concurrency failure (ADR-0006): a caller
 told only "that is stale" has to go and find the right value, and the message
 that names it is the difference between one call and three. The bind is scoped
-to out-of-view items, and that scoping is the decision, not an oversight.
+to out-of-view items, and that scoping is the decision, not an oversight. The
+same reading applies to the alias guard's status: an author refused over an item
+they may read needs to know it is `rejected` in order to fix the document.
 
 ### 7. Preconditions, in order
 
@@ -646,8 +693,11 @@ to out-of-view items, and that scoping is the decision, not an oversight.
    refusal, a wire-required `reason`, and a decision about whether the
    enforcement seat is the tool or the engine (Phase D's ADR candidate #1).
 5. **Whether any residual disclosure survives decision 6's bind.** The bind
-   names the shape and the seat (a caller-scoped `CurrentRevisionLookup`), and
-   slice B4 owes the two-corpora equality that would find a residual. Until that
+   names the shape and **two** seats — a caller-scoped `CurrentRevisionLookup`
+   for `proposeChange`, and, if decision 3's open question is answered *at
+   generation*, whatever scopes the alias guard's status for
+   `generateMigrationDraft` — and slice B4 owes the two-corpora equality that
+   would find a residual on both. Until that
    runs, this ADR asserts a design and not a measurement — which is why the
    equality covers refusals as well as responses, and why *timing* is inside its
    scope: a lookup that folds a longer set for an in-view item than for a
@@ -699,6 +749,21 @@ Measured now, and reproducible from this ADR (2026-09-12, `be977ea7`):
   decision 3). `REJECTED` is in that reach, and `domain/enums.py:206-219` records
   that `REJECTED` is reachable through no flag "because a rejected revision is
   where the secret that caused the rejection still lives".
+- **The alias guard's refusal renders an item id and its status, over the
+  unfiltered set.** `AliasItemCollisionError.__init__` (`domain/errors.py:236-239`)
+  formats `... collides with knowledge item {alias} (status {item_status})`, and
+  `item_status` arrives from `_alias_item_collisions`
+  (`application/migration_alias_guards.py:124-144`), which reads
+  `_final_item_statuses(migration_set)` — a fold over `MigrationSet.ordered(...)`
+  with no status filter and no sensitivity filter. That is why decision 3's
+  guard-timing question is bound by decision 6.
+- **The status gate and the disclosure gate are each pinned by an exact-equality
+  set**, `STATUS_GATE_CALL_SITES` at **6** entries and
+  `DISCLOSURE_GATE_CALL_SITES` at **5** (`tests/unit/test_gate_call_sites.py`,
+  counted with `ast` over the two assignments), and each has a prose count beside
+  it in `domain/enums.py` (`:231` "six call sites", `:272` "five call sites")
+  that no test derives from the set. Both pairs are movers for decision 6's owed
+  lookup, and they are listed in *Still owed* rather than left to be discovered.
 - **The two pulled non-content operations carry opposite wire requirements.**
   `opRestoreItem` (`schemas/migrations/migration.schema.json:253-262`) requires
   `["op", "itemId"]` and types `reason` as optional; `opChangeSensitivity`
@@ -753,10 +818,19 @@ Still owed, with the milestone that will satisfy it:
   not make. Whether the rewrite is faithful is a reading; that it happens in the
   same commit is not optional.
 - **Slice B4 — `writeTools` and the capability note move in the registration
-  commit (decision 5).** Owed: the value assertion, the pinned capability-key
-  set and the e2e tool-set pin all move together, plus the note's own assertion.
-  **Only two of those move on a value flip today** — mutation-measured in
-  *Context* — so a third owed item is the one that closes the gap: a
+  commit (decision 5).** Owed: the two assertions that move on a value flip —
+  `tests/integration/test_mcp_tools.py::test_capabilities_report_what_is_and_is_not_built`
+  and
+  `tests/e2e/test_daemon_single_instance.py::test_capabilities_report_no_write_tools`
+  (:649), which is a **value** assertion over a real client — plus the note's own
+  assertion. Two further pins move at *registration* time rather than on a value
+  flip and are listed separately because they are a different trigger: the pinned
+  capability-**key** set in `test_mcp_tools.py`, and
+  `tests/e2e/test_daemon_single_instance.py::test_the_tool_set_is_read_only`
+  (:402), whose `assert tools == [...]` is an equality over the seven registered
+  names and does not notice a flag value at all.
+  **Only two assertions move on a value flip today** — mutation-measured in
+  *Context* — so a further owed item is the one that closes the gap: a
   **value-level** wire-contract assertion, so that the flag cannot land
   half-moved with the conformance suite still green. The wire-contract file's
   present `writeTools` case is a *type* negative and stays one; what is added is
@@ -790,7 +864,7 @@ Still owed, with the milestone that will satisfy it:
   itself rather than listed, so a fifteenth kind added later is admitted or
   refused deliberately rather than by omission.
 - **Slice B4 — a refusal about an out-of-view item is indistinguishable from one
-  about an absent item (decision 6).** Owed: one battery of `proposeChange`
+  about an absent item, on **both** tools (decision 6).** Owed: one battery of
   calls answered identically over a corpus that **held** withheld items — a
   `rejected` item, one above the deployment's sensitivity ceiling — and one that
   never did, covering **responses and refusals**, with the control that the
@@ -798,12 +872,80 @@ Still owed, with the milestone that will satisfy it:
   scope for the reason decision 6's *does not close* row gives. The fixture is
   synthetic, which is the only way to have a withheld row in a corpus whose
   scope excludes them (ADR-0030 decision 6's reasoning, one surface over).
+  **The battery covers `generateMigrationDraft` as well as `proposeChange`**, at
+  a minimum one admitted operation per item-id-bearing input *position*. Over
+  the ten admitted kinds those positions are **six** distinct property names,
+  read off the schema rather than listed by hand — every property whose `$ref`
+  resolves to `#/$defs/itemId`:
+
+  ```python
+  # run from the repository root; prints the table below
+  import json, pathlib
+
+  defs = json.loads(pathlib.Path("schemas/migrations/migration.schema.json").read_text())["$defs"]
+  pulled = {"operation", "opCreateItem", "opUpsertRevision", "opChangeSensitivity", "opRestoreItem"}
+  positions: set[str] = set()
+  for name, body in sorted(defs.items()):
+      if not name.startswith("op") or name in pulled:
+          continue
+      ids = sorted(
+          p for p, q in body.get("properties", {}).items() if q.get("$ref", "").endswith("itemId")
+      )
+      positions |= set(ids)
+      print(f"{name:26}{ids}")
+  print("distinct positions:", len(positions), sorted(positions))
+  ```
+
+  ```console
+  opAddAlias                ['alias', 'itemId']
+  opAddEvidence             ['itemId']
+  opAddRelation             ['sourceItemId', 'targetItemId']
+  opChangeOwner             ['itemId']
+  opDeprecateItem           ['itemId', 'supersededBy']
+  opRegisterSpecification   ['itemId', 'specId']
+  opRemoveAlias             ['alias']
+  opRemoveEvidence          ['itemId']
+  opRemoveRelation          ['sourceItemId', 'targetItemId']
+  opSupersedeSpecification  ['specId', 'supersededBy']
+  distinct positions: 6 ['alias', 'itemId', 'sourceItemId', 'specId', 'supersededBy', 'targetItemId']
+  ```
+
+  A battery scoped to `itemId` alone would pass a build that answered through
+  `addRelation`'s `targetItemId` or `deprecateItem`'s `supersededBy`, which is
+  why the obligation is stated per position and derived from the schema — a
+  fifteenth operation with a seventh position joins it by existing.
+  **And the refusals are asserted to carry no status**, not only no revision id —
+  the alias guard's message is the one that publishes a status today
+  (decision 3), so a battery written against the revision id alone would pass a
+  build that answered `(status rejected)`.
 - **Slice B4 — the wire path's `CurrentRevisionLookup` is caller-scoped
   (decision 6).** Owed: a test that the lookup the MCP composition root injects
   returns `None` for an item the caller may not see, with the control that it
   returns the revision for one the caller may — without the control, a lookup
   that returned `None` for everything would pass while breaking the
   optimistic-concurrency remedy for in-view items.
+  **This item moves pinned counts elsewhere, and they are named here so the
+  commit that adds a call site is the commit that moves them.** A lookup that
+  consults `may_surface`/`may_disclose` (decision 6's stated authority) adds one
+  or two call sites, and four records are keyed to the current sets:
+
+  | Record | What it holds now | Measured |
+  | :-- | :-- | :-- |
+  | `tests/unit/test_gate_call_sites.py`'s `STATUS_GATE_CALL_SITES` | an **exact-equality** set of `(module, function)` pairs, so it fails on an addition as well as a removal | **6** entries |
+  | the same file's `DISCLOSURE_GATE_CALL_SITES` | the same shape for `may_disclose` | **5** entries |
+  | `may_surface`'s docstring (`domain/enums.py`) | "it is consulted from six call sites", enumerated in prose | the word **six** |
+  | `may_disclose`'s docstring (`domain/enums.py`) | "Consulted from five call sites" | the word **five** |
+
+  Counted with `ast` over the two assignments in `test_gate_call_sites.py`
+  (`STATUS_GATE_CALL_SITES 6` / `DISCLOSURE_GATE_CALL_SITES 5`); the two
+  docstring words are read at `domain/enums.py:231` and `:272`. Both sets are
+  asserted by equality, so neither degrades silently — but neither prose count
+  is derived from its set, so those two move by hand or not at all.
+  **And if the disclosure axis itself is touched**,
+  `docs/architecture/requirements-analysis.md`'s `enforced-axes` block (:103-106,
+  "**three** enforced axes — `chunks.project_id`, `chunks.status` and
+  `chunks.sensitivity`") and `SECURITY.md`'s copy of it move too; the same test
+  file checks both against what `_scope` emits, token set and spelled count.
 - **Slice B4 — an `agentId`/`taskId` stated twice and disagreeing is refused
   (decision 4).** Owed: a driving case with the tool-context field and the
   evidence field set to different values, asserting the refusal; with the
