@@ -103,8 +103,8 @@ plus the fields `ProposalRequest` declares:
 | `itemId`, `title`, `kind`, `owner`, `author`, `description` | the same-named `ProposalRequest` fields | each refused empty at construction |
 | `body` | `ProposalRequest.body` | **inline text** — decision 2 |
 | `contentType` | `ProposalRequest.content_type` | a closed enum: `text/markdown`, `application/json`, `application/yaml`, the three `MediaType` constants `cli/propose_commands.py`'s `_CONTENT_TYPES` maps its five accepted suffixes onto |
-| `evidence` (`agentId`, `taskId`, `model`, `reasoning`, `sourceAnchors[]`) | `Evidence` | decision 4 |
-| `sourceAnchors[]` | `ProposalRequest.source_anchors` | **the same input fills both**, as `propose_commands.py`'s `_request` already does from one `--source-uri`; they stay separate fields because they have separate readers (`evidence.json` is read by a human, `metadata.sourceAnchors` is what `migrate apply` enforces for INV-8) |
+| `evidence` (`agentId`, `taskId`, `model`, `reasoning`) | `Evidence` | decision 4 |
+| `sourceAnchors[]` | **both** `Evidence.anchors` and `ProposalRequest.source_anchors` | **one wire field fills two domain fields**, which is what `propose_commands.py`'s `_request` already does from one `--source-uri`. They stay separate fields in the domain because they have separate readers and separate requirements: the anchors in `evidence.json` are read by the humans reviewing the pull request and by no code path, while `metadata.sourceAnchors` is what `migrate apply` enforces for INV-8. The wire does not reproduce the split, because a caller has one answer to "where did this come from" |
 | `labels[]`, `scopePaths[]`, `namespace?` | the same-named fields | `namespace` absent defaults to the item id's own |
 | `trustLevel?`, `sensitivity?` | the same-named fields | **absent means "not stated"**, never a stamped default: `ProposalRequest` records that writing `unverified`/`internal` into every draft "would assert a judgement the caller did not make (#249)" |
 | `expectedRevision?` | `ProposalRequest.expected_revision` | the optimistic-concurrency gate (ADR-0006): required for an update, refused on a first revision — `_check_expected_revision` refuses both directions with a remedy |
@@ -305,8 +305,11 @@ tool exists* and not *how many*.
   fresh identifiers, the digest pin, the unguarded-update refusal, the
   containment on writes — arrives with the tools rather than being rebuilt for
   them.
-- **The capability surface stays honest at every commit.** No window exists in
-  which the machine-readable answer and the registered tool set disagree.
+- **The capability surface stays honest at every commit.** *Once the coupling
+  pin in Compliance lands*, no window exists in which the machine-readable
+  answer and the registered tool set disagree — until then decision 5 is a rule
+  a reviewer enforces, and this line is scoped to say so rather than claiming a
+  property nothing holds.
 
 ### Negative
 

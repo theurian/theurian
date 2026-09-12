@@ -53,7 +53,26 @@ $ git grep -n "last_seen_commit" be977ea7 -- packages/theurian-core/src | wc -l
 
 Eight sites across five files, none of them a comparison. So the gap is not
 that `migrate apply` cannot reach git; it reaches it three times and asks it
-nothing that decides anything. **No tracking check exists anywhere in `src/`.**
+nothing that decides anything.
+
+**No tracking check exists anywhere in `src/`, and the key is the argument
+vectors themselves.** Walking every list or tuple literal in the shipped package
+whose first element is the string `"git"` returns **five** vectors in **two**
+modules, and the subcommand is what settles it:
+
+| Module | Vector, after `git` |
+| :-- | :-- |
+| `cli/context.py` | `rev-parse --show-toplevel` |
+| `cli/context.py` | `rev-parse HEAD` |
+| `cli/context.py` | `symbolic-ref --short HEAD` |
+| `cli/context.py` | `remote get-url origin` |
+| `infrastructure/git/trailer_source.py` | `-c log.showSignature=false --no-optional-locks --no-replace-objects log -z` |
+
+Not one of them asks what git *tracks* or whether a file matches `HEAD`: there
+is no `ls-files`, no `status`, no `diff`, no `cat-file`. **The key's recorded
+limit** is the one `tests/unit/test_network_call_sites.py` states about its own
+scan — a vector assembled at runtime rather than written as a literal is
+invisible to it, and no name-based walk can do better.
 
 **Phase B is what turns this from a background fact into a precondition**, and
 `docs/roadmap.md` already says so in the Phase B security row: "**T-15's
@@ -299,6 +318,9 @@ Measured now, and reproducible from this ADR (2026-09-12, `be977ea7`):
   returns **8** lines across five files (a write in `project register`, the
   write here, the domain field, the schema column, three upsert lines and the
   read-back), and none is a comparison.
+- The shipped package builds **5** `git` argument vectors in **2** modules, and
+  none is a tracking question — the table and its recorded limit are in
+  *Context*.
 - `PROCESS_SPAWN_SITES` holds **4** entries and is asserted by equality against
   the whole set (`tests/unit/test_network_call_sites.py`).
 - `infrastructure/git/` holds exactly one module besides its `__init__.py`:
