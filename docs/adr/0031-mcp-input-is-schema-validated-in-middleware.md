@@ -48,16 +48,36 @@ context fields every project-scoped call carries — `projectId` required,
 `snapshotId`, `agentId`, `taskId` — and it already sets
 `additionalProperties: false`.
 
-**It is enforced by nothing, and the repository says so in its own words.**
-`schemas/README.md`'s what-verifies-each-schema table gives that row as
+**It is enforced against no real traffic, and the repository says so in its own
+words.** `schemas/README.md`'s what-verifies-each-schema table gives that row as
 "nothing, and nothing should: it describes tool *input*, so there is no response
 to compare", and the one test it names,
 `tests/unit/test_schemas.py::test_project_id_is_required_on_every_tool_call`,
 validates two literal documents against the schema rather than validating any
-real call. The population is four hits outside this ADR
-(`git grep -n "tool-context" -- packages schemas docs tools`, dropping
-`docs/work-logs/`): the protocol page's link, the two test references and the
-`schemas/README.md` row. **No code path under `src/` names it.**
+real call.
+
+**That row names one test where two hold properties of this file**, which slice
+B2 needs to know because the second one moves.
+`::test_object_schemas_reject_unknown_properties` is parametrized over every
+schema in the tree, so `[tool-context.schema.json]` is what holds its
+`additionalProperties: false` — and decision 1's composition moves that keyword.
+A third, `::test_every_published_project_id_pattern_admits_exactly_what_projectid_constructs`,
+holds its `projectId` pattern against `ProjectId` and does not move.
+
+The population under the ADR's own key is **five** hits, not four:
+
+```console
+$ git grep -n "tool-context" -- packages schemas docs tools \
+    | grep -v '^docs/adr/0031' | grep -v '^docs/work-logs/'
+docs/protocol/mcp-tools.md:50:          the link
+packages/theurian-core/tests/unit/test_schemas.py:294:  the literal-document test
+packages/theurian-core/tests/unit/test_schemas.py:781:  the ProjectId-pattern face
+schemas/README.md:98:                        the row that records the absence
+schemas/mcp/tool-context.schema.json:3:       the schema's own `$id`
+```
+
+The fifth is the file naming itself. **The conclusion is unchanged and is the
+one that matters: no code path under `src/` names it.**
 
 So SEC-12 costs two things, and the first is smaller than it looks: a
 **per-tool** input schema does not exist yet, and the artifact that does exist
@@ -74,10 +94,16 @@ __base__=ArgModelBase)`), and `ArgModelBase`'s configuration is
 `ConfigDict(arbitrary_types_allowed=True)` — no `extra="forbid"`. The generated
 wire models are the same shape: `mcp_types/_wire_base.py`'s `WireModel` sets
 only `populate_by_name` and says in its own docstring that "subclasses set
-`extra` themselves", and `extra="forbid"` appears **zero** times in
-`mcp_types/_types.py`
-(`grep -c 'extra="forbid"' .venv/lib/python3.13/site-packages/mcp_types/_types.py`
-→ `0`). Pydantic's default for an unset `extra` is `ignore`. So an unknown key
+`extra` themselves", and `extra="forbid"` appears **zero** times anywhere in the
+`mcp_types` package — the whole package rather than one module, because a single
+module is a key a reader can attack and the package is the claim that matters:
+
+```console
+$ grep -rho 'extra="forbid"' .venv/lib/python3.13/site-packages/mcp_types/ | wc -l
+       0
+```
+
+Pydantic's default for an unset `extra` is `ignore`. So an unknown key
 in `params.arguments` is dropped before any Theurian code sees the request, and
 no code Theurian could write *inside a handler* can notice that it was there.
 
@@ -109,6 +135,17 @@ passes no middleware, then hands the server to `register`. So the seat is empty
 rather than occupied by something else, and slice B2 is the change that fills
 it.
 
+**The seat is a position inside the SDK's own two middlewares, not the outermost
+one, and that placement is the SDK's rather than a choice.** `MCPServer.__init__`
+appends `RequestStateBoundary` to a list `Server.__init__` has already seeded
+with `OpenTelemetryMiddleware`, and then extends it with whatever the caller
+passed, with the comment stating the order: "User middleware runs inside the
+SDK's built-ins (OpenTelemetry, then the request-state boundary), outermost-first
+in the order given." So Theurian controls the order *among its own* middlewares
+and not its position relative to those two. That is fine for this control — both
+built-ins run before params validation, so `ctx.params` still carries the raw
+keys — and it is recorded because it is not something the ADR chose.
+
 ## Decision
 
 ### 1. Every registered tool has a published input schema, and `schemas/mcp/` is where it lives
@@ -128,10 +165,48 @@ tries to stay in bijection with a tree.
 **`tool-context.schema.json` becomes the first schema this control reads, not a
 ninth thing to write.** It already types the context every project-scoped call
 carries and already forbids additional properties; what it has never had is a
-reader. Whether each per-tool schema `$ref`s it or restates it is slice B2's —
-the `$ref` form is what `retrieval-metadata.schema.json` already does for
-responses, and `referencing`'s offline registry (decision 3) is what makes a
-`$ref` resolvable with no network.
+reader. `referencing`'s offline registry (decision 3) is what makes a `$ref`
+resolvable with no network.
+
+**There is exactly one composition that works, and it costs an edit to the
+referent — measured rather than assumed.** The obstacle is that
+`additionalProperties` in Draft 2020-12 considers only the `properties` in *its
+own* schema object, so a per-tool schema that references the context and then
+closes itself rejects the very fields it referenced. Three forms were driven
+against `jsonschema==4.26.0` with a real registry, each against a valid document
+(`projectId` + two tool fields) and a document carrying one unknown key:
+
+| Form | Referent keeps `additionalProperties: false` | Referent's closure moved out |
+| :-- | :-- | :-- |
+| `$ref` with sibling `properties` + `additionalProperties: false` | **rejects the valid document** (`'body', 'itemId' were unexpected`) | **rejects the valid document** (`'projectId' was unexpected`) |
+| `allOf: [{$ref}]` + `additionalProperties: false` | **rejects the valid document** | **rejects the valid document** |
+| `allOf: [{$ref}]` + `unevaluatedProperties: false` | **rejects the valid document** | **accepts it, and rejects the unknown key** |
+
+Only the bottom-right cell is a working input schema, so decision 1 fixes the
+shape: **each per-tool schema is `allOf: [{"$ref": tool-context}]` plus its own
+`properties`, closed with `unevaluatedProperties: false`** — the keyword that,
+unlike `additionalProperties`, sees what the `allOf` branch evaluated.
+
+**`tool-context.schema.json`'s own `additionalProperties: false` therefore moves
+to the per-tool closure, and its pin moves with it.**
+`tests/unit/test_schemas.py::test_object_schemas_reject_unknown_properties[tool-context.schema.json]`
+asserts that every top-level object schema sets the keyword, so B2's edit to the
+referent takes it RED — deliberately. The closure is not lost; it relocates to
+each tool's `unevaluatedProperties`, and the pin has to be rewritten to say so
+rather than deleted.
+
+**The `retrieval-metadata` precedent does not transfer, and that is why this had
+to be measured.** `knowledge-search-response.schema.json` uses `$ref` in a
+**property slot** — `"retrieval": {"$ref": ...}` — where the referent's own
+closure applies to its own object and nothing composes. Same-level composition
+is a different problem, and reading the precedent as if it answered this one is
+what an implementer would do without this table.
+
+**The alternative stays available**: inline the four context properties in each
+per-tool schema, keeping `additionalProperties: false` and duplicating the
+context four keys at a time. It costs a fifth published copy of the `projectId`
+pattern — `_PROJECT_ID_FACES` already tracks five — and the duplication is what
+`$ref` exists to avoid, so it is the fallback rather than the plan.
 
 ### 2. The validation seat is an SDK `ServerMiddleware`, wired where the server is built
 
@@ -227,10 +302,50 @@ hand-written one differ in incidental ways (title strings, `$defs` placement)
 that a naive equality would trip over, so what is owed is a *stated* relation
 with a positive control proving it can fail, not a `==`.
 
-Drift in either direction is a defect: a published schema looser than the
-handler means a request the schema admits and the handler rejects, and a
-published schema tighter than the handler means a documented capability the
-server refuses.
+**"Tighter" is not the defect; two specific things are.** A published schema is
+*supposed* to be tighter than a Python annotation on the value domain — that is
+the whole argument in the alternatives table against generating the published
+file from the handler signature, and it is why an `enum`, a `pattern`, a range
+or a `format` belongs in the file and not in a type hint. What the agreement
+must actually forbid:
+
+1. **The published schema permits what the handler refuses.** A request the
+   contract admits and the server rejects is a published lie, and it is the
+   direction that costs a caller a failed call it was told would work.
+2. **Tightening that deletes a documented capability.** A published `enum`
+   narrower than the set the handler serves retires a capability by editing a
+   file, with no changelog entry and no deprecation.
+
+So the relation is asymmetric: the published schema **may** constrain a value
+domain the annotation does not, and **may not** admit what the handler refuses.
+
+**The closure axis is outside the relation by design, and that is measured.**
+The SDK sets no `additionalProperties` on any tool's derived schema. Driven
+against the built server:
+
+```console
+$ for each of the 7 registered tools: inputSchema.get("additionalProperties")
+  knowledge.search       <absent>     review.findings      <absent>
+  knowledge.get          <absent>     review.search        <absent>
+  knowledge.status       <absent>     system.capabilities  <absent>
+  project.list           <absent>
+tools with no additionalProperties: 7 of 7
+```
+
+A relation that compared closure would therefore be RED on every tool, for ever
+— the published schema closes and the derived one never does. The closure is
+enforced by the **middleware** (decision 2), not by this comparison, and the
+relation states that exclusion explicitly rather than discovering it on the
+first run.
+
+**What stays a handler-layer refusal, and what becomes a schema refusal.**
+Shape, key set, enum membership, pattern, range and format move to the schema,
+and their refusals arrive as a key path and a constraint (decision 4). Refusals
+that depend on state a schema cannot see stay in the handler with their remedies
+intact: an unregistered project id, a snapshot that does not resolve, an item
+the caller may not read. That split is what stops decision 6 from being read as
+"every refusal becomes a schema refusal", which would delete the remedies
+`mcp/tools.py` carries.
 
 ## Consequences
 
@@ -259,10 +374,21 @@ server refuses.
   one thing drift. Decision 6 is the answer, and it is an owed test rather than
   a structural impossibility — until it lands, the agreement is a convention.
 - **The middleware tier is SDK surface, and the SDK is pinned rather than
-  stable.** `ServerMiddleware`'s ordering guarantees are `mcp==2.1.1`'s, and a
-  version bump is where they would change. ADR-0014's exact pinning is what
-  makes that a deliberate event rather than a surprise, but the coupling is
-  real and is recorded here rather than discovered at the bump.
+  stable.** `ServerMiddleware`'s ordering guarantees are `mcp==2.1.1`'s, the
+  position of user middleware relative to the SDK's own two is fixed by
+  `MCPServer.__init__`, and the SDK's own `middleware` property says the chain
+  "may change in a 2.x minor release". A version bump is where those would
+  change. ADR-0014's exact pinning is what makes that a deliberate event rather
+  than a surprise, but the coupling is real and is recorded here rather than
+  discovered at the bump.
+- **The context schema loses a keyword it has always carried.** Decision 1's
+  composition moves `additionalProperties: false` off
+  `tool-context.schema.json` and onto each per-tool closure, which reddens a pin
+  that has held since the file was written. The closure is not weakened — it is
+  enforced once per tool instead of once in the referent — but for the length of
+  slice B2's commit the file that types every call's context does not close
+  itself, and an implementer who moved the keyword and did not rewrite the pin
+  would read a red test as noise.
 - **Refusing unknown keys is a compatibility decision.** A client that sends a
   forward-looking field today gets a refusal instead of silence. That is the
   intended direction — silence is what this control exists to end — but it is a
@@ -318,16 +444,27 @@ Measured now, and reproducible from this ADR (2026-09-12, `be977ea7`):
   response-fragment schemas and one input-side contract,
   `tool-context.schema.json`. **No per-tool input schema exists**, and the one
   input schema that does has **no reader under `src/`** —
-  `git grep -n "tool-context" -- packages schemas docs tools` returns four hits
-  outside this ADR, all of them a link, a test reference or the
-  `schemas/README.md` row that records the absence.
+  `git grep -n "tool-context" -- packages schemas docs tools` returns five hits
+  outside this ADR: a link, two test references, the `schemas/README.md` row
+  that records the absence, and the file's own `$id`.
 - The SDK's argument model sets no `extra="forbid"`:
-  `grep -c 'extra="forbid"' .venv/lib/python3.13/site-packages/mcp_types/_types.py`
-  answers **0**, and `ArgModelBase`'s own config is
+  `grep -rho 'extra="forbid"' .venv/lib/python3.13/site-packages/mcp_types/ | wc -l`
+  answers **0** over the whole package, and `ArgModelBase`'s own config is
   `ConfigDict(arbitrary_types_allowed=True)`
   (`mcp/server/mcpserver/utilities/func_metadata.py`).
+- **No SDK-derived tool schema sets `additionalProperties`** — measured over the
+  built server, **7 of 7** absent, which is why decision 6's equivalence
+  relation excludes the closure axis.
 - `build_server` passes no middleware (`daemon/runner.py`, the `MCPServer(...)`
-  construction).
+  construction), and the seat it would occupy is *inside* the SDK's own two —
+  `OpenTelemetryMiddleware` then `RequestStateBoundary`, appended by
+  `Server.__init__` and `MCPServer.__init__` before the caller's list is
+  extended in.
+- **Only one `$ref` composition admits a valid document and rejects an unknown
+  key**, and it requires the referent's own closure to move:
+  `allOf: [{"$ref": tool-context}]` with `unevaluatedProperties: false`. The
+  table in decision 1 records all three forms driven against
+  `jsonschema==4.26.0`, both with the referent closed and with it open.
 - The core's runtime dependency list is **6** packages and already includes
   `jsonschema==4.26.0` and `referencing==0.37.0`
   (`packages/theurian-core/pyproject.toml`).
@@ -360,7 +497,12 @@ Still owed, with the milestone that will satisfy it:
   (decision 6).** Owed a test that recomputes the agreement from both live
   sides, plus the control that proves it can fail. The equivalence relation is
   stated in the test module's docstring, because a relation nobody wrote down is
-  one a later contributor will loosen to make a failure go away.
+  one a later contributor will loosen to make a failure go away — and the
+  statement has to name what it **excludes**: the closure axis, which the
+  derived schema never carries (7 of 7 absent, measured), and value-domain
+  tightening, which is the published schema's purpose. What it must catch is a
+  published schema **permitting** what the handler refuses, and its positive
+  control is exactly that mutation.
 - **Slice B2 — the bounds on an untrusted document are applied at this boundary
   too.** `validate_migration_document`'s nesting, node and rendered-character
   caps exist because unbounded documents cost unbounded work in `jsonschema`'s
@@ -371,7 +513,18 @@ Still owed, with the milestone that will satisfy it:
   "nothing, and nothing should: it describes tool *input*, so there is no
   response to compare", which is true of a *response* check and false of this
   one. Owed: the row rewritten to name what now reads the schema, in the same
-  commit.
+  commit — and to name **both** tests that hold properties of the file, since it
+  names one today and
+  `::test_object_schemas_reject_unknown_properties[tool-context.schema.json]`
+  is the one decision 1's composition moves.
+- **Slice B2 — the closure pin moves with the closure, and is rewritten rather
+  than deleted.** Moving `additionalProperties: false` off
+  `tool-context.schema.json` takes
+  `tests/unit/test_schemas.py::test_object_schemas_reject_unknown_properties[tool-context.schema.json]`
+  RED. Owed: that test rewritten so it still holds a closure claim over the
+  context fields — asserting that every per-tool schema referencing the context
+  sets `unevaluatedProperties: false` — with the control that a per-tool schema
+  missing it is caught. A pin deleted because a keyword moved is a pin deleted.
 - **Slice B2 — the three records that say SEC-12 does not run are rewritten in
   the commit that makes them false**: `docs/security/threat-model.md`'s *Future
   controls, not shipped* entry, `docs/roadmap.md`'s SEC-12 requirement row
