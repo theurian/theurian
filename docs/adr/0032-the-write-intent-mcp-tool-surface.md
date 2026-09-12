@@ -169,7 +169,7 @@ Refusing the shape is cheaper than containing it. A containment check has to be
 right about symlinks, case folding, Unicode normalisation and TOCTOU on every
 platform; an absent parameter has nothing to be right about.
 
-### 3. `knowledge.generateMigrationDraft` is the operations path, and v1 carries eleven of the fourteen operation kinds
+### 3. `knowledge.generateMigrationDraft` is the operations path, and v1 carries ten of the fourteen operation kinds
 
 `knowledge.proposeChange` covers exactly one shape of change: a body and the
 revision that carries it. The other twelve things a migration can say — a
@@ -181,9 +181,10 @@ emits precisely `createItem` and `upsertRevision`
 
 So the second tool takes a **migration document** and lands it as a proposal.
 Its v1 operation set is the closed `OperationKind` set **minus `createItem`,
-`upsertRevision` and `changeSensitivity`** — eleven of the fourteen. The first
-two are refused with a remedy naming `knowledge.proposeChange`; the third is
-refused for a different reason, below.
+`upsertRevision`, `changeSensitivity` and `restoreItem`** — ten of the
+fourteen. The first two are refused with a remedy naming
+`knowledge.proposeChange`; the other two are refused for their own reasons,
+below.
 
 **The set is chosen on an axis, not on a count, and the axis is *what a wrong
 proposal moves*.** Classifying all fourteen:
@@ -192,7 +193,8 @@ proposal moves*.** Classifying all fourteen:
 | :-- | :-- | :-- |
 | **Moves content** — a body, a revision pointer, the digest pin | `createItem`, `upsertRevision` | **No.** The content path owns them (below) |
 | **Moves an enforced read control** — `may_disclose`, the deployment's sensitivity ceiling (#119, ADR-0025) | `changeSensitivity` | **No.** Pulled; see below |
-| **Moves an enforced surfacing control** — `may_surface`, the status gate | `deprecateItem`, `restoreItem` | **Yes**, and named here so a reviewer knows which two they are |
+| **Narrows an enforced surfacing control** — `may_surface`, the status gate, in the withholding direction | `deprecateItem` | **Yes.** It can only take an item *out* of the surfaceable set |
+| **Widens that same control** — `may_surface`, in the readmitting direction | `restoreItem` | **No.** Pulled; see below |
 | **Moves addressing** — a second key that resolves to an item (T-21) | `addAlias`, `removeAlias` | **Yes**, with the refusal's *timing* named below |
 | **Moves governance metadata** — ownership, relations, specification lifecycle, evidence links | `addRelation`, `removeRelation`, `changeOwner`, `registerSpecification`, `supersedeSpecification`, `addEvidence`, `removeEvidence` | **Yes** |
 
@@ -214,14 +216,88 @@ by which an injected instruction becomes a knowledge candidate." An injected
 instruction that reaches a declassification is the worst member of that family,
 and v1 does not carry it.
 
-**`deprecateItem` and `restoreItem` move a read control too, and they stay** —
-so the distinction is stated rather than implied. Both move an item's `status`,
-which `may_surface` reads, and `restoreItem` moves it in the *widening*
-direction (to `APPROVED`, `application/migration_engine.py`). They stay in v1
-because a reviewer reading the migration sees the whole of what they do: the
-statuses are in the document, the set of surfaceable ones is in the domain, and
-nothing about the deployment changes the answer. That is exactly what is not
-true of `changeSensitivity`.
+**`deprecateItem` and `restoreItem` both move the status gate, and only one of
+them stays. The distinction is which direction it moves it in.**
+
+`deprecateItem` stays. It sets `DEPRECATED`
+(`application/migration_engine.py:485`), a status outside `SURFACEABLE_STATUSES`
+under both values of `includeUnapproved` (`domain/enums.py`), so the worst a
+wrong proposal does is withhold an item that should have stayed visible — a
+reviewer meets that as a missing answer, not as a disclosure. A reviewer reading
+the migration also sees the whole of what it does: the statuses are in the
+document, the set of surfaceable ones is in the domain, and nothing about the
+deployment changes the answer.
+
+**`restoreItem` is pulled, because it readmits from any status, and the wire
+shape lets it say nothing about why.** Three measurements, each with the key
+that settles it.
+
+**One — there is no transition check.** `restoreItem` sets `APPROVED` from
+whatever status the item currently holds:
+
+```python
+# application/migration_engine.py:497-498
+case RestoreItem():
+    self._set_status(writer, project_id, operation.item_id, KnowledgeStatus.APPROVED)
+```
+
+`_set_status` (`application/migration_engine.py:676-686`) looks the item up,
+raises on an unknown id, and writes `item.with_status(status)`. It takes the
+target status as an argument and never reads the current one. The walk that
+would find a transition rule elsewhere returns nothing:
+
+```console
+$ git grep -c "DEPRECATED" -- packages/theurian-core/src
+packages/theurian-core/src/theurian/application/migration_alias_guards.py:2
+packages/theurian-core/src/theurian/application/migration_engine.py:1
+packages/theurian-core/src/theurian/domain/enums.py:1
+```
+
+Four lines in three files, read one by one: the alias guard's own status
+projection (`:75`) and its deprecated-is-exempt test (`:137`), the
+`deprecateItem` write above (`:485`), and the enum member (`domain/enums.py:29`).
+Not one of them asks what a restore is restoring *from*. **The key's limit**: it
+finds only the spelling `DEPRECATED`, so a transition table written in some other
+vocabulary would be invisible to it — which is why the engine's own
+`case RestoreItem()` arm is quoted above rather than inferred from the absence.
+
+**Two — `REJECTED` is inside that reach, and it is the one status no flag
+surfaces.** `domain/enums.py:206-219` says so in its own words: `REJECTED` "is
+deliberately absent and there is no flag that adds it. A rejected revision is
+one the team decided must *not* be followed, and it is also where a secret that
+caused the rejection still lives." A `restoreItem` over a rejected item is
+therefore the one operation in the set that can republish content the read gate
+is built never to serve, and it does it in the widening direction.
+
+**Three — the wire shape is weaker than that of the operation this ADR had
+already pulled, so admitting one while pulling the other had the contrast the
+wrong way round.** `opRestoreItem`
+(`schemas/migrations/migration.schema.json:253-262`) requires exactly `op` and
+`itemId`; its `reason` is an **optional** property, so a schema-valid restore can
+carry no rationale at all. `opChangeSensitivity` (`:305-318`) requires `op`,
+`itemId`, `sensitivity` **and** `reason`, and the schema's own description of
+that field states the principle: "Reclassification changes who may read the
+content, so the rationale is part of the record." The two operations move who
+may read an item by different routes, and the one with the weaker record is the
+one an earlier draft of this ADR admitted.
+
+**The readmission path is owed, not closed.** Widening is additive — the third
+of the three reasons for the content split, below, says why — and a later slice
+that admits `restoreItem` has to bring three things with it:
+
+1. **A transition-aware refusal** — restore admitted only over a `DEPRECATED`
+   item. That is already the operation's *documented* meaning:
+   `docs/protocol/migrations.md:86` gives `restoreItem` as "Undo a
+   deprecation", which the engine does not enforce. That mismatch is
+   pre-existing, is not created here, and is being filed as its own issue.
+2. **A wire-required `reason`**, in the shape `opChangeSensitivity` already
+   uses, so the human reading the pull request is told why an item is coming
+   back.
+3. **A named seat.** Apply-time enforcement of the status transition graph is
+   `docs/roadmap.md`'s Phase D item ① and its ADR candidate #1 ("Enforcing the
+   status transition graph — define the legal transitions and check them in the
+   migration engine"). A tool-side refusal is narrower than that and does not
+   substitute for it; whichever lands first, the other is still owed.
 
 **`addAlias` carries the T-21 shape, and what is owed about it is *when* the
 refusal arrives, not whether.** An alias key equal to a live item id let a read
@@ -250,11 +326,12 @@ Three reasons for the content split, in order of weight:
    a hand-authored document. Two pipelines that must agree about the same set is
    the defect shape, not the feature.
 2. **The split is legible to a caller.** *Content goes to `proposeChange`;
-   everything else except `changeSensitivity` goes to `generateMigrationDraft`*
-   is a rule an agent can follow without reading this ADR.
-3. **Widening is additive.** Admitting `upsertRevision` or `changeSensitivity`
-   later adds a capability; no client breaks. Narrowing later would break
-   clients, which is why the v1 set is the conservative one.
+   everything else except `changeSensitivity` and `restoreItem` goes to
+   `generateMigrationDraft`* is a rule an agent can follow without reading this
+   ADR.
+3. **Widening is additive.** Admitting `upsertRevision`, `changeSensitivity` or
+   `restoreItem` later adds a capability; no client breaks. Narrowing later
+   would break clients, which is why the v1 set is the conservative one.
 
 **Validation reuses the existing entry point, reached the way the service
 already reaches it.** `validate_migration_document`
@@ -531,9 +608,9 @@ to out-of-view items, and that scoping is the decision, not an oversight.
   fact ADR-0034's precondition exists for.
 - **`generateMigrationDraft`'s v1 refusals will be met by callers.** An agent
   that reaches for `upsertRevision` there is told to use the other tool; one
-  that reaches for `changeSensitivity` is told to use the CLI and has no tool to
-  be redirected to. That is a deliberate cost of decision 3 and it will read as
-  a limitation before it reads as a design.
+  that reaches for `changeSensitivity` or `restoreItem` is told to use the CLI
+  and has no tool to be redirected to. That is a deliberate cost of decision 3
+  and it will read as a limitation before it reads as a design.
 - **Two of the three tools' owed controls are new work, not inherited.**
   Decision 6's caller-scoped revision lookup and decision 8's draft-only facade
   are properties nothing in the tree holds today; the sweeps that look like they
@@ -557,14 +634,17 @@ to out-of-view items, and that scoping is the decision, not an oversight.
 2. **The remaining planned `knowledge.*` tools** — `getContext`, `trace`,
    `listChanges`, `checkFreshness`, `submitFeedback` — stay planned. This ADR
    neither builds nor retires them.
-3. **The other eleven operation kinds in `generateMigrationDraft`'s v1 set are
-   admitted, not exercised.** Which of them a real agent can usefully author,
-   and what remedy text each refusal needs, is slice B4's to find by running it.
-4. **Widening `generateMigrationDraft` to the content operations, or to
-   `changeSensitivity`.** Additive by construction (decision 3), and not designed
-   here. The sensitivity one needs its own recorded justification, because what
-   a declassification admits depends on a deployment ceiling the reviewer of the
-   pull request cannot see.
+3. **The ten operation kinds in `generateMigrationDraft`'s v1 set are admitted,
+   not exercised.** Which of them a real agent can usefully author, and what
+   remedy text each refusal needs, is slice B4's to find by running it.
+4. **Widening `generateMigrationDraft` to the content operations, to
+   `changeSensitivity`, or to `restoreItem`.** Additive by construction
+   (decision 3), and not designed here. Each of the two non-content ones needs
+   its own recorded justification: what a declassification admits depends on a
+   deployment ceiling the reviewer of the pull request cannot see, and a
+   readmission needs the three things decision 3 names — a transition-aware
+   refusal, a wire-required `reason`, and a decision about whether the
+   enforcement seat is the tool or the engine (Phase D's ADR candidate #1).
 5. **Whether any residual disclosure survives decision 6's bind.** The bind
    names the shape and the seat (a caller-scoped `CurrentRevisionLookup`), and
    slice B4 owes the two-corpora equality that would find a residual. Until that
@@ -608,7 +688,21 @@ Measured now, and reproducible from this ADR (2026-09-12, `be977ea7`):
 - The proposal generator emits exactly **2** of `OperationKind`'s **14**
   members — `createItem` and `upsertRevision`, read off `_migration_document`'s
   returned `operations` list in `application/proposal_service.py`. Decision 3's
-  v1 set is **11**: fourteen minus those two and minus `changeSensitivity`.
+  v1 set is **10**: fourteen minus those two, minus `changeSensitivity` and
+  minus `restoreItem`.
+- **`restoreItem` sets `APPROVED` from any status, and nothing in `src/` checks
+  the transition.** `application/migration_engine.py:497-498` passes
+  `KnowledgeStatus.APPROVED` to `_set_status` (`:676-686`), which reads the
+  target status from its argument and never the current one;
+  `git grep -c "DEPRECATED" -- packages/theurian-core/src` answers 4 lines in 3
+  files and none of them is a transition rule (the key and its limit are in
+  decision 3). `REJECTED` is in that reach, and `domain/enums.py:206-219` records
+  that `REJECTED` is reachable through no flag "because a rejected revision is
+  where the secret that caused the rejection still lives".
+- **The two pulled non-content operations carry opposite wire requirements.**
+  `opRestoreItem` (`schemas/migrations/migration.schema.json:253-262`) requires
+  `["op", "itemId"]` and types `reason` as optional; `opChangeSensitivity`
+  (`:305-318`) requires `["op", "itemId", "sensitivity", "reason"]`.
 - The bytecode sweep's forbidden set is **17** names — `WRITE_GATEWAYS`
   (`SqliteWriter`, `write_transaction`) plus the **15** methods on `SqliteWriter`
   that are not on `SqliteCanonicalStore`, computed live by
@@ -685,14 +779,16 @@ Still owed, with the milestone that will satisfy it:
   check is that no write-intent tool's input schema declares one. A refusal test
   would pin today's spelling of a rejection; this pins the absence of the
   parameter.
-- **Slice B4 — `generateMigrationDraft` refuses three kinds and admits eleven
-  (decision 3).** Owed: one driving case per refused kind — `createItem` and
-  `upsertRevision` with a remedy naming `knowledge.proposeChange`,
-  `changeSensitivity` with a remedy naming the CLI — plus at least one admitted
-  kind landing a proposal, so the refusal is not satisfied by a tool that
-  refuses everything. The refused set is asserted against `OperationKind` itself
-  rather than listed, so a fifteenth kind added later is admitted or refused
-  deliberately rather than by omission.
+- **Slice B4 — `generateMigrationDraft` refuses four kinds and admits ten
+  (decision 3).** Owed: **four** driving cases, one per refused kind —
+  `createItem` and `upsertRevision` with a remedy naming
+  `knowledge.proposeChange`, `changeSensitivity` and `restoreItem` each with a
+  remedy naming the CLI — plus at least one admitted kind landing a proposal, so
+  the refusal is not satisfied by a tool that refuses everything. That is five
+  driving cases in total, and the count moves with the refused set rather than
+  being stated beside it: the refused set is asserted against `OperationKind`
+  itself rather than listed, so a fifteenth kind added later is admitted or
+  refused deliberately rather than by omission.
 - **Slice B4 — a refusal about an out-of-view item is indistinguishable from one
   about an absent item (decision 6).** Owed: one battery of `proposeChange`
   calls answered identically over a corpus that **held** withheld items — a
