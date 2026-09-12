@@ -254,9 +254,9 @@ The check runs in a `ServerMiddleware` registered on the `MCPServer` that
 Two properties follow from the measurements above, and neither is available at
 any other tier:
 
-1. **`additionalProperties: false` is enforceable.** The middleware sees the
-   keys the caller actually sent, because the SDK has not yet built the model
-   that would drop them.
+1. **The closure is enforceable.** The middleware sees the keys the caller
+   actually sent, because the SDK has not yet built the model that would drop
+   them.
 2. **The check precedes the handler by construction, not by convention.** The
    SDK's own dispatcher wraps params validation, the handler call and the
    pre-init gate inside `call_next(ctx)`, so a tool cannot opt out of the
@@ -289,8 +289,10 @@ alternative that would have added one is rejected below.
 
 ### 4. Unknown keys refuse, and a refusal is bounded and does not echo unbounded caller input
 
-Every published input schema sets `additionalProperties: false`, and a request
-carrying a key the schema does not name is refused rather than trimmed. The
+Every published input schema is closed against unknown keys — with decision 1's
+`unevaluatedProperties: false`, the one keyword the table there measured as
+composing with the context `$ref` — and a request carrying a key the schema does
+not name is refused rather than trimmed. The
 reason is the one the domain-construction control cannot reach: a key the server
 silently drops is a caller believing it asked for something it did not get, and
 on a write-intent surface (ADR-0032) that difference is the difference between
@@ -425,9 +427,9 @@ the caller may not read. That split is what stops decision 6 from being read as
   than a surprise, but the coupling is real and is recorded here rather than
   discovered at the bump.
 - **The context schema loses a keyword it has always carried.** Decision 1's
-  composition moves `additionalProperties: false` off
-  `tool-context.schema.json` and onto each per-tool closure, which reddens a pin
-  that has held since the file was written. The closure is not weakened — it is
+  composition moves the closure off `tool-context.schema.json` and onto each
+  per-tool schema, which reddens a pin that has held since the file was written.
+  The closure is not weakened — it is
   enforced once per tool instead of once in the referent — but for the length of
   slice B2's commit the file that types every call's context does not close
   itself, and an implementer who moved the keyword and did not rewrite the pin
@@ -466,7 +468,7 @@ the caller may not read. That split is what stops decision 6 from being read as
 
 | Alternative | Why rejected |
 | :-- | :-- |
-| **Validate inside the `_tool` registration seam** | The seam runs after the SDK has built its argument model, and that model drops unknown keys (`ArgModelBase` sets no `extra="forbid"`, measured above). A check there can validate the values a handler receives and can never see the keys a caller sent, so `additionalProperties: false` — the half that catches a client asking for something this build does not implement — is unenforceable from it. |
+| **Validate inside the `_tool` registration seam** | The seam runs after the SDK has built its argument model, and that model drops unknown keys (`ArgModelBase` sets no `extra="forbid"`, measured above). A check there can validate the values a handler receives and can never see the keys a caller sent, so the closure — the half that catches a client asking for something this build does not implement — is unenforceable from it. |
 | **A Starlette middleware in `daemon/server.py`** | It sits below the MCP framing, so it would have to re-parse JSON-RPC envelopes and Streamable-HTTP batching to find `params.arguments`. That is a second implementation of the SDK's own dispatch, and it would be wrong in a way nothing tests the day the transport changes. The SDK middleware tier is handed the parsed method and params by contract. |
 | **Patch or fork the SDK's request models to `extra="forbid"`** | Two costs. The dependency is exact-pinned by [ADR-0014](0014-dependency-pinning-and-pre-1-0-isolation.md), so a patched model is a fork to carry across every bump. And it answers the wrong requirement: `forbid` rejects keys the *handler signature* does not name, while SEC-12's own text demands validation "against its published JSON Schema" — a stricter and different statement, since a published schema constrains value ranges, enums and formats that a Python annotation does not. |
 | **Generate the published schema from the handler signature at build time** | It removes the drift of decision 6 by removing one of the two descriptions, which sounds strictly better and is not: the published artifact would then be a projection of the implementation rather than a contract the implementation is held to, so every accidental widening of a parameter type would publish itself as an intentional contract change. The contract is supposed to be the thing that does not move by accident. |
@@ -540,12 +542,23 @@ Still owed, with the milestone that will satisfy it:
   with a positive control that an ordinary tool with its schema is served — a
   refusal test with no served counterpart passes for a server that refuses
   everything.
-- **Slice B2 — `additionalProperties: false` is enforced on the wire, not in
-  the handler.** Owed a test driven through a real `tools/call` carrying an
+- **Slice B2 — each per-tool schema's `unevaluatedProperties: false` is
+  enforced on the wire, not in the handler.** The keyword is decision 1's, not
+  `additionalProperties`, which that decision's table measured as rejecting the
+  valid document under either arrangement of the referent.
+  Owed a test driven through a real `tools/call` carrying an
   unknown key, asserting the refusal — and asserting it against the *SDK's own
   drop*, which is what makes the middleware seat load-bearing rather than
   stylistic. Without that second half the test would pass on a build whose
   handler merely ignored the key, which is today's behaviour.
+- **Slice B2 — the per-tool schemas carry the value-domain constraints
+  [ADR-0032](0032-the-write-intent-mcp-tool-surface.md) decision 3's table
+  assigns them**: an explicit `maxLength` on `body`, the wire equivalent of the
+  `MAX_SOURCE_FILE_BYTES` cap that `_read_body` applies to a body *file* and
+  that nothing applies on a path with no file, and `uniqueItems` on `labels[]`,
+  which the migration schema already requires and the CLI's `_merge_labels`
+  currently satisfies by deduplicating. The driving cases are owed at slice B4
+  and named there; the schemas that make them possible are owed here.
 - **Slice B2 — refusal messages are bounded and do not echo unbounded caller
   input (decision 4).** Owed a test that a key or value past the recorded bound
   is reported by length or by key path and never reproduced, in the shape
