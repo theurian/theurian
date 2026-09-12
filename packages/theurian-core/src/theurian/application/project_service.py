@@ -466,9 +466,18 @@ def derived_escape_remedy(knowledge_directory_name: str, subdirectory: str) -> s
     )
 
 
-#: The knowledge directory's one child that is neither authored source in the
-#: sense :data:`KNOWLEDGE_DIR_ESCAPE_REMEDY` is written for nor a member of
-#: ``DERIVED_SUBDIRECTORIES``, so neither existing cure describes it.
+#: The child of the knowledge directory **this change carves out**: neither
+#: authored source in the sense :data:`KNOWLEDGE_DIR_ESCAPE_REMEDY` is written
+#: for nor a member of ``DERIVED_SUBDIRECTORIES``, so neither existing cure
+#: describes it.
+#:
+#: Not the only member of that class, and an earlier version of this note called
+#: it the one. ``theurian init`` writes no ``.theurian/config.yaml`` either, so
+#: :attr:`ProjectPaths.config` still publishes the fallback's "run `theurian
+#: init` to recreate the directory" clause against a file ``init`` does not
+#: create. That face is filed as
+#: `#652 <https://github.com/theurian/theurian/issues/652>`_ and is deliberately
+#: not carved out here.
 _REVIEW_SUBDIRECTORY: Final = "review"
 
 
@@ -492,16 +501,32 @@ def review_escape_remedy(knowledge_directory_name: str) -> str:
     than a style one.** :func:`derived_escape_remedy` publishes both forms
     because the culprit it names may be a real directory. Here it may not be:
     :meth:`ProjectPaths.of` refuses before this class exists unless the resolved
-    knowledge directory is inside the resolved root, so by the time ``review``
-    is resolved the only object on that path that can still leave the tree is a
-    link at ``review`` itself or below it -- and plain ``rm`` removes a link
-    without the force ``-rf`` adds. Offering ``-rf`` would be worse than
-    redundant: ADR-0030 decision 3 makes review evidence canonical with no
-    replayable source, so a reader who reaches for the force arm over a real
-    directory destroys records no rebuild recovers. Against a real directory
-    plain ``rm`` fails and removes nothing, which is the safe direction, and the
-    ``ls -l`` that opens the cure is what lets a reader see which shape they
-    have before they type anything.
+    knowledge directory is inside the resolved root, so by the time ``review`` is
+    resolved the only object on that path that can still leave the tree is a
+    symbolic link -- and plain ``rm`` removes a link without the force ``-rf``
+    adds. Offering ``-rf`` would be worse than redundant: ADR-0030 decision 3
+    makes review evidence canonical with no replayable source, so a reader who
+    reaches for the force arm over a real directory destroys records no rebuild
+    recovers. Against a real directory plain ``rm`` fails and removes nothing,
+    which is the safe direction, and the ``ls -l`` that opens the cure is what
+    lets a reader see which shape they have before they type anything.
+
+    **Where that link can be is a dated measurement, and the cure names one
+    place.** The ``rm`` below is rendered against the directory itself
+    (``rm .theurian/review``, for the default basename) and so removes a link
+    *at* ``review`` and nothing deeper, which holds only while ``review`` is the
+    deepest thing any helper resolves under that name. It is, today: ``git grep -nE
+    '_contained\\(self\\.knowledge_dir / _REVIEW_SUBDIRECTORY' --
+    packages/theurian-core/src/theurian/application/project_service.py`` printed
+    one line on 2026-09-12, :attr:`ProjectPaths.review` itself, and the key does
+    not hit this paragraph because the text above spells the call with
+    backslashes. :meth:`ProjectPaths._escape_remedy` keys its carve-out on the
+    *first component at any depth* on purpose, so a helper added later for
+    something beneath the evidence directory inherits this arm rather than
+    falling back to a cure naming ``theurian init``. **Whoever adds that helper
+    revisits this cure in the same change**: the link would then be able to sit
+    at an interior component, and a single ``rm .theurian/review`` would name the
+    wrong object.
 
     **The path is rendered without a trailing slash**, for the outcome
     :func:`derived_escape_remedy`'s own measured table records: BSD ``rm -rf``
@@ -514,9 +539,21 @@ def review_escape_remedy(knowledge_directory_name: str) -> str:
     ``mcp/tools.py``'s ``_with_remedy`` replaces the *message* with
     ``PATH_ESCAPE_REFUSAL`` and republishes the *remedy* -- and that fold is
     generic over the exception, not over which helper raised. No registered tool
-    resolves :attr:`ProjectPaths.review` today (``grep -nE 'paths\\.review\\b'
-    packages/theurian-core/src/theurian/mcp/tools.py`` printed nothing on
-    2026-09-12), so the discipline lives here, where a later tool inherits it,
+    resolves :attr:`ProjectPaths.review` today: ``git grep -nE
+    'paths\\.review($|[^_])' -- packages/theurian-core/src/theurian/mcp/``
+    printed nothing on 2026-09-12. Both halves of that pattern are load-bearing,
+    and the key this replaces -- ``paths\\.review\\b``, in the house
+    ``git grep -E`` idiom -- had neither. ``\\b`` is not a POSIX ERE construct:
+    ``git grep -cE 'REVIEW_SEARCH_STORE_ID\\b' --
+    packages/theurian-core/src/theurian/mcp/`` printed nothing on the same day,
+    while the identical pattern without it answered 4, so the old key was silent
+    whether or not a tool resolved this path. ``[^_]`` is what keeps
+    ``paths.review_search_for``, which ``mcp/tools.py`` does call, from answering
+    as a hit, and the ``$`` alternative is what keeps an occurrence at end of
+    line from being missed -- measured by planting both shapes in a scratch file
+    under that pathspec and running the key with ``--untracked``, where
+    ``paths\\.review[^_]`` alone found the mid-line one and not the other. The
+    discipline therefore lives here, where a later tool inherits it,
     rather than in a seam a later tool would bypass: this interpolates the
     knowledge directory's *basename* and this module's own literal, and nothing
     that came out of a ``resolve()`` (GHSA-97q9).
@@ -1331,28 +1368,41 @@ class ProjectPaths:
         cannot raise, and it answers the same before and after the escape it
         describes.
 
-        Three cures now, not two: ``review`` is carved out ahead of the derived
-        check and answered by :func:`review_escape_remedy`, because the fallback
-        told a reader to run ``theurian init`` and ``review`` is not in
-        :data:`INITIAL_DIRECTORIES` (#602). The carve-out is keyed on the first
-        component at any depth, so a later helper resolving something *beneath*
-        the evidence directory inherits it rather than falling back.
+        ``review`` is carved out ahead of the derived check and answered by
+        :func:`review_escape_remedy`, because the fallback told a reader to run
+        ``theurian init`` and ``review`` is not in :data:`INITIAL_DIRECTORIES`
+        (#602). The cures this method can return are read from its own ``return``
+        arms rather than counted in prose -- the sentence this replaces opened
+        "three cures now, not two", which is a number that goes stale silently.
+        ``mcp/tools.py``'s ``PATH_ESCAPE_REFUSAL`` note carries the key that
+        prints them (case-insensitively, so the constant answers beside the two
+        functions) and records what each one interpolates; that note is where a
+        fourth cure has to re-establish the claim it argues.
+
+        The carve-out is keyed on the first component **at any depth**, so a
+        later helper resolving something *beneath* the evidence directory
+        inherits this arm rather than falling back. The arm is ready for that;
+        :func:`review_escape_remedy`'s text is not, and says so -- it names
+        ``rm .theurian/review``, which cures a link at ``review`` and nothing
+        deeper.
 
         Everything else falls back to :data:`KNOWLEDGE_DIR_ESCAPE_REMEDY`, and
         that population is re-derived rather than transcribed -- the sentence
         this replaces had listed four members and omitted ``proposals-local``,
         which predates both this change and the one before it. The key is
-        ``git grep -c 'self\\._contained(' --
+        ``git grep -n 'self\\._contained(' --
         packages/theurian-core/src/theurian/application/project_service.py``,
-        which answered 18 on 2026-09-12; the eight of those whose relative path
-        is a single component, or whose first component is outside
-        ``DERIVED_SUBDIRECTORIES``, are the fallback's population:
-        :attr:`knowledge`, :attr:`specifications`, :attr:`proposals`,
-        :attr:`proposals_local`, :attr:`config`, and :attr:`state` and
-        :attr:`runtime` asked for *as themselves* rather than as a parent.
-        :attr:`review` was the ninth until this change. The key does not hit
-        this sentence: the text above spells the call with a backslash, so it is
-        not the string the pattern matches.
+        which printed 18 lines on 2026-09-12. **Eight** of them build a relative
+        path of a single component; the other ten open with ``state``, ``cache``
+        or ``runtime``, each a member of ``DERIVED_SUBDIRECTORIES``, so the
+        predicate's other disjunct -- a first component outside it -- selects
+        none of them today. **Seven** of the eight are the fallback's
+        population: :attr:`knowledge`, :attr:`specifications`,
+        :attr:`proposals`, :attr:`proposals_local`, :attr:`config`, and
+        :attr:`state` and :attr:`runtime` asked for *as themselves* rather than
+        as a parent. :attr:`review` was the eighth until this change. The key
+        does not hit this sentence: the text above spells the call with a
+        backslash, so it is not the string the pattern matches.
 
         **That last group survives only at the helper level, and an earlier note
         here described it as though a user could meet it.** Asking this class for
@@ -1396,6 +1446,12 @@ class ProjectPaths:
             # for correctness -- but the depth is not. A helper added later for
             # something under the evidence directory would otherwise fall back to
             # a cure naming `theurian init`, which creates nothing here.
+            #
+            # The arm reaches that helper; the cure's *text* does not yet. It
+            # names `rm .theurian/review`, which is written for the only site
+            # this arm has today -- `ProjectPaths.review`, the directory itself.
+            # Adding a helper beneath it means revisiting `review_escape_remedy`
+            # in the same change, and its docstring carries the key that says so.
             return review_escape_remedy(self.knowledge_dir.name)
         under_a_derived_subdirectory = (
             len(parts) >= _MIN_PARTS_UNDER_A_DERIVED_SUBDIRECTORY
@@ -1477,8 +1533,18 @@ class ProjectPaths:
         relative path against *this* root through ``security/paths.py`` -- so a
         hostile provider id is refused there and an escaping ``review`` symlink
         is refused here.
+
+        Composed from :data:`_REVIEW_SUBDIRECTORY` rather than from a literal,
+        the way :attr:`config` is composed from ``PROJECT_CONFIG_FILE``. What
+        that constant decides is not this path but what a *refusal* of it says:
+        :meth:`_escape_remedy` compares it against ``parts[0]`` to pick the arm,
+        and :func:`review_escape_remedy` renders it into the cure. A literal here
+        could drift out of step with either, and the visible symptom would be an
+        escaping evidence directory published with the fallback's ``theurian
+        init`` clause again -- the defect #602 fixed, returning by a different
+        door.
         """
-        return self._contained(self.knowledge_dir / "review")
+        return self._contained(self.knowledge_dir / _REVIEW_SUBDIRECTORY)
 
     @property
     def config(self) -> Path:
