@@ -12,6 +12,61 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The one `LIMIT_EXCEEDED` cure now answers both refusals that reach it**
+  ([#597](https://github.com/theurian/theurian/issues/597)). `theurian review
+  ingest` raises this grade for two causes an operator acts on differently, and
+  every sentence of the recorded cure named something that can only fix the
+  first. A bound of the **run** is yours to change: `limit` is refused below one
+  as well as above the pull-request cap, and `since_number` skips what is already
+  ingested. A **per-record** cap on one pull request's comments, linked issues or
+  labels is not — those are the `first:` literals of the adapter's GraphQL
+  documents (`labels(first: 50)`, `closingIssuesReferences(first: 20)`,
+  `comments(first: 100)`), so neither window parameter moves them at any value;
+  that pull request is reported as skipped and the rest of the run lands. The old
+  text said none of that, leaving a reader to assume the run had stopped or the
+  record had landed truncated. Its "no more than the cap the summary above names"
+  was worse than silent: for a pull request carrying 51 labels the summary names
+  50 — the *label* cap — so a reader following that clause clamps `limit` to 50
+  and meets the identical refusal. The cure now opens on which bound was reached,
+  and sends the per-record case to `gh pr view <number> --repo <owner>/<name>`,
+  which reads the pull request on GitHub instead.
+
+  **The grade was not split, and that is a decision rather than an omission.** A
+  `RefusalGrade` member is a published string in the run document, so adding one
+  is observable behaviour rather than patch material, and this enum's membership
+  is coarse on purpose — what tells two refusals apart is the summary, which
+  names the number. The defect was the cure.
+- **An escaping `.theurian/review` no longer sends you to `theurian init`**
+  ([#602](https://github.com/theurian/theurian/issues/602), SEC-7). A clone can
+  deliver the review-evidence directory as a symbolic link pointing out of the
+  working tree, and the containment refusal that catches it — which is correct,
+  and is not what moved — published the knowledge-directory cure, whose middle
+  clause says to remove the link and "run `theurian init` to recreate the
+  directory". `review` is not in `INITIAL_DIRECTORIES`, so `init` creates nothing
+  at that path: the reader runs a command that does nothing and has no way to
+  tell that from a command that failed silently. The refusal now carries a cure
+  written for this artefact — inspect it with `ls -l`, remove the link with plain
+  `rm` and no trailing slash, and nothing at the link's target is touched.
+  Nothing has to be recreated by hand either: the evidence store makes the
+  directory again at the next `theurian review ingest`, and until then an absent
+  directory is read as an empty corpus rather than as a fault, so `theurian
+  review build` still answers.
+
+  **Plain `rm`, with no `rm -rf` twin** — unlike the derived-path cure beside it,
+  and for a reason about this artefact rather than about style. By the time
+  `review` is resolved, `ProjectPaths.of` has already refused unless the resolved
+  knowledge directory is inside the resolved root, so the only thing left on that
+  path that can leave the tree is a link, and plain `rm` removes a link without
+  the force `-rf` adds. Offering `-rf` would be worse than redundant:
+  [ADR-0030](../../docs/adr/0030-github-review-ingestion-spawns-gh.md) decision 3
+  makes review evidence canonical with no replayable source, so a reader who
+  reached for the force arm over a real directory would destroy records no
+  rebuild recovers. The carve-out is keyed on the first path component at any
+  depth, so a helper resolving something *beneath* the evidence directory
+  inherits this cure rather than falling back to the old one.
+
 ## [0.2.0] - 2026-09-12
 
 ### Added
