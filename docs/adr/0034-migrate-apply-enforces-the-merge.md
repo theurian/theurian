@@ -35,14 +35,34 @@ its own words:
 > untrusted same-UID process can run it directly.
 
 **The code says the same thing, measured — and the shape is *reads that
-describe*, not *no reads at all*.** `cli/commands.py`'s apply path makes
-**three** git calls while building the `Project` record it stores:
-`repository_url`, `default_branch` and `current_commit`, each a
-`subprocess.run` in `cli/context.py`. Every one of them is read-only metadata,
-and **none of the three is ever compared to anything.** `last_seen_commit` is
-the clearest case — its whole population is a write in `project register`, a
-write here, the field on `domain/project.py`, the column in
-`infrastructure/sqlite/schema.py`, three lines of the upsert in
+describe*, not *no reads at all*.** An apply reaches git **four** times, and the
+four split three to one:
+
+| # | Call | Helper | What it decides |
+| :-- | :-- | :-- | :-- |
+| 1 | `rev-parse --show-toplevel` | `find_git_root` (`cli/context.py`) | whether the command runs at all |
+| 2 | `remote get-url origin` | `repository_url` | nothing — stored as `Project.repository_url` |
+| 3 | `symbolic-ref --short HEAD` | `default_branch` | nothing — stored as `Project.default_branch` |
+| 4 | `rev-parse HEAD` | `current_commit` | nothing — stored as `Project.last_seen_commit` |
+
+**The count and the order are a trace of the shipped CLI, not a reading of the
+source.** A `git` shim first on `PATH` recorded every invocation of a real
+`theurian migrate apply`, run in a scratch repository under a redirected `HOME`
+and `THEURIAN_DATA_DIR` (2026-09-12):
+
+```console
+$ cat -n "$GIT_TRACE_LOG"
+     1	rev-parse --show-toplevel
+     2	remote get-url origin
+     3	symbolic-ref --short HEAD
+     4	rev-parse HEAD
+```
+
+Calls 2 to 4 are read-only metadata built into the `Project` record in
+`cli/commands.py`'s `migrate_apply`, and **none of the three is ever compared to
+anything.** `last_seen_commit` is the clearest case — its whole population is a
+write in `project register`, a write here, the field on `domain/project.py`, the
+column in `infrastructure/sqlite/schema.py`, three lines of the upsert in
 `infrastructure/sqlite/store.py` and the read-back that reconstructs the
 object:
 
@@ -51,9 +71,15 @@ $ git grep -n "last_seen_commit" be977ea7 -- packages/theurian-core/src | wc -l
        8
 ```
 
-Eight sites across five files, none of them a comparison. So the gap is not
-that `migrate apply` cannot reach git; it reaches it three times and asks it
-nothing that decides anything.
+Eight sites across five files, none of them a comparison.
+
+**Call 1 is the one that decides something, and the earlier draft of this
+document did not count it at all.** `find_git_root` is the read `resolve_context`
+uses to answer *is there a working tree here*, and the command refuses when the
+answer is no (decision 3). It is a real gate, and it is not this ADR's gate: it
+asks whether git is present, never what git *tracks*. So the gap is not that
+`migrate apply` cannot reach git. It reaches it four times, asks once whether a
+repository exists, and asks nothing at all about the file it is about to apply.
 
 **No tracking check exists anywhere in `src/`, and the key is the argument
 vectors themselves.** Walking every list or tuple literal in the shipped package
@@ -103,6 +129,47 @@ sequence:
 | **committed anywhere in history** | a file whose content was committed once and edited since. The approved bytes are in history; the bytes that would apply are not. |
 | **tracked and byte-identical to `HEAD`** | — this is the one taken |
 
+**The predicate is evaluated against the bytes the engine applies, not against a
+second read of the file.** The loader already digests each migration file's raw
+bytes — `Migration.checksum` is `ContentHash.of_bytes(raw)` over exactly what it
+read, and `Migration.source_path` is that file's project-relative path
+(`infrastructure/filesystem/migration_loader.py`). The check is therefore a
+comparison of two digests: `migration.checksum` against `ContentHash.of_bytes`
+of what `git cat-file blob HEAD:<source_path>` hands back. It is not a `stat`,
+and it is not a re-read.
+
+That is what closes the check-to-load race **by construction rather than by
+timing**. The shape that loses the race is *check the file on disk, then let the
+engine load it*: between the two reads the actors table's untrusted same-UID
+process replaces the file, and the control certifies bytes that never apply.
+There is no window here, because there is no second read of the working tree.
+
+**One query answers both halves of the predicate**, which is why it is one
+query rather than a `ls-files` followed by a `diff`. `git cat-file blob
+HEAD:<path>` fails when the path is not in `HEAD` — which *is* the tracked
+half, since a staged-but-never-committed file is not — and hands back the
+approved bytes when it is. Measured in a scratch repository (2026-09-12):
+
+```console
+$ printf 'approved\n' > sub/m.yaml && git add sub/m.yaml && git commit -qm add
+$ printf 'tampered\n' > sub/m.yaml
+$ git cat-file blob HEAD:sub/m.yaml | shasum -a 256 | cut -d' ' -f1
+7f8518f7db5e9a55049f49c4ea6d6e8f509695231e60cbd607bcb36c88a75a14
+$ shasum -a 256 < sub/m.yaml | cut -d' ' -f1
+92e78d0b032962f47792a9fa95fd981ef63e1e3ef074d536d6304c75eddbe29f
+$ printf 'x\n' > sub/staged.yaml && git add sub/staged.yaml
+$ git cat-file blob HEAD:sub/staged.yaml; echo $?
+fatal: path 'sub/staged.yaml' exists on disk, but not in 'HEAD'
+128
+```
+
+The `<rev>:<path>` spelling also costs less to make safe than a separate path
+argument would: the whole argument begins with `HEAD:`, so a filename shaped
+like an option is read as a path. Driven with a committed file literally named
+`--force.yaml`, `git cat-file blob 'HEAD:sub/--force.yaml'` returned its
+contents and exited 0. That closes the option half of the untrusted-filename
+question and not the rest of it, which stays owed in *Compliance*.
+
 **What it does and does not prove, said plainly.** It proves the bytes that are
 about to apply are the bytes at the current commit. It does **not** prove that
 commit reached `main` through a reviewed pull request — a local commit on a
@@ -114,13 +181,30 @@ tree, and a check that asked the forge would be a network call inside
 file that was **never committed at all** — the gap an agent, a script or a
 mistaken `mv` reaches.
 
+**Whose reach it narrows, actor by actor** — because "closes the gap" is not one
+statement, it is three, and only two of them are worth much:
+
+| Actor (threat model's own table) | What the floor costs them | Worth |
+| :-- | :-- | :-- |
+| An untrusted same-UID process | `git add && git commit` — two commands it can already run, since it has the user's account | **A speed bump.** It converts a silent apply into one that leaves a commit in the repository, and nothing more. Said plainly here rather than implied away by the ADR's title |
+| An MCP client, through the write-intent tools (ADR-0032) | Everything: it cannot reach `.theurian/migrations/` at all. The tools write under `.theurian/proposals/`, and the distance to the applied directory is a human's `propose accept` plus a merge | **Real, and it is the reason this is a Phase B precondition.** This is the actor whose population Phase B multiplies |
+| A human operator mid-development | One flag on the command (decision 2) | **The intended user of the escape hatch**, not a defeat of the control |
+
+The Positive section below is scoped to the middle row for that reason: the last
+unenforced link gets a check against the actor Phase B is about to add, and a
+speed bump against the actor who was already inside the boundary.
+
 ### 2. There is one escape hatch, it is a flag, and using it is visible
 
 An explicit flag — `--allow-uncommitted` is the working name; the exact spelling
 is slice B3's — restores today's behaviour for the two cases that need it:
 development, where a migration is written and applied before it is committed,
-and recovery, where a repository's git state is broken and the knowledge still
-has to be rebuilt.
+and recovery, where the repository is present but its object store cannot answer
+for a file and the knowledge still has to be rebuilt.
+
+**Both cases are inside a git working tree**, which is the whole reach of the
+flag. A directory with no repository at all never gets this far (decision 3), so
+the flag is not a way back into one.
 
 **It is a flag and not a configuration key, and that is the decision.** A
 config default is invisible at the moment of use: a project that set it once
@@ -130,20 +214,48 @@ in the CI log and in whatever recorded the invocation. The control this ADR adds
 is weak enough — decision 1 says how weak — that making it trivially and
 silently disablable would leave nothing.
 
-### 3. A tree with no git refuses without the flag
+### 3. A tree with no git already refuses, this ADR does not change it, and the flag does not reach it
 
-If `.theurian/` sits in a directory that is not a git repository, `migrate
-apply` refuses unless the flag is passed.
+`migrate apply` in a directory that is not a git repository refuses **today**,
+unconditionally. The refusal is `resolve_context`'s, not this control's:
+`find_git_root` returns `None` and the command raises before a project exists
+(`cli/context.py`). Driven in the same sandbox as the trace above, against a
+directory with no `.git` (2026-09-12):
 
-This follows from ADR-0013 point 4 rather than from caution: **this project's
-approval model *is* the merge**. A tree with no git has no approval record for
-the check to read, so the honest answer is to say so and name the flag, not to
-apply silently as if the check had passed. A check that quietly degrades to
-"allow" wherever its input is missing is the fail-open shape ADR-0031 decision 5
-refuses for the same reason.
+```console
+$ theurian migrate apply
+error: <dir> is not inside a Git repository. Theurian scopes a project to a
+Git working tree, so that branches and worktrees stay isolated.
+Run this inside a Git repository.
+$ echo $?
+1
+$ cat -n "$GIT_TRACE_LOG"
+     1	rev-parse --show-toplevel
+```
 
-The refusal names the condition and the flag, so the operator who genuinely has
-no repository is one flag away rather than one bug report away.
+One git call, no project, exit 1, and nothing written.
+
+**So decision 2's flag governs exactly one case: a git tree whose migration file
+is not committed.** It does not restore applying where there is no repository,
+and at decision 4's seat it could not: the check runs *after the project
+resolves*, and in a non-git tree the project never resolves, so the band the
+check sits in is never entered.
+
+**An earlier draft of this ADR said the opposite, and the correction is recorded
+rather than swept.** It designed a "refuses without the flag" path into a
+refusal that already ships, and it owed a driving test for it. That test cannot
+go RED — the behaviour it would assert is the behaviour on `main` — and its
+stated control, *the same tree applies under the flag*, cannot be constructed at
+all without replacing project resolution, which is a change this ADR neither
+prices nor proposes. The owed item is deleted rather than re-milestoned: an
+obligation whose control cannot be built is a sentence, not an obligation.
+
+What survives of the original reasoning is a **non-goal**, and it is kept as
+one. A tree with no git has no approval record for this check to read, so
+raising the non-git case to *apply anyway* would be the fail-open shape
+ADR-0031 decision 5 refuses. Nothing here proposes to, and ADR-0013 point 4 —
+**this project's approval model *is* the merge** — is why the existing refusal is
+the right answer rather than an inconvenience to be flagged away.
 
 ### 4. The check's seat: the CLI's pre-apply refusals, with the git query in `infrastructure/git/`
 
@@ -179,6 +291,30 @@ rather than taken from a document or a configuration file, the command cannot be
 handed a URL or a remote, there is a timeout, and a test goes red when any of
 those stops holding. **The new site reaches no network**, which is the same
 answer `trailer_source.py` gives.
+
+**Three records move with the set, and the coupling is measured rather than
+assumed.** `docs/security/threat-model.md`'s T-7 spawn bullet spells the number
+word **four** and names each of the four module paths, and
+`tests/unit/test_threat_model_t7_claims.py::test_the_t7_spawn_bullet_names_every_pinned_spawn_site_and_spells_how_many`
+derives both sides independently — the fact side from `PROCESS_SPAWN_SITES`, the
+prose side from the entry — so the bullet reddens the moment the set grows.
+Planting a fifth entry in a throwaway checkout takes both pins RED together,
+against a green control on the same two files:
+
+```console
+$ python -m pytest .../test_threat_model_t7_claims.py .../test_network_call_sites.py -q
+62 passed in 0.81s
+
+# a fifth ("infrastructure/git/merge_state.py", "subprocess") planted
+$ python -m pytest .../test_threat_model_t7_claims.py .../test_network_call_sites.py -q
+FAILED test_threat_model_t7_claims.py::test_the_t7_spawn_bullet_names_every_pinned_spawn_site_and_spells_how_many
+FAILED test_network_call_sites.py::test_no_module_outside_the_recorded_spawn_sites_can_start_another_program
+2 failed, 60 passed in 0.72s
+```
+
+Slice B3's commit is therefore the commit that grows the set, rewrites the T-7
+bullet's number word and module list, and lands the adapter — one commit,
+because two would be a red gate in between.
 
 **One inconsistency is named rather than inherited silently.** Both existing git
 sites spawn the bare name `git` and let the child's `PATH` resolve it
@@ -225,9 +361,12 @@ decision 1's floor does not prove a merge into a protected branch.
 
 ### Positive
 
-- **The last unenforced link in ADR-0013's chain gets a check.** Proposal → PR →
-  human merge → `migrate apply` is enforced structurally at the MCP end already;
-  this closes the end that was pure convention.
+- **The last unenforced link in ADR-0013's chain gets a check against the actor
+  Phase B adds.** Proposal → PR → human merge → `migrate apply` is enforced
+  structurally at the MCP end already; this closes the end that was pure
+  convention, for the caller that cannot reach `.theurian/migrations/` at all.
+  Against the untrusted same-UID process it is a speed bump, and decision 1's
+  actor table says so rather than letting this bullet imply otherwise.
 - **Phase B's stated precondition is satisfied by a change rather than by a
   plan.** The threat model's own lesson applies here — "an owner has to be the
   change that would implement the control, and an epic in the right milestone is
@@ -250,10 +389,28 @@ decision 1's floor does not prove a merge into a protected branch.
   flag exists because the friction is real; a flag that everyone types every
   time is a control that has become a habit, which is a thing to watch for
   rather than a thing this ADR can prevent.
-- **Repositories with unusual git layouts will meet decision 3.** A worktree, a
-  submodule, a `GIT_DIR` pointed elsewhere: each is a case the check has to
+- **Repositories with unusual git layouts will meet the predicate.** A worktree,
+  a submodule, a `GIT_DIR` pointed elsewhere: each is a case the check has to
   answer correctly or it refuses an honest project. That is implementation work
   slice B3 owes, and it is a real cost rather than an edge note.
+- **The migration files are parsed before they are refused, and that residual
+  stays.** The check's seat is after `resolve_context`, which has already run
+  `load_migrations` over every file in `.theurian/migrations/` — so an
+  uncommitted file is read, parsed and schema-validated before this control sees
+  it. The work is bounded by `validate_migration_document`'s existing caps
+  (`MAX_DOCUMENT_NESTING`, `MAX_DOCUMENT_NODES`, `MAX_DOCUMENT_RENDERED_CHARS`,
+  recorded for #291 and #245), so it is a bounded residual rather than an
+  unbounded one — but "refused before it is read" is not what this control
+  delivers, and the alternatives table's engine-seat row is where that trade was
+  made.
+- **Every temporary-directory harness that runs the CLI must `git init` first**,
+  which is decision 3's pre-existing cost rather than one this ADR adds. Both
+  suites that drive the real CLI already pay it — the `registry` fixture in
+  `tests/integration/test_mcp_tools.py` and the `running_daemon` fixture in
+  `tests/e2e/test_daemon_single_instance.py` each run `git init -q` before
+  `theurian init` — and a slice-B3 fixture will additionally need a **commit**,
+  because `git init` alone leaves the migration untracked and the new check
+  refuses it.
 
 ### Neutral
 
@@ -283,8 +440,9 @@ decision 1's floor does not prove a merge into a protected branch.
    T-15's residual. It is adjacent work with its own issue and is not folded in
    here.
 4. **The exact flag spelling and the exact refusal wording.** Slice B3's.
-5. **Non-git version control.** A project under something other than git has no
-   check here and takes the flag; designing a second backend is not this ADR's.
+5. **Non-git version control.** A project under something other than git already
+   cannot run `migrate apply` at all (decision 3), and this ADR neither changes
+   that nor designs a second backend. The flag does not reach it.
 6. **`theurian ingest` and the index build.** Neither applies a migration, so
    neither is in this control's population.
 
@@ -296,7 +454,8 @@ decision 1's floor does not prove a merge into a protected branch.
 | **Require only that the content appears somewhere in history** | A file committed once and edited afterwards passes, and the bytes that apply are not the bytes anyone reviewed. This is the same class as ADR-0027's digest pin, one layer out: what matters is that *these* bytes were approved, not that some ancestor of them was. |
 | **Ask the forge whether the commit is on a merged pull request** | It would raise the floor to something worth the title, and it costs a network call and a credential inside `migrate apply` — a command that works offline today, on a machine that may have no `gh` login. ADR-0030 took a deliberate, heavily-argued route to make one command reach GitHub; making the *apply* path reach it is a much larger decision than T-15's residual justifies. |
 | **A configuration key instead of a flag** | Invisible at the moment of use. A project that set it once stops enforcing anything, and nobody reading the failed command sees why. Decision 2's whole content is that the disable is in the command line. |
-| **Apply silently when the tree has no git** | Fail-open on a missing input, which is the shape ADR-0031 decision 5 refuses for the same reason — a control that applies wherever its input happens to be present is a control a caller removes by removing the input. |
+| **Raise the non-git case to "apply anyway"** | Fail-open on a missing input, which is the shape ADR-0031 decision 5 refuses for the same reason — a control that applies wherever its input happens to be present is a control a caller removes by removing the input. Kept as a rejected alternative rather than as a decision, because the refusal it would overturn already ships (decision 3). |
+| **Check the file on disk, then let the engine load it** | It advertises a guarantee it can lose a race for: between the check's read and the loader's, the untrusted same-UID process replaces the file and the control certifies bytes that never apply. Decision 1 compares digests of the bytes the loader *already* read, so there is no second read and no window. |
 | **Enforce it in the migration engine rather than at the CLI** | The engine applies a `MigrationSet` that the loader has already read off disk; by then the file is bytes in memory and the filesystem question has been answered somewhere else. The CLI band is where the other pre-apply refusals sit, and where a refusal costs nothing because `create_database` has not run. |
 | **Record the delivering merge commit instead of refusing (#281)** | Provenance is not enforcement, and #281 says so itself: "the pointer records provenance, it does not gate." The two are complementary, and doing the recording instead of the check would answer a different question than the one T-15 asks. |
 
@@ -311,13 +470,24 @@ the same reason.
 
 Measured now, and reproducible from this ADR (2026-09-12, `be977ea7`):
 
-- `migrate apply` reads git **three** times — `repository_url`,
-  `default_branch`, `current_commit`, all in the `Project` construction in
-  `cli/commands.py` — and compares none of the results.
+- `migrate apply` reads git **four** times, traced through a `PATH` shim on the
+  shipped CLI: `rev-parse --show-toplevel` (`find_git_root`, the one read that
+  decides anything — whether a repository exists at all), then
+  `remote get-url origin`, `symbolic-ref --short HEAD` and `rev-parse HEAD`, the
+  three descriptive reads the `Project` construction in `cli/commands.py` makes
+  and compares to nothing.
   `git grep -n "last_seen_commit" be977ea7 -- packages/theurian-core/src`
   returns **8** lines across five files (a write in `project register`, the
   write here, the domain field, the schema column, three upsert lines and the
   read-back), and none is a comparison.
+- **A directory that is not a git repository already refuses**, from
+  `resolve_context` and not from any flag: one `rev-parse --show-toplevel`, exit
+  1, no project, nothing written. Driven against the shipped CLI in the same
+  sandbox as the trace (decision 3).
+- A loaded `Migration` carries the digest of the bytes it was read from
+  (`checksum = ContentHash.of_bytes(raw)`) and its project-relative
+  `source_path`, so decision 1's predicate needs no second read of the working
+  tree (`infrastructure/filesystem/migration_loader.py`).
 - The shipped package builds **5** `git` argument vectors in **2** modules, and
   none is a tracking question — the table and its recorded limit are in
   *Context*.
@@ -339,15 +509,25 @@ Still owed, with the milestone that will satisfy it:
   *committed-anywhere-in-history* and is the test that goes RED if the
   implementation drifts to the weaker check.
 - **Slice B3 — the escape hatch restores the old behaviour and is a flag
-  (decision 2).** Owed: each refusing case above applies under the flag, plus
-  the property that no configuration key selects it — a test that reads the
+  (decision 2).** Owed: each of the two refusing cases above — staged-never-
+  committed, committed-then-edited — applies under the flag, plus the property
+  that no configuration key selects it — a test that reads the
   config schema and asserts no key does, in the shape
   `tests/unit/test_config_key_call_sites.py` already uses for config-key
   claims.
-- **Slice B3 — a tree with no git refuses, and the refusal names the flag
-  (decision 3).** Owed: a driving case over a directory that is not a
-  repository, asserting the refusal and that its remedy names the flag; with the
-  control that the same tree applies under the flag.
+- **Slice B3 — the refusal's remedy names the flag, and the predicate reads the
+  loader's own bytes (decision 1).** Owed: the refusal's remedy asserted to name
+  the flag; and a test that the comparison is against `migration.checksum` — for
+  example by driving a file whose working-tree bytes are replaced *after* the
+  load, which must still apply, because the bytes the engine holds are the
+  approved ones. The inverse (replaced before the load) refuses, which is the
+  third driving case above.
+  **Deliberately not owed: a driving case for a tree that is not a git
+  repository.** That refusal already ships unconditionally (decision 3), so a
+  test of it cannot go RED against this change, and its control — *the same tree
+  applies under the flag* — cannot be constructed without replacing project
+  resolution. The earlier draft of this ADR owed exactly that test; it is deleted
+  here with the reason, not carried to another milestone.
 - **Slice B3 — the refusal leaves no database behind (decision 4's seat).**
   Owed: the tree is diffed after a refused apply, in the shape
   `tests/integration/test_proposal_service.py::test_generation_writes_only_under_the_proposal_directory`
@@ -357,10 +537,21 @@ Still owed, with the milestone that will satisfy it:
   vector is fixed.** Owed: the equality pin grown by exactly one entry, plus the
   checklist that file states — a test that the vector is fixed by the adapter,
   that it cannot be handed a URL or a remote, and that it carries a timeout.
+- **Slice B3 — the T-7 spawn bullet moves in the same commit as the set.**
+  `docs/security/threat-model.md`'s bullet spells **four** and names each module
+  path;
+  `tests/unit/test_threat_model_t7_claims.py::test_the_t7_spawn_bullet_names_every_pinned_spawn_site_and_spells_how_many`
+  and
+  `tests/unit/test_network_call_sites.py::test_no_module_outside_the_recorded_spawn_sites_can_start_another_program`
+  both go RED when a fifth entry lands — measured, above. Owed: the bullet's
+  number word and module list rewritten in the commit that grows the set, so no
+  commit in between is red.
 - **Slice B3 — the git query is bounded and does not trust its input.** A
-  migration filename reaches the adapter, and a filename is a path. Owed: the
-  vector uses `--` separation so a filename cannot be read as a revision or an
-  option, driven by a filename shaped like each.
+  migration filename reaches the adapter, and a filename is a path. The
+  `HEAD:<path>` form already forecloses the option half — measured, decision 1 —
+  so what is owed is the rest: a filename carrying a `:`, a leading `../`, or a
+  newline, driven through the adapter and asserted to refuse or to resolve to
+  the file it names, never to a different revision.
 - **Slice B3 — the residual population is rewritten *per control*, in the same
   commit as the check.** The key and its measured exclusion are in decision 5.
   The T-15 entry narrows rather than closing: what becomes enforced is
