@@ -750,8 +750,9 @@ Measured now, and reproducible from this ADR (2026-09-12, `be977ea7`):
   `git grep -c "DEPRECATED" -- packages/theurian-core/src` answers 4 lines in 3
   files and none of them is a transition rule (the key and its limit are in
   decision 3). `REJECTED` is in that reach, and `domain/enums.py:206-219` records
-  that `REJECTED` is reachable through no flag "because a rejected revision is
-  where the secret that caused the rejection still lives".
+  that `REJECTED` is reachable through no flag: "A rejected revision is one the
+  team decided must *not* be followed, and it is also where a secret that caused
+  the rejection still lives."
 - **The alias guard's refusal renders an item id and its status, over the
   unfiltered set.** `AliasItemCollisionError.__init__` (`domain/errors.py:236-239`)
   formats `... collides with knowledge item {alias} (status {item_status})`, and
@@ -764,7 +765,7 @@ Measured now, and reproducible from this ADR (2026-09-12, `be977ea7`):
   set**, `STATUS_GATE_CALL_SITES` at **6** entries and
   `DISCLOSURE_GATE_CALL_SITES` at **5** (`tests/unit/test_gate_call_sites.py`,
   counted with `ast` over the two assignments), and each has a prose count beside
-  it in `domain/enums.py` (`:231` "six call sites", `:272` "five call sites")
+  it in `domain/enums.py` (`:231` "six call sites", `:273` "five call sites")
   that no test derives from the set. Both pairs are movers for decision 6's owed
   lookup, and they are listed in *Still owed* rather than left to be discovered.
 - **The two pulled non-content operations carry opposite wire requirements.**
@@ -866,6 +867,19 @@ Still owed, with the milestone that will satisfy it:
   being stated beside it: the refused set is asserted against `OperationKind`
   itself rather than listed, so a fifteenth kind added later is admitted or
   refused deliberately rather than by omission.
+- **Slice B4 — applying any admitted operation leaves every item's
+  `(status, sensitivity)` pair unchanged, `deprecateItem` excepted.** Owed: a
+  structural test over the admitted set that applies each kind and compares the
+  pair before and after, with `deprecateItem` — the one admitted kind that moves
+  a read control, and only in the withdrawing direction — as the named
+  exception and the control that the test would catch a widening. Today that
+  property is held by a keyword at a call site and nothing else:
+  `application/migration_engine.py:536` spells `_replace_item(item,
+  owner=operation.owner)` while `_replace_item` (`:727-737`) accepts
+  `{"sensitivity", "owner", "trust_level", "status"}`, so an admitted operation
+  that grew a second keyword would move a read control with no test going RED.
+  This turns round 3's closure argument into a pinned property rather than a
+  declaration.
 - **Slice B4 — a refusal about an out-of-view item is indistinguishable from one
   about an absent item, on **both** tools (decision 6).** Owed: one battery of
   calls answered identically over a corpus that **held** withheld items — a
@@ -941,7 +955,7 @@ Still owed, with the milestone that will satisfy it:
 
   Counted with `ast` over the two assignments in `test_gate_call_sites.py`
   (`STATUS_GATE_CALL_SITES 6` / `DISCLOSURE_GATE_CALL_SITES 5`); the two
-  docstring words are read at `domain/enums.py:231` and `:272`. Both sets are
+  docstring words are read at `domain/enums.py:231` and `:273`. Both sets are
   asserted by equality, so neither degrades silently — but neither prose count
   is derived from its set, so those two move by hand or not at all.
   **And if the disclosure axis itself is touched**,
