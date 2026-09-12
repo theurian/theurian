@@ -9,6 +9,14 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- The compatibility declaration's Core ceiling is raised to `< 0.3.0`: Core
+  0.2.0 shipped with `protocolVersion` unchanged (`theurian/v1`), and this
+  plugin is exercised against that Core by the repository's own suite
+  (`compatibility.yaml` is the one file that changes when Core ships a
+  compatible release — its own recorded design).
+
 ### Added
 
 - Plugin manifest, deliberately without an `mcpServers` entry so that installing
