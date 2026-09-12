@@ -86,17 +86,18 @@ verification and packaging:
 **A `KnowledgeCandidate` is not a `ProposalRequest`, and the gap is eight of
 sixteen fields.** The candidate carries **15** fields and the request **16**
 (`dataclasses.fields` on each: `domain/review.py` and
-`application/proposal_service.py:525`), and they do not nest. Eight of the
-request's sixteen have no candidate source at all, and they split two ways: four
-are **decided here** because nothing on either side answers them — `owner`,
-`description`, `content_type`, `author` — and four come **straight off the
-wire** under ADR-0032 decision 1's rules — `labels`, `scope_paths`, `namespace`,
-`expected_revision`. The other eight are filled from the candidate —
-`evidence` only in part, since `proposal.Evidence` needs four values the
-candidate does not carry (the row below), and `trust_level` from a field the
-candidate's declaration fixes at `INFERRED` with `init=False` rather than from
-anything a caller says. ADR-0032 decision 1 has its own
-wire-to-request table for the same reason, and this is the one for this tool.
+`application/proposal_service.py:525`), and they do not nest. **Eight of the
+request's sixteen have no field on the candidate to read**, and they split two
+ways: four whose source this ADR has to **decide** — `owner`, `description`,
+`content_type` and `author`, each with its own row below and its own reason —
+and four that come **straight off the wire** under ADR-0032 decision 1's
+existing rules, needing no decision here: `labels`, `scope_paths`, `namespace`,
+`expected_revision`. The other eight do read the candidate — `evidence` only in
+part, since `proposal.Evidence` needs four values the candidate does not carry,
+and `trust_level` from a field the candidate's declaration fixes at `INFERRED`
+with `init=False` rather than from anything a caller says. ADR-0032 decision 1
+has its own wire-to-request table for the same reason, and this is the one for
+this tool.
 
 | `ProposalRequest` field | Where it comes from |
 | :-- | :-- |
@@ -274,10 +275,10 @@ file_path=node.get("path") if isinstance(node.get("path"), str) else None,
 For such a thread the "touches that path" half has no path to check, and the
 verification degenerates to bare existence — which, against a repository whose
 whole history is an accepted answer (`git rev-list --count be977ea7` → **285**),
-is very nearly no check at all. The
-two answers are *refuse the call, because the signal cannot be verified for this
-thread* and *pass on existence alone, with the weaker basis recorded in the
-refusal-free path*. This ADR does not pick one, and slice B5 records the choice
+is very nearly no check at all. The two answers are *refuse the call, because
+the signal cannot be verified for this thread* and *pass on existence alone,
+with the weaker basis recorded in the refusal-free path*. This ADR does not pick
+one, and slice B5 records the choice
 with its reasoning rather than letting the `None` branch be settled by whichever
 line an implementer writes first.
 
