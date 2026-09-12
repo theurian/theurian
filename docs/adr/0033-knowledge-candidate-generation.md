@@ -71,9 +71,13 @@ verification and packaging:
    `theurian review build` projected out of `.theurian/review/`. No network, no
    `gh` spawn, no fetch — the same read-only posture `review.search` already
    has.
-2. **Recomputes the `PromotionGate`** from the stored signals (decision 3) and
-   constructs the `KnowledgeCandidate`, which refuses an unmet gate at
-   construction (`domain/review.py`, `KnowledgeCandidate.__post_init__`).
+2. **Establishes the `PromotionGate`** — five signals recomputed from the stored
+   record, the caller's `fixCommit` **verified against the local git
+   repository**, and `generalizable` satisfied by the submission (decision 3) —
+   then constructs the `KnowledgeCandidate`, which refuses an unmet gate at
+   construction (`domain/review.py`, `KnowledgeCandidate.__post_init__`). The
+   git read is the one thing here that touches something outside the evidence
+   store, and it is local: no network, still.
 3. **Routes it through `ProposalService.draft()`** into an ordinary proposal
    directory — ADR-0013 point 2's shape and nothing special — with
    `trustLevel: inferred`, which the candidate type already fixes with
