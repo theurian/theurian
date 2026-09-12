@@ -38,14 +38,32 @@ What runs instead is domain construction: a tool body builds `ProjectId`,
 cannot represent. That is a real control and it is not this one. It checks the
 values a handler *reads*; it says nothing about the keys a caller *sent*.
 
-**`schemas/mcp/` publishes responses and nothing else.** Its eight files are
-`knowledge-search-response`, `knowledge-status-response`,
+**`schemas/mcp/` holds eight files, of which exactly one is input-side — and
+nothing reads it.** Seven are responses or response fragments
+(`knowledge-search-response`, `knowledge-status-response`,
 `project-list-response`, `retrieval-metadata`, `review-findings-response`,
-`review-search-response`, `system-capabilities-response` and `tool-context` —
-seven response or response-fragment schemas and one shared context fragment.
-There is no input schema in the directory, so "its published JSON Schema" names
-an artifact that does not yet exist. Writing those artifacts is half of what
-SEC-12 costs; the other half is finding a seat where they can be enforced.
+`review-search-response`, `system-capabilities-response`). The eighth,
+`tool-context.schema.json`, is a published *input* contract: it types the
+context fields every project-scoped call carries — `projectId` required,
+`snapshotId`, `agentId`, `taskId` — and it already sets
+`additionalProperties: false`.
+
+**It is enforced by nothing, and the repository says so in its own words.**
+`schemas/README.md`'s what-verifies-each-schema table gives that row as
+"nothing, and nothing should: it describes tool *input*, so there is no response
+to compare", and the one test it names,
+`tests/unit/test_schemas.py::test_project_id_is_required_on_every_tool_call`,
+validates two literal documents against the schema rather than validating any
+real call. The population is four hits outside this ADR
+(`git grep -n "tool-context" -- packages schemas docs tools`, dropping
+`docs/work-logs/`): the protocol page's link, the two test references and the
+`schemas/README.md` row. **No code path under `src/` names it.**
+
+So SEC-12 costs two things, and the first is smaller than it looks: a
+**per-tool** input schema does not exist yet, and the artifact that does exist
+has no seat to be enforced from. Decision 2 is that seat, and `schemas/README.md`'s
+"nothing should" sentence is one of the records that stops being true when it
+lands.
 
 ### Why the seat is forced, and both halves are measured
 
@@ -106,6 +124,14 @@ beside the response schemas under `schemas/mcp/` and that there is one per
 registered tool. **Naming the files here would assert artifacts that do not
 exist**, which is the failure mode ADR-0030 records for a design document that
 tries to stay in bijection with a tree.
+
+**`tool-context.schema.json` becomes the first schema this control reads, not a
+ninth thing to write.** It already types the context every project-scoped call
+carries and already forbids additional properties; what it has never had is a
+reader. Whether each per-tool schema `$ref`s it or restates it is slice B2's —
+the `$ref` form is what `retrieval-metadata.schema.json` already does for
+responses, and `referencing`'s offline registry (decision 3) is what makes a
+`$ref` resolvable with no network.
 
 ### 2. The validation seat is an SDK `ServerMiddleware`, wired where the server is built
 
@@ -210,10 +236,15 @@ server refuses.
 
 ### Positive
 
-- **SEC-12 stops being owed and starts running**, and the two records that
+- **SEC-12 stops being owed and starts running**, and the three records that
   currently say it does not (`threat-model.md`'s *Future controls, not shipped*
-  entry and `roadmap.md`'s `nothing` / `the whole control` row) move in the
-  slice that ships it, not later.
+  entry, `roadmap.md`'s `nothing` / `the whole control` row, and
+  `schemas/README.md`'s "nothing, and nothing should" row for
+  `tool-context.schema.json`) move in the slice that ships it, not later.
+- **A published input contract stops being decorative.**
+  `tool-context.schema.json` has typed every project-scoped call's context
+  since it was written and has never been read; the middleware is what makes it
+  a control rather than a description.
 - **The write-intent surface gets its precondition.** `docs/roadmap.md`'s
   Phase B row already states that "SEC-12 … becomes mandatory the moment a
   write-intent tool opens". ADR-0032 depends on this decision landing first.
@@ -283,9 +314,13 @@ the same reason.
 
 Measured now, and reproducible from this ADR (2026-09-12, `be977ea7`):
 
-- `schemas/mcp/` holds **8** files and **none** of them is an input schema
-  (`ls schemas/mcp/`): seven response or response-fragment schemas plus
-  `tool-context.schema.json`.
+- `schemas/mcp/` holds **8** files (`ls schemas/mcp/`): seven response or
+  response-fragment schemas and one input-side contract,
+  `tool-context.schema.json`. **No per-tool input schema exists**, and the one
+  input schema that does has **no reader under `src/`** —
+  `git grep -n "tool-context" -- packages schemas docs tools` returns four hits
+  outside this ADR, all of them a link, a test reference or the
+  `schemas/README.md` row that records the absence.
 - The SDK's argument model sets no `extra="forbid"`:
   `grep -c 'extra="forbid"' .venv/lib/python3.13/site-packages/mcp_types/_types.py`
   answers **0**, and `ArgModelBase`'s own config is
@@ -331,10 +366,17 @@ Still owed, with the milestone that will satisfy it:
   caps exist because unbounded documents cost unbounded work in `jsonschema`'s
   message building (#291, #245). Owed a test that the MCP boundary refuses a
   document past each bound rather than paying for it.
-- **Slice B2 — the two records that say SEC-12 does not run are rewritten in
+- **Slice B2 — `tool-context.schema.json` gains a reader, and the record that
+  says it should not have one moves with it.** `schemas/README.md`'s row reads
+  "nothing, and nothing should: it describes tool *input*, so there is no
+  response to compare", which is true of a *response* check and false of this
+  one. Owed: the row rewritten to name what now reads the schema, in the same
+  commit.
+- **Slice B2 — the three records that say SEC-12 does not run are rewritten in
   the commit that makes them false**: `docs/security/threat-model.md`'s *Future
-  controls, not shipped* entry and `docs/roadmap.md`'s SEC-12 requirement row
-  (`nothing` / `the whole control`). Not a later documentation pass — an
-  on-main claim must not call a control unimplemented while it runs. Whether
-  the rewrite is *faithful* is a reading and no mechanical check reaches it,
-  which is said here rather than left to be inferred.
+  controls, not shipped* entry, `docs/roadmap.md`'s SEC-12 requirement row
+  (`nothing` / `the whole control`), and the `schemas/README.md` row above. Not
+  a later documentation pass — an on-main claim must not call a control
+  unimplemented while it runs. Whether the rewrite is *faithful* is a reading
+  and no mechanical check reaches it, which is said here rather than left to be
+  inferred.
