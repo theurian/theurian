@@ -292,12 +292,12 @@ alternative that would have added one is rejected below.
 Every published input schema is closed against unknown keys — with decision 1's
 `unevaluatedProperties: false`, the one keyword the table there measured as
 composing with the context `$ref` — and a request carrying a key the schema does
-not name is refused rather than trimmed. The
-reason is the one the domain-construction control cannot reach: a key the server
-silently drops is a caller believing it asked for something it did not get, and
-on a write-intent surface (ADR-0032) that difference is the difference between
-a proposal a human reviews and a proposal a human reviews *without the
-constraint the agent thought it had set*.
+not name is refused rather than trimmed. The reason is the one the
+domain-construction control cannot reach: a key the server silently drops is a
+caller believing it asked for something it did not get, and on a write-intent
+surface (ADR-0032) that difference is the difference between a proposal a human
+reviews and a proposal a human reviews *without the constraint the agent
+thought it had set*.
 
 **A refusal message is bounded, and the house pattern is already in the tree.**
 `mcp/tools.py`'s unregistered-project refusal reports an oversized `project_id`
@@ -429,11 +429,10 @@ the caller may not read. That split is what stops decision 6 from being read as
 - **The context schema loses a keyword it has always carried.** Decision 1's
   composition moves the closure off `tool-context.schema.json` and onto each
   per-tool schema, which reddens a pin that has held since the file was written.
-  The closure is not weakened — it is
-  enforced once per tool instead of once in the referent — but for the length of
-  slice B2's commit the file that types every call's context does not close
-  itself, and an implementer who moved the keyword and did not rewrite the pin
-  would read a red test as noise.
+  The closure is not weakened — it is enforced once per tool instead of once in
+  the referent — but for the length of slice B2's commit the file that types
+  every call's context does not close itself, and an implementer who moved the
+  keyword and did not rewrite the pin would read a red test as noise.
 - **Refusing unknown keys is a compatibility decision.** A client that sends a
   forward-looking field today gets a refusal instead of silence. That is the
   intended direction — silence is what this control exists to end — but it is a
@@ -545,12 +544,12 @@ Still owed, with the milestone that will satisfy it:
 - **Slice B2 — each per-tool schema's `unevaluatedProperties: false` is
   enforced on the wire, not in the handler.** The keyword is decision 1's, not
   `additionalProperties`, which that decision's table measured as rejecting the
-  valid document under either arrangement of the referent.
-  Owed a test driven through a real `tools/call` carrying an
-  unknown key, asserting the refusal — and asserting it against the *SDK's own
-  drop*, which is what makes the middleware seat load-bearing rather than
-  stylistic. Without that second half the test would pass on a build whose
-  handler merely ignored the key, which is today's behaviour.
+  valid document under either arrangement of the referent. Owed a test driven
+  through a real `tools/call` carrying an unknown key, asserting the refusal —
+  and asserting it against the *SDK's own drop*, which is what makes the
+  middleware seat load-bearing rather than stylistic. Without that second half
+  the test would pass on a build whose handler merely ignored the key, which is
+  today's behaviour.
 - **Slice B2 — the per-tool schemas carry the value-domain constraints
   [ADR-0032](0032-the-write-intent-mcp-tool-surface.md) decision 3's table
   assigns them**: an explicit `maxLength` on `body`, the wire equivalent of the
