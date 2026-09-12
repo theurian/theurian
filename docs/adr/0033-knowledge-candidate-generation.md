@@ -334,6 +334,22 @@ Measured now, and reproducible from this ADR (2026-09-12, `be977ea7`):
   this change** and are named here so nobody mistakes them for pins slice B5
   must move.
 
+**One non-`docs/` file moved with this ADR, and it is named rather than
+counted.** *What this does not close* item 1 names the live owner of the
+private-repository arm, which is the form
+`tools/audit/owner_position_cites.py` exists to require — and that issue
+postdates the audit's tracker snapshot, so its offline run reads a live owner as
+no owner. Three ledger rows already record exactly that reading for the
+identical cite in ADR-0029 and ADR-0030; this branch adds the fourth, carrying
+its own tracker measurement dated 2026-09-12. The alternative was to reword item
+1 out of owner position, which is the dodge that audit is built to catch.
+
+**This paragraph deliberately carries no issue link**, and the reason is the
+audit's own: a sentence that *describes* an ownership cite is indistinguishable
+to the key from one that *makes* one, so repeating the number here would have
+produced a second unrecorded suspect about the audit rather than about the
+design. The ownership claim lives in item 1, once, where the ledger row points.
+
 Still owed, with the milestone that will satisfy it:
 
 - **Slice B5 — the absence pins move deliberately, and all of them in one
