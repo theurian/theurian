@@ -139,8 +139,16 @@ class RefusalGrade(StrEnum):
     #: reopens the population :data:`REMEDIES` closes, and a grade per cause
     #: makes this enum report which internal step failed.
     TOOL_FAILED = "tool-failed"
-    #: A recorded bound was reached: the page cap, the pull-request cap, or the
-    #: per-response byte cap. Reported, never a silent truncation.
+    #: A bound on how much one read may cover refused it, or stopped it partway:
+    #: one this adapter records, or one the caller passed. Reported, never a
+    #: silent truncation.
+    #:
+    #: **Which** bounds reach this grade is derived rather than enumerated here.
+    #: The list that stood in this docstring named three and left out the
+    #: per-record document caps entirely, which is the same under-enumeration
+    #: that made the cure below route two faces to neither of its arms. The
+    #: comment above :data:`REMEDIES`' row for this grade carries the key that
+    #: prints every site and says which arm each one is answered by.
     LIMIT_EXCEEDED = "limit-exceeded"
 
 
@@ -191,17 +199,90 @@ REMEDIES: Final[dict[RefusalGrade, str]] = {
         "Run `gh api graphql --hostname github.com -f query='{viewer{login}}'` by "
         "hand to see the failure with its own output, then run the ingestion again."
     ),
-    # Stated so it cures both directions. `limit` is refused below one as well as
-    # above the cap, and "narrow the run" sends a caller who asked for zero the
-    # wrong way. The two keep one grade because an operator does the same thing
-    # about either -- change `limit` -- and this enum's membership is coarse on
-    # purpose; what tells them apart is the summary, which names the number.
+    # Every face of this grade routed, derived rather than remembered (#597, and
+    # its round-one finding). The key is `git grep -n
+    # 'RefusalGrade\.LIMIT_EXCEEDED' -- packages/theurian-core/src`, which printed
+    # eight lines on 2026-09-12; it does not hit this comment, which spells the
+    # grade with a backslash and so is not the string the pattern matches. Those
+    # eight are this row's own key, the re-grade guard in `gh_cli._probe`, and six
+    # raise sites.
+    #
+    # A raise site is not a face: the `_page_cap` helper and `run_bounded`'s byte
+    # cap are each reached from more than one seam, and the seam is what decides
+    # where the refusal lands. So the enumeration below is written per landing
+    # place rather than per site, and it carries the claim on its own -- no total
+    # is stated for it, because a total is what goes stale when a seam is added
+    # and the arithmetic that stood here had already drifted from these bullets.
+    # Where each lands is the whole of the routing:
+    #
+    # Ends the run, and a bound the run itself takes answers it:
+    #   * `_refuse_an_unusable_limit`, twice -- `limit` below one, and `limit`
+    #     above `MAX_PULL_REQUESTS`. Nothing spawned.
+    #   * `_listed`'s `_page_cap` -- the pull-request listing needed more than
+    #     `MAX_PAGES` pages. A smaller `limit` returns the loop at
+    #     `len(events) + len(skipped) >= limit`; a higher `since_number` returns
+    #     it at the boundary.
+    #   * `run_bounded`'s byte cap reached from `_listed`'s `_request` -- one
+    #     listing page past `MAX_RESPONSE_BYTES`. That page asks for
+    #     `min(PAGE_SIZE, limit)` records, so a `limit` at or above `PAGE_SIZE`
+    #     sends the identical request and meets the identical refusal; only a
+    #     `limit` under `PAGE_SIZE` makes the answer smaller. `since_number` is
+    #     named in no request variable -- `_listed` compares it against each node
+    #     a page already returned (`number <= since_number`) -- so what it can
+    #     still do, like a smaller `limit`, is end the loop before a *later* page
+    #     is asked for.
+    #
+    # Lands as a skipped pull request while the run continues, and no run
+    # parameter reaches it:
+    #   * `_pages_of`'s `_page_cap` -- one pull request's threads or reviews
+    #     needed more than `MAX_PAGES` pages. Caught in
+    #     `review_ingest_service._fetch`. This is the face the round-one cure
+    #     routed to neither arm: it is not `limit`-curable, and it is not one of
+    #     the "comments, linked issues or labels" that cure enumerated.
+    #   * the byte cap reached from `_pages_of`'s `_request` -- one page of one
+    #     pull request's threads or reviews past `MAX_RESPONSE_BYTES`. Same seam;
+    #     `first:` is `PAGE_SIZE` there, fixed.
+    #   * `_refuse_a_capped_overflow` -- `MAX_LINKED_ISSUES` or
+    #     `MAX_LABELS_PER_PULL_REQUEST`, caught in `_listed` as a
+    #     `SkippedPullRequest`.
+    #   * `_comments_of` -- `MAX_COMMENTS_PER_THREAD`, caught in `_fetch`.
+    #
+    # Never reaches a reader with this grade: `gh_cli._probe` catches its own
+    # `MAX_PROBE_STDOUT_BYTES` overrun and re-raises it as `TOOL_FAILED`, because
+    # a probe takes no bounds from anybody.
+    #
+    # So the cure keys on where the refusal landed rather than on a list of caps,
+    # which is what stops the next per-record bound from falling outside both
+    # arms the way the page cap did.
+    #
+    # Splitting the grade was considered and declined. A `RefusalGrade` member is
+    # a published string in the run document, so adding one is observable
+    # behaviour rather than patch material, and this enum's membership is coarse
+    # on purpose besides -- what tells two refusals apart is the summary. The
+    # defect was the cure, and specifically its "no more than the cap the summary
+    # above names" clause: for a pull request carrying 51 labels the summary
+    # names 50, so a reader following that clause clamps `limit` to a number
+    # belonging to another bound entirely and meets the same refusal again.
     RefusalGrade.LIMIT_EXCEEDED: (
-        "Adjust the run's bounds and try it again: `limit` is how many pull "
-        "requests to read and must be at least one and no more than the cap the "
-        "summary above names, and `since_number` skips the pull requests already "
-        "ingested. `gh api graphql --hostname github.com` with a smaller page is "
-        "the same request by hand."
+        "Which bound was reached decides what to do, and where this refusal landed "
+        "says which kind it is. A refusal that ended the run is about a bound the "
+        "run itself takes: `limit` is how many pull requests to read and must be at "
+        "least one, and `since_number` skips the pull requests already ingested. "
+        "Both narrow the window -- fewer pull requests, over fewer pages -- so a "
+        "refusal raised while reaching for a later page may not be reached at all. "
+        "Neither makes one page's answer smaller by itself: the listing asks for "
+        "whichever is smaller, `limit` or its own page size, so a larger `limit` "
+        "sends the identical request, and `since_number` is compared against the "
+        "records a page has already returned rather than sent with it. A page "
+        "refused for its size is answered by a `limit` below that page size, and "
+        "`gh api graphql --hostname github.com` with a smaller page is the same "
+        "request by hand. A refusal reported under `skipped` against one "
+        "pull request's number is about a per-record bound: that pull request's "
+        "comments, its linked issues, its labels, the pages its threads and reviews "
+        "need, or the size of one answer about it. Neither `limit` nor "
+        "`since_number` moves any of those at any value -- the rest of the run lands "
+        "without that pull request, and `gh pr view <number> --repo <owner>/<name>` "
+        "reads it on GitHub instead."
     ),
 }
 

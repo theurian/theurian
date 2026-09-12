@@ -17,6 +17,7 @@ directly.
 
 from __future__ import annotations
 
+import ast
 import functools
 import inspect
 import sys
@@ -26,13 +27,16 @@ from typing import Any, get_args, get_type_hints
 
 import pytest
 
+from theurian.application import project_service
 from theurian.application.project_service import (
+    _REVIEW_SUBDIRECTORY,
     KNOWLEDGE_DIR_ESCAPE_REMEDY,
     BuildProvenance,
     ProjectError,
     ProjectPathEscapeError,
     ProjectPaths,
     derived_escape_remedy,
+    review_escape_remedy,
 )
 from theurian.cli.commands import _STATE_DATABASE_GLOB
 from theurian.cli.index_commands import INDEX_FILENAME_PREFIX
@@ -359,6 +363,29 @@ _NAMES_A_DERIVED_ARTIFACT: set[str] = {
     "findings_for",
 }
 
+#: The helpers whose refused path names the review-evidence directory, and which
+#: therefore publish :func:`review_escape_remedy` rather than either of the two
+#: texts above (#602).
+#:
+#: Written out as a judgement for the reason :data:`_NAMES_A_DERIVED_ARTIFACT`
+#: records, and a third class rather than a member of that one: ``review`` is not
+#: in ``DERIVED_SUBDIRECTORIES`` and never may be -- ADR-0030 decision 3 makes
+#: the evidence canonical with no replayable source -- so the rebuild-shaped cure
+#: would tell an operator that ``rm -rf`` costs them nothing. It was in neither
+#: class until now, which is what made it fall to
+#: :data:`KNOWLEDGE_DIR_ESCAPE_REMEDY`: that text sends the reader to ``theurian
+#: init``, and ``review`` is absent from ``INITIAL_DIRECTORIES``, so the command
+#: creates nothing at this path and reports nothing either.
+#:
+#: One member today. Production keys the carve-out on the first path component at
+#: any depth, so a helper resolving something *beneath* the evidence directory
+#: would publish this cure too and belongs here. That there is no such helper is
+#: not left as a remark:
+#: ``test_exactly_one_contained_helper_resolves_under_the_review_evidence_directory``
+#: derives it from the module's own AST, because the cure's ``rm`` names the
+#: directory itself and would name the wrong object once one exists.
+_NAMES_THE_REVIEW_EVIDENCE: set[str] = {"review"}
+
 
 #: Sentinel for "no return annotation": distinct from a member annotated
 #: ``-> None``, which is genuinely not a path helper.
@@ -452,6 +479,8 @@ def test_the_containment_sweep_covers_every_path_returning_helper() -> None:
     # here rather than being silently classified by whichever assertion runs.
     assert set(_HELPER_CALLS) >= _NAMES_A_DERIVED_ARTIFACT
     assert not (_NAMES_A_DERIVED_ARTIFACT & _READER_CONTAINED)
+    assert set(_HELPER_CALLS) >= _NAMES_THE_REVIEW_EVIDENCE
+    assert not (_NAMES_THE_REVIEW_EVIDENCE & (_NAMES_A_DERIVED_ARTIFACT | _READER_CONTAINED))
 
 
 @pytest.mark.parametrize(
@@ -534,12 +563,25 @@ def test_every_path_helper_refuses_when_a_committed_symlink_escapes_under_it(
 
     **The remedy is asserted per class, not as one constant** (#483 round one,
     H-1). ``KNOWLEDGE_DIR_ESCAPE_REMEDY`` was published for every helper here,
-    and for the five in :data:`_NAMES_A_DERIVED_ARTIFACT` it named the operator's
-    authored knowledge directory for a refusal about ``.theurian/state/`` or
-    ``.theurian/runtime/`` -- then sent them to ``theurian init``, which meets
-    the identical refusal. The expectation is a set written out in this module,
-    so a helper that changes class fails here rather than being re-derived into
-    agreement with whatever production now returns.
+    and for the ``len(_NAMES_A_DERIVED_ARTIFACT)`` in that set it named the
+    operator's authored knowledge directory for a refusal about
+    ``.theurian/state/`` or ``.theurian/runtime/`` -- then sent them to
+    ``theurian init``, which meets the identical refusal. The count is spelled as
+    the expression rather than as a number because the number here read *five*
+    while the set held ten.
+
+    **Three classes now, and the third failed the same clause a second way**
+    (#602). ``review`` publishes :func:`review_escape_remedy`: it is not a
+    derived artefact, so the rebuild-shaped cure is data loss rather than a
+    rebuild, and the knowledge-directory text it fell back to sends the reader to
+    ``theurian init`` -- which for this path does not refuse, it creates nothing
+    and says nothing, because ``review`` is absent from ``INITIAL_DIRECTORIES``.
+    Each class asserts ``theurian init`` is *not* named, for the two different
+    reasons that command is wrong here.
+
+    The expectation is a set written out in this module, so a helper that changes
+    class fails here rather than being re-derived into agreement with whatever
+    production now returns.
     """
     root = tmp_path / "repo"
     (root / ".theurian").mkdir(parents=True)
@@ -550,6 +592,14 @@ def test_every_path_helper_refuses_when_a_committed_symlink_escapes_under_it(
 
     with pytest.raises(ProjectError) as excinfo:
         _HELPER_CALLS[helper](paths)
+
+    if helper in _NAMES_THE_REVIEW_EVIDENCE:
+        assert excinfo.value.remedy == review_escape_remedy(".theurian")
+        assert _ESCAPING_CHILD[helper] in excinfo.value.remedy
+        assert "theurian init" not in excinfo.value.remedy, (
+            "the remedy sends the reader to a command that creates nothing at this path"
+        )
+        return
 
     if helper not in _NAMES_A_DERIVED_ARTIFACT:
         assert excinfo.value.remedy == KNOWLEDGE_DIR_ESCAPE_REMEDY
@@ -563,6 +613,177 @@ def test_every_path_helper_refuses_when_a_committed_symlink_escapes_under_it(
     assert _ESCAPING_CHILD[helper] in excinfo.value.remedy
     assert "theurian init" not in excinfo.value.remedy, (
         "the remedy sends the reader to the command that meets this same refusal"
+    )
+
+
+def _truediv_operands(node: ast.expr) -> list[ast.expr]:
+    """``a / b / c`` flattened left to right into ``[a, b, c]``."""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        return [*_truediv_operands(node.left), node.right]
+    return [node]
+
+
+def _static_component(node: ast.expr) -> str | None:
+    """The string one path component is built from, or ``None`` when it is not static.
+
+    A ``str`` literal answers itself. A bare name answers the module constant it
+    binds -- ``_REVIEW_SUBDIRECTORY``, ``PROJECT_CONFIG_FILE`` -- read off the
+    *imported* module, so renaming the constant moves the key and the production
+    call together rather than silently emptying this population. Anything else (a
+    parameter, an attribute of an argument) is not static, and that is an answer
+    the caller acts on rather than swallows.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name):
+        bound = getattr(project_service, node.id, None)
+        return bound if isinstance(bound, str) else None
+    return None
+
+
+#: How a component assembled at run time is rendered, so it still occupies a
+#: position. ``findings_for`` and ``database_for`` end in one; neither can be
+#: elided, because the equality below discriminates on *depth* as well as on the
+#: first component -- a ``review / <filename>`` site has to read as two.
+_NOT_STATIC = "<not static>"
+
+
+def _contained_sites() -> list[tuple[str, tuple[str, ...] | None]]:
+    """Every ``self._contained(...)`` call in ``ProjectPaths``, with the path it builds.
+
+    One entry per *call*, not per member, so a member holding two of them is two
+    entries. The path is relative to ``self.knowledge_dir``.
+
+    ``None`` means this reader cannot say which directory the site resolves
+    under: the call passes no positional argument, the argument does not start at
+    ``self.knowledge_dir``, it adds no component at all, or its **first**
+    component is assembled at run time. That is the over-approximating answer on
+    purpose -- such a site could be the one resolving under the evidence
+    directory, so it fails the guard in the test rather than dropping out of the
+    count.
+
+    A later component that is not static is :data:`_NOT_STATIC` rather than an
+    unreadable site. It cannot change *which* directory the path is under, and
+    keeping its position is what lets the equality below tell ``review`` from
+    ``review / <filename>``.
+
+    **Two shapes reached the chokepoint and left this reader silent, and neither
+    exists in the class today** -- which is why they were closed rather than
+    recorded. An ``async def`` member was skipped by the member filter, so a
+    coroutine helper resolving ``review/<x>`` would have been invisible to the
+    ratchet while inheriting the arm exactly like any other. And a call spelled
+    ``self._contained(path=...)`` has no ``args`` at all: the old shape test read
+    ``call.args`` as a truthiness guard and *dropped* such a call, which is the
+    one disposition a reader of "fails the guard rather than dropping out" would
+    not expect. Both now answer ``None`` and fail the guard.
+    """
+    source_file = inspect.getsourcefile(project_service)
+    assert source_file is not None, "project_service must be importable from source"
+    tree = ast.parse(Path(source_file).read_text(encoding="utf-8"))
+    (class_def,) = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == ProjectPaths.__name__
+    ]
+
+    sites: list[tuple[str, tuple[str, ...] | None]] = []
+    for member in class_def.body:
+        if not isinstance(member, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        for call in ast.walk(member):
+            if not (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and call.func.attr == "_contained"
+                and isinstance(call.func.value, ast.Name)
+                and call.func.value.id == "self"
+            ):
+                continue
+            if not call.args:
+                # Keyword-only, so there is no expression here to read a first
+                # component out of. Unreadable rather than absent: the path it
+                # passes could be the one under the evidence directory.
+                sites.append((member.name, None))
+                continue
+            operands = _truediv_operands(call.args[0])
+            base, *components = operands
+            starts_at_the_knowledge_dir = (
+                isinstance(base, ast.Attribute)
+                and base.attr == "knowledge_dir"
+                and isinstance(base.value, ast.Name)
+                and base.value.id == "self"
+            )
+            resolved = [_static_component(component) for component in components]
+            if not starts_at_the_knowledge_dir or not resolved or resolved[0] is None:
+                sites.append((member.name, None))
+                continue
+            sites.append((member.name, tuple(part or _NOT_STATIC for part in resolved)))
+    return sites
+
+
+def test_exactly_one_contained_helper_resolves_under_the_review_evidence_directory() -> None:
+    """The cure for an escaping ``review`` names one place, and this is why it may.
+
+    :meth:`ProjectPaths._escape_remedy` keys the review arm on the **first path
+    component at any depth**, deliberately: a helper added later for something
+    beneath the evidence directory inherits that arm rather than falling back to a
+    cure naming ``theurian init``, which creates nothing at this path (#602).
+    :func:`review_escape_remedy`'s *text* is not ready for such a helper. It
+    renders one removal, ``rm <knowledge dir>/review``, aimed at the directory
+    itself -- which is the right cure only while ``review`` is the deepest thing
+    any contained helper resolves under that name.
+
+    So the arm's reach and the cure's text are pinned apart, and this is the pin
+    on the second. RED means a link can now sit at an interior component while the
+    published cure still tells the reader to remove the directory above it. Against
+    ADR-0030 decision 3's canonical evidence -- no replayable source, nothing a
+    rebuild recovers -- an ``rm`` aimed a level too high is data loss rather than a
+    cure, which is why this is held as a test and not as a sentence.
+
+    **Derived from the module's own AST rather than transcribed.** The prose key
+    in ``review_escape_remedy``'s docstring is ``git grep -nE
+    '_contained\\(self\\.knowledge_dir / _REVIEW_SUBDIRECTORY' --
+    packages/theurian-core/src/theurian/application/project_service.py``, which
+    answers one line -- and answers it only while the call stays on one line and
+    keeps spelling the constant by name. :func:`_contained_sites` walks the calls,
+    so a site split across two lines, or written with ``"review"`` inline, is
+    counted like any other, and a site whose path cannot be read statically fails
+    the first assertion rather than being quietly left out of the count.
+    """
+    sites = _contained_sites()
+
+    unreadable = sorted({member for member, components in sites if components is None})
+
+    assert not unreadable, (
+        f"{unreadable} call `self._contained(...)` with a path whose first component "
+        "this reader cannot resolve statically, so the population below is not the "
+        "whole one. Teach `_static_component` or `_contained_sites` the new shape -- a "
+        "site whose first component is unreadable could be the one resolving under the "
+        "evidence directory, which is the case this test exists to catch."
+    )
+    assert sites, (
+        "no `self._contained(...)` call was found at all, so the assertion below holds "
+        "vacuously. The chokepoint has moved or been renamed; follow it here before "
+        "trusting a green result."
+    )
+
+    under_review = sorted(
+        (member, components)
+        for member, components in sites
+        if components and components[0] == _REVIEW_SUBDIRECTORY
+    )
+
+    assert under_review == [("review", (_REVIEW_SUBDIRECTORY,))], (
+        "the helpers resolving under the review-evidence directory are no longer "
+        f"`ProjectPaths.review` alone: {under_review}.\n\n"
+        "`_escape_remedy`'s carve-out already covers them -- it keys on the first "
+        "component at any depth -- but `review_escape_remedy`'s text does not. It "
+        f"renders `rm <knowledge dir>/{_REVIEW_SUBDIRECTORY}`, the cure for a link at "
+        "the directory itself, and that names the wrong object for a link at an "
+        "interior component. Revisit that cure in the same change as the new helper "
+        "and move this pin with it; ADR-0030 decision 3 makes the evidence canonical "
+        "with no replayable source, so an `rm` aimed a level too high destroys records "
+        "nothing rebuilds."
     )
 
 

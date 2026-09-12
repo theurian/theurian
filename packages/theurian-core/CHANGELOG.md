@@ -12,6 +12,90 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The one `LIMIT_EXCEEDED` cure now answers every refusal that reaches it**
+  ([#597](https://github.com/theurian/theurian/issues/597)). `theurian review
+  ingest` raises this grade from bounds an operator acts on differently, and
+  every sentence of the 0.2.0 cure named something that can only move a bound the
+  **run** takes. The cure now routes on **where the refusal landed**. Only one of
+  those two places publishes it today: a refusal that ends the run leaves through
+  `{error, remedy}`, while a skipped pull request's entry in the run document
+  carries its grade and its summary and not its remedy — tracked as
+  [#656](https://github.com/theurian/theurian/issues/656), and the per-record arm
+  becomes reader-facing when that lands. A refusal that **ended the run** is
+  about a bound the run itself takes: `limit` is how many pull requests to read,
+  refused below one and above the pull-request cap, and `since_number` skips the
+  pull requests already ingested — both narrow the **window**, fewer pull
+  requests over fewer pages, so a refusal raised while reaching for a later page
+  may not be reached at all. What makes one page's **answer** smaller is a
+  `limit` below the listing's page size: the listing asks for
+  `min(PAGE_SIZE, limit)` records, so a larger `limit` sends the identical
+  request, and `since_number` is compared against the records a page has already
+  returned rather than sent with it. A refusal reported under **`skipped`
+  against one pull request's number** is about a per-record bound: that pull
+  request's comments, its linked issues, its labels, the pages its threads and
+  reviews need, or the size of one answer about it. Neither `limit` nor
+  `since_number` moves any of those at any value — the rest of the run lands
+  without that pull request, and the cure sends that case to `gh pr view <number>
+  --repo <owner>/<name>`, which reads it on GitHub instead.
+
+  **Keyed on where the refusal landed rather than on which cap was reached.** The
+  landing place is a property of where a refusal is caught — a bound on one pull
+  request's own document is caught per pull request and reported as skipped,
+  while one the listing itself could not get past ends the run — so a per-record
+  bound added later routes without the cure being rewritten. A list of caps has
+  no such property, and it also misses the faces that do not read as caps *of a
+  document*: one pull request whose review threads or reviews need more than the
+  page cap, or one page of those past the per-response byte cap, is neither a
+  bound the run takes nor one of that pull request's comments, linked issues or
+  labels. A reader meeting either would be handed a cure written for somebody
+  else's refusal.
+
+  The 0.2.0 text said none of that, leaving a reader who met a skipped pull
+  request to assume the run had stopped or the record had landed truncated. Its
+  "no more than the cap the summary above names" was worse than silent: for a
+  pull request carrying 51 labels the summary names 50 — the *label* cap — so a
+  reader following that clause clamps `limit` to 50 and meets the identical
+  refusal.
+
+  **The grade was not split, and that is a decision rather than an omission.** A
+  `RefusalGrade` member is a published string in the run document, so adding one
+  is observable behaviour rather than patch material, and this enum's membership
+  is coarse on purpose — what tells two refusals apart is the summary, which
+  names the number. The defect was the cure.
+- **An escaping `.theurian/review` no longer sends you to `theurian init`**
+  ([#602](https://github.com/theurian/theurian/issues/602), SEC-7). A clone can
+  deliver the review-evidence directory as a symbolic link pointing out of the
+  working tree, and the containment refusal that catches it — which is correct,
+  and is not what moved — published the knowledge-directory cure, whose middle
+  clause says to remove the link and "run `theurian init` to recreate the
+  directory". `review` is not in `INITIAL_DIRECTORIES`, so `init` creates nothing
+  at that path: the reader runs a command that does nothing and has no way to
+  tell that from a command that failed silently. The refusal now carries a cure
+  written for this artefact — inspect it with `ls -l`, remove the link with plain
+  `rm` and no trailing slash, and nothing at the link's target is touched.
+  Nothing has to be recreated by hand either: the evidence store makes the
+  directory again at the next `theurian review ingest`, and until then an absent
+  directory is read as an empty corpus rather than as a fault, so `theurian
+  review build` still answers.
+
+  **Plain `rm`, with no `rm -rf` twin** — unlike the derived-path cure beside it,
+  and for a reason about this artefact rather than about style. By the time
+  `review` is resolved, `ProjectPaths.of` has already refused unless the resolved
+  knowledge directory is inside the resolved root, so the only thing left on that
+  path that can leave the tree is a link, and plain `rm` removes a link without
+  the force `-rf` adds. Offering `-rf` would be worse than redundant:
+  [ADR-0030](../../docs/adr/0030-github-review-ingestion-spawns-gh.md) decision 3
+  makes review evidence canonical with no replayable source, so a reader who
+  reached for the force arm over a real directory would destroy records no
+  rebuild recovers. The carve-out is keyed on the first path component at any
+  depth, so a helper resolving something *beneath* the evidence directory
+  inherits this **arm** rather than falling back to the old cure. What it
+  inherits is the routing, not a cure already written for it: the `rm` names the
+  evidence directory itself, so whoever adds that helper revisits the cure text
+  in the same change.
+
 ## [0.2.0] - 2026-09-12
 
 ### Added

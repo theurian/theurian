@@ -379,20 +379,46 @@ REVIEW_SEARCH_UNAVAILABLE_REFUSAL: Final = (
 #: That variance is a smaller thing than the message's would be. The population is
 #: the raise sites of the class, and the key that answers it without reading its
 #: own quotation is ``git grep -nE 'ProjectPathEscapeError\($' --
-#: packages/theurian-core/src``: run 2026-09-11 it printed four lines, two in
+#: packages/theurian-core/src``: run 2026-09-12 it printed four lines, two in
 #: ``_contain`` and two in :meth:`ProjectPaths.of`. Each passes a remedy built
-#: from relative names alone -- ``KNOWLEDGE_DIR_ESCAPE_REMEDY``, a constant, for
-#: ``of``'s pair, and for ``_contain``'s whatever
-#: :meth:`ProjectPaths._escape_remedy` chooses between that constant and
-#: ``derived_escape_remedy``, which renders
-#: ``f"{knowledge_directory_name}/{subdirectory}"`` from a *basename*
-#: (``.theurian``) and a member of ``DERIVED_SUBDIRECTORIES``. That function has
-#: one caller, ``derived_escape_remedy(self.knowledge_dir.name, parts[0])``, and
-#: neither argument can carry an absolute path. So the remedy's variance names
-#: which derived subdirectory the link sits at or below, drawn from Theurian's
-#: own fixed vocabulary, and never a location on the machine.
-#: ``cli/commands.py``'s ``_fail_a_path_escape`` enumerates the same four sites
-#: for the neighbouring question of whether a remedy can arrive empty.
+#: from relative names alone: ``of``'s pair passes the constant
+#: ``KNOWLEDGE_DIR_ESCAPE_REMEDY``, and ``_contain``'s pair passes whatever
+#: :meth:`ProjectPaths._escape_remedy` keys for the refused path.
+#:
+#: **That second population is read from the source rather than listed here**, and
+#: this paragraph is why: it named the two cures that existed when it was written,
+#: #602 added a third, and the enumeration went false while the property it argues
+#: stayed true. The key is ``git grep -niE '^ +return [a-z_]*escape_remedy' --
+#: packages/theurian-core/src/theurian/application/project_service.py``.
+#: Case-insensitive so that the constant answers it beside the two functions,
+#: which is also what keeps the pattern short enough to fold at the space before
+#: its pathspec rather than inside itself -- a key folded mid-regex does not run
+#: when it is copied out. Safe to quote here, unlike the key above, because that
+#: pathspec is the other module. What the arms it printed on 2026-09-12
+#: interpolate:
+#:
+#: - ``KNOWLEDGE_DIR_ESCAPE_REMEDY``, a module constant: nothing at all;
+#: - ``derived_escape_remedy(self.knowledge_dir.name, parts[0])``, which renders
+#:   ``f"{knowledge_directory_name}/{subdirectory}"`` from a *basename*
+#:   (``.theurian``) and a member of ``DERIVED_SUBDIRECTORIES``, that membership
+#:   being the ``in`` test which selects the arm;
+#: - ``review_escape_remedy(self.knowledge_dir.name)``, which renders the same
+#:   shape from that same basename and ``_REVIEW_SUBDIRECTORY``, a literal in that
+#:   module (#602).
+#:
+#: So the claim is one an arm satisfies or does not, rather than a list to keep in
+#: step: the only value an arm takes from the caller is ``self.knowledge_dir.name``
+#: -- ``Path.name`` is a final component, so it cannot carry a separator or an
+#: absolute path -- and everything beside it is Theurian's own vocabulary. Nothing
+#: any arm renders came out of a ``resolve()``. Measured over the arms that key
+#: printed on the date above; a fourth cure has to re-establish it, and re-running
+#: the key is what finds the fourth. The remedy's variance therefore names which
+#: child of the knowledge directory the link sits at or below, and never a
+#: location on the machine.
+#: ``cli/commands.py``'s ``_fail_a_path_escape`` enumerates the same four raise
+#: sites for the neighbouring question of whether a remedy can arrive empty; it
+#: keys on ``_escape_remedy`` whole rather than on its arms, so the third cure
+#: left it true.
 #:
 #: Says less than the same refusal does on a terminal, on purpose, and what makes
 #: that affordable is who can act on it: the reader holding the checkout, for whom
