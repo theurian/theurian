@@ -12,7 +12,7 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
-## [0.2.1] - 2026-09-12
+## [0.2.1] - 2026-09-13
 
 ### Fixed
 

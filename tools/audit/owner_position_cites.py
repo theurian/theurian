@@ -676,7 +676,7 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
     #
     # The #656 row that stood here is gone with the 0.2.1 cut, and not because
     # the sentence or its owner moved: dating the entries by inserting
-    # `## [0.2.1] - 2026-09-12` above them put the #597 cure entry inside a
+    # `## [0.2.1] - 2026-09-13` above them put the #597 cure entry inside a
     # dated section, and a dated section is history rather than a live claim
     # (round one's M-j, recorded above), so the sweep no longer produces the
     # row. The judgment it carried -- correct, open owner, snapshot-age false
