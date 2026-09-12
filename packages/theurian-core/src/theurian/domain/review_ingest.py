@@ -205,10 +205,15 @@ REMEDIES: Final[dict[RefusalGrade, str]] = {
     # eight lines on 2026-09-12; it does not hit this comment, which spells the
     # grade with a backslash and so is not the string the pattern matches. Those
     # eight are this row's own key, the re-grade guard in `gh_cli._probe`, and six
-    # raise sites. Two of those six are shared -- the `_page_cap` helper has two
-    # callers and `run_bounded`'s byte cap has two -- so six sites are eight
-    # faces, and one of the eight never arrives with this grade at all. Where
-    # each lands is the whole of the routing:
+    # raise sites.
+    #
+    # A raise site is not a face: the `_page_cap` helper and `run_bounded`'s byte
+    # cap are each reached from more than one seam, and the seam is what decides
+    # where the refusal lands. So the enumeration below is written per landing
+    # place rather than per site, and it carries the claim on its own -- no total
+    # is stated for it, because a total is what goes stale when a seam is added
+    # and the arithmetic that stood here had already drifted from these bullets.
+    # Where each lands is the whole of the routing:
     #
     # Ends the run, and a bound the run itself takes answers it:
     #   * `_refuse_an_unusable_limit`, twice -- `limit` below one, and `limit`
