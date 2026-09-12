@@ -480,10 +480,20 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
     #                ingestion and the'
     #       STALE -> docs/security/threat-model.md #575 'no issue owns it today'
     #
-    # Re-run 2026-09-12, on the text as committed, with the ADR-0033 row in place;
-    # the fourth line is the row this branch added, and the 2026-09-11 run it
-    # replaces read `stale=4` without it. The paste is wrapped at this file's
-    # column, and only there -- the four wrapped lines are two lines of output.
+    # Re-run 2026-09-12, on the text as committed, with the ADR-0033 row in
+    # place; the **fourth entry** is the row this branch added. Driving the same
+    # reconciliation with ADR-0033 removed from both sides -- the shape before
+    # this branch -- answers `unrecorded=0 stale=4 drift=0 ambiguous=0` with the
+    # other four entries unchanged.
+    #
+    # The paste is edited in exactly two ways and in no others: the ADR paths are
+    # abbreviated with `...`, and **three of the five entries are wrapped** at
+    # this file's comment column. Each of those three occupies two physical lines
+    # here and is one line of output; the other two fit on one line each. So the
+    # eight physical `STALE` lines above are five lines of output, which is the
+    # `stale=5` on the line before them. Counted as entries, not as lines: the
+    # lines-arithmetic form of this sentence has now been got wrong three times
+    # in this repository.
     #
     # So the documented no-flag invocation in this module's own header exits 1 on
     # this branch **now**; `--offline` is the form the census test runs and the form
