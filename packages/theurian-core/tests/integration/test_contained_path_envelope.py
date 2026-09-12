@@ -176,8 +176,10 @@ from theurian.application.project_service import (
     FINDINGS_STORE_ID,
     KNOWLEDGE_DIR_ESCAPE_REMEDY,
     REVIEW_SEARCH_STORE_ID,
+    ProjectPathEscapeError,
     ProjectPaths,
     derived_escape_remedy,
+    review_escape_remedy,
 )
 from theurian.cli.commands import EXIT_STATE_ERROR
 from theurian.cli.main import app
@@ -386,6 +388,11 @@ class Plant:
 _DERIVED_STATE: Final = derived_escape_remedy(".theurian", "state")
 _DERIVED_RUNTIME: Final = derived_escape_remedy(".theurian", "runtime")
 _DERIVED_CACHE: Final = derived_escape_remedy(".theurian", "cache")
+#: The third cure, which is neither of the two above: the evidence directory is
+#: authored-weight source with no rebuild (ADR-0030 decision 3) *and* is absent
+#: from ``INITIAL_DIRECTORIES``, so both existing texts said something false
+#: about it (#602).
+_REVIEW: Final = review_escape_remedy(".theurian")
 
 _EVERY_STATE_READER: Final = frozenset(
     {
@@ -477,7 +484,7 @@ PLANTS: Final = (
         helper="review",
         relative="review",
         is_directory=True,
-        remedy=KNOWLEDGE_DIR_ESCAPE_REMEDY,
+        remedy=_REVIEW,
         outside_the_class_because=(
             "no swept command reaches it: ADR-0030 decision 3's evidence directory "
             "has one writer and one reader, both in "
@@ -488,10 +495,18 @@ PLANTS: Final = (
             "one the next plant is measured against. That command grades this "
             "plant `EXIT_STATE_ERROR` through `_fail_a_path_escape`, driven by "
             "`test_review_ingest_cli.py`'s escaping-review-directory case and "
-            "measured 2026-09-07 against the real CLI. Its remedy is the "
-            "knowledge-directory text and not a derived one on purpose: review "
+            "measured 2026-09-07 against the real CLI. Its remedy is a third text "
+            "of its own, and it took two tries to get there. The derived one is "
+            "wrong here for the reason this entry has always recorded -- review "
             "evidence is canonical with no replayable source, so `rm -rf` is data "
-            "loss rather than a rebuild."
+            "loss rather than a rebuild -- but the knowledge-directory text that "
+            "stood in for it was wrong too, in a way nothing here noticed: it "
+            "sends the reader to `theurian init`, and `review` is not in "
+            "`INITIAL_DIRECTORIES`, so that command creates nothing at this path "
+            "(#602). `review_escape_remedy` names the removal and "
+            "`theurian review ingest`, the writer that does create the directory, "
+            "and `test_an_escaping_review_directory_is_cured_by_removing_the_link"
+            "_not_by_init` in this file is what holds it there."
         ),
     ),
     Plant(
@@ -1515,13 +1530,18 @@ def test_every_containment_refusal_publishes_the_remedy_for_the_path_it_refused(
 ) -> None:
     """One cure per doctored artefact, whichever helper noticed it.
 
-    ``_escape_remedy`` keys the cure on the refused path: a leaf under a derived
+    ``_escape_remedy`` keys the cure on the refused path, across three texts
+    rather than the two this paragraph named until #602: a leaf under a derived
     subdirectory gets ``derived_escape_remedy``, which names ``.theurian/state``
-    or ``.theurian/runtime`` and the commands that rebuild them, and everything
+    or ``.theurian/runtime`` and the commands that rebuild them; anything whose
+    first component is ``review`` gets ``review_escape_remedy``; and everything
     else gets ``KNOWLEDGE_DIR_ESCAPE_REMEDY``, which is about the operator's
-    authored knowledge directory. Publishing the second for a doctored
+    authored knowledge directory. Publishing the third for a doctored
     ``.theurian/state/`` was #483's H-1: it named the wrong artefact and sent the
-    reader to ``theurian init``, which meets the identical refusal.
+    reader to ``theurian init``, which meets the identical refusal. Publishing it
+    for ``.theurian/review`` was #602, the same clause failing a second way --
+    there ``theurian init`` does not refuse, it silently creates nothing, because
+    ``review`` is not in ``INITIAL_DIRECTORIES``.
 
     **The expectation is written per plant, not recomputed.** Deriving it from
     ``DERIVED_SUBDIRECTORIES`` would be this test asking production the question
@@ -1576,8 +1596,12 @@ def test_the_knowledge_plant_is_refused_by_the_migration_loader_not_by_containme
     arm the other six carry.)
 
     Attributed by the published cure rather than by reading the call graph: the
-    remedy names ``.theurian/migrations`` and is neither of the two texts
-    ``_escape_remedy`` can return.
+    remedy names ``.theurian/migrations`` and is none of the three cures
+    ``_escape_remedy`` chooses between. The set below holds four strings for
+    those three, because ``derived_escape_remedy`` renders per subdirectory and
+    both of the renderings a swept plant reaches are listed; ``review`` joined on
+    #602 and is listed for the same reason the other two are -- an exclusion
+    that stopped ruling out one of the cures would read as coverage.
     """
     refusals = [
         observation
@@ -1588,13 +1612,123 @@ def test_the_knowledge_plant_is_refused_by_the_migration_loader_not_by_containme
     assert refusals, "the knowledge plant reached nothing at all, so this proves nothing"
     for observation in refusals:
         remedy = str((observation.envelope or {}).get("remedy", ""))
-        assert remedy not in {KNOWLEDGE_DIR_ESCAPE_REMEDY, _DERIVED_STATE, _DERIVED_RUNTIME}, (
+        assert remedy not in {
+            KNOWLEDGE_DIR_ESCAPE_REMEDY,
+            _DERIVED_STATE,
+            _DERIVED_RUNTIME,
+            _REVIEW,
+        }, (
             "the knowledge plant is now refused by containment; it belongs in the "
             "swept population rather than in the exclusions"
         )
         assert ".theurian/migrations" in remedy, (
             f"the knowledge plant's refusal no longer names the migration set: {remedy!r}"
         )
+
+
+#: The path a cure for an escaping ``.theurian/review`` has to name, written out
+#: rather than composed from ``ProjectPaths``. Composing it would be this file
+#: asking production the question production is being tested on -- the rule
+#: :class:`Plant` records for ``relative``, applied to a remedy instead of a path.
+_REVIEW_CULPRIT: Final = ".theurian/review"
+
+
+@_NEEDS_SYMLINKS
+def test_an_escaping_review_directory_is_cured_by_removing_the_link_not_by_init(
+    tmp_path: Path,
+) -> None:
+    """The cure for #602: ``theurian init`` does not recreate ``.theurian/review``.
+
+    ``KNOWLEDGE_DIR_ESCAPE_REMEDY`` says to *"remove the link, run `theurian init`
+    to recreate the directory, then retry"*, and for this artefact the middle
+    clause is false. ``review`` is not in ``INITIAL_DIRECTORIES``, so ``init``
+    creates nothing here; the evidence store makes the directory lazily at its
+    first write, and ``EvidenceReader`` reads an absent one as an empty corpus
+    (pinned by ``tests/unit/test_review_evidence_store.py::
+    test_a_store_over_a_directory_that_does_not_exist_reads_as_empty``). An
+    operator who follows the published cure literally runs a command that does
+    nothing, and has no way to tell that from a command that failed silently.
+
+    **The removal is plain ``rm`` with no ``rm -rf`` twin, and that is a shape
+    argument rather than a style one.** ``derived_escape_remedy`` publishes both
+    forms because the culprit it names may be a real directory. Here it cannot
+    be: :meth:`ProjectPaths.of` has already contained ``.theurian`` by the time
+    ``review`` is resolved, so the only object that can make this path escape is
+    a link *at* ``review`` itself -- and plain ``rm`` removes a link without the
+    force ``-rf`` adds. Offering ``-rf`` would be worse than redundant: ADR-0030
+    decision 3 makes review evidence canonical with no replayable source, so a
+    reader who reaches for the force arm over a real directory destroys records
+    no rebuild recovers. The trailing slash is absent for the measured reason
+    ``derived_escape_remedy`` records -- BSD ``rm -rf`` on a trailing-slash
+    symlink follows the link, destroys the target and leaves the link standing.
+
+    **And the cure has to name what does recreate the directory.** ``theurian
+    review ingest`` is the writer; naming it is what turns "remove this" into a
+    cure a reader can finish.
+
+    RED before the fix: an escaping ``.theurian/review`` publishes
+    ``KNOWLEDGE_DIR_ESCAPE_REMEDY``, which fails every predicate below except
+    none. The sibling pins that must move with the fix are
+    ``PLANTS``' ``review`` entry in this file and
+    ``tests/unit/test_project_paths_containment.py::
+    test_every_path_helper_refuses_when_a_committed_symlink_escapes_under_it``.
+    """
+    root = tmp_path / "repo"
+    (root / ".theurian").mkdir(parents=True)
+    outside = tmp_path / "outside-review"
+    outside.mkdir()
+    (root / ".theurian" / "review").symlink_to(
+        Path("..", "..", outside.name), target_is_directory=True
+    )
+    assert not outside.resolve().is_relative_to(root.resolve()), (
+        "the plant must sit genuinely outside the tree, or the refusal below is not an escape"
+    )
+
+    with pytest.raises(ProjectPathEscapeError) as refused:
+        _ = ProjectPaths.of(root).review
+    remedy = refused.value.remedy
+
+    misdirecting = [
+        (label, why)
+        for label, holds, why in (
+            (
+                f"names `{_REVIEW_CULPRIT}`",
+                _REVIEW_CULPRIT in remedy,
+                "the reader cannot act on a cure that does not say which path is the link",
+            ),
+            (
+                f"says `rm {_REVIEW_CULPRIT}`",
+                f"rm {_REVIEW_CULPRIT}" in remedy,
+                "the removal is named in prose rather than as a command the reader can type",
+            ),
+            (
+                "renders the path without a trailing slash",
+                f"{_REVIEW_CULPRIT}/" not in remedy,
+                "BSD `rm -rf` on a trailing-slash symlink follows the link, destroys the "
+                "target and leaves the link in place -- measured, and the reason "
+                "`derived_escape_remedy` calls the slash out rather than merely omitting it",
+            ),
+            (
+                "does not send the reader to `theurian init`",
+                "theurian init" not in remedy,
+                "`review` is not in `INITIAL_DIRECTORIES`, so `init` recreates nothing here "
+                "and the reader cannot tell that from a command that failed silently",
+            ),
+            (
+                "names `theurian review ingest`",
+                "theurian review ingest" in remedy,
+                "the writer that does create the directory, so the cure has an end",
+            ),
+        )
+        if not holds
+    ]
+
+    assert not misdirecting, (
+        f"the cure for an escaping {_REVIEW_CULPRIT} fails {len(misdirecting)} of its "
+        "predicates:\n"
+        + "\n".join(f"  - {label}: {why}" for label, why in misdirecting)
+        + f"\n\nthe text it publishes is:\n  {remedy!r}"
+    )
 
 
 # -- The bound: what must NOT become a refusal ------------------------------

@@ -33,6 +33,7 @@ from theurian.application.project_service import (
     ProjectPathEscapeError,
     ProjectPaths,
     derived_escape_remedy,
+    review_escape_remedy,
 )
 from theurian.cli.commands import _STATE_DATABASE_GLOB
 from theurian.cli.index_commands import INDEX_FILENAME_PREFIX
@@ -359,6 +360,26 @@ _NAMES_A_DERIVED_ARTIFACT: set[str] = {
     "findings_for",
 }
 
+#: The helpers whose refused path names the review-evidence directory, and which
+#: therefore publish :func:`review_escape_remedy` rather than either of the two
+#: texts above (#602).
+#:
+#: Written out as a judgement for the reason :data:`_NAMES_A_DERIVED_ARTIFACT`
+#: records, and a third class rather than a member of that one: ``review`` is not
+#: in ``DERIVED_SUBDIRECTORIES`` and never may be -- ADR-0030 decision 3 makes
+#: the evidence canonical with no replayable source -- so the rebuild-shaped cure
+#: would tell an operator that ``rm -rf`` costs them nothing. It was in neither
+#: class until now, which is what made it fall to
+#: :data:`KNOWLEDGE_DIR_ESCAPE_REMEDY`: that text sends the reader to ``theurian
+#: init``, and ``review`` is absent from ``INITIAL_DIRECTORIES``, so the command
+#: creates nothing at this path and reports nothing either.
+#:
+#: One member today. Production keys the carve-out on the first path component at
+#: any depth, so a helper resolving something *beneath* the evidence directory
+#: would publish this cure too and belongs here -- and until one exists, saying
+#: so is the whole of what this set can claim.
+_NAMES_THE_REVIEW_EVIDENCE: set[str] = {"review"}
+
 
 #: Sentinel for "no return annotation": distinct from a member annotated
 #: ``-> None``, which is genuinely not a path helper.
@@ -452,6 +473,8 @@ def test_the_containment_sweep_covers_every_path_returning_helper() -> None:
     # here rather than being silently classified by whichever assertion runs.
     assert set(_HELPER_CALLS) >= _NAMES_A_DERIVED_ARTIFACT
     assert not (_NAMES_A_DERIVED_ARTIFACT & _READER_CONTAINED)
+    assert set(_HELPER_CALLS) >= _NAMES_THE_REVIEW_EVIDENCE
+    assert not (_NAMES_THE_REVIEW_EVIDENCE & (_NAMES_A_DERIVED_ARTIFACT | _READER_CONTAINED))
 
 
 @pytest.mark.parametrize(
@@ -534,12 +557,25 @@ def test_every_path_helper_refuses_when_a_committed_symlink_escapes_under_it(
 
     **The remedy is asserted per class, not as one constant** (#483 round one,
     H-1). ``KNOWLEDGE_DIR_ESCAPE_REMEDY`` was published for every helper here,
-    and for the five in :data:`_NAMES_A_DERIVED_ARTIFACT` it named the operator's
-    authored knowledge directory for a refusal about ``.theurian/state/`` or
-    ``.theurian/runtime/`` -- then sent them to ``theurian init``, which meets
-    the identical refusal. The expectation is a set written out in this module,
-    so a helper that changes class fails here rather than being re-derived into
-    agreement with whatever production now returns.
+    and for the ``len(_NAMES_A_DERIVED_ARTIFACT)`` in that set it named the
+    operator's authored knowledge directory for a refusal about
+    ``.theurian/state/`` or ``.theurian/runtime/`` -- then sent them to
+    ``theurian init``, which meets the identical refusal. The count is spelled as
+    the expression rather than as a number because the number here read *five*
+    while the set held ten.
+
+    **Three classes now, and the third failed the same clause a second way**
+    (#602). ``review`` publishes :func:`review_escape_remedy`: it is not a
+    derived artefact, so the rebuild-shaped cure is data loss rather than a
+    rebuild, and the knowledge-directory text it fell back to sends the reader to
+    ``theurian init`` -- which for this path does not refuse, it creates nothing
+    and says nothing, because ``review`` is absent from ``INITIAL_DIRECTORIES``.
+    Each class asserts ``theurian init`` is *not* named, for the two different
+    reasons that command is wrong here.
+
+    The expectation is a set written out in this module, so a helper that changes
+    class fails here rather than being re-derived into agreement with whatever
+    production now returns.
     """
     root = tmp_path / "repo"
     (root / ".theurian").mkdir(parents=True)
@@ -550,6 +586,14 @@ def test_every_path_helper_refuses_when_a_committed_symlink_escapes_under_it(
 
     with pytest.raises(ProjectError) as excinfo:
         _HELPER_CALLS[helper](paths)
+
+    if helper in _NAMES_THE_REVIEW_EVIDENCE:
+        assert excinfo.value.remedy == review_escape_remedy(".theurian")
+        assert _ESCAPING_CHILD[helper] in excinfo.value.remedy
+        assert "theurian init" not in excinfo.value.remedy, (
+            "the remedy sends the reader to a command that creates nothing at this path"
+        )
+        return
 
     if helper not in _NAMES_A_DERIVED_ARTIFACT:
         assert excinfo.value.remedy == KNOWLEDGE_DIR_ESCAPE_REMEDY
