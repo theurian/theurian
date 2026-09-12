@@ -18,12 +18,21 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   ([#597](https://github.com/theurian/theurian/issues/597)). `theurian review
   ingest` raises this grade from bounds an operator acts on differently, and
   every sentence of the 0.2.0 cure named something that can only move a bound the
-  **run** takes. The cure now routes on **where the refusal landed**, which is
-  what a reader already has in front of them. A refusal that **ended the run** is
+  **run** takes. The cure now routes on **where the refusal landed**. Only one of
+  those two places publishes it today: a refusal that ends the run leaves through
+  `{error, remedy}`, while a skipped pull request's entry in the run document
+  carries its grade and its summary and not its remedy — tracked as
+  [#656](https://github.com/theurian/theurian/issues/656), and the per-record arm
+  becomes reader-facing when that lands. A refusal that **ended the run** is
   about a bound the run itself takes: `limit` is how many pull requests to read,
   refused below one and above the pull-request cap, and `since_number` skips the
-  pull requests already ingested — a narrower window reads fewer pull requests,
-  over fewer pages, in smaller answers. A refusal reported under **`skipped`
+  pull requests already ingested — both narrow the **window**, fewer pull
+  requests over fewer pages, so a refusal raised while reaching for a later page
+  may not be reached at all. What makes one page's **answer** smaller is a
+  `limit` below the listing's page size: the listing asks for
+  `min(PAGE_SIZE, limit)` records, so a larger `limit` sends the identical
+  request, and `since_number` is compared against the records a page has already
+  returned rather than sent with it. A refusal reported under **`skipped`
   against one pull request's number** is about a per-record bound: that pull
   request's comments, its linked issues, its labels, the pages its threads and
   reviews need, or the size of one answer about it. Neither `limit` nor
@@ -33,14 +42,15 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
   **Keyed on where the refusal landed rather than on which cap was reached.** The
   landing place is a property of where a refusal is caught — a bound on one pull
-  request's own document is caught per pull request and reported as skipped, and
-  everything else leaves the run — so a per-record bound added later routes
-  without the cure being rewritten. A list of caps has no such property, and it
-  also misses the faces that do not read as caps *of a document*: one pull
-  request whose review threads or reviews need more than the page cap, or one
-  page of those past the per-response byte cap, is neither a bound the run takes
-  nor one of that pull request's comments, linked issues or labels. A reader
-  meeting either would be handed a cure written for somebody else's refusal.
+  request's own document is caught per pull request and reported as skipped,
+  while one the listing itself could not get past ends the run — so a per-record
+  bound added later routes without the cure being rewritten. A list of caps has
+  no such property, and it also misses the faces that do not read as caps *of a
+  document*: one pull request whose review threads or reviews need more than the
+  page cap, or one page of those past the per-response byte cap, is neither a
+  bound the run takes nor one of that pull request's comments, linked issues or
+  labels. A reader meeting either would be handed a cure written for somebody
+  else's refusal.
 
   The 0.2.0 text said none of that, leaving a reader who met a skipped pull
   request to assume the run had stopped or the record had landed truncated. Its

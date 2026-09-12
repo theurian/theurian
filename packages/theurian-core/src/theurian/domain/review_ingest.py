@@ -219,7 +219,13 @@ REMEDIES: Final[dict[RefusalGrade, str]] = {
     #     it at the boundary.
     #   * `run_bounded`'s byte cap reached from `_listed`'s `_request` -- one
     #     listing page past `MAX_RESPONSE_BYTES`. That page asks for
-    #     `min(PAGE_SIZE, limit)` records, so `limit` shrinks the answer too.
+    #     `min(PAGE_SIZE, limit)` records, so a `limit` at or above `PAGE_SIZE`
+    #     sends the identical request and meets the identical refusal; only a
+    #     `limit` under `PAGE_SIZE` makes the answer smaller. `since_number` is
+    #     named in no request variable -- `_listed` compares it against each node
+    #     a page already returned (`number <= since_number`) -- so what it can
+    #     still do, like a smaller `limit`, is end the loop before a *later* page
+    #     is asked for.
     #
     # Lands as a skipped pull request while the run continues, and no run
     # parameter reaches it:
@@ -256,10 +262,16 @@ REMEDIES: Final[dict[RefusalGrade, str]] = {
         "Which bound was reached decides what to do, and where this refusal landed "
         "says which kind it is. A refusal that ended the run is about a bound the "
         "run itself takes: `limit` is how many pull requests to read and must be at "
-        "least one, and `since_number` skips the pull requests already ingested -- a "
-        "narrower window reads fewer pull requests, over fewer pages, in smaller "
-        "answers, and `gh api graphql --hostname github.com` with a smaller page is "
-        "the same request by hand. A refusal reported under `skipped` against one "
+        "least one, and `since_number` skips the pull requests already ingested. "
+        "Both narrow the window -- fewer pull requests, over fewer pages -- so a "
+        "refusal raised while reaching for a later page may not be reached at all. "
+        "Neither makes one page's answer smaller by itself: the listing asks for "
+        "whichever is smaller, `limit` or its own page size, so a larger `limit` "
+        "sends the identical request, and `since_number` is compared against the "
+        "records a page has already returned rather than sent with it. A page "
+        "refused for its size is answered by a `limit` below that page size, and "
+        "`gh api graphql --hostname github.com` with a smaller page is the same "
+        "request by hand. A refusal reported under `skipped` against one "
         "pull request's number is about a per-record bound: that pull request's "
         "comments, its linked issues, its labels, the pages its threads and reviews "
         "need, or the size of one answer about it. Neither `limit` nor "
