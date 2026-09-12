@@ -109,6 +109,94 @@ def test_every_grade_records_a_remedy_that_names_a_command_and_an_artefact() -> 
     )
 
 
+def test_the_limit_cure_covers_the_caps_no_run_parameter_can_move() -> None:
+    """One grade, two cause families, and the cure has to be honest about both (#597).
+
+    ``LIMIT_EXCEEDED`` is raised by two populations that an operator acts on
+    differently, and the grade is deliberately **not** split -- the membership of
+    :class:`RefusalGrade` is coarse on purpose, and what tells two refusals apart
+    is the summary. That decision puts the whole burden on this one static text.
+
+    * **Bounds the caller chose.** ``limit`` and ``since_number`` are run
+      parameters: a caller who asked for zero, or for more than the page cap,
+      changes the argument and runs again. The cure has always covered this
+      family, and the two backticked names are how a reader finds the knobs.
+    * **Per-record document caps no run parameter moves.**
+      ``MAX_COMMENTS_PER_THREAD``, ``MAX_LINKED_ISSUES`` and
+      ``MAX_LABELS_PER_PULL_REQUEST`` are properties of a single pull request's
+      document, not of the run. A pull request carrying 51 labels exceeds the
+      label cap on every invocation, at every ``limit``; the provider reports
+      that pull request as skipped and the run continues with the rest.
+
+    So the predicates below are not four ways of saying "the text looks right":
+
+    * ``limit`` and ``since_number`` -- RED means the bounds family lost its cure
+      while the second family was being added to it.
+    * ``skipped`` -- RED means nothing tells the operator what happened to the
+      51-label pull request. Without it a reader assumes the run stopped, or
+      that the record landed truncated; it did neither, and "this pull request
+      was skipped and the rest were ingested" is the only sentence that
+      distinguishes those.
+    * ``per-record`` -- RED means the second family is unnamed, so a reader who
+      cannot make the refusal go away by any choice of ``limit`` has nothing to
+      tell them why, and no reason to stop trying.
+    * **not** ``the cap the summary above names`` -- RED means the misdirection
+      is back. For the 51-label pull request the summary names **50**, which is
+      the *label* cap; a reader following that clause literally clamps ``limit``
+      to 50 for no reason at all, and the refusal recurs unchanged. It is the
+      one clause that actively sends the reader the wrong way, which is why it
+      is asserted absent rather than merely not asserted present.
+
+    The caps are named by symbol rather than by value: this is a domain-level
+    unit test and the numbers live in ``infrastructure/github/limits.py``, where
+    ``tests/unit/test_gh_argument_vector.py`` pins them.
+    """
+    cure = REMEDIES[RefusalGrade.LIMIT_EXCEEDED]
+
+    broken = [
+        (label, why)
+        for label, holds, why in (
+            (
+                "names `limit`",
+                "`limit`" in cure,
+                "the caller-adjustable bound a run that asked for zero or for more than the "
+                "page cap has to change",
+            ),
+            (
+                "names `since_number`",
+                "`since_number`" in cure,
+                "the other caller-adjustable bound, which skips the pull requests already ingested",
+            ),
+            (
+                "says `skipped`",
+                "skipped" in cure,
+                "what happens to the pull request that tripped a per-record cap: it is "
+                "reported as skipped and the run continues, which no other sentence says",
+            ),
+            (
+                "says `per-record`",
+                "per-record" in cure,
+                "the second cause family, whose caps no run parameter moves -- unnamed, a "
+                "reader keeps adjusting `limit` against a refusal that cannot answer to it",
+            ),
+            (
+                "does not say `the cap the summary above names`",
+                "the cap the summary above names" not in cure,
+                "for a label overflow the summary names the label cap, so that clause tells "
+                "the reader to clamp `limit` to a number belonging to another bound entirely",
+            ),
+        )
+        if not holds
+    ]
+
+    assert not broken, (
+        "`REMEDIES[LIMIT_EXCEEDED]` is the only cure both cause families get, and it fails "
+        + f"{len(broken)} of its predicates:\n"
+        + "\n".join(f"  - {label}: {why}" for label, why in broken)
+        + f"\n\nthe text it publishes is:\n  {cure!r}"
+    )
+
+
 def test_a_refusal_carries_the_recorded_remedy_and_cannot_be_handed_another() -> None:
     """RED means a call site can publish its own cure, which is how a placeholder gets in."""
     for grade in RefusalGrade:

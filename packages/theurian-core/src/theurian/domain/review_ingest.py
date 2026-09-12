@@ -191,17 +191,38 @@ REMEDIES: Final[dict[RefusalGrade, str]] = {
         "Run `gh api graphql --hostname github.com -f query='{viewer{login}}'` by "
         "hand to see the failure with its own output, then run the ingestion again."
     ),
-    # Stated so it cures both directions. `limit` is refused below one as well as
-    # above the cap, and "narrow the run" sends a caller who asked for zero the
-    # wrong way. The two keep one grade because an operator does the same thing
-    # about either -- change `limit` -- and this enum's membership is coarse on
-    # purpose; what tells them apart is the summary, which names the number.
+    # Two cause families reach this grade, and the cure has to answer both (#597).
+    #
+    # The first is a bound of the run, which cures in both directions: `limit` is
+    # refused below one as well as above the cap, and "narrow the run" sends a
+    # caller who asked for zero the wrong way.
+    #
+    # The second is a per-record cap -- `MAX_COMMENTS_PER_THREAD`,
+    # `MAX_LINKED_ISSUES` and `MAX_LABELS_PER_PULL_REQUEST` in
+    # `infrastructure/github/limits.py`, spelled as the `first:` literals of the
+    # GraphQL documents. Those bound one pull request's own data, so the run's
+    # two window parameters (`--limit` and `--since` in `cli/review_commands.py`,
+    # arriving here as `limit` and `since_number`) cannot move them at any value:
+    # the provider reports that pull request as skipped and the run continues.
+    #
+    # Splitting the grade was considered and declined. A `RefusalGrade` member is
+    # a published string in the run document, so adding one is observable
+    # behaviour rather than patch material, and this enum's membership is coarse
+    # on purpose besides -- what tells two refusals apart is the summary. The
+    # defect was the cure, and specifically its "no more than the cap the summary
+    # above names" clause: for a pull request carrying 51 labels the summary
+    # names 50, so a reader following that clause clamps `limit` to a number
+    # belonging to another bound entirely and meets the same refusal again.
     RefusalGrade.LIMIT_EXCEEDED: (
-        "Adjust the run's bounds and try it again: `limit` is how many pull "
-        "requests to read and must be at least one and no more than the cap the "
-        "summary above names, and `since_number` skips the pull requests already "
-        "ingested. `gh api graphql --hostname github.com` with a smaller page is "
-        "the same request by hand."
+        "Which bound was reached decides what to do, and the summary above names "
+        "it. A bound of the run is yours to change: `limit` is how many pull "
+        "requests to read and must be at least one, and `since_number` skips the "
+        "pull requests already ingested -- `gh api graphql --hostname github.com` "
+        "with a smaller page is the same request by hand. A per-record cap on one "
+        "pull request's comments, linked issues or labels is not: neither `limit` "
+        "nor `since_number` moves it, that pull request is reported as skipped "
+        "while the rest of the run lands, and `gh pr view <number> --repo "
+        "<owner>/<name>` reads it on GitHub instead."
     ),
 }
 
