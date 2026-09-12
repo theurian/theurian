@@ -1,8 +1,11 @@
 """What the changelog's review-ingest entry claims, held to the tree (ADR-0030, #479).
 
 ``packages/theurian-core/CHANGELOG.md`` is where an operator learns what
-``theurian review ingest`` does before they run it, and five of its sentences
-say something the tree can be asked about:
+``theurian review ingest`` does before they run it, and the sentences below say
+something the tree can be asked about. No count of them is given, for the reason
+:func:`test_the_changelog_entry_still_states_the_claim` records about its own
+paragraph: one stood here (*"five of its sentences"*) and went stale the moment a
+row was added, which is the failure this module exists to catch, one level up.
 
 - **Exit 1 carries the run document, or ``{error, remedy}``, or both** — the run
   document alone on stdout for a run that happened and was not clean,
@@ -45,6 +48,16 @@ say something the tree can be asked about:
   ``entries == ()`` whether the records never existed or somebody had just
   deleted them. Both are in the drift column's history, and the second is what it
   carries now, because that is the sentence a rebase restores.
+- **The one ``LIMIT_EXCEEDED`` cure routes on where the refusal landed, not on
+  which cap was reached** (#597). A refusal that ended the run is about a bound
+  the run takes; one reported under ``skipped`` against a pull request's number
+  is about a per-record bound, *including* the pages its threads and reviews
+  need and the size of one answer about it. The entry said this as a list of
+  three caps until the rewrite, and a list routes only what is on it: those two
+  faces were on no list, so a reader meeting either eliminated the per-record
+  arm and went back to ``limit`` -- the loop #597 removed for labels. The drift
+  column carries the cap list, because it reads as the *more* precise sentence
+  and is what a rebase restores.
 
 **Each claim is pinned from both sides, and the two sides fail differently on
 purpose.** The prose pins hold *spelling*: they are blind to whether the
@@ -69,14 +82,25 @@ that same file —
 which raises the exception class no arm names and asserts the document is out
 anyway. Each failure message below names the half that did not move.
 
-**The fifth row holds a record's wording and nothing else, and its reach is
-stated rather than assumed.** Its behaviour half is in two other modules --
+**Two rows hold a record's wording and nothing else, and their reach is stated
+rather than assumed** -- named rather than numbered, because an ordinal into this
+list is one more count that goes stale when a row is added.
+
+The **race remedy** row's behaviour half is in two other modules:
 ``tests/unit/test_review_search_builder_claims.py`` reads the guard's condition
 out of the syntax tree and asserts it names the publish-time capture, and
 ``tests/integration/test_review_build_empty_publish.py`` drives both faces
-through the shipped CLI. This row would match word for word against a build
+through the shipped CLI. That row would match word for word against a build
 keyed back on the read, and those two would go RED; nothing here can tell the
 difference, which is exactly why the halves are separate.
+
+The **``LIMIT_EXCEEDED`` routing** row is the same shape: its behaviour half is
+``tests/unit/test_review_ingest_refusals.py::``
+``test_the_limit_cure_routes_by_where_the_refusal_landed``, whose per-record
+predicates read the shipped cure text out of ``REMEDIES``. The row here would
+match word for word against a product whose cure had reverted to the cap list,
+and that test would go RED -- and the reverse holds too, which is the direction
+this module is for.
 
 **Both directions carry a positive control**, because a pin whose expected
 answer is "the fragment is still there" and a pin that has stopped looking read
@@ -315,6 +339,51 @@ ENTRY_CLAIMS: Final[tuple[tuple[str, str, str, str], ...]] = (
             "test_the_empty_publish_guard_is_keyed_on_the_publish_time_capture`, with "
             "the three worlds driven by `tests/integration/"
             "test_review_build_empty_publish.py`"
+        ),
+    ),
+    (
+        "the `LIMIT_EXCEEDED` entry routes by where the refusal landed",
+        (
+            "A refusal that **ended the run** is about a bound the run itself takes: "
+            "`limit` is how many pull requests to read, refused below one and above the "
+            "pull-request cap, and `since_number` skips the pull requests already "
+            "ingested — a narrower window reads fewer pull requests, over fewer pages, "
+            "in smaller answers. A refusal reported under **`skipped` against one pull "
+            "request's number** is about a per-record bound: that pull request's "
+            "comments, its linked issues, its labels, the pages its threads and reviews "
+            "need, or the size of one answer about it. Neither `limit` nor "
+            "`since_number` moves any of those at any value"
+        ),
+        # The 0.2.0 wording, which is what a rebase against any commit before the
+        # rewrite restores -- and it reads as the *more* precise sentence, because
+        # it names three caps and pastes their `first:` literals out of the GraphQL
+        # documents. That precision is the defect: a list of caps routes only the
+        # caps on the list, and two faces are on no list. One pull request whose
+        # review threads or reviews need more than the page cap, and one page of
+        # those past the per-response byte cap, are both reported under `skipped`
+        # against that pull request's number and are neither a bound the run takes
+        # nor one of its "comments, linked issues or labels" -- so a reader meeting
+        # either eliminates the per-record arm and goes back to `limit`, which is
+        # the loop #597 removed for labels. The landing place is a property of
+        # where a refusal is caught, so it has no such list to fall off.
+        (
+            "A bound of the **run** is yours to change: `limit` is refused below one as "
+            "well as above the pull-request cap, and `since_number` skips what is "
+            "already ingested. A **per-record** cap on one pull request's comments, "
+            "linked issues or labels is not — those are the `first:` literals of the "
+            "adapter's GraphQL documents (`labels(first: 50)`, "
+            "`closingIssuesReferences(first: 20)`, `comments(first: 100)`), so neither "
+            "window parameter moves them at any value; that pull request is reported as "
+            "skipped and the rest of the run lands."
+        ),
+        (
+            "`tests/unit/test_review_ingest_refusals.py::"
+            "test_the_limit_cure_routes_by_where_the_refusal_landed`, whose per-record "
+            "predicates -- `skipped`, `per-record`, and `pages` asserted against the "
+            "half of the cure that follows `skipped` -- redden on their own if the "
+            "shipped cure loses an arm or a face, which this row cannot see: it would "
+            "match word for word against a build whose cure had gone back to the cap "
+            "list"
         ),
     ),
 )

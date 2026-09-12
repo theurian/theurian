@@ -109,7 +109,7 @@ def test_every_grade_records_a_remedy_that_names_a_command_and_an_artefact() -> 
     )
 
 
-def test_the_limit_cure_covers_the_caps_no_run_parameter_can_move() -> None:
+def test_the_limit_cure_routes_by_where_the_refusal_landed() -> None:
     """One grade, two places a refusal lands, and the cure has to answer both (#597).
 
     ``LIMIT_EXCEEDED`` is raised by bounds an operator acts on differently, and
