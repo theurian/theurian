@@ -85,7 +85,13 @@ jobs:
   quality:
     name: Format, lint, types, tests
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 30 rather than 10, resized at the 0.2.0 cut: this job runs the FULL
+    # suite (no marker filter, e2e included) and measured 480s of a 600s
+    # ceiling at the 0.1.0 tag; the same selection grew ~28% by 0.2.0, which
+    # is the coin-flip margin that killed core.yml's no-network step at that
+    # cut. 30 matches core.yml's `test` job, the sibling that runs this
+    # suite: a hang backstop, not a ceiling the healthy runtime brushes.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:
