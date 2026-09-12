@@ -236,8 +236,11 @@ def test_every_roadmap_adr_count_is_the_live_count_or_a_dated_measurement() -> N
     it reddens when a *bare* present-tense count is written that disagrees with the
     tree, which is the shape row 7 shipped.
 
-    The key detects drift: a planted ``30 ADRs`` in an unanchored block goes RED
-    against the live count of 29 (measured while writing this).
+    The key detects drift: a planted ADR count that differs from the live one,
+    in an unanchored block, goes RED. The live figure is read from the tree and
+    named in the assertion message, so this docstring carries no number of its
+    own to go stale -- the same reason the row-10 recomputation below quotes its
+    figures out of the cell instead of restating them.
     """
     live = _live_adr_count()
     unanchored: list[str] = []
