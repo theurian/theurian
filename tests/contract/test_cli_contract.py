@@ -87,7 +87,7 @@ def _compat(
     *,
     plugin: str = "0.1.0",
     minimum: str = "0.1.0-dev.0",
-    maximum: str = "0.2.0",
+    maximum: str = "0.3.0",
     protocol: str = "theurian/v1",
 ) -> subprocess.CompletedProcess[str]:
     return _run(
