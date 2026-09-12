@@ -490,10 +490,11 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
     # abbreviated with `...`, and **three of the five entries are wrapped** at
     # this file's comment column. Each of those three occupies two physical lines
     # here and is one line of output; the other two fit on one line each. So the
-    # eight physical `STALE` lines above are five lines of output, which is the
-    # `stale=5` on the line before them. Counted as entries, not as lines: the
-    # lines-arithmetic form of this sentence has now been got wrong three times
-    # in this repository.
+    # eight physical lines above are five lines of output, which is the
+    # `stale=5` on the line before them -- and only five of those eight carry
+    # the `STALE` token, since the other three are continuations. Counted as
+    # entries, not as lines: the lines-arithmetic form of this sentence has now
+    # been got wrong three times in this repository.
     #
     # So the documented no-flag invocation in this module's own header exits 1 on
     # this branch **now**; `--offline` is the form the census test runs and the form
