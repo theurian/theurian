@@ -110,36 +110,56 @@ def test_every_grade_records_a_remedy_that_names_a_command_and_an_artefact() -> 
 
 
 def test_the_limit_cure_covers_the_caps_no_run_parameter_can_move() -> None:
-    """One grade, two cause families, and the cure has to be honest about both (#597).
+    """One grade, two places a refusal lands, and the cure has to answer both (#597).
 
-    ``LIMIT_EXCEEDED`` is raised by two populations that an operator acts on
-    differently, and the grade is deliberately **not** split -- the membership of
+    ``LIMIT_EXCEEDED`` is raised by bounds an operator acts on differently, and
+    the grade is deliberately **not** split -- the membership of
     :class:`RefusalGrade` is coarse on purpose, and what tells two refusals apart
     is the summary. That decision puts the whole burden on this one static text.
 
-    * **Bounds the caller chose.** ``limit`` and ``since_number`` are run
-      parameters: a caller who asked for zero, or for more than the page cap,
-      changes the argument and runs again. The cure has always covered this
-      family, and the two backticked names are how a reader finds the knobs.
-    * **Per-record document caps no run parameter moves.**
-      ``MAX_COMMENTS_PER_THREAD``, ``MAX_LINKED_ISSUES`` and
-      ``MAX_LABELS_PER_PULL_REQUEST`` are properties of a single pull request's
-      document, not of the run. A pull request carrying 51 labels exceeds the
-      label cap on every invocation, at every ``limit``; the provider reports
-      that pull request as skipped and the run continues with the rest.
+    **The cure routes on where the refusal landed rather than on which cap was
+    reached**, and it did not always. The text this predicate list was first
+    written against -- superseded at 33e63e9d, so the quotation below is
+    deliberately a string the tree no longer holds -- split the grade by cap: a
+    bound of the run, against "a per-record cap on one pull request's comments,
+    linked issues or labels". Two faces belonged to neither arm: one pull request
+    whose review threads or reviews need more than ``MAX_PAGES`` pages, and one
+    page of those past ``MAX_RESPONSE_BYTES``. Both are raised inside
+    ``_pages_of``, which asks for ``PAGE_SIZE`` records flat, so no run parameter
+    reaches either, and neither is a comment, a linked issue or a label. The two
+    arms are now:
 
-    So the predicates below are not four ways of saying "the text looks right":
+    * **The refusal ended the run.** ``limit`` and ``since_number`` are the run's
+      own parameters: a caller who asked for zero, or for more than
+      ``MAX_PULL_REQUESTS``, changes the argument and runs again. The two
+      backticked names are how a reader finds the knobs.
+    * **The refusal was reported under ``skipped``, against one pull request's
+      number.** Its comments, its linked issues, its labels, the pages its
+      threads and reviews need, or the size of one answer about it -- properties
+      of a single pull request's document, not of the run. A pull request
+      carrying 51 labels exceeds the label cap on every invocation, at every
+      ``limit``; the provider reports that pull request as skipped and the run
+      continues with the rest.
 
-    * ``limit`` and ``since_number`` -- RED means the bounds family lost its cure
-      while the second family was being added to it.
+    So the predicates below are not five ways of saying "the text looks right":
+
+    * ``limit`` and ``since_number`` -- RED means the run-ended arm lost its cure
+      while the other arm was being rewritten around it.
     * ``skipped`` -- RED means nothing tells the operator what happened to the
       51-label pull request. Without it a reader assumes the run stopped, or
       that the record landed truncated; it did neither, and "this pull request
       was skipped and the rest were ingested" is the only sentence that
-      distinguishes those.
-    * ``per-record`` -- RED means the second family is unnamed, so a reader who
+      distinguishes those. It is also the word this test splits the cure on, so
+      its absence takes the ``pages`` predicate down with it.
+    * ``per-record`` -- RED means the second arm is unnamed, so a reader who
       cannot make the refusal go away by any choice of ``limit`` has nothing to
       tell them why, and no reason to stop trying.
+    * ``pages``, **in the per-record half only** -- RED means the face that was
+      routed to neither arm is unanswered again. It is asserted against the half
+      of the cure after ``skipped`` rather than against the whole text, because
+      the run-ended half says "over fewer pages" too: a predicate over the whole
+      cure would stay green with the per-record pages clause deleted, which is
+      the always-true shape this file exists to refuse.
     * **not** ``the cap the summary above names`` -- RED means the misdirection
       is back. For the 51-label pull request the summary names **50**, which is
       the *label* cap; a reader following that clause literally clamps ``limit``
@@ -152,6 +172,11 @@ def test_the_limit_cure_covers_the_caps_no_run_parameter_can_move() -> None:
     ``tests/unit/test_gh_argument_vector.py`` pins them.
     """
     cure = REMEDIES[RefusalGrade.LIMIT_EXCEEDED]
+    # Everything after the word naming where a per-record refusal lands, which is
+    # the axis the cure routes on. Empty when that word is absent, so the
+    # `pages` predicate below fails alongside the `skipped` one rather than
+    # reporting a half-truth about a cure that has lost its second arm entirely.
+    per_record_arm = cure.partition("skipped")[2]
 
     broken = [
         (label, why)
@@ -160,7 +185,7 @@ def test_the_limit_cure_covers_the_caps_no_run_parameter_can_move() -> None:
                 "names `limit`",
                 "`limit`" in cure,
                 "the caller-adjustable bound a run that asked for zero or for more than the "
-                "page cap has to change",
+                "pull-request cap has to change",
             ),
             (
                 "names `since_number`",
@@ -170,14 +195,22 @@ def test_the_limit_cure_covers_the_caps_no_run_parameter_can_move() -> None:
             (
                 "says `skipped`",
                 "skipped" in cure,
-                "what happens to the pull request that tripped a per-record cap: it is "
+                "what happens to the pull request that tripped a per-record bound: it is "
                 "reported as skipped and the run continues, which no other sentence says",
             ),
             (
                 "says `per-record`",
                 "per-record" in cure,
-                "the second cause family, whose caps no run parameter moves -- unnamed, a "
+                "the second arm, whose bounds no run parameter moves -- unnamed, a "
                 "reader keeps adjusting `limit` against a refusal that cannot answer to it",
+            ),
+            (
+                "names `pages` in the half after `skipped`",
+                "pages" in per_record_arm,
+                "the per-record face the cure's earlier cap list covered nowhere: one pull "
+                "request whose review threads or reviews need more than `MAX_PAGES` pages "
+                "is reported as skipped, and `_pages_of` asks for `PAGE_SIZE` records flat, "
+                "so no `limit` and no `since_number` reaches it",
             ),
             (
                 "does not say `the cap the summary above names`",
@@ -190,7 +223,7 @@ def test_the_limit_cure_covers_the_caps_no_run_parameter_can_move() -> None:
     ]
 
     assert not broken, (
-        "`REMEDIES[LIMIT_EXCEEDED]` is the only cure both cause families get, and it fails "
+        "`REMEDIES[LIMIT_EXCEEDED]` is the only cure either landing place gets, and it fails "
         + f"{len(broken)} of its predicates:\n"
         + "\n".join(f"  - {label}: {why}" for label, why in broken)
         + f"\n\nthe text it publishes is:\n  {cure!r}"
