@@ -698,33 +698,48 @@ def test_the_fallback_cure_names_init_only_for_paths_that_init_creates() -> None
 
     **What this sweeps is one of the cure's publication sites, and the rest are
     argued rather than swept.** Round one found the closure prose silent about
-    them. The sites, keyed (2026-09-13), with the match text cut so the paste fits::
+    them; round two found the paste that answered it keyed on *positions*, and
+    every one of them ``+4`` stale by the end of the same branch -- later commits
+    added docstring lines above them. So the key prints how many and where, and
+    which site is which is argued by name::
 
-        $ git grep -nE '(return |= ?)KNOWLEDGE_DIR_ESCAPE_REMEDY' \\
-              -- packages/theurian-core/src | cut -d: -f1,2
-        packages/theurian-core/src/theurian/application/project_service.py:1407
-        packages/theurian-core/src/theurian/application/project_service.py:1636
-        packages/theurian-core/src/theurian/application/project_service.py:1675
-        packages/theurian-core/src/theurian/application/project_service.py:2165
-        packages/theurian-core/src/theurian/application/project_service.py:2171
-        packages/theurian-core/src/theurian/mcp/tools.py:398
+        $ git grep -cE '(return |= ?)KNOWLEDGE_DIR_ESCAPE_REMEDY' \\
+              -- packages/theurian-core/src
+        packages/theurian-core/src/theurian/application/project_service.py:5
+        packages/theurian-core/src/theurian/mcp/tools.py:1
 
-    The last is another module's prose about the same constant rather than a site.
-    1636 and 1675 are ``_escape_remedy``'s two ``return`` arms: 1675 is the
-    fallback this test's population reaches, and 1636 is the contract guarantee no
-    helper builds a path for, which its own ``pragma: no cover`` records. Neither
-    of the remaining two groups can reopen the class:
+    The one outside ``application/`` is another module's prose about the same
+    constant rather than a site. The five split by the spelling each uses, which
+    the same population prints with the positions dropped instead of the names::
 
-    * 1407 is ``_contain``'s default remedy, and what takes it is
+        $ git grep -hE '(return |= ?)KNOWLEDGE_DIR_ESCAPE_REMEDY' \\
+              -- packages/theurian-core/src
+        def _contain(root: Path, path: Path, *, remedy: str = KNOWLEDGE_DIR_ESCAPE_REMEDY) -> Path:
+                    return KNOWLEDGE_DIR_ESCAPE_REMEDY
+                    return KNOWLEDGE_DIR_ESCAPE_REMEDY
+                        remedy=KNOWLEDGE_DIR_ESCAPE_REMEDY,
+                        remedy=KNOWLEDGE_DIR_ESCAPE_REMEDY,
+        #: printed five lines -- two ``return KNOWLEDGE_DIR_ESCAPE_REMEDY`` and one each for
+
+    The two bare ``return`` lines are :meth:`ProjectPaths._escape_remedy`'s two
+    arms, told apart by the condition each sits under rather than by where it
+    sits: the ``not path.is_relative_to(self.knowledge_dir)`` arm is the contract
+    guarantee no helper builds a path for, which its own ``pragma: no cover``
+    records, and the ``not under_a_derived_subdirectory`` arm is the fallback this
+    test's population reaches. Neither of the remaining two groups can reopen the
+    class:
+
+    * the signature default is ``_contain``'s, and what takes it is
       ``initialize_project``'s two calls -- so the reader of that cure is being
       told to run the command that is already running. Every path it contains is
       an ``INITIAL_DIRECTORIES`` entry it is about to ``mkdir(parents=True)``, or
       the ``.gitkeep`` it touches inside one of ``migrations``,
       ``specifications`` and ``proposals``, which are entries too. The middle
       clause is true by construction there, not by classification.
-    * 2165 and 2171 are ``ProjectPaths.of``'s two raises, and their subject is the
-      knowledge directory *itself* -- which is what this cure is written about,
-      and which ``init`` creates as the parent of every entry in that tuple.
+    * the two ``remedy=`` keywords are :meth:`ProjectPaths.of`'s two raises, and
+      their subject is the knowledge directory *itself* -- which is what this cure
+      is written about, and which ``init`` creates as the parent of every entry in
+      that tuple.
 
     So a third face of the class can only arrive through the arm this test
     classifies, which is the arm it classifies exhaustively.
