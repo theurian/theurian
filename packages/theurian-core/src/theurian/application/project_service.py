@@ -638,11 +638,11 @@ def config_escape_remedy(knowledge_directory_name: str) -> str:
     any form, which is why it can be recorded here.
 
     **Relative names only, enforced in the cure rather than at the seam**
-    (GHSA-97q9), for the reason :func:`review_escape_remedy` records at length: a
-    ``ProjectError``'s remedy crosses the MCP boundary unmodified -- ``_with_remedy``
-    replaces the *message* with ``PATH_ESCAPE_REFUSAL`` and republishes the
-    *remedy* -- and that fold is generic over the exception rather than over which
-    helper raised. This interpolates the knowledge directory's *basename* and
+    (GHSA-97q9-xxfg-33r6), for the reason :func:`review_escape_remedy` records
+    at length: a ``ProjectError``'s remedy crosses the MCP boundary unmodified
+    -- ``_with_remedy`` replaces the *message* with ``PATH_ESCAPE_REFUSAL`` and
+    republishes the *remedy* -- and that fold is generic over the exception
+    rather than over which helper raised. This interpolates the knowledge directory's *basename* and
     :data:`~theurian.security.project_config.PROJECT_CONFIG_FILE`, and nothing that
     came out of a ``resolve()``. No registered tool resolves
     :attr:`ProjectPaths.config` today: ``git grep -nE
