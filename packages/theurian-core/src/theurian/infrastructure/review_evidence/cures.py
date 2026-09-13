@@ -11,7 +11,7 @@ can be stated once for the module instead of per site.
 **Every path is named relative to the review directory, never absolutely.** A
 remedy is text a caller may paste and quote elsewhere -- into an issue, into a
 chat with a colleague -- and an absolute one carries the machine's home
-directory with it (GHSA-97q9 is the same class one surface over). The caller
+directory with it (GHSA-923w-f36f-jcfq is the same class one surface over). The caller
 holds the absolute path and deliberately does not pass it.
 
 **No cure here offers to delete a landed record.** Review evidence is the source

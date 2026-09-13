@@ -485,7 +485,7 @@ def _the_state_database(paths: ProjectPaths, active: ActiveState, *, as_json: bo
     The CLI's half of the containment `mcp/tools._resolve` gained one round
     earlier. Absolute paths are fine in what this publishes -- a terminal is
     where they belong, and every sibling refusal here prints one; the rule that
-    keeps them out is the *MCP* one (GHSA-97q9).
+    keeps them out is the *MCP* one (GHSA-923w-f36f-jcfq).
 
     ``ProjectPathEscapeError`` keeps #525's grading, because a filename that
     leaves the *working tree* is the doctored-clone condition that class owns. A

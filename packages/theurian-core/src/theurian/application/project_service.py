@@ -133,7 +133,7 @@ UNBUILT_STATE_REMEDY: Final = (
 #: What :func:`verify_state_provenance` refuses with. Interpolates nothing.
 #:
 #: **The path this used to name was the operator's resolved filesystem layout**
-#: (GHSA-97q9). It read ``f"The derived knowledge state under {paths.state} ..."``,
+#: (GHSA-923w-f36f-jcfq). It read ``f"The derived knowledge state under {paths.state} ..."``,
 #: and :attr:`ProjectPaths.state` is built from a *resolved* root -- so for a
 #: project registered through a symbolic link it named the physical directory
 #: behind ``rootPath``, which is a string ``project.list`` does not hand out: that
@@ -556,7 +556,7 @@ def review_escape_remedy(knowledge_directory_name: str) -> str:
     discipline therefore lives here, where a later tool inherits it,
     rather than in a seam a later tool would bypass: this interpolates the
     knowledge directory's *basename* and this module's own literal, and nothing
-    that came out of a ``resolve()`` (GHSA-97q9).
+    that came out of a ``resolve()`` (GHSA-923w-f36f-jcfq).
     """
     path = f"{knowledge_directory_name}/{_REVIEW_SUBDIRECTORY}"
     return (
@@ -1841,7 +1841,7 @@ class ProjectPaths:
             ) from exc
         if not contained:
             # **Layout-free by construction, which is why the boundary above this
-            # needs no fold for it** (GHSA-97q9, and the closed loop that fold
+            # needs no fold for it** (GHSA-923w-f36f-jcfq, and the closed loop that fold
             # cost: verdict pass, adversarial HIGH). This message used to end
             # *"resolves outside {state}"* -- the resolved `.theurian/state`, and
             # for a project registered through a symbolic link the physical
@@ -2356,7 +2356,7 @@ def _under_the_project(path: Path, root: Path) -> str:
     """``path`` written relative to ``root``, or its bare name if it is not under it.
 
     For messages that reach an MCP client, where an absolute path is the
-    operator's machine layout and not the reader's business (GHSA-97q9). The
+    operator's machine layout and not the reader's business (GHSA-923w-f36f-jcfq). The
     fallback is the leaf rather than the absolute path: a path outside the root
     has its own refusal with its own wording, and this helper is not the place to
     decide that a caller reached it by mistake.
@@ -2462,7 +2462,7 @@ def read_active_state(paths: ProjectPaths) -> ActiveState | None:
         # it through `_with_remedy` -- and both halves used to carry the
         # operator's absolute path: `{pointer}` directly, and `{exc}`, because an
         # `OSError`'s `str` appends the filename its `strerror` leaves out. The
-        # rule the diff around this states three times (GHSA-97q9) is that a
+        # rule the diff around this states three times (GHSA-923w-f36f-jcfq) is that a
         # reply keeps them out; the relative path names the same file and reads
         # the same to whoever has the checkout.
         where = _under_the_project(pointer, paths.root)
@@ -2542,7 +2542,7 @@ def read_active_index_pointer(paths: ProjectPaths) -> ActiveIndexPointer:
     at its own consumer: :func:`~theurian.mcp.search._published_index` converts
     it to ``pointer-invalid`` there, because a tool caller is not the reader who
     owns the checkout and the paths inside the message are the operator's
-    layout (GHSA-97q9).
+    layout (GHSA-923w-f36f-jcfq).
 
     ``indexBuildId`` is required, not merely read. A pointer without one names no
     build, so it is not a usable pointer; accepting it built a path out of an
