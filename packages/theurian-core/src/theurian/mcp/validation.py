@@ -114,11 +114,33 @@ MAX_PARAMS_NESTING: Final = 32
 MAX_PARAMS_NODES: Final = 100_000
 
 #: How many characters of rendered scalar content a request's arguments may hold
-#: in total. Sized *above* ``security/paths.py``'s 8 MiB
-#: ``MAX_SOURCE_FILE_BYTES`` so a write-intent ``body`` at the cap ADR-0032
-#: decision 3 assigns it is not refused here for being the size its own schema
-#: permits: a bound that rejects what the published contract admits is the
-#: failure ADR-0031 decision 1's table exists to prevent.
+#: in total. **It is not the ceiling a request actually meets over this
+#: transport.** ``build_app`` calls ``streamable_http_app`` without
+#: ``max_request_body_size`` (``daemon/server.py``), so the SDK's own
+#: ``DEFAULT_MAX_REQUEST_BODY_SIZE`` -- 4 MiB,
+#: ``mcp/server/transport_security.py``, measured 2026-09-13 against
+#: ``mcp==2.1.1`` -- is the effective bound: ``RequestBodyLimitMiddleware``
+#: answers ``413 Request body too large`` at a third of this constant, before any
+#: MCP framing exists. So this bound is unreachable over the shipped transport in
+#: the default configuration, and what it defends is a composition that raises or
+#: removes that transport cap -- an explicit ``max_request_body_size``, another
+#: transport, or a seat that reaches this module with no HTTP tier in front of it
+#: -- where this seam's bounded refusal is what a caller gets instead of a bare
+#: ``413`` that names no tool and carries no remedy.
+#:
+#: An earlier rationale here sized the bound *above* ``security/paths.py``'s 8 MiB
+#: ``MAX_SOURCE_FILE_BYTES`` so that a write-intent ``body`` at the cap ADR-0032
+#: decision 3 assigns it would not be refused at this seam. Measurement falsified
+#: that: such a body is refused one tier up and never reaches MCP framing at all,
+#: so the sizing bought nothing it claimed to buy. Reconciling the two caps is
+#: owed by **#669**, at the slice that opens the write surface; the value here is
+#: that issue's decision to make, not this constant's to pre-empt.
+#:
+#: ``tests/integration/test_input_validation_dispatch.py``'s
+#: ``test_the_rendered_character_bound_sits_above_what_the_transport_will_carry``
+#: pins the live relationship from both constants and drives the ``413`` from a
+#: real POST, so it goes RED if either cap moves and the gap cannot widen
+#: unnoticed while #669 waits.
 #:
 #: It is *not* the same guard ``migration_loader``'s ``MAX_DOCUMENT_RENDERED_CHARS``
 #: is. There, a YAML anchor aliased N deep expands a 500-byte file into millions

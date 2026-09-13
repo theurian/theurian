@@ -1743,6 +1743,19 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         # slice and the re-encode is not; both happen before searching rather
         # than only on the way out, so `query` in the response is the string
         # that was actually searched for.
+        #
+        # The truncation half of that line is no longer reachable over the wire.
+        # `schemas/mcp/knowledge-search-input.schema.json` publishes
+        # `maxLength: 2000` -- the same bound as `MAX_QUERY_CHARS` -- so SEC-12's
+        # middleware refuses an over-long `query` with a remedy before this
+        # handler is entered (ADR-0031 decision 2), which is the decided
+        # behaviour: a truncated search answers a question the caller did not
+        # ask. The slice stays as the below-surface backstop and is **not** dead
+        # code to delete: `validation.py` is deliberately SDK-free, the seat that
+        # applies it is a tier this function neither imports nor can assert ran,
+        # and a caller reaching this function with no such tier in front of it --
+        # a direct call, another seat, a future transport -- still meets the
+        # bound here. Defense in depth, deliberately not live.
         searched = query[:MAX_QUERY_CHARS].encode("utf-8", "replace").decode("utf-8")
         if not searched.strip():
             msg = "query must not be empty"
