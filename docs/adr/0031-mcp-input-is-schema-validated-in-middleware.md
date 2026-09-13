@@ -1,6 +1,6 @@
 # ADR-0031: MCP tool input is validated against its published schema, in middleware, before any handler runs
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-09-12
 - Deciders: Theurian maintainers
 - Requirements: SEC-12, SEC-13, SEC-17, T-12
@@ -11,10 +11,16 @@
   not patched), and [ADR-0032](0032-the-write-intent-mcp-tool-surface.md) (the
   surface this control is a precondition for)
 
-**This ADR records a decision and ships no code.** No schema file, no
-middleware, no registration change and no test lands with it; the diff is
-confined to `docs/`. What each implementation slice owes is named in
-*Compliance*.
+**This ADR recorded a decision and shipped no code**: no schema file, no
+middleware, no registration change and no test landed with it, and its own diff
+was confined to `docs/`. **The decision is implemented as of Phase B slice B2**
+([#662](https://github.com/theurian/theurian/issues/662),
+[PR #663](https://github.com/theurian/theurian/pull/663)), which is why the
+status above is `accepted`. *Compliance* names what that slice discharged, with
+the test that discharges it, and what stays owed and to whom. Nothing above
+*Compliance* is rewritten: the measurements below are dated and anchored to a
+commit, and re-writing them to today's tree would delete the evidence the
+decision rests on.
 
 **Every repository fact below was measured on 2026-09-12 against `be977ea7`**,
 which is the commit this document was written at and is reachable from
@@ -475,14 +481,17 @@ the caller may not read. That split is what stops decision 6 from being read as
 
 ## Compliance
 
-**This ADR ships no behaviour, so it has no shipped test to name.** Its
-enforcement at design time is the measurements it cites; its enforcement at
-implementation time is the tests slice B2 owes. The names below are the
-properties an implementation must pin, not files that exist today — the same
-honest split [ADR-0030](0030-github-review-ingestion-spawns-gh.md) states for
-the same reason.
+**This ADR shipped no behaviour, so at the time it was written it had no shipped
+test to name.** Its enforcement at design time is the measurements it cites; its
+enforcement at implementation time is the tests slice B2 owed and has now
+delivered. The two halves are kept apart below rather than merged: what B2
+landed is named with the test that holds it, and what is still owed keeps the
+house *Still owed* heading and names the slice or the issue that will satisfy it.
 
-Measured now, and reproducible from this ADR (2026-09-12, `be977ea7`):
+Measured at `be977ea7` on 2026-09-12 — the state this decision was taken
+against, reproducible from that sha and **deliberately not re-measured**, since
+slice B2 moved most of them and re-writing them to today's tree would delete the
+evidence the decision rests on:
 
 - `schemas/mcp/` holds **8** files (`ls schemas/mcp/`): seven response or
   response-fragment schemas and one input-side contract,
@@ -527,88 +536,161 @@ Measured now, and reproducible from this ADR (2026-09-12, `be977ea7`):
   `jsonschema==4.26.0` and `referencing==0.37.0`
   (`packages/theurian-core/pyproject.toml`).
 
+Landed in Phase B slice B2
+([PR #663](https://github.com/theurian/theurian/pull/663)), each item with the
+test that discharges it:
+
+- **One published input schema per registered tool**, and the population is
+  derived rather than listed.
+  `tests/integration/test_input_validation_dispatch.py::test_every_registered_tool_resolves_to_a_published_input_schema`
+  walks the **built** server's tool manager and asserts set equality in *both*
+  directions — a registered tool with no loaded schema fails, and so does a
+  schema published for a tool this build no longer registers, which would be a
+  wire contract naming a call that answers "no such tool" (`PROCESS_SPAWN_SITES`'
+  rule). `::test_every_published_schema_names_the_file_it_came_from` holds the
+  origin map beside it, so a failure says which file.
+- **The fail-closed dispatch refusal (decision 5).**
+  `::test_a_tool_with_no_published_schema_is_refused_at_dispatch` registers a
+  tool through `_tool` with no published schema on a real built server and drives
+  a real `tools/call` at it. The assertion is that the **handler did not run** —
+  a sentinel list the body appends to stays empty — because a refusal assertion
+  alone passes against a build that refuses *after* dispatching, and a guard no
+  data reaches survives its own deletion.
+  `::test_an_ordinary_tool_is_still_served_on_that_same_server` is the positive
+  control the decision asked for, and
+  `::test_the_unpublished_tool_name_is_one_no_build_artifact_claims` pins the
+  premise that the name is one nothing else registers or publishes.
+- **Each per-tool schema's `unevaluatedProperties: false` is enforced on the
+  wire, and against the SDK's own drop.**
+  `tests/integration/test_input_validation_wire.py::test_an_unknown_key_is_refused_and_the_refusal_names_the_key_not_the_value`
+  drives a real `tools/call` — initialize, the session id,
+  `notifications/initialized` — because `server.call_tool` is the SDK's tool
+  dispatcher and never reaches this tier.
+  `::test_the_same_call_is_served_when_the_middleware_is_lifted_off` is the
+  second half this ADR required, the one that makes the seat load-bearing rather
+  than stylistic: with this one middleware removed, the same call carrying an
+  unknown key is served at `isError: false` and answers byte-identically with the
+  key and without it.
+  `::test_a_valid_call_is_served_unchanged_through_the_middleware` is the served
+  control, and `::test_a_refusal_carries_the_shape_a_handler_refusal_carries`
+  holds that a caller cannot tell which tier refused it from the shape of the
+  answer.
+- **Refusal messages are bounded and do not echo unbounded caller input
+  (decision 4).** `tests/unit/test_input_validation.py` drives a
+  ten-thousand-character unknown key and a ten-thousand-character tool name to
+  short messages; `::test_a_refused_value_is_never_echoed_back` and the two
+  control-character arms hold that no caller-written value reaches a message raw;
+  and `::test_a_refusal_past_the_ceiling_cannot_be_built` with
+  `::test_every_refusal_template_fits_the_ceiling` recompute the ceiling from the
+  live templates and the fragment cap, so a builder that grows a new unbounded
+  fragment raises at construction instead of shipping an amplifier. Over the
+  wire, `test_input_validation_dispatch.py::test_the_widest_body_this_transport_admits_is_refused_without_echoing_it`.
+- **The published schema and the SDK-derived schema agree (decision 6).**
+  `tests/integration/test_input_schema_agreement.py` states the relation in its
+  module docstring, with the exclusions this ADR required it to name: the closure
+  axis — **recomputed** by `::test_no_derived_schema_carries_a_closure_keyword`
+  rather than cited from the measurement above — value-domain tightening, and
+  `snapshotId`/`agentId`/`taskId`, which the shared context publishes and no
+  handler reads. `::test_no_published_type_admits_what_the_handler_refuses`,
+  `::test_the_published_and_derived_schemas_agree_about_what_is_required` and
+  `::test_the_published_schema_names_no_key_the_handler_has_no_parameter_for`
+  are the direction the decision said must be caught, and both positive controls
+  were driven: dropping `itemId` from `knowledge-get-input.schema.json`'s
+  `required` reddens the requiredness arm in this ADR's own words, and giving
+  `project_list` an unpublished parameter reddens the other direction.
+  `::test_the_parametrization_covers_the_tools_the_fixture_serves` pins the
+  premise that the parametrization covers the registered set.
+- **Every published input-side `maxLength` is the live constant it transcribes.**
+  Not an item this ADR foresaw, and a member of decision 6's class rather than a
+  new one: a hand-transcribed bound drifts from the module it was copied from, in
+  whichever direction nothing checks — above the constant it publishes a value
+  the handler refuses, below it it refuses at the wire what the handler would
+  have served. `tests/unit/test_input_schema_bounds.py` maps each bound to the
+  constant *and* to the code that enforces it, because two bounds can be equal by
+  coincidence, and asserts the **population** by equality so a new unpinned bound
+  fails.
+- **The bounds on an untrusted document are applied at this boundary too.**
+  `tests/unit/test_input_validation.py` drives each of `MAX_PARAMS_NESTING`,
+  `MAX_PARAMS_NODES` and `MAX_PARAMS_RENDERED_CHARS` against a synthetic schema
+  set, with `::test_the_nesting_fixture_reaches_the_depth_it_claims` pinning the
+  fixture's own arithmetic, and `test_input_validation_dispatch.py` drives the
+  nesting and node bounds through a real inbound `tools/call` with an
+  at-the-bound positive control beside each. The rendered-character bound is the
+  one that **cannot** be driven over this transport, which is recorded below
+  rather than quietly skipped.
+- **`tool-context.schema.json` gained a reader, and the record that said it
+  should not have one moved with it.** `mcp/validation.py`'s loader reads it
+  through every per-tool schema's `$ref`, and the middleware applies it on every
+  project-scoped call. `schemas/README.md`'s row now names that reader, names the
+  five-test population by the collection **command** rather than by a list, and
+  says which one of the five moved.
+- **The closure pin moved with the closure, and was rewritten rather than
+  deleted.**
+  `tests/unit/test_schemas.py::test_object_schemas_reject_unknown_properties`
+  now holds one claim in three arms — `additionalProperties: false` on a response
+  schema, `unevaluatedProperties: false` on an input schema, and
+  `tool-context.schema.json` as the tree's one recorded exception, whose arm
+  asserts that the delegation is *real*: that referrers exist at all, and that
+  every one of them carries the keyword. The vacuity control was driven by moving
+  the referent's `$id` so nothing referenced it.
+- **The records that said SEC-12 does not run were rewritten in the commit that
+  made them false** — `docs/security/threat-model.md`'s T-11 entry,
+  `docs/roadmap.md`'s SEC-12 requirement row and its Phase B rows, and
+  `schemas/README.md`'s row. **Two more than this ADR listed**, both found while
+  writing them. T-11's *Controls* paragraph itself asserted that `projectId` "is
+  *not* validated by a JSON schema at the MCP boundary — there is no such
+  validation, `jsonschema` is imported only by the migration loader", which the
+  middleware falsifies on both clauses. And `docs/protocol/mcp-tools.md` — the
+  wire contract a client author reads — described no input validation at all;
+  it now publishes the per-tool schema table, the refusal semantics and the three
+  caller-observable behaviour changes. Whether any of these rewrites is
+  *faithful* is a reading and no mechanical check reaches it, which is said here,
+  as it was before, rather than left to be inferred.
+
 Still owed, with the milestone that will satisfy it:
 
-- **Slice B2 — one published input schema per registered tool.** The owed
-  property is a *derived* population, not a listed one: a test enumerates the
-  **built** server's registered tools and asserts each resolves to a loaded
-  schema, so a tool added later joins the sweep by existing. The shape to
-  follow is
-  `tests/integration/test_mcp_tools.py::test_no_registered_tool_can_reach_a_canonical_write`,
-  which walks the built object graph rather than a directory of source files.
-- **Slice B2 — the fail-closed dispatch refusal (decision 5).** Owed a driving
-  test that registers a tool with no schema and asserts the call is refused,
-  with a positive control that an ordinary tool with its schema is served — a
-  refusal test with no served counterpart passes for a server that refuses
-  everything.
-- **Slice B2 — each per-tool schema's `unevaluatedProperties: false` is
-  enforced on the wire, not in the handler.** The keyword is decision 1's, not
-  `additionalProperties`, which that decision's table measured as rejecting the
-  valid document under either arrangement of the referent. Owed a test driven
-  through a real `tools/call` carrying an unknown key, asserting the refusal —
-  and asserting it against the *SDK's own drop*, which is what makes the
-  middleware seat load-bearing rather than stylistic. Without that second half
-  the test would pass on a build whose handler merely ignored the key, which is
-  today's behaviour.
-- **Slice B2 — the per-tool schemas carry the value-domain constraints
+- **The per-tool schemas carry the value-domain constraints
   [ADR-0032](0032-the-write-intent-mcp-tool-surface.md) decision 3's table
-  assigns them**: an explicit `maxLength` on `body`, the wire equivalent of the
-  `MAX_SOURCE_FILE_BYTES` cap that `_read_body` applies to a body *file* and
-  that nothing applies on a path with no file, and `uniqueItems` on `labels[]`,
-  which the migration schema already requires and the CLI's `_merge_labels`
-  currently satisfies by deduplicating. The driving cases are owed at slice B4
-  and named there; the schemas that make them possible are owed here.
-- **Slice B2 — refusal messages are bounded and do not echo unbounded caller
-  input (decision 4).** Owed a test that a key or value past the recorded bound
-  is reported by length or by key path and never reproduced, in the shape
-  `mcp/tools.py`'s `MAX_PROJECT_ID_CHARS` echo-bounding already uses.
-- **Slice B2 — the published schema and the SDK-derived schema agree
-  (decision 6).** Owed a test that recomputes the agreement from both live
-  sides, plus the control that proves it can fail. The equivalence relation is
-  stated in the test module's docstring, because a relation nobody wrote down is
-  one a later contributor will loosen to make a failure go away — and the
-  statement has to name what it **excludes**: the closure axis, which the
-  derived schema never carries (7 of 7 absent, measured), and value-domain
-  tightening, which is the published schema's purpose. What it must catch is a
-  published schema **permitting** what the handler refuses, and its positive
-  control is exactly that mutation.
-- **Slice B2 — the bounds on an untrusted document are applied at this boundary
-  too.** `validate_migration_document`'s nesting, node and rendered-character
-  caps exist because unbounded documents cost unbounded work in `jsonschema`'s
-  message building (#291, #245). Owed a test that the MCP boundary refuses a
-  document past each bound rather than paying for it.
-- **Slice B2 — `tool-context.schema.json` gains a reader, and the record that
-  says it should not have one moves with it.** `schemas/README.md`'s row reads
-  "nothing, and nothing should: it describes tool *input*, so there is no
-  response to compare", which is true of a *response* check and false of this
-  one. Owed: the row rewritten to name what now reads the schema, in the same
-  commit — and to stop naming **one** test where **five** hold properties of the
-  file. The honest form is the *command*, not a list, because four of the five
-  arrive by parametrization and a sixth would join the same way:
-
-  ```console
-  $ uv run --frozen python -m pytest .../test_schemas.py --collect-only -q \
-      | grep -i "tool.context"
-  ```
-
-  plus `::test_project_id_is_required_on_every_tool_call`, which loads the path
-  as a literal at `test_schemas.py:294` and therefore appears in no node id.
-  `::test_object_schemas_reject_unknown_properties[tool-context.schema.json]` is
-  the one of the five that decision 1's composition moves; the row must say
-  which, or a reader takes "five tests" as five things to rewrite.
-- **Slice B2 — the closure pin moves with the closure, and is rewritten rather
-  than deleted.** Moving `additionalProperties: false` off
-  `tool-context.schema.json` takes
-  `tests/unit/test_schemas.py::test_object_schemas_reject_unknown_properties[tool-context.schema.json]`
-  RED. Owed: that test rewritten so it still holds a closure claim over the
-  context fields — asserting that every per-tool schema referencing the context
-  sets `unevaluatedProperties: false` — with the control that a per-tool schema
-  missing it is caught. A pin deleted because a keyword moved is a pin deleted.
-- **Slice B2 — the three records that say SEC-12 does not run are rewritten in
-  the commit that makes them false**: `docs/security/threat-model.md`'s *Future
-  controls, not shipped* entry, `docs/roadmap.md`'s SEC-12 requirement row
-  (`nothing` / `the whole control`), and the `schemas/README.md` row above. Not
-  a later documentation pass — an on-main claim must not call a control
-  unimplemented while it runs. Whether the rewrite is *faithful* is a reading
-  and no mechanical check reaches it, which is said here rather than left to be
-  inferred.
+  assigns them** — an explicit `maxLength` on `body`, the wire equivalent of the
+  `MAX_SOURCE_FILE_BYTES` cap that `_read_body` applies to a body *file* and that
+  nothing applies on a path with no file, and `uniqueItems` on `labels[]`. B2
+  published one schema for each of the **seven** tools this build registers
+  (`grep -c '@_tool(' packages/theurian-core/src/theurian/mcp/tools.py` → 7,
+  `ls schemas/mcp/*-input.schema.json | wc -l` → 7, 2026-09-13), and not one of
+  them takes a `body` or a `labels[]`: those fields arrive with the write-intent
+  tools, so the constraints and their driving cases are both owed at **slice
+  B4**. What B2 owed here and delivered is the mechanism that will carry them,
+  and the sweep that refuses a write-intent tool registered without a published
+  schema at all.
+- **`MAX_PARAMS_RENDERED_CHARS` is unreachable over this transport, and the two
+  caps are unreconciled** —
+  [#669](https://github.com/theurian/theurian/issues/669), at slice B4.
+  `daemon/server.py` calls `streamable_http_app` without `max_request_body_size`,
+  so the SDK's 4 MiB `DEFAULT_MAX_REQUEST_BODY_SIZE` answers `413` before any MCP
+  framing exists, and the wire case for that axis is the widest body the
+  transport admits instead.
+  `test_input_validation_dispatch.py::test_the_rendered_character_bound_sits_above_what_the_transport_will_carry`
+  pins the relationship from both live constants and drives the `413`, so the gap
+  cannot widen unnoticed while that issue waits.
+- **`snapshotId`, `agentId` and `taskId` are published, now enforced, and read by
+  nothing** — [#665](https://github.com/theurian/theurian/issues/665), Phase B.
+  They are decision 6's third exclusion, and the exclusion is held *equal* to the
+  published-but-underived population by
+  `test_input_schema_agreement.py::test_the_excluded_context_keys_are_still_the_unread_three`,
+  so a fourth such key cannot join it by being excluded and the file goes RED
+  whichever way #665 decides. A recorded deferral, not an acceptance.
+- **The `protocolVersion` treatment of the three caller-observable refusals.**
+  *Consequences → Negative* already records that refusing unknown keys is a
+  compatibility decision; what is recorded nowhere is whether it bumps
+  `theurian/v1`. `docs/protocol/mcp-tools.md`'s *Changing this contract* section
+  now carries the question and the evidence it would take to settle it — the
+  section's five existing exemptions each rest on a search-verified consumer
+  census, and none has been taken for these three. The decision falls due with
+  the release that ships SEC-12.
+- **`_meta.serverInfo` is absent from a refusal this tier answers.**
+  `ServerRunner._serialize` stamps it on a modern-era result from server state no
+  middleware is handed, so a refusal from this seat reaches a `2026-07-28` client
+  without it. Recorded on `mcp/middleware.py`'s module docstring rather than
+  discovered later; nothing about the refusal changes, and a client learns the
+  server's identity from the handshake. Owed a fix only if a client is found that
+  reads it.

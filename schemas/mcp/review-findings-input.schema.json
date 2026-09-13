@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theurian.dev/schemas/mcp/review-findings-input.schema.json",
+  "title": "Input to the `review.findings` MCP tool",
+  "x-theurian-tool": "review.findings",
+  "description": "What a caller may send to `review.findings`. SEC-12 validates every call against this file before it reaches application code, in the MCP server middleware (ADR-0031 decision 2).\n\n**Unknown keys are refused rather than dropped.** The SDK sets no `extra=\"forbid\"` on the argument model it derives from the handler, so a key it does not recognise is discarded before any Theurian code runs, and a filtered question answered without one of its filters reads as the whole answer (ADR-0031 decision 4). On a filtering tool that is the same defect its own `limit` refuses rather than clamps to avoid.\n\n**Composition.** The context — `projectId`, and the optional `snapshotId`, `agentId` and `taskId` — arrives by `$ref` to `tool-context.schema.json`. The closure is `unevaluatedProperties: false` and not `additionalProperties: false`, which under a `$ref` composition rejects the very context fields it referenced (ADR-0031 decision 1, measured against `jsonschema` 4.26.0). `projectId` is required by the referent and is not repeated here. `snapshotId`, `agentId` and `taskId` are accepted and read by no handler in this build.\n\n**The vocabularies are deliberately not published here as `enum`s.** `reviewer` and `severity` are drawn from closed sets, and `theurian.mcp.findings` records why the rejection stays there: its refusal names every token in the vocabulary, reports an over-long value by its length rather than quoting it, and ends with the omit-the-filter remedy. An `enum` in this file would answer \"does not satisfy\" in place of all three. The vocabularies are published where a client can read them — `review-findings-response.schema.json` and `docs/protocol/mcp-tools.md` — rather than where a refusal would be worsened by them.\n\nWhat this file does hold is shape and length: the axes a boundary check can state completely, and the ones that bound the work an untrusted request can ask for before anything is read.",
+  "type": "object",
+  "allOf": [{ "$ref": "https://theurian.dev/schemas/mcp/tool-context.schema.json" }],
+  "unevaluatedProperties": false,
+  "properties": {
+    "reviewer": {
+      "type": ["string", "null"],
+      "maxLength": 200,
+      "description": "Which reviewer's findings to read, as the `Review-Finding:` trailer spells it. One of a closed set of governed tokens; the handler names them all when it refuses, and the historical alias the parser normalises is not accepted as a query (ADR-0029 Amendment 1).\n\nAt most 200 characters, the bound every findings filter shares: the longest real value on the other side of these predicates is a 64-character commit sha, so the bound exists to stop a refusal quoting the caller's own bytes back at it rather than to describe the data (#17)."
+    },
+    "severity": {
+      "type": ["string", "null"],
+      "maxLength": 200,
+      "description": "Which severity to read, as the trailer writes it — upper case, from a closed set of four. The handler names all four when it refuses. Bounded at 200 characters for the reason `reviewer` records."
+    },
+    "family": {
+      "type": ["string", "null"],
+      "maxLength": 200,
+      "description": "Which finding family to read. **Refused rather than matched in this build**: no source `theurian findings build` reads derives a family, so every row's column is `null` and a filter on it answered `count: 0` for every value — an absence a caller reads as \"nothing was recorded\" (ADR-0029 D5). The refusal is one build constant, and it is a handler refusal rather than a schema one because a field withdrawn from the contract could not come back without a wire break, while a field that refuses can start working."
+    },
+    "specialist": {
+      "type": ["string", "null"],
+      "maxLength": 200,
+      "description": "Which specialist's findings to read. Refused rather than matched in this build, for the reason `family` records, and published for the same one."
+    },
+    "commitSha": {
+      "type": ["string", "null"],
+      "maxLength": 200,
+      "description": "Which commit's findings to read: a full sha, 40 or 64 lower-case hex characters, as `git log --format=%H` prints it.\n\nNo published `pattern`. A short sha would match no row, and the handler refuses it with that sentence — a schema pattern would answer \"does not satisfy\" instead, and an empty answer read as \"no findings on that commit\" is exactly what the refusal exists to prevent."
+    },
+    "pullRequest": {
+      "type": ["integer", "null"],
+      "description": "Which pull request's findings to read. Refused rather than matched in this build, for the reason `family` records.\n\nNo published `minimum` or `maximum`, although the column behind it is a signed 64-bit integer and the handler refuses anything outside it. That bound is checked before the inert-axis refusal fires, deliberately: a number the column cannot hold has a different thing wrong with it than an axis nothing derives, and it is the one a caller could act on if the axis is ever derived. A range here would leave that guard reachable by no request."
+    },
+    "q": {
+      "type": ["string", "null"],
+      "maxLength": 200,
+      "description": "Free text to match against the finding line. Bounded at 200 characters for the reason `reviewer` records; an empty string is refused by the handler, because it matches nothing rather than everything."
+    },
+    "limit": {
+      "type": "integer",
+      "description": "How many findings to return. Defaults to 20, and the ceiling is a **refusal** rather than a clamp: this tool answers a filtered question with no paging, so a silently truncated page reads as \"these are the findings matching my filter\" when it is not (`theurian.mcp.findings.MAX_FINDINGS_LIMIT`). A page that does end early says so, through the response's `truncated`.\n\nNo published `minimum` or `maximum`: the handler's refusal names both ends and says why it is not a clamp, and a range here would answer \"does not satisfy\" in its place. `knowledge.search` clamps instead, and its own schema records why the two differ."
+    }
+  }
+}

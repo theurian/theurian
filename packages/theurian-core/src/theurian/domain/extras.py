@@ -40,7 +40,13 @@ DAEMON_EXTRA: Final = "daemon"
 #: ``tests/unit/test_daemon_extra.py::test_every_third_party_import_of_the_daemon_is_named_here``,
 #: which walks the two packages rather than trusting this list -- adding an
 #: import to ``daemon/server.py`` is exactly how a user gets the raw traceback
-#: back.
+#: back. That walk subtracts the **core** requirements before comparing, because
+#: the two packages import some of those too: ``mcp/validation.py`` reads the
+#: published input schemas with ``jsonschema`` and ``referencing`` (SEC-12,
+#: ADR-0031), and a bare install already has both. Naming them here would answer
+#: a corrupt *core* install with "install the daemon extra" -- a remedy the user
+#: can follow to completion and stay broken, which is the failure
+#: :data:`DAEMON_EXTRA_REMEDY` exists to avoid.
 DAEMON_MODULES: Final = ("mcp", "starlette", "uvicorn")
 
 #: What a user with no Theurian at all runs. Both choose a Python Core supports

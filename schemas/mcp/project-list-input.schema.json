@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theurian.dev/schemas/mcp/project-list-input.schema.json",
+  "title": "Input to the `project.list` MCP tool",
+  "x-theurian-tool": "project.list",
+  "description": "What a caller may send to `project.list`: nothing. SEC-12 validates every call against this file before it reaches application code, in the MCP server middleware (ADR-0031 decision 2).\n\n**No `$ref` to `tool-context.schema.json`, and that is derived rather than assumed.** This tool is not project-scoped — it is how a caller discovers which `projectId` values exist at all — so its handler takes no arguments, and referencing a context that *requires* `projectId` would publish a contract that refuses every call this build serves. ADR-0031 decision 1 fixes the composition for project-scoped tools; which tools those are is decided by the handlers.\n\n**The closure is still `unevaluatedProperties: false`**, uniformly with the tools that do compose. With no `properties` declared and no `allOf` branch to evaluate, every key a caller sends is unevaluated and therefore refused, which is the same sentence `additionalProperties: false` would say here and the same keyword every other input schema in this directory uses. One keyword across the set is what lets a single test hold the closure claim over all of them.\n\nAn empty `properties` rather than an absent one: the emptiness is the contract, and a sweep asking what this tool's own parameters are gets an answer rather than a `KeyError`.",
+  "type": "object",
+  "unevaluatedProperties": false,
+  "properties": {}
+}

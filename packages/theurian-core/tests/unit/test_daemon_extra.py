@@ -24,6 +24,7 @@ import pathlib
 import re
 import sys
 import tomllib
+from importlib.metadata import packages_distributions
 from typing import Final, cast
 
 import pytest
@@ -50,6 +51,10 @@ _REQUIRES_PYTHON: Final = re.compile(r">=\s*(?P<floor>\d+\.\d+)")
 
 #: The interpreter an install command pins, whatever flags surround it.
 _PINNED_PYTHON: Final = re.compile(r"--python (?P<version>\S+)")
+
+#: The distribution name at the head of a requirement string, before any
+#: version pin, extra or marker.
+_DISTRIBUTION: Final = re.compile(r"^[A-Za-z0-9._-]+")
 
 #: The packages that only run once the ``daemon`` extra is installed. Not a
 #: guess: these are the three modules that import ``uvicorn``, ``mcp`` or
@@ -112,6 +117,40 @@ def _third_party(names: set[str]) -> set[str]:
     }
 
 
+def _normalized(requirement: str) -> str:
+    """A requirement string reduced to its PEP 503 normalized distribution name."""
+    match = _DISTRIBUTION.match(requirement.strip())
+    name = match.group(0) if match else requirement.strip()
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _core_dependency_modules() -> set[str]:
+    """The top-level modules a *bare* install already carries.
+
+    Derived, not listed: a distribution name is not an import name (``pyyaml``
+    provides ``yaml``, ``python-ulid`` provides ``ulid``), so the declared
+    requirements are mapped through the installed metadata rather than guessed
+    at from their spelling.
+
+    The sweep below needs this because the two questions stopped coinciding.
+    ``DAEMON_MODULES`` answers *which missing import the daemon extra would
+    supply*; walking ``theurian.mcp`` answers *which third-party modules it
+    imports*, and since ``mcp/validation.py`` those include ``jsonschema`` and
+    ``referencing`` -- core runtime dependencies a bare install already has.
+    Listing them as daemon modules would answer a broken *core* install with
+    "install the daemon extra", a remedy ``domain/extras.py`` calls worse than
+    none because a user can follow it to completion and stay broken.
+    """
+    metadata = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
+    project = cast(dict[str, object], metadata["project"])
+    declared = {_normalized(spec) for spec in cast(list[str], project["dependencies"])}
+    return {
+        module
+        for module, distributions in packages_distributions().items()
+        if any(_normalized(name) in declared for name in distributions)
+    }
+
+
 def test_every_third_party_import_of_the_daemon_is_named_here() -> None:
     """:data:`DAEMON_MODULES` is the source's answer, not a remembered one.
 
@@ -119,15 +158,28 @@ def test_every_third_party_import_of_the_daemon_is_named_here() -> None:
     ``ModuleNotFoundError`` back in front of a user: the CLI guard re-raises
     anything it does not recognise, so an unlisted module produces exactly the
     traceback this whole change exists to remove.
+
+    What the sweep subtracts is the core requirement set
+    (:func:`_core_dependency_modules`), because an import a bare install already
+    satisfies is not one the extra answers for. The disjointness assertion is
+    the control on that subtraction: a derivation that swallowed ``mcp`` or
+    ``uvicorn`` would hide the very imports this test exists to catch, and would
+    do it silently.
     """
     imported: set[str] = set()
     for package in DAEMON_PACKAGES:
         for path in sorted((SRC / package).rglob("*.py")):
             imported |= _third_party(_top_level_imports(path))
 
-    assert imported == set(DAEMON_MODULES), (
-        f"{DAEMON_PACKAGES} import {sorted(imported)}; DAEMON_MODULES says "
-        f"{sorted(DAEMON_MODULES)}. Update theurian/domain/extras.py."
+    core = _core_dependency_modules()
+    assert core.isdisjoint(DAEMON_MODULES), (
+        f"{sorted(core & set(DAEMON_MODULES))} is being read as a core requirement, "
+        f"which would hide it from this sweep. Check pyproject.toml's dependencies."
+    )
+    assert imported - core == set(DAEMON_MODULES), (
+        f"{DAEMON_PACKAGES} import {sorted(imported - core)} beyond the core "
+        f"requirements; DAEMON_MODULES says {sorted(DAEMON_MODULES)}. "
+        f"Update theurian/domain/extras.py."
     )
 
 

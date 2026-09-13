@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theurian.dev/schemas/mcp/knowledge-search-input.schema.json",
+  "title": "Input to the `knowledge.search` MCP tool",
+  "x-theurian-tool": "knowledge.search",
+  "description": "What a caller may send to `knowledge.search`. SEC-12 validates every call against this file before it reaches application code, in the MCP server middleware (ADR-0031 decision 2).\n\n**Unknown keys are refused rather than dropped.** The SDK builds its argument model from the handler's annotations and sets no `extra=\"forbid\"`, so a key it does not recognise is discarded before any Theurian code runs — a caller that misspelled `includeUnapproved` was served a confident answer to a question it did not ask. This contract is what turns that silence into a refusal (ADR-0031 decision 4).\n\n**Composition.** The context every project-scoped call carries — `projectId`, and the optional `snapshotId`, `agentId` and `taskId` — arrives by `$ref` to `tool-context.schema.json` rather than being restated here, so this tool and every other agree about `projectId` by construction rather than by transcription. The closure is `unevaluatedProperties: false` and not `additionalProperties: false`: the latter considers only the properties of its own schema object, so under a `$ref` composition it rejects the very context fields it referenced — measured against `jsonschema` 4.26.0 and recorded in ADR-0031 decision 1's table. `projectId` is required by the referent and is therefore not repeated in this file's `required`.\n\n**Three referenced context fields are accepted and read by nothing.** `snapshotId`, `agentId` and `taskId` are the referent's, and no handler in this build takes them, so a call that sets one is answered as if it had not. They are published here as the shape of the shared context rather than as this tool's own parameters; closing them out of this file would fork the context contract one tool at a time.\n\n**What this file constrains, and what it deliberately leaves to the handler.** Shape and length — the axes a boundary check exists to bound before untrusted input reaches application code, and the ones a refusal can state completely. Vocabulary and numeric range stay handler refusals: `theurian.mcp.tools` and its siblings name the closed set, say whether a bound is a refusal or a clamp, and tell a caller to omit a filter rather than to go and read a schema. A published `enum` or `maximum` would replace those remedies with \"does not satisfy\", and would leave the guard that carried them reachable by no request at all.",
+  "type": "object",
+  "allOf": [{ "$ref": "https://theurian.dev/schemas/mcp/tool-context.schema.json" }],
+  "required": ["query"],
+  "unevaluatedProperties": false,
+  "properties": {
+    "query": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "description": "What to search for. At most 2,000 characters, which is the same bound `knowledge-search-response.schema.json` publishes on the `query` it echoes back: longer than any real question, and short enough that an error quoting it cannot become a reflector of the caller's own bytes (#17).\n\n**An over-long `query` is now refused, not truncated — a behaviour change this bound decides.** Before SEC-12 published `maxLength`, the handler cut the string to its own `MAX_QUERY_CHARS` (the same 2,000) and searched the prefix; the call is now refused at the wire, with a remedy, and nothing is searched. The handler's clamp stays below this surface as a backstop and is unreachable through this contract (`theurian.mcp.tools`, where the line says so).\n\n**Why `query` and `limit` take opposite rules in one file.** Truncating a `query` changes *what* was asked: the caller is answered about a question it did not ask and cannot tell from the response that this happened — SEC-12's own harm class, and the same silence the unknown-key refusal above closes. Clamping `limit` changes only *how much* comes back; the question answered is still the caller's. So the axis that carries meaning is refused, and the axis that carries volume is clamped.\n\nThe bound is on the request rather than on what the response echoes, so the string a caller sends is the string that was searched for. A whitespace-only query is refused by the handler, which is a value this file admits and the tool does not: `minLength` counts characters, not meaning."
+    },
+    "limit": {
+      "type": "integer",
+      "description": "How many results to return. Defaults to 10, and is **clamped** into 1..50 rather than refused — a caller asking for a million results wants \"as much as you have\", and answering that with an error naming an internal parameter helps nobody (`theurian.mcp.tools.MAX_RESULTS`).\n\nDeliberately no published `minimum` or `maximum`. A range here would turn that clamp into a refusal at the wire, which is a behaviour change dressed as a schema, and would leave the clamp reachable by no request. Ranked retrieval is the one surface where fewer results is a worse answer rather than a wrong one; `review.findings` and `review.search` answer filtered questions and refuse instead, and each says so where it does it."
+    },
+    "includeUnapproved": {
+      "type": "boolean",
+      "description": "Whether drafts and proposals may be returned. Defaults to `false`: an unreviewed draft returned by default is indistinguishable from a team decision, which is the failure this system exists to prevent.\n\nIt never reaches retired knowledge. A `rejected`, `deprecated` or `superseded` revision is withheld from every caller on every path (SEC-13), and this flag widens the surfaceable statuses only."
+    },
+    "maxTokens": {
+      "type": "integer",
+      "description": "The context budget one call may spend, defaulting to 2,000. Clamped into 1..32,000 rather than refused, for the reason `limit` records, and published without a range for the same one."
+    },
+    "useDense": {
+      "type": "boolean",
+      "description": "Whether to ask the dense retriever as well as the lexical one. Defaults to `false`. A build with no vector index answers the lexical way and says so in `retrieval`, rather than refusing: the flag is a preference about how to answer, not an assertion about what this installation has."
+    },
+    "asOf": {
+      "type": ["string", "null"],
+      "maxLength": 100,
+      "description": "Pin the search to a moment — RFC 3339 with an explicit UTC offset, for example `2026-08-01T00:00:00Z`. Omit it and nothing is filtered by validity, exactly as every release before this parameter existed (FR-R1).\n\nAt most 100 characters, because no real timestamp is longer and an over-long one would otherwise be echoed into an error. The format itself is checked by the handler, not here: `datetime.fromisoformat` accepts a superset of RFC 3339, and its refusal names the offset requirement and the example above — a `format` or `pattern` here would answer \"does not satisfy\" instead, and would refuse timestamps this same standard library produces."
+    }
+  }
+}

@@ -21,6 +21,7 @@ from theurian.application.authorization import (
     load_serving_profile,
 )
 from theurian.application.project_service import ProjectRegistry
+from theurian.cli.context import schema_root
 from theurian.daemon.instance import (
     DEFAULT_HOST,
     DEFAULT_PORT,
@@ -36,7 +37,9 @@ from theurian.infrastructure.secrets.file_store import (
     FileSecretStore,
     default_data_dir,
 )
+from theurian.mcp.middleware import InputValidationMiddleware
 from theurian.mcp.tools import register
+from theurian.mcp.validation import load_input_schemas
 from theurian.security.tokens import generate_token
 
 #: Uvicorn log level. Access logs are off: every request carries an
@@ -75,12 +78,37 @@ def build_server(registry: ProjectRegistry, grant: AuthorizationGrant | None = N
     the daemon uses -- so there is one default and not a second one spelled here.
     :func:`serve` passes the *declared* profile instead, read from the operator's
     data directory.
+
+    **The published input schemas are loaded here, and a failure stops the server
+    being built** (SEC-12, ADR-0031 decisions 2 and 5).
+    :func:`~theurian.mcp.validation.load_input_schemas` raises on anything that
+    would leave the set partial -- an unreadable file, a schema the metaschema
+    rejects, two files claiming one tool name, a ``$ref`` that will not resolve
+    offline -- and that exception is deliberately not caught. A daemon that came
+    up serving the tools whose contracts happened to parse would answer "that
+    tool is not published" to a caller whose real problem is a damaged install,
+    and it would do it with the control silently off for the rest.
+
+    Where the schemas are is
+    :func:`~theurian.cli.context.schema_root`'s answer, not a second one: it
+    prefers the copy inside the wheel and falls back to the source checkout, and
+    it is what the migration loader's callers already ask. A resolution spelled
+    again here is the second source of truth ``hatch_build.py``'s own docstring
+    warns about -- it would be correct on the day it was written and wrong the
+    first time the packaging moved.
+
+    The ``mcp`` subtree and not the whole of it: those are this boundary's
+    schemas, and the loader treats every file it is given as fatal to the set. A
+    malformed ``config/project-config.schema.json`` is a real fault and is not
+    this daemon's reason to refuse to start.
     """
     in_effect = grant if grant is not None else StaticAuthorizationProvider().deployment_grant()
+    schemas = load_input_schemas(schema_root() / "mcp")
     server = MCPServer(
         name="theurian",
         title="Theurian",
         version=__version__,
+        middleware=[InputValidationMiddleware(schemas)],
         instructions=(
             "Theurian serves your team's approved engineering knowledge, "
             "specifications, and decisions.\n\n"

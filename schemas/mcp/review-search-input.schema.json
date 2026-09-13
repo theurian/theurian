@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theurian.dev/schemas/mcp/review-search-input.schema.json",
+  "title": "Input to the `review.search` MCP tool",
+  "x-theurian-tool": "review.search",
+  "description": "What a caller may send to `review.search`. SEC-12 validates every call against this file before it reaches application code, in the MCP server middleware (ADR-0031 decision 2).\n\n**Unknown keys are refused rather than dropped.** The SDK sets no `extra=\"forbid\"` on the argument model it derives from the handler, so a key it does not recognise is discarded before any Theurian code runs, and a filtered question answered without one of its filters reads as the whole answer (ADR-0031 decision 4).\n\n**Composition.** The context — `projectId`, and the optional `snapshotId`, `agentId` and `taskId` — arrives by `$ref` to `tool-context.schema.json`. The closure is `unevaluatedProperties: false` and not `additionalProperties: false`, which under a `$ref` composition rejects the very context fields it referenced (ADR-0031 decision 1, measured against `jsonschema` 4.26.0). `projectId` is required by the referent and is not repeated here. `snapshotId`, `agentId` and `taskId` are accepted and read by no handler in this build.\n\n**`threadState`'s vocabulary is deliberately not published here as an `enum`**, for the reason its sibling `review.findings` records for `reviewer` and `severity`: the handler's refusal names every token, recomputed from the enum rather than transcribed, and ends with a remedy an `enum` keyword cannot carry. The vocabulary is published in `review-search-response.schema.json`, where a client reads it without a refusal having to be worsened to say it.\n\nWhat this file holds is shape and length. Every filter here is matched against a stored column and reaches no filesystem call — `filePath` included, which is a path as data and never a path to open (SEC-7, ADR-0030 decision 6).",
+  "type": "object",
+  "allOf": [{ "$ref": "https://theurian.dev/schemas/mcp/tool-context.schema.json" }],
+  "unevaluatedProperties": false,
+  "properties": {
+    "repository": {
+      "type": ["string", "null"],
+      "maxLength": 400,
+      "description": "Which repository's review records to search, as the ingested record spells it.\n\nAt most 400 characters, the bound every `review.search` filter shares. It is an amplification bound rather than a description of the data: it exists so a refusal cannot quote an arbitrary-length value back at the caller who sent it (#17). An empty string is refused by the handler, because it matches nothing rather than everything."
+    },
+    "pullRequest": {
+      "type": ["integer", "null"],
+      "description": "Which pull request's review records to search.\n\nNo published `minimum` or `maximum`, although the column behind it is a signed 64-bit integer and the handler refuses anything outside it: binding a wider value raises an `OverflowError` no layer converts, so the bound is checked at the boundary where it can be a refusal a caller acts on. A range here would leave that guard reachable by no request."
+    },
+    "threadState": {
+      "type": ["string", "null"],
+      "maxLength": 400,
+      "description": "Which thread state to search — a closed vocabulary the handler names in full when it refuses, recomputed from the enum rather than transcribed. Bounded at 400 characters for the reason `repository` records.\n\nA record that is not a thread at all is matched by omitting this filter, never by a token meaning \"any\": absence and a wildcard would be two spellings of one question, and one of them would drift."
+    },
+    "author": {
+      "type": ["string", "null"],
+      "maxLength": 400,
+      "description": "Which author's review records to search. Author-controlled text on both sides of the comparison, bounded here and carried as data; the response's own schema records how the served value is labelled and cut."
+    },
+    "filePath": {
+      "type": ["string", "null"],
+      "maxLength": 400,
+      "description": "Which file's review records to search, as the record spells the path.\n\n**A path as data, never a path to open.** It is matched against a stored column and reaches no filesystem call, here or below (SEC-7, ADR-0030 decision 6), so nothing in it is resolved, contained or followed. Bounded at 400 characters for the reason `repository` records."
+    },
+    "q": {
+      "type": ["string", "null"],
+      "maxLength": 400,
+      "description": "Free text to match against the stored review evidence. Bounded at 400 characters for the reason `repository` records; an empty string is refused by the handler, because it matches nothing rather than everything."
+    },
+    "limit": {
+      "type": "integer",
+      "description": "How many records to return. Defaults to 20, and the ceiling is a **refusal** rather than a clamp: this tool answers a filtered question with no paging, so a silently truncated page reads as the whole answer to the filter (`theurian.mcp.review_search.MAX_REVIEW_SEARCH_LIMIT`).\n\nNo published `minimum` or `maximum`: the handler's refusal names both ends and says why it is not a clamp, and a range here would answer \"does not satisfy\" in its place."
+    }
+  }
+}
