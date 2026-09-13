@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 import pathlib
 import re
+from dataclasses import replace
 from typing import Final
 
 import pytest
@@ -274,6 +275,45 @@ def test_an_envelope_refuses_an_empty_summary() -> None:
             detail="",
             remedy=REMEDIES[RefusalGrade.TOOL_MISSING],
         )
+
+
+def test_an_envelope_refuses_a_remedy_that_is_not_the_row_recorded_for_its_grade() -> None:
+    """Looked up, never passed in -- a rule the type now holds, not a convention.
+
+    ``remedy`` is an ordinary field, and until this check the only thing keeping a
+    composed cure out of an envelope was that no call site composed one -- held by
+    an AST walk over ``src/`` for ``RefusalEnvelope(...)`` calls, which reads
+    constructions by *name*. ``skippedRemedies`` publishes this field on stdout, so
+    a cure built from a spawned child's output would put fetched text into the run
+    document; the walk cannot see a construction that never spells the class name.
+
+    Three shapes below, and the third is the one that survived the whole suite: a
+    composed string, another grade's row (wrong for the grade the same document
+    publishes beside it), and ``dataclasses.replace`` -- which re-runs
+    ``__post_init__`` on a frozen dataclass, so the invariant reaches it while an
+    AST walk never could.
+    """
+    row = REMEDIES[RefusalGrade.TOOL_FAILED]
+
+    with pytest.raises(InvariantViolationError, match="not its recorded row"):
+        RefusalEnvelope(
+            grade=RefusalGrade.TOOL_FAILED,
+            summary="gh failed",
+            detail="",
+            remedy=f"{row} gh said: ssh-rsa AAAA...",
+        )
+
+    with pytest.raises(InvariantViolationError, match="not its recorded row"):
+        RefusalEnvelope(
+            grade=RefusalGrade.TOOL_FAILED,
+            summary="gh failed",
+            detail="",
+            remedy=REMEDIES[RefusalGrade.TOOL_MISSING],
+        )
+
+    envelope = ReviewIngestRefusedError(RefusalGrade.TOOL_FAILED, "gh failed").envelope
+    with pytest.raises(InvariantViolationError, match="not its recorded row"):
+        replace(envelope, remedy=f"{row} gh said: ssh-rsa AAAA...")
 
 
 def test_an_envelope_refuses_a_detail_longer_than_the_recorded_bound() -> None:

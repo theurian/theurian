@@ -55,6 +55,13 @@ _SOURCE_ROOT: Final = Path(next(iter(theurian.__path__)))
 #: the document no longer has.
 _CURES: Final = "skippedRemedies"
 
+#: The type whose ``remedy`` this key publishes, spelled as the string the AST walk
+#: matches rather than taken off the imported class. ``FetchRefusal.__name__`` would
+#: follow a rename silently and leave the walk looking for whatever the class is
+#: called now, which is the one outcome the walk's fail-closed guard exists to
+#: report as a failure a human classifies.
+_FETCH_REFUSAL: Final = "FetchRefusal"
+
 
 def _skip(number: int, grade: RefusalGrade) -> FetchRefusal:
     """One skipped pull request, built the way the ingest run builds one.
@@ -338,20 +345,28 @@ def _refusal_envelope_remedy_arguments() -> list[tuple[str, int, str]]:
 
 
 def test_every_published_cure_is_a_row_of_the_recorded_table_and_never_a_passed_string() -> None:
-    """The premise ``skippedRemedies`` rests on, held over the whole package.
+    """A source-hygiene sweep, and **not** what closes this premise any more.
 
     The field puts a ``FetchRefusal.remedy`` on stdout, and the reason that is not a
     disclosure surface is that the value is Theurian's own static text: the remedy
     is *looked up* by grade, never passed in, so what a caller reads is a row of
-    :data:`REMEDIES` selected by a grade the same document already publishes. That
-    makes the field a function of what is beside it.
+    :data:`REMEDIES` selected by a grade the same document already publishes.
 
-    It is a premise about a construction, not about a type -- ``RefusalEnvelope``
-    takes ``remedy`` as an ordinary field, and its ``__post_init__`` only refuses an
-    *empty* one. A future adapter that built an envelope with a remedy composed from
-    a provider's answer would publish fetched text through this key, and every other
-    assertion in this file would stay green. So the population is every construction
-    in ``src/``, derived from the AST, and each has to be a table lookup.
+    This test was written as that premise's closure and could not be it. It reads
+    constructions **by name** -- an ``ast.Call`` whose func is ``RefusalEnvelope``
+    -- and a construction need not spell the name: round one planted
+    ``replace(exc.envelope, remedy=f"...{detail}")`` in the ``gh`` provider, where
+    ``detail`` carries a spawned child's stderr, and the whole suite stayed green.
+    What closes it now is a runtime invariant on the type
+    (:meth:`~theurian.domain.review_ingest.RefusalEnvelope.__post_init__` refuses a
+    remedy that is not its grade's row, and ``dataclasses.replace`` re-runs it),
+    driven by ``tests/unit/test_review_ingest_refusals.py::
+    test_an_envelope_refuses_a_remedy_that_is_not_the_row_recorded_for_its_grade``,
+    with the document-side ratchet below as the cheap second reading.
+
+    What this still buys is worth keeping: a lookup at the *construction* keeps the
+    call sites readable, so a reviewer sees the rule in the diff rather than
+    inferring it from a raise three layers down.
     """
     sites = _refusal_envelope_remedy_arguments()
 
@@ -368,4 +383,107 @@ def test_every_published_cure_is_a_row_of_the_recorded_table_and_never_a_passed_
         "anything a provider answered would put fetched text into the run document. "
         "Look the cure up by grade -- the domain's rule is that a remedy is never "
         "passed in -- or give this key its own screening before the change lands."
+    )
+
+
+def test_every_cure_a_composed_document_publishes_is_a_row_of_the_table() -> None:
+    """The same premise read off the document, which is where a caller meets it.
+
+    The two checks around this one are about how an envelope is *built* -- one at
+    the type, one over the source. This one asks the published mapping, over a run
+    that met several grades, whether every value in it is a string this repository
+    wrote: no AST, and no knowledge of which module builds what.
+
+    **What it does not reach is worth saying, because the obvious reading is
+    wrong.** The report it asks about is composed here, from :func:`_skip`, so an
+    adapter that composed a cure of its own is invisible to it -- the only remedies
+    it can ever see are the ones this file put in. Measured: with
+    ``replace(exc.envelope, remedy=f"...{detail}")`` planted in the ``gh`` provider
+    and the type's invariant removed, this file and
+    ``test_gh_review_provider.py`` ran green together (129 passed, in a throwaway
+    clone); with the invariant back, that provider test fails and this file still
+    does not notice. So this is a ratchet over the
+    document's *shape* -- a future field that summarised or templated a cure
+    reddens here -- and the closure over adapters is the invariant's.
+
+    A subset rather than an equality, because a run meets some grades and not
+    others; the equality on *which* grades appear is
+    :func:`test_only_the_grades_this_run_met_are_published_never_the_whole_table`'s.
+    """
+    skips = tuple(_skip(40 + offset, grade) for offset, grade in enumerate(RefusalGrade))
+
+    published = _published_cures(_payload(_report(*skips)))
+
+    assert published, "the composed run published no cure at all, so this holds vacuously"
+    assert set(published.values()) <= set(REMEDIES.values()), (
+        "the run document published a cure that is not a row of `REMEDIES`, so "
+        "`skippedRemedies` is carrying a string this repository did not write: "
+        f"{sorted(set(published.values()) - set(REMEDIES.values()))}"
+    )
+
+
+def _fetch_refusal_constructions() -> list[tuple[str, int]]:
+    """Every ``FetchRefusal(...)`` call in ``src/``, by module and line.
+
+    The companion population to :func:`_refusal_envelope_remedy_arguments`, and the
+    reason it is walked at all: ``skippedRemedies`` reads
+    ``FetchRefusal.remedy``, and what makes *that* a table row is that the field is
+    copied from an envelope by :meth:`FetchRefusal.of`. A call that built one
+    directly would take ``remedy`` as an ordinary string and reach the published
+    document without passing any envelope's construction at all.
+
+    Matches the bare name and the attribute spelling
+    (``review_ingest_service.FetchRefusal(...)``), because either is a
+    construction. ``of``'s own body is invisible to this walk by construction: it
+    calls ``cls(...)``.
+    """
+    found: list[tuple[str, int]] = []
+    for module in sorted(_SOURCE_ROOT.rglob("*.py")):
+        for node in ast.walk(ast.parse(module.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            named = (isinstance(func, ast.Name) and func.id == _FETCH_REFUSAL) or (
+                isinstance(func, ast.Attribute) and func.attr == _FETCH_REFUSAL
+            )
+            if named:
+                found.append((module.name, node.lineno))
+    return found
+
+
+def test_nothing_builds_a_fetch_refusal_except_the_constructor_that_copies_an_envelope() -> None:
+    """Why ``skippedRemedies``' values are envelope remedies and not free strings.
+
+    :class:`FetchRefusal` is a plain frozen dataclass whose ``remedy`` is a ``str``
+    with no validation of its own -- the invariant that makes a remedy a table row
+    lives on :class:`~theurian.domain.review_ingest.RefusalEnvelope`, and this type
+    reaches it only by being built through
+    :meth:`FetchRefusal.of`, which copies the three fields off an envelope. A direct
+    construction anywhere would be a published cure that never passed that check.
+
+    **Fail-closed**: the class has to be found in the walked source and ``of`` has
+    to be called from it, or the emptiness below is a rename rather than a property.
+    """
+    service = _SOURCE_ROOT / "application" / "review_ingest_service.py"
+    source = service.read_text(encoding="utf-8")
+
+    assert f"class {_FETCH_REFUSAL}:" in source, (
+        f"`{_FETCH_REFUSAL}` is not defined in {service.name} any more, so the walk "
+        "below is looking for a name nothing builds. Follow the type to its new home "
+        "before trusting a green result."
+    )
+    assert f"{_FETCH_REFUSAL}.of(" in source, (
+        f"nothing in {service.name} calls `{_FETCH_REFUSAL}.of(...)`, so the report's "
+        "skips are being built some other way and this test is asserting about a "
+        "constructor nobody uses."
+    )
+
+    direct = _fetch_refusal_constructions()
+
+    assert not direct, (
+        f"`{_FETCH_REFUSAL}` is constructed directly at {direct}, bypassing `of` -- "
+        "which is the only thing that ties its `remedy` to an envelope's, and so to a "
+        "`REMEDIES` row. `skippedRemedies` publishes that field, so a direct "
+        "construction can put any string on stdout. Build it from an envelope, or give "
+        "this type an invariant of its own."
     )

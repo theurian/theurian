@@ -16,6 +16,15 @@ exactly one recorded remedy, and
 reads the enum -- not a transcribed list -- so a grade added without a remedy
 reddens before it can be raised.
 
+**And it is the type's rule rather than its call sites' habit**, since
+:meth:`RefusalEnvelope.__post_init__` refuses a remedy that is not the row its
+grade keys. Held as a source sweep before that -- an AST walk over ``src/`` for
+``RefusalEnvelope(...)`` calls -- which reads a construction by *name*: a
+one-line ``dataclasses.replace(exc.envelope, remedy=...)`` in an adapter is a
+construction that walk cannot see, and one survived the whole suite. ``replace``
+re-runs ``__post_init__`` on a frozen dataclass, so the invariant reaches that
+shape and every other.
+
 **The cures are ``gh``-shaped, and that coupling has an owner.** Every entry in
 :data:`REMEDIES` names a ``gh`` command, because ``github`` is the only provider
 that exists: a GitLab adapter arriving later would tell its users to run
@@ -420,6 +429,17 @@ class RefusalEnvelope:
     clause 9 forbids -- the exact failure the refusal was constructed to avoid.
     ``detail`` can afford to refuse because an oversized one is a bug in this
     package rather than something somebody sent.
+
+    ``remedy`` is refused unless it **is** the row :data:`REMEDIES` records for
+    ``grade``, which is the module docstring's "looked up, never passed in" made
+    a property of the type. It refuses rather than corrects for ``detail``'s
+    reason: a remedy that is not the recorded row is a bug in this package, and
+    nothing a caller sent can produce one. Inert on every shipped path -- the only
+    construction is :meth:`ReviewIngestRefusedError.__init__`'s, which passes
+    ``REMEDIES[grade]`` -- and worth a runtime check because the field is
+    published: ``cli/review_commands._payload`` puts it on stdout as
+    ``skippedRemedies``, so a cure composed from a spawned child's answer would be
+    fetched text in a run document.
     """
 
     grade: RefusalGrade
@@ -437,6 +457,17 @@ class RefusalEnvelope:
             raise InvariantViolationError(
                 f"Grade {self.grade.value!r} carries an empty remedy. "
                 "Remedies are looked up in `REMEDIES`, never passed in."
+            )
+        if self.remedy != REMEDIES[self.grade]:
+            # The offending string is deliberately not echoed: what this arm
+            # exists to stop reaching a published document is a remedy composed
+            # from a spawned child's output, and a message that quoted it would
+            # publish exactly that through the exception instead.
+            raise InvariantViolationError(
+                f"Grade {self.grade.value!r} carries a remedy that is not its recorded "
+                "row. A remedy is looked up in `REMEDIES` -- never composed, passed in, "
+                "or edited afterwards -- so publish the row this grade keys, or record a "
+                "row for a new grade in `theurian/domain/review_ingest.py`."
             )
         if len(self.summary) > MAX_REFUSAL_SUMMARY_CHARS:
             kept = MAX_REFUSAL_SUMMARY_CHARS - len(_SUMMARY_CUT_MARKER)

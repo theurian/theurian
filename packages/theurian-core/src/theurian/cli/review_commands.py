@@ -720,16 +720,18 @@ def _payload(report: ReviewIngestReport) -> dict[str, object]:
     :data:`~theurian.domain.review_ingest.REMEDIES`, selected by a grade
     ``skipped`` already publishes, so the field is a function of what is beside it.
 
-    That last sentence is a claim about a *construction* rather than about a type
-    -- :class:`~theurian.domain.review_ingest.RefusalEnvelope` takes ``remedy`` as
-    an ordinary field and refuses only an empty one -- so it is held over the
-    package rather than asserted here:
-    ``tests/unit/test_review_run_document.py::
-    test_every_published_cure_is_a_row_of_the_recorded_table_and_never_a_passed_string``
-    walks every ``RefusalEnvelope(...)`` in ``src/`` out of the AST and reddens for
-    one whose remedy is anything but a table lookup. An adapter that composed a
-    cure from a provider's answer would otherwise put fetched text on stdout
-    through this key.
+    That last sentence is a claim about the **type**, since
+    :class:`~theurian.domain.review_ingest.RefusalEnvelope` refuses a remedy that
+    is not the row its grade keys -- and ``dataclasses.replace`` re-runs that
+    check, so it covers every construction shape rather than the ones a source
+    walk can name. It was held by such a walk alone, and round one found what the
+    walk cannot see: a one-line ``replace(exc.envelope, remedy=f"...{detail}")``
+    in the ``gh`` provider, ``detail`` being a spawned child's stderr, put fetched
+    text one step from this key with the whole suite green. The checks are the
+    invariant (``tests/unit/test_review_ingest_refusals.py``), the source sweep,
+    a ratchet over a composed document's values, and a pin that nothing builds a
+    ``FetchRefusal`` except the constructor that copies an envelope (the last
+    three in ``tests/unit/test_review_run_document.py``).
     """
     return {
         "repository": report.repository,
