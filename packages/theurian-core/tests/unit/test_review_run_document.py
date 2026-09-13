@@ -26,12 +26,15 @@ read back off the shipped command, on both channels.
 
 from __future__ import annotations
 
+import ast
 import json
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Final
 
 import pytest
 
+import theurian
 from theurian.application.review_ingest_service import FetchRefusal, ReviewIngestReport
 from theurian.cli.review_commands import _payload
 from theurian.domain.review_ingest import REMEDIES, RefusalGrade, ReviewIngestRefusedError
@@ -39,6 +42,12 @@ from theurian.domain.review_ingest import REMEDIES, RefusalGrade, ReviewIngestRe
 pytestmark = pytest.mark.unit
 
 REPOSITORY: Final = "acme/order-service"
+
+#: The package this file walks for envelope constructions, taken off the imported
+#: module rather than composed from ``__file__`` and ``..`` -- the tests may be run
+#: against an installed package, and a relative walk would then read a source tree
+#: that is not the one under test.
+_SOURCE_ROOT: Final = Path(next(iter(theurian.__path__)))
 
 #: The published key this file is about. Spelled once, so a rename moves every
 #: assertion below together rather than leaving some of them asserting about a key
@@ -258,3 +267,76 @@ def test_a_skipped_entry_and_its_cure_are_joined_by_the_grade_string() -> None:
             f"the grade that keys its cure, so a caller cannot pair the two: {line!r}"
         )
         assert published[skip.grade.value]
+
+
+def _refusal_envelope_remedy_arguments() -> list[tuple[str, int, str]]:
+    """Every ``RefusalEnvelope(...)`` in ``src/``, with how its ``remedy`` is built.
+
+    Walked over the whole package's AST rather than over the one module that has
+    such a call today, because the population this field's disclosure claim rests on
+    is *every* construction anywhere -- an adapter that built one in
+    ``infrastructure/github/`` would be outside a scan of the domain module and
+    would still reach ``skippedRemedies``.
+
+    The third element is the shape of the ``remedy`` argument: ``REMEDIES[...]``
+    for a table lookup, ``<missing>`` when the call passes none, and
+    ``ast.dump``'s rendering of anything else -- which is the case that fails the
+    assertion, with the expression printed.
+    """
+    found: list[tuple[str, int, str]] = []
+    for module in sorted(_SOURCE_ROOT.rglob("*.py")):
+        tree = ast.parse(module.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "RefusalEnvelope"
+            ):
+                continue
+            passed = [keyword for keyword in node.keywords if keyword.arg == "remedy"]
+            if not passed:
+                shape = "<missing>"
+            else:
+                argument = passed[0].value
+                looked_up = (
+                    isinstance(argument, ast.Subscript)
+                    and isinstance(argument.value, ast.Name)
+                    and argument.value.id == "REMEDIES"
+                )
+                shape = "REMEDIES[...]" if looked_up else ast.dump(argument)
+            found.append((module.name, node.lineno, shape))
+    return found
+
+
+def test_every_published_cure_is_a_row_of_the_recorded_table_and_never_a_passed_string() -> None:
+    """The premise ``skippedRemedies`` rests on, held over the whole package.
+
+    The field puts a ``FetchRefusal.remedy`` on stdout, and the reason that is not a
+    disclosure surface is that the value is Theurian's own static text: the remedy
+    is *looked up* by grade, never passed in, so what a caller reads is a row of
+    :data:`REMEDIES` selected by a grade the same document already publishes. That
+    makes the field a function of what is beside it.
+
+    It is a premise about a construction, not about a type -- ``RefusalEnvelope``
+    takes ``remedy`` as an ordinary field, and its ``__post_init__`` only refuses an
+    *empty* one. A future adapter that built an envelope with a remedy composed from
+    a provider's answer would publish fetched text through this key, and every other
+    assertion in this file would stay green. So the population is every construction
+    in ``src/``, derived from the AST, and each has to be a table lookup.
+    """
+    sites = _refusal_envelope_remedy_arguments()
+
+    assert sites, (
+        "no `RefusalEnvelope(...)` construction was found at all, so this assertion "
+        "holds vacuously. The class has been renamed or the envelope is built some "
+        "other way; follow it here before trusting a green result."
+    )
+    passed_in = [site for site in sites if site[2] != "REMEDIES[...]"]
+    assert not passed_in, (
+        f"a refusal envelope is built with a remedy that is not a `REMEDIES` row: "
+        f"{passed_in}.\n\n"
+        "`skippedRemedies` publishes that string on stdout, so a remedy composed from "
+        "anything a provider answered would put fetched text into the run document. "
+        "Look the cure up by grade -- the domain's rule is that a remedy is never "
+        "passed in -- or give this key its own screening before the change lands."
+    )

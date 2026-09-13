@@ -706,8 +706,20 @@ def _payload(report: ReviewIngestReport) -> dict[str, object]:
     **Only the grades this run met.** The mapping is built from
     ``report.skipped`` and never from the table, so it carries no cure for a fault
     that did not happen -- and nothing about it varies with anything the caller
-    may not read: each value is a static module constant selected by a grade
+    may not read: each value is a static row of
+    :data:`~theurian.domain.review_ingest.REMEDIES`, selected by a grade
     ``skipped`` already publishes, so the field is a function of what is beside it.
+
+    That last sentence is a claim about a *construction* rather than about a type
+    -- :class:`~theurian.domain.review_ingest.RefusalEnvelope` takes ``remedy`` as
+    an ordinary field and refuses only an empty one -- so it is held over the
+    package rather than asserted here:
+    ``tests/unit/test_review_run_document.py::
+    test_every_published_cure_is_a_row_of_the_recorded_table_and_never_a_passed_string``
+    walks every ``RefusalEnvelope(...)`` in ``src/`` out of the AST and reddens for
+    one whose remedy is anything but a table lookup. An adapter that composed a
+    cure from a provider's answer would otherwise put fetched text on stdout
+    through this key.
     """
     return {
         "repository": report.repository,
