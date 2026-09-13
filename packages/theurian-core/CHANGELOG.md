@@ -17,8 +17,9 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 - **A pull request `theurian review ingest` skipped now carries its cure**
   ([#656](https://github.com/theurian/theurian/issues/656)). The run document
   named the pull request and the refusal grade and stopped there. The cure
-  existed — `FetchRefusal` carries the envelope's remedy and `REMEDIES` records
-  one per grade — and reached no published surface on any channel, because the
+  existed — `REMEDIES` records one per grade, and a skipped pull request carried
+  a copy of the one its envelope held — and reached no published surface on any
+  channel, because the
   only path those cures travelled was the raise that *ends* a run, and a skipped
   pull request is by definition one that did not end it. So an operator whose
   pull request was skipped `limit-exceeded` read what was refused and never what
@@ -41,7 +42,10 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   telling an absent key from an empty one. Only the grades this run met: the
   mapping is built from the run's own skip list and never from the table, so it
   carries no cure for a fault that did not happen, and every value is a static
-  row of `REMEDIES` selected by a grade the same document already publishes.
+  row of `REMEDIES` **looked up where the document is built**, keyed on a grade
+  that document already publishes. Nothing carries the string there: the skip
+  record holds no remedy field at all, so no value composed upstream — from a
+  spawned `gh`'s own output, say — can decide what this key says.
 
   **This supersedes one clause of 0.2.1's `LIMIT_EXCEEDED` entry below**, which
   recorded that a skipped pull request's entry in the run document "carries its

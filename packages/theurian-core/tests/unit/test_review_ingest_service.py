@@ -69,7 +69,7 @@ from theurian.domain.review import (
     ReviewSubmission,
     ReviewThread,
 )
-from theurian.domain.review_ingest import RefusalGrade, ReviewIngestRefusedError
+from theurian.domain.review_ingest import REMEDIES, RefusalGrade, ReviewIngestRefusedError
 from theurian.infrastructure.github.limits import (
     MAX_PORT_CALLS_PER_RUN,
     MAX_PULL_REQUESTS,
@@ -178,6 +178,34 @@ def _over_cap(number: int) -> ReviewIngestRefusedError:
     return ReviewIngestRefusedError(
         RefusalGrade.LIMIT_EXCEEDED,
         f"Review thread on {REPOSITORY}#{number} carries more than the recorded cap.",
+    )
+
+
+#: Child output a canned refusal carries, shaped like what a spawned ``gh`` writes
+#: to stderr and distinctive enough to search a whole report for.
+#:
+#: **The suite had no refusal carrying one, and that is what hid a composition.**
+#: Round two planted ``if exc.envelope.detail: skip = replace(skip, remedy=...)``
+#: in :meth:`ReviewIngestService._fetch` and the whole suite stayed green, because
+#: every canned refusal here passed ``detail=""`` while
+#: ``infrastructure/github/review_provider.py``'s two ``TOOL_FAILED`` raises both
+#: pass ``detail=outcome.stderr``. A detail-gated arm is now live in this file.
+_CHILD_STDERR: Final = "gh: ssh-rsa AAAAB3NzaC1yc2EAAAA-canary"
+
+
+def _tool_failed(number: int) -> ReviewIngestRefusedError:
+    """The refusal a failed spawn raises, **carrying the child's own output**.
+
+    ``TOOL_FAILED`` with a ``detail`` is the shape a real ``gh`` failure takes:
+    ``_request`` in the ``gh`` adapter raises it with ``detail=outcome.stderr``
+    twice. Reached from ``_pages_of``, it is caught by :meth:`_fetch` and reported
+    as a skip, so the run continues -- which is why this is the grade the
+    containment case below drives.
+    """
+    return ReviewIngestRefusedError(
+        RefusalGrade.TOOL_FAILED,
+        f"`gh` failed reading the review threads on {REPOSITORY}#{number}.",
+        detail=_CHILD_STDERR,
     )
 
 
@@ -487,7 +515,9 @@ async def test_an_over_cap_pull_request_is_skipped_while_its_neighbour_lands(
     assert skip.grade is RefusalGrade.LIMIT_EXCEEDED
     assert "#42" in skip.identity.describe()
     assert "recorded cap" in skip.summary
-    assert skip.remedy
+    # The grade, not a cure: a skip carries no remedy field (#656 round two), and
+    # what a composition root needs from it is a key `REMEDIES` answers.
+    assert skip.grade in REMEDIES
     landed = _landed_files(root)
     assert len(landed) == 3
     assert not any("42" in name for name in landed), (
@@ -495,6 +525,45 @@ async def test_an_over_cap_pull_request_is_skipped_while_its_neighbour_lands(
     )
     assert provider.reads[-1] == ("get_reviews", 41), (
         "the run stopped at the refusing pull request instead of continuing"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_failed_spawns_own_output_reaches_no_field_of_the_report(tmp_path: Path) -> None:
+    """The one field that carries text this process did not write, and where it stops.
+
+    ``detail`` is a spawned ``gh``'s stderr. :meth:`ReviewIngestService._fetch`
+    catches the refusal that carries it and builds a :class:`FetchRefusal` from the
+    envelope, and what that copies is the identity, the grade and the bounded
+    summary -- never the detail, and since #656's round two never a remedy either.
+    The whole report is searched rather than the fields somebody enumerated, because
+    the defect this closes was a *new* composition rather than a field read wrong.
+
+    RED for any arm that folds ``detail`` into a reported value: the composition
+    round two planted onto the remedy has a sibling onto the summary, which
+    ``describe()`` publishes under ``skipped``.
+
+    The positive control is inside the assertion: the run has to have skipped
+    something, or the absence below is the absence of a refusal.
+    """
+    provider = _provider([_event(42), _event(41)], refusals={("get_threads", 42): _tool_failed(42)})
+
+    report, _lander, _root = await _run(tmp_path, provider)
+
+    (skip,) = report.skipped
+    assert skip.grade is RefusalGrade.TOOL_FAILED, (
+        f"the run did not skip on the grade this case drives ({skip.grade}), so the "
+        "refusal that carries a detail is not the one being asked about"
+    )
+    assert report.landed == 3, "the neighbour did not land, so this is not the skip case"
+
+    assert _CHILD_STDERR not in repr(report), (
+        f"the child's own stderr is in the report: {report!r}. A dataclass `repr` names "
+        "every field, so some reported value was composed from `detail` -- the one "
+        "field carrying text this process did not write."
+    )
+    assert _CHILD_STDERR not in skip.describe(), (
+        f"the published `skipped` line carries the child's stderr: {skip.describe()!r}"
     )
 
 
@@ -525,7 +594,10 @@ async def test_a_pull_request_the_listing_could_not_build_is_skipped_not_a_halt(
     assert skip.grade is RefusalGrade.LIMIT_EXCEEDED
     assert "#42" in skip.identity.describe()
     assert "label cap" in skip.summary
-    assert "`limit`" in skip.remedy
+    # Keyed through the grade the report published, which is how a composition root
+    # reaches the cure now that the skip does not carry one: the per-record arm this
+    # reader needs has to be in the row that grade selects.
+    assert "`limit`" in REMEDIES[skip.grade]
     assert [
         record.payload.number for record in lander.handed if isinstance(record.payload, ReviewEvent)
     ] == [41]

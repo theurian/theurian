@@ -23,7 +23,19 @@ grade keys. Held as a source sweep before that -- an AST walk over ``src/`` for
 one-line ``dataclasses.replace(exc.envelope, remedy=...)`` in an adapter is a
 construction that walk cannot see, and one survived the whole suite. ``replace``
 re-runs ``__post_init__`` on a frozen dataclass, so the invariant reaches that
-shape and every other.
+shape too.
+
+**Its reach is every shape that runs ``__post_init__``, which is not every shape
+there is.** ``object.__setattr__`` on an existing envelope writes a frozen field
+without re-running it, and a subclass that overrode ``__post_init__`` would not
+run this one at all. Both are named rather than left implied because the round
+that wrote this check offered it as closure for a *published* value, and the two
+residuals are what a reader has to weigh: what publishes them decides whether
+they matter. The value ``cli/review_commands._payload`` puts in a run document is
+looked up from :data:`REMEDIES` at the publication site and takes nothing from an
+envelope, so neither residual reaches stdout; ``exc.remedy`` on stderr is the
+publication this invariant does hold, and it holds it for every construction the
+raise path uses.
 
 **The cures are ``gh``-shaped, and that coupling has an owner.** Every entry in
 :data:`REMEDIES` names a ``gh`` command, because ``github`` is the only provider
@@ -436,10 +448,20 @@ class RefusalEnvelope:
     reason: a remedy that is not the recorded row is a bug in this package, and
     nothing a caller sent can produce one. Inert on every shipped path -- the only
     construction is :meth:`ReviewIngestRefusedError.__init__`'s, which passes
-    ``REMEDIES[grade]`` -- and worth a runtime check because the field is
-    published: ``cli/review_commands._payload`` puts it on stdout as
-    ``skippedRemedies``, so a cure composed from a spawned child's answer would be
-    fetched text in a run document.
+    ``REMEDIES[grade]`` -- and worth a runtime check because the field **is**
+    published: a run-ending refusal reaches ``cli/review_commands``'
+    ``except TheurianError`` arm, which writes ``exc.remedy`` to stderr through
+    ``_fail``, so a cure composed from a spawned child's answer would be fetched
+    text in a refusal document.
+
+    **That stderr publication is the whole of what this arm protects, and the
+    narrowing is a correction.** It was written claiming the run document's
+    ``skippedRemedies`` too, which then published a copy of this field carried on
+    ``FetchRefusal``. A remedy invariant is the wrong instrument for a value that
+    travels: it cannot see ``object.__setattr__``, a subclass, or a type that
+    copies the string and is never an envelope. That key indexes :data:`REMEDIES`
+    at its own publication site now and reads no field of anything, so it needs
+    nothing from here.
     """
 
     grade: RefusalGrade

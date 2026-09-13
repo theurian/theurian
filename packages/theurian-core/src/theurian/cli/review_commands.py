@@ -79,6 +79,7 @@ from theurian.application.review_search_builder import (
     ReviewSearchBuildRequest,
 )
 from theurian.domain.errors import TheurianError
+from theurian.domain.review_ingest import REMEDIES
 from theurian.infrastructure.github import GitHubReviewProvider
 from theurian.infrastructure.github.limits import MAX_PULL_REQUESTS, PAGE_SIZE
 from theurian.infrastructure.review_evidence import (
@@ -680,9 +681,10 @@ def _payload(report: ReviewIngestReport) -> dict[str, object]:
 
     **``skippedRemedies`` is the one thing here that is not an identity or a
     count, and it is published because the cure had nowhere else to go** (#656).
-    A skipped pull request's ``FetchRefusal`` carries the envelope's remedy and
-    :data:`~theurian.domain.review_ingest.REMEDIES` records one per grade, so the
-    cure existed and was correct -- and no shipped surface published it.
+    :data:`~theurian.domain.review_ingest.REMEDIES` has recorded one cure per
+    grade since the grades existed, and a skipped pull request's ``FetchRefusal``
+    then carried a copy of it, so the cure existed and was correct -- and no
+    shipped surface published it.
     :func:`review_ingest`'s ``except TheurianError`` arm above, which writes
     ``exc.remedy`` to stderr through ``_fail``, is the only path any of these
     cures reached an operator on, and a *skipped* pull request is by definition
@@ -691,10 +693,10 @@ def _payload(report: ReviewIngestReport) -> dict[str, object]:
     changelog or not at all.
 
     **Keyed on the grade rather than on the item**, for a reason the domain
-    states about itself: the remedy is "looked up, never passed in", and
-    :class:`~theurian.domain.review_ingest.RefusalEnvelope` refuses an empty one,
-    so two pull requests refused for one reason carry the same string --
-    ``limit-exceeded``'s is over a thousand characters. One entry per grade
+    states about itself: the remedy is "looked up, never passed in", so the cure
+    for a grade *is* one string and two pull requests refused for one reason
+    would carry it twice -- ``limit-exceeded``'s is over a thousand
+    characters. One entry per grade
     publishes each cure at its natural cardinality, and ``skipped`` still names
     every pull request, so the pair is read by joining on the grade the line
     spells -- **by lookup, and never by position.** Neither channel's order is
@@ -716,22 +718,31 @@ def _payload(report: ReviewIngestReport) -> dict[str, object]:
     **Only the grades this run met.** The mapping is built from
     ``report.skipped`` and never from the table, so it carries no cure for a fault
     that did not happen -- and nothing about it varies with anything the caller
-    may not read: each value is a static row of
-    :data:`~theurian.domain.review_ingest.REMEDIES`, selected by a grade
+    may not read: each value is
+    :data:`~theurian.domain.review_ingest.REMEDIES` indexed **here**, by a grade
     ``skipped`` already publishes, so the field is a function of what is beside it.
 
-    That last sentence is a claim about the **type**, since
-    :class:`~theurian.domain.review_ingest.RefusalEnvelope` refuses a remedy that
-    is not the row its grade keys -- and ``dataclasses.replace`` re-runs that
-    check, so it covers every construction shape rather than the ones a source
-    walk can name. It was held by such a walk alone, and round one found what the
-    walk cannot see: a one-line ``replace(exc.envelope, remedy=f"...{detail}")``
-    in the ``gh`` provider, ``detail`` being a spawned child's stderr, put fetched
-    text one step from this key with the whole suite green. The checks are the
-    invariant (``tests/unit/test_review_ingest_refusals.py``), the source sweep,
-    a ratchet over a composed document's values, and a pin that nothing builds a
-    ``FetchRefusal`` except the constructor that copies an envelope (the last
-    three in ``tests/unit/test_review_run_document.py``).
+    **Two rounds of this premise rested on a guarded remedy travelling here, and
+    it no longer travels.** The value used to be ``FetchRefusal.remedy``, a plain
+    ``str`` copied off the envelope, and what was offered as its closure was the
+    envelope's own invariant -- which covers the construction shapes that run
+    ``__post_init__`` and not ``object.__setattr__``, a subclass, or a type that
+    never held an envelope at all. Round one had already shown the shape: a
+    one-line ``replace(exc.envelope, remedy=f"...{detail}")`` in the ``gh``
+    provider, ``detail`` being a spawned child's stderr. Round two showed it
+    again gated on ``if exc.envelope.detail``, where every canned test refusal
+    carried ``detail=""`` and production ones carry the child's output. So the
+    channel is gone rather than guarded: :class:`FetchRefusal` has no ``remedy``
+    field, the comprehension below indexes the table, and the published text
+    cannot be composed anywhere upstream because no upstream value reaches it.
+    What the invariant still covers is the *other* publication -- ``exc.remedy``
+    on stderr through ``_fail`` -- which is why it stays.
+
+    ``tests/unit/test_review_run_document.py`` holds this side: a planted
+    composition on an envelope is published as the table's row anyway, no
+    ``FetchRefusal`` is built except through the constructor that copies a
+    *bounded* summary off an envelope, and no ``RefusalEnvelope`` in ``src/`` is
+    built with a remedy it did not look up.
     """
     return {
         "repository": report.repository,
@@ -756,5 +767,9 @@ def _payload(report: ReviewIngestReport) -> dict[str, object]:
         # reaches no caller: `_emit` sorts the keys on the `--json` channel and
         # the human renderer walks them in skip order, so a cure is found by
         # looking its grade up and never by position (see the docstring).
-        "skippedRemedies": {skip.grade.value: skip.remedy for skip in report.skipped},
+        #
+        # `REMEDIES[skip.grade]` and not a field off `skip`: the value is looked
+        # up here, so nothing a `FetchRefusal`, an envelope or an adapter carries
+        # can decide what this key publishes.
+        "skippedRemedies": {skip.grade.value: REMEDIES[skip.grade] for skip in report.skipped},
     }

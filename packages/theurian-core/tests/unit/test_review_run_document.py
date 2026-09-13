@@ -2,20 +2,34 @@
 
 ``cli/review_commands._payload`` is the one place a run becomes a document, and
 until #656 its ``skipped`` entries were ``FetchRefusal.describe()`` strings --
-grade and summary, no cure. ``FetchRefusal`` carries the envelope's remedy and
-:data:`~theurian.domain.review_ingest.REMEDIES` records one per grade, so the
-cure existed, was correct, and reached nobody: an operator whose pull request was
-skipped ``limit-exceeded`` read what was refused and never what to do about it.
-#597 had just rewritten that cure with a per-record arm addressed to exactly this
-audience.
+grade and summary, no cure. :data:`~theurian.domain.review_ingest.REMEDIES`
+records one cure per grade and a ``FetchRefusal`` then carried a copy of the one
+its envelope held, so the cure existed, was correct, and reached nobody: an
+operator whose pull request was skipped ``limit-exceeded`` read what was refused
+and never what to do about it. #597 had just rewritten that cure with a per-record
+arm addressed to exactly this audience.
 
 **Grade-keyed rather than per item**, and these tests are where that shape is
 held. The remedy is grade-constant by the domain's own design -- looked up, never
-passed in, and ``RefusalEnvelope`` refuses an empty one -- so a copy per skipped
-pull request would publish one string many times: ``limit-exceeded``'s cure alone
-is over a thousand characters. One entry per grade publishes it at its natural
-cardinality, and the entries stay a mapping so a caller reads
-``skippedRemedies[grade]`` beside the ``skipped`` line that names the grade.
+passed in -- so a copy per skipped pull request would publish one string many
+times: ``limit-exceeded``'s cure alone is over a thousand characters. One entry
+per grade publishes it at its natural cardinality, and the entries stay a mapping
+so a caller reads ``skippedRemedies[grade]`` beside the ``skipped`` line that
+names the grade.
+
+**And the value is looked up at the publication site rather than carried there**
+(round two). ``FetchRefusal`` held a ``remedy`` field, ``_payload`` published it,
+and the offered closure was ``RefusalEnvelope``'s remedy invariant -- which
+reaches the construction shapes that run ``__post_init__`` and not
+``object.__setattr__``, a subclass, or a copy on a type that is not an envelope.
+Round two planted the surviving shape: ``if exc.envelope.detail: skip =
+replace(skip, remedy=f"{skip.remedy} gh said: {exc.envelope.detail}")`` in
+``_fetch``, invisible because every canned refusal in the suite carried
+``detail=""`` while production ones carry a spawned child's stderr. So the field
+is gone and ``_payload`` indexes the table:
+:func:`test_a_composed_cure_planted_past_the_invariant_still_publishes_the_table_row`
+is what goes RED if the value is ever read off an object again, and :func:`_skip`
+now carries a detail by default so no detail-gated arm can hide from this file.
 
 Unit rather than integration: every claim here is about the function that builds
 the document, driven with a real :class:`ReviewIngestReport` rather than a
@@ -55,15 +69,26 @@ _SOURCE_ROOT: Final = Path(next(iter(theurian.__path__)))
 #: the document no longer has.
 _CURES: Final = "skippedRemedies"
 
-#: The type whose ``remedy`` this key publishes, spelled as the string the AST walk
-#: matches rather than taken off the imported class. ``FetchRefusal.__name__`` would
-#: follow a rename silently and leave the walk looking for whatever the class is
-#: called now, which is the one outcome the walk's fail-closed guard exists to
-#: report as a failure a human classifies.
+#: The type whose ``summary`` the ``skipped`` lines publish, spelled as the string
+#: the AST walk matches rather than taken off the imported class.
+#: ``FetchRefusal.__name__`` would follow a rename silently and leave the walk
+#: looking for whatever the class is called now, which is the one outcome the
+#: walk's fail-closed guard exists to report as a failure a human classifies.
 _FETCH_REFUSAL: Final = "FetchRefusal"
 
+#: Child output a canned refusal carries, shaped like what ``gh`` writes to stderr
+#: and distinctive enough to search a whole document for.
+#:
+#: **Non-empty on purpose, and that is the round-two lesson.** The surviving
+#: composition was gated on ``if exc.envelope.detail`` and every canned refusal in
+#: the suite passed ``detail=""``, so the arm was dead in every test and live in
+#: production -- ``infrastructure/github/review_provider.py``'s two
+#: ``TOOL_FAILED`` raises both pass ``detail=outcome.stderr``. A default detail
+#: here means a detail-gated arm runs whenever this file runs.
+_CHILD_STDERR: Final = "gh: ssh-rsa AAAAB3NzaC1yc2EAAAA-canary"
 
-def _skip(number: int, grade: RefusalGrade) -> FetchRefusal:
+
+def _skip(number: int, grade: RefusalGrade, *, detail: str = _CHILD_STDERR) -> FetchRefusal:
     """One skipped pull request, built the way the ingest run builds one.
 
     Through :class:`ReviewIngestRefusedError` rather than by constructing a
@@ -71,8 +96,15 @@ def _skip(number: int, grade: RefusalGrade) -> FetchRefusal:
     the only construction that *looks the remedy up* -- the domain's rule is that a
     remedy is never passed in, and a test that passed one could pin a cure the
     shipped table does not hold.
+
+    ``detail`` defaults to :data:`_CHILD_STDERR` rather than to ``""``, so every
+    report this file composes carries the field that makes a detail-gated
+    composition live. It reaches no assertion by itself; what it buys is that an
+    arm reading it cannot be dead here while it is live in a real run.
     """
-    refused = ReviewIngestRefusedError(grade, f"Pull request {REPOSITORY}#{number} was refused.")
+    refused = ReviewIngestRefusedError(
+        grade, f"Pull request {REPOSITORY}#{number} was refused.", detail=detail
+    )
     return FetchRefusal.of(REPOSITORY, number, refused.envelope)
 
 
@@ -345,28 +377,27 @@ def _refusal_envelope_remedy_arguments() -> list[tuple[str, int, str]]:
 
 
 def test_every_published_cure_is_a_row_of_the_recorded_table_and_never_a_passed_string() -> None:
-    """A source-hygiene sweep, and **not** what closes this premise any more.
+    """A source-hygiene sweep, and **not** what closes the run document's key.
 
-    The field puts a ``FetchRefusal.remedy`` on stdout, and the reason that is not a
-    disclosure surface is that the value is Theurian's own static text: the remedy
-    is *looked up* by grade, never passed in, so what a caller reads is a row of
-    :data:`REMEDIES` selected by a grade the same document already publishes.
-
-    This test was written as that premise's closure and could not be it. It reads
-    constructions **by name** -- an ``ast.Call`` whose func is ``RefusalEnvelope``
-    -- and a construction need not spell the name: round one planted
-    ``replace(exc.envelope, remedy=f"...{detail}")`` in the ``gh`` provider, where
-    ``detail`` carries a spawned child's stderr, and the whole suite stayed green.
-    What closes it now is a runtime invariant on the type
-    (:meth:`~theurian.domain.review_ingest.RefusalEnvelope.__post_init__` refuses a
-    remedy that is not its grade's row, and ``dataclasses.replace`` re-runs it),
-    driven by ``tests/unit/test_review_ingest_refusals.py::
-    test_an_envelope_refuses_a_remedy_that_is_not_the_row_recorded_for_its_grade``,
-    with the document-side ratchet below as the cheap second reading.
-
-    What this still buys is worth keeping: a lookup at the *construction* keeps the
-    call sites readable, so a reviewer sees the rule in the diff rather than
+    What it holds is the *other* publication of a remedy. A run-ending refusal
+    leaves ``cli/review_commands`` through ``_fail(str(exc), remedy=exc.remedy)``,
+    which puts the envelope's own field on stderr, so a cure composed at a
+    construction site would be fetched text in a refusal document. This walk keeps
+    those sites readable -- a reviewer sees the lookup in the diff rather than
     inferring it from a raise three layers down.
+
+    **It was offered as the run document's closure twice and is not that.** It
+    reads constructions **by name** -- an ``ast.Call`` whose func is
+    ``RefusalEnvelope`` -- and a construction need not spell the name: round one
+    planted ``replace(exc.envelope, remedy=f"...{detail}")`` in the ``gh``
+    provider and the whole suite stayed green. The type's invariant
+    (``tests/unit/test_review_ingest_refusals.py::
+    test_an_envelope_refuses_a_remedy_that_is_not_the_row_recorded_for_its_grade``)
+    covers ``replace`` and the named call and stops at ``object.__setattr__``. What
+    closes ``skippedRemedies`` is that it no longer reads any of this: the value is
+    ``REMEDIES`` indexed at the publication site, which
+    :func:`test_a_composed_cure_planted_past_the_invariant_still_publishes_the_table_row`
+    holds.
     """
     sites = _refusal_envelope_remedy_arguments()
 
@@ -389,22 +420,19 @@ def test_every_published_cure_is_a_row_of_the_recorded_table_and_never_a_passed_
 def test_every_cure_a_composed_document_publishes_is_a_row_of_the_table() -> None:
     """The same premise read off the document, which is where a caller meets it.
 
-    The two checks around this one are about how an envelope is *built* -- one at
-    the type, one over the source. This one asks the published mapping, over a run
-    that met several grades, whether every value in it is a string this repository
-    wrote: no AST, and no knowledge of which module builds what.
+    The check above is about how an envelope is *built*. This one asks the published
+    mapping, over a run that met every grade, whether every value in it is a string
+    this repository wrote: no AST, and no knowledge of which module builds what.
 
     **What it does not reach is worth saying, because the obvious reading is
-    wrong.** The report it asks about is composed here, from :func:`_skip`, so an
-    adapter that composed a cure of its own is invisible to it -- the only remedies
-    it can ever see are the ones this file put in. Measured: with
-    ``replace(exc.envelope, remedy=f"...{detail}")`` planted in the ``gh`` provider
-    and the type's invariant removed, this file and
+    wrong.** The report it asks about is composed here, from :func:`_skip`, so a
+    provider that composed a cure of its own is invisible to it. Measured at round
+    one: with ``replace(exc.envelope, remedy=f"...{detail}")`` planted in the ``gh``
+    provider and the type's invariant removed, this file and
     ``test_gh_review_provider.py`` ran green together (129 passed, in a throwaway
-    clone); with the invariant back, that provider test fails and this file still
-    does not notice. So this is a ratchet over the
-    document's *shape* -- a future field that summarised or templated a cure
-    reddens here -- and the closure over adapters is the invariant's.
+    clone). So this is a ratchet over the document's *shape* -- a future field that
+    summarised or templated a cure reddens here -- and not a containment argument.
+    The one below is the containment argument.
 
     A subset rather than an equality, because a run meets some grades and not
     others; the equality on *which* grades appear is
@@ -422,22 +450,73 @@ def test_every_cure_a_composed_document_publishes_is_a_row_of_the_table() -> Non
     )
 
 
-def _fetch_refusal_constructions() -> list[tuple[str, int]]:
-    """Every ``FetchRefusal(...)`` call in ``src/``, by module and line.
+def test_a_composed_cure_planted_past_the_invariant_still_publishes_the_table_row() -> None:
+    """The containment: the published cure is a lookup, not a value that travelled.
 
-    The companion population to :func:`_refusal_envelope_remedy_arguments`, and the
-    reason it is walked at all: ``skippedRemedies`` reads
-    ``FetchRefusal.remedy``, and what makes *that* a table row is that the field is
-    copied from an envelope by :meth:`FetchRefusal.of`. A call that built one
-    directly would take ``remedy`` as an ordinary string and reach the published
-    document without passing any envelope's construction at all.
+    Round two's finding was that the closure for this key was
+    ``RefusalEnvelope``'s remedy invariant, and an invariant on one type cannot
+    close a field that is *copied* out of it -- ``FetchRefusal`` took the string as
+    an ordinary ``str``, ``_payload`` published that copy, and the composition the
+    reviewer planted was gated on a ``detail`` no canned refusal carried.
+
+    So the plant here goes past the invariant on purpose. ``object.__setattr__``
+    writes a frozen field without re-running ``__post_init__``, which is the one
+    shape the invariant provably does not see -- and it is the *strongest* plant
+    available: anything an adapter could do to an envelope leaves the envelope in
+    this state or a weaker one. The envelope then carries a cure with a spawned
+    child's stderr in it, is handed to :meth:`FetchRefusal.of`, and the document is
+    asked what it published.
+
+    RED when ``_payload`` reads a remedy off any object on the way -- which is the
+    shipped code of two rounds ago, and the shape a future refactor would restore
+    by "avoiding the extra lookup".
+    """
+    refused = ReviewIngestRefusedError(
+        RefusalGrade.TOOL_FAILED, f"Pull request {REPOSITORY}#42 was refused.", detail=_CHILD_STDERR
+    )
+    composed = f"{REMEDIES[RefusalGrade.TOOL_FAILED]} gh said: {_CHILD_STDERR}"
+    object.__setattr__(refused.envelope, "remedy", composed)
+
+    assert refused.envelope.remedy == composed, (
+        "the plant did not land, so this test proves nothing about what survives it. "
+        "`RefusalEnvelope` is a frozen slots dataclass and `object.__setattr__` is how "
+        "a write past `__post_init__` is spelled; if that has stopped working, find the "
+        "shape that replaces it before trusting a green result."
+    )
+
+    document = _payload(_report(FetchRefusal.of(REPOSITORY, 42, refused.envelope)))
+
+    assert _published_cures(document) == {
+        RefusalGrade.TOOL_FAILED.value: REMEDIES[RefusalGrade.TOOL_FAILED]
+    }, "the planted cure reached the published document, so this key reads a carried value"
+    assert _CHILD_STDERR not in json.dumps(document), (
+        f"the child's stderr is somewhere in the run document: {json.dumps(document)!r}. "
+        "`detail` is the field that carries what a spawned `gh` wrote and no published "
+        "key may be composed from it."
+    )
+
+
+def _fetch_refusal_constructions() -> list[str]:
+    """Every ``FetchRefusal(...)`` call in ``src/``, by path relative to the package.
+
+    The companion population to :func:`_refusal_envelope_remedy_arguments`, and its
+    subject is now the ``summary``: the ``skipped`` lines publish
+    ``FetchRefusal.summary``, and what bounds that string is
+    :meth:`~theurian.domain.review_ingest.RefusalEnvelope.__post_init__`'s cut at
+    ``MAX_REFUSAL_SUMMARY_CHARS``. This type reaches that bound only by being built
+    through :meth:`FetchRefusal.of`, which copies an already-constructed envelope's
+    value. A call that built one directly would take ``summary`` as an ordinary
+    string and put it in the run document uncut.
+
+    Relative to the package root rather than by basename, because two modules may
+    share a name and a bare ``review_provider.py`` does not say which tree it is in.
 
     Matches the bare name and the attribute spelling
     (``review_ingest_service.FetchRefusal(...)``), because either is a
     construction. ``of``'s own body is invisible to this walk by construction: it
     calls ``cls(...)``.
     """
-    found: list[tuple[str, int]] = []
+    found: list[str] = []
     for module in sorted(_SOURCE_ROOT.rglob("*.py")):
         for node in ast.walk(ast.parse(module.read_text(encoding="utf-8"))):
             if not isinstance(node, ast.Call):
@@ -447,19 +526,25 @@ def _fetch_refusal_constructions() -> list[tuple[str, int]]:
                 isinstance(func, ast.Attribute) and func.attr == _FETCH_REFUSAL
             )
             if named:
-                found.append((module.name, node.lineno))
+                found.append(module.relative_to(_SOURCE_ROOT).as_posix())
     return found
 
 
 def test_nothing_builds_a_fetch_refusal_except_the_constructor_that_copies_an_envelope() -> None:
-    """Why ``skippedRemedies``' values are envelope remedies and not free strings.
+    """Why a published ``skipped`` line carries a bounded summary and not a free string.
 
-    :class:`FetchRefusal` is a plain frozen dataclass whose ``remedy`` is a ``str``
-    with no validation of its own -- the invariant that makes a remedy a table row
-    lives on :class:`~theurian.domain.review_ingest.RefusalEnvelope`, and this type
-    reaches it only by being built through
-    :meth:`FetchRefusal.of`, which copies the three fields off an envelope. A direct
-    construction anywhere would be a published cure that never passed that check.
+    :class:`FetchRefusal` is a plain frozen dataclass whose ``summary`` is a ``str``
+    with no validation of its own -- the cut that bounds it lives on
+    :class:`~theurian.domain.review_ingest.RefusalEnvelope`, and this type reaches
+    it only by being built through :meth:`FetchRefusal.of`, which copies the fields
+    off an already-constructed envelope. A direct construction anywhere would put
+    an uncut summary in the run document.
+
+    **Re-aimed rather than retired** (round two). It was written about the
+    ``remedy`` field, which no longer exists: ``_payload`` indexes ``REMEDIES``
+    itself, so a direct construction can no longer decide what cure is published.
+    It can still decide what ``describe()`` prints, and that string is published
+    under ``skipped`` -- so the walk keeps a subject.
 
     **Fail-closed**: the class has to be found in the walked source and ``of`` has
     to be called from it, or the emptiness below is a rename rather than a property.
@@ -481,9 +566,9 @@ def test_nothing_builds_a_fetch_refusal_except_the_constructor_that_copies_an_en
     direct = _fetch_refusal_constructions()
 
     assert not direct, (
-        f"`{_FETCH_REFUSAL}` is constructed directly at {direct}, bypassing `of` -- "
-        "which is the only thing that ties its `remedy` to an envelope's, and so to a "
-        "`REMEDIES` row. `skippedRemedies` publishes that field, so a direct "
-        "construction can put any string on stdout. Build it from an envelope, or give "
-        "this type an invariant of its own."
+        f"`{_FETCH_REFUSAL}` is constructed directly in {direct}, bypassing `of` -- "
+        "which is the only thing that ties its `summary` to an envelope's, and so to "
+        "the cut `RefusalEnvelope.__post_init__` applies. `describe()` puts that field "
+        "in the run document, so a direct construction can publish an unbounded "
+        "sentence. Build it from an envelope, or give this type a bound of its own."
     )

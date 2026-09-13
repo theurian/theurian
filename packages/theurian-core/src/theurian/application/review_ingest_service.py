@@ -308,9 +308,23 @@ class ReviewIngestRequest:
 class FetchRefusal:
     """One pull request whose records this run withheld whole.
 
-    Carries the envelope's own three fields rather than the exception: a report is
-    a published document, and the summary is already bounded by
-    :class:`~theurian.domain.review_ingest.RefusalEnvelope`'s construction.
+    Carries the identity plus the envelope's grade and summary rather than the
+    exception: a report is a published document, and the summary is already
+    bounded by :class:`~theurian.domain.review_ingest.RefusalEnvelope`'s
+    construction.
+
+    **It holds no remedy, and that absence is the containment** (#656, round
+    two). It held one -- a plain ``str`` on a plain dataclass, copied off the
+    envelope by :meth:`of` -- and ``cli/review_commands._payload`` published that
+    copy as ``skippedRemedies``. So any composition upstream of this copy reached
+    stdout through it: a one-line ``replace(exc.envelope, remedy=f"...{detail}")``
+    in the ``gh`` provider, ``detail`` being a spawned child's stderr, put fetched
+    text one step from the run document, and a detail-gated version of it survived
+    the whole suite. The publication site looks the cure up from
+    :data:`~theurian.domain.review_ingest.REMEDIES` by :attr:`grade` instead, so
+    the published text is a function of that grade and that table and of no field
+    any object on the way carries. A field that cannot hold fetched text is a
+    field that does not exist.
 
     **One shape for both record-scope seams**, the listing's returned skip and a
     per-pull-request fetch's raised refusal. Two shapes would be two vocabularies
@@ -321,7 +335,6 @@ class FetchRefusal:
     identity: ReviewRecordIdentity
     grade: RefusalGrade
     summary: str
-    remedy: str
 
     @classmethod
     def of(cls, repository: str, number: int, envelope: RefusalEnvelope) -> FetchRefusal:
@@ -330,7 +343,6 @@ class FetchRefusal:
             identity=ReviewRecordIdentity(repository, number),
             grade=envelope.grade,
             summary=envelope.summary,
-            remedy=envelope.remedy,
         )
 
     def describe(self) -> str:

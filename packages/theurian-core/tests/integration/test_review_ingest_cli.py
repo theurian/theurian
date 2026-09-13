@@ -166,6 +166,17 @@ def _over_cap(number: int) -> ReviewIngestRefusedError:
     )
 
 
+#: Child output this file's ``tool-failed`` refusal carries, shaped like a spawned
+#: ``gh``'s stderr and distinctive enough to search a whole document for.
+#:
+#: **Non-empty, because an empty one hid a composition for a round.** The
+#: surviving shape was gated on ``if exc.envelope.detail`` and every canned refusal
+#: in the suite passed ``detail=""``, while the ``gh`` adapter's two ``TOOL_FAILED``
+#: raises both pass ``detail=outcome.stderr``. With this here, a detail-gated arm
+#: runs on the shipped command.
+_CHILD_STDERR: Final = "gh: ssh-rsa AAAAB3NzaC1yc2EAAAA-canary"
+
+
 def _tool_failed(number: int) -> ReviewIngestRefusedError:
     """A **second** grade for one run, which is what tells the two channels apart.
 
@@ -174,10 +185,15 @@ def _tool_failed(number: int) -> ReviewIngestRefusedError:
     and it sorts after ``limit-exceeded`` -- so a run that skips on this grade
     first publishes the two in one order on the ``--json`` channel and the other
     on the human one.
+
+    It carries :data:`_CHILD_STDERR` as its ``detail`` for the same reason the real
+    one carries ``outcome.stderr``: this is the grade a failed spawn takes, and the
+    document must be shown not to publish what the child said.
     """
     return ReviewIngestRefusedError(
         RefusalGrade.TOOL_FAILED,
         f"`gh` failed reading the review threads on {REPOSITORY}#{number}.",
+        detail=_CHILD_STDERR,
     )
 
 
@@ -747,7 +763,7 @@ def test_a_skipped_pull_request_exits_one_and_is_named_by_identity(
     grade = RefusalGrade.LIMIT_EXCEEDED.value
     assert payload["skippedRemedies"] == {grade: REMEDIES[RefusalGrade.LIMIT_EXCEEDED]}, (
         "the document does not carry the cure recorded for the grade it published, so "
-        "the remedy `FetchRefusal` holds still reaches no operator (#656)"
+        "the cure `REMEDIES` records still reaches no operator (#656)"
     )
     # The join, through the shipped command rather than only at `_payload`: the
     # line names the grade that keys the cure, which is how a caller pairs them.
@@ -844,6 +860,14 @@ def test_a_run_that_skipped_for_two_reasons_publishes_both_cures_on_both_channel
     assert list(payload["skippedRemedies"]) == [exceeded, failed], (
         "the `--json` channel no longer publishes these keys sorted; `_payload`'s "
         "docstring says it does, so one of the two has moved"
+    )
+    # The `tool-failed` refusal carries a spawned child's stderr in its `detail`,
+    # which is the field #656's round two showed a cure can be composed from. The
+    # whole document, not the cure alone: what the plant reached was one key, and
+    # what it proves is that no key is composed from what the child wrote.
+    assert _CHILD_STDERR not in json.dumps(payload), (
+        f"the run document carries the failed spawn's own output: {payload}. `detail` "
+        "reaches the operator through nothing this command publishes."
     )
 
     result = runner.invoke(app, ["review", "ingest", REPOSITORY], catch_exceptions=False)
