@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theurian.dev/schemas/mcp/knowledge-status-input.schema.json",
+  "title": "Input to the `knowledge.status` MCP tool",
+  "x-theurian-tool": "knowledge.status",
+  "description": "What a caller may send to `knowledge.status`. SEC-12 validates every call against this file before it reaches application code, in the MCP server middleware (ADR-0031 decision 2).\n\n**This tool takes the shared context and nothing else**, which is why `properties` is empty rather than absent: the emptiness is the contract. Every key a caller sends beyond the context is refused rather than dropped, and on a tool with no parameters of its own that refusal is the only thing standing between a caller and an answer to a question it did not ask (ADR-0031 decision 4).\n\n**Composition.** The context — `projectId`, and the optional `snapshotId`, `agentId` and `taskId` — arrives by `$ref` to `tool-context.schema.json`. The closure is `unevaluatedProperties: false` and not `additionalProperties: false`, which under a `$ref` composition rejects the very context fields it referenced (ADR-0031 decision 1, measured against `jsonschema` 4.26.0). `projectId` is required by the referent and is not repeated here.\n\n**Three referenced context fields are accepted and read by nothing.** `snapshotId`, `agentId` and `taskId` are the referent's, and no handler in this build takes them, so a call that sets one is answered as if it had not.\n\nTaking one argument is a property this tool's response schema depends on: with no filter to vary, no published count can be made into a probe, which is the reasoning that made `stateHash` and `appliedMigrations` publishable at all.",
+  "type": "object",
+  "allOf": [{ "$ref": "https://theurian.dev/schemas/mcp/tool-context.schema.json" }],
+  "unevaluatedProperties": false,
+  "properties": {}
+}

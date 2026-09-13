@@ -30,6 +30,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 from migration_fixtures import UNREACHED_BODY_PIN
 
+from theurian.mcp.validation import INPUT_SCHEMA_SUFFIX
 from theurian.security.project_config import SecretScanPolicy
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
@@ -39,11 +40,19 @@ ALL_SCHEMA_PATHS = sorted(SCHEMAS.rglob("*.schema.json"))
 
 RETRIEVAL_METADATA = "mcp/retrieval-metadata.schema.json"
 RETRIEVAL_RESULT = "knowledge/retrieval-result.schema.json"
+TOOL_CONTEXT = "mcp/tool-context.schema.json"
 
 
 def _load(relative: str) -> dict[str, Any]:
     loaded: dict[str, Any] = json.loads((SCHEMAS / relative).read_text(encoding="utf-8"))
     return loaded
+
+
+#: The identity a per-tool input schema references the shared context by, read
+#: off the file rather than transcribed: a ``$id`` that moved would otherwise
+#: leave every reference below matching nothing, and a closure claim that matches
+#: nothing passes.
+CONTEXT_SCHEMA_ID = _load(TOOL_CONTEXT)["$id"]
 
 
 def test_schemas_directory_is_populated() -> None:
@@ -63,18 +72,123 @@ def test_schema_declares_an_id_and_title(path: pathlib.Path) -> None:
     assert schema.get("title")
 
 
+#: The one published object schema that does not close itself, and the closure
+#: claim that replaces its own (ADR-0031 decision 1).
+#:
+#: ``tool-context.schema.json`` is referenced by every project-scoped tool's
+#: input schema, and ``additionalProperties`` in Draft 2020-12 considers only the
+#: ``properties`` of its own schema object -- so a referrer that closed itself
+#: with that keyword rejected the very context fields it had just referenced.
+#: Measured against ``jsonschema`` 4.26.0, the one composition that admits a
+#: valid document and refuses an unknown key is ``allOf: [{"$ref": …}]`` closed
+#: with ``unevaluatedProperties: false`` **in the referrer**, and it requires the
+#: referent's own keyword to go.
+#:
+#: The closure is therefore enforced once per tool instead of once here, and this
+#: exception is only honest while that is true -- which is what the
+#: ``_CLOSURE_DELEGATED`` arm below checks, rather than skipping the file.
+_CLOSURE_DELEGATED = "tool-context.schema.json"
+
+#: The filename suffix marking a published schema as input side, taken from the
+#: loader that reads them rather than respelled here: a suffix this file and
+#: ``mcp/validation.py`` disagreed about would leave the input schemas unchecked
+#: by one of the two, silently.
+_INPUT_SUFFIX = INPUT_SCHEMA_SUFFIX
+
+
+def _references(schema: dict[str, Any], identifier: str) -> bool:
+    """Whether ``schema`` names ``identifier`` in a ``$ref`` anywhere inside it."""
+    frontier: list[Any] = [schema]
+    while frontier:
+        node = frontier.pop()
+        if isinstance(node, dict):
+            if node.get("$ref") == identifier:
+                return True
+            frontier.extend(node.values())
+        elif isinstance(node, list):
+            frontier.extend(node)
+    return False
+
+
+def _input_schemas() -> list[tuple[pathlib.Path, dict[str, Any]]]:
+    return [
+        (path, json.loads(path.read_text(encoding="utf-8")))
+        for path in ALL_SCHEMA_PATHS
+        if path.name.endswith(_INPUT_SUFFIX)
+    ]
+
+
 @pytest.mark.parametrize("path", ALL_SCHEMA_PATHS, ids=lambda p: p.name)
 def test_object_schemas_reject_unknown_properties(path: pathlib.Path) -> None:
     """Silently accepting an unknown field turns a typo into a no-op.
 
     In a migration format that means an operation someone believes they applied
-    and did not.
+    and did not. On the MCP boundary it means a caller that misspelled a
+    parameter was served a confident answer to a question it did not ask, which
+    is the silence SEC-12 exists to end (ADR-0031 decision 4).
+
+    **One claim, three arms, because the keyword that carries it moved.**
+
+    * A response schema closes with ``additionalProperties: false``, unchanged.
+    * An input schema closes with ``unevaluatedProperties: false`` -- the one
+      keyword ADR-0031 decision 1's table measured as composing with a ``$ref``
+      to the shared context. A per-tool schema that dropped it is caught here,
+      whether or not it references the context.
+    * ``tool-context.schema.json`` closes with neither, and is the tree's one
+      recorded exception. Its arm is not a skip: it asserts that the delegation
+      it relies on is real -- that referrers exist at all, and that every one of
+      them carries the keyword. A referent with no referrer would be an open
+      schema with nothing standing behind it, and that reads identically to a
+      forgotten keyword unless something says so.
+
+    An input schema referencing the context must also *not* set
+    ``additionalProperties: false``: under that composition it rejects every
+    valid document, so a file carrying both keywords is a contract that refuses
+    its own product rather than a belt-and-braces one
+    (``test_input_validation.py`` drives that half against ``jsonschema``).
     """
     schema = json.loads(path.read_text(encoding="utf-8"))
-    if schema.get("type") == "object" and "patternProperties" not in schema:
-        assert schema.get("additionalProperties") is False, (
-            f"{path.name}: top-level object schemas must set additionalProperties: false"
+    if schema.get("type") != "object" or "patternProperties" in schema:
+        return
+
+    if path.name.endswith(_INPUT_SUFFIX):
+        assert schema.get("unevaluatedProperties") is False, (
+            f"{path.name}: a published input schema must close with "
+            f"unevaluatedProperties: false (ADR-0031 decision 1). "
+            f"additionalProperties is not the substitute -- under the context $ref "
+            f"composition it rejects every valid document."
         )
+        if _references(schema, CONTEXT_SCHEMA_ID):
+            assert "additionalProperties" not in schema, (
+                f"{path.name}: it references the shared context and also sets "
+                f"additionalProperties, which rejects the context fields it just "
+                f"referenced. Close with unevaluatedProperties: false alone."
+            )
+        return
+
+    if path.name == _CLOSURE_DELEGATED:
+        referrers = [
+            (referrer.name, document)
+            for referrer, document in _input_schemas()
+            if _references(document, CONTEXT_SCHEMA_ID)
+        ]
+        assert referrers, (
+            f"{_CLOSURE_DELEGATED} closes itself with nothing, on the grounds that "
+            f"its referrers close it for it -- and no published input schema "
+            f"references it. Either restore additionalProperties: false here or "
+            f"restore the referrers."
+        )
+        for name, document in referrers:
+            assert document.get("unevaluatedProperties") is False, (
+                f"{name} references {_CLOSURE_DELEGATED} and does not close with "
+                f"unevaluatedProperties: false, so the context fields it inherits "
+                f"are open on that tool."
+            )
+        return
+
+    assert schema.get("additionalProperties") is False, (
+        f"{path.name}: top-level object schemas must set additionalProperties: false"
+    )
 
 
 # -- Migration schema ------------------------------------------------------

@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theurian.dev/schemas/mcp/system-capabilities-input.schema.json",
+  "title": "Input to the `system.capabilities` MCP tool",
+  "x-theurian-tool": "system.capabilities",
+  "description": "What a caller may send to `system.capabilities`: nothing. SEC-12 validates every call against this file before it reaches application code, in the MCP server middleware (ADR-0031 decision 2).\n\n**No `$ref` to `tool-context.schema.json`, and that is derived rather than assumed.** This tool reports what the *daemon* can do — which optional stores were built, which protocol version it speaks — and its handler takes no arguments, so referencing a context that *requires* `projectId` would publish a contract refusing every call this build serves. ADR-0031 decision 1 fixes the composition for project-scoped tools; which tools those are is decided by the handlers.\n\n**The closure is still `unevaluatedProperties: false`**, uniformly with the tools that do compose: with no `properties` declared and no `allOf` branch to evaluate, every key a caller sends is unevaluated and therefore refused. One keyword across the set is what lets a single test hold the closure claim over all of them.\n\nA capability report that varied with an argument would be a different kind of object than this one: taking no input is what makes the answer a property of the installation rather than of the question.",
+  "type": "object",
+  "unevaluatedProperties": false,
+  "properties": {}
+}

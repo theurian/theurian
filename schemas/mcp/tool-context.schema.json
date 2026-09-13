@@ -2,10 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://theurian.dev/schemas/mcp/tool-context.schema.json",
   "title": "Theurian MCP tool call context",
-  "description": "Explicit context carried by every project-scoped MCP tool call. There is no server-side session state and no process-global current project: with many agents sharing one daemon, an implicit default resolves one agent's query against another agent's project (ADR-0002).",
+  "description": "Explicit context carried by every project-scoped MCP tool call. There is no server-side session state and no process-global current project: with many agents sharing one daemon, an implicit default resolves one agent's query against another agent's project (ADR-0002).\n\n**This file no longer closes itself, and the closure is not lost — it moved to every schema that references it** (ADR-0031 decision 1). `additionalProperties` in Draft 2020-12 considers only the `properties` of its own schema object, so a per-tool input schema that referenced this one and then closed itself rejected the very context fields it had just referenced: measured against `jsonschema` 4.26.0, all three arrangements but one refuse a valid document, and the one that works is `allOf: [{\"$ref\": …}]` closed with `unevaluatedProperties: false` in the referring file. Keeping the keyword here would have made that composition impossible and left each tool inlining these four properties instead — one further published copy of the `projectId` pattern per tool, which is the duplication `$ref` exists to avoid.\n\nSo an unknown key is refused once per tool rather than once here, and `test_schemas.py::test_object_schemas_reject_unknown_properties` holds that: this file is the one recorded exception in the tree, and the same test asserts that every input schema referencing it carries `unevaluatedProperties: false`. A referrer that dropped the keyword fails there rather than quietly admitting whatever a caller sends.",
   "type": "object",
   "required": ["projectId"],
-  "additionalProperties": false,
   "properties": {
     "projectId": {
       "type": "string",

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theurian.dev/schemas/mcp/knowledge-get-input.schema.json",
+  "title": "Input to the `knowledge.get` MCP tool",
+  "x-theurian-tool": "knowledge.get",
+  "description": "What a caller may send to `knowledge.get`. SEC-12 validates every call against this file before it reaches application code, in the MCP server middleware (ADR-0031 decision 2).\n\n**Unknown keys are refused rather than dropped.** The SDK builds its argument model from the handler's annotations and sets no `extra=\"forbid\"`, so a key it does not recognise is discarded before any Theurian code runs. On this tool that silence is the one that matters most: a caller who misspells `includeUnapproved` is told nothing, and reads the refusal that follows as \"no such item\" (ADR-0031 decision 4).\n\n**Composition.** The context every project-scoped call carries — `projectId`, and the optional `snapshotId`, `agentId` and `taskId` — arrives by `$ref` to `tool-context.schema.json` rather than being restated here. The closure is `unevaluatedProperties: false` and not `additionalProperties: false`, which under a `$ref` composition rejects the very context fields it referenced (ADR-0031 decision 1, measured against `jsonschema` 4.26.0). `projectId` is required by the referent and is not repeated in this file's `required`.\n\n**Three referenced context fields are accepted and read by nothing.** `snapshotId`, `agentId` and `taskId` are the referent's, and no handler in this build takes them, so a call that sets one is answered as if it had not.\n\n**What this file constrains, and what it leaves to the handler.** Shape and length. The identifier grammar stays a handler refusal: `ItemId` rejects a malformed id with a message that names `knowledge.search` as the way to find a real one, and a `pattern` here would answer \"does not satisfy\" in its place.",
+  "type": "object",
+  "allOf": [{ "$ref": "https://theurian.dev/schemas/mcp/tool-context.schema.json" }],
+  "required": ["itemId"],
+  "unevaluatedProperties": false,
+  "properties": {
+    "itemId": {
+      "type": "string",
+      "maxLength": 200,
+      "description": "Which item to fetch. An alias resolves to the item it names, so a renamed item stays reachable by the id a caller already holds.\n\nAt most 200 characters, which is `MAX_IDENTIFIER_LENGTH` — the bound `ItemId` itself enforces, so no stored id can be longer and a longer one could name nothing. Bounded here as well because an over-long id is otherwise carried into an error message: the handler reports its length rather than quoting it, and this refuses it before either happens (#17).\n\nA well-formed id this caller may not read and one that was never stored are the same answer, deliberately (SEC-13). Nothing about that distinction is expressible here, and nothing here narrows it."
+    },
+    "includeUnapproved": {
+      "type": "boolean",
+      "description": "Whether a draft or proposal may be returned. Defaults to `false`, and never reaches retired knowledge: a `rejected`, `deprecated` or `superseded` revision is withheld from every caller on every path, because closing that door in `knowledge.search` alone would achieve nothing — a caller reads an approved item, takes the `targetItemId` off its `rejects` relation, and fetches the withheld body in one more call (SEC-13)."
+    }
+  }
+}
