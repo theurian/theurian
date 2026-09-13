@@ -434,6 +434,18 @@ def test_every_cure_a_composed_document_publishes_is_a_row_of_the_table() -> Non
     summarised or templated a cure reddens here -- and not a containment argument.
     The one below is the containment argument.
 
+    **And the comparison is against the table, so the table is what has to be
+    unable to move.** ``set(REMEDIES.values())`` is both sides of this assertion:
+    a write to the table shifts the expected answer along with the published one,
+    and this reads green. Two things stop that, neither of them here. The table is
+    a ``MappingProxyType`` annotated ``Final``, so the item write raises
+    ``TypeError`` and the rebinding is refused by ``mypy`` -- measured, both. And
+    what holds the table's *text* without reading its values is
+    ``tests/unit/test_review_ingest_refusals.py::
+    test_every_recorded_remedy_is_a_plain_literal_with_nothing_interpolated``,
+    which reads the rows out of the syntax tree: a row turned into an f-string
+    reddens exactly there and nowhere else, this file included.
+
     A subset rather than an equality, because a run meets some grades and not
     others; the equality on *which* grades appear is
     :func:`test_only_the_grades_this_run_met_are_published_never_the_whole_table`'s.

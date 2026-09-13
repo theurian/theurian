@@ -118,8 +118,12 @@ this module is for.
 **Both directions carry a positive control**, because a pin whose expected
 answer is "the fragment is still there" and a pin that has stopped looking read
 identically from the outside.
-:func:`test_a_drifted_entry_is_reported_by_the_same_checker` mutates each
-fragment into the drift it guards against and asserts the checker reports it;
+:func:`test_a_drifted_entry_is_reported_by_the_same_checker` plants each row's
+drift into the document two ways -- *replacing* the correction and *added beside*
+it -- and asserts the checker reports both. The second shape is the one a rebase
+leaves when a conflict is resolved by keeping both sides, and until round two the
+checker had no arm for it: the correction was still present, so the row read
+green over an entry that stated its own reversion beside it;
 :func:`test_the_field_pin_reddens_when_the_run_document_stops_publishing_it`
 strips the key out of the live payload and asserts the fact pin reports that.
 Both plant into a copy and neither is committed.
@@ -177,13 +181,23 @@ def _collapsed(text: str) -> str:
     return " ".join(text.split())
 
 
-def _assert_the_entry_states(label: str, document: str, fragment: str, fact_side: str) -> None:
+def _assert_the_entry_states(
+    label: str, document: str, fragment: str, drift: str, fact_side: str
+) -> None:
     """The prose check, in one place so its positive control drives the same path.
 
     Written as a helper rather than inline so that
     :func:`test_a_drifted_entry_is_reported_by_the_same_checker` exercises the
     identical comparison and the identical message, instead of a re-derived
     approximation of it that could pass while the real one had stopped looking.
+
+    **Two arms, because a reversion need not displace anything.** The first arm
+    alone asked whether the corrected wording is present, which a document
+    carrying *both* sentences satisfies -- and that is the shape a rebase leaves:
+    a conflict resolved by keeping both sides puts the drift back beside the
+    correction, the entry then says two things that cannot both be true, and the
+    row reads green. The second arm asks whether the reversion is absent. Both
+    plants are driven by the control below, replaced and added-beside.
     """
     assert fragment in document, (
         f"{label}: packages/theurian-core/CHANGELOG.md no longer states:\n\n  {fragment}\n\n"
@@ -195,6 +209,23 @@ def _assert_the_entry_states(label: str, document: str, fragment: str, fact_side
         f"what gets restored. If it is RED too, the product changed and the entry is "
         f"corrected in that same commit -- with the new wording brought here, never "
         f"by relaxing this row."
+    )
+    # The membership is computed before the assertion rather than written into it,
+    # and that is a performance requirement rather than a style. `assert x not in y`
+    # is rewritten by pytest into a call that, on failure, runs `difflib.ndiff`
+    # over both operands to explain itself -- and `document` is the whole collapsed
+    # changelog, around a megabyte. This arm fails on purpose sixteen times per
+    # run (the control below plants two shapes into eight rows), and each failure
+    # spun for minutes: measured as a hang, located with `faulthandler_timeout`.
+    # `assert not <bool>` carries no comparison for the rewriter to explain.
+    states_the_reversion = drift in document
+    assert not states_the_reversion, (
+        f"{label}: packages/theurian-core/CHANGELOG.md states the wording this row "
+        f"exists to keep out, beside the corrected one:\n\n  {drift}\n\n"
+        f"Both sentences are in the entry, so it says two things and one of them was "
+        f"recorded as wrong. This is what a rebase leaves when a conflict is resolved "
+        f"by keeping both sides. Delete the reversion; the corrected wording is the "
+        f"one above it in this row, and the behaviour half is {fact_side}."
     )
 
 
@@ -499,7 +530,7 @@ def test_the_changelog_entry_still_states_the_claim(
     """
     entry = _collapsed(CORE_CHANGELOG.read_text(encoding="utf-8"))
 
-    _assert_the_entry_states(label, entry, fragment, fact_side)
+    _assert_the_entry_states(label, entry, fragment, drift, fact_side)
 
 
 @pytest.mark.parametrize(
@@ -523,27 +554,47 @@ def test_a_drifted_entry_is_reported_by_the_same_checker(
     file is never written: a pin that had to edit the tree to prove it works
     would be a worse instrument than no pin.
 
-    Two guards before the plant, because a substitution that does not land
+    **Both shapes a reversion takes, because the checker has an arm for each.**
+    *Replaced* is the reversion somebody writes: the drift stands where the
+    correction did, and the presence arm catches it. *Added beside* is the one a
+    rebase leaves when a conflict is resolved by keeping both sides: the
+    correction is still there, the presence arm is satisfied, and only the absence
+    arm objects. A control that plants the first alone passes against a checker
+    that has lost the second, which is how the shape went unnoticed for a round.
+
+    Two guards before the plants, because a substitution that does not land
     reports its own no-op as a pass: the drift must not itself contain the
-    fragment, and the replacement must actually change the document.
+    fragment, and each replacement must actually change the document.
     """
     entry = _collapsed(CORE_CHANGELOG.read_text(encoding="utf-8"))
-
-    drifted = entry.replace(fragment, drift)
 
     assert fragment not in drift, (
         f"{label}: the drift contains the fragment it is supposed to displace, so this "
         f"control would assert nothing. Rewrite the `drift` column as the sentence the "
         f"reversion would leave behind."
     )
-    assert drifted != entry, (
-        f"{label}: planting the drift changed nothing, so this control passed without "
-        f"exercising the checker. Either the fragment is absent -- in which case "
-        f"`test_the_changelog_entry_still_states_the_claim` is the RED that matters -- "
-        f"or the drift is byte-identical to it."
+
+    for shape, drifted in (
+        ("replaced", entry.replace(fragment, drift)),
+        ("added beside", entry.replace(fragment, f"{fragment} {drift}")),
+    ):
+        assert drifted != entry, (
+            f"{label} ({shape}): planting the drift changed nothing, so this control "
+            f"passed without exercising the checker. Either the fragment is absent -- in "
+            f"which case `test_the_changelog_entry_still_states_the_claim` is the RED "
+            f"that matters -- or the drift is byte-identical to it."
+        )
+        with pytest.raises(AssertionError, match=re.escape(label)):
+            _assert_the_entry_states(label, drifted, fragment, drift, fact_side)
+
+    # The added-beside plant must be caught by the *absence* arm and not by the
+    # presence one, or it is proving the same thing the replaced plant proves.
+    # Asserted by the state of the document rather than by the message text: the
+    # correction is still in it, so the first arm is satisfied.
+    assert fragment in entry.replace(fragment, f"{fragment} {drift}"), (
+        f"{label}: the added-beside plant lost the corrected wording, so it reddens "
+        f"through the presence arm and says nothing about the absence one."
     )
-    with pytest.raises(AssertionError, match=re.escape(label)):
-        _assert_the_entry_states(label, drifted, fragment, fact_side)
 
 
 #: One run of ``theurian review ingest`` as the service reports it, in the state
