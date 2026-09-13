@@ -36,6 +36,7 @@ import pytest
 
 import theurian
 from theurian.application.review_ingest_service import FetchRefusal, ReviewIngestReport
+from theurian.cli.commands import _emit
 from theurian.cli.review_commands import _payload
 from theurian.domain.review_ingest import REMEDIES, RefusalGrade, ReviewIngestRefusedError
 
@@ -195,14 +196,25 @@ def test_two_pull_requests_skipped_for_one_reason_publish_that_cure_once() -> No
     )
 
 
-def test_each_distinct_grade_in_a_run_publishes_its_own_cure_in_first_seen_order() -> None:
-    """Two reasons, two cures, and the order is the report's rather than the table's.
+def test_three_skips_for_two_reasons_publish_one_cure_per_distinct_grade(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Two reasons, two cures, and the caller finds each one by looking its grade up.
 
     ``ReviewIngestReport.skipped`` is ordered -- the listing's refusals first, then
-    the fetches' -- and dict construction keeps first-seen insertion order, so the
-    mapping reads in the order the skips are published in. Pinned because the
-    alternative a reader might assume, iteration over ``RefusalGrade`` or over
-    ``REMEDIES``, would publish rows for grades this run never met.
+    the fetches' -- and this test used to pin that order onto the mapping,
+    asserting ``list(published)`` against the report's own sequence under a name
+    that said "in first seen order". Two things were wrong with that. The mapping
+    ``_payload`` returns is not a layer any caller reads, and the layer that *is*
+    does not carry the order: ``_emit`` serialises with ``sort_keys=True``, so the
+    same document these three skips produce publishes ``limit-exceeded`` first on
+    the ``--json`` channel and ``tool-failed`` first on the human one. A caller
+    scripting on position would have read the mapping the wrong way round with
+    this test green.
+
+    So the claim is the one the shape really supports -- a cure per *distinct*
+    grade, each the recorded row, the repeat collapsed -- and it is asserted at
+    the emitted layer as a **set**, which is the property both channels share.
     """
     document = _payload(
         _report(
@@ -214,12 +226,29 @@ def test_each_distinct_grade_in_a_run_publishes_its_own_cure_in_first_seen_order
 
     published = _published_cures(document)
 
-    assert list(published) == [
+    assert published == {
+        RefusalGrade.TOOL_FAILED.value: REMEDIES[RefusalGrade.TOOL_FAILED],
+        RefusalGrade.LIMIT_EXCEEDED.value: REMEDIES[RefusalGrade.LIMIT_EXCEEDED],
+    }
+
+    # The emitted layer, through the shipped emitter rather than a second spelling
+    # of its arguments: what a `--json` caller receives is `_emit`'s bytes, and the
+    # key set is what survives its sort.
+    _emit(document, as_json=True)
+    emitted = json.loads(capsys.readouterr().out)
+    assert isinstance(emitted[_CURES], dict)
+    assert set(emitted[_CURES]) == {
         RefusalGrade.TOOL_FAILED.value,
         RefusalGrade.LIMIT_EXCEEDED.value,
-    ]
-    assert published[RefusalGrade.TOOL_FAILED.value] == REMEDIES[RefusalGrade.TOOL_FAILED]
-    assert published[RefusalGrade.LIMIT_EXCEEDED.value] == REMEDIES[RefusalGrade.LIMIT_EXCEEDED]
+    }, (
+        "the published document carries a different set of grades than the mapping "
+        f"`_payload` built: {emitted[_CURES]}"
+    )
+    assert list(emitted[_CURES]) == sorted(emitted[_CURES]), (
+        "the `--json` channel no longer publishes these keys sorted, so `_payload`'s "
+        "docstring is describing a channel that has moved -- re-read `_emit` and say "
+        "what it does now instead"
+    )
 
 
 def test_only_the_grades_this_run_met_are_published_never_the_whole_table() -> None:

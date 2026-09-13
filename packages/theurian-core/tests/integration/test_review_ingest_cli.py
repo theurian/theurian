@@ -166,6 +166,21 @@ def _over_cap(number: int) -> ReviewIngestRefusedError:
     )
 
 
+def _tool_failed(number: int) -> ReviewIngestRefusedError:
+    """A **second** grade for one run, which is what tells the two channels apart.
+
+    Any grade other than :func:`_over_cap`'s would do; ``tool-failed`` is one a
+    per-pull-request fetch really can meet while the rest of the run continues,
+    and it sorts after ``limit-exceeded`` -- so a run that skips on this grade
+    first publishes the two in one order on the ``--json`` channel and the other
+    on the human one.
+    """
+    return ReviewIngestRefusedError(
+        RefusalGrade.TOOL_FAILED,
+        f"`gh` failed reading the review threads on {REPOSITORY}#{number}.",
+    )
+
+
 def _over_the_label_cap(number: int) -> ReviewIngestRefusedError:
     """The refusal the adapter meets while **building** one pull request's record.
 
@@ -751,9 +766,16 @@ def test_a_skipped_pull_requests_cure_is_rendered_on_the_human_channel_too(
     only running it settles -- a nested value dropped, or rendered through
     ``repr``, would leave the JSON channel correct and the terminal one useless.
 
-    Asserted on a fragment of the cure rather than on the whole text, because the
-    renderer is free to wrap: what must hold is that the grade and the cure's own
-    words reach the terminal, not that the bytes match the JSON channel's.
+    Asserted on a fragment of the cure rather than on the whole text, and the
+    reason is attribution rather than wrapping -- the renderer does not wrap at
+    all. ``_render`` writes one ``key: value`` line per entry, and this cure
+    renders as a single line of 1336 characters, 1318 of them the cure (measured
+    2026-09-13 through ``_emit``, which is also how the claim about its length
+    stopped being a guess). That the text is *complete* is held on the ``--json``
+    channel by an equality against ``REMEDIES``; what this test has to show is
+    that the terminal reader gets the cure's own words rather than a ``repr`` or a
+    dropped value, and sixty characters settle that with a failure message a human
+    can read.
     """
     _settings(project)
     _install(
@@ -773,6 +795,71 @@ def test_a_skipped_pull_requests_cure_is_rendered_on_the_human_channel_too(
         "the grade reached the terminal and its cure did not, so the mapping was "
         "rendered as something other than its contents"
     )
+
+
+def test_a_run_that_skipped_for_two_reasons_publishes_both_cures_on_both_channels(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two grades in one run -- the cardinality no case here drove until round one.
+
+    Every other case skips for a single reason, which holds "one entry per distinct
+    grade" only at the cardinality where a mapping keyed on the grade and one keyed
+    on the pull-request number cannot be told apart. Two grades tell them apart.
+
+    They also settle what a caller may rely on about **order**, which is what a
+    sibling unit test used to pin at a layer nothing publishes. The skips are
+    reported ``tool-failed`` first, because pull request 42 is fetched first; the
+    ``--json`` document publishes ``limit-exceeded`` first, because ``_emit``
+    serialises with ``sort_keys=True``; and the human channel renders them in skip
+    order. Both orders are asserted below -- not because either is a contract, but
+    because a reader who assumes one channel's is the other's is wrong, and the
+    only safe access is a lookup by the grade the ``skipped`` line spells.
+    """
+    _settings(project)
+    _install(
+        monkeypatch,
+        _canned(
+            (_event(42), _event(41)),
+            refusals={("get_threads", 42): _tool_failed(42), ("get_threads", 41): _over_cap(41)},
+        ),
+    )
+    failed = RefusalGrade.TOOL_FAILED.value
+    exceeded = RefusalGrade.LIMIT_EXCEEDED.value
+
+    code, payload = _invoke("review", "ingest", REPOSITORY)
+
+    assert code == 1
+    assert payload["clean"] is False
+    assert [failed in line for line in payload["skipped"]] == [True, False], (
+        f"the skips are not reported newest first, so the order claims below describe "
+        f"a run that did not happen: {payload['skipped']}"
+    )
+    assert payload["skippedRemedies"] == {
+        failed: REMEDIES[RefusalGrade.TOOL_FAILED],
+        exceeded: REMEDIES[RefusalGrade.LIMIT_EXCEEDED],
+    }, (
+        "a run that skipped for two reasons published something other than the two "
+        f"recorded cures: {payload['skippedRemedies']}"
+    )
+    assert list(payload["skippedRemedies"]) == [exceeded, failed], (
+        "the `--json` channel no longer publishes these keys sorted; `_payload`'s "
+        "docstring says it does, so one of the two has moved"
+    )
+
+    result = runner.invoke(app, ["review", "ingest", REPOSITORY], catch_exceptions=False)
+
+    assert result.exit_code == 1
+    rendered = [
+        line.strip().split(":", 1)[0]
+        for line in result.stdout.splitlines()
+        if line.strip().split(":", 1)[0] in {failed, exceeded}
+    ]
+    assert rendered == [failed, exceeded], (
+        "the human channel does not render both cures in the order the skips were "
+        f"reported: {rendered}"
+    )
+    assert REMEDIES[RefusalGrade.TOOL_FAILED][:60] in result.stdout
+    assert REMEDIES[RefusalGrade.LIMIT_EXCEEDED][:60] in result.stdout
 
 
 def test_a_newest_pull_request_the_listing_could_not_build_does_not_deny_the_rest(

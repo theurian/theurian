@@ -11,11 +11,12 @@ them.
 screens and lands (decisions 1--4); ``review build`` re-derives the search store
 from what has already landed (decision 3's derived half). Each reports **counts
 and identities** -- a repository, a pull-request number, a provider node id, a
-field name, a refusal grade, a row count -- plus, since #656, the **recorded cure
-for each grade a pull request was skipped for: a static row of
-:data:`~theurian.domain.review_ingest.REMEDIES` selected by a grade the same
-document already publishes, so it is Theurian's own text and carries nothing that
-was fetched.** No title, no body, no comment
+field name, a refusal grade, a row count. ``review ingest`` alone publishes,
+since #656, the **recorded cure for each grade a pull request was skipped for: a
+static row of :data:`~theurian.domain.review_ingest.REMEDIES` selected by a grade
+the same document already publishes, so it is Theurian's own text and carries
+nothing that was fetched** -- ``review build`` fetches nothing, so it skips
+nothing and its document carries no such key. No title, no body, no comment
 text and no participant name reaches stdout from either. A secret-scan finding
 carries only the four-character redacted prefix
 :class:`~theurian.security.content_secrets.SecretFinding` bounds it to. Serving
@@ -681,11 +682,13 @@ def _payload(report: ReviewIngestReport) -> dict[str, object]:
     count, and it is published because the cure had nowhere else to go** (#656).
     A skipped pull request's ``FetchRefusal`` carries the envelope's remedy and
     :data:`~theurian.domain.review_ingest.REMEDIES` records one per grade, so the
-    cure existed and was correct -- and no shipped surface published it. The
-    run-ending raise below is the only path any of these cures reached an
-    operator on, and a *skipped* pull request is by definition one that did not
-    end the run. #597 had just given ``limit-exceeded`` a per-record arm written
-    for exactly this audience, which read it in the changelog or not at all.
+    cure existed and was correct -- and no shipped surface published it.
+    :func:`review_ingest`'s ``except TheurianError`` arm above, which writes
+    ``exc.remedy`` to stderr through ``_fail``, is the only path any of these
+    cures reached an operator on, and a *skipped* pull request is by definition
+    one that did not end the run. #597 had just given ``limit-exceeded`` a
+    per-record arm written for exactly this audience, which read it in the
+    changelog or not at all.
 
     **Keyed on the grade rather than on the item**, for a reason the domain
     states about itself: the remedy is "looked up, never passed in", and
@@ -694,8 +697,15 @@ def _payload(report: ReviewIngestReport) -> dict[str, object]:
     ``limit-exceeded``'s is over a thousand characters. One entry per grade
     publishes each cure at its natural cardinality, and ``skipped`` still names
     every pull request, so the pair is read by joining on the grade the line
-    spells. ``tests/unit/test_review_run_document.py`` holds that join, the
-    cardinality and the order.
+    spells -- **by lookup, and never by position.** Neither channel's order is
+    this function's: ``_emit`` serialises with ``sort_keys=True``, so the
+    ``--json`` document publishes the grades alphabetically, while the human
+    renderer walks this mapping in the order the skips were reported. Measured
+    over one report carrying ``tool-failed`` then ``limit-exceeded``, the two
+    channels print them in opposite orders.
+    ``tests/unit/test_review_run_document.py`` holds the join, the cardinality
+    and the set of keys the document carries -- that last one at the emitted
+    layer, because this dict is not the layer a caller reads.
 
     **Always present, ``{}`` when nothing was skipped.** The shape a caller
     scripts against does not change with the outcome -- the discipline
@@ -739,8 +749,10 @@ def _payload(report: ReviewIngestReport) -> dict[str, object]:
         "refused": [identity.describe() for identity in report.refused],
         "findings": [finding.describe() for finding in report.findings],
         "skipped": [skip.describe() for skip in report.skipped],
-        # Insertion order, so the mapping reads in the order the skips are
-        # published in; duplicates collapse by construction, which is the whole
-        # point of keying on the grade.
+        # Keyed on the grade, which is what collapses two pull requests refused
+        # for one reason into one entry. The order this comprehension builds
+        # reaches no caller: `_emit` sorts the keys on the `--json` channel and
+        # the human renderer walks them in skip order, so a cure is found by
+        # looking its grade up and never by position (see the docstring).
         "skippedRemedies": {skip.grade.value: skip.remedy for skip in report.skipped},
     }
