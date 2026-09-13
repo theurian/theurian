@@ -104,7 +104,7 @@ def auth_rotate(
         #
         # The *cause* and not `str(exc)`: an `OSError`'s `str` appends the
         # filename, which is the operator's absolute path, and the path already
-        # travels in the remedy where a reader acts on it (GHSA-97q9). The
+        # travels in the remedy where a reader acts on it (GHSA-923w-f36f-jcfq). The
         # remedy names the artefact, the two commands that inspect it, and the
         # fact that the old token is still in place -- because it is: `set`
         # failed, so nothing was rotated and the caller's clients still work.

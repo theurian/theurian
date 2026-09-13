@@ -376,7 +376,7 @@ def _published_index(  # noqa: PLR0911 - one return per distinguishable fallback
     delivered as a link out of the tree raised
     :class:`ProjectPathEscapeError` straight through here -- measured
     2026-09-11 through ``build_server``, ``knowledge.search`` answered with both
-    resolved paths in it (GHSA-97q9). Converted here rather than absorbed in the
+    resolved paths in it (GHSA-923w-f36f-jcfq). Converted here rather than absorbed in the
     reader, because the reader's other callers are the CLI commands that
     deliberately *do* refuse on it: its docstring carries that split and the
     measurement behind it.
