@@ -466,18 +466,21 @@ def derived_escape_remedy(knowledge_directory_name: str, subdirectory: str) -> s
     )
 
 
-#: The child of the knowledge directory **this change carves out**: neither
-#: authored source in the sense :data:`KNOWLEDGE_DIR_ESCAPE_REMEDY` is written
-#: for nor a member of ``DERIVED_SUBDIRECTORIES``, so neither existing cure
-#: describes it.
+#: The child of the knowledge directory #602 carved out: neither authored source
+#: in the sense :data:`KNOWLEDGE_DIR_ESCAPE_REMEDY` is written for nor a member of
+#: ``DERIVED_SUBDIRECTORIES``, so neither of those cures describes it.
 #:
-#: Not the only member of that class, and an earlier version of this note called
-#: it the one. ``theurian init`` writes no ``.theurian/config.yaml`` either, so
-#: :attr:`ProjectPaths.config` still publishes the fallback's "run `theurian
+#: Not the only member of that class, and the version of this note #602 shipped
+#: called it the one. ``theurian init`` writes no ``.theurian/config.yaml``
+#: either, so :attr:`ProjectPaths.config` published the same false "run `theurian
 #: init` to recreate the directory" clause against a file ``init`` does not
-#: create. That face is filed as
-#: `#652 <https://github.com/theurian/theurian/issues/652>`_ and is deliberately
-#: not carved out here.
+#: create; :func:`config_escape_remedy` carves that face out, and
+#: `#652 <https://github.com/theurian/theurian/issues/652>`_ is where the class's
+#: closure is recorded. The class is *the shared cure's init clause is false for
+#: a target ``init`` does not create*, and both of its members now have a cure of
+#: their own -- the remaining fallback population is enumerated on
+#: :meth:`ProjectPaths._escape_remedy`, whose key is re-run there, and for every
+#: member of it ``theurian init`` does create the path.
 _REVIEW_SUBDIRECTORY: Final = "review"
 
 
@@ -569,6 +572,98 @@ def review_escape_remedy(knowledge_directory_name: str) -> str:
         f"at the next `theurian review ingest`, and until then an absent directory is "
         f"read as an empty corpus rather than as a fault, so `theurian review build` "
         f"still answers."
+    )
+
+
+def config_escape_remedy(knowledge_directory_name: str) -> str:
+    """The cure for a containment refusal on the project's configuration file (#652).
+
+    :func:`review_escape_remedy`'s sibling, and the second and last member of the
+    class that one opened: :data:`KNOWLEDGE_DIR_ESCAPE_REMEDY`'s middle clause
+    tells the reader to "run `theurian init` to recreate the directory", and
+    ``initialize_project`` iterates :data:`INITIAL_DIRECTORIES`, which holds
+    directories and no files at all. So ``init`` writes nothing at this path --
+    :attr:`ProjectPaths.config` has said so in its own words since it was written
+    -- and an operator who follows that cure literally runs a command that creates
+    nothing and cannot tell that from a command that failed silently. That the
+    class has no third member is not left as prose:
+    ``tests/unit/test_project_paths_containment.py::
+    test_the_fallback_cure_names_init_only_for_paths_that_init_creates`` derives
+    the remaining fallback population from the helper classification and proves
+    ``init`` does create each one.
+
+    **Shorter than its sibling, because there is no writer to name.** The review
+    cure has to say what recreates the evidence directory; this one has nothing to
+    name, and that *is* the cure's good news: every key this module's reader takes
+    out of the file has a shipped default, so the command that refused answers
+    immediately with no file at all. The three defaults are stated rather than
+    summarised as "defaults", because an operator whose link is gone wants to know
+    what is now in force before the retry -- and stating them is what
+    ``tests/unit/test_project_config.py::
+    test_every_configuration_reader_answers_a_default_when_the_file_is_absent``
+    holds against the reader population, so a fourth key with no default, or one
+    whose default moves, arrives here as a failure rather than as a stale
+    sentence.
+
+    **Plain ``rm``, with no ``rm -rf`` twin, and the shape argument is the one
+    :func:`review_escape_remedy` records.** :meth:`ProjectPaths.of` refuses before
+    this class exists unless the resolved knowledge directory is inside the
+    resolved root, so by the time ``config`` is resolved the only object at this
+    path that can still make it escape is a symbolic link -- a real file resolves
+    where it sits, and so does a directory somebody put here. Plain ``rm`` removes
+    a link without the force ``-rf`` adds, and against an authored regular file
+    the reader's ``ls -l`` is what stops them before they type anything.
+
+    **The trailing slash is absent and, unlike the sibling, unmentioned.** Measured
+    on macOS 26.6.2 on 2026-09-13, over a link at this path:
+
+    ==============================================  =============================
+    form                                            measured outcome
+    ==============================================  =============================
+    ``rm .theurian/config.yaml`` (link)             link removed, target intact
+    ``rm .theurian/config.yaml/`` (link to a file)  refused, ``Not a directory``
+    ``rm .theurian/config.yaml/`` (link to a dir)   refused, ``is a directory``
+    ``rm -rf .theurian/config.yaml/`` (link to a    target destroyed, link kept
+    dir)
+    ==============================================  =============================
+
+    Only the last is destructive, and it needs a ``-rf`` this text never prints
+    next to a slash this text never prints either -- a reader who "tidies" the path
+    with a slash and keeps the printed command gets a refusal, not a loss. The
+    sibling's explicit warning is therefore omitted rather than forgotten: it costs
+    two sentences to defend against a command the reader would have to compose
+    themselves.
+
+    **Relative names only, enforced in the cure rather than at the seam**
+    (GHSA-97q9), for the reason :func:`review_escape_remedy` records at length: a
+    ``ProjectError``'s remedy crosses the MCP boundary unmodified -- ``_with_remedy``
+    replaces the *message* with ``PATH_ESCAPE_REFUSAL`` and republishes the
+    *remedy* -- and that fold is generic over the exception rather than over which
+    helper raised. This interpolates the knowledge directory's *basename* and
+    :data:`~theurian.security.project_config.PROJECT_CONFIG_FILE`, and nothing that
+    came out of a ``resolve()``. No registered tool resolves
+    :attr:`ProjectPaths.config` today: ``git grep -nE
+    'paths\\.config($|[^a-z_])' -- packages/theurian-core/src/theurian/mcp/``
+    printed nothing on 2026-09-13, while the same key with the pathspec widened to
+    ``packages/theurian-core/src`` printed five lines the same day, in
+    ``application/proposal_service.py``, ``cli/index_commands.py`` (twice) and
+    ``cli/review_commands.py`` (twice) -- the accept path and two commands, no
+    serving surface. The widened key covers this file and still does not hit this
+    paragraph: the text above spells the pattern with a doubled backslash, so
+    ``paths.config`` is not the string it matches. The discipline lives in the cure
+    anyway, where a later tool inherits it, rather than in a seam a later tool would
+    bypass.
+    """
+    path = f"{knowledge_directory_name}/{PROJECT_CONFIG_FILE}"
+    return (
+        f"Inspect `{path}` with `ls -l {path}` -- a clone may have delivered it as a "
+        f"symbolic link pointing outside the working tree. Remove that link with "
+        f"`rm {path}`. Nothing has to be recreated before the retry: with no "
+        f"{PROJECT_CONFIG_FILE} this build uses its shipped defaults -- "
+        f"`security.secretScan` is `block`, the review allowlist is empty so no "
+        f"repository may be ingested, and participant-name redaction is off -- so the "
+        f"retry runs on those rather than refusing for a file that is not there. Write "
+        f"the file back only to state a policy other than those."
     )
 
 
@@ -1368,41 +1463,61 @@ class ProjectPaths:
         cannot raise, and it answers the same before and after the escape it
         describes.
 
-        ``review`` is carved out ahead of the derived check and answered by
-        :func:`review_escape_remedy`, because the fallback told a reader to run
-        ``theurian init`` and ``review`` is not in :data:`INITIAL_DIRECTORIES`
-        (#602). The cures this method can return are read from its own ``return``
-        arms rather than counted in prose -- the sentence this replaces opened
-        "three cures now, not two", which is a number that goes stale silently.
-        ``mcp/tools.py``'s ``PATH_ESCAPE_REFUSAL`` note carries the key that
-        prints them (case-insensitively, so the constant answers beside the two
-        functions) and records what each one interpolates; that note is where a
-        fourth cure has to re-establish the claim it argues.
+        ``review`` and the configuration file are carved out ahead of the derived
+        check and answered by :func:`review_escape_remedy` and
+        :func:`config_escape_remedy`, because the fallback told a reader to run
+        ``theurian init`` and neither ``review`` nor ``config.yaml`` is something
+        ``initialize_project`` creates -- ``review`` is not in
+        :data:`INITIAL_DIRECTORIES` (#602) and that tuple holds directories only,
+        so no file in it is either (#652). The cures this method can return are
+        read from its own ``return`` arms rather than counted in prose -- the
+        sentence #602 replaced opened "three cures now, not two", which is a
+        number that goes stale silently. ``mcp/tools.py``'s
+        ``PATH_ESCAPE_REFUSAL`` note carries the key that prints them
+        (case-insensitively, so the constant answers beside the functions) and
+        records what each one interpolates; that note is where a *fifth* cure has
+        to re-establish the claim it argues.
 
-        The carve-out is keyed on the first component **at any depth**, so a
-        later helper resolving something *beneath* the evidence directory
-        inherits this arm rather than falling back. The arm is ready for that;
-        :func:`review_escape_remedy`'s text is not, and says so -- it names
+        **The two carve-outs are keyed the same way -- the first component, at any
+        depth -- and each arm's reach is a different distance ahead of its cure's
+        text.** For ``review`` the arm covers a helper added later for something
+        *beneath* the evidence directory, and
+        :func:`review_escape_remedy`'s text does not: it names
         ``rm .theurian/review``, which cures a link at ``review`` and nothing
-        deeper.
+        deeper. ``config.yaml`` is a file and nothing resolves beneath it today,
+        so the depth costs nothing there -- but keying it lexically like the rest
+        of this method is what makes a later helper under that name (a
+        ``config.yaml.d/`` fragment directory, say) inherit this arm instead of
+        falling back to the ``theurian init`` clause again, which is the door #602
+        and #652 both came through. Whoever opens that door revisits
+        :func:`config_escape_remedy` in the same change, exactly as
+        :func:`review_escape_remedy`'s docstring demands for its own.
 
         Everything else falls back to :data:`KNOWLEDGE_DIR_ESCAPE_REMEDY`, and
         that population is re-derived rather than transcribed -- the sentence
-        this replaces had listed four members and omitted ``proposals-local``,
-        which predates both this change and the one before it. The key is
+        #602 replaced had listed four members and omitted ``proposals-local``,
+        which predates both that change and the one before it. The key is
         ``git grep -n 'self\\._contained(' --
         packages/theurian-core/src/theurian/application/project_service.py``,
-        which printed 18 lines on 2026-09-12. **Eight** of them build a relative
-        path of a single component; the other ten open with ``state``, ``cache``
-        or ``runtime``, each a member of ``DERIVED_SUBDIRECTORIES``, so the
-        predicate's other disjunct -- a first component outside it -- selects
-        none of them today. **Seven** of the eight are the fallback's
-        population: :attr:`knowledge`, :attr:`specifications`,
-        :attr:`proposals`, :attr:`proposals_local`, :attr:`config`, and
+        which printed 18 lines on 2026-09-13, unchanged by #652 (which adds an
+        arm to this method and no call to the chokepoint). **Eight** of them
+        build a relative path of a single component; the other ten open with
+        ``state``, ``cache`` or ``runtime``, each a member of
+        ``DERIVED_SUBDIRECTORIES``, so the predicate's other disjunct -- a first
+        component outside it -- selects none of them today. **Six** of the eight
+        are the fallback's population: :attr:`knowledge`,
+        :attr:`specifications`, :attr:`proposals`, :attr:`proposals_local`, and
         :attr:`state` and :attr:`runtime` asked for *as themselves* rather than
-        as a parent. :attr:`review` was the eighth until this change. The key
-        does not hit this sentence: the text above spells the call with a
-        backslash, so it is not the string the pattern matches.
+        as a parent. The other two are the carve-outs: :attr:`review` since #602
+        and :attr:`config` since #652. For each of the six the fallback's middle
+        clause is true -- ``init`` does create that path -- and that is held as a
+        test rather than as this sentence:
+        ``tests/unit/test_project_paths_containment.py::
+        test_the_fallback_cure_names_init_only_for_paths_that_init_creates``
+        classifies every swept helper and goes RED for a fallback member ``init``
+        does not create. The key does not hit this paragraph: the text above
+        spells the call with a backslash, so it is not the string the pattern
+        matches.
 
         **That last group survives only at the helper level, and an earlier note
         here described it as though a user could meet it.** Asking this class for
@@ -1453,6 +1568,24 @@ class ProjectPaths:
             # Adding a helper beneath it means revisiting `review_escape_remedy`
             # in the same change, and its docstring carries the key that says so.
             return review_escape_remedy(self.knowledge_dir.name)
+        if parts and parts[0] == PROJECT_CONFIG_FILE:
+            # The review arm's twin, keyed the same way and for the same reason:
+            # `theurian init` writes no `config.yaml`, so the fallback's middle
+            # clause sends the reader to a command that creates nothing (#652).
+            #
+            # Keyed on the *first* component rather than on the whole path even
+            # though this one names a file, because the alternative -- `parts ==
+            # (PROJECT_CONFIG_FILE,)` -- would silently hand a later helper under
+            # this name back to the `theurian init` clause, which is the door both
+            # faces of this class came through. Nothing resolves beneath it today
+            # (`config` is the only site: the key in `_escape_remedy`'s docstring
+            # partitions all eight single-component sites), so the two spellings
+            # select the same paths now and differ only for the change that adds
+            # one -- where lexical keying is what makes the cure inherited rather
+            # than lost. Whoever adds that helper revisits
+            # `config_escape_remedy`'s text in the same change, exactly as the arm
+            # above demands for `review`.
+            return config_escape_remedy(self.knowledge_dir.name)
         under_a_derived_subdirectory = (
             len(parts) >= _MIN_PARTS_UNDER_A_DERIVED_SUBDIRECTORY
             and parts[0] in DERIVED_SUBDIRECTORIES
@@ -1555,6 +1688,15 @@ class ProjectPaths:
         :data:`~theurian.security.project_config.PROJECT_CONFIG_FILE` rather than
         from a literal, so the path and its only reader cannot end up meaning
         different files.
+
+        **Both of those sentences are what a refusal of this path has to say**, and
+        for two releases it said the opposite: the fallback cure told the reader to
+        run ``theurian init`` to recreate a file ``init`` does not write, and to
+        recreate something whose absence costs nothing (#652).
+        :meth:`_escape_remedy` compares ``PROJECT_CONFIG_FILE`` against ``parts[0]``
+        to pick the arm and :func:`config_escape_remedy` renders it into the cure,
+        so the constant above decides where this path is *and* what a refusal of it
+        publishes -- the coupling :attr:`review` records for its own name.
         """
         return self._contained(self.knowledge_dir / PROJECT_CONFIG_FILE)
 

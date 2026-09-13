@@ -178,6 +178,7 @@ from theurian.application.project_service import (
     REVIEW_SEARCH_STORE_ID,
     ProjectPathEscapeError,
     ProjectPaths,
+    config_escape_remedy,
     derived_escape_remedy,
     review_escape_remedy,
 )
@@ -393,6 +394,12 @@ _DERIVED_CACHE: Final = derived_escape_remedy(".theurian", "cache")
 #: from ``INITIAL_DIRECTORIES``, so both existing texts said something false
 #: about it (#602).
 _REVIEW: Final = review_escape_remedy(".theurian")
+#: The fourth cure, and the third's sibling rather than a new shape: ``theurian
+#: init`` writes no ``config.yaml`` either, so the knowledge-directory text sent
+#: the reader to a command that creates nothing here too (#652). It differs from
+#: :data:`_REVIEW` in what follows the removal -- nothing at all, because every key
+#: the file can carry has a shipped default.
+_CONFIG: Final = config_escape_remedy(".theurian")
 
 _EVERY_STATE_READER: Final = frozenset(
     {
@@ -512,8 +519,13 @@ PLANTS: Final = (
     Plant(
         helper="config",
         relative=PROJECT_CONFIG_FILE,
+        # The one carve-out a swept command reaches, which is why
+        # `test_an_escaping_config_file_is_cured_by_removing_the_link_not_by_init`
+        # drives the shipped CLI where its `review` sibling drives the helper --
+        # and why this field is read by the remedy sweep rather than tied only at
+        # the end of that test, as `review`'s has to be.
         is_directory=False,
-        remedy=KNOWLEDGE_DIR_ESCAPE_REMEDY,
+        remedy=_CONFIG,
         refuses=frozenset({"index build"}),
         directory_refuses=frozenset({"index build"}),
     ),
@@ -1530,18 +1542,25 @@ def test_every_containment_refusal_publishes_the_remedy_for_the_path_it_refused(
 ) -> None:
     """One cure per doctored artefact, whichever helper noticed it.
 
-    ``_escape_remedy`` keys the cure on the refused path, across three texts
+    ``_escape_remedy`` keys the cure on the refused path, across four texts
     rather than the two this paragraph named until #602: a leaf under a derived
     subdirectory gets ``derived_escape_remedy``, which names ``.theurian/state``
     or ``.theurian/runtime`` and the commands that rebuild them; anything whose
-    first component is ``review`` gets ``review_escape_remedy``; and everything
-    else gets ``KNOWLEDGE_DIR_ESCAPE_REMEDY``, which is about the operator's
-    authored knowledge directory. Publishing the third for a doctored
+    first component is ``review`` gets ``review_escape_remedy``; the configuration
+    file gets ``config_escape_remedy``; and everything else gets
+    ``KNOWLEDGE_DIR_ESCAPE_REMEDY``, which is about the operator's
+    authored knowledge directory. Publishing the last for a doctored
     ``.theurian/state/`` was #483's H-1: it named the wrong artefact and sent the
     reader to ``theurian init``, which meets the identical refusal. Publishing it
     for ``.theurian/review`` was #602, the same clause failing a second way --
     there ``theurian init`` does not refuse, it silently creates nothing, because
-    ``review`` is not in ``INITIAL_DIRECTORIES``.
+    ``review`` is not in ``INITIAL_DIRECTORIES``. Publishing it for
+    ``.theurian/config.yaml`` was #652, the same failure again and the last member
+    of that class: the tuple holds directories, so ``init`` writes no file in it.
+    **This sweep is where that fourth text is read back**, because ``config`` is
+    the only one of the two carve-outs a swept command reaches -- the ``review``
+    plant's expectation is tied to production inside its own test instead, for the
+    reason recorded there.
 
     **The expectation is written per plant, not recomputed.** Deriving it from
     ``DERIVED_SUBDIRECTORIES`` would be this test asking production the question
@@ -1559,8 +1578,13 @@ def test_every_containment_refusal_publishes_the_remedy_for_the_path_it_refused(
     unreachable rather than absent, and pinning it at the helper would pin a
     string no user can meet.
     """
-    assert KNOWLEDGE_DIR_ESCAPE_REMEDY not in {_DERIVED_STATE, _DERIVED_RUNTIME}, (
-        "the two remedy texts are equal, so this test cannot tell them apart"
+    # Pairwise distinct rather than "the fallback differs from two of them": the
+    # sweep compares each refusal against one expected text, so any two cures that
+    # were equal would make a mis-keyed arm pass. `_CONFIG` joined at #652.
+    cures = (KNOWLEDGE_DIR_ESCAPE_REMEDY, _DERIVED_STATE, _DERIVED_RUNTIME, _CONFIG)
+    assert len(set(cures)) == len(cures), (
+        "two of the remedy texts this sweep reads are equal, so it cannot tell them "
+        "apart and a refusal publishing the wrong one would pass"
     )
 
     wrong = {
@@ -1596,12 +1620,12 @@ def test_the_knowledge_plant_is_refused_by_the_migration_loader_not_by_containme
     arm the other six carry.)
 
     Attributed by the published cure rather than by reading the call graph: the
-    remedy names ``.theurian/migrations`` and is none of the three cures
-    ``_escape_remedy`` chooses between. The set below holds four strings for
-    those three, because ``derived_escape_remedy`` renders per subdirectory and
+    remedy names ``.theurian/migrations`` and is none of the four cures
+    ``_escape_remedy`` chooses between. The set below holds five strings for
+    those four, because ``derived_escape_remedy`` renders per subdirectory and
     both of the renderings a swept plant reaches are listed; ``review`` joined on
-    #602 and is listed for the same reason the other two are -- an exclusion
-    that stopped ruling out one of the cures would read as coverage.
+    #602 and ``config`` on #652, each listed for the same reason the others are --
+    an exclusion that stopped ruling out one of the cures would read as coverage.
     """
     refusals = [
         observation
@@ -1617,6 +1641,7 @@ def test_the_knowledge_plant_is_refused_by_the_migration_loader_not_by_containme
             _DERIVED_STATE,
             _DERIVED_RUNTIME,
             _REVIEW,
+            _CONFIG,
         }, (
             "the knowledge plant is now refused by containment; it belongs in the "
             "swept population rather than in the exclusions"
@@ -1779,6 +1804,164 @@ def test_an_escaping_review_directory_is_cured_by_removing_the_link_not_by_init(
         "to `KNOWLEDGE_DIR_ESCAPE_REMEDY` at 8900eaea left this file at 19 passed. It "
         "is tied to the shipped text here, where the text is measured, so the ledger "
         "cannot describe a cure that has moved on without it."
+    )
+
+
+#: The path a cure for an escaping ``.theurian/config.yaml`` has to name, written
+#: out rather than composed from ``PROJECT_CONFIG_FILE``. The rule
+#: :data:`_REVIEW_CULPRIT` records, applied to the second carve-out: composing it
+#: would be this file asking production the question production is being tested
+#: on, and a rename of that constant has to arrive here as a failure a human
+#: classifies rather than as a key that quietly follows production.
+_CONFIG_CULPRIT: Final = ".theurian/config.yaml"
+
+
+@_NEEDS_SYMLINKS
+def test_an_escaping_config_file_is_cured_by_removing_the_link_not_by_init(
+    corpus: Path,
+) -> None:
+    """The cure for #652: ``theurian init`` does not write ``.theurian/config.yaml``.
+
+    The second and, per #652's enumeration, last member of #602's class -- *the
+    shared escape cure's "run ``theurian init`` to recreate" clause is false for a
+    target ``init`` does not create*. ``initialize_project`` iterates
+    ``INITIAL_DIRECTORIES``, which holds directories and no files, so ``init``
+    writes nothing at this path; :attr:`ProjectPaths.config`'s own docstring has
+    said so since it was written. An operator who follows the published cure
+    literally runs a command that creates nothing, and has no way to tell that
+    from a command that failed silently.
+
+    **Driven through the shipped CLI, not through the helper**, which is the
+    difference between this and its ``review`` sibling: ``config`` is the one
+    carve-out a swept command reaches (its plant carries ``refuses={"index
+    build"}``), so the cure can be measured where an operator meets it -- in the
+    ``{error, remedy}`` document on stderr -- and the retry can be measured too.
+
+    **The cure is executed rather than read.** Removing the link is the whole of
+    it: the third block below runs exactly the ``rm`` the text names and then the
+    same command again, and the command answers 0 with ``secretScanPolicy:
+    block`` while nothing has recreated the file. That is what makes "nothing has
+    to be recreated" a measurement rather than a promise -- and it is the half a
+    predicate over the text cannot make, because a cure naming a command that
+    creates nothing passes every substring check ever written for it.
+
+    **Plain ``rm`` with no ``rm -rf`` twin**, for the shape reason
+    :func:`review_escape_remedy` records: :meth:`ProjectPaths.of` has already
+    proved the knowledge directory resolves inside the root by the time ``config``
+    is resolved, so the only object at this path that can still leave the tree is
+    a symbolic link -- and plain ``rm`` removes a link without the force ``-rf``
+    adds. The slashed spelling is not printed in the cure at all, so a reader
+    cannot copy out the form BSD ``rm -rf`` follows.
+
+    **The cure names relative paths only** (GHSA-97q9). A remedy crosses the MCP
+    boundary unmodified -- ``mcp/tools.py``'s ``_with_remedy`` replaces the
+    *message* with ``PATH_ESCAPE_REFUSAL`` and republishes the *remedy* -- so an
+    absolute path in it would hand a caller the operator's layout, which it learns
+    no other way. The two assertions below are aimed at the *additive* leak, for
+    the reason the ``review`` test records: swapping the basename for the whole
+    path fails the ``rm`` predicate first, while a cure that keeps every predicate
+    and appends one clause naming where the file is passes them all.
+
+    RED before the fix, at ``a6f7910c``: ``index build`` over this plant exited 4
+    with ``KNOWLEDGE_DIR_ESCAPE_REMEDY``, which fails the ``rm``, the
+    ``theurian init`` and the shipped-default predicates below.
+    """
+    plant = PLANT_BY_HELPER["config"]
+    _plant_escaping_symlink(corpus, plant)
+    planted = _planted_path(corpus, plant)
+
+    refused = _observe(corpus, "index", "build")
+
+    assert refused.exit_code == EXIT_STATE_ERROR, (
+        "the plant no longer refuses `index build`, so the cure below is measured "
+        f"against nothing: {refused.exit_code}, stdout {refused.stdout!r}"
+    )
+    remedy = str((refused.envelope or {}).get("remedy", ""))
+
+    misdirecting = [
+        (label, why)
+        for label, holds, why in (
+            (
+                f"names `{_CONFIG_CULPRIT}`",
+                _CONFIG_CULPRIT in remedy,
+                "the reader cannot act on a cure that does not say which path is the link",
+            ),
+            (
+                f"says `rm {_CONFIG_CULPRIT}`",
+                f"rm {_CONFIG_CULPRIT}" in remedy,
+                "the removal is named in prose rather than as a command the reader can type",
+            ),
+            (
+                "renders the path without a trailing slash",
+                f"{_CONFIG_CULPRIT}/" not in remedy,
+                "BSD `rm -rf` on a trailing-slash symlink follows the link, destroys the "
+                "target and leaves the link in place -- measured, and the reason "
+                "`derived_escape_remedy` calls the slash out rather than merely omitting it",
+            ),
+            (
+                "does not send the reader to `theurian init`",
+                "theurian init" not in remedy,
+                "`initialize_project` iterates `INITIAL_DIRECTORIES`, which holds no "
+                "files, so `init` writes nothing at this path and the reader cannot "
+                "tell that from a command that failed silently (#652)",
+            ),
+            (
+                "says the retry needs nothing recreated",
+                "block" in remedy,
+                "every key this build reads out of the file has a shipped default, so "
+                "the retry works with no file at all -- a cure that does not say so "
+                "leaves the reader believing they have lost something",
+            ),
+        )
+        if not holds
+    ]
+
+    assert not misdirecting, (
+        f"the cure for an escaping {_CONFIG_CULPRIT} fails {len(misdirecting)} of its "
+        "predicates:\n"
+        + "\n".join(f"  - {label}: {why}" for label, why in misdirecting)
+        + f"\n\nthe text it publishes is:\n  {remedy!r}"
+    )
+
+    assert str(corpus) not in remedy, (
+        f"the cure interpolates the project root: {remedy!r}. A remedy crosses the MCP "
+        "boundary unmodified, so this publishes the operator's layout to a caller that "
+        "learns it no other way (GHSA-97q9). The cure takes the knowledge directory's "
+        "basename, never a resolved path."
+    )
+    assert str(corpus.parent) not in remedy, (
+        f"the cure interpolates an absolute path from this run: {remedy!r}. Asserted "
+        "separately from the root because a cure could name the *parent* -- the "
+        "checkout's neighbour, or the temporary directory a test runs in -- without "
+        "naming the root itself, and that discloses the layout just as well."
+    )
+
+    # The cure, executed: the one command its text names, and then the command
+    # that refused. Nothing else -- no `init`, no file written back.
+    assert planted.is_symlink(), "the plant is not a link, so the `rm` below is not the cure"
+    planted.unlink()
+
+    retried = _observe(corpus, "index", "build")
+
+    assert retried.exit_code == 0, (
+        "the cure was followed and the command still refuses, so the published text "
+        f"does not end the fault: exit {retried.exit_code}, "
+        f"{(retried.envelope or {}).get('error')!r}"
+    )
+    assert not planted.exists() and not planted.is_symlink(), (
+        "something recreated the configuration file, so the cure's claim that nothing "
+        "has to be is this test's rather than the product's"
+    )
+    assert json.loads(retried.stdout)["secretScanPolicy"] == "block", (
+        "the retry ran on something other than the shipped default the cure names"
+    )
+
+    assert plant.remedy == remedy, (
+        "the `config` plant's ledger entry records a cure the product no longer "
+        f"publishes:\n  ledger: {plant.remedy!r}\n  shipped: {remedy!r}\n\nThat field "
+        "is the per-plant expectation the remedy sweep reads; it is tied to the shipped "
+        "text here, where the text is measured, so the ledger cannot describe a cure "
+        "that has moved on without it."
     )
 
 
