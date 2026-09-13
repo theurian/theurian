@@ -394,8 +394,10 @@ REVIEW_SEARCH_UNAVAILABLE_REFUSAL: Final = (
 #: also what keeps the pattern short enough to fold at the space before
 #: its pathspec rather than inside itself -- a key folded mid-regex does not run
 #: when it is copied out. Safe to quote here, unlike the key above, because that
-#: pathspec is the other module. Run again on 2026-09-13 for #652's fourth cure it
-#: printed five lines, two of them the constant. What each interpolates:
+#: pathspec is the other module. Run again on 2026-09-13 for #652's fourth cure, it
+#: printed five lines -- two ``return KNOWLEDGE_DIR_ESCAPE_REMEDY`` and one each for
+#: the three functions below, which is the partition its own output spells. What
+#: each interpolates:
 #:
 #: - ``KNOWLEDGE_DIR_ESCAPE_REMEDY``, a module constant: nothing at all;
 #: - ``derived_escape_remedy(self.knowledge_dir.name, parts[0])``, which renders

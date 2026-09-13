@@ -614,25 +614,28 @@ def config_escape_remedy(knowledge_directory_name: str) -> str:
     a link without the force ``-rf`` adds, and against an authored regular file
     the reader's ``ls -l`` is what stops them before they type anything.
 
-    **The trailing slash is absent and, unlike the sibling, unmentioned.** Measured
-    on macOS 26.6.2 on 2026-09-13, over a link at this path:
+    **The trailing slash is absent and, unlike the sibling, unmentioned.** Four
+    forms run against a ``.theurian/config.yaml`` symbolic link in a scratch tree,
+    macOS 26.6.2, 2026-09-13 -- each row is that run's exit status and what was
+    left on disk afterwards:
 
-    ==============================================  =============================
-    form                                            measured outcome
-    ==============================================  =============================
-    ``rm .theurian/config.yaml`` (link)             link removed, target intact
-    ``rm .theurian/config.yaml/`` (link to a file)  refused, ``Not a directory``
-    ``rm .theurian/config.yaml/`` (link to a dir)   refused, ``is a directory``
-    ``rm -rf .theurian/config.yaml/`` (link to a    target destroyed, link kept
+    ================================================  ==============================
+    form                                              measured outcome
+    ================================================  ==============================
+    ``rm .theurian/config.yaml`` (link to a file)     0; link gone, target intact
+    ``rm .theurian/config.yaml/`` (link to a file)    1, ``Not a directory``; both kept
+    ``rm .theurian/config.yaml/`` (link to a dir)     1, ``is a directory``; both kept
+    ``rm -rf .theurian/config.yaml/`` (link to a      0; **target destroyed**, link kept
     dir)
-    ==============================================  =============================
+    ================================================  ==============================
 
     Only the last is destructive, and it needs a ``-rf`` this text never prints
     next to a slash this text never prints either -- a reader who "tidies" the path
-    with a slash and keeps the printed command gets a refusal, not a loss. The
-    sibling's explicit warning is therefore omitted rather than forgotten: it costs
-    two sentences to defend against a command the reader would have to compose
-    themselves.
+    with a slash and keeps the printed command gets one of the two refusals rather
+    than a loss. The sibling's explicit warning is therefore omitted rather than
+    forgotten: it costs two sentences to defend against a command the reader would
+    have to compose themselves. The destructive row is not printed in the cure in
+    any form, which is why it can be recorded here.
 
     **Relative names only, enforced in the cure rather than at the seam**
     (GHSA-97q9), for the reason :func:`review_escape_remedy` records at length: a
