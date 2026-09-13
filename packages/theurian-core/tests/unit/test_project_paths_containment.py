@@ -30,11 +30,13 @@ import pytest
 from theurian.application import project_service
 from theurian.application.project_service import (
     _REVIEW_SUBDIRECTORY,
+    INITIAL_DIRECTORIES,
     KNOWLEDGE_DIR_ESCAPE_REMEDY,
     BuildProvenance,
     ProjectError,
     ProjectPathEscapeError,
     ProjectPaths,
+    config_escape_remedy,
     derived_escape_remedy,
     review_escape_remedy,
 )
@@ -386,6 +388,33 @@ _NAMES_A_DERIVED_ARTIFACT: set[str] = {
 #: directory itself and would name the wrong object once one exists.
 _NAMES_THE_REVIEW_EVIDENCE: set[str] = {"review"}
 
+#: The helpers whose refused path names the project's configuration file, and
+#: which therefore publish :func:`config_escape_remedy` (#652).
+#:
+#: The fourth class, and the second member of the class the third opened: the
+#: fallback's middle clause sends the reader to ``theurian init``, and
+#: ``INITIAL_DIRECTORIES`` holds directories only, so ``init`` writes no
+#: ``config.yaml`` any more than it creates ``review``. Written out as a judgement
+#: for the reason :data:`_NAMES_A_DERIVED_ARTIFACT` records.
+#:
+#: **Why a fourth cure rather than a member of the third.** What follows the
+#: removal differs, and it is the half of a cure a reader acts on: the evidence
+#: directory is recreated by ``theurian review ingest`` and must be, while the
+#: configuration file needs nothing at all -- every key it can carry has a shipped
+#: default, which ``test_project_config.py``'s
+#: ``test_every_configuration_reader_answers_a_default_when_the_file_is_absent``
+#: holds against the reader population rather than leaving it as a sentence here.
+#:
+#: One member, pinned the way ``review``'s is, by
+#: ``test_exactly_one_contained_helper_resolves_under_the_project_config_file``:
+#: the cure's ``rm`` names this exact leaf rather than a directory above one, so a
+#: helper appearing beneath the name makes the *text* wrong in its own way -- an
+#: ``rm`` of the file that is not the link, which against the real directory such a
+#: helper implies removes nothing at all. Production keys the arm lexically so such
+#: a helper inherits the cure instead of falling back, and
+#: :func:`config_escape_remedy`'s docstring is where that trade is recorded.
+_NAMES_THE_PROJECT_CONFIG: set[str] = {"config"}
+
 
 #: Sentinel for "no return annotation": distinct from a member annotated
 #: ``-> None``, which is genuinely not a path helper.
@@ -481,6 +510,11 @@ def test_the_containment_sweep_covers_every_path_returning_helper() -> None:
     assert not (_NAMES_A_DERIVED_ARTIFACT & _READER_CONTAINED)
     assert set(_HELPER_CALLS) >= _NAMES_THE_REVIEW_EVIDENCE
     assert not (_NAMES_THE_REVIEW_EVIDENCE & (_NAMES_A_DERIVED_ARTIFACT | _READER_CONTAINED))
+    assert set(_HELPER_CALLS) >= _NAMES_THE_PROJECT_CONFIG
+    assert not (
+        _NAMES_THE_PROJECT_CONFIG
+        & (_NAMES_A_DERIVED_ARTIFACT | _NAMES_THE_REVIEW_EVIDENCE | _READER_CONTAINED)
+    )
 
 
 @pytest.mark.parametrize(
@@ -570,14 +604,17 @@ def test_every_path_helper_refuses_when_a_committed_symlink_escapes_under_it(
     the expression rather than as a number because the number here read *five*
     while the set held ten.
 
-    **Three classes now, and the third failed the same clause a second way**
-    (#602). ``review`` publishes :func:`review_escape_remedy`: it is not a
+    **Four classes now, and the last two failed the same clause the same way**
+    (#602, #652). ``review`` publishes :func:`review_escape_remedy`: it is not a
     derived artefact, so the rebuild-shaped cure is data loss rather than a
     rebuild, and the knowledge-directory text it fell back to sends the reader to
     ``theurian init`` -- which for this path does not refuse, it creates nothing
     and says nothing, because ``review`` is absent from ``INITIAL_DIRECTORIES``.
-    Each class asserts ``theurian init`` is *not* named, for the two different
-    reasons that command is wrong here.
+    ``config`` publishes :func:`config_escape_remedy` for that second reason
+    alone: ``INITIAL_DIRECTORIES`` holds directories, so ``init`` writes no file
+    in it at all. Every class asserts ``theurian init`` is *not* named, for the
+    two different reasons that command is wrong -- it meets the identical refusal
+    on a derived path, and it silently creates nothing on these two.
 
     The expectation is a set written out in this module, so a helper that changes
     class fails here rather than being re-derived into agreement with whatever
@@ -601,6 +638,14 @@ def test_every_path_helper_refuses_when_a_committed_symlink_escapes_under_it(
         )
         return
 
+    if helper in _NAMES_THE_PROJECT_CONFIG:
+        assert excinfo.value.remedy == config_escape_remedy(".theurian")
+        assert _ESCAPING_CHILD[helper] in excinfo.value.remedy
+        assert "theurian init" not in excinfo.value.remedy, (
+            "the remedy sends the reader to a command that writes no file at all (#652)"
+        )
+        return
+
     if helper not in _NAMES_A_DERIVED_ARTIFACT:
         assert excinfo.value.remedy == KNOWLEDGE_DIR_ESCAPE_REMEDY
         return
@@ -613,6 +658,81 @@ def test_every_path_helper_refuses_when_a_committed_symlink_escapes_under_it(
     assert _ESCAPING_CHILD[helper] in excinfo.value.remedy
     assert "theurian init" not in excinfo.value.remedy, (
         "the remedy sends the reader to the command that meets this same refusal"
+    )
+
+
+def _init_creates(child: str) -> bool:
+    """Whether ``theurian init`` creates ``.theurian/<child>``.
+
+    ``initialize_project`` iterates ``INITIAL_DIRECTORIES`` and makes each entry
+    with its parents, so a child is created when it *is* an entry or is an
+    ancestor of one -- ``knowledge`` is nobody's entry and is the parent of five.
+    Read off the shipped tuple rather than transcribed, so an entry removed from
+    it moves this answer in the same commit.
+    """
+    wanted = PurePosixPath(child)
+    return any(
+        wanted == created or wanted in created.parents
+        for created in (PurePosixPath(entry) for entry in INITIAL_DIRECTORIES)
+    )
+
+
+def test_the_fallback_cure_names_init_only_for_paths_that_init_creates() -> None:
+    """#602's and #652's class, closed over the classification rather than by eye.
+
+    The class is *the shared escape cure's "run ``theurian init`` to recreate"
+    clause is false for a target ``init`` does not create*. Two faces were found
+    one at a time -- ``review`` (#602) and ``config.yaml`` (#652) -- and #652's
+    filing argued the second was the last by enumerating the fallback population
+    by hand at ``9328c2e7``. A hand enumeration is what this class already
+    defeated once, so the closure is held here instead: every helper this module
+    classifies as a fallback member has to name a path ``init`` really does
+    create, and both directions are asserted, so a third face arrives as a
+    failure rather than as an issue.
+
+    The two sets are complements by construction (the classification guard above
+    keeps them disjoint), which is what makes the second assertion more than a
+    restatement of the first: it fails for a carve-out that stopped needing one --
+    somebody adding ``review`` to ``INITIAL_DIRECTORIES``, say -- where the
+    published cure would then be naming a writer the reader no longer has to run.
+    """
+    carved_out = _NAMES_THE_REVIEW_EVIDENCE | _NAMES_THE_PROJECT_CONFIG
+    publishes_the_fallback = (
+        set(_HELPER_CALLS) - _NAMES_A_DERIVED_ARTIFACT - carved_out - _READER_CONTAINED
+    )
+
+    assert "theurian init" in KNOWLEDGE_DIR_ESCAPE_REMEDY, (
+        "the fallback cure no longer names `theurian init`, so this test is asserting "
+        "a property of a sentence that has been rewritten. Re-read the cure and either "
+        "retire this guard or re-aim it at whatever command it names now."
+    )
+    assert publishes_the_fallback, (
+        "no helper publishes the fallback any more, so both assertions below hold "
+        "vacuously. The classification sets have absorbed the whole population; check "
+        "that against `_escape_remedy`'s arms before trusting a green result."
+    )
+
+    false_for = sorted(
+        helper for helper in publishes_the_fallback if not _init_creates(_ESCAPING_CHILD[helper])
+    )
+    assert not false_for, (
+        f"{false_for} publish `KNOWLEDGE_DIR_ESCAPE_REMEDY`, which tells the reader to "
+        "run `theurian init` to recreate the path -- and `INITIAL_DIRECTORIES` does not "
+        "create it. That is a third face of #602's class: the reader runs a command that "
+        "creates nothing and cannot tell it from one that failed silently. Give it a "
+        "cure of its own beside `review_escape_remedy` and `config_escape_remedy`, and "
+        "classify it into a set here."
+    )
+
+    stopped_needing_a_carve_out = sorted(
+        helper for helper in carved_out if _init_creates(_ESCAPING_CHILD[helper])
+    )
+    assert not stopped_needing_a_carve_out, (
+        f"{stopped_needing_a_carve_out} carry a cure written because `theurian init` "
+        "creates nothing at their path, and `INITIAL_DIRECTORIES` now says it does. "
+        "The published cure is telling the reader to run something else -- "
+        "`theurian review ingest`, or nothing at all -- so re-read it against what "
+        "`init` writes now."
     )
 
 
@@ -784,6 +904,68 @@ def test_exactly_one_contained_helper_resolves_under_the_review_evidence_directo
         "and move this pin with it; ADR-0030 decision 3 makes the evidence canonical "
         "with no replayable source, so an `rm` aimed a level too high destroys records "
         "nothing rebuilds."
+    )
+
+
+def test_exactly_one_contained_helper_resolves_under_the_project_config_file() -> None:
+    """The cure for an escaping ``config.yaml`` names one place, and this is why it may.
+
+    The pin above, applied to the second carve-out (#652).
+    :meth:`ProjectPaths._escape_remedy` keys the config arm on the **first path
+    component at any depth**, spelled that way for the same reason as ``review``'s:
+    a helper added later beneath this name inherits the cure instead of falling
+    back to the ``theurian init`` clause that both faces of this class came
+    through. :func:`config_escape_remedy`'s *text* is not ready for such a helper.
+    It renders one removal, ``rm <knowledge dir>/config.yaml``, aimed at the leaf,
+    and a helper resolving beneath that name implies a real directory there -- so
+    for a link at an interior component the published ``rm`` names the directory
+    above the link, where plain ``rm`` fails and removes nothing. The reader is
+    left holding a command that changed nothing and a cure that also promises the
+    retry needs nothing recreated.
+
+    So the arm's reach and the cure's text are pinned apart here exactly as they
+    are for ``review``. RED means the second resolver was added, and the answer is
+    to revisit that cure's text in the same change -- which is what its docstring
+    and the arm's own comment ask for, in prose that nothing enforced until this
+    pin.
+
+    **The population is the module's own AST**, :func:`_contained_sites`, so a call
+    split across lines or spelling ``"config.yaml"`` inline is counted like any
+    other. The equality needs no companion ``assert sites``: it compares against a
+    one-element list, so a population that emptied reddens here rather than passing
+    vacuously. The unreadable check is the case equality cannot cover -- a site
+    whose first component cannot be read statically drops out of the filter, and it
+    could be the one resolving under this name.
+    """
+    sites = _contained_sites()
+
+    unreadable = sorted({member for member, components in sites if components is None})
+
+    assert not unreadable, (
+        f"{unreadable} call `self._contained(...)` with a path whose first component "
+        "this reader cannot resolve statically, so the population below is not the "
+        "whole one. Teach `_static_component` or `_contained_sites` the new shape -- a "
+        "site whose first component is unreadable could be the one resolving under the "
+        "configuration file, which is the case this test exists to catch."
+    )
+
+    under_the_config_file = sorted(
+        (member, components)
+        for member, components in sites
+        if components and components[0] == PROJECT_CONFIG_FILE
+    )
+
+    assert under_the_config_file == [("config", (PROJECT_CONFIG_FILE,))], (
+        "the helpers resolving under the project's configuration file are no longer "
+        f"`ProjectPaths.config` alone: {under_the_config_file}.\n\n"
+        "`_escape_remedy`'s carve-out already covers them -- it keys on the first "
+        "component at any depth -- but `config_escape_remedy`'s text does not. It "
+        f"renders `rm <knowledge dir>/{PROJECT_CONFIG_FILE}`, the cure for a link at "
+        "the file itself, and that names the wrong object for a link at an interior "
+        "component: the path it prints is then the directory above the link, where "
+        "plain `rm` fails and removes nothing. Revisit that cure in the same change "
+        "as the new helper -- its docstring asks for exactly that -- and move this pin "
+        "with it."
     )
 
 

@@ -19,15 +19,19 @@ Marked ``unit`` and writes only under ``tmp_path``.
 
 from __future__ import annotations
 
+import inspect
 import os
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Final
 
 import pytest
 
+from theurian.application.project_service import config_escape_remedy
 from theurian.domain.errors import ProjectConfigError
+from theurian.security import project_config
 from theurian.security.paths import MAX_SOURCE_FILE_BYTES
 from theurian.security.project_config import (
     PROJECT_CONFIG_FILE,
@@ -409,3 +413,85 @@ def test_the_reader_leaves_the_project_alone(tmp_path: Path) -> None:
     read_secret_scan_policy(root, config)
 
     assert {p.relative_to(root).as_posix() for p in root.rglob("*")} == before
+
+
+#: What each reader answers for a project with no configuration file, keyed by the
+#: reader's own name. Written out rather than recomputed, so a default that *moves*
+#: fails here instead of being re-derived into agreement with production -- and
+#: each of these three values is a sentence in :func:`config_escape_remedy`, the
+#: cure #652 published for an escaping ``config.yaml``. That cure's whole promise
+#: is "nothing has to be recreated", and this mapping is what makes the promise
+#: measured rather than asserted.
+_DEFAULT_WHEN_ABSENT: Final[dict[str, object]] = {
+    "read_secret_scan_policy": SecretScanPolicy.BLOCK,
+    "read_review_repositories": (),
+    "read_review_participant_redaction": False,
+}
+
+
+def _configuration_readers() -> dict[str, Callable[[Path, Path], object]]:
+    """Every public reader of the configuration file, off the module by reflection.
+
+    Keyed on the shape rather than on a list kept by hand: a public function
+    defined in this module taking ``(root, config_file)``. A fourth key added with
+    a reader of its own appears here the moment it is written, and fails the
+    equality below until somebody records what it answers for an absent file --
+    which is the sentence :func:`config_escape_remedy` publishes to an operator
+    whose ``config.yaml`` has just been removed.
+    """
+    found: dict[str, Callable[[Path, Path], object]] = {}
+    for name, member in vars(project_config).items():
+        if name.startswith("_") or not inspect.isfunction(member):
+            continue
+        if member.__module__ != project_config.__name__:
+            continue
+        if list(inspect.signature(member).parameters) == ["root", "config_file"]:
+            found[name] = member
+    return found
+
+
+def test_every_configuration_reader_answers_a_default_when_the_file_is_absent(
+    tmp_path: Path,
+) -> None:
+    """The claim #652's cure publishes: removing the file costs the reader nothing.
+
+    ``config_escape_remedy`` tells an operator to delete an escaping
+    ``.theurian/config.yaml`` and says the retry needs nothing recreated, naming
+    the three defaults that come into force. Every clause of that is a claim about
+    *this* module, and it holds in two parts: no reader may treat the absent file
+    as a fault, and the value each one answers has to be the value the cure names.
+
+    Both are asserted over a reflected population rather than over the three
+    readers that exist today, because the defect the cure would develop is a fourth
+    key whose reader refuses without a file -- at which point the published cure
+    sends an operator to delete something and then meet a refusal it promised they
+    would not.
+    """
+    root, config = _project(tmp_path, None)
+    assert not config.exists(), "the fixture wrote a configuration file, so this proves nothing"
+
+    readers = _configuration_readers()
+
+    assert set(readers) == set(_DEFAULT_WHEN_ABSENT), (
+        f"the configuration readers and the recorded defaults have moved apart: "
+        f"{sorted(set(readers) ^ set(_DEFAULT_WHEN_ABSENT))}. A reader added here without "
+        "a default for the absent file breaks `config_escape_remedy`'s promise that "
+        "nothing has to be recreated; record what it answers, and say so in that cure."
+    )
+
+    answered = {name: read(root, config) for name, read in sorted(readers.items())}
+
+    assert answered == _DEFAULT_WHEN_ABSENT, (
+        f"a reader answers something other than the default the published cure names:\n"
+        f"  answered: {answered}\n  recorded: {_DEFAULT_WHEN_ABSENT}\n\n"
+        "`config_escape_remedy` states these three values to an operator who has just "
+        "removed the file, so a default that moves without that text moving is a cure "
+        "describing a policy that is not in force."
+    )
+
+    cure = config_escape_remedy(".theurian")
+    assert SecretScanPolicy.BLOCK.value in cure, (
+        f"the cure no longer names the secret-scan policy an absent file selects: {cure!r}. "
+        "That is the one default of the three with a security consequence, and an operator "
+        "deleting the file is entitled to read which way it falls."
+    )

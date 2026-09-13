@@ -11,7 +11,11 @@ them.
 screens and lands (decisions 1--4); ``review build`` re-derives the search store
 from what has already landed (decision 3's derived half). Each reports **counts
 and identities** -- a repository, a pull-request number, a provider node id, a
-field name, a refusal grade, a row count -- and no title, no body, no comment
+field name, a refusal grade, a row count -- plus, since #656, the **recorded cure
+for each grade a pull request was skipped for: a static row of
+:data:`~theurian.domain.review_ingest.REMEDIES` selected by a grade the same
+document already publishes, so it is Theurian's own text and carries nothing that
+was fetched.** No title, no body, no comment
 text and no participant name reaches stdout from either. A secret-scan finding
 carries only the four-character redacted prefix
 :class:`~theurian.security.content_secrets.SecretFinding` bounds it to. Serving
@@ -449,6 +453,12 @@ def review_ingest(
     stay inside the working tree -- carrying the run document too, if the escape
     was met by the rebuild rather than before the fetch.
 
+    A pull request this run skipped gets no `remedy` on stderr, because the run
+    did not end on it: `skipped` names the pull request and the grade, and
+    `skippedRemedies` carries the cure recorded for that grade -- one entry per
+    distinct grade, `{}` when nothing was skipped, joined to a `skipped` line by
+    the grade it spells.
+
     The run document carries a `searchStore` block: the derived store is rebuilt
     from every landed record once the run has finished landing, so a search sees
     this run's records without a second command. A failure to rebuild it
@@ -496,8 +506,16 @@ def review_ingest(
         # `limit` is deliberately unbounded by Typer so that it arrives here: the
         # adapter refuses a limit below one or above its recorded cap with a
         # graded envelope whose remedy names the bound and how to change it,
-        # which is a better answer than Click's usage error and is the only way
-        # `LIMIT_EXCEEDED`'s recorded cure reaches an operator at all.
+        # which is a better answer than Click's usage error -- and is the only way
+        # `LIMIT_EXCEEDED`'s recorded cure reaches the operator of a run that
+        # *ended* on it.
+        #
+        # It was the only way the cure reached anyone at all until #656. A
+        # per-pull-request refusal does not come through here: the run continues
+        # and the pull request is reported under `skipped`, where the cure is now
+        # published beside it as `skippedRemedies` (see `_payload`). So this arm
+        # speaks for the run-scope face and that key for the record-scope one,
+        # which is the same split #597 wrote into the cure's own two arms.
         _fail(str(exc), remedy=exc.remedy or _GENERIC_REMEDY, as_json=as_json, code=1)
         return
 
@@ -658,6 +676,50 @@ def _payload(report: ReviewIngestReport) -> dict[str, object]:
     that found a secret is ``clean``, refuses nothing and exits zero, having
     written that finding into a file. See
     :attr:`~theurian.application.review_ingest_service.ReviewIngestReport.secrets_warned`.
+
+    **``skippedRemedies`` is the one thing here that is not an identity or a
+    count, and it is published because the cure had nowhere else to go** (#656).
+    A skipped pull request's ``FetchRefusal`` carries the envelope's remedy and
+    :data:`~theurian.domain.review_ingest.REMEDIES` records one per grade, so the
+    cure existed and was correct -- and no shipped surface published it. The
+    run-ending raise below is the only path any of these cures reached an
+    operator on, and a *skipped* pull request is by definition one that did not
+    end the run. #597 had just given ``limit-exceeded`` a per-record arm written
+    for exactly this audience, which read it in the changelog or not at all.
+
+    **Keyed on the grade rather than on the item**, for a reason the domain
+    states about itself: the remedy is "looked up, never passed in", and
+    :class:`~theurian.domain.review_ingest.RefusalEnvelope` refuses an empty one,
+    so two pull requests refused for one reason carry the same string --
+    ``limit-exceeded``'s is over a thousand characters. One entry per grade
+    publishes each cure at its natural cardinality, and ``skipped`` still names
+    every pull request, so the pair is read by joining on the grade the line
+    spells. ``tests/unit/test_review_run_document.py`` holds that join, the
+    cardinality and the order.
+
+    **Always present, ``{}`` when nothing was skipped.** The shape a caller
+    scripts against does not change with the outcome -- the discipline
+    ``secretFindings`` holds one document over -- and an empty mapping says "no
+    pull request needs a cure" rather than leaving ``jq`` to distinguish an absent
+    key from an empty one.
+
+    **Only the grades this run met.** The mapping is built from
+    ``report.skipped`` and never from the table, so it carries no cure for a fault
+    that did not happen -- and nothing about it varies with anything the caller
+    may not read: each value is a static row of
+    :data:`~theurian.domain.review_ingest.REMEDIES`, selected by a grade
+    ``skipped`` already publishes, so the field is a function of what is beside it.
+
+    That last sentence is a claim about a *construction* rather than about a type
+    -- :class:`~theurian.domain.review_ingest.RefusalEnvelope` takes ``remedy`` as
+    an ordinary field and refuses only an empty one -- so it is held over the
+    package rather than asserted here:
+    ``tests/unit/test_review_run_document.py::
+    test_every_published_cure_is_a_row_of_the_recorded_table_and_never_a_passed_string``
+    walks every ``RefusalEnvelope(...)`` in ``src/`` out of the AST and reddens for
+    one whose remedy is anything but a table lookup. An adapter that composed a
+    cure from a provider's answer would otherwise put fetched text on stdout
+    through this key.
     """
     return {
         "repository": report.repository,
@@ -677,4 +739,8 @@ def _payload(report: ReviewIngestReport) -> dict[str, object]:
         "refused": [identity.describe() for identity in report.refused],
         "findings": [finding.describe() for finding in report.findings],
         "skipped": [skip.describe() for skip in report.skipped],
+        # Insertion order, so the mapping reads in the order the skips are
+        # published in; duplicates collapse by construction, which is the whole
+        # point of keying on the grade.
+        "skippedRemedies": {skip.grade.value: skip.remedy for skip in report.skipped},
     }
