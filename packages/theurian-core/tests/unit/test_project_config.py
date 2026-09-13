@@ -433,25 +433,81 @@ _DEFAULT_WHEN_ABSENT: Final[dict[str, object]] = {
 }
 
 
+#: The two parameters a reader of the configuration file opens with. Compared as a
+#: **prefix** rather than as the whole signature, which is the difference between
+#: this key and the one round one demonstrated open: a reader spelled ``(root,
+#: config_file, *, strict=False)`` is a reader, it is callable as ``read(root,
+#: config)``, and an exact-signature key dropped it out of the population --
+#: taking with it the promise :func:`config_escape_remedy` makes about absent
+#: files. The demonstration was a fourth reader that *raised* without a file and
+#: passed the suite.
+_READER_LEAD: Final = ["root", "config_file"]
+
+#: Public functions in ``security/project_config.py`` that are **not** readers of
+#: the file, each with the reason it is not one. Empty today, and that is a
+#: measurement rather than an omission: the module's public surface is the three
+#: readers. It exists so the partition below can be asserted -- a public helper
+#: added there (a validator, a renderer, a writer) is either a reader whose
+#: absent-file answer is recorded, or a named entry here, and no third state is
+#: green.
+_NOT_A_CONFIGURATION_READER: Final[dict[str, str]] = {}
+
+
+def _public_functions() -> dict[str, Callable[..., object]]:
+    """Every public function ``security/project_config.py`` defines itself.
+
+    Imported names are excluded by ``__module__``: the question is what this module
+    publishes as its own surface, not what it happens to have in scope. This is the
+    population the partition is asserted over, and it is deliberately wider than
+    the readers -- a fail-open key is exactly what round one found here, so the set
+    a reader can fall out of has to be visible.
+    """
+    return {
+        name: member
+        for name, member in vars(project_config).items()
+        if not name.startswith("_")
+        and inspect.isfunction(member)
+        and member.__module__ == project_config.__name__
+    }
+
+
 def _configuration_readers() -> dict[str, Callable[[Path, Path], object]]:
     """Every public reader of the configuration file, off the module by reflection.
 
     Keyed on the shape rather than on a list kept by hand: a public function
-    defined in this module taking ``(root, config_file)``. A fourth key added with
-    a reader of its own appears here the moment it is written, and fails the
-    equality below until somebody records what it answers for an absent file --
-    which is the sentence :func:`config_escape_remedy` publishes to an operator
-    whose ``config.yaml`` has just been removed.
+    defined in this module whose first two parameters are
+    :data:`_READER_LEAD`. A fourth key added with a reader of its own appears here
+    the moment it is written, and fails the equality below until somebody records
+    what it answers for an absent file -- which is the sentence
+    :func:`config_escape_remedy` publishes to an operator whose ``config.yaml`` has
+    just been removed.
     """
     found: dict[str, Callable[[Path, Path], object]] = {}
-    for name, member in vars(project_config).items():
-        if name.startswith("_") or not inspect.isfunction(member):
-            continue
-        if member.__module__ != project_config.__name__:
-            continue
-        if list(inspect.signature(member).parameters) == ["root", "config_file"]:
+    for name, member in _public_functions().items():
+        parameters = list(inspect.signature(member).parameters.values())
+        if [parameter.name for parameter in parameters[:2]] == _READER_LEAD:
             found[name] = member
     return found
+
+
+def _readers_not_callable_with_two_paths() -> list[str]:
+    """Readers this file could not drive, which is a classification failure not a skip.
+
+    A member of the population is called below as ``read(root, config_file)``. One
+    that requires a third argument would raise ``TypeError`` there -- an error whose
+    message says nothing about the promise being held -- so it is reported here
+    instead, by name, with what to do about it.
+    """
+    return sorted(
+        name
+        for name, member in _configuration_readers().items()
+        if any(
+            parameter.default is inspect.Parameter.empty
+            and parameter.kind
+            not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+            for parameter in list(inspect.signature(member).parameters.values())[2:]
+        )
+    )
 
 
 def test_every_configuration_reader_answers_a_default_when_the_file_is_absent(
@@ -480,11 +536,42 @@ def test_every_configuration_reader_answers_a_default_when_the_file_is_absent(
     key whose reader *raises* without a file -- at which point the published cure
     sends an operator to delete something and then meet a refusal no command could
     have avoided.
+
+    **And the population is closed the other way too, which round one is why.** The
+    key used to be the *whole* parameter list, so a reader spelled ``(root,
+    config_file, *, strict=False)`` was not in it: the demonstrated fourth reader
+    raised on an absent file and this test stayed green. The key is now the first
+    two parameters, and the module's public surface is partitioned -- reader, or a
+    named entry in :data:`_NOT_A_CONFIGURATION_READER` -- so a public function that
+    is neither fails here rather than falling out.
     """
     root, config = _project(tmp_path, None)
     assert not config.exists(), "the fixture wrote a configuration file, so this proves nothing"
 
     readers = _configuration_readers()
+    public = _public_functions()
+
+    assert set(public) == set(readers) | set(_NOT_A_CONFIGURATION_READER), (
+        f"a public function in {project_config.__name__} is neither a reader of the "
+        f"configuration file nor recorded as not being one: "
+        f"{sorted(set(public) - set(readers) - set(_NOT_A_CONFIGURATION_READER))}. Give "
+        "it `(root, config_file)` as its first two parameters and record what it "
+        "answers for an absent file, or name it in `_NOT_A_CONFIGURATION_READER` with "
+        "the reason it is not one -- `config_escape_remedy` tells operators to delete "
+        "that file, and this is the population that promise ranges over."
+    )
+    assert not set(readers) & set(_NOT_A_CONFIGURATION_READER), (
+        f"{sorted(set(readers) & set(_NOT_A_CONFIGURATION_READER))} are carved out of "
+        "the reader population and match the reader shape, so the carve-out is hiding a "
+        "reader from the equality below"
+    )
+    assert not _readers_not_callable_with_two_paths(), (
+        f"{_readers_not_callable_with_two_paths()} take a required third argument, so "
+        "this file cannot drive them with a root and a config file. Give the extra "
+        "parameter a default -- the shipped call sites pass two -- or, if the reader is "
+        "not one an operator's retry reaches, record it in "
+        "`_NOT_A_CONFIGURATION_READER`."
+    )
 
     assert set(readers) == set(_DEFAULT_WHEN_ABSENT), (
         f"the configuration readers and the recorded defaults have moved apart: "
