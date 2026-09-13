@@ -40,6 +40,7 @@ from typing import Any, Final
 import pytest
 
 from theurian.domain.identifiers import MAX_IDENTIFIER_LENGTH
+from theurian.mcp import tools, validation
 from theurian.mcp.findings import MAX_FILTER_CHARS as FINDINGS_MAX_FILTER_CHARS
 from theurian.mcp.review_search import MAX_FILTER_CHARS as REVIEW_SEARCH_MAX_FILTER_CHARS
 from theurian.mcp.tools import MAX_AS_OF_CHARS, MAX_PROJECT_ID_CHARS, MAX_QUERY_CHARS
@@ -255,6 +256,30 @@ def test_a_published_bound_is_the_constant_its_handler_enforces(
         f"Nothing validates a published schema against the module it was transcribed "
         f"from, so the two enforce nothing together unless they are the same number. "
         f"Move both in the same change."
+    )
+
+
+def test_the_bounded_echo_caps_track_the_tool_surface() -> None:
+    """``validation``'s per-fragment echo cap and cut marker equal ``tools``'.
+
+    ``mcp/validation.py``'s ``MAX_ECHOED_FRAGMENT_CHARS`` and ``_CUT_MARKER`` are
+    documented to bound the same kind of caller-written fragment, at the same
+    boundary, as ``mcp/tools.py``'s ``_MAX_QUOTED_VALUE_CHARS`` and
+    ``_CUT_MARKER`` -- but that equality was prose only, and a prose claim drifts
+    the moment one side moves. It is the same drift the ``maxLength`` bounds above
+    guard against, one layer in: two boundaries that quote a caller's bytes back
+    must cut at the same width and mark the cut the same way, or one refusal
+    truncates where the other does not and a reader who trusts them equal is
+    wrong. Pinned, not narrated -- *pin derivations, not prose*.
+    """
+    assert validation.MAX_ECHOED_FRAGMENT_CHARS == tools._MAX_QUOTED_VALUE_CHARS, (
+        "the per-fragment echo caps drifted: validation.MAX_ECHOED_FRAGMENT_CHARS is "
+        f"{validation.MAX_ECHOED_FRAGMENT_CHARS} and tools._MAX_QUOTED_VALUE_CHARS is "
+        f"{tools._MAX_QUOTED_VALUE_CHARS}; move both together"
+    )
+    assert validation._CUT_MARKER == tools._CUT_MARKER, (
+        f"the cut markers drifted: validation._CUT_MARKER is {validation._CUT_MARKER!r} and "
+        f"tools._CUT_MARKER is {tools._CUT_MARKER!r}; move both together"
     )
 
 

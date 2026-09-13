@@ -16,16 +16,17 @@ refusal is paired with the same call against the same server with this one
 middleware lifted off, and what that pairing shows is not "the key is refused"
 but *who refuses it*.
 
-**Four tests here are the complement: what this seat deliberately does not
+**Five tests here are the complement: what this seat deliberately does not
 refuse.** Seated above the SDK's params validation, the middleware is handed the
 *raw* inbound params, so it meets envelopes a conforming
 ``CallToolRequestParams`` could never produce -- a non-string ``name``, a
-non-object ``arguments``. Those are passed on and fail closed one tier down as
-``INVALID_PARAMS``, while an absent ``arguments`` key is coerced to ``{}``,
-because that one is the legal spelling of a call with no arguments and the
-published schema has to see the empty object. Each is driven over raw JSON-RPC
-rather than through ``mcp_session``, whose ``call`` can only assemble a
-well-formed ``{"name", "arguments"}`` envelope and so cannot express any of them.
+non-object ``arguments``, a null ``params`` object altogether. Those are passed
+on and fail closed one tier down as ``INVALID_PARAMS``, while an absent
+``arguments`` key is coerced to ``{}``, because that one is the legal spelling of
+a call with no arguments and the published schema has to see the empty object.
+Each is driven over raw JSON-RPC rather than through ``mcp_session``, whose
+``call`` can only assemble a well-formed ``{"name", "arguments"}`` envelope and
+so cannot express any of them.
 """
 
 from __future__ import annotations
@@ -346,6 +347,33 @@ def test_a_non_string_tool_name_is_left_to_the_sdks_params_validation(
     """
     with open_client(build_server(registry), tmp_path / "data") as (client, session):
         answer = _raw_tool_call(client, session, {"name": 123, "arguments": {}})
+
+    assert "result" not in answer, answer
+    assert answer["error"]["code"] == INVALID_PARAMS, answer
+
+
+def test_a_tools_call_with_null_params_is_left_to_the_sdks_params_validation(
+    registry: ProjectRegistry, tmp_path: Path
+) -> None:
+    """A ``tools/call`` whose ``params`` is null is passed on, not crashed on.
+
+    The middleware reads the raw inbound params above the SDK's validation, so it
+    is handed ``params`` exactly as the wire sent it -- and ``"params": null`` is
+    a shape a conforming client does not send but the transport carries. The
+    ``params is None`` clause of ``_refusal``'s guard is what makes that a
+    pass-through: it returns ``None``, the chain continues, and the SDK answers
+    ``INVALID_PARAMS`` where a served call would have carried a result.
+
+    Without that clause the next line is ``params.get("name")`` on ``None`` -- an
+    ``AttributeError`` raised inside the middleware, before any handler, turning a
+    fail-closed ``-32602`` into a crash. So the assertion is the ``-32602``
+    disposition itself: ``result`` absent, ``error.code`` the SDK's, and the
+    request handled at all rather than blown up at this seat. Driven over raw
+    JSON-RPC because ``mcp_session``'s ``call`` always builds a ``params`` object
+    and so cannot express a null one.
+    """
+    with open_client(build_server(registry), tmp_path / "data") as (client, session):
+        answer = _raw_tool_call(client, session, None)
 
     assert "result" not in answer, answer
     assert answer["error"]["code"] == INVALID_PARAMS, answer

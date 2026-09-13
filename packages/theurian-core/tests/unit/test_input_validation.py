@@ -136,6 +136,54 @@ def _deepest(arguments: dict[str, Any]) -> int:
     return max(depth for _, depth in validation._iter_nodes(arguments))
 
 
+def _node_count(arguments: dict[str, Any]) -> int:
+    """How many nodes :func:`~theurian.mcp.validation._unbounded` discovers.
+
+    Its walk starts the count at 1 for the arguments object and adds one per
+    node :func:`~theurian.mcp.validation._iter_nodes` yields, so this mirrors the
+    arithmetic the node bound checks against. A fixture built to hit
+    :data:`MAX_PARAMS_NODES` exactly is only a control for the ``>``-versus-``>=``
+    boundary if it truly sits at the bound, which is what
+    :func:`test_the_node_and_rendered_fixtures_reach_the_amounts_they_claim`
+    confirms.
+    """
+    return 1 + sum(1 for _ in validation._iter_nodes(arguments))
+
+
+def _rendered_chars(arguments: dict[str, Any]) -> int:
+    """How many rendered characters ``_unbounded`` charges ``arguments``.
+
+    The root object contributes nothing; every node the walk yields is charged
+    through the module's own :func:`~theurian.mcp.validation._rendered_width`.
+    """
+    return sum(validation._rendered_width(value) for value, _ in validation._iter_nodes(arguments))
+
+
+def _arguments_of_node_count(count: int) -> dict[str, Any]:
+    """A schema-valid document whose walk discovers exactly ``count`` nodes.
+
+    ``{"projectId": "demo", "nested": [...]}`` is five nodes -- the object, its
+    two keys, ``"demo"`` and the list itself -- so the list carries ``count - 5``
+    integers. ``nested`` is an unconstrained array in the probe schema, so the
+    document is valid: any answer other than ``None`` came from the size guard
+    rather than the schema.
+    """
+    return {"projectId": "demo", "nested": [0] * (count - 5)}
+
+
+def _arguments_of_rendered_width(width: int) -> dict[str, Any]:
+    """A schema-valid document whose nodes render to exactly ``width`` characters.
+
+    Its keys (``projectId`` = 9, ``nested`` = 6), ``"demo"`` (4) and one string
+    element inside ``nested`` are what render; the array node itself renders to
+    nothing, so the element carries ``width - 19``. The wide value sits in
+    ``nested`` rather than ``query`` precisely so no ``maxLength`` refuses it
+    first -- the document is valid, and the rendered-width bound is the only thing
+    that could refuse it.
+    """
+    return {"projectId": "demo", "nested": ["a" * (width - 19)]}
+
+
 # -- The composition ADR-0031 decision 1 fixed -----------------------------
 
 
@@ -523,6 +571,23 @@ def test_the_nesting_fixture_reaches_the_depth_it_claims(depth: int) -> None:
     assert _deepest(_arguments_nesting(depth)) == depth
 
 
+def test_the_node_and_rendered_fixtures_reach_the_amounts_they_claim() -> None:
+    """The at-bound accepts below rest on the fixtures sitting *at* the bound.
+
+    A document one node or one character short would reach the schema under both
+    ``>`` and ``>=``, so the accept would pass against the relaxed bound too and
+    catch nothing. Checked against the module's own walk, both directions of the
+    node bound -- the accept at the cap and the refusal one past it share this
+    builder.
+    """
+    assert _node_count(_arguments_of_node_count(MAX_PARAMS_NODES)) == MAX_PARAMS_NODES
+    assert _node_count(_arguments_of_node_count(MAX_PARAMS_NODES + 1)) == MAX_PARAMS_NODES + 1
+    assert (
+        _rendered_chars(_arguments_of_rendered_width(MAX_PARAMS_RENDERED_CHARS))
+        == MAX_PARAMS_RENDERED_CHARS
+    )
+
+
 def test_arguments_at_the_nesting_bound_are_validated(loaded: InputSchemaSet) -> None:
     """The positive control for the bound below: at the limit, the schema decides."""
     assert loaded.validate(PROBE_TOOL, _arguments_nesting(MAX_PARAMS_NESTING)) is None
@@ -547,6 +612,32 @@ def test_arguments_past_the_node_bound_are_refused(loaded: InputSchemaSet) -> No
     assert "values" in refusal.message
 
 
+def test_arguments_at_the_node_bound_reach_the_schema(loaded: InputSchemaSet) -> None:
+    """The positive control the node bound had none of: at the cap, the schema decides.
+
+    The refusal above and its wire twin both sit *far* past
+    :data:`MAX_PARAMS_NODES`, so ``discovered > MAX_PARAMS_NODES`` and
+    ``discovered >= MAX_PARAMS_NODES`` refuse them alike -- neither can tell the
+    boundary this module ships from the one relaxed by a character. A document
+    with exactly :data:`MAX_PARAMS_NODES` nodes is valid, so ``None`` is the
+    schema deciding; relaxing the bound to ``>=`` refuses it here as "values"
+    instead, and this goes RED.
+    """
+    assert loaded.validate(PROBE_TOOL, _arguments_of_node_count(MAX_PARAMS_NODES)) is None
+
+
+def test_arguments_one_past_the_node_bound_are_refused(loaded: InputSchemaSet) -> None:
+    """The refusing half of the boundary pair: exactly one node past is refused.
+
+    Distinct from ``test_arguments_past_the_node_bound_are_refused``, which is
+    far past and proves only that a large document refuses. This pins where the
+    refusal begins, so the accept above and this refusal bracket the boundary.
+    """
+    refusal = loaded.validate(PROBE_TOOL, _arguments_of_node_count(MAX_PARAMS_NODES + 1))
+    assert refusal is not None
+    assert "values" in refusal.message
+
+
 def test_arguments_past_the_rendered_character_bound_are_refused(
     loaded: InputSchemaSet,
 ) -> None:
@@ -554,6 +645,20 @@ def test_arguments_past_the_rendered_character_bound_are_refused(
     refusal = loaded.validate(PROBE_TOOL, arguments)
     assert refusal is not None
     assert "characters of content" in refusal.message
+
+
+def test_arguments_at_the_rendered_character_bound_reach_the_schema(
+    loaded: InputSchemaSet,
+) -> None:
+    """The same at-cap control for the rendered-width bound.
+
+    The refusal above sits past the cap, so it cannot tell
+    ``rendered > MAX_PARAMS_RENDERED_CHARS`` from ``>=``. A document whose nodes
+    render to exactly the cap is valid, so ``None`` is the schema deciding;
+    ``>=`` refuses it here as "characters of content" instead, and this goes RED.
+    """
+    at_bound = _arguments_of_rendered_width(MAX_PARAMS_RENDERED_CHARS)
+    assert loaded.validate(PROBE_TOOL, at_bound) is None
 
 
 def test_a_giant_integer_is_charged_against_the_rendered_bound(
