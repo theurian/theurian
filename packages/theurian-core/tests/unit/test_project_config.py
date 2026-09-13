@@ -461,6 +461,22 @@ def _public_functions() -> dict[str, Callable[..., object]]:
     population the partition is asserted over, and it is deliberately wider than
     the readers -- a fail-open key is exactly what round one found here, so the set
     a reader can fall out of has to be visible.
+
+    **The key is ``inspect.isfunction``, which means a plain ``def`` and nothing
+    else**, and the limit is stated rather than implied because this population is
+    argued over. A reader wrapped in ``functools.lru_cache`` or ``functools.partial``,
+    or written as a callable instance, is not a function: it falls out of this set
+    and out of the partition below with it, and no assertion here would say so.
+
+    What stands behind that gap is the key side rather than the reader side.
+    ``tests/unit/test_config_key_call_sites.py`` reads the configuration key
+    spellings out of this package's syntax tree and holds the population this
+    module names at exactly the three in :data:`_DEFAULT_WHEN_ABSENT`, so a reader
+    of a *new* key reddens there in whatever shape it is written. The residual is a
+    wrapped reader of one of those same three keys: it would not be driven here,
+    and nothing else asks what it answers for an absent file. Widening the key to
+    non-class callables is the fix if that residual ever becomes real -- it needs a
+    carve-out for ``SecretScanPolicy``, the one public class this module defines.
     """
     return {
         name: member

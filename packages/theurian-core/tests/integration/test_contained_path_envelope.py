@@ -1970,7 +1970,7 @@ def test_an_escaping_config_file_is_cured_by_removing_the_link_not_by_init(
             ),
             (
                 "offers the authored settings back rather than only a removal",
-                f"write {_CONFIG_CULPRIT} back" in remedy,
+                f"write `{_CONFIG_CULPRIT}` back" in remedy,
                 "this file is Git-tracked policy no ignore covers, so a cure that stops "
                 "at `rm` applies the derived-artefact shape to authored content -- "
                 "`GITIGNORE_LINK_REMEDY` records why that shape is wrong here",

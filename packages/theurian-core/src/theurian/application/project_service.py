@@ -633,6 +633,13 @@ def config_escape_remedy(knowledge_directory_name: str) -> str:
     is where they live -- kept conditional, because a target that is somebody
     else's file is exactly what the opening ``ls -l`` is for.
 
+    **Every occurrence of the path below is in code font**, the way both sibling
+    cures already had it. The two clauses that were bare are the two a reader acts
+    on with an editor rather than with ``rm``, and a path not marked as one reads
+    as ordinary prose exactly where the reader has to type it. The copy-back
+    predicate in ``tests/integration/test_contained_path_envelope.py`` matches the
+    backticked spelling, so the sentence and its pin move in one commit.
+
     **Plain ``rm``, with no ``rm -rf`` twin, and the shape argument is the one
     :func:`review_escape_remedy` records.** :meth:`ProjectPaths.of` refuses before
     this class exists unless the resolved knowledge directory is inside the
@@ -728,7 +735,7 @@ def config_escape_remedy(knowledge_directory_name: str) -> str:
         f"that link with `rm {path}`: plain `rm` removes the link and not what it points "
         f"at, so the settings it named are still there to read. This file is authored "
         f"policy and nothing recreates it, so if those settings are this project's, write "
-        f"{path} back as a regular file holding them. With no {path} the shipped defaults "
+        f"`{path}` back as a regular file holding them. With no `{path}` the shipped defaults "
         f"are in force: `security.secretScan` is `block`; the review allowlist is empty, "
         f"and an empty allowlist names no repository, so `theurian review ingest` refuses "
         f"every repository until the file lists it; and participant-name redaction is "
