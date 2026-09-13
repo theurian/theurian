@@ -646,6 +646,26 @@ test that discharges it:
   caller-observable behaviour changes. Whether any of these rewrites is
   *faithful* is a reading and no mechanical check reaches it, which is said here,
   as it was before, rather than left to be inferred.
+- **The `protocolVersion` treatment of the three caller-observable refusals is
+  settled and recorded.** `docs/protocol/mcp-tools.md`'s *Changing this contract*
+  section, as of `76e1628c` on the branch of
+  [#663](https://github.com/theurian/theurian/pull/663), grants the three the
+  **sixth, seventh and eighth** breaking-but-unbumped exemptions — taking that
+  series from five to eight — and `protocolVersion` stays `theurian/v1`. Two legs
+  are shared by all three: a consumer census re-measured for this change and
+  pasted as the commands that produce it rather than summarised — the population
+  is every place outside Core and `docs/` that builds a `tools/call`, and it holds
+  one construction site, a test helper, whose eight call sites are partitioned and
+  listed over the four key sets this contract defines; no plugin script builds an
+  MCP call at all — and the pre-1.0 versioning policy the Core changelog states in
+  its own header, deliberately *not* the "no known external integration to break"
+  leg the fourth and fifth exemptions rest on, since Core is published on PyPI and
+  nobody here can say what is installed against it. Each refusal then carries a
+  ground of its own and a scope line that stops it widening to the next: unknown
+  keys were never published as accepted, `project.list` and `system.capabilities`
+  never took an argument in this document or in any schema under `schemas/mcp/`,
+  and `query`'s 2,000-character bound was already published in two places, so what
+  moved there is the disposition of an over-bound query from clamp to refuse.
 
 Still owed, with the milestone that will satisfy it:
 
@@ -679,14 +699,6 @@ Still owed, with the milestone that will satisfy it:
   `test_input_schema_agreement.py::test_the_excluded_context_keys_are_still_the_unread_three`,
   so a fourth such key cannot join it by being excluded and the file goes RED
   whichever way #665 decides. A recorded deferral, not an acceptance.
-- **The `protocolVersion` treatment of the three caller-observable refusals.**
-  *Consequences → Negative* already records that refusing unknown keys is a
-  compatibility decision; what is recorded nowhere is whether it bumps
-  `theurian/v1`. `docs/protocol/mcp-tools.md`'s *Changing this contract* section
-  now carries the question and the evidence it would take to settle it — the
-  section's five existing exemptions each rest on a search-verified consumer
-  census, and none has been taken for these three. The decision falls due with
-  the release that ships SEC-12.
 - **`_meta.serverInfo` is absent from a refusal this tier answers.**
   `ServerRunner._serialize` stamps it on a modern-era result from server state no
   middleware is handed, so a refusal from this seat reaches a `2026-07-28` client
