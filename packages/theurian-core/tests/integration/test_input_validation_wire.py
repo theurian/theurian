@@ -15,16 +15,29 @@ model sets no ``extra="forbid"`` and pydantic's default is ``ignore``. So each
 refusal is paired with the same call against the same server with this one
 middleware lifted off, and what that pairing shows is not "the key is refused"
 but *who refuses it*.
+
+**Four tests here are the complement: what this seat deliberately does not
+refuse.** Seated above the SDK's params validation, the middleware is handed the
+*raw* inbound params, so it meets envelopes a conforming
+``CallToolRequestParams`` could never produce -- a non-string ``name``, a
+non-object ``arguments``. Those are passed on and fail closed one tier down as
+``INVALID_PARAMS``, while an absent ``arguments`` key is coerced to ``{}``,
+because that one is the legal spelling of a call with no arguments and the
+published schema has to see the empty object. Each is driven over raw JSON-RPC
+rather than through ``mcp_session``, whose ``call`` can only assemble a
+well-formed ``{"name", "arguments"}`` envelope and so cannot express any of them.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 import pytest
 from mcp.server import MCPServer
+from mcp.types import INVALID_PARAMS
+from starlette.testclient import TestClient
 
 from theurian.application.project_service import ProjectRegistry
 from theurian.daemon.runner import build_server
@@ -59,6 +72,24 @@ def _without_the_middleware(server: MCPServer) -> MCPServer:
     ]
     assert not any(isinstance(entry, InputValidationMiddleware) for entry in server.middleware)
     return server
+
+
+def _raw_tool_call(client: TestClient, session: str, params: object) -> dict[str, Any]:
+    """One ``tools/call`` whose ``params`` cross the wire exactly as given.
+
+    ``mcp_session``'s ``call`` always assembles ``{"name": tool, "arguments":
+    {...}}``, which is the one thing the tests below must not do: the middleware
+    reads the raw inbound params, above the SDK's params validation, so the
+    envelopes it has to have a decision about are precisely the ones a
+    conforming client cannot send.
+    """
+    response = client.post(
+        "/mcp",
+        json={"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": params},
+        headers=headers(session),
+    )
+    assert response.status_code == 200, response.text
+    return payload(response)
 
 
 def test_build_server_seats_the_middleware_inside_the_sdks_own(registry: ProjectRegistry) -> None:
@@ -213,3 +244,108 @@ def test_a_refusal_carries_the_shape_a_handler_refusal_carries(
     assert from_handler["result"]["isError"] is True, from_handler
     assert set(from_schema["result"]) == set(from_handler["result"])
     assert "resultType" not in from_schema["result"], from_schema
+
+
+def test_a_call_with_no_arguments_key_is_checked_as_the_empty_object(
+    registry: ProjectRegistry, tmp_path: Path
+) -> None:
+    """Omitting ``arguments`` is the legal spelling of a call with no arguments,
+    so a tool that requires one is refused *by its published schema* rather than
+    passed on unchecked.
+
+    ``CallToolRequestParams`` types ``arguments`` as object-or-null, so this
+    envelope is well-formed and the SDK dispatches it. Coercing absent to ``{}``
+    is what makes the published contract answer -- ``tool-context.schema.json``'s
+    ``"required": ["projectId"]``, reached by ``$ref`` from
+    ``knowledge-search-input.schema.json`` -- and the assertion is on *which*
+    tier answered.
+
+    So it is on the refusal's text, not on ``isError``, which is true either way:
+    with the coercion dropped the SDK's per-tool argument model answers instead,
+    in pydantic's wording and naming the fields it found missing (measured
+    against this build). Both are errors; only one is this control's.
+    """
+    with open_client(build_server(registry), tmp_path / "data") as (client, session):
+        answer = _raw_tool_call(client, session, {"name": "knowledge.search"})
+
+    assert "error" not in answer, answer
+    assert answer["result"]["isError"] is True, answer
+    text = answer["result"]["content"][0]["text"]
+    assert "published input schema" in text, text
+    assert "does not satisfy 'required'" in text, text
+    assert "projectId" in text, text
+
+
+def test_a_tool_that_needs_no_arguments_is_served_when_the_key_is_absent(
+    registry: ProjectRegistry, tmp_path: Path
+) -> None:
+    """The coercion above must not cost a caller a call it is entitled to make.
+
+    Asserted as equality against the same call sent with an explicit ``{}``,
+    because "served" has to mean more than ``isError`` being false: the two
+    legal spellings of a no-argument call are one call.
+
+    This half carries no teeth of its own and is not meant to --
+    ``test_a_call_with_no_arguments_key_is_checked_as_the_empty_object`` is the
+    one that goes RED when the coercion is dropped, since ``project.list`` is
+    served either way (measured). What this pins is the direction a future
+    tightening of that guard must not break.
+    """
+    with open_client(build_server(registry), tmp_path / "data") as (client, session):
+        absent = _raw_tool_call(client, session, {"name": "project.list"})
+        explicit = _raw_tool_call(client, session, {"name": "project.list", "arguments": {}})
+
+    assert absent["result"]["isError"] is False, absent
+    assert absent["result"]["structuredContent"] == {
+        "count": 0,
+        "projects": [],
+        "unreadable": [],
+        "remedy": None,
+    }
+    assert absent["result"] == explicit["result"]
+
+
+def test_a_non_object_arguments_value_is_left_to_the_sdks_params_validation(
+    registry: ProjectRegistry, tmp_path: Path
+) -> None:
+    """A shape no conforming client can send is passed on, not answered here.
+
+    Fail-closed either way: ``arguments`` is typed object-or-null, so the params
+    model rejects this envelope inside ``call_next`` and the caller is answered
+    ``INVALID_PARAMS`` where a served call would have carried a result. What the
+    assertion pins is that it fails closed *there*: answering it at this tier
+    would mean wording a refusal shape ``mcp/middleware.py`` deliberately does
+    not own, since every string a caller reads comes from ``mcp/validation.py``.
+
+    So ``result`` must be absent, not merely an error result. A guard that
+    coerced this to ``{}`` would answer a schema refusal, which is ``isError``
+    true and a different tier entirely.
+    """
+    with open_client(build_server(registry), tmp_path / "data") as (client, session):
+        answer = _raw_tool_call(
+            client, session, {"name": "knowledge.search", "arguments": "not-an-object"}
+        )
+
+    assert "result" not in answer, answer
+    assert answer["error"]["code"] == INVALID_PARAMS, answer
+
+
+def test_a_non_string_tool_name_is_left_to_the_sdks_params_validation(
+    registry: ProjectRegistry, tmp_path: Path
+) -> None:
+    """The same for a ``name`` that is not a string, and here the alternative is
+    worse than refusing: it is inventing a name.
+
+    A guard that substituted ``""`` would look that up, find no published schema
+    and answer a *tool result* refusing a tool the caller never named -- a
+    refusal distinction this tier is not allowed to create, since which inputs
+    refuse and how they are told apart belongs to ``mcp/validation.py``.
+    ``name`` is typed ``str`` with no default, so the SDK refuses the envelope
+    itself and the caller is told the params were invalid, which is what they
+    were.
+    """
+    with open_client(build_server(registry), tmp_path / "data") as (client, session):
+        answer = _raw_tool_call(client, session, {"name": 123, "arguments": {}})
+
+    assert "result" not in answer, answer
+    assert answer["error"]["code"] == INVALID_PARAMS, answer
