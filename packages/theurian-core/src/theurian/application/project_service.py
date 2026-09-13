@@ -614,6 +614,26 @@ def config_escape_remedy(knowledge_directory_name: str) -> str:
     a link without the force ``-rf`` adds, and against an authored regular file
     the reader's ``ls -l`` is what stops them before they type anything.
 
+    **Where that link can be, which is why one ``rm`` is enough.** The path below
+    is rendered against the file itself, so the cure removes a link *at*
+    ``config.yaml`` and nothing deeper -- the right cure only while ``config.yaml``
+    is the deepest thing any contained helper resolves under that name. It is, and
+    that is pinned rather than dated:
+    ``tests/unit/test_project_paths_containment.py::
+    test_exactly_one_contained_helper_resolves_under_the_project_config_file``
+    reads the chokepoint's call sites out of this module's syntax tree and goes RED
+    for a second resolver. The prose key on :meth:`ProjectPaths._escape_remedy`,
+    which partitions all eight single-component sites, stays the way a reader
+    re-derives that population by hand; it answers only when somebody runs it, and
+    closing that gap is what the pin is for. That method keys its carve-out on the
+    *first component at any depth* on purpose, so a helper added later beneath this
+    name inherits the arm rather than falling back to the ``theurian init`` clause.
+    **Whoever adds that helper revisits this cure in the same change**: the link
+    could then sit at an interior component, and the single ``rm`` below would name
+    the directory above it, where plain ``rm`` fails and removes nothing -- leaving
+    the reader a command that changed nothing beside a cure still promising the
+    retry needs nothing recreated.
+
     **The trailing slash is absent and, unlike the sibling, unmentioned.** Four
     forms run against a ``.theurian/config.yaml`` symbolic link in a scratch tree,
     macOS 26.6.2, 2026-09-13 -- each row is that run's exit status and what was
@@ -638,7 +658,7 @@ def config_escape_remedy(knowledge_directory_name: str) -> str:
     any form, which is why it can be recorded here.
 
     **Relative names only, enforced in the cure rather than at the seam**
-    (GHSA-97q9-xxfg-33r6), for the reason :func:`review_escape_remedy` records
+    (GHSA-923w-f36f-jcfq), for the reason :func:`review_escape_remedy` records
     at length: a ``ProjectError``'s remedy crosses the MCP boundary unmodified
     -- ``_with_remedy`` replaces the *message* with ``PATH_ESCAPE_REFUSAL`` and
     republishes the *remedy* -- and that fold is generic over the exception
@@ -659,6 +679,19 @@ def config_escape_remedy(knowledge_directory_name: str) -> str:
     re-running the key against the text as committed, which is the only thing that
     catches it. The discipline lives in the cure anyway, where a later tool inherits
     it, rather than in a seam a later tool would bypass.
+
+    **The advisory above is the layout class, and reaching it took a correction
+    this note records rather than hides.** It was written with the abbreviated
+    identifier several test modules still use for that class, which #661's guard
+    (``tests/unit/test_advisory_citations.py``) forbids in ``src/``. #661 resolved
+    every other occurrence of it under ``src/`` to GHSA-923w-f36f-jcfq; this one was
+    resolved to GHSA-97q9-xxfg-33r6, the RAPTOR advisory -- a purge-failed build
+    being served, not a resolved path crossing a boundary -- which the guard accepts,
+    because it holds a citation's *form* and cannot see its attribution. That
+    spelling existed on the #652 branch only and reached no release. What settles the
+    attribution is ``docs/security/threat-model.md``'s T-25 row, *an MCP error
+    response names the operator's resolved filesystem layout*, and
+    :func:`review_escape_remedy` cites the same advisory for the same sentence.
     """
     path = f"{knowledge_directory_name}/{PROJECT_CONFIG_FILE}"
     return (
