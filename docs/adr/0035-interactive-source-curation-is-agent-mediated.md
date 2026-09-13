@@ -5,7 +5,9 @@
 - Deciders: Theurian maintainers
 - Requirements: FR-I3, FR-V4, T-3
 - Situates against [ADR-0013](0013-ai-writes-produce-proposals.md) (the approval
-  gate this ADR preserves — proposal → PR → human review → merge → apply),
+  gate this ADR preserves — its flowchart's proposal → PR → human review →
+  merge → `migrate apply`), [ADR-0034](0034-migrate-apply-enforces-the-merge.md)
+  (the `migrate apply` step at the end of that chain),
   [ADR-0026](0026-evidence-plane-not-control-plane.md) (the daemon does not
   become a control point, so interactivity cannot live in it),
   [ADR-0032](0032-the-write-intent-mcp-tool-surface.md) (the write-intent tool
@@ -71,18 +73,21 @@ step earlier — the agent distills, Theurian verifies and packages.
 
 The curation dialogue has exactly one terminus: a proposal produced through
 Phase B's write path — `knowledge.proposeChange`
-([ADR-0032](0032-the-write-intent-mcp-tool-surface.md) decision 1), the roadmap's
-"AI proposes, over a protocol". **It produces a proposal; it never writes
-approved knowledge, and it is not a route into the source layer.**
+([ADR-0032](0032-the-write-intent-mcp-tool-surface.md) decision 1), the tool
+through which the roadmap's Phase B promotes the *proposes* in *AI proposes* from
+a CLI to a protocol. **It produces a proposal; it never writes approved
+knowledge, and it is not a route into the source layer.**
 
 The distinction matters because the two failure modes are different. A dialogue
 that wrote to the source layer directly would make an agent's distillation the
 system of record with no review at all, which is what FR-I3 forbids — *route AI
 writes to proposal files, never into approved state*. A dialogue that is an
-on-ramp to `proposeChange` inherits every guard ADR-0032 and
-[ADR-0027](0027-accept-validates-before-it-moves.md) already hold: the
-schema-valid migration, the digest-pinned body, the accept-time secret scan, the
-containment on writes. It adds no new write primitive; it feeds an existing one.
+on-ramp to `proposeChange` inherits every guard the shipped `ProposalService`
+and `propose accept` machinery already hold — the schema-valid migration, the
+digest-pinned body, the accept-time secret scan, the containment on writes —
+documented by [ADR-0013](0013-ai-writes-produce-proposals.md)'s Milestone 7
+amendment and [ADR-0027](0027-accept-validates-before-it-moves.md). It adds no
+new write primitive; it feeds an existing one.
 
 Ingesting the raw sources *themselves* as a governed source class — snapshotting
 noisy SaaS content behind a trust model — is a separate problem, owned by
@@ -94,9 +99,12 @@ them; it is not about Theurian ingesting them.
 
 > **The dialogue removes the friction of *authoring*. It does not remove, relax,
 > or shortcut *approval*. Approval remains proposal → PR → human review → merge →
-> `migrate apply`, exactly as [ADR-0013](0013-ai-writes-produce-proposals.md)
-> point 4 states it. No conversational "yes" — however explicit, however
-> confident — becomes approved knowledge without passing that gate.**
+> `migrate apply`, exactly as [ADR-0013](0013-ai-writes-produce-proposals.md)'s
+> approval flowchart traces it — through the merge its point 4 calls approval,
+> and on to the `migrate apply` step that
+> [ADR-0034](0034-migrate-apply-enforces-the-merge.md) owns. No conversational
+> "yes" — however explicit, however confident — becomes approved knowledge
+> without passing that gate.**
 
 The friction the dialogue removes is *distillation and drafting*: the labour of
 turning a scattered discussion into a well-formed migration document. The friction
@@ -113,6 +121,18 @@ friendlier face: it is a human act, but it is not the human act FR-V4 requires,
 which is *approval recorded as a migration* against *a reviewable diff*. The
 dialogue's output is a proposal a human still has to review and merge; the
 conversation is upstream of the gate, never a substitute for it.
+
+**The merge link's enforcement is a workflow convention, and this ADR relies on
+it exactly as it stands.** That the commit `migrate apply` runs was reviewed and
+merged — rather than committed locally — is held by branch protection and a
+human, not by a check the code makes: T-15's accepted residual, recorded in
+[ADR-0026](0026-evidence-plane-not-control-plane.md) and the threat model, and
+narrowed but not closed by [ADR-0034](0034-migrate-apply-enforces-the-merge.md),
+which enforces *committed*, not *merged*. The invariant above therefore rests on
+human and branch-protection enforcement at that link — stated with the same
+recorded-limit honesty this ADR gives ADR-0032 decision 8's one-level walk in
+*Compliance*. Interactive curation neither strengthens nor weakens that
+enforcement, and must not be read as making the merge automatic.
 
 ### 4. The dialogue's origin is captured as evidence
 
@@ -184,9 +204,11 @@ review is a real one and not a rubber stamp on prose the agent chose.
   guard (decision 5) mitigates this by keeping the raw source viewable, but it
   cannot force a careful review. FR-V4's human is the control, and this ADR does
   not pretend the dialogue checks the distillation's fairness.
-- **A new prompt-injection path, and it is the one the roadmap already names.**
-  Distilling noisy, mutable SaaS content is precisely where an injected
-  instruction can ride into a proposal (T-3). The mitigation is the existing
+- **A new prompt-injection path, and it is the same class the roadmap already
+  names.** The roadmap names the review-text → candidate path specifically;
+  distilling noisy, mutable SaaS content is a sibling face of it — an injected
+  instruction riding into a proposal (T-3), the framing decision 5 and *What
+  this does not close* item 4 already carry. The mitigation is the existing
   triple plus decision 5's raw-source visibility, and the threat model's T-3
   section owes the interactive-curation path as a named addition when the
   mechanism lands — recorded here rather than dressed as already covered.
