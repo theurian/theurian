@@ -24,10 +24,20 @@ keeps the plugin movable to its own repository.
 - **Breaking changes** (removing a property, tightening a type, adding a
   required property) bump `protocolVersion` and therefore every plugin's
   `coreCompatibility` range.
-- `additionalProperties: false` is deliberate throughout. Silently accepting an
-  unknown field turns a typo into a value that is quietly ignored — in a
-  migration format, that means an operation someone believes they applied and
-  did not.
+- **Closing against unknown fields is deliberate throughout**, and which keyword
+  does it depends on the side. A response schema closes with
+  `additionalProperties: false`. A published input schema closes with
+  `unevaluatedProperties: false`, because `additionalProperties` in Draft 2020-12
+  considers only the `properties` of its own schema object and so rejects the
+  shared-context fields a per-tool schema has just referenced by `$ref`
+  ([ADR-0031](../docs/adr/0031-mcp-input-is-schema-validated-in-middleware.md)
+  decision 1 measured all three arrangements). `mcp/tool-context.schema.json` is
+  the one file here that closes with neither: its closure moved to each referrer,
+  and `test_object_schemas_reject_unknown_properties` asserts that delegation is
+  real rather than skipping the file. Silently accepting an unknown field turns a
+  typo into a value that is quietly ignored — in a migration format, that means
+  an operation someone believes they applied and did not; over MCP it means a
+  caller was answered confidently about a question it did not ask.
 - **Correcting a schema to describe what is already emitted is neither.** The
   rules above are about the *wire*: they exist so a client that works keeps
   working. Removing a property no version ever sent cannot break a client,
@@ -83,10 +93,16 @@ returns:
 
 Schemas are validated in CI for well-formedness, every example under `examples/`
 is validated against them, and each published response shape is validated against
-a real response. Which test does that, and against what, because the rule above is
-worth nothing if the reader has to guess where it has been applied:
+a real response. Since SEC-12
+([ADR-0031](../docs/adr/0031-mcp-input-is-schema-validated-in-middleware.md)) the
+input side is checked too, and against real traffic for the same reason: each
+`mcp/*-input.schema.json` is what an SDK `ServerMiddleware` validates every
+`tools/call` against before dispatch, so the tests drive calls through the
+transport rather than validating a fixture. Which test does that, and against
+what, because the rule above is worth nothing if the reader has to guess where it
+has been applied:
 
-| Schema | Checked against real output by |
+| Schema | Checked against real traffic by |
 | :-- | :-- |
 | `mcp/knowledge-search-response.schema.json` | `test_wire_contract.py`, on **both** answer paths — ranked retrieval and the unranked fallback |
 | `knowledge/retrieval-result.schema.json` | the same test, transitively: the response `$ref`s it, so every validated response validates every hit |
@@ -95,7 +111,35 @@ worth nothing if the reader has to guess where it has been applied:
 | `cli/version.schema.json` | `test_schemas.py::test_version_output_matches_its_published_schema`, against the payload `theurian version` emits |
 | `mcp/project-list-response.schema.json` | `test_wire_contract.py`, against a registry that reads cleanly and one holding two unreadable entries |
 | `mcp/review-findings-response.schema.json` | `test_wire_contract.py`, against three real `review.findings` responses over a store that also holds a rejected trailer: a full read carrying rows with the derived fields both set and null, a filtered read, and the empty one — `count: 0` is the case a `minItems` would have rejected |
-| `mcp/tool-context.schema.json` | nothing, and nothing should: it describes tool *input*, so there is no response to compare. `test_project_id_is_required_on_every_tool_call` holds what it is for |
+| `mcp/knowledge-search-input.schema.json` | the three set-wide sweeps below, plus `test_input_validation_wire.py`, against a real `tools/call`: an unknown key is refused, and the refusal names the key and never the value it carried. `test_input_validation_dispatch.py` drives the request-size bounds and the widest body this transport admits through this same tool, and `test_input_schema_bounds.py` holds `query` and `asOf` against `MAX_QUERY_CHARS` and `MAX_AS_OF_CHARS` |
+| `mcp/knowledge-get-input.schema.json` | the three set-wide sweeps below; `test_input_schema_bounds.py` holds `itemId` against `MAX_IDENTIFIER_LENGTH` |
+| `mcp/knowledge-status-input.schema.json` | the three set-wide sweeps below. It publishes no length bound, so it has no entry in `test_input_schema_bounds.py`'s table — which is asserted by equality, so a bound added here without an entry fails there |
+| `mcp/project-list-input.schema.json` | the three set-wide sweeps below, plus both of `test_input_validation_wire.py`'s controls over a real `project.list` call: with the middleware **lifted off**, the same call carrying an unknown key is served at `isError: false` and answers byte-identically with the key and without it — which is what makes the refusal above attributable to this seat — and **through** the middleware a valid call is answered identically to the same call with the seat off |
+| `mcp/review-findings-input.schema.json` | the three set-wide sweeps below; `test_input_schema_bounds.py` holds its six filter bounds against `mcp/findings.py`'s `MAX_FILTER_CHARS` |
+| `mcp/review-search-input.schema.json` | the three set-wide sweeps below; `test_input_schema_bounds.py` holds its five filter bounds against `mcp/review_search.py`'s `MAX_FILTER_CHARS` |
+| `mcp/system-capabilities-input.schema.json` | the three set-wide sweeps below. Like `knowledge-status`, it publishes no length bound and therefore no entry in the bounds table |
+| `mcp/tool-context.schema.json` | `mcp/validation.py`'s loader, reached through every per-tool input schema's `$ref` and applied by the middleware, so this file is read on every project-scoped `tools/call`. **Five tests hold a property of it**, and the honest way to name them is the command rather than a list, because four arrive by parametrization and a sixth would join the same way: `uv run --frozen python -m pytest packages/theurian-core/tests/unit/test_schemas.py --collect-only -q \| grep -i "tool.context"`, plus `test_schemas.py::test_project_id_is_required_on_every_tool_call`, which loads the path as a literal and so appears in no node id. Exactly one of the five moved: `test_object_schemas_reject_unknown_properties[tool-context.schema.json]`, rewritten rather than deleted because ADR-0031 decision 1 relocated the closure to each per-tool schema's `unevaluatedProperties: false` — its arm now asserts the delegation is real, that referrers exist at all and that every one of them carries the keyword |
+
+**The three set-wide sweeps** cover every `mcp/*-input.schema.json` without being
+told which files exist, which is the property that matters: a schema added
+tomorrow joins them by existing.
+
+- `test_input_validation_dispatch.py::test_every_registered_tool_resolves_to_a_published_input_schema`
+  walks the **built server**'s registered tools and asserts set equality in both
+  directions — a registered tool with no published schema is refused at dispatch
+  rather than served, and a schema published for a tool this build no longer
+  registers is a contract naming a call that answers "no such tool".
+- `test_input_schema_agreement.py` holds each published schema against the schema
+  the SDK derives from that handler's signature, parametrized over every
+  registered tool. Its module docstring states the relation and what it excludes:
+  the closure axis, which no derived schema carries; value-domain tightening,
+  which is the published file's purpose; and `snapshotId`, `agentId` and
+  `taskId`, which the shared context publishes and no handler in this build reads
+  ([#665](https://github.com/theurian/theurian/issues/665)).
+- `test_schemas.py::test_object_schemas_reject_unknown_properties` holds the
+  closure keyword, parametrized over every schema in this tree — for an input
+  schema that is `unevaluatedProperties: false`, and for a response schema it is
+  still `additionalProperties: false`.
 
 `project-list-response.schema.json` was the gap this section was written to name,
 and this text went on naming it for a week after it was filled — which is the
@@ -126,7 +170,11 @@ To check locally:
 
 ```sh
 uv run pytest packages/theurian-core/tests/unit/test_schemas.py \
-             packages/theurian-core/tests/integration/test_wire_contract.py -v
+             packages/theurian-core/tests/unit/test_input_schema_bounds.py \
+             packages/theurian-core/tests/integration/test_wire_contract.py \
+             packages/theurian-core/tests/integration/test_input_validation_wire.py \
+             packages/theurian-core/tests/integration/test_input_validation_dispatch.py \
+             packages/theurian-core/tests/integration/test_input_schema_agreement.py -v
 ```
 
 Cross-file `$ref`s are resolved from a registry built out of this directory.

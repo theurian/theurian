@@ -425,22 +425,88 @@ and neither the assertions above nor `access_log=False` would notice.
 
 #### T-11 — A client authorized for Project A reads Project B (EoP, High)
 
-**Controls:** `projectId` is required on every project-scoped call. It is *not*
-validated by a JSON schema at the MCP boundary — there is no such validation,
-`jsonschema` is imported only by the migration loader — but it is validated by
-construction: the tool builds a `ProjectId`, which rejects a malformed id, and
-resolves it through `ProjectRegistry.load()`, which excludes any registry key
-that is not itself a usable `ProjectId`
+**Controls:** `projectId` is required on every project-scoped call, and it is
+checked at two tiers that fail for different reasons. At the MCP boundary it is
+validated against a published JSON schema — SEC-12, below — whose pattern is
+held against `ProjectId`'s own construction by
+`test_schemas.py::test_every_published_project_id_pattern_admits_exactly_what_projectid_constructs`,
+so the published contract cannot drift into admitting an id the domain refuses.
+Below that, it is validated by construction: the tool builds a `ProjectId`,
+which rejects a malformed id, and resolves it through `ProjectRegistry.load()`,
+which excludes any registry key that is not itself a usable `ProjectId`
 (`application/project_service.py::_usable_id`), so an id that names no registered
-project cannot resolve to one. There is no process-global or connection-scoped
-current project; every retriever filters on `chunks.project_id` through
-`SqliteIndexStore._scope` before ranking, so a row from another project takes no
-result slot, rank, or published number (T-17, FR-R1); an E2E test asserts a query
-for A never returns B.
+project cannot resolve to one. The schema check is not a replacement for that
+one: it constrains the keys and the shapes a caller may send, and domain
+construction constrains the values a handler reads. There is no process-global
+or connection-scoped current project; every retriever filters on
+`chunks.project_id` through `SqliteIndexStore._scope` before ranking, so a row
+from another project takes no result slot, rank, or published number (T-17,
+FR-R1); an E2E test asserts a query for A never returns B.
 
-*Future controls, not shipped:* SEC-12 — validating every MCP tool input against
-its published JSON Schema at the boundary — is not implemented; input is checked
-by domain construction as above, not against the schemas.
+**SEC-12 ships.** Every MCP tool input is validated against its published JSON
+Schema before it reaches application code
+([ADR-0031](../adr/0031-mcp-input-is-schema-validated-in-middleware.md)). The
+seat is an SDK `ServerMiddleware` — `mcp/middleware.py`'s
+`InputValidationMiddleware`, wired into the `MCPServer` that
+`daemon/runner.py`'s `build_server` constructs — which reads `ctx.method` and
+the raw `ctx.params`, and for a `tools/call` validates the arguments against
+that tool's published schema before `call_next` is awaited. The schemas are
+`schemas/mcp/*-input.schema.json`, one per registered tool, loaded once at build
+time by `mcp/validation.py`'s `load_input_schemas`; the five project-scoped ones
+reach `projectId` through an `allOf` `$ref` to `tool-context.schema.json`. The
+set is held equal to the built server's registered tools in both directions by
+`test_input_validation_dispatch.py::test_every_registered_tool_resolves_to_a_published_input_schema`,
+so a tool added later joins the control by existing rather than by being
+remembered (seven schemas on 2026-09-13, `ls schemas/mcp/*-input.schema.json`).
+
+**The middleware tier is the only tier that sees the keys a caller sent.**
+`mcp==2.1.1` builds each tool's argument model with `ArgModelBase`, which sets
+no `extra="forbid"`, so pydantic's default of `ignore` drops an unknown key
+before any Theurian code runs — a check written inside a handler cannot notice
+the key was ever there. That is driven rather than argued:
+`test_input_validation_wire.py::test_the_same_call_is_served_when_the_middleware_is_lifted_off`
+lifts this one middleware off the same server and watches the unknown key be
+accepted in silence.
+
+**Fail-closed by structure, both directions.** A registered tool that resolves
+to no loaded schema is refused at *dispatch* and its handler is never entered —
+`test_input_validation_dispatch.py::test_a_tool_with_no_published_schema_is_refused_at_dispatch`
+asserts the non-entry with a sentinel the body would set if it ran, and
+`::test_an_ordinary_tool_is_still_served_on_that_same_server` is the positive
+control that the refusal is not a server refusing everything. A schema set that
+cannot be loaded whole raises out of `build_server` rather than serving the
+tools whose contracts happened to parse, so a damaged install fails at startup
+instead of answering "that tool is not published".
+
+**A refusal names a key path and the constraint that rejected it, never the
+value a caller sent.** Every caller-written fragment is escaped through `repr`
+and cut to `MAX_ECHOED_FRAGMENT_CHARS`, and the assembled message is held under
+`MAX_REFUSAL_CHARS` at construction, so a refusal cannot become an amplifier of
+the caller's own bytes — the shape `mcp/tools.py`'s `MAX_PROJECT_ID_CHARS`
+echo-bounding already uses (#17). Arguments are bounded before `jsonschema` is
+handed them (`MAX_PARAMS_NESTING`, `MAX_PARAMS_NODES`,
+`MAX_PARAMS_RENDERED_CHARS`), because past the interpreter's recursion budget
+`jsonschema` cannot build even its own message — the mechanism #291 and #245
+recorded for the migration loader.
+
+**What SEC-12 is not**, because a schema check reads wider than it is. It is not
+authorization: SEC-13 project scoping is a different control at a different
+point, and a schema-valid request for a project the caller may not read is still
+a schema-valid request. It constrains shape and length, not meaning, so the
+controls that read what a value *says* — SEC-11's scanning and SEC-15's safety
+triple — keep their own seats. And it bounds one request's arguments without
+bounding rate or aggregate cost, which stays T-6's.
+
+**Residual risk:** two, both recorded rather than discovered later.
+`MAX_PARAMS_RENDERED_CHARS` is unreachable over the shipped transport —
+`daemon/server.py` calls `streamable_http_app` without `max_request_body_size`,
+so the SDK's 4 MiB default answers `413` before any MCP framing exists, and the
+reconciliation is owed by
+[#669](https://github.com/theurian/theurian/issues/669) at the slice that opens
+the write surface. And `tool-context.schema.json` publishes `snapshotId`,
+`agentId` and `taskId`, which the enforced contract now *admits* and which no
+handler in this build reads, so a caller that pins one is answered as if it had
+not ([#665](https://github.com/theurian/theurian/issues/665)).
 
 The `AuthorizationProvider` port has an implementation since #119 —
 `application/authorization.StaticAuthorizationProvider`, resolved once at startup

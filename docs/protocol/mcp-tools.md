@@ -33,7 +33,8 @@ act through `theurian review ingest` (see below).
 ```
 
 `projectId` is **required** on every project-scoped tool that ships today:
-`knowledge.search`, `knowledge.get`, and `knowledge.status`. Omitting it is a
+`knowledge.search`, `knowledge.get`, `knowledge.status`, `review.findings` and
+`review.search`. Omitting it is a
 validation error, never a fallback to "the last one used". With ten subagents
 sharing one daemon, an implicit default resolves one agent's query against
 another agent's project ([ADR-0002](../adr/0002-single-local-daemon-over-streamable-http.md)).
@@ -47,7 +48,79 @@ current MCP tools.
 `agentId` and `taskId` are designed proposal provenance fields. Theurian does
 not authenticate agents, and no MCP proposal tool accepts them today.
 
+**All three optional fields are *admitted* by the published input schemas and
+read by nothing.** They belong to the shared context every project-scoped tool
+references, so a call that sets `snapshotId`, `agentId` or `taskId` passes
+validation and is then answered exactly as if it had not set it — no refusal, no
+signal. Which of the two cures that gets, implementing them or withdrawing them
+from the contract, is
+[#665](https://github.com/theurian/theurian/issues/665).
+
 Schema: [`tool-context.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/tool-context.schema.json).
+
+## Every tool call is validated against its published input schema
+
+Every tool listed above has a published input schema under `schemas/mcp/`, and
+the daemon validates each `tools/call` against that tool's schema **before the
+call reaches the tool** (SEC-12,
+[ADR-0031](../adr/0031-mcp-input-is-schema-validated-in-middleware.md)). The
+check runs in an MCP server middleware, above the SDK's argument coercion, which
+is the only tier that still sees the keys a caller actually sent.
+
+| Tool | Input schema |
+| :-- | :-- |
+| `knowledge.search` | [`knowledge-search-input.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/knowledge-search-input.schema.json) |
+| `knowledge.get` | [`knowledge-get-input.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/knowledge-get-input.schema.json) |
+| `knowledge.status` | [`knowledge-status-input.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/knowledge-status-input.schema.json) |
+| `project.list` | [`project-list-input.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/project-list-input.schema.json) |
+| `review.findings` | [`review-findings-input.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/review-findings-input.schema.json) |
+| `review.search` | [`review-search-input.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/review-search-input.schema.json) |
+| `system.capabilities` | [`system-capabilities-input.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/system-capabilities-input.schema.json) |
+
+The five project-scoped tools reach `projectId` and the three optional context
+fields through a `$ref` to `tool-context.schema.json` rather than restating them,
+so every tool agrees about `projectId` by construction. `project.list` and
+`system.capabilities` take no arguments, and their schemas say exactly that: an
+empty `properties`, closed.
+
+**Unknown keys are refused, not dropped.** A key a tool's schema does not name is
+rejected and nothing runs. Sending a forward-looking field to see whether this
+build supports it does not work, and is not meant to: a server that quietly
+discards a parameter leaves a client believing it asked for something it did not
+get. `system.capabilities` is where a client learns what this build supports.
+
+A refusal arrives in the same shape as a refusal raised inside a tool body —
+`content` plus `isError: true`, and the same key set — so a caller cannot tell
+which tier answered from the shape, only from what it says. It names the offending
+key path and the constraint that rejected it, and it never reproduces the value
+the key carried. It carries no code from the [Errors](#errors) table.
+
+A tool this daemon publishes no input schema for is refused at dispatch rather
+than served, so the control covers whatever set is registered rather than the set
+someone remembered to enumerate.
+
+**What the schemas constrain, and what they leave to the tool.** Shape, key set
+and length. Vocabulary and numeric range stay tool-level refusals on purpose: a
+published `enum` answers "does not satisfy" where `review.findings` names the
+closed set it accepts and tells you to omit the filter, and a published range
+would turn `knowledge.search`'s deliberate clamps on `limit` and `maxTokens` into
+wire refusals. So a schema-valid request can still be refused by the tool, and
+that is by design.
+
+### Three behaviour changes a caller can observe
+
+| Before | Now |
+| :-- | :-- |
+| An unknown or extra key on any tool was silently dropped by the SDK's argument model, and the call was served | The call is refused, with the key named |
+| `project.list` and `system.capabilities` take no arguments, and anything sent with them was ignored | Anything sent with them is refused |
+| A `knowledge.search` `query` longer than `MAX_QUERY_CHARS` (2,000 characters) was truncated to that length and the prefix searched | The call is refused at the wire and nothing is searched |
+
+The third is the one that changes an answer rather than a silence, and the reason
+it refuses instead of truncating is recorded on the schema's own `query`
+description: truncating a `query` changes *what* was asked, and the caller cannot
+tell from the response that it happened. Clamping `limit` or `maxTokens` changes
+only *how much* comes back, so those stay clamps. The handler's own truncation
+stays below this surface as a backstop and is unreachable through this contract.
 
 ## Knowledge
 
@@ -516,10 +589,11 @@ served row comes through, and discards it.
 **One bound on this surface clamps instead of refusing, and it is the only
 value whose size the caller does not control.** A served `findingText`
 is cut at 2,000 characters and marked with a trailing `...`, so a cut value
-cannot be read as a whole one. It is the same number `knowledge.search` clamps a
-`query` to, derived from that constant rather than chosen again: one bound
-governs the longest string this daemon will search for and the longest finding
-it will hand back. It fires on nothing a reviewer writes — a finding is one
+cannot be read as a whole one. It is the same number `knowledge.search` bounds a
+`query` at — refused at the wire since SEC-12, and clamped below the surface as a
+backstop — derived from that constant rather than chosen again: one bound governs
+the longest string this daemon will search for and the longest finding it will
+hand back. It fires on nothing a reviewer writes — a finding is one
 trailer line, and the longest in this repository's own history was 193
 characters when the bound was chosen (measured 2026-09-02) — but `findingText`
 is byte-preserved from a commit message, and a commit message line has no length
@@ -929,6 +1003,20 @@ Additive changes (a new optional field, a new tool) are MINOR and do not bump
 `protocolVersion`. Removing a field, tightening a type, adding a required field,
 or renaming a tool is breaking and bumps it. See
 [plugin-core-compatibility.md](plugin-core-compatibility.md).
+
+**SEC-12's input validation is a client-visible tightening, and this change does
+not settle its `protocolVersion` treatment.** Publishing an input schema per tool
+is additive — nothing was removed, and no field became required that the tools
+did not already require — but the three changes tabulated under *Every tool call
+is validated against its published input schema* each turn a call that was served
+into a call that is refused, so a client that worked can stop working. That is
+the shape the rules above call breaking. The exemptions granted below rest on
+search-verified evidence about who consumes the behaviour, and that evidence has
+not been gathered for these three. `protocolVersion` therefore stays
+`theurian/v1` as shipped, and the decision falls due with the release that ships
+SEC-12: the changelog entry names the break, and this section gains either the
+bump or a sixth exemption with its grounds. Until one of those lands, this
+paragraph is the record that the question is open rather than answered.
 
 `knowledge.search`'s admission refusal (see Errors, above) is a behaviour of
 the shipped surface as of this change. It is a client-visible behaviour
