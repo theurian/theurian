@@ -920,8 +920,14 @@ def test_exactly_one_contained_helper_resolves_under_the_project_config_file() -
     and a helper resolving beneath that name implies a real directory there -- so
     for a link at an interior component the published ``rm`` names the directory
     above the link, where plain ``rm`` fails and removes nothing. The reader is
-    left holding a command that changed nothing and a cure that also promises the
-    retry needs nothing recreated.
+    left holding a command that changed nothing, beside clauses that all describe
+    what is in force *after* a removal that did not happen.
+
+    **A sibling name is not covered by that arm and is not what this pins.**
+    ``_escape_remedy`` compares whole components, so a ``config.yaml.d/`` fragment
+    directory is a different first component and falls through to the fallback
+    cure; the population filtered below is paths *under* ``config.yaml``. Whoever
+    adds a sibling owes it an arm and a cure, not this pin.
 
     So the arm's reach and the cure's text are pinned apart here exactly as they
     are for ``review``. RED means the second resolver was added, and the answer is

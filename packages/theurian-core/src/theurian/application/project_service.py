@@ -1553,12 +1553,26 @@ class ProjectPaths:
         ``rm .theurian/review``, which cures a link at ``review`` and nothing
         deeper. ``config.yaml`` is a file and nothing resolves beneath it today,
         so the depth costs nothing there -- but keying it lexically like the rest
-        of this method is what makes a later helper under that name (a
-        ``config.yaml.d/`` fragment directory, say) inherit this arm instead of
-        falling back to the ``theurian init`` clause again, which is the door #602
-        and #652 both came through. Whoever opens that door revisits
-        :func:`config_escape_remedy` in the same change, exactly as
-        :func:`review_escape_remedy`'s docstring demands for its own.
+        of this method is what makes a later helper *under that name* -- something
+        resolving ``config.yaml/fragments``, the shape
+        ``tests/unit/test_project_paths_containment.py::
+        test_exactly_one_contained_helper_resolves_under_the_project_config_file``
+        perturbation-tested -- inherit this arm instead of falling back to the
+        ``theurian init`` clause again, which is the door #602 and #652 both came
+        through. Whoever opens that door revisits :func:`config_escape_remedy` in
+        the same change, exactly as :func:`review_escape_remedy`'s docstring
+        demands for its own.
+
+        **What this arm does *not* reach is a sibling name, and an earlier version
+        of this paragraph offered one as the example.** The comparison is
+        ``parts[0] == PROJECT_CONFIG_FILE`` -- whole-component equality -- so a
+        ``config.yaml.d/`` fragment directory is a different first component and
+        falls through to the fallback, ``theurian init`` clause and all. Measured
+        against this method: ``config.yaml.d`` and ``config.yaml.d/extra.yaml``
+        both answer :data:`KNOWLEDGE_DIR_ESCAPE_REMEDY`, while
+        ``config.yaml/fragments`` answers :func:`config_escape_remedy`. A sibling
+        name therefore needs an arm and a cure of its own, and the depth this arm
+        buys is not what covers it.
 
         Everything else falls back to :data:`KNOWLEDGE_DIR_ESCAPE_REMEDY`, and
         that population is re-derived rather than transcribed -- the sentence
