@@ -651,11 +651,14 @@ def config_escape_remedy(knowledge_directory_name: str) -> str:
     ``packages/theurian-core/src`` printed five lines the same day, in
     ``application/proposal_service.py``, ``cli/index_commands.py`` (twice) and
     ``cli/review_commands.py`` (twice) -- the accept path and two commands, no
-    serving surface. The widened key covers this file and still does not hit this
-    paragraph: the text above spells the pattern with a doubled backslash, so
-    ``paths.config`` is not the string it matches. The discipline lives in the cure
-    anyway, where a later tool inherits it, rather than in a seam a later tool would
-    bypass.
+    serving surface. The widened pathspec covers this file, so this paragraph is
+    written not to answer its own key: the pattern above is spelled with a doubled
+    backslash, and the attribute is named through the ``ProjectPaths`` reference
+    rather than in the dotted form the key matches. A sentence that spelled it the
+    short way added a sixth line and made the count above false -- caught by
+    re-running the key against the text as committed, which is the only thing that
+    catches it. The discipline lives in the cure anyway, where a later tool inherits
+    it, rather than in a seam a later tool would bypass.
     """
     path = f"{knowledge_directory_name}/{PROJECT_CONFIG_FILE}"
     return (
