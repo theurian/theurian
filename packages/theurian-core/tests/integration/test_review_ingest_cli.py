@@ -51,7 +51,7 @@ from theurian.domain.review import (
     ReviewSubmission,
     ReviewThread,
 )
-from theurian.domain.review_ingest import RefusalGrade, ReviewIngestRefusedError
+from theurian.domain.review_ingest import REMEDIES, RefusalGrade, ReviewIngestRefusedError
 from theurian.infrastructure.github.limits import MAX_PULL_REQUESTS
 from theurian.infrastructure.sqlite.review_search_store import SqliteReviewSearchStore
 
@@ -266,6 +266,10 @@ def test_a_clean_run_reports_counts_and_exits_zero(
     assert payload["refused"] == []
     assert payload["findings"] == []
     assert payload["skipped"] == []
+    # Part of the shape rather than a key that appears on trouble (#656): a caller
+    # scripting `jq '.skippedRemedies'` reads a mapping on every run, and a clean
+    # one has no audience for any cure so it carries none.
+    assert payload["skippedRemedies"] == {}
     assert len(_landed(project)) == 3
 
     # No evidence content is served. The bodies and titles the provider answered
@@ -700,7 +704,15 @@ def test_a_repository_asked_for_in_another_case_reads_its_own_records_back(
 def test_a_skipped_pull_request_exits_one_and_is_named_by_identity(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """AC-1 through the CLI: the neighbour lands, the run is not clean, exit 1."""
+    """AC-1 through the CLI: the neighbour lands, the run is not clean, exit 1.
+
+    **And the cure is in the document** (#656). The identity and the grade were
+    always published; the recorded remedy was not, on any channel -- this run
+    exits 1 with the run document on stdout and nothing on stderr, so an operator
+    whose pull request was skipped read what happened and never what to do. The
+    assertion is an equality against ``REMEDIES`` rather than a substring, because
+    a truncated cure reads like a cure.
+    """
     _settings(project)
     _install(
         monkeypatch,
@@ -716,6 +728,51 @@ def test_a_skipped_pull_request_exits_one_and_is_named_by_identity(
     assert "#42" in payload["skipped"][0]
     assert "limit-exceeded" in payload["skipped"][0]
     assert not any("42" in name for name in _landed(project))
+
+    grade = RefusalGrade.LIMIT_EXCEEDED.value
+    assert payload["skippedRemedies"] == {grade: REMEDIES[RefusalGrade.LIMIT_EXCEEDED]}, (
+        "the document does not carry the cure recorded for the grade it published, so "
+        "the remedy `FetchRefusal` holds still reaches no operator (#656)"
+    )
+    # The join, through the shipped command rather than only at `_payload`: the
+    # line names the grade that keys the cure, which is how a caller pairs them.
+    assert grade in payload["skipped"][0]
+
+
+def test_a_skipped_pull_requests_cure_is_rendered_on_the_human_channel_too(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other channel, measured rather than reasoned about (#656).
+
+    ``skippedRemedies`` is a mapping, and the human renderer treats a mapping
+    differently from a string: ``_render`` writes the key, then indents and
+    recurses. Nothing in ``_payload`` had a nested mapping of long strings before
+    this, so "the rendering needs no new code" is a claim about ``_render`` that
+    only running it settles -- a nested value dropped, or rendered through
+    ``repr``, would leave the JSON channel correct and the terminal one useless.
+
+    Asserted on a fragment of the cure rather than on the whole text, because the
+    renderer is free to wrap: what must hold is that the grade and the cure's own
+    words reach the terminal, not that the bytes match the JSON channel's.
+    """
+    _settings(project)
+    _install(
+        monkeypatch,
+        _canned((_event(42), _event(41)), refusals={("get_threads", 42): _over_cap(42)}),
+    )
+
+    result = runner.invoke(app, ["review", "ingest", REPOSITORY], catch_exceptions=False)
+
+    assert result.exit_code == 1
+    rendered = result.stdout
+    assert "skippedRemedies:" in rendered, (
+        f"the human channel does not publish the cure at all: {rendered!r}"
+    )
+    assert RefusalGrade.LIMIT_EXCEEDED.value in rendered
+    assert REMEDIES[RefusalGrade.LIMIT_EXCEEDED][:60] in rendered, (
+        "the grade reached the terminal and its cure did not, so the mapping was "
+        "rendered as something other than its contents"
+    )
 
 
 def test_a_newest_pull_request_the_listing_could_not_build_does_not_deny_the_rest(
@@ -748,6 +805,12 @@ def test_a_newest_pull_request_the_listing_could_not_build_does_not_deny_the_res
     assert "#42" in skipped
     assert "limit-exceeded" in skipped
     assert "label cap" in skipped
+    # Same grade as the fetch-scope skip and therefore the same recorded cure: the
+    # two seams publish one shape, so the cure follows the grade and not the seam
+    # (#656). The cure's own per-record arm is what speaks to this reader.
+    assert payload["skippedRemedies"] == {
+        RefusalGrade.LIMIT_EXCEEDED.value: REMEDIES[RefusalGrade.LIMIT_EXCEEDED]
+    }
     landed = _landed(project)
     assert len(landed) == 3
     assert not any("42" in name for name in landed), (
