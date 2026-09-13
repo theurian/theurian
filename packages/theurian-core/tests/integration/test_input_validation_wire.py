@@ -20,114 +20,24 @@ but *who refuses it*.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
-from contextlib import contextmanager
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Final
+from typing import Final
 
 import pytest
 from mcp.server import MCPServer
-from starlette.testclient import TestClient
 
 from theurian.application.project_service import ProjectRegistry
 from theurian.daemon.runner import build_server
-from theurian.daemon.server import DaemonConfig, build_app
 from theurian.mcp.middleware import InputValidationMiddleware
-from theurian.security.tokens import generate_token
+
+from mcp_wire_session import headers, mcp_session, open_client, payload  # isort: skip
 
 pytestmark = pytest.mark.integration
-
-TOKEN: Final = generate_token()
-
-#: The negotiated era every test here speaks. Named rather than left implicit
-#: because the refusal envelope this middleware owns is era-dependent: a modern
-#: connection requires ``resultType`` and this one does not describe it, so an
-#: assertion about the answer's shape is an assertion about this string too.
-PROTOCOL_VERSION: Final = "2025-06-18"
-
-INITIALIZE: Final = {
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "initialize",
-    "params": {
-        "protocolVersion": PROTOCOL_VERSION,
-        "capabilities": {},
-        "clientInfo": {"name": "test", "version": "1"},
-    },
-}
 
 #: A value no message in this codebase could produce, so "the refusal does not
 #: echo what the caller sent" is checkable by searching the whole response rather
 #: than by reading the one field a test remembered to look at.
 SENTINEL: Final = "sentinel-value-9d41c0f2"
-
-
-def _headers(session: str | None = None) -> dict[str, str]:
-    headers = {
-        "Authorization": f"Bearer {TOKEN}",
-        "Content-Type": "application/json",
-        "Accept": "application/json, text/event-stream",
-    }
-    if session is not None:
-        headers["mcp-session-id"] = session
-    return headers
-
-
-def _payload(response: Any) -> dict[str, Any]:
-    """One JSON-RPC message out of a response that may be SSE or plain JSON.
-
-    Streamable HTTP answers a POST with ``text/event-stream`` whenever the
-    client accepts it, which this client does because a real one does. Reading
-    only ``response.json()`` would pass on a transport that stopped streaming
-    and fail on the one this daemon actually serves.
-    """
-    if response.headers.get("content-type", "").startswith("text/event-stream"):
-        for line in response.text.splitlines():
-            if line.startswith("data:"):
-                parsed: dict[str, Any] = json.loads(line.split(":", 1)[1])
-                return parsed
-        raise AssertionError(f"no data frame in the event stream: {response.text!r}")
-    loaded: dict[str, Any] = response.json()
-    return loaded
-
-
-@contextmanager
-def _session(server: MCPServer, data_dir: Path) -> Iterator[Any]:
-    """A client that has completed the handshake, so ``tools/call`` is reachable.
-
-    The context manager is not optional: mounting the MCP app disables the SDK's
-    own lifespan, and without ours the session manager never starts, so every
-    request fails with "Task group is not initialized".
-    """
-    config = DaemonConfig(token=TOKEN, data_dir=data_dir, started_at=datetime.now(UTC).isoformat())
-    # base_url sets the Host header; DNS-rebinding protection rejects
-    # TestClient's default `testserver`.
-    with TestClient(build_app(config, server), base_url="http://127.0.0.1:7419") as client:
-        opened = client.post("/mcp", json=INITIALIZE, headers=_headers())
-        assert opened.status_code == 200, opened.text
-        session = opened.headers["mcp-session-id"]
-        client.post(
-            "/mcp",
-            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
-            headers=_headers(session),
-        )
-
-        def call(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
-            response = client.post(
-                "/mcp",
-                json={
-                    "jsonrpc": "2.0",
-                    "id": 2,
-                    "method": "tools/call",
-                    "params": {"name": tool, "arguments": arguments},
-                },
-                headers=_headers(session),
-            )
-            assert response.status_code == 200, response.text
-            return _payload(response)
-
-        yield call
 
 
 @pytest.fixture
@@ -180,7 +90,7 @@ def test_an_unknown_key_is_refused_and_the_refusal_names_the_key_not_the_value(
     sent appears nowhere in the response. A refusal that echoed it would be an
     amplifier of the caller's own bytes at a boundary that takes untrusted input.
     """
-    with _session(build_server(registry), tmp_path / "data") as call:
+    with mcp_session(build_server(registry), tmp_path / "data") as call:
         answer = call(
             "knowledge.search",
             {"projectId": "backend-service", "query": "auth", "includeUnaproved": SENTINEL},
@@ -213,7 +123,7 @@ def test_the_same_call_is_served_when_the_middleware_is_lifted_off(
     """
     bare = _without_the_middleware(build_server(registry))
 
-    with _session(bare, tmp_path / "data") as call:
+    with mcp_session(bare, tmp_path / "data") as call:
         with_unknown = call("project.list", {"unknownParameter": SENTINEL})
         without = call("project.list", {})
 
@@ -234,9 +144,9 @@ def test_a_valid_call_is_served_unchanged_through_the_middleware(
     guarded = build_server(registry)
     bare = _without_the_middleware(build_server(registry))
 
-    with _session(guarded, tmp_path / "guarded") as call:
+    with mcp_session(guarded, tmp_path / "guarded") as call:
         through = call("project.list", {})
-    with _session(bare, tmp_path / "bare") as call:
+    with mcp_session(bare, tmp_path / "bare") as call:
         direct = call("project.list", {})
 
     assert through["result"]["isError"] is False, through
@@ -255,27 +165,15 @@ def test_a_method_that_is_not_a_tool_call_passes_through_untouched(
     """``tools/list`` is how a caller learns what to send, so refusing it would
     take away the remedy every refusal here names.
 
-    The handshake is covered by every test in this file: ``_session`` fails
+    The handshake is covered by every test in this file: ``mcp_session`` fails
     outright if ``initialize`` does not answer through the same chain.
     """
-    config = DaemonConfig(
-        token=TOKEN, data_dir=tmp_path / "data", started_at=datetime.now(UTC).isoformat()
-    )
-    with TestClient(
-        build_app(config, build_server(registry)), base_url="http://127.0.0.1:7419"
-    ) as client:
-        opened = client.post("/mcp", json=INITIALIZE, headers=_headers())
-        session = opened.headers["mcp-session-id"]
-        client.post(
-            "/mcp",
-            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
-            headers=_headers(session),
-        )
-        listed = _payload(
+    with open_client(build_server(registry), tmp_path / "data") as (client, session):
+        listed = payload(
             client.post(
                 "/mcp",
                 json={"jsonrpc": "2.0", "id": 3, "method": "tools/list"},
-                headers=_headers(session),
+                headers=headers(session),
             )
         )
 
@@ -306,7 +204,7 @@ def test_a_refusal_carries_the_shape_a_handler_refusal_carries(
     project is a refusal the *handler* raises, and its key set is the one a
     schema refusal must have.
     """
-    with _session(build_server(registry), tmp_path / "data") as call:
+    with mcp_session(build_server(registry), tmp_path / "data") as call:
         from_schema = call("knowledge.search", {"projectId": "backend-service", "unknown": 1})
         from_handler = call("knowledge.search", {"projectId": "backend-service", "query": "auth"})
 
