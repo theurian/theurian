@@ -405,11 +405,13 @@ _NAMES_THE_REVIEW_EVIDENCE: set[str] = {"review"}
 #: ``test_every_configuration_reader_answers_a_default_when_the_file_is_absent``
 #: holds against the reader population rather than leaving it as a sentence here.
 #:
-#: One member, and unlike ``review`` there is no AST guard pinning that: the
-#: cure's ``rm`` names this exact leaf rather than a directory above one, so a
-#: helper appearing beneath the name would make the *text* wrong in a different
-#: way -- an ``rm`` of the file that is not the link. Production keys the arm
-#: lexically so such a helper inherits the cure instead of falling back, and
+#: One member, pinned the way ``review``'s is, by
+#: ``test_exactly_one_contained_helper_resolves_under_the_project_config_file``:
+#: the cure's ``rm`` names this exact leaf rather than a directory above one, so a
+#: helper appearing beneath the name makes the *text* wrong in its own way -- an
+#: ``rm`` of the file that is not the link, which against the real directory such a
+#: helper implies removes nothing at all. Production keys the arm lexically so such
+#: a helper inherits the cure instead of falling back, and
 #: :func:`config_escape_remedy`'s docstring is where that trade is recorded.
 _NAMES_THE_PROJECT_CONFIG: set[str] = {"config"}
 
@@ -902,6 +904,68 @@ def test_exactly_one_contained_helper_resolves_under_the_review_evidence_directo
         "and move this pin with it; ADR-0030 decision 3 makes the evidence canonical "
         "with no replayable source, so an `rm` aimed a level too high destroys records "
         "nothing rebuilds."
+    )
+
+
+def test_exactly_one_contained_helper_resolves_under_the_project_config_file() -> None:
+    """The cure for an escaping ``config.yaml`` names one place, and this is why it may.
+
+    The pin above, applied to the second carve-out (#652).
+    :meth:`ProjectPaths._escape_remedy` keys the config arm on the **first path
+    component at any depth**, spelled that way for the same reason as ``review``'s:
+    a helper added later beneath this name inherits the cure instead of falling
+    back to the ``theurian init`` clause that both faces of this class came
+    through. :func:`config_escape_remedy`'s *text* is not ready for such a helper.
+    It renders one removal, ``rm <knowledge dir>/config.yaml``, aimed at the leaf,
+    and a helper resolving beneath that name implies a real directory there -- so
+    for a link at an interior component the published ``rm`` names the directory
+    above the link, where plain ``rm`` fails and removes nothing. The reader is
+    left holding a command that changed nothing and a cure that also promises the
+    retry needs nothing recreated.
+
+    So the arm's reach and the cure's text are pinned apart here exactly as they
+    are for ``review``. RED means the second resolver was added, and the answer is
+    to revisit that cure's text in the same change -- which is what its docstring
+    and the arm's own comment ask for, in prose that nothing enforced until this
+    pin.
+
+    **The population is the module's own AST**, :func:`_contained_sites`, so a call
+    split across lines or spelling ``"config.yaml"`` inline is counted like any
+    other. The equality needs no companion ``assert sites``: it compares against a
+    one-element list, so a population that emptied reddens here rather than passing
+    vacuously. The unreadable check is the case equality cannot cover -- a site
+    whose first component cannot be read statically drops out of the filter, and it
+    could be the one resolving under this name.
+    """
+    sites = _contained_sites()
+
+    unreadable = sorted({member for member, components in sites if components is None})
+
+    assert not unreadable, (
+        f"{unreadable} call `self._contained(...)` with a path whose first component "
+        "this reader cannot resolve statically, so the population below is not the "
+        "whole one. Teach `_static_component` or `_contained_sites` the new shape -- a "
+        "site whose first component is unreadable could be the one resolving under the "
+        "configuration file, which is the case this test exists to catch."
+    )
+
+    under_the_config_file = sorted(
+        (member, components)
+        for member, components in sites
+        if components and components[0] == PROJECT_CONFIG_FILE
+    )
+
+    assert under_the_config_file == [("config", (PROJECT_CONFIG_FILE,))], (
+        "the helpers resolving under the project's configuration file are no longer "
+        f"`ProjectPaths.config` alone: {under_the_config_file}.\n\n"
+        "`_escape_remedy`'s carve-out already covers them -- it keys on the first "
+        "component at any depth -- but `config_escape_remedy`'s text does not. It "
+        f"renders `rm <knowledge dir>/{PROJECT_CONFIG_FILE}`, the cure for a link at "
+        "the file itself, and that names the wrong object for a link at an interior "
+        "component: the path it prints is then the directory above the link, where "
+        "plain `rm` fails and removes nothing. Revisit that cure in the same change "
+        "as the new helper -- its docstring asks for exactly that -- and move this pin "
+        "with it."
     )
 
 
