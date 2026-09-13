@@ -1,8 +1,13 @@
-"""What the changelog's review-ingest entry claims, held to the tree (ADR-0030, #479).
+"""What the changelog's live entries claim, held to the tree (ADR-0030, #479).
 
-``packages/theurian-core/CHANGELOG.md`` is where an operator learns what
-``theurian review ingest`` does before they run it, and the sentences below say
-something the tree can be asked about. No count of them is given, for the reason
+``packages/theurian-core/CHANGELOG.md`` is where an operator learns what a
+command does before they run it, and the sentences below say something the tree
+can be asked about. Most of them belong to the ``theurian review ingest`` entry
+this module was opened for; the last is #652's configuration-cure entry, which
+lands here rather than in a module of its own because the instrument is here --
+the collapse, the shared checker and the drift control *are* what a prose pin is,
+and a second copy of them would be a second thing to keep honest. No count of the
+rows is given, for the reason
 :func:`test_the_changelog_entry_still_states_the_claim` records about its own
 paragraph: one stood here (*"five of its sentences"*) and went stale the moment a
 row was added, which is the failure this module exists to catch, one level up.
@@ -58,6 +63,14 @@ row was added, which is the failure this module exists to catch, one level up.
   arm and went back to ``limit`` -- the loop #597 removed for labels. The drift
   column carries the cap list, because it reads as the *more* precise sentence
   and is what a rebase restores.
+- **The configuration cure's "nothing has to be recreated" is stated per command,
+  not per key** (#652). An empty review allowlist is one of the shipped defaults
+  and an empty allowlist names no repository, so ``theurian review ingest``
+  refuses *every* repository until the file is written back; the promise is made
+  for ``theurian index build``, which runs with no ``config.yaml`` at all. The
+  drift column carries the first cut's wording -- *"nothing has to be recreated
+  before the retry"* -- which is unconditional, reads as the friendlier sentence,
+  and is what a rebase against any commit before the narrowing restores.
 
 **Each claim is pinned from both sides, and the two sides fail differently on
 purpose.** The prose pins hold *spelling*: they are blind to whether the
@@ -118,9 +131,9 @@ worst possible moment. What a release changes is their *status*, from a live
 claim to a record, at which point a row may be retired with that reason on the
 line.
 
-Pure in the sense the other structural pins here are: it reads two repository
-files as text and calls one pure function, and opens no database, no socket and
-no temporary directory.
+Pure in the sense the other structural pins here are: it reads
+``packages/theurian-core/CHANGELOG.md`` as text and calls one pure function, and
+opens no database, no socket and no temporary directory.
 """
 
 from __future__ import annotations
@@ -389,6 +402,54 @@ ENTRY_CLAIMS: Final[tuple[tuple[str, str, str, str], ...]] = (
             "shipped cure loses an arm or a face, which this row cannot see: it would "
             "match word for word against a build whose cure had gone back to the cap "
             "list"
+        ),
+    ),
+    (
+        "the config cure's promise is per command, not per key",
+        (
+            '**So "nothing has to be recreated" is stated per command rather than per '
+            "key**: it is made for `theurian index build`, which runs with no file at "
+            "all, and it is not made for `theurian review ingest`, which refuses on that "
+            "empty allowlist until the file is back"
+        ),
+        # The first cut's wording, and the reason it had to move: it was checked
+        # over the three *readers* -- each of which answers a default when the file
+        # is absent -- and never over the commands that retry. The review
+        # allowlist's default is the empty tuple, and an empty allowlist names no
+        # repository, so `theurian review ingest` refuses every repository until the
+        # file is written back; round one reproduced it answering
+        # `repository-not-allowlisted` against a project with no configuration file
+        # at all. Kept as the drift column rather than dropped, because it is
+        # unconditional where the shipped sentence is per command, it reads as
+        # reassurance to the reader it costs the most, and it is the sentence a
+        # rebase against any commit before the narrowing restores.
+        #
+        # The fact side of this row is held by two behavioural tests, neither of
+        # them here, and each holds a different half:
+        # `tests/unit/test_project_config.py::
+        # test_every_configuration_reader_answers_a_default_when_the_file_is_absent`
+        # holds that the defaults exist at all, over the reader population, so a
+        # fourth key with no default arrives as a failure; and
+        # `tests/integration/test_contained_path_envelope.py::
+        # test_an_escaping_config_file_is_cured_by_removing_the_link_not_by_init`
+        # follows the `rm` the cure prints and then runs *both* commands -- `index
+        # build` at exit 0 with `secretScanPolicy: block` and nothing recreated,
+        # `review ingest` at exit 1 carrying the allowlist's own cure. A product
+        # that started refusing `index build` with no file, or stopped refusing
+        # `review ingest`, reddens there while this row goes on matching word for
+        # word; that is the split, not a redundancy.
+        (
+            "**Nothing has to be recreated before the retry**: every key this file "
+            "carries has a shipped default, so a project without it runs on those "
+            "rather than refusing for a file that is not there"
+        ),
+        (
+            "`tests/integration/test_contained_path_envelope.py::"
+            "test_an_escaping_config_file_is_cured_by_removing_the_link_not_by_init`, "
+            "which runs the `rm` this cure prints and then both commands, over the "
+            "reader population `tests/unit/test_project_config.py::"
+            "test_every_configuration_reader_answers_a_default_when_the_file_is_absent` "
+            "holds"
         ),
     ),
 )
