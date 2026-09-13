@@ -58,7 +58,7 @@ class IrregularArtefactError(OSError):
 
     The message names the **leaf** and not the whole path. It reaches an MCP
     client through more than one caller's envelope, and an absolute path there is
-    the operator's machine layout rather than the reader's business (GHSA-97q9).
+    the operator's machine layout rather than the reader's business (GHSA-923w-f36f-jcfq).
     The path travels on :attr:`path` for the remedy a caller builds from it.
     """
 

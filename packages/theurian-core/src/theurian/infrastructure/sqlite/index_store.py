@@ -177,7 +177,7 @@ class IndexPathNotAFileError(IndexBuildError):
 
     The path travels in the remedy and only its leaf in the message: the remedy is
     the field a reader acts on, and an absolute path in both is the operator's
-    machine layout twice over (GHSA-97q9).
+    machine layout twice over (GHSA-923w-f36f-jcfq).
     """
 
     def __init__(self, path: Path, shape: str) -> None:

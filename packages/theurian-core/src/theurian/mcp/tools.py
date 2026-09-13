@@ -287,7 +287,7 @@ REVIEW_SEARCH_CAPACITY_REFUSAL: Final = (
 #: `_contain` chokepoint a level up, or
 #: :meth:`ProjectPaths.review_search_for`'s own state-scoped one, which used to
 #: fold in here because its message interpolated the resolved state directory
-#: (GHSA-97q9). That interpolation is gone, so the fold suppressed nothing and
+#: (GHSA-923w-f36f-jcfq). That interpolation is gone, so the fold suppressed nothing and
 #: cost the caller the `rm` step this constant's rebuild cannot perform. The guard
 #: in :func:`register`'s `review_search` body records the whole of it.
 #:
@@ -358,7 +358,7 @@ REVIEW_SEARCH_UNAVAILABLE_REFUSAL: Final = (
 #: it. (Round one, code review: the sentence this replaces said both halves
 #: were resolved absolute paths, which was never true of ``of``'s pair.) A
 #: resolved root is correct on a terminal, where the reader owns the checkout,
-#: and the operator's machine layout on this one (GHSA-97q9). For a project
+#: and the operator's machine layout on this one (GHSA-923w-f36f-jcfq). For a project
 #: registered through a symbolic link it is not even the ``rootPath`` the
 #: registry records and ``project.list`` republishes verbatim
 #: (``_publishable_field(e.get("rootPath", ""))``, below): it is the physical
@@ -619,7 +619,7 @@ def _forwarding[**P, R](fn: Callable[P, R]) -> Callable[P, R]:
     that stays true because this wrapper only passes its message through).
 
     **A containment refusal crosses as the constant, and that is a narrowing**
-    (GHSA-97q9). :class:`ProjectPathEscapeError` is the one ``TheurianError``
+    (GHSA-923w-f36f-jcfq). :class:`ProjectPathEscapeError` is the one ``TheurianError``
     whose message is the operator's filesystem layout rather than a description
     of it -- :data:`PATH_ESCAPE_REFUSAL` records which half of that message is
     what -- so the arm below substitutes the constant for ``str(exc)``. It
@@ -1295,7 +1295,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         same line of SDK code. One fold, applied wherever a ``ProjectError``
         would otherwise cross the tool boundary.
 
-        **A containment refusal crosses as its cure alone** (GHSA-97q9).
+        **A containment refusal crosses as its cure alone** (GHSA-923w-f36f-jcfq).
         :class:`ProjectPathEscapeError` is raised with
         :func:`~theurian.application.project_service._contain`'s or
         :meth:`ProjectPaths.of`'s own message, and each of those names the
@@ -1601,7 +1601,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             # **Neither the refusal's message nor its remedy is passed through**,
             # and the two have separate reasons. The message names the resolved
             # absolute path -- correct on a terminal, the operator's machine
-            # layout on this surface (GHSA-97q9), and routing this call through
+            # layout on this surface (GHSA-923w-f36f-jcfq), and routing this call through
             # containment added a member to that population. The remedy is keyed
             # by `ProjectPaths._escape_remedy` on the assumption that a *link* on
             # the path is what escaped, so it says to remove `.theurian/state`:
@@ -1658,7 +1658,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             # The plain fold, and deliberately *not* a bespoke message like
             # `state_database_named`'s above. What arrives here is already
             # layout-free: that refusal is a constant naming the project-relative
-            # `.theurian/state/` (GHSA-97q9, closed at the raise site rather than
+            # `.theurian/state/` (GHSA-923w-f36f-jcfq, closed at the raise site rather than
             # at this seam, so a second caller inherits the suppression instead of
             # inheriting the disclosure). There is nothing left for a handler to
             # suppress -- and a bespoke wording would be keyed on this *clause*
