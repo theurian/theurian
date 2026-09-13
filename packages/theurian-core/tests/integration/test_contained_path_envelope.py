@@ -1870,17 +1870,17 @@ def test_an_escaping_config_file_is_cured_by_removing_the_link_not_by_init(
     directories (``state/``, ``cache/``, ``runtime/``, ``generated/``), the three
     sqlite globs (``*.sqlite``, ``*.sqlite-wal``, ``*.sqlite-shm``), and
     ``proposals-local/``. **The claim is about this file, not about files in
-    general** -- those globs do match files under ``.theurian``: measured
-    2026-09-13, ``git check-ignore -v
-    examples/sample-project/.theurian/probe.sqlite`` answers
-    ``.gitignore:57:*.sqlite`` where the same command against this file answers
+    general** -- those globs do match files under ``.theurian``. Measured
+    2026-09-13, ``git check-ignore -v`` against
+    ``examples/sample-project/.theurian/probe.sqlite`` answers
+    ``.gitignore:57:*.sqlite``, where the same command against this file answers
     nothing. What they match is a derived sqlite artifact, which is the one
     category an authored settings file is not -- so the derived-artefact shape,
     "remove it, nothing is lost", would tell an operator to delete what they
-    wrote. ``GITIGNORE_LINK_REMEDY``
-    is the shape that fits, for the reason its own docstring records: copy the
-    settings back from the link's target if they belong to this repository. The
-    predicate below holds that this cure carries that clause, and the two
+    wrote. ``GITIGNORE_LINK_REMEDY`` is the shape that fits, for the reason its
+    own docstring records: copy the settings back from the link's target if they
+    belong to this repository. The predicate below holds that this cure carries
+    that clause, and the two
     ``review ingest`` runs are why it has to -- an operator whose file listed a
     repository, or asked for participant-name redaction (R-12), loses that
     control on the retry and is entitled to be told so.
