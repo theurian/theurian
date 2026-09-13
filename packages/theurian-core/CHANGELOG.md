@@ -12,6 +12,90 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A pull request `theurian review ingest` skipped now carries its cure**
+  ([#656](https://github.com/theurian/theurian/issues/656)). The run document
+  named the pull request and the refusal grade and stopped there. The cure
+  existed — `FetchRefusal` carries the envelope's remedy and `REMEDIES` records
+  one per grade — and reached no published surface on any channel, because the
+  only path those cures travelled was the raise that *ends* a run, and a skipped
+  pull request is by definition one that did not end it. So an operator whose
+  pull request was skipped `limit-exceeded` read what was refused and never what
+  to do about it, while 0.2.1 had just rewritten that cure with a per-record arm
+  addressed to exactly this reader. The run document now publishes
+  **`skippedRemedies`**, a new field: one entry per distinct grade this run
+  skipped a pull request for, mapping the grade string to the cure `REMEDIES`
+  records for it. The human channel renders it too, so it is not a `--json`-only
+  answer.
+
+  **Additive, not a change of shape.** No existing key is renamed, removed or
+  made conditional, and the exit codes do not move. `skipped` still names every
+  pull request and its grade; the pair is read by joining on the grade the
+  `skipped` line spells. Keyed on the grade rather than on the pull request
+  because the remedy is grade-constant by the domain's own design — looked up,
+  never passed in — and `limit-exceeded`'s cure alone is over a thousand
+  characters, so a copy per skipped pull request would publish one string many
+  times. **Always present, `{}` when nothing was skipped**, so a caller
+  scripting `jq .skippedRemedies` reads a mapping on every run instead of
+  telling an absent key from an empty one. Only the grades this run met: the
+  mapping is built from the run's own skip list and never from the table, so it
+  carries no cure for a fault that did not happen, and every value is a static
+  row of `REMEDIES` selected by a grade the same document already publishes.
+
+  **This supersedes one clause of 0.2.1's `LIMIT_EXCEEDED` entry below**, which
+  recorded that a skipped pull request's entry in the run document "carries its
+  grade and its summary and not its remedy". That was true of 0.2.1 and stays
+  there as the record of it; from this version the per-record arm is
+  reader-facing, which is what that clause said would happen when #656 landed.
+- **An escaping `.theurian/config.yaml` no longer sends you to `theurian init`
+  either** ([#652](https://github.com/theurian/theurian/issues/652), SEC-7). The
+  sibling of 0.2.1's `.theurian/review` fix below, and the second and last
+  member of the class that one opened. A clone can deliver the project's
+  configuration file as a symbolic link pointing out of the working tree, and
+  the containment refusal that catches it — which is correct, and is not what
+  moved — published the knowledge-directory cure, whose middle clause says to
+  remove the link and "run `theurian init` to recreate the directory".
+  `initialize_project` iterates `INITIAL_DIRECTORIES`, which holds directories
+  and no files at all, so `init` writes no `config.yaml`: the reader ran a
+  command that creates nothing and had no way to tell that from a command that
+  failed silently. The refusal now carries a cure written for this file —
+  inspect it with `ls -l`, remove the link with plain `rm`, and **nothing has to
+  be recreated before the retry**, because with no `config.yaml` this build
+  reads its shipped defaults. The cure names all three rather than saying
+  "defaults", since an operator whose file has just gone wants to know what is
+  in force before they retry: `security.secretScan` is `block`, the review
+  allowlist is empty so no repository may be ingested, and participant-name
+  redaction is off.
+
+  **Plain `rm`, with no `rm -rf` twin, and the path printed without a trailing
+  slash**, for the shape reason the entry below records for `review`: by the time
+  `config.yaml` is resolved, `ProjectPaths.of` has already refused unless the
+  resolved knowledge directory is inside the resolved root, so the only object
+  left on that path that can still leave the tree is a link, and plain `rm`
+  removes a link without the force `-rf` adds. Against a real directory somebody
+  put there, plain `rm` fails and removes nothing, which is the safe direction;
+  against a regular file it would remove it, and the `ls -l` that opens the cure
+  is what shows a reader which shape they have before they type anything. Of the
+  four `rm` forms measured against such a link and recorded on
+  `config_escape_remedy`, only `rm -rf <link-to-a-directory>/` destroys what the
+  link points at, and it needs both an `-rf` and a trailing slash that this cure
+  prints nowhere — so the sibling's explicit warning against the slash is
+  omitted here rather than forgotten. The cure names relative paths only
+  — the knowledge directory's basename and the file name, nothing that came out
+  of a `resolve()` — because a containment refusal's remedy crosses the MCP
+  boundary unmodified
+  ([GHSA-923w-f36f-jcfq](https://github.com/theurian/theurian/security/advisories/GHSA-923w-f36f-jcfq)).
+
+  **This closes the class rather than adding a third cure to it.** The class is
+  *the shared cure's `theurian init` clause is false for a target `init` does
+  not create*, and both of its members now have a cure of their own. What still
+  falls back to the shared cure is a population `init` does create, and that is
+  held as a test rather than as a sentence here:
+  `tests/unit/test_project_paths_containment.py::test_the_fallback_cure_names_init_only_for_paths_that_init_creates`
+  classifies every swept path helper and goes RED for a fallback member `init`
+  does not create.
+
 ## [0.2.1] - 2026-09-13
 
 ### Fixed
