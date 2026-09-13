@@ -1004,20 +1004,6 @@ Additive changes (a new optional field, a new tool) are MINOR and do not bump
 or renaming a tool is breaking and bumps it. See
 [plugin-core-compatibility.md](plugin-core-compatibility.md).
 
-**SEC-12's input validation is a client-visible tightening, and this change does
-not settle its `protocolVersion` treatment.** Publishing an input schema per tool
-is additive — nothing was removed, and no field became required that the tools
-did not already require — but the three changes tabulated under *Every tool call
-is validated against its published input schema* each turn a call that was served
-into a call that is refused, so a client that worked can stop working. That is
-the shape the rules above call breaking. The exemptions granted below rest on
-search-verified evidence about who consumes the behaviour, and that evidence has
-not been gathered for these three. `protocolVersion` therefore stays
-`theurian/v1` as shipped, and the decision falls due with the release that ships
-SEC-12: the changelog entry names the break, and this section gains either the
-bump or a sixth exemption with its grounds. Until one of those lands, this
-paragraph is the record that the question is open rather than answered.
-
 `knowledge.search`'s admission refusal (see Errors, above) is a behaviour of
 the shipped surface as of this change. It is a client-visible behaviour
 change — a call that once queued can now be refused (the CHANGELOG records it
@@ -1039,8 +1025,10 @@ The four, so that "breaking but unbumped" is checkable rather than asserted:
 the `knowledge.search` response reshape, the removal of `withheldSuperseded`,
 and the two required fields `project.list` gained (all Milestone 5), and the
 removal of `system.capabilities.milestone` (#206). Each is named as BREAKING
-in the changelog, which is what protects an integrator. The first bump is the
-first breaking change after the version that first carries `theurian/v1`.
+in the changelog, which is what protects an integrator. A breaking change bumps
+unless this section records an exemption for it on grounds specific to that
+change; every exemption below is granted once, and none of them widens to cover
+the next one.
 
 **`milestone`'s exemption rests on different ground.** Measured across
 `core-v0.1.0.dev0` through `core-v0.1.0.dev4`, the field shipped in every
@@ -1077,3 +1065,122 @@ rather than away from it, since the table always documented 4 for "that
 migration is already in place". **Scoped to this one code on this one command**:
 it says nothing about `compat check`'s 0/2/3, which a plugin script does branch
 on, or about `migrate apply`'s 4.
+
+**SEC-12's three caller-visible refusals are the sixth, seventh and eighth**
+([ADR-0031](../adr/0031-mcp-input-is-schema-validated-in-middleware.md)).
+Publishing an input schema per tool is itself additive — nothing was removed, and
+no field became required that the tools did not already require — but each of the
+three changes tabulated under [*Three behaviour changes a caller can
+observe*](#three-behaviour-changes-a-caller-can-observe) turns a call that was
+served into a call that is refused, and served-to-refused is the shape the rule
+at the top of this section calls breaking. `protocolVersion` stays `theurian/v1`,
+which takes the breaking-but-unbumped series to eight. Two legs are shared by all
+three, and each then has a ground of its own.
+
+**The shared leg, one: the consumer census.** The population is every place in
+this repository that builds an MCP `tools/call`, excluding Core itself — Core's
+own tests are the instrument that pins these refusals, not a consumer of them —
+and excluding `docs/`, which quotes these strings and constructs no call, this
+paragraph included. Measured at `03dac2ef` on the branch of
+[#663](https://github.com/theurian/theurian/pull/663), and re-runnable as
+written:
+
+```console
+$ git grep -n '"arguments"' -- . ':!packages/theurian-core' ':!docs'
+tests/e2e/test_daemon_single_instance.py:240:                "params": {"name": tool, "arguments": arguments},
+
+$ git grep -ln "mcp__\|arguments" -- plugins/claude-code; echo "exit=$?"
+exit=1
+```
+
+One construction site, and it is a test helper; no plugin script builds an MCP
+call at all, because the plugin's scripts shell out to the CLI. That helper's
+call sites are counted first and then partitioned — into the six written on one
+line and the two whose argument object wraps — so the listing below is the whole
+of them, and every one sends keys this document defines:
+
+```console
+$ git grep -c '\.call(' -- tests/e2e
+tests/e2e/test_daemon_single_instance.py:8
+
+$ git grep -n '\.call("' -- tests/e2e
+tests/e2e/test_daemon_single_instance.py:393:        result = client.call("knowledge.search", {"projectId": "not-registered", "query": "x"})
+tests/e2e/test_daemon_single_instance.py:437:        result = client.call("review.findings", {"projectId": "demo"})
+tests/e2e/test_daemon_single_instance.py:579:        page = client.call("review.findings", {"projectId": "demo", "limit": 1})
+tests/e2e/test_daemon_single_instance.py:580:        whole = client.call("review.findings", {"projectId": "demo"})
+tests/e2e/test_daemon_single_instance.py:581:        refused = client.call("review.findings", {"projectId": "demo", "limit": 101})
+tests/e2e/test_daemon_single_instance.py:651:        capabilities = client.call("system.capabilities", {})
+
+$ git grep -nA1 '\.call($' -- tests/e2e
+tests/e2e/test_daemon_single_instance.py:281:            result = client.call(
+tests/e2e/test_daemon_single_instance.py-282-                "knowledge.search", {"projectId": running_daemon.project_id, "query": "JWT"}
+--
+tests/e2e/test_daemon_single_instance.py:636:        results = client.call(
+tests/e2e/test_daemon_single_instance.py-637-            "knowledge.search", {"projectId": running_daemon.project_id, "query": "JWT"}
+```
+
+Four key sets — `{projectId, query}`, `{projectId}`, `{projectId, limit}`, and
+the empty one — every key of them defined above, and the longest `query` in the
+list is three characters. The only two places in the repository that build a
+string *at* the 2,000 bound are inside Core, and neither builds a `tools/call`:
+
+```console
+$ git grep -nE '"[a-z]" \* MAX_QUERY_CHARS|MAX_QUERY_CHARS \+' -- . ':!docs'
+packages/theurian-core/tests/integration/test_index_store.py:1607:    padding = "x" * MAX_QUERY_CHARS
+packages/theurian-core/tests/integration/test_review_findings_tool.py:663:    "one-past-the-bound": _finding_text_of(MAX_QUERY_CHARS + 1),
+```
+
+The first drives `search_lexical` below this surface, where the clamp is still
+the backstop; the second sizes a `findingText`, which clamps by design.
+
+**The shared leg, two: the pre-1.0 versioning policy.** The Core changelog
+records it in its own header — *pre-1.0, a MINOR bump may change the protocol;
+post-1.0, only a MAJOR may* — and that is the leg these three rest on. It is
+deliberately **not** the "no known external integration to break" leg the two
+exemptions above use: Core is published on PyPI as `theurian`, so nobody here can
+say what is installed against it. What the policy says is that a pre-1.0 MINOR is
+where a protocol change is allowed to land, and that is where these three land.
+
+**Sixth: an unknown or extra key on any tool is refused.** The drop was the SDK's
+argument model, never this contract — no version of this document ever published
+that a key it does not name is accepted, so a call carrying one was always
+outside the valid surface described here. What this document *did* call valid is
+served unchanged, and that is measured rather than asserted:
+`test_input_schema_agreement.py` holds each published schema's key set and its
+handler's parameter set equal, per tool over the registered set, less the three
+shared context keys it names; and `test_input_validation_wire.py`'s positive
+control answers a valid call through the middleware and again on a server with
+the seat lifted off, asserting the two results equal. **Scoped to keys no schema
+names**: it says nothing about a key a schema does name, whose value refusals are
+the published bounds, and nothing about the vocabulary and range refusals that
+stay inside the tools.
+
+**Seventh: `project.list` and `system.capabilities` refuse any argument.** Same
+ground, and a narrower one: neither tool has ever had an argument in this
+document or in any schema under `schemas/mcp/`, so nothing published as accepted
+became refused. Sending no argument is unaffected — the census's one
+`system.capabilities` call site passes `{}`, which is exactly what an empty,
+closed `properties` admits. **Scoped to these two tools**: it says nothing about
+the five project-scoped tools, whose arguments this document does define.
+
+**Eighth: a `knowledge.search` `query` over 2,000 characters is refused instead
+of truncated.** This one shares the two legs above but not the
+never-published-as-accepted ground the sixth and seventh rest on, and the
+difference is worth stating precisely. It is not a type-tightening: no *input*
+schema existed before this change, so there was no published type to tighten —
+the input contract was prose. The **bound** was already published, in two places.
+`knowledge-search-response.schema.json` puts `maxLength: 2000` on the `query` it
+echoes back, and this document has carried the same number since before SEC-12,
+in the sentence under `review.findings` that derives `findingText`'s cut from the
+bound `knowledge.search` puts on a `query`. So what changed is the *disposition*
+of an over-bound query — from clamp to refuse — at a bound the contract already
+published, which moves the behaviour toward the meaning the document already
+published rather than away from it: the same ground the fifth exemption above
+uses in those words. **Scoped to `query` on this one tool**: `limit` and
+`maxTokens` still clamp, `findingText` still clamps, and no other published bound
+changed disposition.
+
+Each of the three is named as BREAKING in the Core changelog by the release that
+ships SEC-12, under that release's `### Changed`. That entry is what protects an
+integrator, and it is **not written yet** — it lands with the release commit, not
+with this section.
