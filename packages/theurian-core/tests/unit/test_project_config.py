@@ -419,9 +419,13 @@ def test_the_reader_leaves_the_project_alone(tmp_path: Path) -> None:
 #: reader's own name. Written out rather than recomputed, so a default that *moves*
 #: fails here instead of being re-derived into agreement with production -- and
 #: each of these three values is a sentence in :func:`config_escape_remedy`, the
-#: cure #652 published for an escaping ``config.yaml``. That cure's whole promise
-#: is "nothing has to be recreated", and this mapping is what makes the promise
-#: measured rather than asserted.
+#: cure #652 published for an escaping ``config.yaml``. That cure names each of
+#: them **with what it costs**, one of them being that an empty allowlist refuses
+#: every ``theurian review ingest``; this mapping is what holds the values it
+#: states, and
+#: ``tests/integration/test_contained_path_envelope.py::
+#: test_an_escaping_config_file_is_cured_by_removing_the_link_not_by_init`` is
+#: where the consequences are run.
 _DEFAULT_WHEN_ABSENT: Final[dict[str, object]] = {
     "read_secret_scan_policy": SecretScanPolicy.BLOCK,
     "read_review_repositories": (),
@@ -453,19 +457,29 @@ def _configuration_readers() -> dict[str, Callable[[Path, Path], object]]:
 def test_every_configuration_reader_answers_a_default_when_the_file_is_absent(
     tmp_path: Path,
 ) -> None:
-    """The claim #652's cure publishes: removing the file costs the reader nothing.
+    """The part of #652's cure that is this module's: no reader reads absence as a fault.
 
     ``config_escape_remedy`` tells an operator to delete an escaping
-    ``.theurian/config.yaml`` and says the retry needs nothing recreated, naming
-    the three defaults that come into force. Every clause of that is a claim about
-    *this* module, and it holds in two parts: no reader may treat the absent file
+    ``.theurian/config.yaml`` and names the three defaults that come into force.
+    Two claims about *this* module are in that: no reader may treat the absent file
     as a fault, and the value each one answers has to be the value the cure names.
 
-    Both are asserted over a reflected population rather than over the three
+    **And that is the whole of what this file can hold**, which round one made
+    worth writing down. The cure's first cut went one step further -- the retry
+    "runs on those rather than refusing" -- and this test was cited as holding it.
+    It cannot: a reader answering ``()`` for an absent allowlist is a default, and
+    an empty allowlist names no repository, so ``theurian review ingest`` refuses
+    on exactly the answer recorded below as the good case. What a command does with
+    a default is a claim at the command's layer, and
+    ``tests/integration/test_contained_path_envelope.py::
+    test_an_escaping_config_file_is_cured_by_removing_the_link_not_by_init`` is
+    where the two commands are run.
+
+    Both claims are asserted over a reflected population rather than over the three
     readers that exist today, because the defect the cure would develop is a fourth
-    key whose reader refuses without a file -- at which point the published cure
-    sends an operator to delete something and then meet a refusal it promised they
-    would not.
+    key whose reader *raises* without a file -- at which point the published cure
+    sends an operator to delete something and then meet a refusal no command could
+    have avoided.
     """
     root, config = _project(tmp_path, None)
     assert not config.exists(), "the fixture wrote a configuration file, so this proves nothing"
@@ -475,8 +489,9 @@ def test_every_configuration_reader_answers_a_default_when_the_file_is_absent(
     assert set(readers) == set(_DEFAULT_WHEN_ABSENT), (
         f"the configuration readers and the recorded defaults have moved apart: "
         f"{sorted(set(readers) ^ set(_DEFAULT_WHEN_ABSENT))}. A reader added here without "
-        "a default for the absent file breaks `config_escape_remedy`'s promise that "
-        "nothing has to be recreated; record what it answers, and say so in that cure."
+        "a default for the absent file leaves `config_escape_remedy` naming the defaults "
+        "of a file it does not describe; record what it answers, and say so in that cure "
+        "-- with what the answer costs, which is the clause round one found missing."
     )
 
     answered = {name: read(root, config) for name, read in sorted(readers.items())}

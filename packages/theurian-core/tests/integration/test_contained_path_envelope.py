@@ -184,6 +184,7 @@ from theurian.application.project_service import (
 )
 from theurian.cli.commands import EXIT_STATE_ERROR
 from theurian.cli.main import app
+from theurian.domain.review_ingest import REMEDIES, RefusalGrade
 from theurian.domain.state import StateHash
 from theurian.domain.values import ContentHash
 from theurian.security.project_config import PROJECT_CONFIG_FILE
@@ -397,8 +398,10 @@ _REVIEW: Final = review_escape_remedy(".theurian")
 #: The fourth cure, and the third's sibling rather than a new shape: ``theurian
 #: init`` writes no ``config.yaml`` either, so the knowledge-directory text sent
 #: the reader to a command that creates nothing here too (#652). It differs from
-#: :data:`_REVIEW` in what follows the removal -- nothing at all, because every key
-#: the file can carry has a shipped default.
+#: :data:`_REVIEW` in what follows the removal: no command recreates this file, so
+#: the cure offers the authored settings back and says which command an absent one
+#: refuses -- both measured in
+#: :func:`test_an_escaping_config_file_is_cured_by_removing_the_link_not_by_init`.
 _CONFIG: Final = config_escape_remedy(".theurian")
 
 _EVERY_STATE_READER: Final = frozenset(
@@ -1815,6 +1818,12 @@ def test_an_escaping_review_directory_is_cured_by_removing_the_link_not_by_init(
 #: classifies rather than as a key that quietly follows production.
 _CONFIG_CULPRIT: Final = ".theurian/config.yaml"
 
+#: Any well-formed ``owner/name``, because the point is that **no** name is
+#: allowlisted by a project with no configuration file. Spelled here rather than
+#: taken from a fixture so the assertion reads as what it is: the refusal does not
+#: depend on which repository was asked for.
+REPOSITORY_TO_INGEST: Final = "acme/order-service"
+
 
 @_NEEDS_SYMLINKS
 def test_an_escaping_config_file_is_cured_by_removing_the_link_not_by_init(
@@ -1837,13 +1846,35 @@ def test_an_escaping_config_file_is_cured_by_removing_the_link_not_by_init(
     build"}``), so the cure can be measured where an operator meets it -- in the
     ``{error, remedy}`` document on stderr -- and the retry can be measured too.
 
-    **The cure is executed rather than read.** Removing the link is the whole of
-    it: the third block below runs exactly the ``rm`` the text names and then the
-    same command again, and the command answers 0 with ``secretScanPolicy:
-    block`` while nothing has recreated the file. That is what makes "nothing has
-    to be recreated" a measurement rather than a promise -- and it is the half a
-    predicate over the text cannot make, because a cure naming a command that
-    creates nothing passes every substring check ever written for it.
+    **The cure is executed rather than read, and both of its claims about the
+    retry are run.** The first cut of this text promised that the retry "runs on
+    those [defaults] rather than refusing for a file that is not there" -- checked
+    over the *readers*, each of which answers a default, and not over the commands
+    that retry. An empty review allowlist is a default that refuses: round one
+    reproduced ``theurian review ingest`` answering ``repository-not-allowlisted``
+    against a project with no configuration file at all. So the third block below
+    runs exactly the ``rm`` the text names and then **two** commands -- ``index
+    build``, which answers 0 with ``secretScanPolicy: block`` while nothing has
+    recreated the file, and ``review ingest``, which refuses with the allowlist's
+    own recorded cure. The first is what makes the narrowed "nothing has to be
+    recreated" a measurement rather than a promise; the second is what makes the
+    warning beside it one too. Neither is a half a predicate over the text can
+    make, because a cure naming a command that creates nothing -- or promising a
+    retry that refuses -- passes every substring check ever written for it.
+
+    **The removal is not the whole cure, because this file is authored.**
+    ``.theurian/config.yaml`` is Git-tracked, policy-bearing content that no
+    ignore covers -- ``examples/sample-project/.theurian/config.yaml`` is one in
+    this repository, and ``GITIGNORE_SECTIONS`` names ``state/``, ``cache/``,
+    ``runtime/``, ``generated/`` and ``proposals-local/`` and no file under
+    ``.theurian`` -- so the derived-artefact shape, "remove it, nothing is lost",
+    would tell an operator to delete what they wrote. ``GITIGNORE_LINK_REMEDY``
+    is the shape that fits, for the reason its own docstring records: copy the
+    settings back from the link's target if they belong to this repository. The
+    predicate below holds that this cure carries that clause, and the two
+    ``review ingest`` runs are why it has to -- an operator whose file listed a
+    repository, or asked for participant-name redaction (R-12), loses that
+    control on the retry and is entitled to be told so.
 
     **Plain ``rm`` with no ``rm -rf`` twin**, for the shape reason
     :func:`review_escape_remedy` records: :meth:`ProjectPaths.of` has already
@@ -1862,9 +1893,11 @@ def test_an_escaping_config_file_is_cured_by_removing_the_link_not_by_init(
     path fails the ``rm`` predicate first, while a cure that keeps every predicate
     and appends one clause naming where the file is passes them all.
 
-    RED before the fix, at ``a6f7910c``: ``index build`` over this plant exited 4
-    with ``KNOWLEDGE_DIR_ESCAPE_REMEDY``, which fails the ``rm``, the
-    ``theurian init`` and the shipped-default predicates below.
+    RED before the fix, at ``4431951c`` -- this branch's point, and the anchor the
+    first cut of this line got wrong by citing a commit that exists only on an
+    unrelated branch. There ``index build`` over this plant exited 4 with
+    ``KNOWLEDGE_DIR_ESCAPE_REMEDY``, which fails every predicate below except the
+    trailing-slash one, and satisfies that one only by naming no path at all.
     """
     plant = PLANT_BY_HELPER["config"]
     _plant_escaping_symlink(corpus, plant)
@@ -1906,11 +1939,32 @@ def test_an_escaping_config_file_is_cured_by_removing_the_link_not_by_init(
                 "tell that from a command that failed silently (#652)",
             ),
             (
-                "says the retry needs nothing recreated",
+                "names the secret-scan policy an absent file selects",
                 "block" in remedy,
-                "every key this build reads out of the file has a shipped default, so "
-                "the retry works with no file at all -- a cure that does not say so "
-                "leaves the reader believing they have lost something",
+                "an operator whose file is gone is entitled to read which way the one "
+                "default with a security consequence falls before they retry",
+            ),
+            (
+                "says which command an empty review allowlist refuses",
+                "theurian review ingest" in remedy,
+                "the allowlist's default is empty and an empty allowlist names no "
+                "repository, so this command refuses until the file is written back -- "
+                "a cure that promises the retry needs nothing is false for it, which is "
+                "the second block below",
+            ),
+            (
+                "says a policy the file carried stops applying",
+                "redaction is off" in remedy and "stops applying" in remedy,
+                "R-12's switch defaults off, so an operator who had configured it loses "
+                "a privacy control by following this cure -- naming the default without "
+                "its consequence reads as reassurance to the reader it costs the most",
+            ),
+            (
+                "offers the authored settings back rather than only a removal",
+                f"write {_CONFIG_CULPRIT} back" in remedy,
+                "this file is Git-tracked policy no ignore covers, so a cure that stops "
+                "at `rm` applies the derived-artefact shape to authored content -- "
+                "`GITIGNORE_LINK_REMEDY` records why that shape is wrong here",
             ),
         )
         if not holds
@@ -1954,6 +2008,30 @@ def test_an_escaping_config_file_is_cured_by_removing_the_link_not_by_init(
     )
     assert json.loads(retried.stdout)["secretScanPolicy"] == "block", (
         "the retry ran on something other than the shipped default the cure names"
+    )
+
+    # The other command, and the reason the promise above is stated per command
+    # rather than per reader. `read_review_repositories` answers a default for an
+    # absent file like the other two -- and its default is the empty tuple, which
+    # allowlists nothing, so this retry refuses where `index build` succeeds. The
+    # refusal is the real adapter's and reaches no process: `review_allowlist`
+    # refuses before `gh` is located, which is what makes it safe to run here.
+    ingested = _observe(corpus, "review", "ingest", REPOSITORY_TO_INGEST)
+
+    assert ingested.exit_code == 1, (
+        "`review ingest` no longer refuses a project with no configuration file, so "
+        "the cure's warning about the empty allowlist describes nothing: exit "
+        f"{ingested.exit_code}, stdout {ingested.stdout!r}"
+    )
+    assert (ingested.envelope or {}).get("remedy") == REMEDIES[
+        RefusalGrade.REPOSITORY_NOT_ALLOWLISTED
+    ], (
+        "the refusal after the cure is not the allowlist one, so what the cure warns "
+        f"about is not what an operator meets: {ingested.envelope!r}"
+    )
+    assert not planted.exists() and not planted.is_symlink(), (
+        "`review ingest` wrote the configuration file back, so the refusal above is "
+        "not the one the cure's warning describes"
     )
 
     assert plant.remedy == remedy, (

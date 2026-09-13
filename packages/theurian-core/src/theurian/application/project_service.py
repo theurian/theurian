@@ -592,18 +592,42 @@ def config_escape_remedy(knowledge_directory_name: str) -> str:
     the remaining fallback population from the helper classification and proves
     ``init`` does create each one.
 
-    **Shorter than its sibling, because there is no writer to name.** The review
-    cure has to say what recreates the evidence directory; this one has nothing to
-    name, and that *is* the cure's good news: every key this module's reader takes
-    out of the file has a shipped default, so the command that refused answers
-    immediately with no file at all. The three defaults are stated rather than
-    summarised as "defaults", because an operator whose link is gone wants to know
-    what is now in force before the retry -- and stating them is what
+    **Longer than its sibling, because a default is not automatically a good
+    outcome.** The review cure has to say what recreates the evidence directory;
+    this one has no writer to name, and the first cut read that as good news:
+    "nothing has to be recreated before the retry", backed by the three readers'
+    shipped defaults. Round one reproduced the clause that promise leaves out --
+    an empty review allowlist *is* one of those defaults, and it names no
+    repository, so ``theurian review ingest`` refuses **every** repository until
+    the file is back. The promise is therefore stated per command rather than per
+    key, and it is stated for the command it was measured on:
+    ``tests/integration/test_contained_path_envelope.py::
+    test_an_escaping_config_file_is_cured_by_removing_the_link_not_by_init`` runs
+    the ``rm`` this text names and then both commands -- ``index build`` exits 0 on
+    the ``block`` default with nothing recreated, ``review ingest`` exits 1
+    carrying ``repository-not-allowlisted``'s own cure. Each default is therefore
+    stated with what it costs rather than summarised as "defaults", and that
+    the three *are* the readers' defaults is what
     ``tests/unit/test_project_config.py::
     test_every_configuration_reader_answers_a_default_when_the_file_is_absent``
     holds against the reader population, so a fourth key with no default, or one
     whose default moves, arrives here as a failure rather than as a stale
     sentence.
+
+    **The copy-back clause comes from :data:`GITIGNORE_LINK_REMEDY` rather than
+    from this cure's own sibling**, because what sits at this path is the same
+    kind of thing: ``.theurian/config.yaml`` is authored, Git-tracked,
+    policy-bearing content that no ignore covers -- :data:`GITIGNORE_SECTIONS`
+    names four derived directories and ``proposals-local/``, and no file under
+    ``.theurian`` -- and this repository ships one at
+    ``examples/sample-project/.theurian/config.yaml``. So the derived-artefact
+    shape, *remove it and Theurian recreates it*, is false twice over here:
+    nothing recreates this file, and what the reader would lose is their own
+    writing. ``.gitignore``'s cure met that class first and its docstring records
+    the reasoning; what is taken from it is the second act -- replace the link
+    with a regular file holding the rules, copied from the link's target if that
+    is where they live -- kept conditional, because a target that is somebody
+    else's file is exactly what the opening ``ls -l`` is for.
 
     **Plain ``rm``, with no ``rm -rf`` twin, and the shape argument is the one
     :func:`review_escape_remedy` records.** :meth:`ProjectPaths.of` refuses before
@@ -631,8 +655,8 @@ def config_escape_remedy(knowledge_directory_name: str) -> str:
     **Whoever adds that helper revisits this cure in the same change**: the link
     could then sit at an interior component, and the single ``rm`` below would name
     the directory above it, where plain ``rm`` fails and removes nothing -- leaving
-    the reader a command that changed nothing beside a cure still promising the
-    retry needs nothing recreated.
+    the reader a command that changed nothing beside clauses that all describe a
+    retry the removal never reached.
 
     **The trailing slash is absent and, unlike the sibling, unmentioned.** Four
     forms run against a ``.theurian/config.yaml`` symbolic link in a scratch tree,
@@ -695,14 +719,18 @@ def config_escape_remedy(knowledge_directory_name: str) -> str:
     """
     path = f"{knowledge_directory_name}/{PROJECT_CONFIG_FILE}"
     return (
-        f"Inspect `{path}` with `ls -l {path}` -- a clone may have delivered it as a "
-        f"symbolic link pointing outside the working tree. Remove that link with "
-        f"`rm {path}`. Nothing has to be recreated before the retry: with no "
-        f"{PROJECT_CONFIG_FILE} this build uses its shipped defaults -- "
-        f"`security.secretScan` is `block`, the review allowlist is empty so no "
-        f"repository may be ingested, and participant-name redaction is off -- so the "
-        f"retry runs on those rather than refusing for a file that is not there. Write "
-        f"the file back only to state a policy other than those."
+        f"Inspect `{path}` with `ls -l {path}`, run from the project root -- a clone may "
+        f"have delivered it as a symbolic link pointing outside the working tree. Remove "
+        f"that link with `rm {path}`: plain `rm` removes the link and not what it points "
+        f"at, so the settings it named are still there to read. This file is authored "
+        f"policy and nothing recreates it, so if those settings are this project's, write "
+        f"{path} back as a regular file holding them. With no {path} the shipped defaults "
+        f"are in force: `security.secretScan` is `block`; the review allowlist is empty, "
+        f"and an empty allowlist names no repository, so `theurian review ingest` refuses "
+        f"every repository until the file lists it; and participant-name redaction is "
+        f"off, so a redaction the file asked for stops applying. Nothing has to be "
+        f"recreated for a command those defaults already answer -- `theurian index build` "
+        f"runs with no file at all."
     )
 
 
