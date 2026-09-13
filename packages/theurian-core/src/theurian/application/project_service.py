@@ -617,9 +617,13 @@ def config_escape_remedy(knowledge_directory_name: str) -> str:
     **The copy-back clause comes from :data:`GITIGNORE_LINK_REMEDY` rather than
     from this cure's own sibling**, because what sits at this path is the same
     kind of thing: ``.theurian/config.yaml`` is authored, Git-tracked,
-    policy-bearing content that no ignore covers -- :data:`GITIGNORE_SECTIONS`
-    names four derived directories and ``proposals-local/``, and no file under
-    ``.theurian`` -- and this repository ships one at
+    policy-bearing content that no managed ignore entry covers --
+    :data:`GITIGNORE_SECTIONS` names four derived directories,
+    ``proposals-local/`` and three ``*.sqlite*`` globs, and not one of those eight
+    entries matches ``config.yaml``. The globs *do* match files under
+    ``.theurian``, so the claim is about this file rather than about files in
+    general: what they match is a derived sqlite artifact, which is the one
+    category a file somebody authored is not -- and this repository ships one at
     ``examples/sample-project/.theurian/config.yaml``. So the derived-artefact
     shape, *remove it and Theurian recreates it*, is false twice over here:
     nothing recreates this file, and what the reader would lose is their own
