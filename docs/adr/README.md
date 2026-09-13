@@ -42,6 +42,7 @@ alternatives that were rejected and why.
 | [0032](0032-the-write-intent-mcp-tool-surface.md) | The write-intent MCP tool surface, and when `writeTools` flips | proposed |
 | [0033](0033-knowledge-candidate-generation.md) | Candidate generation: the caller is the model; Theurian verifies the gate | proposed |
 | [0034](0034-migrate-apply-enforces-the-merge.md) | `migrate apply` enforces the merge | proposed |
+| [0035](0035-interactive-source-curation-is-agent-mediated.md) | Interactive curation of sources is agent-mediated and does not relax the approval gate | proposed |
 
 ## Writing a new ADR
 
