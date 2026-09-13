@@ -60,13 +60,36 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   and no files at all, so `init` writes no `config.yaml`: the reader ran a
   command that creates nothing and had no way to tell that from a command that
   failed silently. The refusal now carries a cure written for this file —
-  inspect it with `ls -l`, remove the link with plain `rm`, and **nothing has to
-  be recreated before the retry**, because with no `config.yaml` this build
-  reads its shipped defaults. The cure names all three rather than saying
-  "defaults", since an operator whose file has just gone wants to know what is
-  in force before they retry: `security.secretScan` is `block`, the review
-  allowlist is empty so no repository may be ingested, and participant-name
-  redaction is off.
+  inspect it with `ls -l` run from the project root, then remove the link with
+  plain `rm`, which takes the link and not what it points at, so the settings it
+  named are still there to read.
+
+  **Removing the link is not the whole cure, because this file is authored.**
+  `.theurian/config.yaml` is Git-tracked, policy-bearing content that no managed
+  ignore entry covers — this repository ships one at
+  `examples/sample-project/.theurian/config.yaml` — so the derived-path cure
+  beside it, whose removal "costs only artifacts Theurian rebuilds", is the
+  wrong shape twice over here: nothing recreates this file, and what the reader
+  would lose is their own writing. The cure takes the second act of
+  `.gitignore`'s own link cure instead and says to write `.theurian/config.yaml`
+  back as a regular file holding those settings if they are this project's —
+  conditional, because a target that is somebody else's file is what the opening
+  `ls -l` is for.
+
+  **With no `config.yaml` the shipped defaults are in force, and the cure names
+  each one with what it costs** rather than saying "defaults", since an operator
+  whose file has just gone wants to know what is in force before they retry:
+  `security.secretScan` is `block`; the review allowlist is empty, and an empty
+  allowlist names no repository, so `theurian review ingest` refuses **every**
+  repository until the file lists it; and participant-name redaction is off, so
+  a redaction the file asked for stops applying. **So "nothing has to be
+  recreated" is stated per command rather than per key**: it is made for
+  `theurian index build`, which runs with no file at all, and it is not made for
+  `theurian review ingest`, which refuses on that empty allowlist until the file
+  is back. Both halves are run rather than asserted over the cure's text —
+  `tests/integration/test_contained_path_envelope.py::test_an_escaping_config_file_is_cured_by_removing_the_link_not_by_init`
+  follows the `rm` the cure prints, then runs both commands, and checks that
+  nothing recreated the file in between.
 
   **Plain `rm`, with no `rm -rf` twin, and the path printed without a trailing
   slash**, for the shape reason the entry below records for `review`: by the time
