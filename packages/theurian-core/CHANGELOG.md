@@ -120,36 +120,50 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   Hebrew, Arabic) expands 3.0x on the wire and used to meet that `413`. Not a
   protocol change — `protocolVersion` is untouched — and not a widening of what
   is *validated*: the schema tier's own bounds are unchanged. Two costs are
-  recorded on the constant rather than left to be discovered: one at-cap request
-  in flight holds roughly 3.0x its wire bytes of Python heap (measured 75.1 MiB
-  peak), and two encodings still meet the `413` at a landed size the store would
-  accept — C0 controls other than `\b` `\t` `\n` `\f` `\r`, which have no
-  remedy because raw C0 is illegal JSON, and DEL (U+007F), which has one: send
-  it raw instead of `ensure_ascii`-escaped.
+  recorded on the constant rather than left to be discovered. One at-cap request
+  in flight holds 3.00x to **7.00x** its wire bytes of Python heap, the multiple
+  being set by the body's widest code point rather than by its length, because
+  PEP 393 sizes a `str` by its widest member: 3.00x (75.1 MiB, `tracemalloc`) is
+  the all-ASCII row, and **7.00x (175.1 MiB) is the worst measured at this
+  cap**, reached by any body carrying one astral character. And two encodings still meet the
+  `413` at a landed size the store would accept — C0 controls other than `\b`
+  `\t` `\n` `\f` `\r`, which have no remedy because raw C0 is illegal JSON, and
+  DEL (U+007F), which has one: send it raw instead of `ensure_ascii`-escaped.
 
 ### Fixed
 
-- **The MCP boundary's rendered-character budget is charged what `repr`
-  actually renders, not a leaf's own length**
+- **The MCP boundary's rendered-character budget is charged what `repr` actually
+  renders, for every leaf, rather than a string's own length**
   ([#669](https://github.com/theurian/theurian/issues/669), SEC-12).
   `MAX_PARAMS_RENDERED_CHARS` (12 MiB) bounds how much render work `jsonschema`
   may be asked to do, and `jsonschema` renders a failing instance with
   `{instance!r}` — which escapes. The charge counted a string's own length, so a
   leaf was charged one character for up to ten that `repr` renders: a raw U+007F
   costs one wire byte and four rendered characters, a raw U+0600 two bytes and
-  six. Reproduced with the second of those — a body of U+0600 that the transport
-  admits made the validator build a **53,476,811-character** message, 4.25x the
-  recorded budget, on one authenticated request. The breach predates this
-  release: under the old 4 MiB default the same under-charge already reached
-  1.33x the budget, over raw U+007F. The refusal itself was never the amplifier
-  — it stayed bounded and echoed nothing; the transient was the cost. The charge
-  is now exactly what `repr` renders, verified over all 1,114,112 code points, so
-  the budget holds at **any** transport cap instead of resting on the two caps'
-  ordering. **Caller-visible**: an escape-heavy request that previously reached
-  a published `maxLength` refusal can now meet the rendered-character refusal
-  first — the same refusal shape, a different limit and message. The identical
-  under-charge in the migration loader's own walk is filed separately
-  ([#693](https://github.com/theurian/theurian/issues/693)).
+  six. Reproduced with the second of those — a body of U+0600 made the validator
+  build a **53,476,811-character** message, 4.25x the recorded budget, on one
+  authenticated request — but that reproduction ran against the interim body cap
+  the same issue withdrew. **At the cap this release ships, the worst the old
+  charge admitted is 75,497,472 characters, 6.00x the budget**, reached by the
+  same class of character (any raw non-printable 2-byte one) at the larger size
+  this cap admits. The breach predates this release: under the old 4 MiB default
+  the same under-charge already reached 1.33x the budget, over raw U+007F. The
+  refusal itself was never the amplifier — it stayed bounded and echoed nothing;
+  the transient was the cost. Every leaf is now charged at least the number of
+  characters it contributes to the render, verified over all 1,114,112 code
+  points, so the budget holds at **any** transport cap instead of resting on the
+  two caps' ordering. **Caller-visible**, twice over. An escape-heavy request
+  that previously reached a published `maxLength` refusal can now meet the
+  rendered-character refusal first — the same refusal shape, a different limit
+  and message. And a request whose whole render exceeds the composed ceiling
+  (`MAX_PARAMS_RENDERED_CHARS + MAX_PARAMS_NODES * 4` = **12,982,912
+  characters**) is now refused at the validation seam where it was previously
+  *admitted*: `float` and `None` leaves were charged nothing, so arguments
+  pairing a string at the budget with 99,995 full-precision floats passed the
+  gate and rendered 15,182,796 characters, 1.207x the budget. Such a request now
+  receives the seam's bounded refusal naming the tool and the limit it passed.
+  The identical under-charge in the migration loader's own walk is filed
+  separately ([#693](https://github.com/theurian/theurian/issues/693)).
 
 ## [0.2.2] - 2026-09-14
 

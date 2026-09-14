@@ -727,10 +727,26 @@ Still owed, with the milestone that will satisfy it:
 > caps are unreconciled. Both clauses are false as of this change; the bullet now
 > points here, and the test cite it carried named a test this change deleted.
 >
-> Every figure below was measured on 2026-09-14, at `172e9d28`, a branch commit
-> of [PR #685](https://github.com/theurian/theurian/pull/685) and not on `main`
-> until that pull request lands — which is why the anchor carries the
+> **Where the figures below come from**, because they no longer share one
+> anchor and an earlier draft of this block said they did:
+>
+> * **Measured 2026-09-14 at `172e9d28`, a branch commit** — the cap derivation,
+>   the wire-escape table, the `413` refusal's own size.
+> * **Measured 2026-09-15 at `5f96c781`, a branch commit** — the per-request
+>   memory table, the per-node punctuation cost, the fallback's transient and its
+>   timings. These are round two's re-measurements; the addendum at the end of
+>   this amendment records what they replaced and why.
+> * **Derived from the live constants rather than measured**, and said so where
+>   it happens: the composed render ceiling, and the worst render the pre-#669
+>   charge admitted at a given cap.
+>
+> Both commits are branch commits of
+> [PR #685](https://github.com/theurian/theurian/pull/685) and not on `main`
+> until that pull request lands — which is why each anchor carries the
 > pull-request qualifier rather than reading as a tree a reader can check out.
+> One figure is older than either, and the sentence quoting it says so: the
+> 53,476,811-character reproduction was taken against the interim `2 *` cap this
+> amendment withdrew, not against the cap it ships.
 > CPython 3.13, `mcp==2.1.1`, `jsonschema==4.26.0`.
 
 **What the record said, and what is true now.** `build_app` called
@@ -782,35 +798,77 @@ sent"*, and `_rendered_width` charged a string `len(value)` accordingly, while
 The premise is false in both directions and was false before this change: raw
 U+007F is **one** wire byte and **four** rendered characters, and JSON admits it
 raw, so even under the SDK's 4 MiB default the worst reachable render was
-16,777,216 characters — 1.33x the 12 MiB budget. Raising the cap would have
-widened that breach 3.2x rather than creating it: a body of U+0600 that the new
-cap admits passed the gate charged about 8.9 M and made `jsonschema` build a
-**53,476,811-character** message, 4.25x the budget, while the refusal it
-eventually produced stayed bounded at 341 bytes and echoed nothing — the
-transient was the cost, not the answer. `_rendered_width` now charges a string
-exactly what `repr` renders it as — an `isprintable()` fast path that allocates
-nothing, and `len(repr(value)) - 2` otherwise, exact because a string's `repr`
-carries exactly two delimiting quotes — over all 1,114,112 code points, verified
-exhaustively rather than argued. So the budget is enforced by the charge
-at **any** transport cap, and the ordering above now decides only *which*
-refusal a caller between the two bounds receives. Pinned per escape class by
+16,777,216 characters — 1.33x the 12 MiB budget. Raising the cap widened that
+breach rather than creating it, and the worst instance at **this** cap is **any
+raw non-printable 2-byte BMP character**, U+0600 among them: two wire bytes, a
+six-character `\uXXXX` render, so under the old code-point charge the gate
+admitted 12,582,912 of them — 25,165,824 wire bytes, inside this cap with the
+`+ 1 MiB` envelope allowance to spare, sent raw as the official clients send it
+— and `jsonschema` would render **75,497,472 characters, 6.00x the budget**,
+which is **4.50x** the worst the SDK's own default could reach. That is the
+worst over every escape class and not over one body someone tried, and it is the
+2-byte class because that class alone saturates the charge without meeting the
+transport first: raw U+007F is charge-bound too but renders only four characters
+per code point (4.00x), and a non-printable astral character renders ten but is
+transport-bound at 6,553,600 of them (5.21x). Derived from the two constants and
+swept on CPython 3.13 over the 1,112,064 code points UTF-8 can carry — every one
+but the 2,048 surrogates, which no encoder will put on the wire — rather than
+argued from the three named here.
+
+The reproduction behind those figures was run on the same character class at the
+interim `2 *` cap (**17,825,792 bytes**) this amendment withdrew, where the
+transport bound first instead of the charge: a body of U+0600 passed the gate
+charged about 8.9 M and made `jsonschema` build a measured
+**53,476,811-character** message, **4.25x the budget** — that pair belongs to
+the interim cap, and the shipped cap's pair is the one above. An earlier draft
+of this paragraph printed the interim figures under the shipped cap's name.
+Either way the refusal eventually produced stayed bounded at 341 bytes and
+echoed nothing — the transient was the cost, not the answer.
+
+`_rendered_width` now charges **every leaf at least the number of characters
+that leaf contributes to the render**: a string through an `isprintable()` fast
+path that allocates nothing, through `len(repr(value)) - 2` up to
+`_CHUNK_CODE_POINTS` and a chunked upper bound above it; an integer by its digit
+count; and every remaining leaf type — `float` and `None`, which an earlier
+draft charged zero, among them — by its whole `repr`. The escape classes under
+that charge are verified exhaustively over all 1,114,112 code points rather than
+argued. So the budget is enforced by the charge at **any** transport cap, and
+the ordering above now decides only *which* refusal a caller between the two
+bounds receives. Pinned per escape class by
 `tests/unit/test_rendered_width_charge.py` and driven over the wire by
 `test_input_validation_dispatch.py::test_escape_heavy_text_smaller_than_the_render_budget_still_exceeds_it`,
 whose body is smaller in bytes than the render budget itself — so no ordering of
-the two caps could have refused it. The withdrawn sentence survives in the tree
-only where something refutes it: the two constant docstrings
+the two caps could have refused it.
+
+What that budget bounds is the **charged leaves**, not the whole render. An
+instance is its leaves plus the punctuation holding them together — braces,
+brackets, `, `, `: `, the quotes around each string — which no leaf is charged
+for, because `_iter_nodes` descends into containers and charges their members
+instead, and a container is the one deliberate zero. That excess is a fixed cost
+per node, measured at no more than **4 characters per node** over both the
+structured worst cases and 300,000 random shapes, so the render a request can
+actually reach is `MAX_PARAMS_RENDERED_CHARS + MAX_PARAMS_NODES * 4` =
+**12,982,912 characters**, 1.032x the constant alone. Quote the composed figure
+wherever the real ceiling matters; the constant alone under-states it.
+
+The withdrawn sentence survives in the tree only where something refutes it:
+the two constant docstrings
 (`daemon/server.py`'s `MAX_REQUEST_BODY_BYTES` and `mcp/validation.py`'s
 `MAX_PARAMS_RENDERED_CHARS`), the two test modules that drive its falseness, and
-this paragraph. No record states it as fact.
+this amendment. No record states it as fact.
 
-**Two caller-visible behaviour changes**, both named here because a client
+**Three caller-visible behaviour changes**, each named here because a client
 author reads the refusal, not the constant. A body up to 26,214,400 bytes is now
 read where 4 MiB was the limit, so the write-intent body ADR-0032 sizes for
 arrives and is answered by its schema — naming the tool and the constraint —
 where a 2-byte-script body of the same landed size previously met a `413` that
-named nothing. And an escape-heavy body that previously reached a published
+named nothing. An escape-heavy body that previously reached a published
 `maxLength` refusal can now meet the rendered-character refusal first: the same
-`isError`, a different limit and a different message.
+`isError`, a different limit and a different message. And arguments whose whole
+render passes the composed ceiling are now refused at this seam where they were
+*admitted*: with `float` and `None` charged nothing, a request pairing a string
+at the budget with 99,995 full-precision floats rendered 15,182,796 characters
+and was let through. It now receives the seam's bounded refusal.
 
 **The residual is recorded, not closed, and it is two rows of the wire table.**
 Only the control classes exceed 3.0x, both at 6.0x: C0 characters other than
@@ -824,14 +882,49 @@ characters are **not** in that set — they expand at 3.0x and the cap covers
 them.
 
 **What the bound costs per request, and what still bounds nothing.** The SDK
-buffers a whole body before anything parses it, so roughly 3.0x the wire bytes
-of Python heap is live while one at-cap request is in flight: measured at this
-cap, one authenticated at-cap POST peaks at 75.1 MiB of Python heap
-(`tracemalloc`) and adds 50.1 MiB to `ru_maxrss`. The derivation also couples
-this daemon's per-request memory ceiling to a *filesystem* constant — raising
-`MAX_SOURCE_FILE_BYTES` for a reason about files raises it by three times as
-much — which is recorded on `MAX_REQUEST_BODY_BYTES` because nothing at the
-`security/paths.py` end says so. The *number* of concurrent arrivals is bounded
+buffers a whole body before anything parses it, so a multiple of the wire bytes
+is live in Python heap while one at-cap request is in flight — and **the
+multiple is set by the body's widest code point, not by its length.** PEP 393
+sizes a `str` by its widest member, so the `str` the parse materialises and the
+`str` it extracts for the argument each cost *k* bytes per code point, *k* being
+1 for an all-ASCII body, 2 once any BMP character is present and 4 once any
+astral one is. One authenticated at-cap POST per row, one fresh process each:
+
+| Body at 26,214,400 wire bytes | `tracemalloc` peak | vs wire bytes | `ru_maxrss` |
+| :-- | --: | --: | --: |
+| all ASCII | 75.1 MiB | 3.00x | ~50 MiB |
+| dense U+007F | 75.2 MiB | 3.01x | ~50 MiB |
+| U+007F + one 2-byte character | 125.1 MiB | 5.00x | ~25 MiB |
+| **U+007F + one astral character** | **175.1 MiB** | **7.00x** | ~75 MiB |
+
+**The worst of the four is 7.00x, and 3.00x is the ASCII row** — an earlier
+draft of this paragraph recorded the ASCII row as though it bounded every body.
+What these rows assert is the measurement and the direction the cost moves in —
+the widest code point is the variable — rather than a closed-form multiple of
+the wire bytes. The two columns are named because they answer different
+questions and disagree by
+design: `tracemalloc` is the Python heap and reproduces to the tenth of a MiB
+across runs, while `ru_maxrss` is a process high-water mark that moves with
+whatever the process already touched, which is why it is quoted only to the MiB
+and why it is **not monotone in the row order** — the 2-byte row reads lower
+than the ASCII row there while `tracemalloc` reads half again higher. Read the
+`tracemalloc` column for what a request costs; `ru_maxrss` answers what the
+process peaked at, which is not the same question.
+
+All four rows are the parse's alone, and the 7.00x is inherent here: both
+strings exist before any Theurian code is reached. Charging the
+render used to add a term on top of them — the fallback reprred a whole leaf,
+peaking at 100 MiB (dense U+007F) to 400 MiB (the same leaf with one emoji),
+`tracemalloc` — and `_chunked_width` removed it: those two leaves now peak at
+0.04 MiB and 0.15 MiB against a **320 KB** ceiling
+(`_CHUNK_CODE_POINTS * 10 * 4`) that holds whatever the leaf's width or kind.
+
+The derivation also couples this daemon's per-request memory ceiling to a
+*filesystem* constant — raising `MAX_SOURCE_FILE_BYTES` for a reason about files
+raises every row above by three times as much, and then by up to four times that
+again for a body carrying one astral character — which is recorded on
+`MAX_REQUEST_BODY_BYTES` because nothing at the `security/paths.py` end says so.
+The *number* of concurrent arrivals is bounded
 nowhere in-process; that is T-6's recorded deferral, and the figures are on
 [#26](https://github.com/theurian/theurian/issues/26#issuecomment-5661638879).
 
@@ -849,3 +942,41 @@ class is closed across both seats rather than at the one this change touched.
 Finally, the stale test cite corrected above was found by review rather than by
 the suite: nothing checks that a test name an ADR cites still exists
 ([#692](https://github.com/theurian/theurian/issues/692)).
+
+**Addendum, 2026-09-15 — round two: three figures were measurements over a
+favourable instance, written down as bounds.** Appended rather than folded into
+the text above, because the class is worth more than the corrected numbers. Each
+face was a real measurement, recorded without the instance it was taken over, so
+each read as universal and each was smaller than the truth. The faces, as
+[PR #685](https://github.com/theurian/theurian/pull/685)'s round two found them:
+
+1. **Per-request memory, recorded as "roughly 3.0x the wire bytes, 75.1 MiB".**
+   That is the all-ASCII row. PEP 393 sizes a `str` by its widest member, so one
+   astral character anywhere in the body takes the same request to **7.00x,
+   175.1 MiB** — the worst of the four rows measured at this cap, and the row
+   the table above bolds.
+2. **The render charge, recorded as charging "every leaf what `repr` renders it
+   as".** `float` and `None` fell through to a `return 0`, so a request pairing
+   a string at the budget with 99,995 full-precision floats was charged
+   12,582,906 and admitted while rendering 15,182,796 characters, 1.207x the
+   budget. Fixed in code rather than reworded, and with it the whole-render
+   ceiling became statable: **12,982,912 characters**, not the 12,582,912 the
+   constant alone names.
+3. **The pre-fix reach, recorded as "53,476,811 characters, 4.25x the budget,
+   widening the breach 3.2x".** Measured against the interim `2 *` cap and
+   printed under the shipped `3 *` cap's name. At the cap this amendment ships
+   the worst is **75,497,472 characters, 6.00x the budget, 4.50x the SDK
+   default's worst** — the same character class, at the larger size the shipped
+   cap admits. The reproduction was right; the cap it was filed under was not.
+
+Every figure in this amendment now names the instance it is worst over and the
+unit it is counted in, and the measurement block at the top says which anchor
+each was taken at. **What is not yet enforced is that they stay that way.**
+Nothing in the suite reads this amendment's prose:
+`tests/integration/test_sec12_shipped_claims.py` pins T-11's residual paragraph
+and records in its own docstring that its reach stops short of this file. The
+fact side a pin would need does exist — the composed ceiling is recomputable
+from `MAX_PARAMS_RENDERED_CHARS` and `MAX_PARAMS_NODES`, and `_rendered_width`
+returning a positive charge for every non-container leaf type is assertable
+directly — so what is missing is the wiring, not a contract to wire it to. Until
+that lands, a revert of these corrections is silent.

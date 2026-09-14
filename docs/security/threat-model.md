@@ -502,16 +502,24 @@ no longer the reachability of `MAX_PARAMS_RENDERED_CHARS`, which is settled:
 `build_app` passes `daemon/server.py`'s `MAX_REQUEST_BODY_BYTES` —
 **26,214,400 bytes**, derived as `3 * MAX_SOURCE_FILE_BYTES + 1 MiB` rather than
 left to the SDK's unrecorded 4 MiB default — and `mcp/validation.py`'s
-`_rendered_width` charges every leaf what `repr` renders it as, so the 12 MiB
+`_rendered_width` charges **every leaf at least the number of characters that
+leaf contributes to the render**, `float` and `None` included, so the 12 MiB
 render budget is held by the charge at any transport cap and its bounded refusal
 is reachable in the shipped default configuration
 ([#669](https://github.com/theurian/theurian/issues/669),
 [ADR-0031](../adr/0031-mcp-input-is-schema-validated-in-middleware.md)
-*Amendment 1*). **What is residual is which encodings still meet the bare
-`413`.** The `3 *` in that derivation is the worst ratio of wire bytes to landed
-UTF-8 bytes any *non-control* text reaches, and exactly two wire-escape classes
-exceed it,
-both at 6.0x: C0 characters other than `\b` `\t` `\n` `\f` `\r`, which have no
+*Amendment 1*). That budget is the ceiling on **charged leaves**, not on the
+whole render: an instance is its leaves plus the punctuation between them, which
+no leaf is charged for, and that excess is a fixed per-node cost measured at no
+more than 4 characters per node. So the ceiling a request actually reaches is
+`MAX_PARAMS_RENDERED_CHARS + MAX_PARAMS_NODES * 4` = **12,982,912 characters**,
+1.032x the constant alone, and the composed figure is the one to quote wherever
+the real ceiling matters. **What is residual is which encodings still meet the
+bare `413`.** The `3 *` in that derivation is the worst ratio of wire bytes to
+landed UTF-8 bytes any *non-control* text reaches — enumerated per UTF-8 byte
+length under both encoder families, `ensure_ascii=True` and the raw UTF-8 the
+official clients emit — and exactly two wire-escape classes exceed it, both at
+6.0x: C0 characters other than `\b` `\t` `\n` `\f` `\r`, which have no
 remedy because raw C0 is illegal JSON, and DEL (U+007F), whose remedy is to send
 it raw rather than `ensure_ascii`-escaped (1.0x). Text dense in either still
 meets a transport-tier `413` — naming no tool, carrying no remedy, having no
@@ -1313,11 +1321,31 @@ worst at 84.3 s with no gate against 3.0 s under the cap.
 Since [#669](https://github.com/theurian/theurian/issues/669) an unbounded
 arrival also carries a recorded per-request cost at the transport itself: the
 SDK buffers a whole body before anything parses it, so one in-flight request at
-`daemon/server.py`'s `MAX_REQUEST_BODY_BYTES` (26,214,400 bytes) holds roughly
-3.0x its wire bytes of Python heap — measured 2026-09-14, one authenticated
-at-cap POST peaking at 75.1 MiB (`tracemalloc`) and adding 50.1 MiB to
-`ru_maxrss` — while nothing in this process bounds how many such arrivals there
-are, the aggregate knob and its figures being on
+`daemon/server.py`'s `MAX_REQUEST_BODY_BYTES` (26,214,400 bytes) holds a
+multiple of its wire bytes in Python heap — and **that multiple is a function of
+the body's widest code point, not of its length.** PEP 393 sizes a `str` by its
+widest member, so the `str` the parse materialises and the `str` it extracts for
+the argument each cost *k* bytes per code point, *k* being 1 for an all-ASCII
+body, 2 once any BMP character is present and 4 once any astral one is. Measured
+2026-09-15 by `tracemalloc`, one authenticated at-cap POST per row in a fresh
+process: **3.00x (75.1 MiB)** all-ASCII, 3.01x (75.2 MiB) dense U+007F, 5.00x
+(125.1 MiB) with one 2-byte character, and **7.00x (175.1 MiB) with one astral
+character**. That last row is the worst of the four, and **3.00x is the ASCII
+row, which an earlier version of this sentence recorded as though it were
+universal.** What is asserted is the measurement and the direction — the cost
+rises with the body's widest code point — not a closed-form multiple of the wire
+bytes. The `ru_maxrss` figures quoted beside these on the constant itself
+answer a different question — a process high-water mark rather than the Python
+heap — and the two are not interchangeable. The 7.00x is parse-side and inherent
+here: both strings exist before any Theurian code is reached. What *was* this
+project's own is gone — `mcp/validation.py`'s `_rendered_width` fallback reprred
+a whole leaf, peaking (`tracemalloc`) at 100 MiB on a dense-U+007F leaf and
+400 MiB on the same leaf carrying one emoji, because that repr's own output
+becomes 4 bytes per character. Chunked accumulation with early exit now holds
+that transient under a **320 KB** ceiling (`_CHUNK_CODE_POINTS * 10 * 4`)
+whatever the leaf's width or kind: those two leaves measure 0.04 MiB and
+0.15 MiB. Nothing in this process bounds how many such arrivals there are, the
+aggregate knob and its figures being on
 [#26's own comment](https://github.com/theurian/theurian/issues/26#issuecomment-5661638879).
 
 **Accepted design decision: the denial is per-daemon, not per-project.** Four
