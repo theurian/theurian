@@ -670,9 +670,9 @@ test that discharges it:
   `tests/integration/test_committed_migration_check_adapter.py::test_the_git_vector_is_fixed_and_carries_a_timeout`
   holds that the vector is fixed by the adapter, cannot be handed a URL or a
   remote, and carries a timeout.
-- **The T-7 spawn bullet moved in the same commit as the set** (commit
-  `588a6b4f`). `docs/security/threat-model.md`'s bullet now spells **five** and
-  names `infrastructure/git/committed_check.py`;
+- **The T-7 spawn bullet moved in the same commit as the set.**
+  `docs/security/threat-model.md`'s bullet now spells **five** and names
+  `infrastructure/git/committed_check.py`;
   `tests/unit/test_threat_model_t7_claims.py::test_the_t7_spawn_bullet_names_every_pinned_spawn_site_and_spells_how_many`
   and
   `tests/unit/test_network_call_sites.py::test_no_module_outside_the_recorded_spawn_sites_can_start_another_program`
