@@ -110,3 +110,17 @@ assert the claim appears only under the guard (PR #596's
 `test_no_cure_claims_a_costless_removal_outside_the_shape_guard` is the
 pattern) — a table-driven check agrees with the routing it checks; the
 rendered-text walk does not. Burned in after four cross-seam recurrences.
+
+## A pin drives at the worst instance the record it guards claims to bound
+
+Steering a pin toward a favourable fixture is a defect, not a passing test.
+Twice on PR #685 this specialist built a check whose fixtures could not reach
+the counterexample: a hand-picked wire-ratio population whose members all
+measured the recorded factor (the 2x multiplier survived until a review swept
+the whole space and found 3.0x), and a memory-model pin steered onto an
+escape-heavy body so a two-term model held while the jsonschema path it
+excluded measured 38x. Before writing any pin over a recorded bound or model:
+enumerate the path families or allocation terms *first*, pick the worst member
+of each, and check the parts sum to the measured whole. A population or fixture
+chosen because it makes the assertion pass is the class the pin exists to
+prevent. Burned in after two recurrences (#685 rounds 1-3).
