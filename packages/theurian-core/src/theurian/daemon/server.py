@@ -131,13 +131,16 @@ UNAUTHENTICATED_PATHS: Final = frozenset({"/health"})
 #: #691's to settle.
 #:
 #: **What the bound costs, per request -- and it is not a single multiple of the
-#: wire bytes.** Two terms are live while one at-cap request is in flight, and
-#: only the first is denominated in bytes the way this constant is:
+#: wire bytes, nor a function of the body alone.** Up to three terms are live
+#: while one at-cap request is in flight, and *which* of them exist depends on
+#: the path the request takes, not on how big it is:
 #:
 #: * **the transport's buffers: 2x the wire bytes, whatever the body holds.**
-#:   ``RequestBodyLimitMiddleware`` accumulates the body into a ``bytearray``,
-#:   and ``request.body()`` hands on a ``bytes`` copy; both are live when the
-#:   parse begins.
+#:   ``RequestBodyLimitMiddleware`` accumulates the body into a ``bytearray`` and
+#:   then makes the ``bytes`` copy itself (``bytes(received_body)``,
+#:   ``transport_security.py``); Starlette's ``request.body()`` joins that single
+#:   chunk and hands back the very same object rather than copying again. Both
+#:   are live when the parse begins.
 #: * **the parse's own peak: 1x, 3x or 5x the wire bytes, set by the body's
 #:   widest code point.** The SDK parses with ``pydantic_core.from_json(body)``
 #:   (``streamable_http.py``), straight from the bytes. PEP 393 then sizes the
@@ -150,23 +153,20 @@ UNAUTHENTICATED_PATHS: Final = frozenset({"/health"})
 #:   the call as a whole. Nothing downstream copies the string again:
 #:   ``jsonrpc_message_adapter.validate_python`` peaks at 0.0 MiB and hands back
 #:   the very same object (checked by identity).
+#: * **``jsonschema``'s message construction, on refusal paths only.** Every
+#:   keyword but the two in ``mcp/validation.py``'s ``_KEYWORDS_THAT_NAME_KEYS``
+#:   builds its message with ``{instance!r}``, so a request that *passes* the
+#:   charge gate and then fails such a keyword makes ``iter_errors`` render the
+#:   instance -- a second string, at the same PEP 393 width, up to
+#:   :data:`~theurian.mcp.validation.MAX_PARAMS_RENDERED_CHARS` characters.
+#:   Bounded by ``2 x MAX_PARAMS_RENDERED_CHARS x 4`` bytes, ~96 MiB isolated.
 #:
-#: The two compose to every one of the four rows below: 2x + 1x = 3.00x for both
-#: 1-byte-kind bodies, 2x + 3x = 5.00x with a 2-byte character, 2x + 5x = 7.00x
-#: with an astral one. The dense-U+007F row's extra 0.01x is the charge's own
-#: chunked transient, the third term named below. Composing on all four is the
-#: check that this is the right model rather than an arithmetic that fits one
-#: row. An earlier draft
-#: of this paragraph priced the parse term with ``json.loads(body)`` instead, and
-#: measured 2 x *k* x the wire bytes: that call decodes the whole body to a
-#: ``str`` before parsing it, a string this request path never builds, and the
-#: 200 MiB it reported for an astral body was larger than the 175.1 MiB the whole
-#: request actually peaks at. A term of a model cannot exceed the total it is
-#: part of; when one does, the term was measured on something else.
+#: Three path families follow, and they are the honest unit of this record:
 #:
-#: So the per-request figure is a function of the body's widest code point, not
-#: of its length. One authenticated at-cap POST, one fresh process per row,
-#: measured 2026-09-15 at this cap (26,214,400 wire bytes):
+#: **(i) Charge-refused shapes: two terms.** ``_unbounded`` refuses before
+#: ``iter_errors`` is ever called, so nothing renders. One authenticated at-cap
+#: POST, one fresh process per row, ``tracemalloc``, measured 2026-09-15 at this
+#: cap (26,214,400 wire bytes):
 #:
 #: ======================== =============== ==============
 #: Body                     ``tracemalloc`` ``ru_maxrss``
@@ -177,23 +177,44 @@ UNAUTHENTICATED_PATHS: Final = frozenset({"/health"})
 #: U+007F + one astral      175.1 MiB 7.00x ~75 MiB
 #: ======================== =============== ==============
 #:
-#: The ``tracemalloc`` column reproduces to the tenth of a MiB across runs; the
-#: ``ru_maxrss`` one is a process high-water mark that moves by a few hundred KB
-#: and depends on what the process already touched, so it is quoted to the MiB.
+#: The two terms compose to every one of those rows: 2x + 1x = 3.00x for both
+#: 1-byte-kind bodies, 2x + 3x = 5.00x with a 2-byte character, 2x + 5x = 7.00x
+#: with an astral one. The dense-U+007F row's extra 0.01x is the charge's own
+#: chunked transient, priced on
+#: :func:`~theurian.mcp.validation._chunked_width`. Composing on all four is the
+#: check that this is the right model rather than an arithmetic that fits one
+#: row. **3.00x is the ASCII row, not a bound**; 7.00x is the worst of these
+#: four, and an earlier draft recorded the ASCII row as though it were
+#: universal. The ``tracemalloc`` column reproduces to the tenth of a MiB across
+#: runs; ``ru_maxrss`` is a process high-water mark that moves by a few hundred
+#: KB and depends on what the process already touched, so it is quoted to the
+#: MiB. The two instruments are named beside their own figures because they
+#: answer different questions and disagree by design.
 #:
-#: **3.00x is the ASCII row, not the bound**; the worst of the four measured is
-#: the **7.00x** an astral character buys, and an earlier draft of this paragraph
-#: recorded the ASCII row as though it were universal. The two instruments are
-#: named beside their own figures because they answer different questions --
-#: ``tracemalloc`` the Python heap, ``ru_maxrss`` the process high-water mark --
-#: and they disagree by design.
+#: **(ii) ``jsonschema``-answered shapes: three terms, and the worst ratios this
+#: daemon reaches.** A body of *printable* multi-byte text is charged one
+#: character per code point, so it passes the gate that the family-(i) rows meet
+#: and reaches ``iter_errors``. Round-3 measurements, ``tracemalloc``, one
+#: authenticated POST each:
 #:
-#: Those rows are the two terms above and nothing else. Charging the render used
-#: to add a third on top of them -- ``mcp/validation.py``'s fallback reprred a
-#: whole leaf, peaking at 100 MiB on a dense-U+007F body and 400 MiB once one
-#: emoji made the repr's own output 4 bytes per character -- and
-#: :func:`~theurian.mcp.validation._chunked_width` removed it: the same leaves
-#: now peak at 0.04 and 0.15 MiB against a 320 KB ceiling.
+#: * **ratio-worst: 114.1 MiB = 38.04x the wire bytes**, at only 3,145,848 wire
+#:   bytes -- ``"\x7f" * 3,145,717`` plus one U+1F600, charged 12,582,869, just
+#:   under the budget and therefore admitted.
+#: * **absolute-worst: ~194-200 MiB, up to 8.00x**, at the cap: CJK filler plus
+#:   ASCII plus one astral character, saturating the wire cap and the render
+#:   budget at the same time.
+#:
+#: Both exceed the 175.1 MiB that family (i) tops out at, and the first exceeds
+#: every ratio in that table by five-fold at an eighth of the size. **The
+#: per-request figure is therefore not a function of the body's widest code point
+#: alone, and not monotone in the body's length**; an earlier draft of this
+#: paragraph said both, and this family is the counterexample to each. The third
+#: term appears only on the refusal path of a rendering keyword, is uncorrelated
+#: with the size of the request that triggers it, and is bounded by the render
+#: budget times the kind times two.
+#:
+#: **(iii) Valid shapes: two terms.** Nothing fails, so nothing renders; the
+#: family-(i) composition applies without its third term.
 #:
 #: Raising this constant raises every row proportionally, and the derivation
 #: makes them track a *filesystem* constant: raising
@@ -201,8 +222,9 @@ UNAUTHENTICATED_PATHS: Final = frozenset({"/health"})
 #: files raises this daemon's per-request memory ceiling by three times as much,
 #: then by up to four times that again for a body carrying one astral character.
 #: Nothing at the ``security/paths.py`` end says so, which is why it is recorded
-#: here. The *number* of concurrent arrivals is not bounded in-process at all --
-#: that is T-6's recorded deferral, and the aggregate knob and its figures are on
+#: here. The *number* of concurrent arrivals multiplies every family above and is
+#: not bounded in-process at all -- that is T-6's recorded deferral, unchanged by
+#: anything here, and the aggregate knob and its figures are on
 #: https://github.com/theurian/theurian/issues/26#issuecomment-5661638879.
 #:
 #: **It sits above** ``mcp/validation.py``'s ``MAX_PARAMS_RENDERED_CHARS``

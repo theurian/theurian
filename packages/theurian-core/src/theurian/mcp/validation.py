@@ -185,10 +185,15 @@ MAX_PARAMS_RENDERED_CHARS: Final = 12 * 1024 * 1024
 #: 393 sizes a ``str`` by its widest member, so a repr whose output carries one
 #: printable astral character is stored at 4 bytes per character rather than 1.
 #: Reprring a 26 MB leaf whole therefore peaked far above what the
-#: character-denominated records claimed. Slicing bounds it instead: the repr of
-#: one chunk is at most ten characters per code point, so the transient is
-#: ~400 KB at this size whatever the leaf's width or kind, and the loop stops as
-#: soon as the running charge passes the remaining budget.
+#: character-denominated records claimed. Slicing bounds it instead, and the
+#: bound has **two** terms, because the same expression builds two strings: the
+#: repr output, at most ten characters per code point, *and* the concatenated
+#: slice ``_chunked_width`` reprs. Both can sit in the 4-byte kind at once, so
+#: the ceiling is ``_CHUNK_CODE_POINTS * (10 + 1) * 4`` -- **~352 KiB** at this
+#: size, whatever the leaf's width or kind -- and the loop stops as soon as the
+#: running charge passes the remaining budget. That figure is the module's one
+#: ceiling; :func:`_chunked_width` and :func:`_rendered_width` quote it and
+#: nothing else.
 #:
 #: Wide enough that the exact single-repr path still covers every string a real
 #: call carries, which matters because the chunked sum is a *bound* rather than
@@ -442,10 +447,21 @@ def _chunked_width(value: str, remaining: int) -> int:
     proportion is in *bytes*: the output runs to ten characters per code point,
     each stored at up to four bytes once any printable astral character puts the
     result in PEP 393's widest kind. Reprring one slice at a time caps that
-    transient at the slice -- :data:`_CHUNK_CODE_POINTS` code points, so ~320 KB
-    -- and stopping as soon as the running total passes ``remaining`` caps the
-    *work* too: the caller refuses at that point, so the rest of the leaf is
-    never read.
+    transient at the slice, and stopping as soon as the running total passes
+    ``remaining`` caps the *work* too: the caller refuses at that point, so the
+    rest of the leaf is never read.
+
+    **The cap has two terms, not one.** The line below builds two strings per
+    slice -- the concatenation ``'"' + value[...]`` and the ``repr`` of it -- and
+    both can be in the 4-byte kind at the same time, so the bound is
+    ``_CHUNK_CODE_POINTS * (10 + 1) * 4`` = 360,448 bytes of payload, **~352
+    KiB**. Measured through the walk at 360,548 bytes, the difference being the
+    two ``str`` object headers; round 3's own instance measured 361,156 bytes.
+    The worst leaf is one of *non-printable* astral characters carrying a
+    *printable* astral: the first makes the repr output ten characters per code
+    point, the second forces both that output and the concatenated slice into
+    the widest kind. An earlier record priced only the repr output
+    (``* 10 * 4``, 320 KiB) and omitted the concatenation.
 
     **The slice is reprred in a forced quote context, and that is what makes the
     sum sound.** ``repr``'s choice of delimiter is a property of the whole
@@ -560,12 +576,18 @@ def _rendered_width(value: object, remaining: int = MAX_PARAMS_RENDERED_CHARS) -
     present. Character-denominated records missed that by 4x. Measured
     2026-09-15 on the fallback arm alone, for the widest leaf the transport
     admits: reprring it whole peaks at **100 MiB** (dense U+007F) to **400 MiB**
-    (the same leaf with one emoji); chunked, the same leaves peak at
-    **0.04 MiB** and **0.15 MiB**, against a ceiling of
-    ``_CHUNK_CODE_POINTS * 10 * 4`` = **320 KB** that holds whatever the leaf's
-    width or kind. Instrument: ``tracemalloc`` peak, which is the Python-heap
-    question; ``ru_maxrss`` answers a different one and is quoted beside its own
-    figures on
+    (the same leaf with one emoji); chunked, the same two leaves peak at
+    **0.04 MiB** and **0.15 MiB**.
+
+    Those two are corroborations, not the ceiling, and it is worth saying what
+    they were measured on: a dense-U+007F leaf, walked with the early exit
+    disabled, whose single widening character sat in the final slice. U+007F
+    renders four characters per code point rather than ten, so neither figure
+    reaches the worst case -- the ceiling is
+    ``_CHUNK_CODE_POINTS * (10 + 1) * 4``, **~352 KiB**, derived and measured on
+    :func:`_chunked_width`, and it is the one figure to quote. Instrument:
+    ``tracemalloc`` peak, which is the Python-heap question; ``ru_maxrss``
+    answers a different one and is quoted beside its own figures on
     :data:`~theurian.daemon.server.MAX_REQUEST_BODY_BYTES`.
 
     Chunking pays in time as well, because :func:`_chunked_width` stops as soon
