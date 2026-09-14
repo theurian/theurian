@@ -45,6 +45,7 @@ Pure: two files read as text, no database, socket or temporary directory.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from typing import Final
 
@@ -181,3 +182,34 @@ def entry_in(text: str, threat_id: str) -> str:
 def entry(threat_id: str) -> str:
     """The one section of the threat model headed *threat_id*, raw."""
     return entry_in(THREAT_MODEL.read_text(encoding="utf-8"), threat_id)
+
+
+def pairings(
+    text: str, subject: re.Pattern[str], phrasing: re.Pattern[str], reach: int
+) -> list[str]:
+    """Every place *text* puts *phrasing* within *reach* characters of *subject*.
+
+    The shape every "no record says X about Y again" rule needs, and the part a
+    second copy gets wrong silently: the distance is measured from the *ends* of
+    the two matches in either order, because a retired claim may put its
+    phrasing before its subject or after, and an off-by-one in that arithmetic
+    widens or narrows every rule built on it with nothing to say so.
+
+    Normalised through :func:`prose` first, which is not optional: records
+    soft-wrap mid-claim and bold their negations, so a scan over raw bytes
+    passes over the sentences it exists to watch.
+
+    Returns the window around each pairing rather than a count, so a failure
+    shows the sentence to judge instead of a number to reconcile.
+    """
+    normalised = prose(text)
+    spans = [match.span() for match in subject.finditer(normalised)]
+
+    found: list[str] = []
+    for hit in phrasing.finditer(normalised):
+        for start, end in spans:
+            if max(start - hit.end(), hit.start() - end, 0) <= reach:
+                opening = max(0, min(start, hit.start()) - 40)
+                found.append(normalised[opening : max(end, hit.end()) + 40])
+                break
+    return found

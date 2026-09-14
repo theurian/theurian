@@ -30,15 +30,12 @@ from ``build_server`` takes the fact arm RED with every prose arm green.
   *Controls* clause -- ``projectId`` "is *not* validated by a JSON schema at the
   MCP boundary -- there is no such validation" -- together, since they are one
   claim written twice. Beside it, the entry must name the seat.
-* ``docs/security/threat-model.md``'s **T-11 residual paragraph**, which #669
-  corrected a second time and which is held as its own subject. It said
-  ``MAX_PARAMS_RENDERED_CHARS`` was unreachable over the shipped transport and
-  that the reconciliation was owed; both are now false, so a second absence rule
-  keyed to that claim sits beside a positive half -- the residual's *count* of
-  over-multiplier wire-escape classes and the *factors* it prints, read off
-  ``tests/unit/test_transport_body_cap.py``'s class table rather than typed --
-  and a fact arm that extracts every byte figure the paragraph prints and
-  compares it to the live constant.
+* ``docs/security/threat-model.md``'s **T-11 residual paragraph** is held by
+  ``test_sec12_record_figures.py`` beside it, not here. That paragraph carries
+  #669's figures rather than SEC-12's shipped-ness, and the two failures read
+  differently: a record naming the wrong seat is a record about a control that
+  moved, while a record printing the wrong number is a record about a constant
+  that did.
 * ``docs/roadmap.md``'s **Phase 0 SEC-12 row**. Its two cells may not read
   ``nothing`` and ``the whole control`` again, and the *What ships* cell must
   name the live class and the live builder.
@@ -94,16 +91,13 @@ from pathlib import Path
 from typing import Final
 
 import pytest
-from threat_model_claims import SPELLED_NUMBERS, entry, prose
-from wire_escape_classes import RESIDUAL_CLASSES, WIRE_CLASSES
+from threat_model_claims import entry, pairings, prose
 from write_lock_claims import REPO_ROOT
 
 from theurian.application.project_service import ProjectRegistry
 from theurian.daemon.runner import build_server
-from theurian.daemon.server import MAX_REQUEST_BODY_BYTES
 from theurian.mcp.middleware import InputValidationMiddleware
-from theurian.mcp.validation import MAX_PARAMS_RENDERED_CHARS, load_input_schemas
-from theurian.security.paths import MAX_SOURCE_FILE_BYTES
+from theurian.mcp.validation import load_input_schemas
 
 pytestmark = pytest.mark.integration
 
@@ -171,59 +165,6 @@ _UNSHIPPED: Final = re.compile(
 #: ("Future controls, not shipped: SEC-12 ...") and the retired clause put it
 #: after.
 _REACH_CHARS: Final = 240
-
-#: What names the render budget as the subject of a sentence. Three spellings
-#: because the retired residual named it by constant and the shipped one also
-#: names it by what it bounds.
-_RENDER_BOUND_SUBJECT: Final = re.compile(
-    r"max_params_rendered_chars|rendered-character bound|render budget",
-)
-
-#: What a sentence reaches for to say the two caps were never reconciled -- that
-#: the render bound cannot be met over the shipped transport, or that the
-#: reconciliation is still owed. Keyed off the retired residual's own three
-#: clauses, which said it three ways in one paragraph.
-#:
-#: **Deliberately narrower than :data:`_UNSHIPPED`**, and for a reason that is
-#: the opposite of that key's. The shipped residual paragraph still talks about
-#: reachability at length -- it opens *"no longer the reachability of
-#: ``MAX_PARAMS_RENDERED_CHARS``, which is settled"* and closes that clause with
-#: *"reachable in the shipped default configuration"* -- so an over-approximation
-#: keyed on ``reachab`` or on the SDK's ``4 MiB`` figure (which the corrected
-#: sentence quotes, to say what the cap is derived *instead of*) would be RED
-#: against the record it is meant to protect. ``unreachable`` matches neither
-#: ``reachable`` nor ``reachability``, which is what makes it usable here.
-_UNRECONCILED: Final = re.compile(
-    r"is unreachable|unreachable over|unreachable in"
-    r"|without max_request_body_size"
-    r"|reconciliation is owed|reconciliation of|reconciliation with",
-)
-
-#: Where T-11's residual risk starts. The paragraph runs to the next blank line,
-#: which is how the entry separates it from the ``AuthorizationProvider`` note
-#: below it. Sliced rather than scanned whole because the arms below count and
-#: compare figures, and T-11's body quotes ``MAX_PARAMS_RENDERED_CHARS`` and a
-#: byte cap in passages that are not the residual.
-_RESIDUAL_MARKER: Final = "**Residual risk:**"
-
-#: How the residual paragraph's count of over-multiplier classes is located. The
-#: paragraph states two counts -- how many residual *risks* T-11 carries, and how
-#: many wire-escape *classes* exceed the multiplier -- and only the second is the
-#: one :data:`RESIDUAL_CLASSES` is the fact side of. Keyed on the noun, so the
-#: two cannot be confused.
-_RESIDUAL_COUNT_KEY: Final = re.compile(r"exactly (\w+) wire-escape classes")
-
-#: The addend the derivation records, as the paragraph spells it. One MiB, named
-#: here so the multiplier can be recovered from the live cap by arithmetic.
-_ENVELOPE_HEADROOM: Final = 1024 * 1024
-
-#: How the residual paragraph's remedy-less class is located. The ``because`` is
-#: load-bearing and not decoration: the paragraph says "no remedy" twice -- once
-#: of the class, once of the bare ``413``'s own shape ("naming no tool, carrying
-#: no remedy, having no refusal shape") -- so a key on the bare phrase stays
-#: green with the class clause deleted entirely. Driven: deleting that clause
-#: leaves the bare key matching the 413 sentence and reports nothing.
-_NO_REMEDY_KEY: Final = "no remedy because"
 
 #: The import path every source module here shares, stripped before a module
 #: name is written the way a record writes a file.
@@ -322,69 +263,9 @@ _REASSERTION_RECORDS: Final[dict[str, Callable[[], str]]] = {
 }
 
 
-def _pairings(text: str, subject: re.Pattern[str], phrasing: re.Pattern[str]) -> list[str]:
-    """Every place *text* puts *phrasing* within reach of *subject*.
-
-    Normalised first, which is not optional: the retired passages are
-    soft-wrapped mid-claim in their source files and one writes its negation as
-    ``*not*``, so a scan over raw bytes would pass over the sentences it exists
-    to watch. :func:`~threat_model_claims.prose` is the shared normalisation --
-    markup dropped, wraps flattened, case folded.
-
-    Returns the window around each pairing rather than a count, so a failure
-    shows the sentence to judge instead of a number to reconcile.
-
-    Parametrised over both keys because this module now runs two of these rules
-    -- *a record calls SEC-12 unimplemented* and *a record calls the render
-    bound unreachable* -- and the reach arithmetic is the part a second copy
-    gets wrong silently, in whichever copy its author forgot. The same reasoning
-    ``threat_model_claims`` records for its entry slicing.
-    """
-    normalised = prose(text)
-    subjects = [match.span() for match in subject.finditer(normalised)]
-
-    found: list[str] = []
-    for retraction in phrasing.finditer(normalised):
-        for start, end in subjects:
-            if max(start - retraction.end(), retraction.start() - end, 0) <= _REACH_CHARS:
-                opening = max(0, min(start, retraction.start()) - 40)
-                found.append(normalised[opening : max(end, retraction.end()) + 40])
-                break
-    return found
-
-
 def _unshipped_reassertions(text: str) -> list[str]:
     """Every place *text* pairs a SEC-12 subject with a not-shipped phrasing."""
-    return _pairings(text, _SEC12_SUBJECT, _UNSHIPPED)
-
-
-def _unreconciled_reassertions(text: str) -> list[str]:
-    """Every place *text* pairs the render bound with an unreconciled phrasing."""
-    return _pairings(text, _RENDER_BOUND_SUBJECT, _UNRECONCILED)
-
-
-def _t11_residual_paragraph() -> str:
-    """T-11's *Residual risk* paragraph, raw.
-
-    Raw rather than normalised, for :func:`~threat_model_claims.entry`'s reason:
-    the slice is taken on a blank line, and :func:`prose` destroys the line
-    structure it is taken on. Callers normalise afterwards.
-
-    Sliced rather than scanned over the whole entry because T-11's body names
-    ``MAX_PARAMS_RENDERED_CHARS`` in a second place -- the bounded-refusal
-    paragraph, which lists it beside ``MAX_PARAMS_NESTING`` and
-    ``MAX_PARAMS_NODES`` -- and the arms below count classes and compare figures
-    that only the residual paragraph carries. A scan of the whole entry would
-    pair the wrong subject and count the wrong nouns.
-    """
-    text = entry(_THREAT_ID)
-
-    assert text.count(_RESIDUAL_MARKER) == 1, (
-        f"T-11 carries {text.count(_RESIDUAL_MARKER)} `{_RESIDUAL_MARKER}` markers, "
-        f"expected 1. With none of them every arm below reads an empty string and "
-        f"reports it as safety; with two, whichever came first"
-    )
-    return text[text.index(_RESIDUAL_MARKER) :].split("\n\n", 1)[0]
+    return pairings(text, _SEC12_SUBJECT, _UNSHIPPED, _REACH_CHARS)
 
 
 @pytest.mark.parametrize("record", sorted(_REASSERTION_RECORDS))
@@ -467,214 +348,6 @@ def test_the_t11_entry_names_the_seat_the_build_carries() -> None:
             f"the live objects, so the second case is what this arm is for: move the "
             f"record in the commit that moves the code."
         )
-
-
-def test_the_t11_residual_no_longer_says_the_render_bound_is_unreachable() -> None:
-    """RED means the residual went back to calling a reachable bound unreachable.
-
-    Until #669, T-11's residual said ``MAX_PARAMS_RENDERED_CHARS`` *"is
-    unreachable over the shipped transport"*, because ``build_app`` called
-    ``streamable_http_app`` with no ``max_request_body_size`` and the SDK's own
-    4 MiB default answered ``413`` before any MCP framing existed -- so the
-    reconciliation was owed. Both halves are now false: the transport cap is
-    derived and passed, and ``_rendered_width`` charges every leaf what ``repr``
-    renders it as, so the render budget is held by the charge at any transport
-    cap rather than by the caps' ordering.
-
-    The failure this arm exists for is that correction being undone -- by a
-    revert, by a merge resolved the wrong way, or by somebody re-deriving the
-    old sentence from an older record. It is the same failure shape
-    :func:`test_no_record_says_sec_12_is_unimplemented_again` guards one claim
-    up, and it costs the same way: a security record saying a recorded bound
-    cannot be reached is read as an admitted gap by a reviewer and as an open
-    slice by a planner.
-
-    **Keyed on this paragraph, not on every record that once carried the
-    claim.** ``docs/roadmap.md``'s SEC-12 *owed* cell said it too -- *"the
-    reconciliation of ``MAX_PARAMS_RENDERED_CHARS`` with the transport's own
-    4 MiB body cap"* -- and its corrected cell names no render-bound subject at
-    all, leading with #691's ``maxLength`` unit question instead. A
-    parametrization that included it would look like two records held and be
-    one, which is the reasoning :data:`_REASSERTION_RECORDS` already records for
-    ``schemas/README.md``.
-
-    **The subject premise is what stops this passing on an empty read**, exactly
-    as in the arm above: a slice that stopped finding the paragraph reports a
-    clean record whatever the document says.
-    """
-    paragraph = _t11_residual_paragraph()
-
-    assert _RENDER_BOUND_SUBJECT.search(prose(paragraph)), (
-        f"T-11's residual paragraph names no render-bound subject at all, so the scan "
-        f"below has nothing to pair an unreconciled phrasing with and would report a "
-        f"clean record whatever it said. Either the slice is reading the wrong bytes or "
-        f"the paragraph stopped being about the bound it records a residual "
-        f"for:\n\n{paragraph[:400]}"
-    )
-
-    reassertions = _unreconciled_reassertions(paragraph)
-
-    assert not reassertions, (
-        f"T-11's residual says the render bound is unreachable, or that the two caps "
-        f"are unreconciled, within {_REACH_CHARS} characters of naming it:\n"
-        + "".join(f"\n  ...{window}..." for window in reassertions)
-        + f"\n\nBoth were closed by #669. `build_app` passes "
-        f"`MAX_REQUEST_BODY_BYTES` ({MAX_REQUEST_BODY_BYTES} bytes), and "
-        f"`mcp/validation.py`'s `_rendered_width` charges every leaf what `repr` "
-        f"renders it as, so the {MAX_PARAMS_RENDERED_CHARS}-character render budget is "
-        f"held by the charge rather than by the caps' ordering and its bounded refusal "
-        f"is reachable in the shipped default configuration. If the sentence is about "
-        f"some *other* bound that genuinely cannot be met, key it to that bound so it "
-        f"no longer reads as a claim about this one."
-    )
-
-
-def test_the_t11_residual_names_as_many_classes_as_the_unit_module_pins() -> None:
-    """RED means the record's residual and the measured residual disagree.
-
-    The absence arm above refuses the retired sentence; this is the positive
-    half, and it is the one that fires when the *measurement* moves rather than
-    when the prose does. T-11 now states the residual as a count and two
-    factors -- exactly *n* wire-escape classes exceed the multiplier, all at one
-    ratio, one of them with a raw-UTF-8 remedy and one without -- and every one
-    of those figures is the fact side of
-    ``tests/unit/test_transport_body_cap.py``'s class table, which holds the
-    residual set *equal* to the measured over-multiplier set.
-
-    So the count and the factors are read off that table rather than typed here.
-    Add a ninth wire class that expands past the multiplier and the unit module
-    goes RED on its own set equality while this arm goes RED on the record that
-    still says two; change a residual class's raw factor and the remedy figure
-    the record prints stops being the measured one.
-
-    **What this does not hold is which class the record attaches each factor
-    to.** The record names them in English -- "C0 characters other than
-    ``\\b`` ``\\t`` ``\\n`` ``\\f`` ``\\r``", "DEL (U+007F)" -- and the module
-    keys them by name, so no mechanical comparison joins the two without
-    transcribing one into the other, which is the failure this whole module
-    exists to avoid. The count, the shared over-multiplier ratio, the remedy
-    ratio and the existence of a remedy-less class are what *are* mechanical,
-    and they are what is asserted.
-    """
-    paragraph = prose(_t11_residual_paragraph())
-    factors = {WIRE_CLASSES[name].escaped for name in RESIDUAL_CLASSES}
-    remedied = {
-        name for name in RESIDUAL_CLASSES if WIRE_CLASSES[name].raw < WIRE_CLASSES[name].escaped
-    }
-
-    stated = _RESIDUAL_COUNT_KEY.search(paragraph)
-    assert stated is not None, (
-        f"T-11's residual paragraph no longer states how many wire-escape classes "
-        f"exceed the multiplier, so nothing here can disagree with the "
-        f"{len(RESIDUAL_CLASSES)} `tests/unit/test_transport_body_cap.py` measures. "
-        f"The sentence this arm reads is the one carrying `wire-escape "
-        f"classes`:\n\n{paragraph[:600]}"
-    )
-    assert SPELLED_NUMBERS.get(stated.group(1)) == len(RESIDUAL_CLASSES), (
-        f"T-11's residual says `{stated.group(0)}` exceed the multiplier; "
-        f"`tests/unit/test_transport_body_cap.py` measures "
-        f"{len(RESIDUAL_CLASSES)} ({sorted(RESIDUAL_CLASSES)}). A class that joined "
-        f"can meet the bare 413 at a landed size the store would accept and the record "
-        f"does not say so; a class that left is a residual the record still warns about"
-    )
-
-    assert len(factors) == 1, (
-        f"the residual classes no longer share one over-multiplier ratio "
-        f"({sorted(factors)}), so `both at N.0x` is not a sentence the record can "
-        f"carry and this arm cannot check the one it does"
-    )
-    assert f"{next(iter(factors))}.0x" in paragraph, (
-        f"T-11's residual does not print the {next(iter(factors))}.0x ratio the "
-        f"residual classes measure at, so the reach of the gap it records is not the "
-        f"reach that was measured:\n\n{paragraph[:600]}"
-    )
-
-    for factor in sorted({WIRE_CLASSES[name].raw for name in remedied}):
-        assert f"{factor}.0x" in paragraph, (
-            f"T-11's residual does not print the {factor}.0x a caller pays by sending "
-            f"{sorted(remedied)} raw instead of ensure_ascii-escaped. A remedy stated "
-            f"without its cost sends someone to retry a request whose new size they "
-            f"cannot predict"
-        )
-    if RESIDUAL_CLASSES - remedied:
-        assert _NO_REMEDY_KEY in paragraph, (
-            f"T-11's residual no longer says that {sorted(RESIDUAL_CLASSES - remedied)} "
-            f"has no remedy, and why. Its raw form costs exactly what its escaped form "
-            f"does, because raw C0 is illegal JSON -- a record that drops the clause "
-            f"leaves a reader to assume the remedy it states for the other class "
-            f"applies to both"
-        )
-
-
-def test_the_figures_the_t11_residual_prints_are_the_live_constants() -> None:
-    """The fact leg under the two prose arms: the record's numbers are the build's.
-
-    Every arm above holds a *record*. This one holds the thing recorded -- and
-    it is what makes the pair something other than a paragraph agreeing with
-    itself. T-11's residual prints four figures about the two caps: the
-    transport cap's byte total, the multiplier its derivation uses, the addend,
-    and the render budget in MiB. Each is extracted from the paragraph and
-    compared against the live constant, so a constant that moves without its
-    record goes RED here with the prose arms green, which is the direction that
-    says *the product moved*.
-
-    Extracted, not transcribed. A pin that asserted ``"26,214,400" in
-    paragraph`` would be a second copy of the number, correct on the day it is
-    typed and silent afterwards -- this module's own subject matter one level
-    up.
-
-    The derivation itself is pinned elsewhere and not re-implemented here:
-    ``test_input_validation_dispatch.py::test_the_transport_body_cap_is_derived_from_the_cap_on_a_landed_file``
-    holds the formula, ``::test_the_transport_body_cap_sits_above_the_rendered_character_bound``
-    holds the ordering, and ``tests/unit/test_transport_body_cap.py`` holds the
-    measurement the multiplier *is*. What is asserted here is only the premise
-    those figures need to be comparable at all -- that the cap really is a whole
-    multiple of the landed-file cap plus the recorded addend -- and then the
-    comparison.
-    """
-    paragraph = prose(_t11_residual_paragraph())
-
-    assert MAX_REQUEST_BODY_BYTES == 3 * MAX_SOURCE_FILE_BYTES + _ENVELOPE_HEADROOM, (
-        f"MAX_REQUEST_BODY_BYTES ({MAX_REQUEST_BODY_BYTES}) is no longer "
-        f"3 * MAX_SOURCE_FILE_BYTES ({MAX_SOURCE_FILE_BYTES}) + {_ENVELOPE_HEADROOM}, "
-        f"so `derived as N * MAX_SOURCE_FILE_BYTES + 1 MiB` is not a description this "
-        f"record can carry and the multiplier below cannot be recovered from the cap"
-    )
-    assert MAX_REQUEST_BODY_BYTES > MAX_PARAMS_RENDERED_CHARS, (
-        f"the transport cap ({MAX_REQUEST_BODY_BYTES}) no longer sits above the render "
-        f"budget ({MAX_PARAMS_RENDERED_CHARS}), so T-11's residual describes the two "
-        f"tiers in an order this build does not have"
-    )
-
-    assert MAX_PARAMS_RENDERED_CHARS % _ENVELOPE_HEADROOM == 0, (
-        f"MAX_PARAMS_RENDERED_CHARS ({MAX_PARAMS_RENDERED_CHARS}) is no longer a whole "
-        f"number of MiB, so the MiB spelling the record uses would round and this arm "
-        f"would compare the record against a figure it never meant"
-    )
-
-    multiplier = (MAX_REQUEST_BODY_BYTES - _ENVELOPE_HEADROOM) // MAX_SOURCE_FILE_BYTES
-    printed_totals = re.findall(r"(\d{1,3}(?:,\d{3})+) bytes", paragraph)
-    printed_multipliers = re.findall(r"(\d+) max_source_file_bytes", paragraph)
-
-    assert printed_totals == [f"{MAX_REQUEST_BODY_BYTES:,}"], (
-        f"T-11's residual prints {printed_totals} as the transport cap; the build "
-        f"carries {MAX_REQUEST_BODY_BYTES:,}. A record quoting a byte figure this "
-        f"daemon does not enforce tells a reader which bodies arrive, and is wrong "
-        f"about it:\n\n{paragraph[:600]}"
-    )
-    assert printed_multipliers == [str(multiplier)], (
-        f"T-11's residual derives the cap with {printed_multipliers}; recovered from "
-        f"the live constants the multiplier is {multiplier}. That figure is the worst "
-        f"wire expansion the cap covers, so it also decides which encodings the "
-        f"residual below it names"
-    )
-    assert f"{MAX_PARAMS_RENDERED_CHARS // (1024 * 1024)} mib render budget" in paragraph, (
-        f"T-11's residual does not call it a "
-        f"{MAX_PARAMS_RENDERED_CHARS // (1024 * 1024)} MiB render budget, which is what "
-        f"MAX_PARAMS_RENDERED_CHARS ({MAX_PARAMS_RENDERED_CHARS}) is. Either the "
-        f"constant moved without the record, or the record stopped naming the figure "
-        f"whose reachability the sentence is about:\n\n{paragraph[:600]}"
-    )
 
 
 def test_the_roadmap_sec_12_row_no_longer_reads_nothing_and_the_whole_control() -> None:
@@ -885,59 +558,6 @@ def test_the_reassertion_scan_reports_the_passages_it_was_written_for(
         f"it was written for -- a narrowed key, a subject spelling that drifted, or a "
         f"normalisation that stopped folding the wrap this passage carries. Every "
         f"absence arm above is green whatever the records now say.\n\n{passage}"
-    )
-
-
-#: The retired T-11 residual, verbatim at ``11825776^`` -- the state immediately
-#: before #669's records commit, in the same frame as the passages above. Its
-#: three clauses are what :data:`_UNRECONCILED` is keyed off: the bound "is
-#: unreachable", the builder calls the SDK "without ``max_request_body_size``",
-#: and "the reconciliation is owed". Line breaks included, because the claim
-#: wraps four times and folding the wrap is what lets the rule see it.
-#:
-#: Only the ``#669`` half is carried. The ``#665`` sentence that closed the same
-#: paragraph is still shipped, word for word, so including it would put live
-#: prose in a constant named for retired prose.
-_RETIRED_T11_RESIDUAL: Final = (
-    "**Residual risk:** two, both recorded rather than discovered later.\n"
-    "`MAX_PARAMS_RENDERED_CHARS` is unreachable over the shipped transport —\n"
-    "`daemon/server.py` calls `streamable_http_app` without `max_request_body_size`,\n"
-    "so the SDK's 4 MiB default answers `413` before any MCP framing exists, and the\n"
-    "reconciliation is owed by\n"
-    "[#669](https://github.com/theurian/theurian/issues/669) at the slice that opens\n"
-    "the write surface."
-)
-
-
-def test_the_unreconciled_scan_reports_the_passage_it_was_written_for() -> None:
-    """The premise under the unreachability arm: that rule can still fire.
-
-    :data:`_UNRECONCILED` is deliberately narrow -- the shipped paragraph talks
-    about reachability throughout, so the usual over-approximation would be RED
-    against the record it protects -- and a narrow key is exactly the kind that
-    stops matching without anyone noticing. One character trimmed from
-    ``unreachable``, a subject spelling that drifts, a normalisation that stops
-    folding the wrap, and
-    :func:`test_the_t11_residual_no_longer_says_the_render_bound_is_unreachable`
-    is green whatever the threat model now says.
-
-    So the retired residual is held here verbatim, and the rule is required to
-    report it. Verbatim including the line breaks, which is the half a synthetic
-    string would miss: the claim wraps four times, and a rule that stopped
-    normalising would report nothing while the shipped record stayed green.
-
-    The shipped paragraph is asserted clean by the arm itself; what this adds is
-    that *clean* means the rule looked.
-    """
-    reported = _unreconciled_reassertions(_RETIRED_T11_RESIDUAL)
-
-    assert reported, (
-        f"the retired T-11 residual, the text itself, is no longer reported.\n\n"
-        f"The rule guarding that paragraph has stopped matching the passage it was "
-        f"written for -- a narrowed key, a subject spelling that drifted, or a "
-        f"normalisation that stopped folding the wraps this passage carries. The "
-        f"unreachability arm is green whatever the record now "
-        f"says.\n\n{_RETIRED_T11_RESIDUAL}"
     )
 
 
