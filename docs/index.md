@@ -92,10 +92,11 @@ when they land they emit the same proposal file.
 
 **What is enforced, and what is convention.** That no MCP tool writes approved
 knowledge is enforced — a test walks the bytecode of every registered tool to
-hold it. That a human merged the proposal is *not*: `migrate apply` applies
-whatever is in `.theurian/migrations/`, committed or not, so the review is a
-workflow convention rather than a check the code makes (T-15's recorded
-residual).
+hold it. That a human merged the proposal is *not*: `migrate apply` refuses an
+uncommitted migration by default (`--allow-uncommitted` restores the old
+behaviour), so the commit is a check the code makes, but a local commit on a
+local branch passes and the merge itself stays a workflow convention (T-15's
+recorded residual).
 
 AI agents can consume governed knowledge without becoming the authority that
 governs it. Decisions remain reviewable engineering artifacts controlled by
@@ -143,7 +144,7 @@ most important engineering questions.
 | Was this reviewed? | Usually unknown | **Trust and status travel with it** |
 | Is it still valid? | Usually unknown | **Freshness is queryable** |
 | Where did this claim come from? | Often a document link | **Source provenance** |
-| Can an AI silently promote its own output to approved knowledge? | Depends on the system | **No, over MCP** — no write tool exists. On the CLI path nothing enforces the merge (T-15's recorded residual); the workflow, not the code, is the check. |
+| Can an AI silently promote its own output to approved knowledge? | Depends on the system | **No, over MCP** — no write tool exists. On the CLI path `migrate apply` now refuses an uncommitted migration by default, but a local commit still passes, so the code enforces the commit and the merge stays a workflow convention (T-15's recorded residual). |
 
 The goal is not to replace search.
 

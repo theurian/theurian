@@ -79,6 +79,20 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   contract. The eighth breaking-but-unbumped change: the 2,000-character bound was
   already published, so what moved is the disposition of an over-bound query from
   clamp to refuse.
+- **BREAKING — `migrate apply` refuses a migration that is not committed at
+  `HEAD` by default**
+  ([ADR-0034](../../docs/adr/0034-migrate-apply-enforces-the-merge.md), T-15).
+  Old shape: `migrate apply` applied whatever sat in `.theurian/migrations/`,
+  committed or not, so an agent, a script, or a mistaken `mv` could promote a
+  file no human had committed. New shape: the migration file must be tracked by
+  git and byte-identical to `HEAD`, or the apply is refused with a remedy that
+  names the flag; `--allow-uncommitted` restores the old behaviour for
+  development and recovery. What is enforced is *committed*, not *merged* — a
+  local commit on a local branch passes — so the human's review of the pull
+  request stays a workflow convention (T-15's narrowed residual). This is a CLI
+  default change, not a protocol change: `protocolVersion` is untouched. A
+  temporary-directory harness that drives `migrate apply` must now commit its
+  migration first, or pass the flag.
 
 ## [0.2.2] - 2026-09-14
 

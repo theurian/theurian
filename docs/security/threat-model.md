@@ -2254,10 +2254,19 @@ does not approve, so the human's merge is the approval. `theurian ingest` is the
 same shape — it records a content-hash manifest and stores no body, and
 promotion runs through a migration and a human (`ingest_command`'s docstring).
 
-**Residual: nothing enforces the merge.** `migrate apply` applies whatever is in
-`.theurian/migrations/`, committed or not — the human's review is a workflow
-convention, not a check the code makes, and the actors table's untrusted
-same-UID process can run it directly.
+**Residual: the commit is enforced; the merge is not.** Since ADR-0034's T-15
+check (Phase B slice B3), `migrate apply` refuses by default a migration file
+that is not committed — tracked by git and byte-identical to `HEAD`, read
+through `infrastructure/git/committed_check.py` and enforced in
+`cli/commands.py`'s pre-apply band; `--allow-uncommitted` restores the old
+behaviour for development and recovery. What the check does **not** prove is
+that the commit reached a reviewed branch: a local commit on a local branch
+satisfies it, because *merged into the default branch* is a branch-protection
+fact held by a forge, not by the working tree (ADR-0034 decision 1 and *What
+this does not close*). So the human's review of the merge stays a workflow
+convention rather than a check the code makes, and the actors table's untrusted
+same-UID process can still apply its own migration by committing it first — a
+speed bump, not a wall.
 
 **The second standing control acts after the fact, not at the trigger point:**
 removing a secret once it is in is a different operation — superseding the
@@ -2392,7 +2401,9 @@ a separate point:*
   convenience rather than a control.
 - **A migration written straight into `.theurian/migrations/` never meets the
   scan at all**, because it never passes through `accept`. That is the same
-  residual as "nothing enforces the merge" above, seen from the scanner's side.
+  residual as "the merge is not enforced" above, seen from the scanner's side:
+  the T-15 check refuses an *uncommitted* file by default, but a file committed
+  straight into the directory clears it and still bypasses the accept-path scan.
 - **The detector will miss things, and will fire on things that are not
   secrets.** A credential that resembles neither a known shape nor random output
   is invisible to it, and there is no per-finding suppression: a false positive
