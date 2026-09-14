@@ -1323,23 +1323,34 @@ arrival also carries a recorded per-request cost at the transport itself: the
 SDK buffers a whole body before anything parses it, so one in-flight request at
 `daemon/server.py`'s `MAX_REQUEST_BODY_BYTES` (26,214,400 bytes) holds a
 multiple of its wire bytes in Python heap — and **that multiple is a function of
-the body's widest code point, not of its length.** PEP 393 sizes a `str` by its
-widest member, so the `str` the parse materialises and the `str` it extracts for
-the argument each cost *k* bytes per code point, *k* being 1 for an all-ASCII
-body, 2 once any BMP character is present and 4 once any astral one is. Measured
+the body's widest code point, not of its length.** Two terms compose it, and
+only the first is denominated in bytes the way the cap is. The transport's
+buffers cost **2x the wire bytes whatever the body holds** —
+`RequestBodyLimitMiddleware` accumulates the body into a `bytearray` and
+`request.body()` hands on a `bytes` copy, both live when the parse begins. The
+parse's own peak costs **1x, 3x or 5x**, set by the widest code point: the SDK
+parses with `pydantic_core.from_json(body)` straight from the bytes, PEP 393
+sizes the resulting `str` by its widest member — 1, 2 or 4 bytes per code
+point — so the finished string alone is 1x, 2x or 4x, and above the 1-byte kind
+the parse holds one further wire-byte-sized buffer while it widens. **There is
+one string, not two**: nothing downstream copies it, and
+`jsonrpc_message_adapter.validate_python` peaks at 0.0 MiB and hands back the
+very same object, checked by identity. Measured
 2026-09-15 by `tracemalloc`, one authenticated at-cap POST per row in a fresh
 process: **3.00x (75.1 MiB)** all-ASCII, 3.01x (75.2 MiB) dense U+007F, 5.00x
 (125.1 MiB) with one 2-byte character, and **7.00x (175.1 MiB) with one astral
-character**. That last row is the worst of the four, and **3.00x is the ASCII
+character** — the two terms composing to each of them, 2x + 1x, 2x + 3x and
+2x + 5x, with the dense row's extra 0.01x being the charge's own chunked
+transient. That last row is the worst of the four, and **3.00x is the ASCII
 row, which an earlier version of this sentence recorded as though it were
-universal.** What is asserted is the measurement and the direction — the cost
-rises with the body's widest code point — not a closed-form multiple of the wire
+universal.** What is asserted is those measurements and a model that composes to
+all four of them, not a single multiple of the wire
 bytes. The `ru_maxrss` figures quoted beside these on the constant itself
 answer a different question — a process high-water mark rather than the Python
-heap — and the two are not interchangeable. The 7.00x is parse-side and inherent
-here: both strings exist before any Theurian code is reached. What *was* this
-project's own is gone — `mcp/validation.py`'s `_rendered_width` fallback reprred
-a whole leaf, peaking (`tracemalloc`) at 100 MiB on a dense-U+007F leaf and
+heap — and the two are not interchangeable. The 7.00x is inherent to admitting a
+body of this size: both terms are spent before any tool handler runs. What *was*
+this project's own is gone — `mcp/validation.py`'s `_rendered_width` fallback
+reprred a whole leaf, peaking (`tracemalloc`) at 100 MiB on a dense-U+007F leaf and
 400 MiB on the same leaf carrying one emoji, because that repr's own output
 becomes 4 bytes per character. Chunked accumulation with early exit now holds
 that transient under a **320 KB** ceiling (`_CHUNK_CODE_POINTS * 10 * 4`)

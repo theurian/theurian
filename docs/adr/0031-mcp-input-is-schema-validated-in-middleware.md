@@ -736,6 +736,10 @@ Still owed, with the milestone that will satisfy it:
 >   memory table, the per-node punctuation cost, the fallback's transient and its
 >   timings. These are round two's re-measurements; the addendum at the end of
 >   this amendment records what they replaced and why.
+> * **Measured 2026-09-15 at `097d754c`, a branch commit** — the two terms the
+>   per-request memory model is made of, taken on the call this request path
+>   actually parses with. No row of the table moved; only the model that has to
+>   explain it.
 > * **Derived from the live constants rather than measured**, and said so where
 >   it happens: the composed render ceiling, and the worst render the pre-#669
 >   charge admitted at a given cap.
@@ -883,11 +887,22 @@ them.
 **What the bound costs per request, and what still bounds nothing.** The SDK
 buffers a whole body before anything parses it, so a multiple of the wire bytes
 is live in Python heap while one at-cap request is in flight — and **the
-multiple is set by the body's widest code point, not by its length.** PEP 393
-sizes a `str` by its widest member, so the `str` the parse materialises and the
-`str` it extracts for the argument each cost *k* bytes per code point, *k* being
-1 for an all-ASCII body, 2 once any BMP character is present and 4 once any
-astral one is. One authenticated at-cap POST per row, one fresh process each:
+multiple is set by the body's widest code point, not by its length.** Two terms
+compose it, and only the first is denominated in bytes the way this cap is:
+
+- **The transport's buffers — 2x the wire bytes, whatever the body holds.**
+  `RequestBodyLimitMiddleware` accumulates the body into a `bytearray`, and
+  `request.body()` hands on a `bytes` copy; both are live when the parse begins.
+- **The parse's own peak — 1x, 3x or 5x, set by the widest code point.** The SDK
+  parses with `pydantic_core.from_json(body)` (`streamable_http.py`), straight
+  from the bytes, and PEP 393 sizes the resulting `str` by its widest member — 1,
+  2 or 4 bytes per code point — so the finished string alone is 1x, 2x or 4x,
+  and above the 1-byte kind the parse holds one further wire-byte-sized buffer
+  while it widens. **There is one string, not two**: nothing downstream copies
+  it, and `jsonrpc_message_adapter.validate_python` peaks at 0.0 MiB and hands
+  back the very same object, checked by identity.
+
+One authenticated at-cap POST per row, one fresh process each:
 
 | Body at 26,214,400 wire bytes | `tracemalloc` peak | vs wire bytes | `ru_maxrss` |
 | :-- | --: | --: | --: |
@@ -896,10 +911,16 @@ astral one is. One authenticated at-cap POST per row, one fresh process each:
 | U+007F + one 2-byte character | 125.1 MiB | 5.00x | ~25 MiB |
 | **U+007F + one astral character** | **175.1 MiB** | **7.00x** | ~75 MiB |
 
+**The two terms compose to every one of those rows**: 2x + 1x = 3.00x for both
+1-byte-kind bodies, 2x + 3x = 5.00x with a 2-byte character, 2x + 5x = 7.00x
+with an astral one, the dense-U+007F row's extra 0.01x being the charge's own
+chunked transient. Composing on all four is what makes it a model rather than an
+arithmetic that fits one row.
+
 **The worst of the four is 7.00x, and 3.00x is the ASCII row** — an earlier
 draft of this paragraph recorded the ASCII row as though it bounded every body.
-What these rows assert is the measurement and the direction the cost moves in —
-the widest code point is the variable — rather than a closed-form multiple of
+What the rows assert is the measurement and what the model asserts is the
+composition; neither asserts a single multiple of
 the wire bytes. The two columns are named because they answer different
 questions and disagree by
 design: `tracemalloc` is the Python heap and reproduces to the tenth of a MiB
@@ -910,12 +931,12 @@ than the ASCII row there while `tracemalloc` reads half again higher. Read the
 `tracemalloc` column for what a request costs; `ru_maxrss` answers what the
 process peaked at, which is not the same question.
 
-All four rows are the parse's alone, and the 7.00x is inherent here: both
-strings exist before any Theurian code is reached. Charging the
-render used to add a term on top of them — the fallback reprred a whole leaf,
-peaking at 100 MiB (dense U+007F) to 400 MiB (the same leaf with one emoji),
-`tracemalloc` — and `_chunked_width` removed it: those two leaves now peak at
-0.04 MiB and 0.15 MiB against a **320 KB** ceiling
+All four rows are those two terms and nothing else, and the 7.00x is inherent to
+admitting a body of this size: both are spent before any tool handler runs.
+Charging the render used to add a third on top of them — the fallback reprred a
+whole leaf, peaking at 100 MiB (dense U+007F) to 400 MiB (the same leaf with one
+emoji), `tracemalloc` — and `_chunked_width` removed it: those two leaves now
+peak at 0.04 MiB and 0.15 MiB against a **320 KB** ceiling
 (`_CHUNK_CODE_POINTS * 10 * 4`) that holds whatever the leaf's width or kind.
 
 The derivation also couples this daemon's per-request memory ceiling to a
@@ -970,12 +991,16 @@ each read as universal and each was smaller than the truth. The faces, as
 
 Every figure in this amendment now names the instance it is worst over and the
 unit it is counted in, and the measurement block at the top says which anchor
-each was taken at. **What is not yet enforced is that they stay that way.**
-Nothing in the suite reads this amendment's prose:
-`tests/integration/test_sec12_shipped_claims.py` pins T-11's residual paragraph
-and records in its own docstring that its reach stops short of this file. The
-fact side a pin would need does exist — the composed ceiling is recomputable
-from `MAX_PARAMS_RENDERED_CHARS` and `MAX_PARAMS_NODES`, and `_rendered_width`
-returning a positive charge for every non-container leaf type is assertable
-directly — so what is missing is the wiring, not a contract to wire it to. Until
-that lands, a revert of these corrections is silent.
+each was taken at. **That is now enforced rather than merely intended**, which
+it was not when this addendum was first written: this amendment's prose was read
+by nothing, and the paragraph here said so. It is wired now.
+`tests/integration/test_sec12_record_figures.py` recomputes the composed ceiling
+from `MAX_PARAMS_RENDERED_CHARS` and `MAX_PARAMS_NODES`, recomputes the worst
+render the old charge admitted, and drives `_rendered_width` over every leaf
+type the records call *every leaf* — so a figure that drifts from the build goes
+RED against the build rather than against a second copy of itself.
+`tests/integration/test_sec12_retired_claims.py` holds the other direction:
+each retired figure above — the ASCII-only memory row, the universal charge
+claim, and the interim cap's three — may appear only with the attribution that
+marks it retired, so none of them can quietly come back as a live one. A revert
+of these corrections is no longer silent.
