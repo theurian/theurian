@@ -120,20 +120,25 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   Hebrew, Arabic) expands 3.0x on the wire and used to meet that `413`. Not a
   protocol change — `protocolVersion` is untouched — and not a widening of what
   is *validated*: the schema tier's own bounds are unchanged. Two costs are
-  recorded on the constant rather than left to be discovered. One at-cap request
-  in flight holds 3.00x to **7.00x** its wire bytes of Python heap, the multiple
-  being set by the body's widest code point rather than by its length, because
-  PEP 393 sizes a `str` by its widest member: 3.00x (75.1 MiB, `tracemalloc`) is
-  the all-ASCII row, and **7.00x (175.1 MiB) is the worst measured at this
-  cap**, reached by any body carrying one astral character. And two encodings still meet the
+  recorded on the constant rather than left to be discovered. The first is
+  per-request memory, and it is **neither a single multiple of the wire bytes nor
+  a function of the body alone**: up to three terms are live — the transport's
+  buffers at 2x, the parse's peak at 1x/3x/5x by the body's widest code point,
+  and, on refusal paths only, the second string `jsonschema` renders to build its
+  message — and the peak is the **maximum of the parse moment and the render
+  moment** rather than their sum. A charge-refused body at the cap measures
+  3.00x (75.1 MiB, `tracemalloc`) all-ASCII up to 7.00x (175.1 MiB) with one
+  astral character; a body that instead reaches `jsonschema` measures worse on
+  both axes — **114.1 MiB at 38.04x** on only 3,145,848 wire bytes, and
+  ~194–200 MiB (up to 8.00x) at the cap. And two encodings still meet the
   `413` at a landed size the store would accept — C0 controls other than `\b`
   `\t` `\n` `\f` `\r`, which have no remedy because raw C0 is illegal JSON, and
   DEL (U+007F), which has one: send it raw instead of `ensure_ascii`-escaped.
 
 ### Fixed
 
-- **The MCP boundary's rendered-character budget is charged what `repr` actually
-  renders, for every leaf, rather than a string's own length**
+- **The MCP boundary charges every leaf at least the number of characters that
+  leaf contributes to the render, rather than a string's own length**
   ([#669](https://github.com/theurian/theurian/issues/669), SEC-12).
   `MAX_PARAMS_RENDERED_CHARS` (12 MiB) bounds how much render work `jsonschema`
   may be asked to do, and `jsonschema` renders a failing instance with

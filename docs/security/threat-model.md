@@ -1319,45 +1319,96 @@ base-vs-branch point measured by a single harness on both sides (a
 worst at 84.3 s with no gate against 3.0 s under the cap.
 
 Since [#669](https://github.com/theurian/theurian/issues/669) an unbounded
-arrival also carries a recorded per-request cost at the transport itself: the
-SDK buffers a whole body before anything parses it, so one in-flight request at
-`daemon/server.py`'s `MAX_REQUEST_BODY_BYTES` (26,214,400 bytes) holds a
-multiple of its wire bytes in Python heap — and **that multiple is a function of
-the body's widest code point, not of its length.** Two terms compose it, and
-only the first is denominated in bytes the way the cap is. The transport's
-buffers cost **2x the wire bytes whatever the body holds** —
-`RequestBodyLimitMiddleware` accumulates the body into a `bytearray` and
-`request.body()` hands on a `bytes` copy, both live when the parse begins. The
-parse's own peak costs **1x, 3x or 5x**, set by the widest code point: the SDK
-parses with `pydantic_core.from_json(body)` straight from the bytes, PEP 393
-sizes the resulting `str` by its widest member — 1, 2 or 4 bytes per code
-point — so the finished string alone is 1x, 2x or 4x, and above the 1-byte kind
-the parse holds one further wire-byte-sized buffer while it widens. **There is
-one string, not two**: nothing downstream copies it, and
-`jsonrpc_message_adapter.validate_python` peaks at 0.0 MiB and hands back the
-very same object, checked by identity. Measured
-2026-09-15 by `tracemalloc`, one authenticated at-cap POST per row in a fresh
-process: **3.00x (75.1 MiB)** all-ASCII, 3.01x (75.2 MiB) dense U+007F, 5.00x
-(125.1 MiB) with one 2-byte character, and **7.00x (175.1 MiB) with one astral
-character** — the two terms composing to each of them, 2x + 1x, 2x + 3x and
-2x + 5x, with the dense row's extra 0.01x being the charge's own chunked
-transient. That last row is the worst of the four, and **3.00x is the ASCII
-row, which an earlier version of this sentence recorded as though it were
-universal.** What is asserted is those measurements and a model that composes to
-all four of them, not a single multiple of the wire
-bytes. The `ru_maxrss` figures quoted beside these on the constant itself
-answer a different question — a process high-water mark rather than the Python
-heap — and the two are not interchangeable. The 7.00x is inherent to admitting a
-body of this size: both terms are spent before any tool handler runs. What *was*
-this project's own is gone — `mcp/validation.py`'s `_rendered_width` fallback
-reprred a whole leaf, peaking (`tracemalloc`) at 100 MiB on a dense-U+007F leaf and
-400 MiB on the same leaf carrying one emoji, because that repr's own output
-becomes 4 bytes per character. Chunked accumulation with early exit now holds
-that transient under a **320 KB** ceiling (`_CHUNK_CODE_POINTS * 10 * 4`)
-whatever the leaf's width or kind: those two leaves measure 0.04 MiB and
-0.15 MiB. Nothing in this process bounds how many such arrivals there are, the
+arrival also carries a recorded per-request cost at the transport itself, and
+**that cost is neither a single multiple of the wire bytes nor a function of the
+body alone.** Up to three terms are live while one request at
+`daemon/server.py`'s `MAX_REQUEST_BODY_BYTES` (26,214,400 bytes) is in flight,
+and *which* of them exist depends on the path the request takes rather than on
+how big it is:
+
+- **The transport's buffers — 2x the wire bytes, whatever the body holds.**
+  `RequestBodyLimitMiddleware` accumulates the body into a `bytearray` and makes
+  the `bytes` copy itself; Starlette's `request.body()` hands back that same
+  object rather than copying again.
+- **The parse's own peak — 1x, 3x or 5x, set by the body's widest code point.**
+  `pydantic_core.from_json(body)` reads straight from the bytes, and PEP 393
+  sizes the resulting `str` by its widest member — 1, 2 or 4 bytes per code
+  point. Nothing downstream copies it:
+  `jsonrpc_message_adapter.validate_python` peaks at 0.0 MiB and hands back the
+  very same object, checked by identity.
+- **`jsonschema`'s message construction — on refusal paths only.** Every keyword
+  but the two in `mcp/validation.py`'s `_KEYWORDS_THAT_NAME_KEYS` builds its
+  message with `{instance!r}`, so a request that *passes* the charge gate and
+  then fails such a keyword makes `iter_errors` render the instance a second
+  time, at the same PEP 393 width. Bounded by
+  `2 × MAX_PARAMS_RENDERED_CHARS × 4` bytes, **~96 MiB isolated**.
+
+**The peak is a maximum over moments, not a sum**, because the parse's transient
+buffers are freed before `jsonschema` renders anything, so the two never stand
+together:
+
+```text
+peak = max(2*wire + parse_peak,                          # the parse moment
+           2*wire + code_points*kind + 2*rendered*kind)  # the render moment
+```
+
+Three path families follow, and they are the honest unit of this record.
+**(i) Charge-refused shapes** meet `_unbounded` before `iter_errors` is ever
+called, so only the parse moment exists. Measured at this cap by `tracemalloc`,
+one authenticated POST per row in a fresh process: 3.00x (75.1 MiB) all-ASCII,
+3.01x (75.2 MiB) dense U+007F, 5.00x (125.1 MiB) with one 2-byte character,
+7.00x (175.1 MiB) with one astral character — **3.00x being the ASCII row and
+7.00x the worst of those four, neither a bound over all shapes.**
+**(ii) `jsonschema`-answered shapes** carry both moments, and whichever is larger
+wins: *printable* multi-byte text is charged one character per code point, so it
+passes the gate family (i) meets and reaches `iter_errors`. Its worst measured
+instances, round 3, `tracemalloc`, one authenticated POST each:
+
+| Worst by | Peak | The instance that reaches it |
+| :-- | :-- | :-- |
+| ratio | **114.1 MiB = 38.04x** the wire bytes | `"\x7f" * 3,145,717` plus one U+1F600 — only **3,145,848 wire bytes**, charged 12,582,869 and so admitted. Its render moment is 38.00x against a 7.00x parse moment |
+| absolute | **~194–200 MiB, up to 8.00x** | CJK filler plus ASCII plus one astral character, at the cap, saturating the wire bound and the render budget at once |
+
+**(iii) Valid shapes** render nothing, so family (i)'s composition applies with no
+second moment.
+
+Two sentences earlier versions of this paragraph carried are **withdrawn**, and
+family (ii) is the counterexample to each: *"a function of the body's widest code
+point, not of its length"*, and *"those rows are the two terms and nothing
+else"*. The ratio-worst row exceeds every family-(i) ratio five-fold at an eighth
+of the size, so the cost is neither monotone in the body's length nor decided by
+its width alone. The `ru_maxrss` figures quoted beside these on the constant
+itself answer a different question — a process high-water mark rather than the
+Python heap — and the two are not interchangeable. Separately,
+`mcp/validation.py`'s `_rendered_width` fallback once reprred a whole leaf,
+peaking (`tracemalloc`) at 100 MiB on a dense-U+007F leaf and 400 MiB on the same
+leaf carrying one emoji; chunked accumulation with early exit now holds that
+transient to `_CHUNK_CODE_POINTS * (10 + 1) * 4` — **~352 KiB**, two terms
+because the same expression builds both the repr output and the concatenated
+slice it reprs, measured across three readings as **360,548 to 361,156 bytes**,
+worst over a leaf of non-printable astral characters carrying one printable
+astral. An earlier record priced only the repr output and called it 320 KB.
+Nothing in this process bounds how many such arrivals there are, the
 aggregate knob and its figures being on
 [#26's own comment](https://github.com/theurian/theurian/issues/26#issuecomment-5661638879).
+
+**Accepted design decision: the refusal-path render term is T-6's, and is
+deferred with it.** The third term above is bounded — at most
+`2 × MAX_PARAMS_RENDERED_CHARS × 4` bytes, ~200 MiB per request including the
+transport and parse terms — and it is accepted rather than closed, as an
+instance of the per-query deferral this entry already records. The reasons are
+this entry's own: the surface is loopback-bound and bearer-authenticated, so
+reaching it requires the token; nothing about the term discloses content, and
+round 3 measured refusals at 354–376 bytes with no canary on any path; and the
+*aggregate* — the number of concurrent arrivals that multiplies it — is the
+deferral recorded above, unchanged by anything here. **The alternative was
+considered and rejected**: a byte-denominated budget applied *before* validation
+would price every body for a cost only the refusal path spends, so it would
+refuse valid multi-byte bodies that render nothing — precisely the write-intent
+acceptance ADR-0032 sizes for, and the one slice B4 depends on. The reduction
+that does fit is bounding the render at the point it is spent, inside
+`jsonschema`'s message construction rather than ahead of it, and it is filed
+separately as [#696](https://github.com/theurian/theurian/issues/696).
 
 **Accepted design decision: the denial is per-daemon, not per-project.** Four
 concurrent searches on any *one* project refuse `knowledge.search` for every

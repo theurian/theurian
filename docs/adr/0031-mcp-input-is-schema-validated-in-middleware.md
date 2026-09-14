@@ -736,17 +736,21 @@ Still owed, with the milestone that will satisfy it:
 >   memory table, the per-node punctuation cost, the fallback's transient and its
 >   timings. These are round two's re-measurements; the addendum at the end of
 >   this amendment records what they replaced and why.
-> * **Measured 2026-09-15 at `097d754c`, a branch commit** — the two terms the
->   per-request memory model is made of, taken on the call this request path
->   actually parses with. No row of the table moved; only the model that has to
->   explain it.
+> * **Measured 2026-09-15 at `097d754c`, a branch commit** — the transport and
+>   parse terms, taken on the call this request path actually parses with. No row
+>   of the table moved; only the model that has to explain it.
+> * **Measured 2026-09-15 at `286b3d2a`, a branch commit** — round three's:
+>   `jsonschema`'s message-construction term and the family-(ii) worst instances,
+>   the maximum-over-moments composition, and the chunked transient's second
+>   factor. These replaced a model that was missing a term and a ceiling that was
+>   missing a factor; the second addendum at the end says what each was.
 > * **Derived from the live constants rather than measured**, and said so where
 >   it happens: the composed render ceiling, and the worst render the pre-#669
 >   charge admitted at a given cap.
 >
-> Both commits are branch commits of this pull request and not on `main` until
-> it lands — which is why each anchor carries the pull-request qualifier rather
-> than reading as a tree a reader can check out.
+> Every commit named above is a branch commit of this pull request and not on
+> `main` until it lands — which is why each anchor carries the pull-request
+> qualifier rather than reading as a tree a reader can check out.
 > One figure is older than either, and the sentence quoting it says so: the
 > 53,476,811-character reproduction was taken against the interim `2 *` cap this
 > amendment withdrew, not against the cap it ships.
@@ -886,13 +890,15 @@ them.
 
 **What the bound costs per request, and what still bounds nothing.** The SDK
 buffers a whole body before anything parses it, so a multiple of the wire bytes
-is live in Python heap while one at-cap request is in flight — and **the
-multiple is set by the body's widest code point, not by its length.** Two terms
-compose it, and only the first is denominated in bytes the way this cap is:
+is live in Python heap while one at-cap request is in flight — and that multiple
+is **neither a single multiple of the wire bytes nor a function of the body
+alone.** Up to three terms are live, and *which* of them exist depends on the
+path the request takes rather than on how big it is:
 
 - **The transport's buffers — 2x the wire bytes, whatever the body holds.**
-  `RequestBodyLimitMiddleware` accumulates the body into a `bytearray`, and
-  `request.body()` hands on a `bytes` copy; both are live when the parse begins.
+  `RequestBodyLimitMiddleware` accumulates the body into a `bytearray` and makes
+  the `bytes` copy itself; Starlette's `request.body()` joins that single chunk
+  and hands back the very same object rather than copying again.
 - **The parse's own peak — 1x, 3x or 5x, set by the widest code point.** The SDK
   parses with `pydantic_core.from_json(body)` (`streamable_http.py`), straight
   from the bytes, and PEP 393 sizes the resulting `str` by its widest member — 1,
@@ -901,8 +907,26 @@ compose it, and only the first is denominated in bytes the way this cap is:
   while it widens. **There is one string, not two**: nothing downstream copies
   it, and `jsonrpc_message_adapter.validate_python` peaks at 0.0 MiB and hands
   back the very same object, checked by identity.
+- **`jsonschema`'s message construction — on refusal paths only.** Every keyword
+  but the two in `_KEYWORDS_THAT_NAME_KEYS` builds its message with
+  `{instance!r}`, so a request that *passes* the charge gate and then fails such
+  a keyword makes `iter_errors` render the instance a second time, at the same
+  width. Bounded by `2 × MAX_PARAMS_RENDERED_CHARS × 4` bytes, **~96 MiB
+  isolated**, and uncorrelated with the size of the request that triggers it.
 
-One authenticated at-cap POST per row, one fresh process each:
+**The peak is a maximum over moments, not a sum**, because the parse's transient
+buffers are freed before `jsonschema` renders anything, so the two never stand
+together:
+
+```text
+peak = max(2*wire + parse_peak,                          # the parse moment
+           2*wire + code_points*kind + 2*rendered*kind)  # the render moment
+```
+
+Three path families follow, and they are the honest unit of this record.
+**(i) Charge-refused shapes** meet `_unbounded` before `iter_errors` is ever
+called, so only the parse moment exists. One authenticated at-cap POST per row,
+one fresh process each:
 
 | Body at 26,214,400 wire bytes | `tracemalloc` peak | vs wire bytes | `ru_maxrss` |
 | :-- | --: | --: | --: |
@@ -911,18 +935,38 @@ One authenticated at-cap POST per row, one fresh process each:
 | U+007F + one 2-byte character | 125.1 MiB | 5.00x | ~25 MiB |
 | **U+007F + one astral character** | **175.1 MiB** | **7.00x** | ~75 MiB |
 
-**The two terms compose to every one of those rows**: 2x + 1x = 3.00x for both
-1-byte-kind bodies, 2x + 3x = 5.00x with a 2-byte character, 2x + 5x = 7.00x
-with an astral one, the dense-U+007F row's extra 0.01x being the charge's own
-chunked transient. Composing on all four is what makes it a model rather than an
-arithmetic that fits one row.
+**The parse moment reproduces every one of those rows**: 2x + 1x = 3.00x for
+both 1-byte-kind bodies, 2x + 3x = 5.00x with a 2-byte character, 2x + 5x =
+7.00x with an astral one, the dense-U+007F row's extra 0.01x being the charge's
+own chunked transient. Holding on all four is what makes it a model rather than
+an arithmetic that fits one row.
 
-**The worst of the four is 7.00x, and 3.00x is the ASCII row** — an earlier
-draft of this paragraph recorded the ASCII row as though it bounded every body.
-What the rows assert is the measurement and what the model asserts is the
-composition; neither asserts a single multiple of
-the wire bytes. The two columns are named because they answer different
-questions and disagree by
+**(ii) `jsonschema`-answered shapes** carry both moments, and whichever is larger
+wins. A body of *printable* multi-byte text is charged one character per code
+point, so it passes the gate the family-(i) rows meet and reaches `iter_errors`.
+Round-3 measurements, `tracemalloc`, one authenticated POST each:
+
+| Worst by | Peak | The instance that reaches it |
+| :-- | :-- | :-- |
+| ratio | **114.1 MiB = 38.04x** the wire bytes | `"\x7f" * 3,145,717` plus one U+1F600 — only **3,145,848 wire bytes**, charged 12,582,869, just under the budget and therefore admitted. Its render moment is 38.00x against a 7.00x parse moment, so the render decides it |
+| absolute | **~194–200 MiB, up to 8.00x** | CJK filler plus ASCII plus one astral character, at the cap, saturating the wire bound and the render budget at once |
+
+**(iii) Valid shapes** render nothing, so family (i)'s composition applies with no
+second moment.
+
+**The moments are not added.** Presenting the three terms additively over-states
+a printable 2-byte body by 1.88x the wire bytes — 7.00x predicted against 5.12x
+measured — by charging it for buffers already freed; and the `max` is
+load-bearing rather than a formality, since printable CJK peaks at its *parse*
+moment, 5.00x against a 4.00x render moment. Different shapes' peaks are decided
+by different terms, and neither term alone is the model.
+
+**The worst of family (i) is 7.00x, and 3.00x is the ASCII row** — an earlier
+draft of this paragraph recorded the ASCII row as though it bounded every body,
+and a later one recorded family (i)'s 7.00x the same way. Both family-(ii) rows
+exceed 175.1 MiB, and the ratio-worst exceeds every ratio in that table
+five-fold at an eighth of the size. The two columns are named because they
+answer different questions and disagree by
 design: `tracemalloc` is the Python heap and reproduces to the tenth of a MiB
 across runs, while `ru_maxrss` is a process high-water mark that moves with
 whatever the process already touched, which is why it is quoted only to the MiB
@@ -931,13 +975,17 @@ than the ASCII row there while `tracemalloc` reads half again higher. Read the
 `tracemalloc` column for what a request costs; `ru_maxrss` answers what the
 process peaked at, which is not the same question.
 
-All four rows are those two terms and nothing else, and the 7.00x is inherent to
-admitting a body of this size: both are spent before any tool handler runs.
-Charging the render used to add a third on top of them — the fallback reprred a
-whole leaf, peaking at 100 MiB (dense U+007F) to 400 MiB (the same leaf with one
-emoji), `tracemalloc` — and `_chunked_width` removed it: those two leaves now
-peak at 0.04 MiB and 0.15 MiB against a **320 KB** ceiling
-(`_CHUNK_CODE_POINTS * 10 * 4`) that holds whatever the leaf's width or kind.
+Two sentences earlier drafts of this paragraph carried are **withdrawn**, and
+family (ii) is the counterexample to each: *"the multiple is set by the body's
+widest code point, not by its length"*, and *"all four rows are those two terms
+and nothing else"*. The charge's own fallback is a separate cost again: it once
+reprred a whole leaf, peaking at 100 MiB (dense U+007F) to 400 MiB (the same leaf
+with one emoji), `tracemalloc`, and `_chunked_width` bounded it to
+`_CHUNK_CODE_POINTS * (10 + 1) * 4` — **~352 KiB**, two terms because the same
+expression builds the repr output *and* the concatenated slice it reprs, measured
+across three readings as **360,548 to 361,156 bytes**, worst over a leaf of
+non-printable astral characters carrying one printable astral. An earlier record
+priced only the repr output and called it 320 KB.
 
 The derivation also couples this daemon's per-request memory ceiling to a
 *filesystem* constant — raising `MAX_SOURCE_FILE_BYTES` for a reason about files
@@ -1004,3 +1052,37 @@ each retired figure above — the ASCII-only memory row, the universal charge
 claim, and the interim cap's three — may appear only with the attribution that
 marks it retired, so none of them can quietly come back as a live one. A revert
 of these corrections is no longer silent.
+
+**Addendum, 2026-09-15 — round three: the same class, one surface further in.**
+Round two's class was *a measurement over a favourable instance, written down as
+a bound*. Round three found it three more times, and the worst face was produced
+by the stage that was closing it:
+
+1. **The memory model was missing the term `jsonschema` itself spends.** The
+   render budget is character-denominated, so a body of *printable* multi-byte
+   text is charged one character per code point, passes the charge gate, and
+   reaches `iter_errors` — which renders the instance a second time at PEP 393
+   width. A legal authenticated request of 3,145,848 wire bytes peaks at
+   **114.1 MiB, 38.04x**, where the model then recorded predicted 7.00x. The
+   model above is now three terms composed as a **maximum over moments**, with
+   family (ii) and its two worst instances written out. The term had in fact been
+   measured while the two-term model was being written, recorded as an aside, and
+   the pin steered onto a fixture where the two-term model held — which is the
+   class's own mechanism, executed by the stage closing it.
+2. **The chunked transient's ceiling was one term of two.**
+   `_CHUNK_CODE_POINTS * 10 * 4` priced the repr output and omitted the
+   concatenated slice the same expression builds. The real ceiling is
+   `(10 + 1) * 4` per code point, **~352 KiB**, measured 360,548–361,156 bytes.
+3. **The retired charge universal came back in a new dress** — in the CHANGELOG's
+   own `Fixed` heading, and in the docstring of the module whose job is refusing
+   it. A verbatim key cannot catch a reworded sentence, so
+   `test_sec12_retired_claims.py` now carries a subject-plus-phrasing key that
+   does, and runs it over the two production docstrings as well as these records.
+
+**What terminates the class is structural, not another round of faces.** No
+cost or memory universal survives in a #669 record unless it is recomputed from
+live constants by a pin, driven at a named worst instance by a pin, or rewritten
+as an enumeration of measured rows with their instruments and instances named.
+The three paragraphs above are the third form; the falsified universals are kept
+as attributed retired claims rather than deleted, so a reader meets the
+correction instead of a gap.

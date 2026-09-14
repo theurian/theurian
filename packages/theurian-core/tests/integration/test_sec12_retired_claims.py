@@ -541,20 +541,7 @@ def _reworded_universal(text: str) -> list[str]:
         "ADR-0031 Amendment 1",
         "daemon/server.py's MAX_REQUEST_BODY_BYTES",
         "mcp/validation.py's MAX_PARAMS_RENDERED_CHARS",
-        pytest.param(
-            "CHANGELOG #669 entries",
-            marks=pytest.mark.xfail(
-                reason=(
-                    "the CHANGELOG's own `Fixed` heading restates the retired universal in a "
-                    "new dress -- 'is charged what `repr` actually renders, for every leaf' -- "
-                    "which the verbatim key walks past and this one catches. The heading is a "
-                    "record, fixed in the docs stage of PR #685's round 3; this parameter "
-                    "turns XPASS the moment it lands and `strict` makes that a failure, so "
-                    "the marker cannot outlive the defect."
-                ),
-                strict=True,
-            ),
-        ),
+        "CHANGELOG #669 entries",
     ],
 )
 def test_no_record_restates_the_retired_universal_in_a_new_dress(record: str) -> None:
