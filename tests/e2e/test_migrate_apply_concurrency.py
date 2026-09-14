@@ -108,6 +108,17 @@ def _init_project(root: Path, env: dict[str, str]) -> None:
     (root / ".theurian/knowledge/architecture").mkdir(parents=True, exist_ok=True)
     (root / ".theurian/knowledge/architecture/concurrency-policy.md").write_text(BODY)
     (root / f".theurian/migrations/{MIGRATION_ID}-concurrency.yaml").write_text(MIGRATION)
+    # ADR-0034: `migrate apply` refuses a migration that is not committed (tracked
+    # and byte-identical to HEAD), so commit it here -- once, before the concurrent
+    # applies -- which is what this fixture's docstring already promises. Identity
+    # and `commit.gpgsign=false` are configured above; a behavioural no-op today.
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)  # noqa: S607
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "commit the migration"],  # noqa: S607
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
 
 
 def _apply(root: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:

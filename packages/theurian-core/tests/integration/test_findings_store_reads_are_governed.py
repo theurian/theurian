@@ -73,6 +73,7 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
+from git_harness import commit_migrations
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
@@ -171,6 +172,10 @@ LANDED = FindingLoad(
 
 
 def _run(*args: str) -> None:
+    if args[:2] == ("migrate", "apply"):
+        # ADR-0034: commit the migration (tracked, byte-identical to HEAD) before
+        # apply; a behavioural no-op today, green once the committed-check lands.
+        commit_migrations()
     result = runner.invoke(app, [*args, "--json"], catch_exceptions=False)
     assert result.exit_code == 0, result.stdout + (result.stderr or "")
 

@@ -29,6 +29,7 @@ from typing import Any
 import pytest
 import typer
 import yaml
+from git_harness import commit_migrations
 from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
 from typer.testing import CliRunner
 
@@ -109,6 +110,13 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
 
 
 def _invoke(*args: str) -> tuple[int, dict[str, Any]]:
+    if args[:2] == ("migrate", "apply"):
+        # ADR-0034: `migrate apply` refuses a migration that is not committed
+        # (tracked and byte-identical to HEAD). `propose accept` moves the
+        # migration into `.theurian/migrations/`; committing it here -- the
+        # `project` fixture chdirs into the tree -- is a behavioural no-op today
+        # and keeps these applies green once the committed-check lands.
+        commit_migrations()
     result = runner.invoke(app, [*args, "--json"], catch_exceptions=False)
     stream = result.stdout if result.exit_code == 0 else (result.stderr or result.stdout)
     return result.exit_code, json.loads(stream) if stream.strip() else {}

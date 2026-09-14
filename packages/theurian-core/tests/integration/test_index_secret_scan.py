@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from git_harness import commit_migrations
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
@@ -204,6 +205,10 @@ def _in(root: Path, *args: str) -> tuple[int, dict[str, Any]]:
     monkey = pytest.MonkeyPatch()
     monkey.chdir(root)
     try:
+        if args[:2] == ("migrate", "apply"):
+            # ADR-0034: commit the migration (tracked, byte-identical to HEAD) before
+            # apply; a behavioural no-op today, green once the committed-check lands.
+            commit_migrations()
         result = runner.invoke(app, [*args, "--json"], catch_exceptions=False)
     finally:
         monkey.undo()
@@ -221,6 +226,10 @@ def _streams(root: Path, *args: str) -> str:
     monkey = pytest.MonkeyPatch()
     monkey.chdir(root)
     try:
+        if args[:2] == ("migrate", "apply"):
+            # ADR-0034: commit the migration (tracked, byte-identical to HEAD) before
+            # apply; a behavioural no-op today, green once the committed-check lands.
+            commit_migrations()
         result = runner.invoke(app, list(args), catch_exceptions=False)
     finally:
         monkey.undo()

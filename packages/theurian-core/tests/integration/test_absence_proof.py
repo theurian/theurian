@@ -296,6 +296,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Final
 
 import pytest
+from git_harness import commit_migrations
 from hypothesis import given, seed, settings
 from hypothesis import strategies as st
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
@@ -2568,6 +2569,10 @@ def _shipped_cli(
 ) -> dict[str, Any]:
     monkeypatch.setenv("THEURIAN_DATA_DIR", str(data_dir))
     monkeypatch.chdir(root)
+    if args[:2] == ("migrate", "apply"):
+        # ADR-0034: commit the migration (tracked, byte-identical to HEAD) before
+        # apply; a behavioural no-op today, green once the committed-check lands.
+        commit_migrations()
     result = _SHIPPED_CLI.invoke(app, [*args, "--json"], catch_exceptions=False)
     assert result.exit_code == 0, f"{' '.join(args)}: {result.output}"
     payload: dict[str, Any] = json.loads(result.output)

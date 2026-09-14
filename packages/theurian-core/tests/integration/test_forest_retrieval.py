@@ -50,6 +50,7 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 import pytest
+from git_harness import commit_migrations
 from jsonschema import Draft202012Validator
 from migration_fixtures import body_pin
 from referencing import Registry, Resource
@@ -191,6 +192,10 @@ operations:
 def _cli(*args: str) -> None:
     from theurian.cli.main import app
 
+    if args[:2] == ("migrate", "apply"):
+        # ADR-0034: commit the migration (tracked, byte-identical to HEAD) before
+        # apply; a behavioural no-op today, green once the committed-check lands.
+        commit_migrations()
     result = runner.invoke(app, [*args, "--json"], catch_exceptions=False)
     assert result.exit_code == 0, result.stdout + (result.stderr or "")
 

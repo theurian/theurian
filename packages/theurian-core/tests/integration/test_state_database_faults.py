@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Final
 
 import pytest
+from git_harness import commit_migrations
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
@@ -149,6 +150,7 @@ def applied(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     (root / ".theurian/knowledge/architecture/state-faults.md").write_text(BODY)
     (root / f".theurian/migrations/{MIGRATION_ID}-state-faults.yaml").write_text(MIGRATION)
 
+    commit_migrations()  # ADR-0034: committed before apply (no-op today)
     result = runner.invoke(app, ["migrate", "apply", "--json"], catch_exceptions=False)
     assert result.exit_code == 0, result.stderr
     yield root

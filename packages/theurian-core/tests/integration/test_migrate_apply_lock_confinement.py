@@ -50,6 +50,7 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
+from git_harness import commit_migrations
 from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
@@ -194,6 +195,7 @@ def test_create_database_and_write_active_state_each_run_only_while_the_lock_is_
     monkeypatch.setattr("theurian.cli.commands.create_database", probed_create_database)
     monkeypatch.setattr("theurian.cli.commands.write_active_state", probed_write_active_state)
 
+    commit_migrations()  # ADR-0034: committed before apply (no-op today)
     result = runner.invoke(app, ["migrate", "apply", "--json"], catch_exceptions=False)
 
     assert result.exit_code == 0, result.stderr
@@ -231,6 +233,7 @@ def test_provenance_is_recorded_before_the_pointer_publishes(
 
     monkeypatch.setattr("theurian.cli.commands.write_active_state", probed_write_active_state)
 
+    commit_migrations()  # ADR-0034: committed before apply (no-op today)
     result = runner.invoke(app, ["migrate", "apply", "--json"], catch_exceptions=False)
 
     assert result.exit_code == 0, result.stderr
@@ -263,6 +266,7 @@ def test_a_failed_create_database_leaves_no_partial_file_behind(
         "theurian.infrastructure.sqlite.connection.DDL", "THIS IS NOT VALID SQL AT ALL;"
     )
 
+    commit_migrations()  # ADR-0034: committed before apply (no-op today)
     result = runner.invoke(app, ["migrate", "apply", "--json"], catch_exceptions=False)
 
     assert result.exit_code == EXIT_STATE_ERROR
@@ -301,6 +305,7 @@ def test_a_directory_at_the_database_path_fails_cleanly_and_cleans_up(project: P
     database_path = paths.state / f"theurian-state-{state_hash[:12]}.sqlite"
     database_path.mkdir(parents=True)
 
+    commit_migrations()  # ADR-0034: committed before apply (no-op today)
     result = runner.invoke(app, ["migrate", "apply", "--json"], catch_exceptions=False)
 
     assert result.exit_code == EXIT_STATE_ERROR
@@ -385,6 +390,7 @@ def test_a_lock_file_symlinked_onto_a_file_in_the_tree_never_truncates_that_file
     lock.unlink(missing_ok=True)
     lock.symlink_to(Path("../../runbook.md"))
 
+    commit_migrations()  # ADR-0034: committed before apply (no-op today)
     result = runner.invoke(app, ["migrate", "apply", "--json"])
 
     assert victim.read_bytes() == before, (
@@ -454,6 +460,7 @@ def test_an_ordinary_lock_file_is_still_taken_and_the_apply_succeeds(
     lock = _lock_path(project)
     assert not lock.exists(), "the absent-lock arm needs the lock not to exist yet"
 
+    commit_migrations()  # ADR-0034: committed before apply (no-op today)
     first = runner.invoke(app, ["migrate", "apply", "--json"])
 
     assert first.exit_code == 0, first.stderr
@@ -470,6 +477,7 @@ def test_an_ordinary_lock_file_is_still_taken_and_the_apply_succeeds(
         f"including its own holder"
     )
 
+    commit_migrations()  # ADR-0034: committed before apply (no-op today)
     second = runner.invoke(app, ["migrate", "apply", "--json"])
 
     assert second.exit_code == 0, second.stderr
@@ -581,6 +589,7 @@ def test_the_published_remedy_for_an_escaping_runtime_link_is_safe_when_executed
     runtime = _lock_path(project).parent
     _plant_an_escaping_runtime_link(runtime, outside)
 
+    commit_migrations()  # ADR-0034: committed before apply (no-op today)
     refused = runner.invoke(app, ["migrate", "apply", "--json"])
 
     assert refused.exit_code == EXIT_STATE_ERROR, refused.stdout + (refused.stderr or "")
@@ -622,6 +631,7 @@ def test_the_published_remedy_for_an_escaping_runtime_link_is_safe_when_executed
             f"Before: {sorted(before)}; after: {sorted(after)}"
         )
 
+    commit_migrations()  # ADR-0034: committed before apply (no-op today)
     retried = runner.invoke(app, ["migrate", "apply", "--json"])
 
     assert retried.exit_code == 0, (
@@ -655,6 +665,7 @@ def test_the_remedy_never_renders_a_path_with_a_trailing_slash(
     outside.mkdir()
     _plant_an_escaping_runtime_link(_lock_path(project).parent, outside)
 
+    commit_migrations()  # ADR-0034: committed before apply (no-op today)
     refused = runner.invoke(app, ["migrate", "apply", "--json"])
 
     assert refused.exit_code == EXIT_STATE_ERROR, refused.stdout + (refused.stderr or "")
@@ -683,6 +694,7 @@ def test_a_directory_at_the_active_pointer_temp_path_fails_cleanly(project: Path
     temporary = paths.active_pointer.with_suffix(".json.tmp")
     temporary.mkdir(parents=True)
 
+    commit_migrations()  # ADR-0034: committed before apply (no-op today)
     result = runner.invoke(app, ["migrate", "apply", "--json"], catch_exceptions=False)
 
     assert result.exit_code == EXIT_STATE_ERROR
@@ -1093,6 +1105,7 @@ def test_a_lock_the_open_cannot_take_is_refused_as_a_document(
             # refuses nothing.
             pytest.skip(f"this filesystem accepts the lock over {artefact.label}")
 
+        commit_migrations()  # ADR-0034: committed before apply (no-op today)
         result = runner.invoke(app, ["migrate", "apply", "--json"])
 
         escaped = None if isinstance(result.exception, SystemExit) else result.exception
@@ -1197,6 +1210,7 @@ def _apply_once(project: Path) -> Path:
     behaviour.
     """
     _write_migration(project)
+    commit_migrations()  # ADR-0034: committed before apply (no-op today)
     applied = runner.invoke(app, ["migrate", "apply", "--json"], catch_exceptions=False)
     assert applied.exit_code == 0, applied.stderr
     state_hash = str(json.loads(applied.stdout)["stateHash"])
@@ -1260,6 +1274,7 @@ def test_a_fault_inside_the_transaction_leaves_the_provenanced_state_untouched(
 
     monkeypatch.setattr("theurian.cli.commands.apply_migration_set", raise_inside_the_transaction)
 
+    commit_migrations()  # ADR-0034: committed before apply (no-op today)
     result = runner.invoke(app, ["migrate", "apply", "--json"], catch_exceptions=False)
 
     assert created_flags == [False], (
@@ -1296,6 +1311,7 @@ def test_a_real_write_fault_inside_the_transaction_leaves_the_state_untouched(
     before = database.read_bytes()
     database.chmod(0o444)
     try:
+        commit_migrations()  # ADR-0034: committed before apply (no-op today)
         result = runner.invoke(app, ["migrate", "apply", "--json"], catch_exceptions=False)
 
         assert result.exit_code == EXIT_STATE_ERROR, result.stdout + (result.stderr or "")

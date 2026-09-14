@@ -57,6 +57,7 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
+from git_harness import commit_migrations
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
@@ -217,6 +218,11 @@ def _write_corpus(root: Path, docs: Sequence[Doc]) -> None:
 
 
 def _in(root: Path, *args: str) -> tuple[int, dict[str, Any]]:
+    if args[:2] == ("migrate", "apply"):
+        # ADR-0034: `migrate apply` refuses a migration that is not committed
+        # (tracked and byte-identical to HEAD). Committing it first is a
+        # behavioural no-op today and keeps this setup green once the check lands.
+        commit_migrations(root)
     monkey = pytest.MonkeyPatch()
     monkey.chdir(root)
     try:

@@ -36,6 +36,7 @@ from typing import Any, Final
 
 import pytest
 from fakes.setup import FakeMcpConfig, FakeService
+from git_harness import commit_migrations
 from migration_fixtures import body_pin
 from setup_migrations import state_hash_from_the_loader, unchecked_migrations
 from typer.testing import CliRunner
@@ -161,6 +162,10 @@ class Ran:
 
 
 def _run(*args: str) -> Ran:
+    if args[:2] == ("migrate", "apply"):
+        # ADR-0034: commit the migration (tracked, byte-identical to HEAD) before
+        # apply; a behavioural no-op today, green once the committed-check lands.
+        commit_migrations()
     result = runner.invoke(app, [*args, "--json"])
     escaped = result.exception
     if isinstance(escaped, SystemExit):

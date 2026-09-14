@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Final
 
 import pytest
+from git_harness import commit_migrations
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
@@ -134,6 +135,7 @@ def built(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     (root / ".theurian/knowledge/architecture/bounds.md").write_text(BODY)
     (root / f".theurian/migrations/{MIGRATION_ID}-bounds.yaml").write_text(MIGRATION)
 
+    commit_migrations()  # ADR-0034: committed before apply (no-op today)
     applied = runner.invoke(app, ["migrate", "apply", "--json"], catch_exceptions=False)
     assert applied.exit_code == 0, applied.stderr
     indexed = runner.invoke(app, ["index", "build", "--json"], catch_exceptions=False)

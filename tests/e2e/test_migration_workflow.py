@@ -89,8 +89,24 @@ def project(tmp_path: Path) -> Iterator[Path]:
             os.environ["THEURIAN_DATA_DIR"] = previous
 
 
+def _commit_migrations(root: Path) -> None:
+    """Commit the migration so ``migrate apply`` accepts it (ADR-0034): tracked
+    and byte-identical to ``HEAD``. A behavioural no-op today -- the apply still
+    succeeds -- that keeps this workflow green once the committed-check lands.
+    """
+    subprocess.run(["git", "add", "-A"], cwd=root, capture_output=True, check=False)  # noqa: S607
+    subprocess.run(
+        ["git", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "apply"],  # noqa: S607
+        cwd=root,
+        capture_output=True,
+        check=True,
+    )
+
+
 def _run(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     assert THEURIAN is not None
+    if args[:2] == ("migrate", "apply"):
+        _commit_migrations(root)
     return subprocess.run(  # noqa: S603 - fixed argv, no shell
         [THEURIAN, *args],
         cwd=root,

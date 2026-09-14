@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from git_harness import commit_migrations
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
@@ -160,12 +161,20 @@ def _write(root: Path, migration_id: str, body: str) -> None:
 
 
 def _run(*args: str) -> None:
+    if args[:2] == ("migrate", "apply"):
+        # ADR-0034: commit the migration (tracked, byte-identical to HEAD) before
+        # apply; a behavioural no-op today, green once the committed-check lands.
+        commit_migrations()
     result = runner.invoke(app, [*args, "--json"], catch_exceptions=False)
     assert result.exit_code == 0, result.stdout + (result.stderr or "")
 
 
 def _run_failing(*args: str) -> dict[str, str]:
     """Invoke a command that must refuse, and return the report a user reads."""
+    if args[:2] == ("migrate", "apply"):
+        # ADR-0034: commit the migration (tracked, byte-identical to HEAD) before
+        # apply; a behavioural no-op today, green once the committed-check lands.
+        commit_migrations()
     result = runner.invoke(app, [*args, "--json"], catch_exceptions=False)
     assert result.exit_code == EXIT_STATE_ERROR, (
         f"`theurian {' '.join(args)}` exited {result.exit_code}: {result.stdout}"
@@ -182,10 +191,18 @@ def _apply_whatever_it_does(*args: str) -> None:
     a build that refuses for some unrelated reason would then satisfy them all
     without the property underneath ever being read.
     """
+    if args[:2] == ("migrate", "apply"):
+        # ADR-0034: commit the migration (tracked, byte-identical to HEAD) before
+        # apply; a behavioural no-op today, green once the committed-check lands.
+        commit_migrations()
     runner.invoke(app, [*args, "--json"], catch_exceptions=False)
 
 
 def _json(*args: str) -> dict[str, Any]:
+    if args[:2] == ("migrate", "apply"):
+        # ADR-0034: commit the migration (tracked, byte-identical to HEAD) before
+        # apply; a behavioural no-op today, green once the committed-check lands.
+        commit_migrations()
     result = runner.invoke(app, [*args, "--json"], catch_exceptions=False)
     assert result.exit_code == 0, result.stdout + (result.stderr or "")
     payload: dict[str, Any] = json.loads(result.stdout)

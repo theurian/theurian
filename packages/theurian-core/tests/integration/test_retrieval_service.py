@@ -18,6 +18,7 @@ from typing import Any, final
 
 import pytest
 from fakes import truncating, whole
+from git_harness import commit_migrations
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
@@ -199,6 +200,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
         _migration(1, "architecture.cache", "cache.md", "Caching policy", CACHE_BODY)
     )
     assert runner.invoke(app, ["project", "register", "--json"]).exit_code == 0
+    commit_migrations()  # ADR-0034: committed before apply (no-op today)
     assert runner.invoke(app, ["migrate", "apply", "--json"]).exit_code == 0
     yield root
 
@@ -215,6 +217,7 @@ def with_a_long_document(project: Path) -> Path:
     (project / ".theurian/migrations/01K1CAAAAA01234567890ABCDE-playbook.yaml").write_text(
         _migration(2, "architecture.playbook", "playbook.md", "Operations playbook", PLAYBOOK_BODY)
     )
+    commit_migrations()  # ADR-0034: committed before apply (no-op today)
     assert runner.invoke(app, ["migrate", "apply", "--json"]).exit_code == 0
     return project
 
@@ -935,6 +938,7 @@ def empty_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.chdir(root)
     assert runner.invoke(app, ["init", "--json"]).exit_code == 0
     assert runner.invoke(app, ["project", "register", "--json"]).exit_code == 0
+    commit_migrations()  # ADR-0034: committed before apply (no-op today)
     assert runner.invoke(app, ["migrate", "apply", "--json"]).exit_code == 0
     return root
 
@@ -1158,6 +1162,7 @@ operations:
     reason: superseded by the edge cache design
 """
     )
+    commit_migrations()  # ADR-0034: committed before apply (no-op today)
     assert runner.invoke(app, ["migrate", "apply", "--json"]).exit_code == 0
 
     index_path = project / ".theurian/state/theurian-index-01K1DXAAAA.sqlite"
@@ -1268,6 +1273,7 @@ def _retire_after_the_build(project: Path, item: str) -> None:
     (project / ".theurian/migrations/01K1EAAAAA01234567890ABCDE-retire.yaml").write_text(
         DEPRECATE_MIGRATION.format(item=item)
     )
+    commit_migrations()  # ADR-0034: committed before apply (no-op today)
     assert runner.invoke(app, ["migrate", "apply", "--json"]).exit_code == 0
 
 
@@ -1997,6 +2003,7 @@ def _probe_corpus(
             f"Deployment window {number}",
             NOISE_BODY.format(number=number),
         )
+    commit_migrations()  # ADR-0034: committed before apply (no-op today)
     assert runner.invoke(app, ["migrate", "apply", "--json"]).exit_code == 0
 
     # `STAAAA`, not `STALEA`: Crockford base32 has no L, and the fixture guard in
@@ -2006,6 +2013,7 @@ def _probe_corpus(
     (project / ".theurian/migrations/01K1R0AAAA01234567890ABCDE-retire.yaml").write_text(
         RETIRE_INCIDENT
     )
+    commit_migrations()  # ADR-0034: committed before apply (no-op today)
     assert runner.invoke(app, ["migrate", "apply", "--json"]).exit_code == 0
 
     fresh = _build_probe_index(project, "01K1FRESHA", "01K1FRESHA01234567890ABCDE")

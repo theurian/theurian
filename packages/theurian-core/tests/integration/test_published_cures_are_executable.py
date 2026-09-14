@@ -77,6 +77,7 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
+from git_harness import commit_migrations
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
@@ -277,6 +278,10 @@ def _git(root: Path, *args: str) -> None:
 def _cli(root: Path, *args: str) -> None:
     """Run one setup command for the corpus, and require it to succeed."""
     with chdir(root):
+        if args[:2] == ("migrate", "apply"):
+            # ADR-0034: commit the migration (tracked, byte-identical to HEAD) before
+            # apply; a behavioural no-op today, green once the committed-check lands.
+            commit_migrations()
         result = runner.invoke(app, [*args, "--json"], catch_exceptions=False)
     assert result.exit_code == 0, (
         f"building the corpus failed at `{' '.join(args)}`: {result.stdout}"

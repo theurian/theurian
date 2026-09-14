@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from git_harness import commit_migrations
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
@@ -142,6 +143,10 @@ def _at(root: Path, data_dir: Path) -> Iterator[None]:
 
 def _cli(root: Path, data_dir: Path, *args: str) -> None:
     with _at(root, data_dir):
+        if args[:2] == ("migrate", "apply"):
+            # ADR-0034: commit the migration (tracked, byte-identical to HEAD) before
+            # apply; a behavioural no-op today, green once the committed-check lands.
+            commit_migrations()
         result = runner.invoke(app, [*args, "--json"], catch_exceptions=False)
     assert result.exit_code == 0, f"`theurian {' '.join(args)}` failed: {result.output}"
 
@@ -785,6 +790,7 @@ def test_migrate_apply_does_not_launder_a_doctored_index_via_withdrawal_purge(
     registry = _register(victim, victim_data)
 
     with _at(victim, victim_data):
+        commit_migrations()  # ADR-0034: committed before apply (no-op today)
         applied = runner.invoke(app, ["migrate", "apply", "--json"], catch_exceptions=False)
     assert applied.exit_code == 0, applied.output
     purge = json.loads(applied.output)["indexPurge"]

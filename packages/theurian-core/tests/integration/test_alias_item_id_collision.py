@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from git_harness import commit_migrations
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
@@ -237,12 +238,20 @@ def registry(tmp_path: Path) -> ProjectRegistry:
 
 def _run(*args: str) -> None:
     """A command that must succeed. Its exit 0 is the assertion (test 2, 6)."""
+    if args[:2] == ("migrate", "apply"):
+        # ADR-0034: commit the migration (tracked, byte-identical to HEAD) before
+        # apply; a behavioural no-op today, green once the committed-check lands.
+        commit_migrations()
     result = runner.invoke(app, [*args, "--json"], catch_exceptions=False)
     assert result.exit_code == 0, result.stdout + (result.stderr or "")
 
 
 def _run_failing(*args: str) -> dict[str, str]:
     """A command that must refuse; returns the ``{error, remedy}`` a user reads."""
+    if args[:2] == ("migrate", "apply"):
+        # ADR-0034: commit the migration (tracked, byte-identical to HEAD) before
+        # apply; a behavioural no-op today, green once the committed-check lands.
+        commit_migrations()
     result = runner.invoke(app, [*args, "--json"], catch_exceptions=False)
     assert result.exit_code == EXIT_STATE_ERROR, (
         f"`theurian {' '.join(args)}` exited {result.exit_code}: {result.stdout}"
@@ -252,6 +261,10 @@ def _run_failing(*args: str) -> dict[str, str]:
 
 
 def _json(*args: str) -> dict[str, Any]:
+    if args[:2] == ("migrate", "apply"):
+        # ADR-0034: commit the migration (tracked, byte-identical to HEAD) before
+        # apply; a behavioural no-op today, green once the committed-check lands.
+        commit_migrations()
     result = runner.invoke(app, [*args, "--json"], catch_exceptions=False)
     assert result.exit_code == 0, result.stdout + (result.stderr or "")
     payload: dict[str, Any] = json.loads(result.stdout)
