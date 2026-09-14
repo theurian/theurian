@@ -646,3 +646,51 @@ def test_a_surrogate_cannot_be_filed_as_a_wire_representative() -> None:
 
     assert "U+D800" in str(caught.value), str(caught.value)
     assert "UTF-8 carries no surrogate" in str(caught.value), str(caught.value)
+
+
+def test_no_two_rows_record_the_same_pair_of_factors() -> None:
+    """RED means a boundary in the partition stopped being observable.
+
+    The exhaustiveness arms above ask, for each class, whether every member
+    measures the row's factors. They cannot ask whether the *boundary* between
+    two classes is in the right place when both sides record the same pair: move
+    the line between ``json_escapable`` and ``short_control_escape`` -- both
+    ``(2, 2)`` -- and every member still measures its row's factors, because the
+    rows are indistinguishable by what they record.
+
+    So this arm does not assert that there are no collisions -- there are two,
+    and the point is that both are *named*, with what covers each written down:
+
+    * ``json_escapable`` / ``short_control_escape``, both ``(2, 2)``. Same wire
+      cost, different reason: JSON spells ``"`` and ``\\`` one way and the five
+      short control escapes another. Nothing measurable separates them, and
+      nothing needs to -- they are one wire class split for readability.
+    * ``two_byte`` / ``astral``, both ``(3, 1)``. This one matters, and it is the
+      boundary a review mutation went through: filing a CJK character in the
+      ``astral`` row left both rows' factors correct and took four-byte text out
+      of the population entirely. What catches it is not the factors but
+      :func:`test_every_representative_lands_as_the_byte_count_its_class_name_asserts`
+      and :func:`test_every_representative_sits_in_the_range_its_class_name_describes`
+      -- the arms keyed on UTF-8 length rather than on cost. This collision is
+      why those arms exist rather than being belt-and-braces.
+
+    A collision that *appears* needs the same treatment: someone has to say which
+    boundary has stopped being observable and what holds it instead. A collision
+    that disappears means a factor moved, which is its own finding.
+    """
+    by_pair: dict[tuple[int, int], list[str]] = {}
+    for name, record in WIRE_CLASSES.items():
+        by_pair.setdefault((record.escaped, record.raw), []).append(name)
+
+    colliding = {pair: sorted(names) for pair, names in by_pair.items() if len(names) > 1}
+
+    assert colliding == {
+        (2, 2): ["json_escapable", "short_control_escape"],
+        (3, 1): ["astral", "two_byte"],
+    }, (
+        f"the rows sharing a factor pair are {colliding}, not the two collisions recorded. "
+        f"A pair shared by two rows means the sweep cannot tell a misplaced boundary between "
+        f"them from a correct one -- every member measures its row's factors either way -- so "
+        f"the boundary rests entirely on `class_of`. A new collision needs that said out "
+        f"loud; a collision that disappeared means a factor moved"
+    )

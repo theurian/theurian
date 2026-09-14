@@ -39,9 +39,14 @@ recomputed from. They do **not** pin:
   of the same reading. What *is* pinned about that table is its **model** --
   ``tests/integration/test_request_memory_model.py`` holds the two terms it
   composes from, at a scaled body.
-* **the rest of Amendment 1's prose** -- its decision text, its
-  behaviour-change list, its measurement-block anchors. Figures and the retired
-  claims, not narrative.
+* **Amendment 1's narrative** -- its decision text, its behaviour-change
+  list, its measurement-block anchors. Its *figures* are held, and all of them:
+  the composed ceiling, the shipped cap's pre-fix pair, and the three
+  comparisons drawn around it (the SDK default's own worst, that worst as a
+  ratio, and the astral member's). An earlier version of this sentence said
+  "figures, not narrative" while four of those figures were read by nothing --
+  a reach claim wider than the arms under it, which is this module's own
+  subject stated about itself.
 * **the roadmap's SEC-12 cell**, which carries no #669 figure at all since the
   reconciliation left its *owed* list; ``test_sec12_shipped_claims.py`` holds
   what that row is still held to.
@@ -59,17 +64,20 @@ database, no socket, nothing written anywhere.
 
 from __future__ import annotations
 
+import random
 import re
 from typing import Final
 
 import pytest
 from escape_class_sweep import sweep
-from sec12_records import t11_residual_paragraph
+from mcp.server.transport_security import DEFAULT_MAX_REQUEST_BODY_SIZE
+from sec12_records import amendment_one, t11_residual_paragraph
 from threat_model_claims import SPELLED_NUMBERS, prose
 from wire_escape_classes import RESIDUAL_CLASSES, WIRE_CLASSES
 from write_lock_claims import REPO_ROOT
 
 from theurian.daemon.server import MAX_REQUEST_BODY_BYTES
+from theurian.mcp import validation
 from theurian.mcp.validation import (
     MAX_PARAMS_NODES,
     MAX_PARAMS_RENDERED_CHARS,
@@ -157,6 +165,12 @@ _COMPOSED_RATIO_RECORDS: Final = frozenset(
 #: dropped silently, because "every leaf is charged something" and "every leaf
 #: is charged at least its contribution" differ exactly there, and the second is
 #: the one the records state.
+#: How many characters of punctuation an instance spends per node, beyond what
+#: its leaves are charged. The records state it as "no more than 4", and
+#: :func:`test_the_per_node_punctuation_cost_the_composed_ceiling_uses_is_measured_here`
+#: is what keeps it from being a figure copied out of a record into a test.
+_PER_NODE_PUNCTUATION: Final = 4
+
 _LEAF_VALUES: Final = (
     "text",
     0,
@@ -171,6 +185,32 @@ _LEAF_VALUES: Final = (
 )
 
 
+def _random_instances(count: int) -> list[dict[str, object]]:
+    """``count`` argument-shaped instances from a fixed seed.
+
+    Seeded rather than sampled fresh, for the reason the house rule gives about
+    dict order and wall-clock: an arm whose population changes per run reports a
+    different bound on the day it fails, and the bound is the thing under test.
+    """
+    source = random.Random(7)  # noqa: S311 -- shapes for a bound, not keys for a secret
+    shapes: list[dict[str, object]] = []
+    for _ in range(count):
+        shape: dict[str, object] = {}
+        for _ in range(source.randint(1, 6)):
+            key = "".join(source.choice("abcde") for _ in range(source.randint(1, 4)))
+            roll = source.random()
+            if roll < 0.3:
+                shape[key] = [source.randint(0, 9) for _ in range(source.randint(0, 4))]
+            elif roll < 0.6:
+                shape[key] = "".join(source.choice("xyz") for _ in range(source.randint(0, 5)))
+            elif roll < 0.8:
+                shape[key] = {"z": source.randint(0, 999)}
+            else:
+                shape[key] = source.choice([None, True, 1.5, 0])
+        shapes.append(shape)
+    return shapes
+
+
 def _composed_render_ceiling() -> int:
     """The whole render a request can reach, from the two live constants.
 
@@ -180,7 +220,7 @@ def _composed_render_ceiling() -> int:
     recomputed here so that moving either constant moves what the records are
     required to say.
     """
-    return MAX_PARAMS_RENDERED_CHARS + MAX_PARAMS_NODES * 4
+    return MAX_PARAMS_RENDERED_CHARS + MAX_PARAMS_NODES * _PER_NODE_PUNCTUATION
 
 
 def _worst_pre_fix_render() -> tuple[int, int, int]:
@@ -258,10 +298,14 @@ def test_the_t11_residual_names_as_many_classes_as_the_unit_module_pins() -> Non
         f"({sorted(factors)}), so `both at N.0x` is not a sentence the record can "
         f"carry and this arm cannot check the one it does"
     )
-    assert f"{next(iter(factors))}.0x" in paragraph, (
-        f"T-11's residual does not print the {next(iter(factors))}.0x ratio the "
-        f"residual classes measure at, so the reach of the gap it records is not the "
-        f"reach that was measured:\n\n{paragraph[:600]}"
+    shared = next(iter(factors))
+    assert f"both at {shared}.0x" in paragraph, (
+        f"T-11's residual does not say `both at {shared}.0x` -- the ratio the residual "
+        f"classes measure at -- so the reach of the gap it records is not the reach that "
+        f"was measured. Anchored to the clause rather than to the bare substring: the "
+        f"paragraph prints `3.0x` for the astral exemption two sentences later, so a bare "
+        f"`{shared}.0x` search would pass on a paragraph that had stopped stating the "
+        f"residual's own ratio:\n\n{paragraph[:600]}"
     )
 
     for factor in sorted({WIRE_CLASSES[name].raw for name in remedied}):
@@ -499,8 +543,19 @@ def test_the_charge_is_positive_for_every_leaf_type_the_records_call_every_leaf(
     from its fixture would be asserting the weaker claim while reading like the
     stronger one.
     """
-    charged = {value: _rendered_width(value) for value in _LEAF_VALUES}
-    uncharged = {value: width for value, width in charged.items() if width <= 0}
+    # Keyed by type-and-value, not by value: `False == 0` and `True == 1`, so a
+    # plain dict comprehension silently folds the two booleans into the two
+    # integers and this population of ten reports as eight -- with `bool`, one of
+    # the arms the records single out, never checked.
+    charged = {
+        f"{type(value).__name__}:{value!r}": _rendered_width(value) for value in _LEAF_VALUES
+    }
+    uncharged = {label: width for label, width in charged.items() if width <= 0}
+
+    assert len(charged) == len(_LEAF_VALUES), (
+        f"the population of {len(_LEAF_VALUES)} leaves collapsed to {len(charged)} distinct "
+        f"labels, so at least one value is not being charged at all: {sorted(charged)}"
+    )
 
     assert _rendered_width("") == 0, (
         f"the empty string is charged {_rendered_width('')} rather than 0. It contributes "
@@ -561,4 +616,112 @@ def test_the_worst_render_the_old_charge_admitted_is_what_the_records_print() ->
     )
 
 
-# -- Retired figures may stay, attributed ---------------------------------------
+# -- The retired figures' own corpus and slicing -------------------------------
+
+
+def test_the_per_node_punctuation_cost_the_composed_ceiling_uses_is_measured_here() -> None:
+    """The ``4`` in the composed ceiling, held structurally rather than transcribed.
+
+    :func:`_composed_render_ceiling` multiplies :data:`MAX_PARAMS_NODES` by a
+    literal ``4``, and every arm above compares records against the product. So
+    the product is only as good as that factor, and the factor was a figure
+    copied out of a record into a test -- the shape this module exists to
+    refuse, one level down.
+
+    What it measures is the *excess*: what ``repr`` of an instance costs beyond
+    the sum of the charges its leaves are given. That excess is the punctuation
+    no leaf is charged for -- braces, brackets, ``, ``, ``: ``, and the quotes
+    around each string -- and it is a fixed cost per node, so ``excess <= 4 *
+    nodes`` is the claim.
+
+    **The bound is provable and the measurement says where it is tight.** A
+    container contributes its two delimiters plus a separator per member beyond
+    the first, and a string two quotes, giving ``E <= 4N - 4`` for any instance
+    with at least one container and one member; the empty container is the one
+    case outside it (``E = 2``, ``N = 1``) and is carried below so the arm is
+    honest about its own edge. The families that converge on 4 from below reach
+    **3.98** at 200 members, and a seeded random search over 30,000 shapes peaks
+    at **3.69** -- so ``4`` is correct and ``3`` would be wrong, which is the
+    pair of facts a transcribed constant cannot tell anyone.
+
+    The random half is seeded, not sampled fresh: an arm whose population
+    changes per run reports a different bound on the day it fails.
+    """
+    families: dict[str, object] = {
+        "dict_of_string_keys": {f"k{index}": f"v{index}" for index in range(50)},
+        "list_of_strings": [f"s{index}" for index in range(200)],
+        "flat_integers": list(range(500)),
+        "nested_mixed": {"a": [1, 2, {"b": "c"}], "d": None, "e": 1.5},
+        "empty_container": {},
+    }
+    families.update(
+        {f"random_{index}": shape for index, shape in enumerate(_random_instances(30_000))}
+    )
+
+    ratios = {}
+    for name, instance in families.items():
+        nodes = list(validation._iter_nodes(instance))
+        excess = len(repr(instance)) - sum(validation._rendered_width(v) for v, _ in nodes)
+        ratios[name] = excess / (1 + len(nodes))
+
+    over = {name: ratio for name, ratio in ratios.items() if ratio > _PER_NODE_PUNCTUATION}
+    converging = max(ratios[name] for name in ("dict_of_string_keys", "list_of_strings"))
+
+    assert over == {}, (
+        f"these shapes spend more than {_PER_NODE_PUNCTUATION} characters of punctuation per "
+        f"node: {over}. The composed render ceiling multiplies MAX_PARAMS_NODES by that "
+        f"figure, so a shape above it renders past the ceiling every record prints"
+    )
+    assert converging > _PER_NODE_PUNCTUATION - 0.1, (
+        f"the families that converge on the per-node cost from below now peak at "
+        f"{converging:.2f}, well under the {_PER_NODE_PUNCTUATION} the ceiling uses. Either "
+        f"the charge changed or the render did; a factor nothing approaches is slack in a "
+        f"figure five records print as a ceiling"
+    )
+
+
+def test_the_amendment_s_other_derived_figures_are_recomputable_too() -> None:
+    """The three comparisons Amendment 1 draws around the pre-fix reach.
+
+    The reach arm above holds the shipped cap's pair. The amendment states three
+    more figures in the same paragraph, each a comparison the severity argument
+    rests on, and an earlier draft of this module's reach block described them as
+    *covered* while nothing read them:
+
+    * **16,777,216 characters, 1.33x the budget** -- the worst the same
+      under-charge already reached under the SDK's own ``DEFAULT_MAX_REQUEST_BODY_SIZE``,
+      which is the sentence that says the breach predates this release rather
+      than being created by raising the cap.
+    * **4.50x the SDK default's worst** -- the shipped cap's reach over that one,
+      which is how much raising the cap widened it.
+    * **5.21x** -- the astral member, quoted to say the 2-byte class is the worst
+      and not merely an example.
+
+    All four come out of the same two inputs the shipped pair does: the
+    ``(raw wire bytes, render width)`` pairs the code-point sweep found, and a
+    byte cap. Swapping the cap for the SDK's own default is the whole difference,
+    so naming them out of this module's reach would have been recording a gap
+    that did not need to exist.
+    """
+    shipped, _wire, _width = _worst_pre_fix_render()
+    default_worst = max(
+        min(MAX_PARAMS_RENDERED_CHARS, DEFAULT_MAX_REQUEST_BODY_SIZE // wire) * width
+        for wire, width in sweep().reach_pairs
+    )
+    astral_reach = min(MAX_PARAMS_RENDERED_CHARS, MAX_REQUEST_BODY_BYTES // 4) * 10
+    amendment = prose(amendment_one())
+
+    expected = {
+        "the SDK default's worst render": f"{default_worst:,}",
+        "that worst as a ratio of the budget": f"{default_worst / MAX_PARAMS_RENDERED_CHARS:.2f}x",
+        "the shipped cap's reach over it": f"{shipped / default_worst:.2f}x",
+        "the astral member's ratio": f"{astral_reach / MAX_PARAMS_RENDERED_CHARS:.2f}x",
+    }
+    missing = {name: figure for name, figure in expected.items() if figure not in amendment}
+
+    assert missing == {}, (
+        f"Amendment 1 no longer prints these, recomputed from the live caps and the "
+        f"code-point sweep: {missing}. Each is a comparison its severity argument rests on "
+        f"-- that the breach predates the cap raise, how much the raise widened it, and that "
+        f"the 2-byte class is the worst rather than one example among three"
+    )

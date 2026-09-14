@@ -19,6 +19,20 @@ So :func:`class_of` is the definition -- written from the JSON grammar and the
 UTF-8 encoding, naming no representative -- and :func:`sweep` applies it to all
 1,114,112 code points.
 
+**What the sweep cannot see, and what covers it.** Two classes that record the
+same factor pair are indistinguishable by measurement: move the boundary between
+them and every member still measures its row's figures, because the figures are
+the same on both sides. Two such pairs exist -- ``json_escapable`` and
+``short_control_escape`` at ``(2, 2)``, and ``two_byte`` and ``astral`` at
+``(3, 1)`` -- so those two lines rest on :func:`class_of` and on the byte-length
+arms, not on anything the factors say. The second is the one a review mutation
+walked through: a CJK character filed in the ``astral`` row leaves both rows
+measuring correctly and removes four-byte text from the population.
+``test_transport_body_cap.test_no_two_rows_record_the_same_pair_of_factors``
+holds the set of collisions at the two that are known, so a *new* one cannot
+appear without someone stating which boundary has stopped being observable and
+what holds it instead.
+
 **Cost, measured 2026-09-15 on CPython 3.13:** ~2 s for the whole sweep, paid
 once per process through :func:`functools.cache` and shared by every module that
 asks. That is slow for a unit test and cheap for an exhaustive one; the
@@ -37,9 +51,11 @@ Pure: no file, socket, clock or temporary directory.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import cache
 from json.encoder import encode_basestring, encode_basestring_ascii
+from types import MappingProxyType
 from typing import Final
 
 from theurian.mcp.validation import _rendered_width
@@ -168,9 +184,9 @@ class Sweep:
 
     #: Class name to the ``(escaped, raw)`` factor pairs its members measure at,
     #: as exact ``Fraction``-free integer ratios ``(wire, landed)``.
-    factors: dict[str, frozenset[tuple[tuple[int, int], tuple[int, int]]]]
+    factors: Mapping[str, frozenset[tuple[tuple[int, int], tuple[int, int]]]]
     #: Render width to how many code points render at it.
-    width_counts: dict[int, int]
+    width_counts: Mapping[int, int]
     #: Code points whose measured width disagrees with :func:`expected_width`,
     #: first few only -- a failure needs an example, not a million of them.
     width_disagreements: tuple[tuple[int, int, int], ...]
@@ -207,9 +223,13 @@ def sweep() -> Sweep:
         factors.setdefault(class_of(character), set()).add(((escaped, landed), (raw, landed)))
         reach_pairs.add((raw, measured))
 
+    # Read-only views, because this result is cached for the process and shared
+    # by four modules: a plain dict handed to several callers is one `.pop()` in
+    # one arm away from changing what every later arm measures, and the failure
+    # would land in whichever module ran next.
     return Sweep(
-        factors={name: frozenset(pairs) for name, pairs in factors.items()},
-        width_counts=dict(width_counts),
+        factors=MappingProxyType({name: frozenset(pairs) for name, pairs in factors.items()}),
+        width_counts=MappingProxyType(dict(width_counts)),
         width_disagreements=tuple(disagreements),
         reach_pairs=frozenset(reach_pairs),
     )

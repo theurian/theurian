@@ -53,6 +53,7 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
+from escape_class_sweep import expected_width
 from mcp.server import MCPServer
 from wire_escape_classes import COVERED_CLASSES, WIRE_CLASSES
 
@@ -99,6 +100,22 @@ SENTINEL: Final = "sentinel-value-3b7e41af"
 #: held. What is driven here is the consequence: a body of each, landing at the
 #: file cap, still arrives framed.
 SCRIPT_CLASSES: Final = {name: WIRE_CLASSES[name].character for name in sorted(COVERED_CLASSES)}
+
+#: How many characters ``repr`` renders each class's representative as, from
+#: ``escape_class_sweep``'s rule rather than from ``_rendered_width``. The tier
+#: assertion below needs a prediction *independent* of the charge it is
+#: checking: an expectation computed by calling the decider agrees with the
+#: decider whatever either does.
+#:
+#: Derived, not written out, and the first draft of this table is why. It listed
+#: ``json_escapable`` at 2 -- the factor JSON's ``\"`` costs on the *wire* --
+#: where ``repr`` never escapes a double quote at all and renders it as itself.
+#: The two tables answer different questions about the same character, which is
+#: the confusion ``MAX_REQUEST_BODY_BYTES``'s docstring ends on, and hand-copying
+#: one into the other reproduced it inside the arm meant to be independent.
+RENDER_WIDTH: Final = {
+    name: expected_width(character) for name, character in SCRIPT_CLASSES.items()
+}
 
 #: A character ``repr`` renders as a six-character ``\uXXXX`` escape while JSON
 #: sends it raw as its own two UTF-8 bytes -- U+0600 ARABIC NUMBER SIGN, a
@@ -669,8 +686,16 @@ def test_a_write_intent_sized_body_arrives_and_is_refused_by_its_schema(
     """
     query = _landing_at(SCRIPT_CLASSES[script], MAX_SOURCE_FILE_BYTES)
     raw = _raw_call_carrying(query, ensure_ascii=True)
+    # Derived from the class's own arithmetic -- its landed byte count times the
+    # render width its row records -- rather than from `_rendered_width`, which
+    # is the thing deciding the outcome: an expectation read off the decider
+    # agrees with it however wrong both are. The `+ 24` is the rest of the
+    # arguments object, whose keys and `projectId` are charged against the same
+    # budget; it is two orders of magnitude below the margin at this size.
+    per_code_point = RENDER_WIDTH[script]
+    predicted = MAX_SOURCE_FILE_BYTES // len(SCRIPT_CLASSES[script].encode()) * per_code_point + 24
+    expected = "characters of content" if predicted > MAX_PARAMS_RENDERED_CHARS else "maxLength"
     charged = _rendered_width(query)
-    expected = "characters of content" if charged > MAX_PARAMS_RENDERED_CHARS else "maxLength"
 
     with open_client(build_server(registry), tmp_path / "data") as (client, session):
         answer = client.post("/mcp", content=raw, headers=headers(session))
@@ -688,10 +713,33 @@ def test_a_write_intent_sized_body_arrives_and_is_refused_by_its_schema(
     text = result["content"][0]["text"]
     assert result["isError"] is True, text
     assert "knowledge.search" in text, text
+    # The two derivations agree exactly only below the budget. Above it
+    # `_chunked_width` stops as soon as the running total passes what the caller
+    # can accept -- the rest of the leaf is never read -- so the charge comes
+    # back a partial sum. That is the behaviour, not a discrepancy, and it is
+    # why the agreement is asserted as "both put it on the same side" rather
+    # than as equality: the independent arithmetic found this, and an
+    # expectation read off `_rendered_width` could not have.
+    if predicted > MAX_PARAMS_RENDERED_CHARS:
+        assert charged > MAX_PARAMS_RENDERED_CHARS, (
+            f"a {script} body landing at the file cap renders {predicted} characters by its "
+            f"class's own arithmetic -- past the {MAX_PARAMS_RENDERED_CHARS} budget -- yet "
+            f"the charge returns {charged}, inside it. The charge is under-counting this "
+            f"class against what its recorded render width says it costs"
+        )
+    else:
+        assert abs(charged - predicted) < MAX_PARAMS_RENDERED_CHARS // 100, (
+            f"a {script} body landing at the file cap is charged {charged} rendered "
+            f"characters, while its class's own arithmetic -- {MAX_SOURCE_FILE_BYTES} landed "
+            f"bytes / {len(SCRIPT_CLASSES[script].encode())} bytes per code point x "
+            f"{per_code_point} rendered characters -- predicts {predicted}. The two "
+            f"derivations have parted company, so the tier expectation below is no longer a "
+            f"check on the charge"
+        )
     assert expected in text, (
-        f"a {script} body landing at the file cap is charged {charged} rendered characters "
-        f"against a {MAX_PARAMS_RENDERED_CHARS} budget, so the tier that should answer it is "
-        f"the one naming {expected!r}. It answered: {text}"
+        f"a {script} body landing at the file cap renders {predicted} characters by its "
+        f"class's own arithmetic, against a {MAX_PARAMS_RENDERED_CHARS} budget, so the tier "
+        f"that should answer it is the one naming {expected!r}. It answered: {text}"
     )
     assert SENTINEL not in json.dumps(framed), text
 

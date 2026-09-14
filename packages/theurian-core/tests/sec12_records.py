@@ -103,7 +103,11 @@ def changelog_entries(issue: str) -> str:
     rest = text.split(_UNRELEASED_HEAD, 1)[1]
     end = rest.find("\n## ")
     unreleased = rest[:end] if end >= 0 else rest
-    bullets = [block for block in re.split(r"\n(?=- )", unreleased) if issue in block]
+    # Word-boundary, so `#669` does not match `#6691`: the CHANGELOG names
+    # issues by number in running prose, and a substring match would fold a
+    # neighbouring issue's bullet into this record the day one is filed.
+    names_issue = re.compile(rf"{re.escape(issue)}(?![0-9])")
+    bullets = [block for block in re.split(r"\n(?=- )", unreleased) if names_issue.search(block)]
 
     assert bullets, (
         f"the CHANGELOG's [Unreleased] section holds no bullet naming {issue}, so every arm "
