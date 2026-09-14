@@ -131,18 +131,38 @@ UNAUTHENTICATED_PATHS: Final = frozenset({"/health"})
 #: #691's to settle.
 #:
 #: **What the bound costs, per request -- and it is not a single multiple of the
-#: wire bytes.** Four things are live while one at-cap request is in flight, and
-#: only the first two are denominated in bytes the way this constant is:
+#: wire bytes.** Two terms are live while one at-cap request is in flight, and
+#: only the first is denominated in bytes the way this constant is:
 #:
-#: * the ``bytearray`` ``RequestBodyLimitMiddleware`` accumulates the body into,
-#:   and the ``bytes`` copy it hands on -- one wire byte each;
-#: * the ``str`` the JSON parse materialises, **and** the ``str`` it extracts for
-#:   the argument, at *k* bytes per code point -- where PEP 393 sets *k* from the
-#:   string's **widest** member: 1 for an all-ASCII body, 2 once any BMP
-#:   character is present, 4 once any astral one is. A single emoji anywhere in a
-#:   26 MB body quadruples both. Measured in isolation, the parse alone peaks at
-#:   2 x *k* x the wire bytes: 50 MiB ASCII, 100 MiB with a 2-byte character,
-#:   200 MiB with an astral one.
+#: * **the transport's buffers: 2x the wire bytes, whatever the body holds.**
+#:   ``RequestBodyLimitMiddleware`` accumulates the body into a ``bytearray``,
+#:   and ``request.body()`` hands on a ``bytes`` copy; both are live when the
+#:   parse begins.
+#: * **the parse's own peak: 1x, 3x or 5x the wire bytes, set by the body's
+#:   widest code point.** The SDK parses with ``pydantic_core.from_json(body)``
+#:   (``streamable_http.py``), straight from the bytes. PEP 393 then sizes the
+#:   resulting ``str`` by its **widest** member -- measured 1 byte per code point
+#:   for an all-ASCII body, 2 once any BMP character is present, 4 once any
+#:   astral one is -- so the finished string alone is 1x, 2x or 4x the wire
+#:   bytes, and one emoji anywhere in a 26 MB body quadruples it. Above the
+#:   1-byte kind the parse holds one further wire-byte-sized buffer while it
+#:   widens, which is the difference between those and the 1x/3x/5x measured for
+#:   the call as a whole. Nothing downstream copies the string again:
+#:   ``jsonrpc_message_adapter.validate_python`` peaks at 0.0 MiB and hands back
+#:   the very same object (checked by identity).
+#:
+#: The two compose to every one of the four rows below: 2x + 1x = 3.00x for both
+#: 1-byte-kind bodies, 2x + 3x = 5.00x with a 2-byte character, 2x + 5x = 7.00x
+#: with an astral one. The dense-U+007F row's extra 0.01x is the charge's own
+#: chunked transient, the third term named below. Composing on all four is the
+#: check that this is the right model rather than an arithmetic that fits one
+#: row. An earlier draft
+#: of this paragraph priced the parse term with ``json.loads(body)`` instead, and
+#: measured 2 x *k* x the wire bytes: that call decodes the whole body to a
+#: ``str`` before parsing it, a string this request path never builds, and the
+#: 200 MiB it reported for an astral body was larger than the 175.1 MiB the whole
+#: request actually peaks at. A term of a model cannot exceed the total it is
+#: part of; when one does, the term was measured on something else.
 #:
 #: So the per-request figure is a function of the body's widest code point, not
 #: of its length. One authenticated at-cap POST, one fresh process per row,
@@ -161,15 +181,15 @@ UNAUTHENTICATED_PATHS: Final = frozenset({"/health"})
 #: ``ru_maxrss`` one is a process high-water mark that moves by a few hundred KB
 #: and depends on what the process already touched, so it is quoted to the MiB.
 #:
-#: **3.00x is the ASCII row, not the bound**; the bound at this cap is the
-#: **7.00x** an astral character buys, and an earlier draft of this paragraph
+#: **3.00x is the ASCII row, not the bound**; the worst of the four measured is
+#: the **7.00x** an astral character buys, and an earlier draft of this paragraph
 #: recorded the ASCII row as though it were universal. The two instruments are
 #: named beside their own figures because they answer different questions --
 #: ``tracemalloc`` the Python heap, ``ru_maxrss`` the process high-water mark --
 #: and they disagree by design.
 #:
-#: Those rows are the parse's, and the parse's alone. Charging the render used to
-#: add a fifth term on top of them -- ``mcp/validation.py``'s fallback reprred a
+#: Those rows are the two terms above and nothing else. Charging the render used
+#: to add a third on top of them -- ``mcp/validation.py``'s fallback reprred a
 #: whole leaf, peaking at 100 MiB on a dense-U+007F body and 400 MiB once one
 #: emoji made the repr's own output 4 bytes per character -- and
 #: :func:`~theurian.mcp.validation._chunked_width` removed it: the same leaves
