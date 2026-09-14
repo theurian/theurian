@@ -625,10 +625,11 @@ def _refuse_an_uncommitted_migration(context: CommandContext, *, as_json: bool) 
     """Refuse an apply whose migration files are not committed at HEAD (ADR-0034, T-15).
 
     The predicate, per migration, is decision 1's: the file is tracked by git and
-    its working-tree bytes are identical to the bytes at ``HEAD``. It is evaluated
-    against ``migration.checksum`` -- the loader's digest of the bytes the engine
-    will apply -- not a second read of the file, so there is no check-to-load race
-    for an untrusted same-UID process to win (:class:`CommittedMigrationCheck`).
+    the bytes the engine will apply hash -- under the path's gitattributes -- to the
+    id git committed at ``HEAD``. It is evaluated against ``migration.source_bytes``
+    -- the loader's read of the bytes the engine will apply -- not a second read of
+    the file, so there is no check-to-load race for an untrusted same-UID process to
+    win (:class:`CommittedMigrationCheck`).
 
     Called only when ``--allow-uncommitted`` was not passed, and seated in
     ``migrate apply`` before ``create_database`` so a refused apply leaves no state
@@ -641,26 +642,36 @@ def _refuse_an_uncommitted_migration(context: CommandContext, *, as_json: bool) 
     check = CommittedMigrationCheck(context.paths.root)
     for migration in context.loaded.migration_set.migrations:
         source_path = migration.source_path
-        # `load_migrations` always sets `source_path` (`_load_one`); a `None` is an
-        # in-memory set no file backs, which cannot be proven committed -- treated
-        # as NOT_TRACKED so it refuses rather than being waved through.
+        source_bytes = migration.source_bytes
+        # `load_migrations` always sets both `source_path` and `source_bytes`
+        # (`_load_one`); a `None` in either is an in-memory set no file backs, which
+        # cannot be proven committed -- treated as NOT_TRACKED so it refuses rather
+        # than being waved through.
         comparison = (
             HeadComparison.NOT_TRACKED
-            if source_path is None
-            else check.compare_to_head(source_path, migration.checksum)
+            if source_path is None or source_bytes is None
+            else check.compare_to_head(source_path, source_bytes)
         )
         if comparison is HeadComparison.COMMITTED:
             continue
         label = source_path if source_path is not None else str(migration.migration_id)
-        reason = (
-            "its working-tree bytes differ from the version committed at HEAD"
+        # The headline is split by verdict: a MODIFIED file *is* committed -- it was
+        # committed once and edited since, so an "is not committed" headline was
+        # false of it (round-1 code-review/security) -- while a NOT_TRACKED file
+        # genuinely never was. Both name the file, carry the same escape-hatch
+        # remedy, and echo no file content (SEC-7).
+        message = (
+            f"{label} differs from the version committed at HEAD: the bytes that would "
+            f"apply are not the committed ones. This project's approval model is the "
+            f"merge (ADR-0013), so `migrate apply` refuses a migration whose applied "
+            f"bytes differ from HEAD."
             if comparison is HeadComparison.MODIFIED
-            else "git does not track it at HEAD, so it was never committed"
+            else f"{label} is not committed: git does not track it at HEAD, so it was "
+            f"never committed. This project's approval model is the merge (ADR-0013), so "
+            f"`migrate apply` refuses a migration that has not been committed."
         )
         _fail(
-            f"{label} is not committed: {reason}. This project's approval model is the "
-            f"merge (ADR-0013), so `migrate apply` refuses a migration that has not been "
-            f"committed.",
+            message,
             remedy=_UNCOMMITTED_MIGRATION_REMEDY,
             as_json=as_json,
             code=EXIT_STATE_ERROR,

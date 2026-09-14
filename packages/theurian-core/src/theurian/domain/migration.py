@@ -334,6 +334,14 @@ class Migration:
     #: Project-relative path, for error messages. Deliberately excluded from the
     #: checksum and the state hash: renaming a file must not change the state.
     source_path: str | None = None
+    #: The exact bytes the loader read for this migration -- the same bytes
+    #: ``checksum`` digests. Carried so the committed-check (ADR-0034, T-15) can
+    #: hand them to ``git hash-object`` without a second read of the working tree,
+    #: which is what closes the check-to-load race. ``None`` for an in-memory set
+    #: no file backs, which cannot be proven committed. Excluded from equality and
+    #: repr: it is redundant with ``checksum`` for identity (both derive from the
+    #: same bytes) and dumping raw bytes into a repr is noise, not information.
+    source_bytes: bytes | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if not self.operations:

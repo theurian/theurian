@@ -1,33 +1,63 @@
 """Ask git whether a migration file is committed unmodified at ``HEAD`` (ADR-0034, T-15).
 
 This adapter answers decision 1's predicate for one migration: **the file is
-tracked by git, and its working-tree bytes are identical to the bytes at
-``HEAD``.** ``migrate apply`` refuses, by default, a migration that fails it --
-the merge is this project's approval model, so a file that was never committed
-was never reviewed (ADR-0013 point 4). The floor it enforces is *committed*, not
-*merged into a protected branch*; ADR-0034 decision 1 states that limit.
+tracked by git, and the bytes the engine will apply are byte-for-byte what git
+would store for that path at ``HEAD``.** ``migrate apply`` refuses, by default, a
+migration that fails it -- the merge is this project's approval model, so a file
+that was never committed was never reviewed (ADR-0013 point 4). The floor it
+enforces is *committed*, not *merged into a protected branch*; ADR-0034 decision 1
+states that limit.
 
-**One query answers both halves of the predicate.** ``git cat-file blob
-HEAD:<source_path>`` fails when the path is not in ``HEAD`` -- which *is* the
-tracked half, since a staged-but-never-committed file is not at ``HEAD`` -- and
-hands back the committed bytes when it is. The predicate is then a digest
-comparison: ``ContentHash.of_bytes(blob)`` against the ``migration.checksum`` the
-loader already computed over the exact bytes the engine will apply. There is no
-second read of the working tree, so the shape that loses the check-to-load race
--- *check the file on disk, then let the engine load it* -- has no window here
-(ADR-0034 decision 1's alternatives table).
+**The predicate is a git-blob-id comparison, so git's own normalization is on
+both sides of it.** An earlier shape hashed the working-tree bytes and compared
+that digest to the *stored* blob, which read ``MODIFIED`` for a committed,
+git-clean file whenever an ``eol=lf`` attribute or ``core.autocrlf`` (the Windows
+default) meant the stored blob differs from the bytes on disk -- refusing every
+text migration on Windows by default (round-1 code-review HIGH). The two ids
+compared here are:
 
-**The ``HEAD:<path>`` spelling is the input guard, and it is load-bearing.** The
-whole object argument begins with the literal ``HEAD:``, so a migration filename
-shaped like an option (``--force.yaml``) is read as a path, never as a flag; and
-git splits the tree-ish on its *first* colon, so a filename carrying a ``:``
-still resolves *under* ``HEAD`` and never names a different revision. A ``../``
-path, or one carrying a newline, names nothing in ``HEAD`` and fails closed to
-"not committed" rather than escaping the tree. The vector is fixed by this
-adapter -- ``git``, ``cat-file``, ``blob`` and one built object argument -- and
-takes nothing from a document, a config, a URL or a remote (SEC-9). It reaches no
-network, which is the same answer ``trailer_source.py`` gives for its own ``git
-log``: it is on ``PROCESS_SPAWN_SITES`` only because it spawns a process.
+* the **committed** id -- ``git rev-parse --verify --quiet HEAD:<path>``, which
+  is the object id git recorded for that path at ``HEAD``. A path not present at
+  ``HEAD`` makes it exit non-zero with no output, which *is* the tracked half of
+  the predicate: a staged-but-never-committed file is not at ``HEAD``;
+* the **applied** id -- ``git hash-object --stdin --path=<path>`` fed the exact
+  bytes the engine will apply. ``--path`` makes git apply the same gitattributes
+  (eol conversion, a clean filter) it would apply on commit, so a file that is
+  clean under those attributes yields the committed id even when its worktree
+  bytes differ from the stored blob. This is the load-bearing flag: a bare
+  ``hash-object`` without ``--path`` would hash the raw bytes and reintroduce the
+  false ``MODIFIED``.
+
+Both ids are 40 hex characters, so the comparison is bounded and ``rev-parse``
+returns only the id -- the ``HEAD`` blob is never read into this process's memory
+(round-1 security MEDIUM: the earlier ``cat-file blob`` buffered the whole
+committed blob with no cap, while the applied side already capped at
+:data:`~theurian.security.paths.MAX_SOURCE_FILE_BYTES`).
+
+**The applied id is computed from the loader's already-read bytes, never a second
+read of the working tree.** ``compare_to_head`` is handed ``source_bytes`` --
+``Migration.source_bytes``, the exact bytes the loader digested into
+``Migration.checksum`` -- and feeds them to ``hash-object`` on stdin. So the shape
+that loses the check-to-load race -- *check the file on disk, then let the engine
+load it* -- has no window here (ADR-0034 decision 1's alternatives table); this is
+load-bearing and the reason ``source_bytes`` is threaded rather than re-read.
+
+**Neither git argument is user-chosen, and this is the input guard.** The
+``rev-parse`` object argument begins with the literal ``HEAD:``, so a migration
+filename shaped like an option (``--force.yaml``) is a path, never a flag; git
+splits the tree-ish on its *first* colon, so a ``:``-bearing filename still
+resolves *under* ``HEAD`` and never names a different revision; a ``../`` or
+newline-bearing path names nothing in ``HEAD`` and fails closed. The
+``hash-object`` path is passed as ``--path=<value>`` (the ``=`` form, not a
+separate ``--path <value>`` token), so an option-shaped filename is part of the
+one token and cannot be read as a flag. The ``<path>`` on both sides is the git
+spelling -- forward slashes -- because ``source_path`` is built with ``os.sep``
+and a Windows backslash spelling would resolve nothing at ``HEAD`` (round-1
+code-review HIGH). The vector is fixed by this adapter -- ``git``, two literal
+subcommands and one built argument each -- and takes nothing from a document, a
+config, a URL or a remote (SEC-9). It reaches no network, which is the same answer
+``trailer_source.py`` gives for its own ``git log``: it is on
+``PROCESS_SPAWN_SITES`` only because it spawns a process.
 
 **The binary is resolved to an absolute path, and this call is the ``gh``
 precedent tier, not the bare-``git`` tier** (ADR-0034 decision 4's open choice).
@@ -46,29 +76,30 @@ import os
 import shutil
 import subprocess
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Final, final
 
-from theurian.domain.values import ContentHash
-
-#: Timeout on the one ``git cat-file`` this adapter spawns. A single object read
+#: Timeout on each ``git`` call this adapter spawns. A single object read or hash
 #: from local storage is cheap -- generous even for a migration at the loader's
-#: 4 MiB source cap -- and an unbounded subprocess in a CLI a hook may call is a
-#: hang the user cannot explain (SEC-19). The sibling ``git`` reads in
-#: ``cli/context.py`` bound at the same five seconds for the same reason;
-#: ``trailer_source.py``'s 30 is for a full-history ``git log``, not one blob.
+#: 8 MiB source cap (:data:`~theurian.security.paths.MAX_SOURCE_FILE_BYTES`) -- and
+#: an unbounded subprocess in a CLI a hook may call is a hang the user cannot
+#: explain (SEC-19). The sibling ``git`` reads in ``cli/context.py`` bound at the
+#: same five seconds for the same reason; ``trailer_source.py``'s 30 is for a
+#: full-history ``git log``, not one blob.
 GIT_TIMEOUT_SECONDS: Final = 5.0
 
 
 class HeadComparison(Enum):
     """How a migration file compares to the version committed at ``HEAD``."""
 
-    #: Tracked at ``HEAD``, and its working-tree bytes are identical to the
-    #: committed ones -- the one outcome that lets an apply proceed.
+    #: Tracked at ``HEAD``, and the bytes the engine will apply hash -- under the
+    #: path's gitattributes -- to the id git recorded for it: the one outcome that
+    #: lets an apply proceed.
     COMMITTED = "committed"
-    #: Tracked at ``HEAD``, but its working-tree bytes differ from the committed
-    #: ones: committed once and edited since (ADR-0034 decision 1's third row).
-    #: The approved bytes are the ones at ``HEAD``, not the ones on disk.
+    #: Tracked at ``HEAD``, but the bytes the engine will apply hash to a different
+    #: id than the committed one even after normalization: committed once and
+    #: edited since (ADR-0034 decision 1's third row). The approved bytes are the
+    #: ones at ``HEAD``, not the ones the loader read.
     MODIFIED = "modified"
     #: Not committed at ``HEAD`` at all -- never committed,
     #: staged-but-never-committed, or a path git could not answer for. Fail-closed:
@@ -98,50 +129,101 @@ class CommittedMigrationCheck:
         found = shutil.which("git", path=os.environ.get("PATH"))
         self._git: Path | None = Path(found).resolve() if found is not None else None
 
-    def compare_to_head(self, source_path: str, checksum: ContentHash) -> HeadComparison:
-        """Compare *source_path*'s committed bytes against *checksum*.
+    def compare_to_head(self, source_path: str, source_bytes: bytes) -> HeadComparison:
+        """Compare *source_bytes* against ``HEAD``'s version of *source_path*.
 
-        *checksum* is the loader's digest of the exact bytes the engine will apply
-        (``Migration.checksum``), so the comparison is against what applies, not a
-        second read of the working tree -- which is what closes the check-to-load
-        race by construction (ADR-0034 decision 1).
+        *source_bytes* is the loader's read of the bytes the engine will apply
+        (``Migration.source_bytes``, the same bytes ``Migration.checksum`` digests),
+        so the comparison is against what applies, not a second read of the working
+        tree -- which is what closes the check-to-load race by construction
+        (ADR-0034 decision 1).
+
+        The verdict is a blob-id comparison (module docstring): the committed id
+        from ``rev-parse`` and the applied id from ``hash-object --path=``. A
+        committed id git cannot produce -- the path is not at ``HEAD``, git is
+        absent, or a spawn failed -- is the fail-closed ``NOT_TRACKED`` half of the
+        predicate. An applied id git cannot produce (the second spawn failed after
+        the first succeeded) also fails closed to ``NOT_TRACKED``: the enum's own
+        "a path git could not answer for" case, since an unproven apply must refuse.
         """
-        blob = self._head_blob(source_path)
-        if blob is None:
+        posix_source_path = PurePath(source_path).as_posix()
+        committed_id = self._committed_blob_id(posix_source_path)
+        if committed_id is None:
             return HeadComparison.NOT_TRACKED
-        if ContentHash.of_bytes(blob) == checksum:
+        applied_id = self._applied_blob_id(posix_source_path, source_bytes)
+        if applied_id is None:
+            return HeadComparison.NOT_TRACKED
+        if applied_id == committed_id:
             return HeadComparison.COMMITTED
         return HeadComparison.MODIFIED
 
-    def _head_blob(self, source_path: str) -> bytes | None:
-        """The bytes of *source_path* as committed at ``HEAD``, or ``None``.
+    def _committed_blob_id(self, posix_source_path: str) -> str | None:
+        """The object id git recorded for *posix_source_path* at ``HEAD``, or ``None``.
 
-        ``None`` is every "cannot prove committed" outcome -- the path is not
-        tracked at ``HEAD``, git cannot be run, or it times out -- so the caller
-        refuses (fail-closed). The module docstring says why the ``HEAD:<path>``
-        object argument keeps an option-shaped, colon-bearing, ``../`` or
-        newline-bearing filename from naming a flag, escaping the tree, or
-        resolving to a different revision.
+        ``None`` is every "not committed at ``HEAD``" outcome -- the path is not
+        tracked there, git cannot be run, or it times out -- so the caller refuses
+        (fail-closed). ``--verify --quiet`` makes ``rev-parse`` print only the id
+        and exit zero on success, and exit non-zero with no output when the object
+        argument names nothing at ``HEAD``; the object argument begins with the
+        literal ``HEAD:`` so nothing user-supplied is option-shaped or names a
+        different revision (module docstring).
+        """
+        completed = self._run(["rev-parse", "--verify", "--quiet", f"HEAD:{posix_source_path}"])
+        if completed is None or completed.returncode != 0:
+            # Non-zero is `git`'s own "not present at 'HEAD'" and every other read
+            # failure -- the tracked half of the predicate, fail-closed.
+            return None
+        return self._one_object_id(completed.stdout)
+
+    def _applied_blob_id(self, posix_source_path: str, source_bytes: bytes) -> str | None:
+        """The id *source_bytes* would have if committed at *posix_source_path*, or ``None``.
+
+        ``--stdin`` feeds the loader's already-read bytes -- no second read of the
+        working tree, which is what keeps the check-to-load race closed (module
+        docstring). ``--path=<value>`` (the ``=`` form) both selects the
+        gitattributes to apply -- so eol conversion and a clean filter match what
+        git would store on commit -- and keeps an option-shaped filename inside the
+        one token, unable to be read as a flag. ``None`` on a spawn failure fails
+        closed.
+        """
+        completed = self._run(
+            ["hash-object", "--stdin", f"--path={posix_source_path}"], stdin_bytes=source_bytes
+        )
+        if completed is None or completed.returncode != 0:
+            return None
+        return self._one_object_id(completed.stdout)
+
+    @staticmethod
+    def _one_object_id(stdout: bytes) -> str | None:
+        """The single object id in *stdout*, or ``None`` when git printed nothing.
+
+        Both git calls print one 40-hex id and a newline on success; an empty or
+        whitespace-only stdout (which ``--quiet`` produces on a miss) is ``None``,
+        so a blank read never compares equal to a real id.
+        """
+        decoded = stdout.decode("ascii", "replace").strip()
+        return decoded or None
+
+    def _run(
+        self, git_args: list[str], *, stdin_bytes: bytes | None = None
+    ) -> subprocess.CompletedProcess[bytes] | None:
+        """Spawn one ``git`` call, or ``None`` if the binary is absent or the spawn fails.
+
+        The single spawn site in this module (``PROCESS_SPAWN_SITES`` records the
+        module, not the call count). Fixed vector, no shell; the caller builds
+        ``git_args`` from a literal subcommand and one argument whose user-supplied
+        half is foreclosed at the boundary (``HEAD:<path>`` / ``--path=<path>``).
         """
         if self._git is None:
             return None
-        # Fixed vector, no shell. The object argument begins with the literal
-        # `HEAD:`, so no element is user-chosen or option-shaped, and git splits
-        # the tree-ish on its first colon -- the revision is always `HEAD` (SEC-9).
-        args = [str(self._git), "cat-file", "blob", f"HEAD:{source_path}"]
         try:
-            completed = subprocess.run(  # noqa: S603 - fixed adapter-controlled vector, no shell; the object arg is `HEAD:<path>` so nothing user-supplied is option-shaped or names a revision (SEC-9)
-                args,
+            return subprocess.run(  # noqa: S603 - fixed adapter-controlled vector, no shell; the rev-parse arg begins with `HEAD:` and the hash-object path uses the `--path=<value>` form, so no user-supplied element is option-shaped or names a revision (SEC-9)
+                [str(self._git), *git_args],
                 cwd=self._repo_root,
+                input=stdin_bytes,
                 capture_output=True,
                 timeout=GIT_TIMEOUT_SECONDS,
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired):
             return None
-        if completed.returncode != 0:
-            # Non-zero is `git`'s own "exists on disk, but not in 'HEAD'" (exit
-            # 128) and every other read failure -- the tracked half of the
-            # predicate, fail-closed.
-            return None
-        return completed.stdout
