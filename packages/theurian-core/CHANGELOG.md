@@ -12,6 +12,74 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Added
+
+- **Every MCP tool call is validated against its published JSON Schema before it
+  reaches application code** ([#662](https://github.com/theurian/theurian/issues/662),
+  SEC-12, [ADR-0031](../../docs/adr/0031-mcp-input-is-schema-validated-in-middleware.md)).
+  Seven published contracts land under `schemas/mcp/*-input.schema.json`, one per
+  registered tool, and an MCP server middleware wired where the daemon builds its
+  server validates each `tools/call`'s raw arguments against that tool's schema
+  before dispatch. The seat is forced rather than chosen: the SDK builds each
+  tool's argument model without `extra="forbid"`, so pydantic's default of
+  `ignore` drops an unknown key before any Theurian code sees the request, and no
+  check a tool body could carry can notice the key was ever there. The middleware
+  tier is the one seat above that coercion.
+
+  **Fail-closed in both directions.** A registered tool that resolves to no loaded
+  schema is refused at dispatch and its handler is never entered, so the control
+  covers whatever tool set is registered rather than the set someone remembered to
+  enumerate. A schema set that cannot be loaded whole — an unreadable file, a
+  schema the metaschema rejects, two files claiming one tool name, a `$ref` that
+  will not resolve offline — stops the server being built rather than serving the
+  tools whose contracts happened to parse. References resolve against a local
+  registry that carries no network fetcher.
+
+  **A refusal names a key path and the constraint that rejected it, and never
+  reproduces the value a caller sent.** Every caller-written fragment is escaped
+  and cut, and the assembled message is bounded at construction, so a refusal
+  cannot become an amplifier of the caller's own bytes. A request's arguments are
+  bounded for nesting, node count and rendered width before the validator is
+  handed them, because past the interpreter's recursion budget `jsonschema` cannot
+  build even its own message.
+
+  Two limits are recorded rather than closed: the rendered-width bound is
+  unreachable over the shipped transport, which answers `413` at 4 MiB first
+  ([#669](https://github.com/theurian/theurian/issues/669)), and the shared
+  context's `snapshotId`, `agentId` and `taskId` are now admitted by the enforced
+  contract while no handler reads them
+  ([#665](https://github.com/theurian/theurian/issues/665)).
+
+### Changed
+
+- **BREAKING — an unknown or extra key on any MCP tool call is refused rather than
+  silently dropped** (SEC-12, ADR-0031). Old shape: the SDK's argument model
+  discarded any key a handler's signature did not name and the call was served, so
+  a client that misspelled `includeUnapproved` was given a confident answer to a
+  question it did not ask. New shape: the call is refused before dispatch, with the
+  offending key named and the caller's value not echoed. A client probing for
+  support by sending a forward-looking field must read `system.capabilities`
+  instead. `protocolVersion` stays `theurian/v1` — this is the sixth
+  breaking-but-unbumped change on grounds recorded in
+  [`docs/protocol/mcp-tools.md`](../../docs/protocol/mcp-tools.md)'s *Changing this
+  contract* section (a search-verified consumer census, zero consumers).
+- **BREAKING — `project.list` and `system.capabilities` refuse any argument.** Old
+  shape: both take no parameters, and anything sent with them was ignored. New
+  shape: their published schemas declare an empty `properties` closed with
+  `unevaluatedProperties: false`, so any key at all is refused. The seventh
+  breaking-but-unbumped change, same grounds.
+- **BREAKING — a `knowledge.search` `query` longer than 2,000 characters is
+  refused at the wire instead of being truncated and searched.** Old shape: the
+  handler cut the string to `MAX_QUERY_CHARS` and searched the prefix, and nothing
+  in the response said so. New shape: the published `maxLength` refuses the call
+  with a remedy and nothing is searched — truncating a `query` changes *what* was
+  asked, which is SEC-12's own harm class. `limit` and `maxTokens` keep their
+  clamps, because clamping changes only *how much* comes back; the handler's own
+  truncation stays below the surface as a backstop and is unreachable through this
+  contract. The eighth breaking-but-unbumped change: the 2,000-character bound was
+  already published, so what moved is the disposition of an over-bound query from
+  clamp to refuse.
+
 ## [0.2.2] - 2026-09-14
 
 ### Fixed
