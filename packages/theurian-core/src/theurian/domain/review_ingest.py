@@ -16,6 +16,27 @@ exactly one recorded remedy, and
 reads the enum -- not a transcribed list -- so a grade added without a remedy
 reddens before it can be raised.
 
+**And it is the type's rule rather than its call sites' habit**, since
+:meth:`RefusalEnvelope.__post_init__` refuses a remedy that is not the row its
+grade keys. Held as a source sweep before that -- an AST walk over ``src/`` for
+``RefusalEnvelope(...)`` calls -- which reads a construction by *name*: a
+one-line ``dataclasses.replace(exc.envelope, remedy=...)`` in an adapter is a
+construction that walk cannot see, and one survived the whole suite. ``replace``
+re-runs ``__post_init__`` on a frozen dataclass, so the invariant reaches that
+shape too.
+
+**Its reach is every shape that runs ``__post_init__``, which is not every shape
+there is.** ``object.__setattr__`` on an existing envelope writes a frozen field
+without re-running it, and a subclass that overrode ``__post_init__`` would not
+run this one at all. Both are named rather than left implied because the round
+that wrote this check offered it as closure for a *published* value, and the two
+residuals are what a reader has to weigh: what publishes them decides whether
+they matter. The value ``cli/review_commands._payload`` puts in a run document is
+looked up from :data:`REMEDIES` at the publication site and takes nothing from an
+envelope, so neither residual reaches stdout; ``exc.remedy`` on stderr is the
+publication this invariant does hold, and it holds it for every construction the
+raise path uses.
+
 **The cures are ``gh``-shaped, and that coupling has an owner.** Every entry in
 :data:`REMEDIES` names a ``gh`` command, because ``github`` is the only provider
 that exists: a GitLab adapter arriving later would tell its users to run
@@ -83,8 +104,10 @@ answers an agent, and an agent is not the person whose ``gh`` resolved the name.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Final
 
 from theurian.domain.errors import InvariantViolationError, TheurianError
@@ -160,131 +183,148 @@ class RefusalGrade(StrEnum):
 #: fill it, and then the population this table closes would be open again. What
 #: varies -- the repository, the version floor, the bound that was reached -- goes
 #: in the refusal's ``summary``, which is the field that describes *this* run.
-REMEDIES: Final[dict[RefusalGrade, str]] = {
-    RefusalGrade.REPOSITORY_NOT_ALLOWLISTED: (
-        "Add the repository to `providers.review.repositories` in "
-        "`.theurian/config.yaml`, spelled as GitHub resolves it -- "
-        "`gh repo view <owner>/<name> --json nameWithOwner` prints that spelling."
-    ),
-    RefusalGrade.REPOSITORY_IS_PRIVATE: (
-        "Review ingestion reads public repositories only in this version. Remove the "
-        "repository from `providers.review.repositories` in `.theurian/config.yaml`; "
-        "`gh repo view <owner>/<name> --json visibility` prints what GitHub reports."
-    ),
-    RefusalGrade.REPOSITORY_RESOLVED_ELSEWHERE: (
-        "GitHub answered for a different repository, which is what a rename redirect "
-        "looks like. Run `gh repo view <owner>/<name> --json nameWithOwner` to see "
-        "where the listed name now points, and update "
-        "`providers.review.repositories` in `.theurian/config.yaml` if the rename "
-        "was expected."
-    ),
-    RefusalGrade.TRANSPORT_OVERRIDE_CONFIGURED: (
-        "Remove the transport override from `config.yml` in the `gh` configuration "
-        "directory this run would read -- the summary above names it, and "
-        "`gh config list` prints the settings in force -- then run the ingestion again."
-    ),
-    RefusalGrade.TOOL_MISSING: (
-        "Install the GitHub CLI (https://cli.github.com) so that `gh --version` "
-        "answers, then run the ingestion again."
-    ),
-    RefusalGrade.TOOL_TOO_OLD: (
-        "Upgrade the GitHub CLI (https://cli.github.com) to the version the summary "
-        "above names; `gh --version` prints the installed one."
-    ),
-    RefusalGrade.TOOL_UNAUTHENTICATED: (
-        "Sign in with `gh auth login --hostname github.com`, confirm with "
-        "`gh auth status --hostname github.com`, then run the ingestion again."
-    ),
-    RefusalGrade.TOOL_FAILED: (
-        "Run `gh api graphql --hostname github.com -f query='{viewer{login}}'` by "
-        "hand to see the failure with its own output, then run the ingestion again."
-    ),
-    # Every face of this grade routed, derived rather than remembered (#597, and
-    # its round-one finding). The key is `git grep -n
-    # 'RefusalGrade\.LIMIT_EXCEEDED' -- packages/theurian-core/src`, which printed
-    # eight lines on 2026-09-12; it does not hit this comment, which spells the
-    # grade with a backslash and so is not the string the pattern matches. Those
-    # eight are this row's own key, the re-grade guard in `gh_cli._probe`, and six
-    # raise sites.
-    #
-    # A raise site is not a face: the `_page_cap` helper and `run_bounded`'s byte
-    # cap are each reached from more than one seam, and the seam is what decides
-    # where the refusal lands. So the enumeration below is written per landing
-    # place rather than per site, and it carries the claim on its own -- no total
-    # is stated for it, because a total is what goes stale when a seam is added
-    # and the arithmetic that stood here had already drifted from these bullets.
-    # Where each lands is the whole of the routing:
-    #
-    # Ends the run, and a bound the run itself takes answers it:
-    #   * `_refuse_an_unusable_limit`, twice -- `limit` below one, and `limit`
-    #     above `MAX_PULL_REQUESTS`. Nothing spawned.
-    #   * `_listed`'s `_page_cap` -- the pull-request listing needed more than
-    #     `MAX_PAGES` pages. A smaller `limit` returns the loop at
-    #     `len(events) + len(skipped) >= limit`; a higher `since_number` returns
-    #     it at the boundary.
-    #   * `run_bounded`'s byte cap reached from `_listed`'s `_request` -- one
-    #     listing page past `MAX_RESPONSE_BYTES`. That page asks for
-    #     `min(PAGE_SIZE, limit)` records, so a `limit` at or above `PAGE_SIZE`
-    #     sends the identical request and meets the identical refusal; only a
-    #     `limit` under `PAGE_SIZE` makes the answer smaller. `since_number` is
-    #     named in no request variable -- `_listed` compares it against each node
-    #     a page already returned (`number <= since_number`) -- so what it can
-    #     still do, like a smaller `limit`, is end the loop before a *later* page
-    #     is asked for.
-    #
-    # Lands as a skipped pull request while the run continues, and no run
-    # parameter reaches it:
-    #   * `_pages_of`'s `_page_cap` -- one pull request's threads or reviews
-    #     needed more than `MAX_PAGES` pages. Caught in
-    #     `review_ingest_service._fetch`. This is the face the round-one cure
-    #     routed to neither arm: it is not `limit`-curable, and it is not one of
-    #     the "comments, linked issues or labels" that cure enumerated.
-    #   * the byte cap reached from `_pages_of`'s `_request` -- one page of one
-    #     pull request's threads or reviews past `MAX_RESPONSE_BYTES`. Same seam;
-    #     `first:` is `PAGE_SIZE` there, fixed.
-    #   * `_refuse_a_capped_overflow` -- `MAX_LINKED_ISSUES` or
-    #     `MAX_LABELS_PER_PULL_REQUEST`, caught in `_listed` as a
-    #     `SkippedPullRequest`.
-    #   * `_comments_of` -- `MAX_COMMENTS_PER_THREAD`, caught in `_fetch`.
-    #
-    # Never reaches a reader with this grade: `gh_cli._probe` catches its own
-    # `MAX_PROBE_STDOUT_BYTES` overrun and re-raises it as `TOOL_FAILED`, because
-    # a probe takes no bounds from anybody.
-    #
-    # So the cure keys on where the refusal landed rather than on a list of caps,
-    # which is what stops the next per-record bound from falling outside both
-    # arms the way the page cap did.
-    #
-    # Splitting the grade was considered and declined. A `RefusalGrade` member is
-    # a published string in the run document, so adding one is observable
-    # behaviour rather than patch material, and this enum's membership is coarse
-    # on purpose besides -- what tells two refusals apart is the summary. The
-    # defect was the cure, and specifically its "no more than the cap the summary
-    # above names" clause: for a pull request carrying 51 labels the summary
-    # names 50, so a reader following that clause clamps `limit` to a number
-    # belonging to another bound entirely and meets the same refusal again.
-    RefusalGrade.LIMIT_EXCEEDED: (
-        "Which bound was reached decides what to do, and where this refusal landed "
-        "says which kind it is. A refusal that ended the run is about a bound the "
-        "run itself takes: `limit` is how many pull requests to read and must be at "
-        "least one, and `since_number` skips the pull requests already ingested. "
-        "Both narrow the window -- fewer pull requests, over fewer pages -- so a "
-        "refusal raised while reaching for a later page may not be reached at all. "
-        "Neither makes one page's answer smaller by itself: the listing asks for "
-        "whichever is smaller, `limit` or its own page size, so a larger `limit` "
-        "sends the identical request, and `since_number` is compared against the "
-        "records a page has already returned rather than sent with it. A page "
-        "refused for its size is answered by a `limit` below that page size, and "
-        "`gh api graphql --hostname github.com` with a smaller page is the same "
-        "request by hand. A refusal reported under `skipped` against one "
-        "pull request's number is about a per-record bound: that pull request's "
-        "comments, its linked issues, its labels, the pages its threads and reviews "
-        "need, or the size of one answer about it. Neither `limit` nor "
-        "`since_number` moves any of those at any value -- the rest of the run lands "
-        "without that pull request, and `gh pr view <number> --repo <owner>/<name>` "
-        "reads it on GitHub instead."
-    ),
-}
+#:
+#: **Read-only at run time, not merely by convention.** It was a plain ``dict``,
+#: and ``cli/review_commands._payload`` indexes it to build a published document:
+#: ``REMEDIES[TOOL_FAILED] = f"{...} {child_stderr}"`` anywhere in the process put
+#: a spawned child's output into that document, with every check green -- because
+#: the invariant on :class:`RefusalEnvelope` and the ratchet over the published
+#: mapping *both* compare against this table, so a mutation moves the expected
+#: answer along with the actual one. ``MappingProxyType`` refuses the item write
+#: with a ``TypeError``, ``Final`` refuses the rebinding under ``mypy``, and the
+#: literal is written inside the call so no name is bound to the mutable dict
+#: underneath. What holds the *text* independently of the values is a source pin:
+#: ``tests/unit/test_review_ingest_refusals.py::
+#: test_every_recorded_remedy_is_a_plain_literal_with_nothing_interpolated``
+#: reads this table out of the syntax tree, which is the one reading a mutation
+#: cannot move.
+REMEDIES: Final[Mapping[RefusalGrade, str]] = MappingProxyType(
+    {
+        RefusalGrade.REPOSITORY_NOT_ALLOWLISTED: (
+            "Add the repository to `providers.review.repositories` in "
+            "`.theurian/config.yaml`, spelled as GitHub resolves it -- "
+            "`gh repo view <owner>/<name> --json nameWithOwner` prints that spelling."
+        ),
+        RefusalGrade.REPOSITORY_IS_PRIVATE: (
+            "Review ingestion reads public repositories only in this version. Remove the "
+            "repository from `providers.review.repositories` in `.theurian/config.yaml`; "
+            "`gh repo view <owner>/<name> --json visibility` prints what GitHub reports."
+        ),
+        RefusalGrade.REPOSITORY_RESOLVED_ELSEWHERE: (
+            "GitHub answered for a different repository, which is what a rename redirect "
+            "looks like. Run `gh repo view <owner>/<name> --json nameWithOwner` to see "
+            "where the listed name now points, and update "
+            "`providers.review.repositories` in `.theurian/config.yaml` if the rename "
+            "was expected."
+        ),
+        RefusalGrade.TRANSPORT_OVERRIDE_CONFIGURED: (
+            "Remove the transport override from `config.yml` in the `gh` configuration "
+            "directory this run would read -- the summary above names it, and "
+            "`gh config list` prints the settings in force -- then run the ingestion again."
+        ),
+        RefusalGrade.TOOL_MISSING: (
+            "Install the GitHub CLI (https://cli.github.com) so that `gh --version` "
+            "answers, then run the ingestion again."
+        ),
+        RefusalGrade.TOOL_TOO_OLD: (
+            "Upgrade the GitHub CLI (https://cli.github.com) to the version the summary "
+            "above names; `gh --version` prints the installed one."
+        ),
+        RefusalGrade.TOOL_UNAUTHENTICATED: (
+            "Sign in with `gh auth login --hostname github.com`, confirm with "
+            "`gh auth status --hostname github.com`, then run the ingestion again."
+        ),
+        RefusalGrade.TOOL_FAILED: (
+            "Run `gh api graphql --hostname github.com -f query='{viewer{login}}'` by "
+            "hand to see the failure with its own output, then run the ingestion again."
+        ),
+        # Every face of this grade routed, derived rather than remembered (#597, and
+        # its round-one finding). The key is `git grep -n
+        # 'RefusalGrade\.LIMIT_EXCEEDED' -- packages/theurian-core/src`, which printed
+        # eight lines on 2026-09-12; it does not hit this comment, which spells the
+        # grade with a backslash and so is not the string the pattern matches. Those
+        # eight are this row's own key, the re-grade guard in `gh_cli._probe`, and six
+        # raise sites.
+        #
+        # A raise site is not a face: the `_page_cap` helper and `run_bounded`'s byte
+        # cap are each reached from more than one seam, and the seam is what decides
+        # where the refusal lands. So the enumeration below is written per landing
+        # place rather than per site, and it carries the claim on its own -- no total
+        # is stated for it, because a total is what goes stale when a seam is added
+        # and the arithmetic that stood here had already drifted from these bullets.
+        # Where each lands is the whole of the routing:
+        #
+        # Ends the run, and a bound the run itself takes answers it:
+        #   * `_refuse_an_unusable_limit`, twice -- `limit` below one, and `limit`
+        #     above `MAX_PULL_REQUESTS`. Nothing spawned.
+        #   * `_listed`'s `_page_cap` -- the pull-request listing needed more than
+        #     `MAX_PAGES` pages. A smaller `limit` returns the loop at
+        #     `len(events) + len(skipped) >= limit`; a higher `since_number` returns
+        #     it at the boundary.
+        #   * `run_bounded`'s byte cap reached from `_listed`'s `_request` -- one
+        #     listing page past `MAX_RESPONSE_BYTES`. That page asks for
+        #     `min(PAGE_SIZE, limit)` records, so a `limit` at or above `PAGE_SIZE`
+        #     sends the identical request and meets the identical refusal; only a
+        #     `limit` under `PAGE_SIZE` makes the answer smaller. `since_number` is
+        #     named in no request variable -- `_listed` compares it against each node
+        #     a page already returned (`number <= since_number`) -- so what it can
+        #     still do, like a smaller `limit`, is end the loop before a *later* page
+        #     is asked for.
+        #
+        # Lands as a skipped pull request while the run continues, and no run
+        # parameter reaches it:
+        #   * `_pages_of`'s `_page_cap` -- one pull request's threads or reviews
+        #     needed more than `MAX_PAGES` pages. Caught in
+        #     `review_ingest_service._fetch`. This is the face the round-one cure
+        #     routed to neither arm: it is not `limit`-curable, and it is not one of
+        #     the "comments, linked issues or labels" that cure enumerated.
+        #   * the byte cap reached from `_pages_of`'s `_request` -- one page of one
+        #     pull request's threads or reviews past `MAX_RESPONSE_BYTES`. Same seam;
+        #     `first:` is `PAGE_SIZE` there, fixed.
+        #   * `_refuse_a_capped_overflow` -- `MAX_LINKED_ISSUES` or
+        #     `MAX_LABELS_PER_PULL_REQUEST`, caught in `_listed` as a
+        #     `SkippedPullRequest`.
+        #   * `_comments_of` -- `MAX_COMMENTS_PER_THREAD`, caught in `_fetch`.
+        #
+        # Never reaches a reader with this grade: `gh_cli._probe` catches its own
+        # `MAX_PROBE_STDOUT_BYTES` overrun and re-raises it as `TOOL_FAILED`, because
+        # a probe takes no bounds from anybody.
+        #
+        # So the cure keys on where the refusal landed rather than on a list of caps,
+        # which is what stops the next per-record bound from falling outside both
+        # arms the way the page cap did.
+        #
+        # Splitting the grade was considered and declined. A `RefusalGrade` member is
+        # a published string in the run document, so adding one is observable
+        # behaviour rather than patch material, and this enum's membership is coarse
+        # on purpose besides -- what tells two refusals apart is the summary. The
+        # defect was the cure, and specifically its "no more than the cap the summary
+        # above names" clause: for a pull request carrying 51 labels the summary
+        # names 50, so a reader following that clause clamps `limit` to a number
+        # belonging to another bound entirely and meets the same refusal again.
+        RefusalGrade.LIMIT_EXCEEDED: (
+            "Which bound was reached decides what to do, and where this refusal landed "
+            "says which kind it is. A refusal that ended the run is about a bound the "
+            "run itself takes: `limit` is how many pull requests to read and must be at "
+            "least one, and `since_number` skips the pull requests already ingested. "
+            "Both narrow the window -- fewer pull requests, over fewer pages -- so a "
+            "refusal raised while reaching for a later page may not be reached at all. "
+            "Neither makes one page's answer smaller by itself: the listing asks for "
+            "whichever is smaller, `limit` or its own page size, so a larger `limit` "
+            "sends the identical request, and `since_number` is compared against the "
+            "records a page has already returned rather than sent with it. A page "
+            "refused for its size is answered by a `limit` below that page size, and "
+            "`gh api graphql --hostname github.com` with a smaller page is the same "
+            "request by hand. A refusal reported under `skipped` against one "
+            "pull request's number is about a per-record bound: that pull request's "
+            "comments, its linked issues, its labels, the pages its threads and reviews "
+            "need, or the size of one answer about it. Neither `limit` nor "
+            "`since_number` moves any of those at any value -- the rest of the run lands "
+            "without that pull request, and `gh pr view <number> --repo <owner>/<name>` "
+            "reads it on GitHub instead."
+        ),
+    }
+)
 
 #: How much contained child output an envelope may carry. A spawned ``gh`` writes
 #: whatever it likes to stderr, and an envelope is a published document: the
@@ -420,6 +460,27 @@ class RefusalEnvelope:
     clause 9 forbids -- the exact failure the refusal was constructed to avoid.
     ``detail`` can afford to refuse because an oversized one is a bug in this
     package rather than something somebody sent.
+
+    ``remedy`` is refused unless it **is** the row :data:`REMEDIES` records for
+    ``grade``, which is the module docstring's "looked up, never passed in" made
+    a property of the type. It refuses rather than corrects for ``detail``'s
+    reason: a remedy that is not the recorded row is a bug in this package, and
+    nothing a caller sent can produce one. Inert on every shipped path -- the only
+    construction is :meth:`ReviewIngestRefusedError.__init__`'s, which passes
+    ``REMEDIES[grade]`` -- and worth a runtime check because the field **is**
+    published: a run-ending refusal reaches ``cli/review_commands``'
+    ``except TheurianError`` arm, which writes ``exc.remedy`` to stderr through
+    ``_fail``, so a cure composed from a spawned child's answer would be fetched
+    text in a refusal document.
+
+    **That stderr publication is the whole of what this arm protects, and the
+    narrowing is a correction.** It was written claiming the run document's
+    ``skippedRemedies`` too, which then published a copy of this field carried on
+    ``FetchRefusal``. A remedy invariant is the wrong instrument for a value that
+    travels: it cannot see ``object.__setattr__``, a subclass, or a type that
+    copies the string and is never an envelope. That key indexes :data:`REMEDIES`
+    at its own publication site now and reads no field of anything, so it needs
+    nothing from here.
     """
 
     grade: RefusalGrade
@@ -437,6 +498,17 @@ class RefusalEnvelope:
             raise InvariantViolationError(
                 f"Grade {self.grade.value!r} carries an empty remedy. "
                 "Remedies are looked up in `REMEDIES`, never passed in."
+            )
+        if self.remedy != REMEDIES[self.grade]:
+            # The offending string is deliberately not echoed: what this arm
+            # exists to stop reaching a published document is a remedy composed
+            # from a spawned child's output, and a message that quoted it would
+            # publish exactly that through the exception instead.
+            raise InvariantViolationError(
+                f"Grade {self.grade.value!r} carries a remedy that is not its recorded "
+                "row. A remedy is looked up in `REMEDIES` -- never composed, passed in, "
+                "or edited afterwards -- so publish the row this grade keys, or record a "
+                "row for a new grade in `theurian/domain/review_ingest.py`."
             )
         if len(self.summary) > MAX_REFUSAL_SUMMARY_CHARS:
             kept = MAX_REFUSAL_SUMMARY_CHARS - len(_SUMMARY_CUT_MARKER)

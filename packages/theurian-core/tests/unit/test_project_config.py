@@ -19,15 +19,19 @@ Marked ``unit`` and writes only under ``tmp_path``.
 
 from __future__ import annotations
 
+import inspect
 import os
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Final
 
 import pytest
 
+from theurian.application.project_service import config_escape_remedy
 from theurian.domain.errors import ProjectConfigError
+from theurian.security import project_config
 from theurian.security.paths import MAX_SOURCE_FILE_BYTES
 from theurian.security.project_config import (
     PROJECT_CONFIG_FILE,
@@ -409,3 +413,203 @@ def test_the_reader_leaves_the_project_alone(tmp_path: Path) -> None:
     read_secret_scan_policy(root, config)
 
     assert {p.relative_to(root).as_posix() for p in root.rglob("*")} == before
+
+
+#: What each reader answers for a project with no configuration file, keyed by the
+#: reader's own name. Written out rather than recomputed, so a default that *moves*
+#: fails here instead of being re-derived into agreement with production -- and
+#: each of these three values is a sentence in :func:`config_escape_remedy`, the
+#: cure #652 published for an escaping ``config.yaml``. That cure names each of
+#: them **with what it costs**, one of them being that an empty allowlist refuses
+#: every ``theurian review ingest``; this mapping is what holds the values it
+#: states, and
+#: ``tests/integration/test_contained_path_envelope.py::
+#: test_an_escaping_config_file_is_cured_by_removing_the_link_not_by_init`` is
+#: where the consequences are run.
+_DEFAULT_WHEN_ABSENT: Final[dict[str, object]] = {
+    "read_secret_scan_policy": SecretScanPolicy.BLOCK,
+    "read_review_repositories": (),
+    "read_review_participant_redaction": False,
+}
+
+
+#: The two parameters a reader of the configuration file opens with. Compared as a
+#: **prefix** rather than as the whole signature, which is the difference between
+#: this key and the one round one demonstrated open: a reader spelled ``(root,
+#: config_file, *, strict=False)`` is a reader, it is callable as ``read(root,
+#: config)``, and an exact-signature key dropped it out of the population --
+#: taking with it the promise :func:`config_escape_remedy` makes about absent
+#: files. The demonstration was a fourth reader that *raised* without a file and
+#: passed the suite.
+_READER_LEAD: Final = ["root", "config_file"]
+
+#: Public functions in ``security/project_config.py`` that are **not** readers of
+#: the file, each with the reason it is not one. Empty today, and that is a
+#: measurement rather than an omission: the module's public surface is the three
+#: readers. It exists so the partition below can be asserted -- a public helper
+#: added there (a validator, a renderer, a writer) is either a reader whose
+#: absent-file answer is recorded, or a named entry here, and no third state is
+#: green.
+_NOT_A_CONFIGURATION_READER: Final[dict[str, str]] = {}
+
+
+def _public_functions() -> dict[str, Callable[..., object]]:
+    """Every public function ``security/project_config.py`` defines itself.
+
+    Imported names are excluded by ``__module__``: the question is what this module
+    publishes as its own surface, not what it happens to have in scope. This is the
+    population the partition is asserted over, and it is deliberately wider than
+    the readers -- a fail-open key is exactly what round one found here, so the set
+    a reader can fall out of has to be visible.
+
+    **The key is ``inspect.isfunction``, which means a plain ``def`` and nothing
+    else**, and the limit is stated rather than implied because this population is
+    argued over. A reader wrapped in ``functools.lru_cache`` or ``functools.partial``,
+    or written as a callable instance, is not a function: it falls out of this set
+    and out of the partition below with it, and no assertion here would say so.
+
+    What stands behind that gap is the key side rather than the reader side.
+    ``tests/unit/test_config_key_call_sites.py`` reads the configuration key
+    spellings out of this package's syntax tree and holds the population this
+    module names at exactly the three in :data:`_DEFAULT_WHEN_ABSENT`, so a reader
+    of a *new* key reddens there in whatever shape it is written. The residual is a
+    wrapped reader of one of those same three keys: it would not be driven here,
+    and nothing else asks what it answers for an absent file. Widening the key to
+    non-class callables is the fix if that residual ever becomes real -- it needs a
+    carve-out for ``SecretScanPolicy``, the one public class this module defines.
+    """
+    return {
+        name: member
+        for name, member in vars(project_config).items()
+        if not name.startswith("_")
+        and inspect.isfunction(member)
+        and member.__module__ == project_config.__name__
+    }
+
+
+def _configuration_readers() -> dict[str, Callable[[Path, Path], object]]:
+    """Every public reader of the configuration file, off the module by reflection.
+
+    Keyed on the shape rather than on a list kept by hand: a public function
+    defined in this module whose first two parameters are
+    :data:`_READER_LEAD`. A fourth key added with a reader of its own appears here
+    the moment it is written, and fails the equality below until somebody records
+    what it answers for an absent file -- which is the sentence
+    :func:`config_escape_remedy` publishes to an operator whose ``config.yaml`` has
+    just been removed.
+    """
+    found: dict[str, Callable[[Path, Path], object]] = {}
+    for name, member in _public_functions().items():
+        parameters = list(inspect.signature(member).parameters.values())
+        if [parameter.name for parameter in parameters[:2]] == _READER_LEAD:
+            found[name] = member
+    return found
+
+
+def _readers_not_callable_with_two_paths() -> list[str]:
+    """Readers this file could not drive, which is a classification failure not a skip.
+
+    A member of the population is called below as ``read(root, config_file)``. One
+    that requires a third argument would raise ``TypeError`` there -- an error whose
+    message says nothing about the promise being held -- so it is reported here
+    instead, by name, with what to do about it.
+    """
+    return sorted(
+        name
+        for name, member in _configuration_readers().items()
+        if any(
+            parameter.default is inspect.Parameter.empty
+            and parameter.kind
+            not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+            for parameter in list(inspect.signature(member).parameters.values())[2:]
+        )
+    )
+
+
+def test_every_configuration_reader_answers_a_default_when_the_file_is_absent(
+    tmp_path: Path,
+) -> None:
+    """The part of #652's cure that is this module's: no reader reads absence as a fault.
+
+    ``config_escape_remedy`` tells an operator to delete an escaping
+    ``.theurian/config.yaml`` and names the three defaults that come into force.
+    Two claims about *this* module are in that: no reader may treat the absent file
+    as a fault, and the value each one answers has to be the value the cure names.
+
+    **And that is the whole of what this file can hold**, which round one made
+    worth writing down. The cure's first cut went one step further -- the retry
+    "runs on those rather than refusing" -- and this test was cited as holding it.
+    It cannot: a reader answering ``()`` for an absent allowlist is a default, and
+    an empty allowlist names no repository, so ``theurian review ingest`` refuses
+    on exactly the answer recorded below as the good case. What a command does with
+    a default is a claim at the command's layer, and
+    ``tests/integration/test_contained_path_envelope.py::
+    test_an_escaping_config_file_is_cured_by_removing_the_link_not_by_init`` is
+    where the two commands are run.
+
+    Both claims are asserted over a reflected population rather than over the three
+    readers that exist today, because the defect the cure would develop is a fourth
+    key whose reader *raises* without a file -- at which point the published cure
+    sends an operator to delete something and then meet a refusal no command could
+    have avoided.
+
+    **And the population is closed the other way too, which round one is why.** The
+    key used to be the *whole* parameter list, so a reader spelled ``(root,
+    config_file, *, strict=False)`` was not in it: the demonstrated fourth reader
+    raised on an absent file and this test stayed green. The key is now the first
+    two parameters, and the module's public surface is partitioned -- reader, or a
+    named entry in :data:`_NOT_A_CONFIGURATION_READER` -- so a public function that
+    is neither fails here rather than falling out.
+    """
+    root, config = _project(tmp_path, None)
+    assert not config.exists(), "the fixture wrote a configuration file, so this proves nothing"
+
+    readers = _configuration_readers()
+    public = _public_functions()
+
+    assert set(public) == set(readers) | set(_NOT_A_CONFIGURATION_READER), (
+        f"a public function in {project_config.__name__} is neither a reader of the "
+        f"configuration file nor recorded as not being one: "
+        f"{sorted(set(public) - set(readers) - set(_NOT_A_CONFIGURATION_READER))}. Give "
+        "it `(root, config_file)` as its first two parameters and record what it "
+        "answers for an absent file, or name it in `_NOT_A_CONFIGURATION_READER` with "
+        "the reason it is not one -- `config_escape_remedy` tells operators to delete "
+        "that file, and this is the population that promise ranges over."
+    )
+    assert not set(readers) & set(_NOT_A_CONFIGURATION_READER), (
+        f"{sorted(set(readers) & set(_NOT_A_CONFIGURATION_READER))} are carved out of "
+        "the reader population and match the reader shape, so the carve-out is hiding a "
+        "reader from the equality below"
+    )
+    assert not _readers_not_callable_with_two_paths(), (
+        f"{_readers_not_callable_with_two_paths()} take a required third argument, so "
+        "this file cannot drive them with a root and a config file. Give the extra "
+        "parameter a default -- the shipped call sites pass two -- or, if the reader is "
+        "not one an operator's retry reaches, record it in "
+        "`_NOT_A_CONFIGURATION_READER`."
+    )
+
+    assert set(readers) == set(_DEFAULT_WHEN_ABSENT), (
+        f"the configuration readers and the recorded defaults have moved apart: "
+        f"{sorted(set(readers) ^ set(_DEFAULT_WHEN_ABSENT))}. A reader added here without "
+        "a default for the absent file leaves `config_escape_remedy` naming the defaults "
+        "of a file it does not describe; record what it answers, and say so in that cure "
+        "-- with what the answer costs, which is the clause round one found missing."
+    )
+
+    answered = {name: read(root, config) for name, read in sorted(readers.items())}
+
+    assert answered == _DEFAULT_WHEN_ABSENT, (
+        f"a reader answers something other than the default the published cure names:\n"
+        f"  answered: {answered}\n  recorded: {_DEFAULT_WHEN_ABSENT}\n\n"
+        "`config_escape_remedy` states these three values to an operator who has just "
+        "removed the file, so a default that moves without that text moving is a cure "
+        "describing a policy that is not in force."
+    )
+
+    cure = config_escape_remedy(".theurian")
+    assert SecretScanPolicy.BLOCK.value in cure, (
+        f"the cure no longer names the secret-scan policy an absent file selects: {cure!r}. "
+        "That is the one default of the three with a security consequence, and an operator "
+        "deleting the file is entitled to read which way it falls."
+    )

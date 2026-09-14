@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 import pathlib
 import re
+from dataclasses import replace
 from typing import Final
 
 import pytest
@@ -106,6 +107,96 @@ def test_every_grade_records_a_remedy_that_names_a_command_and_an_artefact() -> 
         + "\n".join(f"  {grade}: {REMEDIES[RefusalGrade(grade)]!r}" for grade in unusable)
         + "\n\nA remedy names the thing to act on and something the reader can type. "
         "A truthy string is not a remedy."
+    )
+
+
+def _recorded_remedy_values() -> list[tuple[int, ast.expr]]:
+    """Every value in ``REMEDIES``' literal, off this module's syntax tree.
+
+    Located by the assignment's target name rather than by position, and the
+    mapping is read through whatever call wraps it -- ``MappingProxyType({...})``
+    today -- so the wrapper can change without this walk losing its subject.
+
+    Returns ``(lineno, value)`` pairs. The line number is for a failure message
+    and reaches no assertion; what is asserted is the shape of each value.
+    """
+    tree = ast.parse(pathlib.Path(review_ingest.__file__).read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.AnnAssign):
+            continue
+        if not (isinstance(node.target, ast.Name) and node.target.id == "REMEDIES"):
+            continue
+        assigned = node.value
+        if isinstance(assigned, ast.Call) and assigned.args:
+            assigned = assigned.args[0]
+        if isinstance(assigned, ast.Dict):
+            # `ast.Dict.keys` carries a `None` for a `**` unpacking and `values`
+            # does not, so every element here is an expression.
+            return [(value.lineno, value) for value in assigned.values]
+    return []
+
+
+def test_every_recorded_remedy_is_a_plain_literal_with_nothing_interpolated() -> None:
+    r"""The table's text held against the **source**, which a mutation cannot move.
+
+    This module's note on :data:`REMEDIES` says the text "carries no interpolation
+    on purpose", and every other check in this repository that asks what a cure
+    says reads it *out of* ``REMEDIES`` -- the envelope's invariant, the document
+    ratchet in ``tests/unit/test_review_run_document.py``, the CLI's equality
+    assertions. All of those mirror the table: assign
+    ``REMEDIES[TOOL_FAILED] = f"{row} {child_stderr}"`` and the expected answer
+    moves with the actual one, which is why the table is a ``MappingProxyType``
+    now. This is the reading that does not mirror it, and it is the independent
+    half of that pair: a row written as an f-string, a concatenation with a name
+    in it, or a ``.format`` call fails here whatever the values happen to be at
+    run time.
+
+    An implicitly concatenated literal is one ``ast.Constant`` after parsing, so
+    the multi-line rows in the table satisfy this without a carve-out. What does
+    not is any node that computes: ``JoinedStr``, ``BinOp``, ``Call``, ``Name``.
+
+    The run-time half is the ``MappingProxyType`` and nothing written down, but
+    what writes to the table is worth a key, and this one answers **itself** --
+    the two lines it prints are this docstring and the note above ``REMEDIES``,
+    both describing the write rather than making it. The docstring is raw so the
+    pattern below is the bytes to copy, and it folds at the space before its
+    pathspec rather than inside itself -- a key folded mid-regex does not run::
+
+        $ git grep -cE 'REMEDIES *(\[[^]]*\] *=[^=]|\.(update|pop|clear|setdefault|popitem)\()' \
+              -- packages/theurian-core/src packages/theurian-core/tests tools
+        packages/theurian-core/src/theurian/domain/review_ingest.py:1
+        packages/theurian-core/tests/unit/test_review_ingest_refusals.py:1
+
+    A third line is a real writer, and it will be refused at run time -- the
+    reason to look is that a writer means somebody wanted one, and what they
+    wanted belongs in the ``summary``.
+
+    **Fail-closed** on the walk: the assignment has to be found and has to yield a
+    row per grade, or an empty result would read as a table with nothing wrong
+    with it.
+    """
+    values = _recorded_remedy_values()
+
+    assert len(values) == len(RefusalGrade), (
+        f"the walk found {len(values)} values in `REMEDIES`' literal for "
+        f"{len(RefusalGrade)} grades. It reads the annotated assignment to `REMEDIES` "
+        "and unwraps one call argument; if the table is built some other way now, "
+        "follow it here before trusting a green result."
+    )
+
+    computed = [
+        (lineno, type(value).__name__)
+        for lineno, value in values
+        if not (isinstance(value, ast.Constant) and isinstance(value.value, str))
+    ]
+
+    assert not computed, (
+        f"a recorded remedy is computed rather than written: {computed}.\n\n"
+        "`REMEDIES` is read by `cli/review_commands._payload` to build a published "
+        "document, and every other check of these strings compares against the table "
+        "itself -- so a row that interpolates is a row whose content nothing holds. "
+        "Keep the text a literal and put what varies in the refusal's `summary`, which "
+        "is the field that describes one run."
     )
 
 
@@ -274,6 +365,45 @@ def test_an_envelope_refuses_an_empty_summary() -> None:
             detail="",
             remedy=REMEDIES[RefusalGrade.TOOL_MISSING],
         )
+
+
+def test_an_envelope_refuses_a_remedy_that_is_not_the_row_recorded_for_its_grade() -> None:
+    """Looked up, never passed in -- a rule the type now holds, not a convention.
+
+    ``remedy`` is an ordinary field, and until this check the only thing keeping a
+    composed cure out of an envelope was that no call site composed one -- held by
+    an AST walk over ``src/`` for ``RefusalEnvelope(...)`` calls, which reads
+    constructions by *name*. ``skippedRemedies`` publishes this field on stdout, so
+    a cure built from a spawned child's output would put fetched text into the run
+    document; the walk cannot see a construction that never spells the class name.
+
+    Three shapes below, and the third is the one that survived the whole suite: a
+    composed string, another grade's row (wrong for the grade the same document
+    publishes beside it), and ``dataclasses.replace`` -- which re-runs
+    ``__post_init__`` on a frozen dataclass, so the invariant reaches it while an
+    AST walk never could.
+    """
+    row = REMEDIES[RefusalGrade.TOOL_FAILED]
+
+    with pytest.raises(InvariantViolationError, match="not its recorded row"):
+        RefusalEnvelope(
+            grade=RefusalGrade.TOOL_FAILED,
+            summary="gh failed",
+            detail="",
+            remedy=f"{row} gh said: ssh-rsa AAAA...",
+        )
+
+    with pytest.raises(InvariantViolationError, match="not its recorded row"):
+        RefusalEnvelope(
+            grade=RefusalGrade.TOOL_FAILED,
+            summary="gh failed",
+            detail="",
+            remedy=REMEDIES[RefusalGrade.TOOL_MISSING],
+        )
+
+    envelope = ReviewIngestRefusedError(RefusalGrade.TOOL_FAILED, "gh failed").envelope
+    with pytest.raises(InvariantViolationError, match="not its recorded row"):
+        replace(envelope, remedy=f"{row} gh said: ssh-rsa AAAA...")
 
 
 def test_an_envelope_refuses_a_detail_longer_than_the_recorded_bound() -> None:

@@ -1,8 +1,13 @@
-"""What the changelog's review-ingest entry claims, held to the tree (ADR-0030, #479).
+"""What the changelog's live entries claim, held to the tree (ADR-0030, #479).
 
-``packages/theurian-core/CHANGELOG.md`` is where an operator learns what
-``theurian review ingest`` does before they run it, and the sentences below say
-something the tree can be asked about. No count of them is given, for the reason
+``packages/theurian-core/CHANGELOG.md`` is where an operator learns what a
+command does before they run it, and the sentences below say something the tree
+can be asked about. Most of them belong to the ``theurian review ingest`` entry
+this module was opened for; the last is #652's configuration-cure entry, which
+lands here rather than in a module of its own because the instrument is here --
+the collapse, the shared checker and the drift control *are* what a prose pin is,
+and a second copy of them would be a second thing to keep honest. No count of the
+rows is given, for the reason
 :func:`test_the_changelog_entry_still_states_the_claim` records about its own
 paragraph: one stood here (*"five of its sentences"*) and went stale the moment a
 row was added, which is the failure this module exists to catch, one level up.
@@ -58,6 +63,14 @@ row was added, which is the failure this module exists to catch, one level up.
   arm and went back to ``limit`` -- the loop #597 removed for labels. The drift
   column carries the cap list, because it reads as the *more* precise sentence
   and is what a rebase restores.
+- **The configuration cure's "nothing has to be recreated" is stated per command,
+  not per key** (#652). An empty review allowlist is one of the shipped defaults
+  and an empty allowlist names no repository, so ``theurian review ingest``
+  refuses *every* repository until the file is written back; the promise is made
+  for ``theurian index build``, which runs with no ``config.yaml`` at all. The
+  drift column carries the first cut's wording -- *"nothing has to be recreated
+  before the retry"* -- which is unconditional, reads as the friendlier sentence,
+  and is what a rebase against any commit before the narrowing restores.
 
 **Each claim is pinned from both sides, and the two sides fail differently on
 purpose.** The prose pins hold *spelling*: they are blind to whether the
@@ -105,8 +118,12 @@ this module is for.
 **Both directions carry a positive control**, because a pin whose expected
 answer is "the fragment is still there" and a pin that has stopped looking read
 identically from the outside.
-:func:`test_a_drifted_entry_is_reported_by_the_same_checker` mutates each
-fragment into the drift it guards against and asserts the checker reports it;
+:func:`test_a_drifted_entry_is_reported_by_the_same_checker` plants each row's
+drift into the document two ways -- *replacing* the correction and *added beside*
+it -- and asserts the checker reports both. The second shape is the one a rebase
+leaves when a conflict is resolved by keeping both sides, and until round two the
+checker had no arm for it: the correction was still present, so the row read
+green over an entry that stated its own reversion beside it;
 :func:`test_the_field_pin_reddens_when_the_run_document_stops_publishing_it`
 strips the key out of the live payload and asserts the fact pin reports that.
 Both plant into a copy and neither is committed.
@@ -118,9 +135,9 @@ worst possible moment. What a release changes is their *status*, from a live
 claim to a record, at which point a row may be retired with that reason on the
 line.
 
-Pure in the sense the other structural pins here are: it reads two repository
-files as text and calls one pure function, and opens no database, no socket and
-no temporary directory.
+Pure in the sense the other structural pins here are: it reads
+``packages/theurian-core/CHANGELOG.md`` as text and calls one pure function, and
+opens no database, no socket and no temporary directory.
 """
 
 from __future__ import annotations
@@ -164,13 +181,23 @@ def _collapsed(text: str) -> str:
     return " ".join(text.split())
 
 
-def _assert_the_entry_states(label: str, document: str, fragment: str, fact_side: str) -> None:
+def _assert_the_entry_states(
+    label: str, document: str, fragment: str, drift: str, fact_side: str
+) -> None:
     """The prose check, in one place so its positive control drives the same path.
 
     Written as a helper rather than inline so that
     :func:`test_a_drifted_entry_is_reported_by_the_same_checker` exercises the
     identical comparison and the identical message, instead of a re-derived
     approximation of it that could pass while the real one had stopped looking.
+
+    **Two arms, because a reversion need not displace anything.** The first arm
+    alone asked whether the corrected wording is present, which a document
+    carrying *both* sentences satisfies -- and that is the shape a rebase leaves:
+    a conflict resolved by keeping both sides puts the drift back beside the
+    correction, the entry then says two things that cannot both be true, and the
+    row reads green. The second arm asks whether the reversion is absent. Both
+    plants are driven by the control below, replaced and added-beside.
     """
     assert fragment in document, (
         f"{label}: packages/theurian-core/CHANGELOG.md no longer states:\n\n  {fragment}\n\n"
@@ -182,6 +209,23 @@ def _assert_the_entry_states(label: str, document: str, fragment: str, fact_side
         f"what gets restored. If it is RED too, the product changed and the entry is "
         f"corrected in that same commit -- with the new wording brought here, never "
         f"by relaxing this row."
+    )
+    # The membership is computed before the assertion rather than written into it,
+    # and that is a performance requirement rather than a style. `assert x not in y`
+    # is rewritten by pytest into a call that, on failure, runs `difflib.ndiff`
+    # over both operands to explain itself -- and `document` is the whole collapsed
+    # changelog, around a megabyte. This arm fails on purpose sixteen times per
+    # run (the control below plants two shapes into eight rows), and each failure
+    # spun for minutes: measured as a hang, located with `faulthandler_timeout`.
+    # `assert not <bool>` carries no comparison for the rewriter to explain.
+    states_the_reversion = drift in document
+    assert not states_the_reversion, (
+        f"{label}: packages/theurian-core/CHANGELOG.md states the wording this row "
+        f"exists to keep out, beside the corrected one:\n\n  {drift}\n\n"
+        f"Both sentences are in the entry, so it says two things and one of them was "
+        f"recorded as wrong. This is what a rebase leaves when a conflict is resolved "
+        f"by keeping both sides. Delete the reversion; the corrected wording is the "
+        f"one above it in this row, and the behaviour half is {fact_side}."
     )
 
 
@@ -391,6 +435,54 @@ ENTRY_CLAIMS: Final[tuple[tuple[str, str, str, str], ...]] = (
             "list"
         ),
     ),
+    (
+        "the config cure's promise is per command, not per key",
+        (
+            '**So "nothing has to be recreated" is stated per command rather than per '
+            "key**: it is made for `theurian index build`, which runs with no file at "
+            "all, and it is not made for `theurian review ingest`, which refuses on that "
+            "empty allowlist until the file is back"
+        ),
+        # The first cut's wording, and the reason it had to move: it was checked
+        # over the three *readers* -- each of which answers a default when the file
+        # is absent -- and never over the commands that retry. The review
+        # allowlist's default is the empty tuple, and an empty allowlist names no
+        # repository, so `theurian review ingest` refuses every repository until the
+        # file is written back; round one reproduced it answering
+        # `repository-not-allowlisted` against a project with no configuration file
+        # at all. Kept as the drift column rather than dropped, because it is
+        # unconditional where the shipped sentence is per command, it reads as
+        # reassurance to the reader it costs the most, and it is the sentence a
+        # rebase against any commit before the narrowing restores.
+        #
+        # The fact side of this row is held by two behavioural tests, neither of
+        # them here, and each holds a different half:
+        # `tests/unit/test_project_config.py::
+        # test_every_configuration_reader_answers_a_default_when_the_file_is_absent`
+        # holds that the defaults exist at all, over the reader population, so a
+        # fourth key with no default arrives as a failure; and
+        # `tests/integration/test_contained_path_envelope.py::
+        # test_an_escaping_config_file_is_cured_by_removing_the_link_not_by_init`
+        # follows the `rm` the cure prints and then runs *both* commands -- `index
+        # build` at exit 0 with `secretScanPolicy: block` and nothing recreated,
+        # `review ingest` at exit 1 carrying the allowlist's own cure. A product
+        # that started refusing `index build` with no file, or stopped refusing
+        # `review ingest`, reddens there while this row goes on matching word for
+        # word; that is the split, not a redundancy.
+        (
+            "**Nothing has to be recreated before the retry**: every key this file "
+            "carries has a shipped default, so a project without it runs on those "
+            "rather than refusing for a file that is not there"
+        ),
+        (
+            "`tests/integration/test_contained_path_envelope.py::"
+            "test_an_escaping_config_file_is_cured_by_removing_the_link_not_by_init`, "
+            "which runs the `rm` this cure prints and then both commands, over the "
+            "reader population `tests/unit/test_project_config.py::"
+            "test_every_configuration_reader_answers_a_default_when_the_file_is_absent` "
+            "holds"
+        ),
+    ),
 )
 
 
@@ -438,7 +530,7 @@ def test_the_changelog_entry_still_states_the_claim(
     """
     entry = _collapsed(CORE_CHANGELOG.read_text(encoding="utf-8"))
 
-    _assert_the_entry_states(label, entry, fragment, fact_side)
+    _assert_the_entry_states(label, entry, fragment, drift, fact_side)
 
 
 @pytest.mark.parametrize(
@@ -462,27 +554,47 @@ def test_a_drifted_entry_is_reported_by_the_same_checker(
     file is never written: a pin that had to edit the tree to prove it works
     would be a worse instrument than no pin.
 
-    Two guards before the plant, because a substitution that does not land
+    **Both shapes a reversion takes, because the checker has an arm for each.**
+    *Replaced* is the reversion somebody writes: the drift stands where the
+    correction did, and the presence arm catches it. *Added beside* is the one a
+    rebase leaves when a conflict is resolved by keeping both sides: the
+    correction is still there, the presence arm is satisfied, and only the absence
+    arm objects. A control that plants the first alone passes against a checker
+    that has lost the second, which is how the shape went unnoticed for a round.
+
+    Two guards before the plants, because a substitution that does not land
     reports its own no-op as a pass: the drift must not itself contain the
-    fragment, and the replacement must actually change the document.
+    fragment, and each replacement must actually change the document.
     """
     entry = _collapsed(CORE_CHANGELOG.read_text(encoding="utf-8"))
-
-    drifted = entry.replace(fragment, drift)
 
     assert fragment not in drift, (
         f"{label}: the drift contains the fragment it is supposed to displace, so this "
         f"control would assert nothing. Rewrite the `drift` column as the sentence the "
         f"reversion would leave behind."
     )
-    assert drifted != entry, (
-        f"{label}: planting the drift changed nothing, so this control passed without "
-        f"exercising the checker. Either the fragment is absent -- in which case "
-        f"`test_the_changelog_entry_still_states_the_claim` is the RED that matters -- "
-        f"or the drift is byte-identical to it."
+
+    for shape, drifted in (
+        ("replaced", entry.replace(fragment, drift)),
+        ("added beside", entry.replace(fragment, f"{fragment} {drift}")),
+    ):
+        assert drifted != entry, (
+            f"{label} ({shape}): planting the drift changed nothing, so this control "
+            f"passed without exercising the checker. Either the fragment is absent -- in "
+            f"which case `test_the_changelog_entry_still_states_the_claim` is the RED "
+            f"that matters -- or the drift is byte-identical to it."
+        )
+        with pytest.raises(AssertionError, match=re.escape(label)):
+            _assert_the_entry_states(label, drifted, fragment, drift, fact_side)
+
+    # The added-beside plant must be caught by the *absence* arm and not by the
+    # presence one, or it is proving the same thing the replaced plant proves.
+    # Asserted by the state of the document rather than by the message text: the
+    # correction is still in it, so the first arm is satisfied.
+    assert fragment in entry.replace(fragment, f"{fragment} {drift}"), (
+        f"{label}: the added-beside plant lost the corrected wording, so it reddens "
+        f"through the presence arm and says nothing about the absence one."
     )
-    with pytest.raises(AssertionError, match=re.escape(label)):
-        _assert_the_entry_states(label, drifted, fragment, fact_side)
 
 
 #: One run of ``theurian review ingest`` as the service reports it, in the state

@@ -390,12 +390,14 @@ REVIEW_SEARCH_UNAVAILABLE_REFUSAL: Final = (
 #: #602 added a third, and the enumeration went false while the property it argues
 #: stayed true. The key is ``git grep -niE '^ +return [a-z_]*escape_remedy' --
 #: packages/theurian-core/src/theurian/application/project_service.py``.
-#: Case-insensitive so that the constant answers it beside the two functions,
-#: which is also what keeps the pattern short enough to fold at the space before
+#: Case-insensitive so that the constant answers it beside the functions, which is
+#: also what keeps the pattern short enough to fold at the space before
 #: its pathspec rather than inside itself -- a key folded mid-regex does not run
 #: when it is copied out. Safe to quote here, unlike the key above, because that
-#: pathspec is the other module. What the arms it printed on 2026-09-12
-#: interpolate:
+#: pathspec is the other module. Run again on 2026-09-13 for #652's fourth cure, it
+#: printed five lines -- two ``return KNOWLEDGE_DIR_ESCAPE_REMEDY`` and one each for
+#: the three functions below, which is the partition its own output spells. What
+#: each interpolates:
 #:
 #: - ``KNOWLEDGE_DIR_ESCAPE_REMEDY``, a module constant: nothing at all;
 #: - ``derived_escape_remedy(self.knowledge_dir.name, parts[0])``, which renders
@@ -404,21 +406,26 @@ REVIEW_SEARCH_UNAVAILABLE_REFUSAL: Final = (
 #:   being the ``in`` test which selects the arm;
 #: - ``review_escape_remedy(self.knowledge_dir.name)``, which renders the same
 #:   shape from that same basename and ``_REVIEW_SUBDIRECTORY``, a literal in that
-#:   module (#602).
+#:   module (#602);
+#: - ``config_escape_remedy(self.knowledge_dir.name)``, which renders that shape
+#:   from the same basename and ``PROJECT_CONFIG_FILE``, a literal in
+#:   ``security/project_config.py`` -- the same constant the ``==`` test selecting
+#:   the arm compares against (#652).
 #:
 #: So the claim is one an arm satisfies or does not, rather than a list to keep in
 #: step: the only value an arm takes from the caller is ``self.knowledge_dir.name``
 #: -- ``Path.name`` is a final component, so it cannot carry a separator or an
 #: absolute path -- and everything beside it is Theurian's own vocabulary. Nothing
 #: any arm renders came out of a ``resolve()``. Measured over the arms that key
-#: printed on the date above; a fourth cure has to re-establish it, and re-running
-#: the key is what finds the fourth. The remedy's variance therefore names which
+#: printed on the date above; a *fifth* cure has to re-establish it, and re-running
+#: the key is what finds the fifth. The remedy's variance therefore names which
 #: child of the knowledge directory the link sits at or below, and never a
 #: location on the machine.
 #: ``cli/commands.py``'s ``_fail_a_path_escape`` enumerates the same four raise
 #: sites for the neighbouring question of whether a remedy can arrive empty; it
-#: keys on ``_escape_remedy`` whole rather than on its arms, so the third cure
-#: left it true.
+#: keys on ``_escape_remedy`` whole rather than on its arms, so neither the third
+#: cure nor the fourth disturbed it -- and the raise-site count it states is
+#: untouched by either, since both added an arm to that method and no raise.
 #:
 #: Says less than the same refusal does on a terminal, on purpose, and what makes
 #: that affordable is who can act on it: the reader holding the checkout, for whom
