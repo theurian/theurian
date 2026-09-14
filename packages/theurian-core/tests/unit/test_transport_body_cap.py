@@ -22,10 +22,21 @@ against the factor its own encoding derives rather than against a shared number.
 The table itself is ``wire_escape_classes``, beside the other shared test
 helpers, because the threat model's T-11 residual states the same count and the
 same factors in prose and
-``tests/integration/test_sec12_shipped_claims.py::test_the_t11_residual_names_as_many_classes_as_the_unit_module_pins``
-reads them from there rather than transcribing them. What stays here is
+``test_the_t11_residual_names_as_many_classes_as_the_unit_module_pins``, one
+of the SEC-12 record pins, reads them from there rather than transcribing them. What stays here is
 everything that *checks* the table: the measurement through ``json.dumps``, and
 the independent derivation from each character's own encoding.
+
+**A representative is a claim about its class, and that claim is checked here
+too.** Measuring a table's representatives cannot notice a representative filed
+under the wrong name: put a Cyrillic character in the ``three_byte`` row and the
+measurement and the derivation agree with each other, because both read the same
+wrong character. Five mutations of exactly that shape survived a round of
+review. Three things close it, and each is a separate arm below -- the row's own
+byte length must be the one its *name* asserts; the representatives must be
+pairwise distinct and sit inside the ranges their names describe; and the
+factors must hold over **every member of the class**, swept from the code-point
+space by ``escape_class_sweep`` rather than from the table's own rows.
 
 A ratio moving out from under the recorded decision goes RED here. That is the
 signal to re-measure and re-record the residual on the constant, not to retune a
@@ -42,15 +53,32 @@ from __future__ import annotations
 
 import json
 from fractions import Fraction
+from json.encoder import encode_basestring, encode_basestring_ascii
 from typing import Final
 
 import pytest
+from escape_class_sweep import CODE_POINTS, SURROGATES, class_of, landed_bytes, sweep
 from wire_escape_classes import COVERED_CLASSES, RESIDUAL_CLASSES, WIRE_CLASSES
 
 from theurian.daemon.server import MAX_REQUEST_BODY_BYTES
 from theurian.security.paths import MAX_SOURCE_FILE_BYTES
 
 pytestmark = pytest.mark.unit
+
+#: How many UTF-8 bytes each class's *name* says its representative lands as.
+#: Held equal to :data:`WIRE_CLASSES`'s own keys below, so a row added later
+#: cannot join the table without someone stating the length its name asserts --
+#: which is the moment the misfiling this guards against would happen.
+NAMED_BYTE_LENGTH: Final = {
+    "printable_ascii": 1,
+    "json_escapable": 1,
+    "short_control_escape": 1,
+    "c0_other": 1,
+    "delete": 1,
+    "two_byte": 2,
+    "three_byte": 3,
+    "astral": 4,
+}
 
 #: How many copies of each representative character a sample holds. Any count
 #: gives the same ratio -- every character here escapes independently of its
@@ -114,7 +142,21 @@ def _derived_escaped_factor(character: str) -> Fraction:
 
     Takes a single character -- ``ord`` in the raw twin says so -- because a
     class is represented by one, and a mixed string has no single factor.
+
+    **A surrogate is refused rather than encoded.** ``repr`` renders a lone
+    surrogate perfectly well, so one can reach a width table; UTF-8 carries
+    none, so ``str.encode`` raises ``UnicodeEncodeError`` on it. Filed as a wire
+    representative it would fail here with an encoder's error four frames deep
+    instead of a sentence naming what went wrong, and the reader would go
+    looking at the encoding rather than at the table.
     """
+    if ord(character) in SURROGATES:
+        raise ValueError(
+            f"U+{ord(character):04X} is a surrogate and cannot be a wire-class "
+            f"representative: UTF-8 carries no surrogate, so the class has no landed byte "
+            f"count to take a ratio against. `repr` renders one, which is why the render "
+            f"width table does cover it -- see test_rendered_width_charge.py."
+        )
     if character in JSON_SHORT_ESCAPES:
         return Fraction(2, len(character.encode("utf-8")))
     if character.isascii() and character.isprintable():
@@ -364,3 +406,243 @@ def test_a_body_landing_at_the_file_cap_fits_the_transport_cap_with_the_envelope
         f"covered expansion did; the constant's docstring states both, so one of them is "
         f"now wrong there"
     )
+
+
+# -- Representative integrity: the table's rows are what their names claim ------
+
+
+def test_every_class_name_asserts_a_byte_length_and_the_table_covers_exactly_those() -> None:
+    """The premise under the row arms: every row has a stated length to honour.
+
+    :data:`NAMED_BYTE_LENGTH` is the reading of each class name -- ``two_byte``
+    says two, ``astral`` says four, the five one-byte rows say one. A row added
+    to :data:`WIRE_CLASSES` without an entry here would slip past the per-row
+    arm below silently, which is the same omission the representatives
+    themselves were vulnerable to. Equality, so a row removed fails too.
+    """
+    assert set(NAMED_BYTE_LENGTH) == set(WIRE_CLASSES), (
+        f"the byte lengths the class names assert cover {sorted(NAMED_BYTE_LENGTH)} while "
+        f"the table holds {sorted(WIRE_CLASSES)}. A row with no stated length is a row the "
+        f"per-row arm below cannot check, and a stated length with no row is a reading of a "
+        f"name nothing carries"
+    )
+
+
+@pytest.mark.parametrize("name", sorted(WIRE_CLASSES))
+def test_every_representative_lands_as_the_byte_count_its_class_name_asserts(name: str) -> None:
+    """RED means a row's representative does not belong to the class it names.
+
+    This is the arm that survives nothing. A class name in this table is a claim
+    about UTF-8 length, and the factors recorded beside it are only true of
+    characters of that length -- so swapping the ``three_byte`` row's CJK
+    character for a Cyrillic one makes the row's measured factor 3.0x while the
+    row records 2.0x, *and* leaves nothing measuring three-byte text at all.
+    The second half is the silent one: the measurement arms above would then
+    agree with each other about a class that has no member under test.
+
+    Length only, deliberately. Which character of that length stands for the
+    class does not matter, because
+    :func:`test_every_member_of_every_class_measures_the_factors_its_row_records`
+    holds the factors over every member; what matters is that the character is
+    *of* the class.
+    """
+    representative = WIRE_CLASSES[name].character
+
+    landed = len(representative.encode("utf-8"))
+
+    assert landed == NAMED_BYTE_LENGTH[name], (
+        f"the {name} row's representative {representative!r} lands as {landed} UTF-8 bytes, "
+        f"not the {NAMED_BYTE_LENGTH[name]} its class name asserts. Either the character was "
+        f"replaced by one from another class -- in which case this row now records another "
+        f"class's factors and its own class has no member under test -- or the row was "
+        f"renamed without moving its representative"
+    )
+
+
+def test_every_representative_sits_in_the_range_its_class_name_describes() -> None:
+    """RED means a control row's representative drifted out of its own range.
+
+    Byte length alone does not separate the five one-byte rows: a C0 control, a
+    DEL, a quote and an ``a`` are all one byte, so the arm above passes for any
+    permutation of them. What separates them is where they sit, and the two
+    control rows are the ones whose position carries the recorded residual --
+    ``c0_other`` is C0 minus the five characters JSON short-escapes, and
+    ``delete`` is U+007F exactly.
+
+    Asserted through the partition rather than by re-testing the ranges here:
+    :func:`~escape_class_sweep.class_of` computes a character's class from the
+    character, so requiring every representative to classify as its own row is
+    the whole integrity claim in one line, for all eight rows at once.
+    """
+    misfiled = {
+        name: (record.character, class_of(record.character))
+        for name, record in WIRE_CLASSES.items()
+        if class_of(record.character) != name
+    }
+
+    assert misfiled == {}, (
+        f"these rows hold a representative the partition puts in another class: {misfiled}. "
+        f"The class a character belongs to is computed from the character, so a row whose "
+        f"representative classifies elsewhere is recording another class's factors under "
+        f"this name -- and leaving its own class with no member under test"
+    )
+
+
+def test_no_two_classes_share_a_representative() -> None:
+    """RED means two rows are measuring the same character.
+
+    Distinctness is not implied by the arms above: two one-byte rows can both
+    hold ``a`` and both classify... they cannot, since the partition is a
+    function -- which is exactly why this arm is about *sharing* rather than
+    about correctness. A shared representative means one class is unmeasured
+    while the table still looks complete, and it is the state a careless
+    copy-paste of a row leaves behind.
+    """
+    representatives = [record.character for record in WIRE_CLASSES.values()]
+
+    assert len(set(representatives)) == len(representatives), (
+        f"two classes share a representative: {sorted(representatives)}. The table then has "
+        f"as many rows as classes and fewer characters, so one class is measured twice and "
+        f"another not at all"
+    )
+
+
+# -- Exhaustiveness: the factors hold over the space, not over the rows ---------
+
+
+def test_the_sweep_encodes_the_way_json_dumps_does() -> None:
+    """The premise under every swept arm: the fast encoder is ``json.dumps``'s own.
+
+    :mod:`escape_class_sweep` calls :func:`json.encoder.encode_basestring_ascii`
+    and :func:`~json.encoder.encode_basestring` directly, and derives a
+    character's landed byte count by arithmetic rather than by encoding it --
+    three shortcuts, taken because a million ``json.dumps`` calls is most of a
+    sweep's runtime. Each is a claim about CPython, and a wrong one would make
+    every ratio below wrong in the same direction with nothing to say so.
+
+    So all three are held over the whole space, which costs about a second and
+    removes the only reason to distrust the sweep.
+    """
+    disagreements = [
+        code_point
+        for code_point in range(CODE_POINTS)
+        if code_point not in SURROGATES
+        and (
+            encode_basestring_ascii(chr(code_point)) != json.dumps(chr(code_point))
+            or encode_basestring(chr(code_point)) != json.dumps(chr(code_point), ensure_ascii=False)
+            or landed_bytes(code_point) != len(chr(code_point).encode("utf-8"))
+        )
+    ]
+
+    assert disagreements == [], (
+        f"{len(disagreements)} code points encode differently through the sweep's shortcuts "
+        f"than through json.dumps and str.encode, the first being "
+        f"{[f'U+{c:04X}' for c in disagreements[:8]]}. Every wire ratio this module measures "
+        f"is taken through those shortcuts, so they are wrong together and silently"
+    )
+
+
+def test_every_class_the_space_produces_is_a_row_of_the_table() -> None:
+    """RED means the table and the partition disagree about what the classes are.
+
+    The partition is total over the non-surrogate space, so the classes it
+    produces are the classes that exist. A name it produces with no row is a
+    class of characters this cap was never sized for; a row with no name it
+    produces is a row measuring something the space cannot present. Deleting the
+    ``two_byte`` row is the first of those, and it is the mutation that used to
+    survive: nothing noticed a whole UTF-8 length going unrecorded, because
+    every remaining row still measured correctly.
+    """
+    produced = set(sweep().factors)
+
+    assert produced == set(WIRE_CLASSES), (
+        f"the code-point space produces {sorted(produced)} and the table records "
+        f"{sorted(WIRE_CLASSES)}. Produced with no row: "
+        f"{sorted(produced - set(WIRE_CLASSES))} -- characters whose wire cost this cap's "
+        f"derivation never accounted for. Recorded with no producer: "
+        f"{sorted(set(WIRE_CLASSES) - produced)} -- a row measuring a class no character "
+        f"falls into"
+    )
+
+
+@pytest.mark.parametrize("name", sorted(WIRE_CLASSES))
+def test_every_member_of_every_class_measures_the_factors_its_row_records(name: str) -> None:
+    """The exhaustiveness claim, asserted over members rather than over one member.
+
+    A row records two factors for a whole class. Measuring its representative
+    checks them for one character; this checks them for every character the
+    partition puts in the class -- 954,464 of them for ``astral``, one for
+    ``delete`` -- so a row whose factors are right about its representative and
+    wrong about its class fails here.
+
+    That is what makes the recorded table a statement about the wire rather than
+    about eight characters, and it is the arm the constant's *"swept over every
+    non-control code point rather than sampled inside the classes, so the class
+    boundaries are measured too"* actually rests on.
+    """
+    recorded = WIRE_CLASSES[name]
+
+    measured = {(Fraction(*escaped), Fraction(*raw)) for escaped, raw in sweep().factors[name]}
+
+    assert measured == {(Fraction(recorded.escaped), Fraction(recorded.raw))}, (
+        f"the {name} class's members do not all measure the "
+        f"({recorded.escaped}, {recorded.raw}) its row records: the space produces "
+        f"{sorted((str(e), str(r)) for e, r in measured)}. More than one pair means the "
+        f"class is not a class -- the partition is putting characters of different wire cost "
+        f"together, and the row's single pair describes only some of them"
+    )
+
+
+def test_the_worst_covered_ratio_and_the_residual_set_come_out_of_the_space() -> None:
+    """The multiplier and the residual, recomputed from members rather than rows.
+
+    :func:`test_the_multiplier_is_the_worst_wire_ratio_any_non_control_class_reaches`
+    and
+    :func:`test_the_classes_that_exceed_the_multiplier_are_exactly_the_two_the_residual_names`
+    ask the same two questions of the table's eight representatives. This asks
+    them of all 1,112,064 characters UTF-8 can carry, which is the form the
+    constant's docstring states them in -- and the form that notices a class
+    whose representative is mild while its members are not.
+    """
+    swept = {
+        name: {(Fraction(*escaped), Fraction(*raw)) for escaped, raw in pairs}
+        for name, pairs in sweep().factors.items()
+    }
+    worst_escaped = max(e for name in COVERED_CLASSES for e, _ in swept[name])
+    worst_raw = max(r for name in COVERED_CLASSES for _, r in swept[name])
+
+    exceeding = {name for name in swept if max(e for e, _ in swept[name]) > worst_escaped}
+
+    assert worst_escaped == 3, (
+        f"swept over the whole space, the worst ensure_ascii expansion among the classes the "
+        f"cap is derived for is {float(worst_escaped)}x, not the 3.0x its multiplier is. The "
+        f"table's representatives may still say 3.0x while some other member of their class "
+        f"does not -- which is the difference between a sampled claim and this one"
+    )
+    assert worst_raw == 2, (
+        f"swept over the whole space, raw UTF-8 costs {float(worst_raw)}x at worst over those "
+        f"same classes, not the 2.0x the constant records"
+    )
+    assert exceeding == RESIDUAL_CLASSES, (
+        f"swept over the whole space, the classes expanding past {float(worst_escaped)}x are "
+        f"{sorted(exceeding)}, not the {sorted(RESIDUAL_CLASSES)} recorded as the residual"
+    )
+
+
+def test_a_surrogate_cannot_be_filed_as_a_wire_representative() -> None:
+    """RED means the derivation would fail on an encoder error instead of a sentence.
+
+    ``repr`` renders a lone surrogate, so one is a legitimate member of the
+    *render width* table and could be copied into this one by a reader working
+    from that table. UTF-8 carries no surrogate, so the wire ratio it would need
+    does not exist -- and without a guard the failure is a
+    ``UnicodeEncodeError`` raised inside ``str.encode``, which reads as a bug in
+    the measurement rather than as a character that does not belong.
+
+    Both halves are asserted: the refusal fires, and it says why.
+    """
+    with pytest.raises(ValueError, match="surrogate") as caught:
+        _derived_escaped_factor("\ud800")
+
+    assert "U+D800" in str(caught.value), str(caught.value)
+    assert "UTF-8 carries no surrogate" in str(caught.value), str(caught.value)

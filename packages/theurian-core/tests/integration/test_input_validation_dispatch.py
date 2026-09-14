@@ -54,6 +54,7 @@ from typing import Any, Final
 
 import pytest
 from mcp.server import MCPServer
+from wire_escape_classes import COVERED_CLASSES, WIRE_CLASSES
 
 from theurian.application.project_service import ProjectRegistry
 from theurian.daemon.runner import build_server
@@ -65,6 +66,7 @@ from theurian.mcp.validation import (
     MAX_PARAMS_NODES,
     MAX_PARAMS_RENDERED_CHARS,
     MAX_REFUSAL_CHARS,
+    _rendered_width,
 )
 from theurian.security.paths import MAX_SOURCE_FILE_BYTES
 
@@ -83,19 +85,20 @@ UNPUBLISHED_TOOL: Final = "test.without.a.schema"
 #: checkable without trusting that a test looked at the right field.
 SENTINEL: Final = "sentinel-value-3b7e41af"
 
-#: One representative per UTF-8 byte length, for the acceptance below. A body's
-#: wire size is decided by the length of the characters it lands as -- 1, 2, 3
-#: or 4 bytes -- so these four are the population
-#: :data:`MAX_REQUEST_BODY_BYTES`'s multiplier is derived over, not a list of
-#: scripts anyone judged realistic. The per-class expansion factors are measured
-#: in ``tests/unit/test_transport_body_cap.py``; what is driven here is that a
-#: body of each, landing at the file cap, still arrives framed.
-SCRIPT_CLASSES: Final = {
-    "ascii": "a",
-    "two_byte_cyrillic": "д",
-    "three_byte_cjk": "日",
-    "astral_emoji": "\U0001f600",
-}
+#: The classes the acceptance below is driven over: **every class the cap's
+#: multiplier is derived for**, taken from the table rather than re-typed here.
+#:
+#: Derived, and that is the point. A list written out in this file is a list
+#: someone keeps in step, and it drifts in the direction nobody notices -- an
+#: astral representative replaced by an ASCII one leaves four cases that read
+#: like four classes and exercise one expansion factor. Reading
+#: ``COVERED_CLASSES`` off the table means a class added to the derivation joins
+#: this acceptance by existing, a class moved into the residual leaves it, and a
+#: representative that stops representing its class fails in
+#: ``tests/unit/test_transport_body_cap.py`` where the integrity of the table is
+#: held. What is driven here is the consequence: a body of each, landing at the
+#: file cap, still arrives framed.
+SCRIPT_CLASSES: Final = {name: WIRE_CLASSES[name].character for name in sorted(COVERED_CLASSES)}
 
 #: A character ``repr`` renders as a six-character ``\uXXXX`` escape while JSON
 #: sends it raw as its own two UTF-8 bytes -- U+0600 ARABIC NUMBER SIGN, a
@@ -629,16 +632,29 @@ def test_a_write_intent_sized_body_arrives_and_is_refused_by_its_schema(
     call carries a body of that size class -- and until #669 the SDK's
     unrecorded 4 MiB default answered it ``413`` before any tool was named. That
     is the precondition slice B4 needs, and it is asserted here as *which tier
-    refuses*: the schema, naming the tool and the constraint it failed, rather
-    than a transport tier that knows neither.
+    refuses*: one that names the tool and the limit it passed, rather than a
+    transport tier that knows neither.
 
-    **Parametrized over the script, because the wire size is a function of it.**
-    An ASCII-only version of this test was green against a cap of
-    ``2 * MAX_SOURCE_FILE_BYTES + 1 MiB`` while the same landed byte count in
-    Cyrillic -- or in any other 2-byte script, or in astral characters --
-    expanded to 3.0x under ``ensure_ascii`` and met the bare ``413``. One
-    representative per UTF-8 byte length is what makes "a body that lands at the
-    file cap arrives" a claim about bodies rather than about ASCII.
+    **Parametrized over every class the multiplier is derived for, because the
+    wire size is a function of the class.** An ASCII-only version of this test
+    was green against a cap of ``2 * MAX_SOURCE_FILE_BYTES + 1 MiB`` while the
+    same landed byte count in Cyrillic -- or in any other 2-byte script, or in
+    astral characters -- expanded to 3.0x under ``ensure_ascii`` and met the
+    bare ``413``.
+
+    **Which refusal each class meets is derived, not asserted flat.** Widening
+    the population from four remembered scripts to the table's six covered
+    classes turned up a case the flat assertion had no room for: a body of
+    newlines lands at the file cap, arrives framed, and is refused by the
+    *render charge* rather than by the schema, because ``repr`` spells each one
+    ``\\n`` and the charge is therefore 2x the code points -- 16,777,216 against
+    a 12,582,912 budget. That is the behaviour
+    :data:`~theurian.mcp.validation.MAX_PARAMS_RENDERED_CHARS` records in so
+    many words (*"'Can', not 'does' ... a plain one may satisfy a published
+    ``maxLength`` first"*), so the expected tier is computed from the live
+    charge instead of being one of the two written here. Asserting ``maxLength``
+    for all six would have been wrong about the newline class and would have
+    read as a defect in the daemon rather than as a defect in the test.
 
     Posted as raw bytes serialised with ``ensure_ascii=True`` rather than
     through ``TestClient``'s ``json=`` kwarg, which serialises with
@@ -651,9 +667,10 @@ def test_a_write_intent_sized_body_arrives_and_is_refused_by_its_schema(
     today; what is under test is the wire size class, which is a property of the
     transport and not of the tool.
     """
-    raw = _raw_call_carrying(
-        _landing_at(SCRIPT_CLASSES[script], MAX_SOURCE_FILE_BYTES), ensure_ascii=True
-    )
+    query = _landing_at(SCRIPT_CLASSES[script], MAX_SOURCE_FILE_BYTES)
+    raw = _raw_call_carrying(query, ensure_ascii=True)
+    charged = _rendered_width(query)
+    expected = "characters of content" if charged > MAX_PARAMS_RENDERED_CHARS else "maxLength"
 
     with open_client(build_server(registry), tmp_path / "data") as (client, session):
         answer = client.post("/mcp", content=raw, headers=headers(session))
@@ -663,15 +680,19 @@ def test_a_write_intent_sized_body_arrives_and_is_refused_by_its_schema(
         f"takes {len(raw)} bytes on the wire under ensure_ascii and was answered "
         f"{answer.status_code} by the transport tier, past MAX_REQUEST_BODY_BYTES "
         f"({MAX_REQUEST_BODY_BYTES}). The write-intent body ADR-0032 sizes for meets a bare "
-        f"413 that names no tool in this script -- #669's defect, re-opened for every "
+        f"413 that names no tool in this class -- #669's defect, re-opened for every "
         f"encoding the cap's multiplier does not cover"
     )
     framed = payload(answer)
     result = framed["result"]
     text = result["content"][0]["text"]
     assert result["isError"] is True, text
-    assert "knowledge.search" in text and "maxLength" in text, text
-    assert "characters of content" not in text, text
+    assert "knowledge.search" in text, text
+    assert expected in text, (
+        f"a {script} body landing at the file cap is charged {charged} rendered characters "
+        f"against a {MAX_PARAMS_RENDERED_CHARS} budget, so the tier that should answer it is "
+        f"the one naming {expected!r}. It answered: {text}"
+    )
     assert SENTINEL not in json.dumps(framed), text
 
 

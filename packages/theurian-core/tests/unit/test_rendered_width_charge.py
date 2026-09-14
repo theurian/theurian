@@ -32,10 +32,20 @@ from __future__ import annotations
 from typing import Final
 
 import pytest
+from escape_class_sweep import CODE_POINTS, expected_width, sweep
 
 from theurian.mcp import validation
 
 pytestmark = pytest.mark.unit
+
+#: The widths ``repr`` can charge one code point, and how many code points each
+#: holds. Measured 2026-09-15 over all 1,114,112 of them on CPython 3.13: four
+#: two-character escapes (``\t`` ``\n`` ``\r`` ``\\``), the 64 ``\xHH`` code
+#: points, 9,956 other non-printable BMP ones, 954,464 non-printable astral
+#: ones, and the printable remainder. A count that moves is a Unicode data
+#: change moving characters across the printable boundary -- a real event, and
+#: one worth a failure that names it rather than a silently shifted table.
+WIDTH_POPULATION: Final = {1: 149_624, 2: 4, 4: 64, 6: 9_956, 10: 954_464}
 
 #: One representative per class ``repr`` renders differently, with the number of
 #: characters it contributes to ``{instance!r}``. The classes come from
@@ -323,4 +333,96 @@ def test_the_integer_sweep_reaches_the_values_the_rounding_terms_are_there_for()
     assert without_the_sign_term, (
         "the sweep holds no negative integer whose rendered minus sign the estimate would "
         "fail to cover, so dropping the sign's own `+ 1` would leave the sweep above green"
+    )
+
+
+# -- The partition, over the space rather than over the representatives --------
+
+
+def test_the_render_width_of_every_code_point_is_the_one_the_rule_predicts() -> None:
+    """The exhaustive form of the per-class arms above.
+
+    ``RENDER_CLASSES`` holds one representative per width and asks whether the
+    implementation agrees with the recorded number for *that character*. This
+    asks the same question of all 1,114,112 code points, against a rule written
+    from CPython's documented ``repr`` behaviour -- four two-character escapes,
+    then printable at one, then non-printable by plane -- rather than against
+    the implementation or against the table.
+
+    Two independent things can go wrong and only this notices either: a
+    representative that stops representing its class, and a class whose rule is
+    right about the sampled character and wrong elsewhere in its range. The
+    ``\\xHH`` class is the one where that is easy -- it runs to U+00A0 and picks
+    up U+00AD, neither of them adjacent to the C0 block a reader thinks of.
+    """
+    disagreements = sweep().width_disagreements
+
+    assert disagreements == (), (
+        "these code points are charged a width the documented rule does not predict "
+        + ", ".join(
+            f"U+{code_point:04X}: charged {measured}, rule says {predicted}"
+            for code_point, measured, predicted in disagreements
+        )
+        + ". Either `_rendered_width` changed, or CPython's `repr` did, or the rule "
+        "`expected_width` states no longer describes it -- and the per-class arms above "
+        "are green either way, because they read one character per class"
+    )
+
+
+def test_the_width_classes_are_exactly_the_five_recorded_with_their_populations() -> None:
+    """RED means the set of widths ``repr`` can charge has changed.
+
+    The rule the arm above checks each code point against is a function; this is
+    its *image*, which is the part the records quote. ``_rendered_width``'s own
+    table says a code point costs 1, 2, 4, 6 or 10 -- five values, no others --
+    and the composed-ceiling and pre-fix-reach figures on ADR-0031 are
+    maximisations over exactly that set. A sixth width would make those figures
+    understatements without changing any of the five.
+
+    Populations as well as widths, because a width whose class emptied would
+    still appear in the set as long as one character held it: the counts are
+    what say the classes are the sizes the table describes.
+    """
+    assert sweep().width_counts == WIDTH_POPULATION, (
+        f"the render widths over the code-point space are "
+        f"{dict(sorted(sweep().width_counts.items()))}, "
+        f"not the {WIDTH_POPULATION} recorded. A width that appeared is a class nothing "
+        f"prices; a population that moved is characters crossing the printable boundary, "
+        f"which moves what a body of them costs to render"
+    )
+
+
+def test_the_rule_the_sweep_checks_against_is_not_the_implementation() -> None:
+    """The premise under both arms above: the two derivations are independent.
+
+    A sweep comparing ``_rendered_width`` to a rule that called
+    ``_rendered_width`` would report zero disagreements for any implementation
+    at all -- the shape of a check that cannot fail. So the rule is exercised
+    here on its own, against widths a reader can verify against CPython's
+    documentation by eye, and the arms above are worth what they say only
+    because this passes.
+    """
+    assert expected_width("\t") == 2
+    assert expected_width("\\") == 2
+    assert expected_width("a") == 1
+    assert expected_width("\U0001f600") == 1
+    assert expected_width("\x01") == 4
+    assert expected_width("\xad") == 4
+    assert expected_width("؀") == 6
+    assert expected_width("\ud800") == 6
+    assert expected_width("\U000e0001") == 10
+
+
+def test_the_sweep_reaches_every_code_point() -> None:
+    """The other premise: nothing was skipped.
+
+    "No disagreements" is the assertion that passes most convincingly when the
+    loop never ran, and the sweep quietly skips surrogates on its wire side --
+    so the width side is asserted to have covered the whole space, surrogates
+    included, by counting what it charged.
+    """
+    assert sum(sweep().width_counts.values()) == CODE_POINTS, (
+        f"the width sweep charged {sum(sweep().width_counts.values())} code points, not the "
+        f"{CODE_POINTS} that exist. A sweep that stopped early reports a clean partition over "
+        f"whatever it reached"
     )
