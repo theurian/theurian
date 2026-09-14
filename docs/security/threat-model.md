@@ -497,13 +497,32 @@ controls that read what a value *says* — SEC-11's scanning and SEC-15's safety
 triple — keep their own seats. And it bounds one request's arguments without
 bounding rate or aggregate cost, which stays T-6's.
 
-**Residual risk:** two, both recorded rather than discovered later.
-`MAX_PARAMS_RENDERED_CHARS` is unreachable over the shipped transport —
-`daemon/server.py` calls `streamable_http_app` without `max_request_body_size`,
-so the SDK's 4 MiB default answers `413` before any MCP framing exists, and the
-reconciliation is owed by
-[#669](https://github.com/theurian/theurian/issues/669) at the slice that opens
-the write surface. And `tool-context.schema.json` publishes `snapshotId`,
+**Residual risk:** two, both recorded rather than discovered later. The first is
+no longer the reachability of `MAX_PARAMS_RENDERED_CHARS`, which is settled:
+`build_app` passes `daemon/server.py`'s `MAX_REQUEST_BODY_BYTES` —
+**26,214,400 bytes**, derived as `3 * MAX_SOURCE_FILE_BYTES + 1 MiB` rather than
+left to the SDK's unrecorded 4 MiB default — and `mcp/validation.py`'s
+`_rendered_width` charges every leaf what `repr` renders it as, so the 12 MiB
+render budget is held by the charge at any transport cap and its bounded refusal
+is reachable in the shipped default configuration
+([#669](https://github.com/theurian/theurian/issues/669),
+[ADR-0031](../adr/0031-mcp-input-is-schema-validated-in-middleware.md)
+*Amendment 1*). **What is residual is which encodings still meet the bare
+`413`.** The `3 *` in that derivation is the worst ratio of wire bytes to landed
+UTF-8 bytes any *non-control* text reaches, and exactly two wire-escape classes
+exceed it,
+both at 6.0x: C0 characters other than `\b` `\t` `\n` `\f` `\r`, which have no
+remedy because raw C0 is illegal JSON, and DEL (U+007F), whose remedy is to send
+it raw rather than `ensure_ascii`-escaped (1.0x). Text dense in either still
+meets a transport-tier `413` — naming no tool, carrying no remedy, having no
+refusal shape — at a landed size the store would accept. Accepted rather than
+closed: that density is not what a knowledge store lands, and some residual is
+inherent to any finite byte bound at a tier that runs before MCP framing exists.
+Astral characters are **not** in that set; they expand at 3.0x and the cap
+covers them. The table and its residual are pinned by
+`tests/unit/test_transport_body_cap.py`, which holds the two residual classes
+*equal* to the measured over-multiplier set, so a third class rising past it
+fails there. And `tool-context.schema.json` publishes `snapshotId`,
 `agentId` and `taskId`, which the enforced contract now *admits* and which no
 handler in this build reads, so a caller that pins one is answered as if it had
 not ([#665](https://github.com/theurian/theurian/issues/665)).
@@ -1290,6 +1309,16 @@ wave more (measured 1.02 s at 36, 2.06 s at 72, 3.10 s at 120). The one
 base-vs-branch point measured by a single harness on both sides (a
 120-call real-search flood, in-process, 2026-08-30) put `knowledge.get`'s
 worst at 84.3 s with no gate against 3.0 s under the cap.
+
+Since [#669](https://github.com/theurian/theurian/issues/669) an unbounded
+arrival also carries a recorded per-request cost at the transport itself: the
+SDK buffers a whole body before anything parses it, so one in-flight request at
+`daemon/server.py`'s `MAX_REQUEST_BODY_BYTES` (26,214,400 bytes) holds roughly
+3.0x its wire bytes of Python heap — measured 2026-09-14, one authenticated
+at-cap POST peaking at 75.1 MiB (`tracemalloc`) and adding 50.1 MiB to
+`ru_maxrss` — while nothing in this process bounds how many such arrivals there
+are, the aggregate knob and its figures being on
+[#26's own comment](https://github.com/theurian/theurian/issues/26#issuecomment-5661638879).
 
 **Accepted design decision: the denial is per-daemon, not per-project.** Four
 concurrent searches on any *one* project refuse `knowledge.search` for every

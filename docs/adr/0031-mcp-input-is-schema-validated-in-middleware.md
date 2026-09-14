@@ -584,7 +584,10 @@ test that discharges it:
   `::test_every_refusal_template_fits_the_ceiling` recompute the ceiling from the
   live templates and the fragment cap, so a builder that grows a new unbounded
   fragment raises at construction instead of shipping an amplifier. Over the
-  wire, `test_input_validation_dispatch.py::test_the_widest_body_this_transport_admits_is_refused_without_echoing_it`.
+  wire, `test_input_validation_dispatch.py::test_the_widest_body_the_schema_tier_can_see_is_refused_without_echoing_it`
+  — renamed from `…the_widest_body_this_transport_admits…` in *Amendment 1*'s
+  change, because the transport now admits bodies wider than the schema tier is
+  ever handed.
 - **The published schema and the SDK-derived schema agree (decision 6).**
   `tests/integration/test_input_schema_agreement.py` states the relation in its
   module docstring, with the exclusions this ADR required it to name: the closure
@@ -682,16 +685,25 @@ Still owed, with the milestone that will satisfy it:
   B4**. What B2 owed here and delivered is the mechanism that will carry them,
   and the sweep that refuses a write-intent tool registered without a published
   schema at all.
-- **`MAX_PARAMS_RENDERED_CHARS` is unreachable over this transport, and the two
-  caps are unreconciled** —
-  [#669](https://github.com/theurian/theurian/issues/669), at slice B4.
-  `daemon/server.py` calls `streamable_http_app` without `max_request_body_size`,
-  so the SDK's 4 MiB `DEFAULT_MAX_REQUEST_BODY_SIZE` answers `413` before any MCP
-  framing exists, and the wire case for that axis is the widest body the
-  transport admits instead.
-  `test_input_validation_dispatch.py::test_the_rendered_character_bound_sits_above_what_the_transport_will_carry`
-  pins the relationship from both live constants and drives the `413`, so the gap
-  cannot widen unnoticed while that issue waits.
+- **The two caps are reconciled; what stays owed under this heading is narrower
+  than the reconciliation was** —
+  [#669](https://github.com/theurian/theurian/issues/669), landed. This bullet
+  used to read *"`MAX_PARAMS_RENDERED_CHARS` is unreachable over this transport,
+  and the two caps are unreconciled"*; both clauses are false now, and
+  *Amendment 1* below records what landed, what measuring it revealed, and what
+  it left open. In short: `build_app` passes a derived
+  `max_request_body_size` instead of taking the SDK's default, and
+  `MAX_PARAMS_RENDERED_CHARS` is held by `_rendered_width`'s charge rather than
+  by the two caps' ordering, so it is reachable and enforced at any transport
+  cap. **Still owed at slice B4**, both narrower: the *unit* a published
+  `maxLength` on a write-intent `body` counts — JSON Schema counts code points,
+  while the transport cap's derivation is in landed bytes — and a pin that
+  recomputes that cap's `+ 1 MiB` envelope allowance from the sibling fields'
+  own published bounds, which do not exist yet
+  ([#691](https://github.com/theurian/theurian/issues/691)). Two wire-escape
+  classes still meet the bare `413` at a landed size the store would accept;
+  that is recorded as an accepted residual on `MAX_REQUEST_BODY_BYTES` and in
+  the threat model's SEC-12 entry, not owed to a milestone.
 - **`snapshotId`, `agentId` and `taskId` are published, now enforced, and read by
   nothing** — [#665](https://github.com/theurian/theurian/issues/665), Phase B.
   They are decision 6's third exclusion, and the exclusion is held *equal* to the
@@ -706,3 +718,134 @@ Still owed, with the milestone that will satisfy it:
   discovered later; nothing about the refusal changes, and a client learns the
   server's identity from the handshake. Owed a fix only if a client is found that
   reads it.
+
+## Amendment 1 — the transport body cap is chosen and recorded, and the render budget no longer rests on it (2026-09-14, #669, PR #685)
+
+> **This is an append-only amendment. The decisions above are unchanged.** What
+> it corrects is a *Compliance* item: the second owed bullet, which said
+> `MAX_PARAMS_RENDERED_CHARS` is unreachable over this transport and the two
+> caps are unreconciled. Both clauses are false as of this change; the bullet now
+> points here, and the test cite it carried named a test this change deleted.
+>
+> Every figure below was measured on 2026-09-14, at `172e9d28`, a branch commit
+> of [PR #685](https://github.com/theurian/theurian/pull/685) and not on `main`
+> until that pull request lands — which is why the anchor carries the
+> pull-request qualifier rather than reading as a tree a reader can check out.
+> CPython 3.13, `mcp==2.1.1`, `jsonschema==4.26.0`.
+
+**What the record said, and what is true now.** `build_app` called
+`streamable_http_app` without `max_request_body_size`, so the SDK's
+`DEFAULT_MAX_REQUEST_BODY_SIZE` — 4 MiB, `mcp/server/transport_security.py` —
+was the first bound an inbound body met: a number this project never chose and
+never recorded. It now passes `daemon/server.py`'s `MAX_REQUEST_BODY_BYTES`,
+**26,214,400 bytes**, derived as `3 * MAX_SOURCE_FILE_BYTES + 1 MiB` from the
+byte cap ADR-0032 decision 3 puts on the file a proposal lands. That sits above
+`MAX_PARAMS_RENDERED_CHARS` (12 MiB), so a body between the two arrives, is
+framed, and meets this seam's bounded refusal — which names the tool and the
+limit it passed — instead of a bare `413 Request body too large` (22 bytes,
+measured) from a tier that exists before any MCP framing does. The formula is
+recomputed from both live constants by
+`test_input_validation_dispatch.py::test_the_transport_body_cap_is_derived_from_the_cap_on_a_landed_file`,
+the ordering by `::test_the_transport_body_cap_sits_above_the_rendered_character_bound`,
+and the tier boundary is driven at the exact byte on both sides by
+`::test_a_body_of_exactly_the_transport_cap_still_reaches_mcp_framing` and
+`::test_a_body_one_byte_past_the_transport_cap_is_refused_without_echoing_it`.
+
+**The multiplier is an enumeration, and that is what makes it an authority.**
+The first draft of this change sized the cap at `2 *`, from a sample of
+encodings judged realistic — quote, backslash, newline, tab, CJK — every one of
+which measures 2.0x and none of which is the worst case. The ratio is a property
+of a character's UTF-8 length, not of how ordinary its script is: under
+`ensure_ascii`, every 2-byte character (Latin supplements, Greek, Cyrillic,
+Hebrew, Arabic) costs a 6-byte `\uXXXX` over 2 landed bytes, **3.0x**, and a
+Cyrillic body landing under `MAX_SOURCE_FILE_BYTES` met the bare `413` *inside
+the change that was closing this issue*. The constant now records one row per
+UTF-8 byte length, under both encoder families — `ensure_ascii=True`, the
+stdlib default, and raw UTF-8, which the official Python and JS clients emit —
+and `tests/unit/test_transport_body_cap.py` is what makes that table
+falsifiable: `::test_the_multiplier_is_the_worst_wire_ratio_any_non_control_class_reaches`
+recovers the multiplier from the live constant by arithmetic and compares it to
+the measured maximum, and
+`::test_the_classes_that_exceed_the_multiplier_are_exactly_the_two_the_residual_names`
+holds the residual set by equality, so a third class rising past the multiplier
+fails too. Over the wire the acceptance is parametrized per script class —
+`test_input_validation_dispatch.py::test_a_write_intent_sized_body_arrives_and_is_refused_by_its_schema`
+posts a body landing at `MAX_SOURCE_FILE_BYTES` in ASCII, 2-byte, 3-byte and
+astral text, `ensure_ascii`-escaped, and asserts each is answered by its schema
+rather than by a `413`.
+
+**The render budget is held by the charge, not by the caps' ordering — and the
+premise that said otherwise is withdrawn.** `MAX_PARAMS_RENDERED_CHARS` was
+written under *"a request's rendered width never exceeds the bytes the caller
+sent"*, and `_rendered_width` charged a string `len(value)` accordingly, while
+`jsonschema` renders a failing instance with `{instance!r}` and `repr` escapes.
+The premise is false in both directions and was false before this change: raw
+U+007F is **one** wire byte and **four** rendered characters, and JSON admits it
+raw, so even under the SDK's 4 MiB default the worst reachable render was
+16,777,216 characters — 1.33x the 12 MiB budget. Raising the cap would have
+widened that breach 3.2x rather than creating it: a body of U+0600 that the new
+cap admits passed the gate charged about 8.9 M and made `jsonschema` build a
+**53,476,811-character** message, 4.25x the budget, while the refusal it
+eventually produced stayed bounded at 341 bytes and echoed nothing — the
+transient was the cost, not the answer. `_rendered_width` now charges a string
+exactly what `repr` renders it as — an `isprintable()` fast path that allocates
+nothing, and `len(repr(value)) - 2` otherwise, exact because a string's `repr`
+carries exactly two delimiting quotes — over all 1,114,112 code points, verified
+exhaustively rather than argued. So the budget is enforced by the charge
+at **any** transport cap, and the ordering above now decides only *which*
+refusal a caller between the two bounds receives. Pinned per escape class by
+`tests/unit/test_rendered_width_charge.py` and driven over the wire by
+`test_input_validation_dispatch.py::test_escape_heavy_text_smaller_than_the_render_budget_still_exceeds_it`,
+whose body is smaller in bytes than the render budget itself — so no ordering of
+the two caps could have refused it. The withdrawn sentence survives in the tree
+only where something refutes it: the two constant docstrings
+(`daemon/server.py`'s `MAX_REQUEST_BODY_BYTES` and `mcp/validation.py`'s
+`MAX_PARAMS_RENDERED_CHARS`), the two test modules that drive its falseness, and
+this paragraph. No record states it as fact.
+
+**Two caller-visible behaviour changes**, both named here because a client
+author reads the refusal, not the constant. A body up to 26,214,400 bytes is now
+read where 4 MiB was the limit, so the write-intent body ADR-0032 sizes for
+arrives and is answered by its schema — naming the tool and the constraint —
+where a 2-byte-script body of the same landed size previously met a `413` that
+named nothing. And an escape-heavy body that previously reached a published
+`maxLength` refusal can now meet the rendered-character refusal first: the same
+`isError`, a different limit and a different message.
+
+**The residual is recorded, not closed, and it is two rows of the wire table.**
+Only the control classes exceed 3.0x, both at 6.0x: C0 characters other than
+`\b` `\t` `\n` `\f` `\r`, which have **no** remedy because raw C0 is illegal
+JSON, and DEL (U+007F), whose remedy is to send it raw rather than
+`ensure_ascii`-escaped (1.0x). Text dense in either still meets the bare `413`
+at a landed size the store would accept. Accepted rather than closed: that
+density is not what a knowledge store lands, and some residual is inherent to
+any finite byte bound at a tier with no MCP framing to refuse through. Astral
+characters are **not** in that set — they expand at 3.0x and the cap covers
+them.
+
+**What the bound costs per request, and what still bounds nothing.** The SDK
+buffers a whole body before anything parses it, so roughly 3.0x the wire bytes
+of Python heap is live while one at-cap request is in flight: measured at this
+cap, one authenticated at-cap POST peaks at 75.1 MiB of Python heap
+(`tracemalloc`) and adds 50.1 MiB to `ru_maxrss`. The derivation also couples
+this daemon's per-request memory ceiling to a *filesystem* constant — raising
+`MAX_SOURCE_FILE_BYTES` for a reason about files raises it by three times as
+much — which is recorded on `MAX_REQUEST_BODY_BYTES` because nothing at the
+`security/paths.py` end says so. The *number* of concurrent arrivals is bounded
+nowhere in-process; that is T-6's recorded deferral, and the figures are on
+[#26](https://github.com/theurian/theurian/issues/26#issuecomment-5661638879).
+
+**Two homes for what this hands on.** The unit question and the envelope pin
+both fall to slice B4 ([#691](https://github.com/theurian/theurian/issues/691)).
+A `maxLength` transcribed from an 8 MiB byte cap admits up to four times the bytes
+it names, because JSON Schema counts code points, and the `+ 1 MiB` addend is an
+allowance inside a hard total rather than a derived figure — nothing could
+derive it until `description`, `evidence.*`, `sourceAnchors[]`, `labels[]` and
+`scopePaths[]` carry published bounds. Separately, the same under-charge exists
+in `infrastructure/filesystem/migration_loader.py`'s own `_rendered_width`,
+whose docstring states a lower bound as intended behaviour
+([#693](https://github.com/theurian/theurian/issues/693)) — box-split so this
+class is closed across both seats rather than at the one this change touched.
+Finally, the stale test cite corrected above was found by review rather than by
+the suite: nothing checks that a test name an ADR cites still exists
+([#692](https://github.com/theurian/theurian/issues/692)).

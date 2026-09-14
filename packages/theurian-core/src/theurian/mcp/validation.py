@@ -152,8 +152,8 @@ MAX_PARAMS_NODES: Final = 100_000
 #: under the SDK's own default. The decision, its derivation from
 #: ``MAX_SOURCE_FILE_BYTES``, and the encodings it still leaves meeting the
 #: ``413`` are recorded on ``MAX_REQUEST_BODY_BYTES`` itself, which is the place
-#: to read before moving either cap. ADR-0031's *Still owed* bullet on #669
-#: describes the state before this change and is owed the matching correction.
+#: to read before moving either cap; ADR-0031's *Amendment 1* records the same
+#: reconciliation from the decision's side, with what it left open.
 #:
 #: It is *not* the same guard ``migration_loader``'s ``MAX_DOCUMENT_RENDERED_CHARS``
 #: is. There, a YAML anchor aliased N deep expands a 500-byte file into millions

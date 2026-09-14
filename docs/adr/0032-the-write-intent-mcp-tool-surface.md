@@ -392,7 +392,7 @@ them.** Both live in `cli/propose_commands.py`, above the service:
 
 | CLI guarantee | Where it lives | What owes the wire equivalent |
 | :-- | :-- | :-- |
-| The body is capped at `MAX_SOURCE_FILE_BYTES` (8 MiB) | `_read_body`, applied to the body **file**'s `stat().st_size` — there is no file on this path (decision 2), so nothing applies it | ADR-0031's published input schema (slice B2) carries an explicit `maxLength` on `body`, and slice B4 drives it |
+| The body is capped at `MAX_SOURCE_FILE_BYTES` (8 MiB) | `_read_body`, applied to the body **file**'s `stat().st_size` — there is no file on this path (decision 2), so nothing applies it | ADR-0031's published input schema (slice B2) carries an explicit `maxLength` on `body`, and slice B4 drives it — in a unit that is still open, since `maxLength` counts code points and this cap is in bytes, so the wire bound must either be the sound over-approximation plus a byte check at landing or an explicitly recorded different unit ([#691](https://github.com/theurian/theurian/issues/691)) |
 | `--label authored-in-theurian` beside `--authored-here` is deduplicated | `_merge_labels`, which exists because `revisionMetadata.labels` is `uniqueItems` in the migration schema and a duplicate would fail the generator's own validation | The published input schema sets `uniqueItems` on `labels[]`, so the refusal is a schema refusal with a key path rather than a validation failure over a document the caller cannot see |
 
 Neither is a defect in the CLI; both are the consequence of the service taking
