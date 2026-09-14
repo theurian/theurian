@@ -152,17 +152,38 @@ UNAUTHENTICATED_PATHS: Final = frozenset({"/health"})
 #:   widens, which is the difference between those and the 1x/3x/5x measured for
 #:   the call as a whole. Nothing downstream copies the string again:
 #:   ``jsonrpc_message_adapter.validate_python`` peaks at 0.0 MiB and hands back
-#:   the very same object (checked by identity).
-#: * **``jsonschema``'s message construction, on refusal paths only.** Every
-#:   keyword but the two in ``mcp/validation.py``'s ``_KEYWORDS_THAT_NAME_KEYS``
-#:   builds its message with ``{instance!r}``, so a request that *passes* the
-#:   charge gate and then fails such a keyword makes ``iter_errors`` render the
-#:   instance -- a second string, at the same PEP 393 width, up to
+#:   the very same object (checked by identity). **Those multiples are measured
+#:   over single-large-leaf bodies**, which is the shape this cap is sized for. A
+#:   body of many small values instead pays CPython's per-object overhead, which
+#:   the ratio does not include -- ~46 bytes a value, measured, taking 98,900
+#:   distinct short strings to 4.87x their wire bytes where one leaf of the same
+#:   size parses at 1.00x, and the round-4 sweep to 7.57x on shorter ones. That
+#:   excess is bounded *absolutely* rather than by the body:
+#:   :data:`~theurian.mcp.validation.MAX_PARAMS_NODES` caps it at a few MiB.
+#: * **``jsonschema``'s message construction, on refusal paths only.** *Most*
+#:   keywords build their message with ``{instance!r}`` -- including every
+#:   constraint the published schemas apply to a string field that a large value
+#:   can fail (``maxLength``, ``minLength``, ``pattern``), and ``type`` and
+#:   ``enum`` besides. Measured on ``jsonschema==4.26.0``, ``required``,
+#:   ``const`` and ``maximum`` name no instance value at all, and the two in
+#:   ``mcp/validation.py``'s ``_KEYWORDS_THAT_NAME_KEYS`` name only a key; an
+#:   earlier draft said every keyword but those two rendered the instance, which
+#:   over-states the set. A request that *passes* the charge gate and then fails
+#:   a rendering keyword makes ``iter_errors`` build the instance -- a second
+#:   string, up to
 #:   :data:`~theurian.mcp.validation.MAX_PARAMS_RENDERED_CHARS` characters.
+#:
+#:   **That string sits at the width of the ``repr`` *output*, which is not
+#:   always the parsed string's.** ``repr`` escapes every non-printable code
+#:   point to ASCII, so only a code point that survives it raw can widen the
+#:   result: the render strings take the parsed kind when the widest code point
+#:   is *printable*, and 1 byte per character when every wide one is escaped
+#:   (the rule is exact -- the output's kind is the kind of the widest printable
+#:   code point, checked over 200,000 mixed strings with no exception).
 #:   Bounded by ``2 x MAX_PARAMS_RENDERED_CHARS x 4`` bytes, ~96 MiB isolated.
 #:
 #: Three path families follow, and they are the honest unit of this record.
-#: **One expression predicts all three**, and it is a maximum rather than a sum,
+#: **One expression bounds all three**, and it is a maximum rather than a sum,
 #: because a peak is a maximum over *time*: the parse's transient buffers are
 #: freed before ``jsonschema`` renders anything, so the two never stand together::
 #:
@@ -171,9 +192,19 @@ UNAUTHENTICATED_PATHS: Final = frozenset({"/health"})
 #:         2*wire + code_points*kind + 2*rendered*kind,  # the render moment
 #:     )
 #:
-#: Measured by ``test_request_memory_model.py`` over five shapes at two scales:
-#: every whole-request ratio within **+0.12x** of that expression, and always
-#: above it, by the request's fixed overhead.
+#: where ``kind`` is the *parsed* string's bytes per code point. **Read it as an
+#: upper bound, not as a prediction.** It is tight -- within **+0.12x**, and
+#: always above, by the request's fixed overhead -- for the five shapes
+#: ``test_request_memory_model.py`` pins, which are single-large-leaf bodies
+#: whose widest code point is printable or 1-byte. Outside that set it
+#: over-predicts, because the render moment's ``kind`` is the *parsed* string's
+#: while the strings it prices sit at the ``repr`` output's: a body of
+#: non-printable astral characters measures 8.11x where the expression says
+#: 23.00x, and one of non-printable U+0600 measures 9.11x against 15.00x. A
+#: DEL-only body is unaffected, its parsed kind already being 1. Swept over the
+#: code point space, the expression never under-predicts -- worst
+#: over-prediction -14.88x -- which is why it is recorded as the bound this
+#: daemon can be held to rather than as a figure to expect.
 #:
 #: **(i) Charge-refused shapes: the parse moment only.** ``_unbounded`` refuses
 #: before ``iter_errors`` is ever called, so nothing renders and the second
