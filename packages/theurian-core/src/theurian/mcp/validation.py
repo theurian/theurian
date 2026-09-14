@@ -454,9 +454,12 @@ def _chunked_width(value: str, remaining: int) -> int:
     **The cap has two terms, not one.** The line below builds two strings per
     slice -- the concatenation ``'"' + value[...]`` and the ``repr`` of it -- and
     both can be in the 4-byte kind at the same time, so the bound is
-    ``_CHUNK_CODE_POINTS * (10 + 1) * 4`` = 360,448 bytes of payload, **~352
-    KiB**. Measured through the walk at 360,548 bytes, the difference being the
-    two ``str`` object headers; round 3's own instance measured 361,156 bytes.
+    ``_CHUNK_CODE_POINTS * (10 + 1) * 4`` = **360,448 bytes of payload**, ~352
+    KiB, plus the two ``str`` object headers. Three readings of that one
+    transient have been taken -- through the walk, directly on the arm, and on
+    round 3's own instance -- and they are one range rather than three figures:
+    **360,548 to 361,156 bytes**, every one of them the payload bound plus
+    headers, the spread being where the widening character falls in its slice.
     The worst leaf is one of *non-printable* astral characters carrying a
     *printable* astral: the first makes the repr output ten characters per code
     point, the second forces both that output and the concatenated slice into

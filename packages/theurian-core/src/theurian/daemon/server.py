@@ -161,12 +161,24 @@ UNAUTHENTICATED_PATHS: Final = frozenset({"/health"})
 #:   :data:`~theurian.mcp.validation.MAX_PARAMS_RENDERED_CHARS` characters.
 #:   Bounded by ``2 x MAX_PARAMS_RENDERED_CHARS x 4`` bytes, ~96 MiB isolated.
 #:
-#: Three path families follow, and they are the honest unit of this record:
+#: Three path families follow, and they are the honest unit of this record.
+#: **One expression predicts all three**, and it is a maximum rather than a sum,
+#: because a peak is a maximum over *time*: the parse's transient buffers are
+#: freed before ``jsonschema`` renders anything, so the two never stand together::
 #:
-#: **(i) Charge-refused shapes: two terms.** ``_unbounded`` refuses before
-#: ``iter_errors`` is ever called, so nothing renders. One authenticated at-cap
-#: POST, one fresh process per row, ``tracemalloc``, measured 2026-09-15 at this
-#: cap (26,214,400 wire bytes):
+#:     peak = max(
+#:         2*wire + parse_peak,                          # the parse moment
+#:         2*wire + code_points*kind + 2*rendered*kind,  # the render moment
+#:     )
+#:
+#: Measured by ``test_request_memory_model.py`` over five shapes at two scales:
+#: every whole-request ratio within **+0.12x** of that expression, and always
+#: above it, by the request's fixed overhead.
+#:
+#: **(i) Charge-refused shapes: the parse moment only.** ``_unbounded`` refuses
+#: before ``iter_errors`` is ever called, so nothing renders and the second
+#: moment does not exist. One authenticated at-cap POST, one fresh process per
+#: row, ``tracemalloc``, measured 2026-09-15 at this cap (26,214,400 wire bytes):
 #:
 #: ======================== =============== ==============
 #: Body                     ``tracemalloc`` ``ru_maxrss``
@@ -177,11 +189,11 @@ UNAUTHENTICATED_PATHS: Final = frozenset({"/health"})
 #: U+007F + one astral      175.1 MiB 7.00x ~75 MiB
 #: ======================== =============== ==============
 #:
-#: The two terms compose to every one of those rows: 2x + 1x = 3.00x for both
+#: The parse moment reproduces every one of those rows: 2x + 1x = 3.00x for both
 #: 1-byte-kind bodies, 2x + 3x = 5.00x with a 2-byte character, 2x + 5x = 7.00x
 #: with an astral one. The dense-U+007F row's extra 0.01x is the charge's own
 #: chunked transient, priced on
-#: :func:`~theurian.mcp.validation._chunked_width`. Composing on all four is the
+#: :func:`~theurian.mcp.validation._chunked_width`. Holding on all four is the
 #: check that this is the right model rather than an arithmetic that fits one
 #: row. **3.00x is the ASCII row, not a bound**; 7.00x is the worst of these
 #: four, and an earlier draft recorded the ASCII row as though it were
@@ -191,30 +203,39 @@ UNAUTHENTICATED_PATHS: Final = frozenset({"/health"})
 #: MiB. The two instruments are named beside their own figures because they
 #: answer different questions and disagree by design.
 #:
-#: **(ii) ``jsonschema``-answered shapes: three terms, and the worst ratios this
-#: daemon reaches.** A body of *printable* multi-byte text is charged one
-#: character per code point, so it passes the gate that the family-(i) rows meet
-#: and reaches ``iter_errors``. Round-3 measurements, ``tracemalloc``, one
-#: authenticated POST each:
+#: **(ii) ``jsonschema``-answered shapes: both moments, and whichever is larger
+#: wins.** A body of *printable* multi-byte text is charged one character per
+#: code point, so it passes the gate that the family-(i) rows meet and reaches
+#: ``iter_errors``. Round-3 measurements, ``tracemalloc``, one authenticated POST
+#: each -- these are peaks, so the max form leaves them where they were:
 #:
 #: * **ratio-worst: 114.1 MiB = 38.04x the wire bytes**, at only 3,145,848 wire
 #:   bytes -- ``"\x7f" * 3,145,717`` plus one U+1F600, charged 12,582,869, just
-#:   under the budget and therefore admitted.
+#:   under the budget and therefore admitted. Its render moment is 38.00x against
+#:   a 7.00x parse moment, so the render decides it.
 #: * **absolute-worst: ~194-200 MiB, up to 8.00x**, at the cap: CJK filler plus
 #:   ASCII plus one astral character, saturating the wire cap and the render
 #:   budget at the same time.
 #:
-#: Both exceed the 175.1 MiB that family (i) tops out at, and the first exceeds
-#: every ratio in that table by five-fold at an eighth of the size. **The
+#: **The two moments are not added.** An earlier draft of this paragraph
+#: presented the three terms additively, which over-states a printable 2-byte
+#: body by 1.88x the wire bytes -- 7.00x predicted against 5.12x measured -- by
+#: charging it for buffers that were already freed. And the ``max`` is
+#: load-bearing rather than a formality: printable CJK peaks at its *parse*
+#: moment, 5.00x against a 4.00x render moment, so different terms decide
+#: different shapes' peaks and neither alone is the model.
+#:
+#: Both rows exceed the 175.1 MiB that family (i) tops out at, and the first
+#: exceeds every ratio in that table by five-fold at an eighth of the size. **The
 #: per-request figure is therefore not a function of the body's widest code point
 #: alone, and not monotone in the body's length**; an earlier draft of this
-#: paragraph said both, and this family is the counterexample to each. The third
-#: term appears only on the refusal path of a rendering keyword, is uncorrelated
+#: paragraph said both, and this family is the counterexample to each. The render
+#: moment exists only on the refusal path of a rendering keyword, is uncorrelated
 #: with the size of the request that triggers it, and is bounded by the render
 #: budget times the kind times two.
 #:
-#: **(iii) Valid shapes: two terms.** Nothing fails, so nothing renders; the
-#: family-(i) composition applies without its third term.
+#: **(iii) Valid shapes: the parse moment only.** Nothing fails, so nothing
+#: renders; family (i)'s composition applies without a second moment.
 #:
 #: Raising this constant raises every row proportionally, and the derivation
 #: makes them track a *filesystem* constant: raising
