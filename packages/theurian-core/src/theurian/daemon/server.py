@@ -54,36 +54,114 @@ UNAUTHENTICATED_PATHS: Final = frozenset({"/health"})
 #: it rather than left at a default.
 #:
 #: **Derived, not chosen.** The largest legitimate body this daemon is sized for
-#: is a write-intent one -- the seven tools registered today are all read-side
-#: and sit far below this, so the sizing is for the surface ADR-0032 designs and
-#: slice B4 registers -- and what bounds such a body is its *landed* form:
+#: is a write-intent one -- every tool registered today is read-side and sits far
+#: below this, so the sizing is for the surface ADR-0032 designs and slice B4
+#: registers (``git grep -c '@_tool(' -- packages/theurian-core/src`` answers 7,
+#: 2026-09-14: ``knowledge.search``/``.get``/``.status``, ``project.list``,
+#: ``review.findings``/``.search``, ``system.capabilities``) -- and what bounds
+#: such a body is its *landed* form:
 #: :data:`~theurian.security.paths.MAX_SOURCE_FILE_BYTES` is the byte cap on the
-#: file a proposal writes (ADR-0032 decision 3). The ``2 *`` covers every
-#: realistic JSON wire form of such a body, measured 2026-09-14 on CPython 3.13
-#: as wire bytes over landed bytes: text whose every character takes a two-byte
-#: escape -- a quote, a backslash, a newline, a tab -- is exactly 2.0x, and
-#: ``ensure_ascii``-escaped CJK (3 UTF-8 bytes becoming a 6-byte ``\uXXXX``) is
-#: exactly 2.0x as well. The ``+ 1 MiB`` is headroom for the JSON-RPC envelope
-#: around the body: the frame, the tool name, and the call's other arguments.
+#: file a proposal writes (ADR-0032 decision 3).
 #:
-#: **The residual is recorded, not closed.** Two encodings expand past 2.0x and
-#: can still meet this ``413`` at a landed size the store would accept: text
-#: dense in C0 control characters escapes at 6.0x (one byte becoming a 6-byte
-#: ``\u0001``), and ``ensure_ascii``-escaped astral characters at 3.0x (4 UTF-8
-#: bytes becoming a 12-byte surrogate pair). Some such residual is inherent to
-#: any finite byte bound at a tier with no MCP framing to refuse through. For
-#: the astral case the remedy is to send the body as raw UTF-8 instead of
-#: ``ensure_ascii``-escaped, which measures 1.0x; the control-character case has
-#: none, because JSON requires C0 escaping whatever the encoder is set to -- and
-#: a body that is mostly control characters is not the text a knowledge store
-#: lands.
+#: The ``3 *`` is **the worst ratio of wire bytes to landed UTF-8 bytes that any
+#: non-control text reaches**, derived from a complete enumeration by UTF-8 byte
+#: length rather than from a sample of scripts someone judged realistic. That
+#: distinction is the whole correction: the sample an earlier draft used returned
+#: 2.0x while ordinary Cyrillic, Greek, Hebrew and Arabic prose was expanding at
+#: 3.0x, because the ratio is a property of a character's UTF-8 length and not of
+#: how ordinary its script is. Measured 2026-09-14 on CPython 3.13 through
+#: ``json.dumps``, per class, under both encoder families (``ensure_ascii=True``,
+#: the stdlib default, and raw UTF-8, which the official Python and JS clients
+#: emit):
+#:
+#: * **1-byte printable ASCII** -- 1.0x escaped and raw. The seven characters
+#:   JSON must escape are 2.0x under *both* encoders: ``"``, ``\``, and the
+#:   five two-character control escapes ``\b`` ``\t`` ``\n`` ``\f`` ``\r``.
+#: * **1-byte C0 other than those five** -- 6.0x (``\u0001``) under both
+#:   encoders, since JSON mandates escaping U+0000-U+001F whatever
+#:   ``ensure_ascii`` is set to. Raw is illegal, so there is no cheaper form.
+#: * **1-byte DEL (U+007F)** -- 6.0x escaped, because ``ensure_ascii`` escapes
+#:   everything outside U+0020-U+007E; 1.0x raw, which JSON permits.
+#: * **2-byte (U+0080-U+07FF -- Latin supplements, Greek, Cyrillic, Hebrew,
+#:   Arabic)** -- **3.0x** escaped, a 6-byte ``\uXXXX`` over 2 landed bytes;
+#:   1.0x raw.
+#: * **3-byte (CJK, kana, Hangul, Thai)** -- 2.0x escaped, 1.0x raw.
+#: * **4-byte astral** -- **3.0x** escaped, a 12-byte surrogate pair over 4
+#:   landed bytes; 1.0x raw.
+#:
+#: So the worst over that population, controls excepted, is **3.0x**, reached by
+#: the 2-byte class and by the astral class under ``ensure_ascii``; raw UTF-8
+#: never exceeds 2.0x. Swept over every non-control code point rather than
+#: sampled inside the classes, so the class boundaries are measured too.
+#:
+#: **The residual is recorded, not closed**, and it is now two rows of that table
+#: rather than a guess. Only the control classes exceed 3.0x, both at 6.0x, and
+#: either can still meet this ``413`` at a landed size the store would accept:
+#:
+#: * **C0 other than** ``\b`` ``\t`` ``\n`` ``\f`` ``\r`` -- no remedy,
+#:   because raw C0 is illegal JSON. Accepted rather than closed: text dense
+#:   enough in control characters to reach 6.0x is not what a knowledge store
+#:   lands.
+#: * **DEL (U+007F)** -- the remedy is to send it raw rather than
+#:   ``ensure_ascii``-escaped, which measures 1.0x.
+#:
+#: Nothing else exceeds 3.0x. Some residual is inherent to any finite byte bound
+#: at a tier with no MCP framing to refuse through.
+#:
+#: **The ``+ 1 MiB`` is envelope slack inside the bound, not a coverage claim.**
+#: It is not derived from a population and does not assert one: ADR-0032's
+#: ``description``, ``evidence.*``, ``sourceAnchors[]``, ``labels[]`` and
+#: ``scopePaths[]`` carry no published ``maxLength`` until slice B4, so nothing
+#: could derive it yet. What makes that safe is that the addend sits *inside* a
+#: hard total -- whatever the envelope costs, a caller cannot exceed
+#: :data:`MAX_REQUEST_BODY_BYTES` -- so it buys a worst-case body room for its
+#: JSON-RPC frame, tool name and sibling arguments without changing what this
+#: daemon will read. Sizing those fields, and the pin that would recompute this
+#: addend from them, is https://github.com/theurian/theurian/issues/691.
+#:
+#: **The unit is landed bytes, and the schema side does not yet agree.**
+#: ADR-0032's compliance table records that no code applies
+#: ``MAX_SOURCE_FILE_BYTES`` on this wire path, and the ``maxLength`` slice B4
+#: plans counts *code points* rather than bytes -- so a ``maxLength`` set to the
+#: byte cap would admit up to four times the bytes. The landed-byte framing here
+#: is the intended invariant; which unit the published schema states it in is
+#: #691's to settle.
+#:
+#: **What the bound costs, per request.** The SDK buffers a whole body before
+#: anything parses it -- ``RequestBodyLimitMiddleware`` accumulates into a
+#: ``bytearray``, copies that to ``bytes``, and the JSON parse then materialises
+#: a ``str`` -- so roughly 3.0x the wire bytes of Python heap is live while one
+#: at-cap request is in flight. Measured 2026-09-14 at this cap: one
+#: authenticated at-cap POST peaks at 75.1 MiB of Python heap (``tracemalloc``,
+#: 3.00x the 26,214,400 wire bytes) and adds 50.1 MiB to ``ru_maxrss`` (2.00x --
+#: lower, because part of that peak lands on pages the process already holds).
+#: Both instruments are named because they answer different questions and
+#: disagree by design. Raising this constant raises those figures
+#: proportionally, and the derivation makes them track a *filesystem* constant:
+#: raising :data:`~theurian.security.paths.MAX_SOURCE_FILE_BYTES` for a
+#: reason about files raises this daemon's per-request memory ceiling by three
+#: times as much. Nothing at the ``security/paths.py`` end says so, which is why
+#: it is recorded here. The *number* of concurrent arrivals is not bounded
+#: in-process at all -- that is T-6's recorded deferral, and the aggregate knob
+#: and its figures are on
+#: https://github.com/theurian/theurian/issues/26#issuecomment-5661638879.
 #:
 #: **It sits above** ``mcp/validation.py``'s ``MAX_PARAMS_RENDERED_CHARS``
-#: (12 MiB), which is the reconciliation #669 asked for and is deliberate. A
-#: request between the two caps now arrives framed and meets that seam's
-#: bounded refusal -- which names the tool and the limit it passed -- rather
-#: than the bare ``413`` above.
-MAX_REQUEST_BODY_BYTES: Final = 2 * MAX_SOURCE_FILE_BYTES + 1024 * 1024
+#: (12 MiB), deliberately: a request between the two caps arrives framed and
+#: meets that seam's bounded refusal -- which names the tool and the limit it
+#: passed -- rather than the bare ``413`` above. That ordering is no longer what
+#: makes the render budget hold, though. ``_rendered_width`` charges every leaf
+#: at least what ``repr`` renders it as, so that budget is enforced by the charge
+#: at *any* transport cap: moving this constant moves how many bytes get
+#: buffered, never how much render work ``jsonschema`` can be made to do.
+#:
+#: Read ``_rendered_width``'s own table before reasoning about the two together.
+#: It counts *rendered characters per code point* under ``{instance!r}``, a
+#: different question from the wire table above -- *wire bytes per landed UTF-8
+#: byte* under ``json.dumps`` -- and conflating the two is exactly what produced
+#: the "a request's rendered width never exceeds the bytes the caller sent"
+#: premise that had to be withdrawn.
+MAX_REQUEST_BODY_BYTES: Final = 3 * MAX_SOURCE_FILE_BYTES + 1024 * 1024
 
 
 #: Origins the browser may present. Anything else is a cross-origin attempt at a

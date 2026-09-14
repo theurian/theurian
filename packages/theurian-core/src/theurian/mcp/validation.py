@@ -460,9 +460,11 @@ def _rendered_width(value: object) -> int:
     contribution exactly rather than an estimate. The fallback builds one repr
     per dirty leaf, a transient bounded at ten characters per code point and
     four per wire byte. It therefore scales with
-    :data:`~theurian.daemon.server.MAX_REQUEST_BODY_BYTES` and owes a fresh
-    measurement whenever that constant moves.
-    That transient is a peak and not a sum: each repr dies when this function returns, and
+    :data:`~theurian.daemon.server.MAX_REQUEST_BODY_BYTES` and is re-measured
+    whenever that moves: at the cap of 2026-09-14 the widest leaf the transport
+    admits is 26,214,273 raw U+007F, charged 104,857,092 characters, measured at
+    **+100.0 MiB** peak RSS.
+    That is a peak and not a sum: each repr dies when this function returns, and
     :func:`_unbounded` stops at the first leaf whose charge carries the running
     total past the budget, so in the hostile cases the transient is immediately
     followed by the refusal the charge it just computed triggers.
