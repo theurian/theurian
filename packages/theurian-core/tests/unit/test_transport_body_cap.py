@@ -14,11 +14,18 @@ encodings someone judged realistic -- quote, backslash, newline, tab, CJK -- all
 of which measure 2.0x, none of which is the worst case. Ordinary Cyrillic,
 Greek, Hebrew and Arabic prose expands at 3.0x, because the ratio is a property
 of a character's UTF-8 length and not of how ordinary its script is, and a body
-of it landing at the file cap met the bare ``413``. So the table below is built
-per *wire-escape class* rather than per remembered script: every UTF-8 byte
-length, both control classes, and the ASCII characters JSON must escape, each
-asserted against the factor its own encoding derives rather than against a
-shared number.
+of it landing at the file cap met the bare ``413``. So the table is built per
+*wire-escape class* rather than per remembered script: every UTF-8 byte length,
+both control classes, and the ASCII characters JSON must escape, each asserted
+against the factor its own encoding derives rather than against a shared number.
+
+The table itself is ``wire_escape_classes``, beside the other shared test
+helpers, because the threat model's T-11 residual states the same count and the
+same factors in prose and
+``tests/integration/test_sec12_shipped_claims.py::test_the_t11_residual_names_as_many_classes_as_the_unit_module_pins``
+reads them from there rather than transcribing them. What stays here is
+everything that *checks* the table: the measurement through ``json.dumps``, and
+the independent derivation from each character's own encoding.
 
 A ratio moving out from under the recorded decision goes RED here. That is the
 signal to re-measure and re-record the residual on the constant, not to retune a
@@ -34,11 +41,11 @@ and drives the ``413`` boundary at exact bytes.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from fractions import Fraction
 from typing import Final
 
 import pytest
+from wire_escape_classes import COVERED_CLASSES, RESIDUAL_CLASSES, WIRE_CLASSES
 
 from theurian.daemon.server import MAX_REQUEST_BODY_BYTES
 from theurian.security.paths import MAX_SOURCE_FILE_BYTES
@@ -57,54 +64,12 @@ REPEAT: Final = 1024
 ENVELOPE_HEADROOM: Final = 1024 * 1024
 
 #: The characters JSON renders as a two-character escape whatever the encoder is
-#: set to: the quote, the backslash, and the five short control escapes.
+#: set to: the quote, the backslash, and the five short control escapes. Here
+#: rather than beside the table in ``wire_escape_classes``, because only the
+#: derivations below read it: it is this module's model of the grammar, which is
+#: the thing the table is checked *against*, and moving the two together would
+#: let a wrong model and a wrong table agree.
 JSON_SHORT_ESCAPES: Final = frozenset('"\\\b\t\n\f\r')
-
-
-@dataclass(frozen=True, slots=True)
-class WireClass:
-    """One wire-escape class, its representative, and the factors recorded for it.
-
-    ``escaped`` and ``raw`` are the two columns
-    :data:`~theurian.daemon.server.MAX_REQUEST_BODY_BYTES`'s docstring states as
-    wire bytes over landed UTF-8 bytes, under ``ensure_ascii=True`` (the stdlib
-    default, and what the escaping clients emit) and under raw UTF-8 (what the
-    official Python and JS clients emit).
-    """
-
-    character: str
-    escaped: int
-    raw: int
-
-
-#: Every class a character can fall into on this wire, one representative each.
-#: Partitioned by what decides the ratio -- the character's UTF-8 length and
-#: whether JSON or ``ensure_ascii`` must escape it -- so the population is
-#: complete by construction rather than by whoever last remembered a script.
-#: Which of these rows the constant records as its residual is
-#: :data:`RESIDUAL_CLASSES`, kept apart from the table so the split is asserted
-#: against the measurement rather than declared alongside it.
-WIRE_CLASSES: Final = {
-    "printable_ascii": WireClass("a", escaped=1, raw=1),
-    "json_escapable": WireClass('"', escaped=2, raw=2),
-    "short_control_escape": WireClass("\n", escaped=2, raw=2),
-    "c0_other": WireClass("\x01", escaped=6, raw=6),
-    "delete": WireClass("\x7f", escaped=6, raw=1),
-    "two_byte": WireClass("д", escaped=3, raw=1),
-    "three_byte": WireClass("日", escaped=2, raw=1),
-    "astral": WireClass("\U0001f600", escaped=3, raw=1),
-}
-
-#: The classes the constant records as a residual it has not closed: the two
-#: control rows, and only those. Asserted as a set below rather than checked one
-#: at a time, so a third class rising past the multiplier fails too.
-RESIDUAL_CLASSES: Final = frozenset({"c0_other", "delete"})
-
-#: The classes the ``3 *`` multiplier is derived over -- everything the residual
-#: does not name. A knowledge store lands text, not control bytes, which is why
-#: the cap is sized for this population and the residual is recorded rather than
-#: paid for.
-COVERED_CLASSES: Final = frozenset(WIRE_CLASSES) - RESIDUAL_CLASSES
 
 
 def _landed_bytes(sample: str) -> int:
