@@ -37,8 +37,10 @@ recomputed from. They do **not** pin:
   with no live constant behind them: nothing in the build computes 175.1 MiB,
   so nothing here can recompute it, and a pin would be a second transcription
   of the same reading. What *is* pinned about that table is its **model** --
-  ``tests/integration/test_request_memory_model.py`` holds the two terms it
-  composes from, at a scaled body.
+  ``tests/integration/test_request_memory_model.py`` holds the three terms and
+  the three path families it composes from, at a scaled body. (Two was this
+  sentence's first count, written when the model had two terms and its pin
+  excluded the family the third one appears on.)
 * **Amendment 1's narrative** -- its decision text, its behaviour-change
   list, its measurement-block anchors. Its *figures* are held, and all of them:
   the composed ceiling, the shipped cap's pre-fix pair, and the three

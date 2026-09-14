@@ -665,16 +665,29 @@ def test_no_two_rows_record_the_same_pair_of_factors() -> None:
       cost, different reason: JSON spells ``"`` and ``\\`` one way and the five
       short control escapes another. Nothing measurable separates them, and
       nothing needs to -- they are one wire class split for readability.
-    * ``two_byte`` / ``astral``, both ``(3, 1)``. This one matters, and it is the
-      boundary a review mutation went through: filing a CJK character in the
-      ``astral`` row left both rows' factors correct and took four-byte text out
-      of the population entirely. What catches it is not the factors but
+    * ``two_byte`` / ``astral``, both ``(3, 1)``. Two classes of different UTF-8
+      length that cost the same on the wire. A *representative* filed in the
+      wrong one of these is caught -- by
       :func:`test_every_representative_lands_as_the_byte_count_its_class_name_asserts`
-      and :func:`test_every_representative_sits_in_the_range_its_class_name_describes`
-      -- the arms keyed on UTF-8 length rather than on cost. This collision is
-      why those arms exist rather than being belt-and-braces.
+      and :func:`test_every_representative_sits_in_the_range_its_class_name_describes`,
+      which read UTF-8 length rather than cost.
 
-    A collision that *appears* needs the same treatment: someone has to say which
+    **A drift in :func:`~escape_class_sweep.class_of` itself is a different
+    thing, and nothing here sees it.** This pin reads the table; the arms above
+    read the representatives. Move the boundary inside the *function* between two
+    same-pair rows and every arm in this module stays green: each row's
+    representative still classifies as its own row, because both sit outside the
+    region that moved, and every member still measures its row's factors, because
+    the factors are identical on both sides. Round 4 drove exactly that, twice,
+    and both mutations survived -- verdict-neutral by measurement, and unguarded.
+    Closing it needs an arm driving ``class_of`` over the space against an
+    independently stated rule, which is gap 1 on
+    https://github.com/theurian/theurian/issues/697. Recorded here rather than
+    claimed closed: what this arm contributes is that the *set* of collisions
+    stays the two that are known, so a new unobservable boundary cannot appear
+    unannounced.
+
+    A collision that *appears* needs that treatment: someone has to say which
     boundary has stopped being observable and what holds it instead. A collision
     that disappears means a factor moved, which is its own finding.
     """

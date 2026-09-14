@@ -33,15 +33,28 @@ key that has stopped matching -- a narrowed regex, a figure re-spelled without
 its commas, a normalisation that stopped folding a wrap -- and it is green most
 convincingly at exactly that moment.
 
-**Reach.** The records are T-11's residual paragraph, ADR-0031's Amendment 1 and
-the CHANGELOG's #669 entries, read through ``sec12_records``. Not the roadmap's
-SEC-12 cell, which carries no #669 figure since the reconciliation left its
-*owed* list, and not **T-6** -- which the round-two brief named and which
-measurably carries none of these: ``roughly 3.0x``, ``53,476,811``, ``4.25x``
-and the retired universal appear in it zero times. Including it would look like
-a record held and be an empty read, the reason
+**Reach, and it differs by arm.** The *figure* arms read three records --
+T-11's residual paragraph, ADR-0031's Amendment 1 and the CHANGELOG's #669
+entries, through ``sec12_records``. The *new-dress* arm reads five: those three
+plus ``daemon/server.py``'s ``MAX_REQUEST_BODY_BYTES`` and
+``mcp/validation.py``'s ``MAX_PARAMS_RENDERED_CHARS``, which carry no retired
+figure and never should but do state the universal in its corrected wording --
+so the subject half of that key is live in each, and they are where the next
+dress is most likely to land. :data:`_FIGURE_RECORDS` and
+:data:`_UNIVERSAL_RECORDS` are the two corpora, and each names its own reason.
+
+Out of both: the roadmap's SEC-12 cell, which carries no #669 figure since the
+reconciliation left its *owed* list, and **T-6** -- which the round-two brief
+named and which measurably carries none of these: ``roughly 3.0x``,
+``53,476,811``, ``4.25x`` and the retired universal appear in it zero times.
+Including it would look like a record held and be an empty read, the reason
 ``test_sec12_shipped_claims.py``'s ``_REASSERTION_RECORDS`` gives for leaving
-``schemas/README.md`` out of its own sweep.
+``schemas/README.md`` out of its own sweep. This module's own prose is out too,
+and for a mechanism reason rather than an empty-read one: a round-4 reviewer
+drove self-inclusion and it reports seven windows, four of them the regex source
+literals themselves. Excluding a key's own definition from its sweep needs a
+mechanism that does not exist here, and it is
+https://github.com/theurian/theurian/issues/697's to build.
 
 Two files read as text. No database, no socket, nothing written anywhere.
 """
@@ -103,10 +116,12 @@ _UNRECONCILED: Final = re.compile(
 #: sentence in these records reaches for ``53,476,811`` about anything else.
 #:
 #: **A verbatim key only catches the claim in the dress it was retired in**,
-#: which is why :data:`_REWORDED_UNIVERSAL` sits beside it. The numbers here are
-#: safe to key verbatim -- a figure re-spelled is a different figure -- but the
+#: which is why :data:`_REWORDED_UNIVERSAL_SUBJECT` and
+#: :data:`_REWORDED_UNIVERSAL_PHRASING` sit beside it. The numbers here are safe
+#: to key verbatim -- a figure re-spelled is a different figure -- but the
 #: universal is a *sentence*, and a sentence has as many dresses as an editor
-#: wants. One is already in the tree, and this key walks straight past it.
+#: wants. One was in the tree when this key was written, and this key walked
+#: straight past it.
 _RETIRED_FIGURES: Final = {
     "the-universal-charge-claim": re.compile(r"every leaf what repr renders it as"),
     "the-ascii-only-memory-row": re.compile(r"roughly 3\.0x"),
@@ -141,9 +156,12 @@ _ATTRIBUTION_REACH: Final = 200
 #: The retired universal in any dress: a subject naming the population, a
 #: phrasing equating the charge to what ``repr`` renders. The verbatim key above
 #: catches only the sentence Amendment 1 retired; this catches a restatement,
-#: which is not hypothetical -- the CHANGELOG's own *Fixed* heading carries one
-#: (*"is charged what ``repr`` actually renders, for every leaf"*), and it is
-#: what a reader of that entry takes away as the shipped guarantee.
+#: which is not hypothetical: the CHANGELOG's own *Fixed* heading carried one
+#: until #685's docs stage (*"is charged what ``repr`` actually renders, for
+#: every leaf"* -- what a reader of that entry would have taken away as the
+#: shipped guarantee), and the verbatim key walked straight past it. The
+#: quotation survives here as the specimen the key was built from, not as a
+#: description of the record's current contents.
 #:
 #: The shipped wording -- *"at least the number of characters that leaf
 #: contributes to the render"* -- pairs with neither half, which is the property
@@ -556,11 +574,18 @@ def test_no_record_restates_the_retired_universal_in_a_new_dress(record: str) ->
 
     The verbatim key beside this one catches the sentence Amendment 1 retired
     and nothing else. A universal is a sentence, and a sentence has as many
-    dresses as an editor wants: one restatement is already in the tree, in the
-    CHANGELOG heading a reader takes the shipped guarantee from, and the
-    verbatim key does not see it. So this pairs a *subject* naming the
-    population with a *phrasing* equating the charge to the render, which is the
-    shape any dress of the claim has to take.
+    dresses as an editor wants: one restatement was in the tree when this arm
+    was written, in the CHANGELOG heading a reader took the shipped guarantee
+    from, and the verbatim key did not see it -- #685's docs stage corrected the
+    heading, and this arm is what would have caught the next one. So this pairs
+    a *subject* naming the population with a *phrasing* equating the charge to
+    the render, which is the shape any dress of the claim has to take.
+
+    Two of the four phrasing alternatives are reached by no fixture, which means
+    a rewording landing on exactly those would pass this arm in silence. That is
+    gap 2 on https://github.com/theurian/theurian/issues/697, which owes a
+    control fixture per alternative; what is here holds the two dresses that
+    have actually been written.
 
     Held over five records rather than the three the figure arms read: the two
     production docstrings carry no retired *figure* and never should, but both

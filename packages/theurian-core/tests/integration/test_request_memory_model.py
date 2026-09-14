@@ -22,7 +22,7 @@ and passes. And the 5.03x family (ii) produces on plain ASCII had already been
 from it. So: the families are enumerated first, each family's worst member is
 the fixture, and the parts are checked against the measured whole.
 
-**One expression predicts every family**, which is what makes it a model rather
+**One expression bounds every family**, which is what makes it a model rather
 than an arithmetic that fits one row. A request's peak is the larger of the two
 moments it passes through::
 
@@ -34,9 +34,22 @@ moments it passes through::
 Family (i) never reaches the second moment, so its peak is the first -- the
 two-term composition the four recorded at-cap rows check. Family (ii) reaches
 both, and for its ratio-worst member the second is five times the first. Family
-(iii) is family (i) without a refusal. Measured 2026-09-15 over five shapes at
-two scales: every whole-request ratio within **+0.12x** of that expression, and
-always *above* it, by the request's fixed overhead.
+(iii) is family (i) without a refusal.
+
+**Read the expression as an upper bound, not as a prediction**, which is how
+``daemon/server.py`` now records it. It is tight -- within **+0.12x**, and
+always above, by the request's fixed overhead -- over the five shapes this
+module pins, and those five share a scope: each is a **single large leaf** whose
+**widest code point is printable or 1-byte**. Outside that scope it
+over-predicts rather than failing, because the render moment's ``kind`` is the
+*parsed* string's while the strings it prices sit at the width of the ``repr``
+*output* -- and ``repr`` escapes every non-printable code point to ASCII, so
+only a code point that survives it raw can widen the result. A body of
+non-printable astral characters measures 8.11x where the expression says 23.00x.
+Swept over the code point space the expression never under-predicts, which is
+why it is the bound the daemon can be held to. The arms below drive the shapes
+inside the scope; the over-prediction outside it is recorded on the constant,
+not asserted here.
 
 **The recorded rows themselves stay unpinned, on purpose.** Nothing in the build
 computes 175.1 MiB or 114.1 MiB, so a test asserting one would transcribe the
@@ -120,6 +133,13 @@ TRANSPORT_TERM: Final = 2.0
 #: above, every isolated term within 0.06. Several times the observed spread,
 #: and far inside the gap between any two families -- the nearest pair differ by
 #: 3.00x, the widest by 33.00x.
+#:
+#: **0.5 against a 0.12 spread is declared slack**, not a measurement: it buys
+#: room for a loaded machine at the cost of not noticing a term that moved by
+#: less than half the wire bytes. Tightening it toward the observed spread is
+#: gap 3's neighbourhood on
+#: https://github.com/theurian/theurian/issues/697; what is here is chosen to
+#: fail on a whole-multiple change and to survive contention.
 TOLERANCE: Final = 0.5
 
 
@@ -240,8 +260,17 @@ def test_the_parse_term_is_the_multiple_of_the_wire_bytes_the_model_records(kind
     PEP 393 sizes a ``str`` by its widest member, so the same million wire bytes
     cost one megabyte of heap as ASCII, three with one 2-byte character anywhere
     in them, and five with one astral character -- a function of the body's
-    *widest code point*, not of its length, and the reason the recorded rows
-    differ at all.
+    *widest code point*, not of its length. That phrasing is correct **of this
+    term** and was withdrawn as a claim about the whole request, where family
+    (ii)'s third term is uncorrelated with either.
+
+    **Scoped to a single large leaf**, which is the shape this cap is sized for
+    and the shape these bodies are. A body of many small values instead pays
+    CPython's per-object overhead -- ~46 bytes a value, taking 98,900 short
+    strings to 4.87x where one leaf of the same size parses at 1.00x -- which
+    these ratios do not include and which
+    :data:`~theurian.mcp.validation.MAX_PARAMS_NODES` bounds absolutely rather
+    than as a multiple of the body.
 
     One character decides each row, and that is deliberate: the bodies are
     identical but for their last two or four bytes, so a ratio that failed to
@@ -350,6 +379,14 @@ def test_a_jsonschema_answered_request_peaks_where_the_three_term_model_says(
     before the render begins. ``printable_cjk`` is the member that proves the
     ``max`` is load-bearing: its parse moment is 5.00x and its render moment
     4.00x, so its peak is decided by the term the other members' peaks are not.
+
+    **Three of these five members have no third-term teeth**, and that is
+    declared rather than implied: where the ``max`` picks the parse moment, this
+    arm would stay green with the render term removed. Only
+    ``ratio_worst_del_plus_astral`` and ``plain_ascii`` fail without it --
+    driven. The other three hold the *composition*, not the third term, and
+    giving them teeth is gap 3 on
+    https://github.com/theurian/theurian/issues/697.
 
     The render moment's inputs are the body's own code point count, its PEP 393
     kind and ``len(repr(...))`` -- none of them read from the charge this daemon
