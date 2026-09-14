@@ -56,9 +56,12 @@ UNAUTHENTICATED_PATHS: Final = frozenset({"/health"})
 #: **Derived, not chosen.** The largest legitimate body this daemon is sized for
 #: is a write-intent one -- every tool registered today is read-side and sits far
 #: below this, so the sizing is for the surface ADR-0032 designs and slice B4
-#: registers (``git grep -c '@_tool(' -- packages/theurian-core/src`` answers 7,
-#: 2026-09-14: ``knowledge.search``/``.get``/``.status``, ``project.list``,
-#: ``review.findings``/``.search``, ``system.capabilities``) -- and what bounds
+#: registers (``git grep -c '^    @_tool($' -- packages/theurian-core/src``
+#: answers ``mcp/tools.py:7``, 2026-09-15: ``knowledge.search``/``.get``/
+#: ``.status``, ``project.list``, ``review.findings``/``.search``,
+#: ``system.capabilities``. The pattern is anchored to the decorator's own
+#: indentation because an unanchored one counts this very sentence, which is how
+#: the first recording of it came to answer 8) -- and what bounds
 #: such a body is its *landed* form:
 #: :data:`~theurian.security.paths.MAX_SOURCE_FILE_BYTES` is the byte cap on the
 #: file a proposal writes (ADR-0032 decision 3).
@@ -127,23 +130,59 @@ UNAUTHENTICATED_PATHS: Final = frozenset({"/health"})
 #: is the intended invariant; which unit the published schema states it in is
 #: #691's to settle.
 #:
-#: **What the bound costs, per request.** The SDK buffers a whole body before
-#: anything parses it -- ``RequestBodyLimitMiddleware`` accumulates into a
-#: ``bytearray``, copies that to ``bytes``, and the JSON parse then materialises
-#: a ``str`` -- so roughly 3.0x the wire bytes of Python heap is live while one
-#: at-cap request is in flight. Measured 2026-09-14 at this cap: one
-#: authenticated at-cap POST peaks at 75.1 MiB of Python heap (``tracemalloc``,
-#: 3.00x the 26,214,400 wire bytes) and adds 50.1 MiB to ``ru_maxrss`` (2.00x --
-#: lower, because part of that peak lands on pages the process already holds).
-#: Both instruments are named because they answer different questions and
-#: disagree by design. Raising this constant raises those figures
-#: proportionally, and the derivation makes them track a *filesystem* constant:
-#: raising :data:`~theurian.security.paths.MAX_SOURCE_FILE_BYTES` for a
-#: reason about files raises this daemon's per-request memory ceiling by three
-#: times as much. Nothing at the ``security/paths.py`` end says so, which is why
-#: it is recorded here. The *number* of concurrent arrivals is not bounded
-#: in-process at all -- that is T-6's recorded deferral, and the aggregate knob
-#: and its figures are on
+#: **What the bound costs, per request -- and it is not a single multiple of the
+#: wire bytes.** Four things are live while one at-cap request is in flight, and
+#: only the first two are denominated in bytes the way this constant is:
+#:
+#: * the ``bytearray`` ``RequestBodyLimitMiddleware`` accumulates the body into,
+#:   and the ``bytes`` copy it hands on -- one wire byte each;
+#: * the ``str`` the JSON parse materialises, **and** the ``str`` it extracts for
+#:   the argument, at *k* bytes per code point -- where PEP 393 sets *k* from the
+#:   string's **widest** member: 1 for an all-ASCII body, 2 once any BMP
+#:   character is present, 4 once any astral one is. A single emoji anywhere in a
+#:   26 MB body quadruples both. Measured in isolation, the parse alone peaks at
+#:   2 x *k* x the wire bytes: 50 MiB ASCII, 100 MiB with a 2-byte character,
+#:   200 MiB with an astral one.
+#:
+#: So the per-request figure is a function of the body's widest code point, not
+#: of its length. One authenticated at-cap POST, one fresh process per row,
+#: measured 2026-09-15 at this cap (26,214,400 wire bytes):
+#:
+#: ======================== =============== ==============
+#: Body                     ``tracemalloc`` ``ru_maxrss``
+#: ======================== =============== ==============
+#: all ASCII                75.1 MiB 3.00x  ~50 MiB
+#: dense U+007F             75.2 MiB 3.01x  ~50 MiB
+#: U+007F + one 2-byte      125.1 MiB 5.00x ~25 MiB
+#: U+007F + one astral      175.1 MiB 7.00x ~75 MiB
+#: ======================== =============== ==============
+#:
+#: The ``tracemalloc`` column reproduces to the tenth of a MiB across runs; the
+#: ``ru_maxrss`` one is a process high-water mark that moves by a few hundred KB
+#: and depends on what the process already touched, so it is quoted to the MiB.
+#:
+#: **3.00x is the ASCII row, not the bound**; the bound at this cap is the
+#: **7.00x** an astral character buys, and an earlier draft of this paragraph
+#: recorded the ASCII row as though it were universal. The two instruments are
+#: named beside their own figures because they answer different questions --
+#: ``tracemalloc`` the Python heap, ``ru_maxrss`` the process high-water mark --
+#: and they disagree by design.
+#:
+#: Those rows are the parse's, and the parse's alone. Charging the render used to
+#: add a fifth term on top of them -- ``mcp/validation.py``'s fallback reprred a
+#: whole leaf, peaking at 100 MiB on a dense-U+007F body and 400 MiB once one
+#: emoji made the repr's own output 4 bytes per character -- and
+#: :func:`~theurian.mcp.validation._chunked_width` removed it: the same leaves
+#: now peak at 0.04 and 0.15 MiB against a 320 KB ceiling.
+#:
+#: Raising this constant raises every row proportionally, and the derivation
+#: makes them track a *filesystem* constant: raising
+#: :data:`~theurian.security.paths.MAX_SOURCE_FILE_BYTES` for a reason about
+#: files raises this daemon's per-request memory ceiling by three times as much,
+#: then by up to four times that again for a body carrying one astral character.
+#: Nothing at the ``security/paths.py`` end says so, which is why it is recorded
+#: here. The *number* of concurrent arrivals is not bounded in-process at all --
+#: that is T-6's recorded deferral, and the aggregate knob and its figures are on
 #: https://github.com/theurian/theurian/issues/26#issuecomment-5661638879.
 #:
 #: **It sits above** ``mcp/validation.py``'s ``MAX_PARAMS_RENDERED_CHARS``
@@ -151,9 +190,13 @@ UNAUTHENTICATED_PATHS: Final = frozenset({"/health"})
 #: meets that seam's bounded refusal -- which names the tool and the limit it
 #: passed -- rather than the bare ``413`` above. That ordering is no longer what
 #: makes the render budget hold, though. ``_rendered_width`` charges every leaf
-#: at least what ``repr`` renders it as, so that budget is enforced by the charge
-#: at *any* transport cap: moving this constant moves how many bytes get
-#: buffered, never how much render work ``jsonschema`` can be made to do.
+#: at least the characters that leaf contributes to the render -- including the
+#: ``float`` and ``None`` leaves an earlier draft charged nothing -- so that
+#: budget is enforced by the charge at *any* transport cap: moving this constant
+#: moves how many bytes get buffered, never how much render work ``jsonschema``
+#: can be made to do. The render a request can reach is the budget plus the
+#: punctuation between its nodes, ``12,982,912`` characters; the composition is
+#: recorded on ``MAX_PARAMS_RENDERED_CHARS``.
 #:
 #: Read ``_rendered_width``'s own table before reasoning about the two together.
 #: It counts *rendered characters per code point* under ``{instance!r}``, a

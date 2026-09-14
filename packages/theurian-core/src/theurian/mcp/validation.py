@@ -134,12 +134,25 @@ MAX_PARAMS_NODES: Final = 100_000
 #: ``{instance!r}`` escapes: a raw U+007F is one wire byte and four rendered
 #: characters, a raw U+0600 is two bytes and six. A body at the transport cap
 #: can therefore render to four times its own byte count. The bound holds
-#: because :func:`_rendered_width` charges every leaf at least what ``repr``
-#: renders it as -- the escape classes and their measured ratios are on that
-#: function -- so :func:`_unbounded` refuses before the render is built. Do not
-#: re-derive this from the caps' ordering: "a request's rendered width never
-#: exceeds the bytes the caller sent" reads true and is false in both
-#: directions.
+#: because :func:`_rendered_width` charges **every leaf at least the number of
+#: characters that leaf contributes to the render** -- the escape classes and
+#: their measured ratios are on that function -- so :func:`_unbounded` refuses
+#: before the render is built. Do not re-derive this from the caps' ordering: "a
+#: request's rendered width never exceeds the bytes the caller sent" reads true
+#: and is false in both directions.
+#:
+#: **This constant is the ceiling on charged leaves, not on the whole render.**
+#: What ``jsonschema`` renders is the instance, and an instance is its leaves
+#: plus the punctuation holding them together -- braces, brackets, ``, ``,
+#: ``: ``, and the quotes around each string, none of which any leaf is charged
+#: for. That excess is bounded by :data:`MAX_PARAMS_NODES`, because it is a
+#: fixed cost per node: measured 2026-09-15 over both the structured worst cases
+#: and 300,000 random shapes, it never reaches **4 characters per node** (the
+#: dict-of-string-keys and list-of-strings families converge on 4 from below;
+#: the random search peaked at 3.64). So the render a request can actually reach
+#: is ``MAX_PARAMS_RENDERED_CHARS + MAX_PARAMS_NODES * 4`` = **12,982,912
+#: characters**, 1.032x this constant. Quote that composed figure wherever the
+#: real ceiling matters; this constant alone under-states it.
 #:
 #: That ordering is the reconciliation **#669** asked for, and it is deliberate
 #: rather than incidental. Until it landed, ``streamable_http_app`` was called
@@ -165,6 +178,22 @@ MAX_PARAMS_NODES: Final = 100_000
 #: only the transport knows, and a factor of four is exactly the gap that makes
 #: recording it necessary.
 MAX_PARAMS_RENDERED_CHARS: Final = 12 * 1024 * 1024
+
+#: How many code points :func:`_rendered_width`'s fallback reprs at a time once a
+#: leaf is wider than this. The fallback's whole cost is the transient ``repr``
+#: it builds, and that transient is denominated in *bytes*, not characters: PEP
+#: 393 sizes a ``str`` by its widest member, so a repr whose output carries one
+#: printable astral character is stored at 4 bytes per character rather than 1.
+#: Reprring a 26 MB leaf whole therefore peaked far above what the
+#: character-denominated records claimed. Slicing bounds it instead: the repr of
+#: one chunk is at most ten characters per code point, so the transient is
+#: ~400 KB at this size whatever the leaf's width or kind, and the loop stops as
+#: soon as the running charge passes the remaining budget.
+#:
+#: Wide enough that the exact single-repr path still covers every string a real
+#: call carries, which matters because the chunked sum is a *bound* rather than
+#: the exact render -- see :func:`_chunked_width`.
+_CHUNK_CODE_POINTS: Final = 8192
 
 #: The keywords whose own ``jsonschema`` message names the offending *keys* and
 #: interpolates no instance value, so it can be quoted (bounded) instead of
@@ -406,11 +435,71 @@ def _iter_nodes(root: object) -> Iterator[tuple[object, int]]:
             frontier.append((child, depth + 1))
 
 
-def _rendered_width(value: object) -> int:
+def _chunked_width(value: str, remaining: int) -> int:
+    """A bound on ``value``'s repr contribution, built without reprring it whole.
+
+    Reprring a leaf whole costs a transient proportional to the leaf, and the
+    proportion is in *bytes*: the output runs to ten characters per code point,
+    each stored at up to four bytes once any printable astral character puts the
+    result in PEP 393's widest kind. Reprring one slice at a time caps that
+    transient at the slice -- :data:`_CHUNK_CODE_POINTS` code points, so ~320 KB
+    -- and stopping as soon as the running total passes ``remaining`` caps the
+    *work* too: the caller refuses at that point, so the rest of the leaf is
+    never read.
+
+    **The slice is reprred in a forced quote context, and that is what makes the
+    sum sound.** ``repr``'s choice of delimiter is a property of the whole
+    string: one holding apostrophes and no ``"`` is rendered with ``"``
+    delimiters and its apostrophes cost one character each, while any other
+    string is rendered with ``'`` delimiters and they cost two. Summing naive
+    per-slice reprs can therefore *under*-count -- a slice with no ``"`` scores
+    its apostrophes at one while the whole string scores them at two.
+    Prefixing each slice with a ``"`` removes the choice: every slice is then
+    rendered with ``'`` delimiters, every apostrophe costs two, and no other
+    character's width depends on context. The overhead that prefix adds is
+    exactly three characters -- two delimiters and the ``"`` itself, which
+    ``repr`` never escapes -- hence the ``- 3``; subtracting four would
+    under-count by one per slice, which is the unsafe direction.
+
+    So the result is exact except for a string carrying apostrophes and no
+    ``"``, where it over-charges by one per apostrophe. Over-charging refuses a
+    request the budget was sized to admit, so the threshold above which this runs
+    is set past anything a real call carries, and every small string keeps the
+    exact single-repr arm.
+    """
+    total = 0
+    for start in range(0, len(value), _CHUNK_CODE_POINTS):
+        total += len(repr('"' + value[start : start + _CHUNK_CODE_POINTS])) - 3
+        if total > remaining:
+            # Already past what the caller can accept; the refusal does not need
+            # the exact number and the rest of the leaf is not worth reading.
+            return total
+    return total
+
+
+def _rendered_width(value: object, remaining: int = MAX_PARAMS_RENDERED_CHARS) -> int:
     """How many characters ``value`` contributes to a ``{instance!r}`` render.
 
-    **The charge is never below what ``repr`` actually renders**, and that, not
-    any property of JSON, is what holds :data:`MAX_PARAMS_RENDERED_CHARS`.
+    **Every leaf is charged at least the number of characters it contributes to
+    that render**, and that, not any property of JSON, is what holds
+    :data:`MAX_PARAMS_RENDERED_CHARS`. Two things the invariant deliberately does
+    *not* say. It is about a leaf's **contribution**, not about
+    ``len(repr(leaf))``: the ``str`` arms exclude the two delimiting quotes
+    ``repr`` puts around a string, because those are punctuation of the render
+    rather than content of the leaf -- the ``bytes`` arm is the one asymmetry,
+    charging its whole repr including the ``b''`` delimiters, which over-charges
+    in the safe direction. And it is about *leaves*: a container is charged zero
+    here because :func:`_iter_nodes` descends into it and charges its members, so
+    the punctuation holding an instance together is counted by
+    :data:`MAX_PARAMS_NODES` instead -- at most 4 characters per node, measured,
+    giving the composed ceiling recorded on
+    :data:`MAX_PARAMS_RENDERED_CHARS`. **Charging a leaf zero is how this
+    invariant was broken once**: ``float`` and ``None`` fell through to a
+    ``return 0`` justified as "bounded per node", and a request pairing a string
+    at the budget with 99,995 full-precision floats rendered 15,182,796
+    characters -- 1.207x the budget -- and was *admitted*. Bounded is not free;
+    every leaf type is charged, and the final arm charges whatever a future
+    parser hands this walk rather than enumerating what is expected.
     ``repr`` escapes: a leaf charged its own length is charged one character for
     something that renders as up to ten, and ``jsonschema`` then builds a
     message this seam never budgeted for. The escape classes, measured
@@ -450,24 +539,43 @@ def _rendered_width(value: object) -> int:
     ``"`` is never escaped whichever delimiter ``repr`` picks. That arm builds
     nothing, and ``isprintable`` stops at the first non-printable character, so
     the clean text a real call carries costs three C-speed scans and no
-    allocation: measured 0.004 ms for a realistic ``knowledge.search`` call, and
-    8.8 ms for an ASCII leaf of :data:`MAX_PARAMS_RENDERED_CHARS` characters --
-    this gate's own ceiling -- against the 11.4 ms ``json.loads`` the same body
-    already paid to arrive.
+    allocation. Measured 2026-09-15, median of five, on the whole
+    :func:`_unbounded` walk: **0.00 ms** for a realistic ``knowledge.search``
+    call, 8.8 ms for an ASCII leaf at :data:`MAX_PARAMS_RENDERED_CHARS`, and
+    **17.9 ms for one at the transport cap** -- which is the number that
+    matters, since the transport admits 2.08x this gate's budget in ASCII
+    characters and a clean leaf is scanned whole before the budget refuses it.
+    For scale, ``json.loads`` on the same at-budget body costs 11.4 ms.
 
-    Everything else falls back to ``len(repr(value)) - 2``: ``repr`` of a string
-    always carries exactly two delimiting quotes, so that difference is the
-    contribution exactly rather than an estimate. The fallback builds one repr
-    per dirty leaf, a transient bounded at ten characters per code point and
-    four per wire byte. It therefore scales with
-    :data:`~theurian.daemon.server.MAX_REQUEST_BODY_BYTES` and is re-measured
-    whenever that moves: at the cap of 2026-09-14 the widest leaf the transport
-    admits is 26,214,273 raw U+007F, charged 104,857,092 characters, measured at
-    **+100.0 MiB** peak RSS.
-    That is a peak and not a sum: each repr dies when this function returns, and
-    :func:`_unbounded` stops at the first leaf whose charge carries the running
-    total past the budget, so in the hostile cases the transient is immediately
-    followed by the refusal the charge it just computed triggers.
+    Everything else falls back to a ``repr``, exactly for a leaf at or under
+    :data:`_CHUNK_CODE_POINTS` (``len(repr(value)) - 2``: ``repr`` always carries
+    exactly two delimiting quotes, so that difference is the contribution rather
+    than an estimate) and through :func:`_chunked_width` above it.
+
+    **The fallback's cost is a transient denominated in bytes, and that is why it
+    is chunked.** Reprring a leaf whole builds an output of up to ten characters
+    per code point, and PEP 393 sizes a ``str`` by its *widest* member -- so the
+    same escape-heavy leaf whose repr is pure ASCII at 1 byte per character
+    becomes 4 bytes per character the moment one printable astral character is
+    present. Character-denominated records missed that by 4x. Measured
+    2026-09-15 on the fallback arm alone, for the widest leaf the transport
+    admits: reprring it whole peaks at **100 MiB** (dense U+007F) to **400 MiB**
+    (the same leaf with one emoji); chunked, the same leaves peak at
+    **0.04 MiB** and **0.15 MiB**, against a ceiling of
+    ``_CHUNK_CODE_POINTS * 10 * 4`` = **320 KB** that holds whatever the leaf's
+    width or kind. Instrument: ``tracemalloc`` peak, which is the Python-heap
+    question; ``ru_maxrss`` answers a different one and is quoted beside its own
+    figures on
+    :data:`~theurian.daemon.server.MAX_REQUEST_BODY_BYTES`.
+
+    Chunking pays in time as well, because :func:`_chunked_width` stops as soon
+    as the running charge passes what the caller can still accept. On the same
+    at-cap leaves the whole walk went from 82.5 ms to 9.9 ms (dense U+007F),
+    119.1 ms to 10.8 ms (with an emoji) and 71.0 ms to 12.0 ms (a 2-byte
+    non-printable); the fast path is unchanged at 17.9 ms. The worst shape left
+    is a clean ASCII leaf with one non-printable at its end -- ``isprintable``
+    scans it whole, then the chunked walk does too, because no prefix of it
+    reaches the budget -- measured **29.3 ms**, down from 50.7 ms.
 
     O(1) for the other leaves, which keeps the budget walk's cost the walk's
     own. An ``int`` reports its decimal digit count estimated from
@@ -479,26 +587,30 @@ def _rendered_width(value: object) -> int:
     if isinstance(value, str):
         if value.isprintable() and "\\" not in value and "'" not in value:
             return len(value)
+        if len(value) > _CHUNK_CODE_POINTS:
+            return _chunked_width(value, remaining)
         return len(repr(value)) - 2
-    if isinstance(value, bytes):
-        # Unreachable from a parsed JSON request -- no `json.loads` output holds
-        # `bytes` -- and charged soundly anyway rather than left as the one leaf
-        # type whose escapes (`b"\x00" * n` renders to `4n`) are uncounted.
-        # `len(repr(value))` over-charges by the `b''` delimiters, which is the
-        # safe direction.
-        return len(repr(value))
-    if isinstance(value, bool):
-        # Matched before `int`, of which it is a subclass, so its one-bit
-        # `bit_length` does not under-report "True"/"False".
-        return len(repr(value))
-    if isinstance(value, int):
+    if isinstance(value, int) and not isinstance(value, bool):
+        # `bool` excluded rather than matched first: it is an `int` subclass whose
+        # one-bit `bit_length` would under-report "True"/"False", and it is
+        # charged by the final arm instead.
         digits = (value.bit_length() * 30103) // 100_000 + 1
         return digits + 1 if value < 0 else digits
-    # Every other leaf a parsed JSON request can hold -- a `float`, a `null` --
-    # renders to a handful of characters, so its width is already bounded by
-    # :data:`MAX_PARAMS_NODES` counting the node itself. Only a string and an
-    # integer are unbounded per node, and those are the two charged above.
-    return 0
+    if isinstance(value, Mapping | list | tuple | set | frozenset):
+        # Not a leaf: `_iter_nodes` descends into exactly these and charges every
+        # member on its own, so a width here would double-count them. What a
+        # container adds beyond its members is punctuation, and that is the
+        # per-node constant the composed ceiling accounts for. This type list is
+        # `_iter_nodes`'s own, and the two must not drift apart.
+        return 0
+    # Everything else, charged its whole repr rather than enumerated: `float` and
+    # `None`, which a `return 0` once waved through (above); `bytes`, which no
+    # `json.loads` output holds but whose escapes would otherwise go uncounted;
+    # and whatever a future parser hands this walk. For `bytes` the charge
+    # includes the `b''` delimiters, the one arm that over-charges rather than
+    # matching the render exactly -- the safe direction, and the asymmetry the
+    # invariant above names.
+    return len(repr(value))
 
 
 def _unbounded(tool: str, params: Mapping[str, object]) -> InputRefusal | None:
@@ -521,7 +633,7 @@ def _unbounded(tool: str, params: Mapping[str, object]) -> InputRefusal | None:
         discovered += 1
         if discovered > MAX_PARAMS_NODES:
             return _oversized(tool, MAX_PARAMS_NODES, "values")
-        rendered += _rendered_width(value)
+        rendered += _rendered_width(value, MAX_PARAMS_RENDERED_CHARS - rendered)
         if rendered > MAX_PARAMS_RENDERED_CHARS:
             return _oversized(tool, MAX_PARAMS_RENDERED_CHARS, "characters of content")
     return None
