@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from git_harness import commit_migrations
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 from mcp.types import CallToolResult
@@ -292,6 +293,10 @@ def registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Projec
 
 
 def _run(*args: str) -> None:
+    if args[:2] == ("migrate", "apply"):
+        # ADR-0034: commit the migration (tracked, byte-identical to HEAD) before
+        # apply; a behavioural no-op today, green once the committed-check lands.
+        commit_migrations()
     result = runner.invoke(app, [*args, "--json"], catch_exceptions=False)
     assert result.exit_code == 0, result.stdout + (result.stderr or "")
 
@@ -7636,6 +7641,7 @@ def _apply_returning_its_report(root: Path) -> dict[str, Any]:
     """
     with pytest.MonkeyPatch.context() as patch:
         patch.chdir(root)
+        commit_migrations()  # ADR-0034: committed before apply (no-op today)
         result = runner.invoke(app, ["migrate", "apply", "--json"], catch_exceptions=False)
     assert result.exit_code == 0, result.stdout + (result.stderr or "")
     report: dict[str, Any] = json.loads(result.stdout)

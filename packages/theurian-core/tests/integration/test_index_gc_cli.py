@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from git_harness import commit_migrations
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
@@ -88,6 +89,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     (root / ".theurian/knowledge/architecture/auth.md").write_text(BODY)
     (root / ".theurian/migrations/01K1AAAAAA01234567890ABCDE-auth.yaml").write_text(MIGRATION)
     assert runner.invoke(app, ["project", "register", "--json"]).exit_code == 0
+    commit_migrations()  # ADR-0034: committed before apply (no-op today)
     assert runner.invoke(app, ["migrate", "apply", "--json"]).exit_code == 0
     yield root
 

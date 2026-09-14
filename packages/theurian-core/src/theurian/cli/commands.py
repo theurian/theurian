@@ -93,6 +93,7 @@ from theurian.domain.state import ActiveState
 from theurian.domain.values import MediaType
 from theurian.infrastructure.embedding import HashingEmbedding
 from theurian.infrastructure.filesystem.parsers.registry import ParserRegistry, detect_media_type
+from theurian.infrastructure.git.committed_check import CommittedMigrationCheck, HeadComparison
 from theurian.infrastructure.raptor.extractive import ExtractiveSummarizer
 from theurian.infrastructure.sqlite.connection import (
     SchemaVersionMismatchError,
@@ -442,6 +443,25 @@ _UNNAMED_GUARD_REFUSAL_REMEDY: Final = (
 )
 
 
+#: Cure for an apply refused because a migration file is not committed at HEAD
+#: (ADR-0034, T-15). Names both a runnable cure -- commit the file, then retry --
+#: and the `--allow-uncommitted` flag the refusal is escaped by, with the artifact
+#: it acts on (the file under `.theurian/migrations/`). The flag is named as a
+#: flag on purpose: it is not a configuration key, so the choice to skip the check
+#: is visible in the command that ran, in shell history and in a CI log (decision
+#: 2). What the check enforces is *committed*, not *reviewed* -- a local commit
+#: satisfies it -- so a rewrite of an already-committed file is answered by a new
+#: commit, never by editing an applied migration (which trips FR-K5's own guard).
+_UNCOMMITTED_MIGRATION_REMEDY: Final = (
+    "Commit the migration before applying it -- this project's approval model is the "
+    "merge (ADR-0013), so `git add` and `git commit` the file under "
+    "`.theurian/migrations/`, then run `theurian migrate apply` again. For development "
+    "or recovery, where a migration is written and applied before it is committed, pass "
+    "`theurian migrate apply --allow-uncommitted` to apply it anyway; that is a flag and "
+    "not a configuration key so the choice stays visible in the command that ran."
+)
+
+
 #: Every canonical-state database this project has ever built. Excludes
 #: `theurian-index-*.sqlite`, which lives in the same directory
 #: (`ProjectPaths.state`) but is a different schema entirely.
@@ -599,6 +619,64 @@ def _refuse_a_set_a_static_guard_rejects(context: CommandContext, *, as_json: bo
             as_json=as_json,
             code=EXIT_STATE_ERROR,
         )
+
+
+def _refuse_an_uncommitted_migration(context: CommandContext, *, as_json: bool) -> None:
+    """Refuse an apply whose migration files are not committed at HEAD (ADR-0034, T-15).
+
+    The predicate, per migration, is decision 1's: the file is tracked by git and
+    the bytes the engine will apply hash -- under the path's gitattributes -- to the
+    id git committed at ``HEAD``. It is evaluated against ``migration.source_bytes``
+    -- the loader's read of the bytes the engine will apply -- not a second read of
+    the file, so there is no check-to-load race for an untrusted same-UID process to
+    win (:class:`CommittedMigrationCheck`).
+
+    Called only when ``--allow-uncommitted`` was not passed, and seated in
+    ``migrate apply`` before ``create_database`` so a refused apply leaves no state
+    database behind -- the same band, and the same reason, as
+    :func:`_refuse_a_set_a_static_guard_rejects` (decision 4). A tree with no git
+    never reaches here: ``resolve_context`` already refused it (decision 3), so the
+    escape hatch this refusal names governs exactly one case -- a git tree whose
+    migration file is not committed.
+    """
+    check = CommittedMigrationCheck(context.paths.root)
+    for migration in context.loaded.migration_set.migrations:
+        source_path = migration.source_path
+        source_bytes = migration.source_bytes
+        # `load_migrations` always sets both `source_path` and `source_bytes`
+        # (`_load_one`); a `None` in either is an in-memory set no file backs, which
+        # cannot be proven committed -- treated as NOT_TRACKED so it refuses rather
+        # than being waved through.
+        comparison = (
+            HeadComparison.NOT_TRACKED
+            if source_path is None or source_bytes is None
+            else check.compare_to_head(source_path, source_bytes)
+        )
+        if comparison is HeadComparison.COMMITTED:
+            continue
+        label = source_path if source_path is not None else str(migration.migration_id)
+        # The headline is split by verdict: a MODIFIED file *is* committed -- it was
+        # committed once and edited since, so an "is not committed" headline was
+        # false of it (round-1 code-review/security) -- while a NOT_TRACKED file
+        # genuinely never was. Both name the file, carry the same escape-hatch
+        # remedy, and echo no file content (SEC-7).
+        message = (
+            f"{label} differs from the version committed at HEAD: the bytes that would "
+            f"apply are not the committed ones. This project's approval model is the "
+            f"merge (ADR-0013), so `migrate apply` refuses a migration whose applied "
+            f"bytes differ from HEAD."
+            if comparison is HeadComparison.MODIFIED
+            else f"{label} is not committed: git does not track it at HEAD, so it was "
+            f"never committed. This project's approval model is the merge (ADR-0013), so "
+            f"`migrate apply` refuses a migration that has not been committed."
+        )
+        _fail(
+            message,
+            remedy=_UNCOMMITTED_MIGRATION_REMEDY,
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
+        return
 
 
 def _refused_migration_ids(migration_set: MigrationSet) -> list[str]:
@@ -2404,8 +2482,18 @@ def _fail_the_state_publish(exc: OSError, paths: ProjectPaths, *, as_json: bool)
 
 
 @migrate_app.command("apply")
-def migrate_apply(  # noqa: PLR0911 -- one early return per distinguishable failure shape; the single critical section (#468) is kept as one function on purpose, so "does everything really sit under the one lock" stays answerable by reading top to bottom rather than by trusting a call graph
+def migrate_apply(  # noqa: PLR0911, PLR0912 -- one early return (and now one branch) per distinguishable failure shape, the uncommitted-migration refusal (ADR-0034, T-15) among them; the single critical section (#468) is kept as one function on purpose, so "does everything really sit under the one lock" stays answerable by reading top to bottom rather than by trusting a call graph
     as_json: JsonOption = False,
+    allow_uncommitted: Annotated[
+        bool,
+        typer.Option(
+            "--allow-uncommitted",
+            help=(
+                "Apply migrations that are not committed at HEAD. For development and "
+                "recovery only; the merge is this project's approval (ADR-0034)."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Apply pending migrations to the canonical store.
 
@@ -2463,6 +2551,18 @@ def migrate_apply(  # noqa: PLR0911 -- one early return per distinguishable fail
     # guards through the same function, but only once a write transaction is open
     # and `create_database` has already run.
     _refuse_a_set_a_static_guard_rejects(context, as_json=as_json)
+
+    # The merge is this project's approval (ADR-0013 point 4), and nothing here
+    # enforced it: `apply` applied whatever sat in `.theurian/migrations/`,
+    # committed or not -- T-15's residual, and a Phase B precondition once a
+    # protocol write path multiplies who can put a file there (ADR-0034). Refuse a
+    # migration that is not committed at HEAD, in this same pre-`create_database`
+    # band so a refused apply leaves no database behind (decision 4).
+    # `--allow-uncommitted` restores the old behaviour for development and
+    # recovery; it is a flag and not a config key so the choice is visible in the
+    # command that ran (decision 2).
+    if not allow_uncommitted:
+        _refuse_an_uncommitted_migration(context, as_json=as_json)
 
     # This installation's record of the state it built, out of the repository
     # tree (ADR-0004, SEC-7). Used twice below: to refuse to *apply into* a

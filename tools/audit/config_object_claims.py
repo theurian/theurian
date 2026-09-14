@@ -734,6 +734,23 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str], ...]] = (
         "names no verb and no object, so it is in this sweep as its own shape and is "
         "cleared by hand rather than by a pattern.",
     ),
+    # `test_allow_uncommitted_is_not_a_config_key.py`'s module docstring arrived with
+    # B3 (T-15, ADR-0034): the committed-check pin, whose rationale says the check has
+    # no reader of `.theurian/config.yaml` because its answer comes from a CLI flag.
+    (
+        "packages/theurian-core/tests/unit/test_allow_uncommitted_is_not_a_config_key.py",
+        "there is no reader of this file for the committed-check at all",
+        "true",
+        "The claim is true and scoped to the committed check, not the retracted #426 "
+        "universal: `security/project_config.py` does open `.theurian/config.yaml` for "
+        "`security.secretScan`, so a bare 'nothing reads this file' would be false -- but "
+        "this sentence says only that the *committed-check* has no reader of it, which is "
+        "correct. ADR-0034 decision 2 makes the escape hatch the `--allow-uncommitted` CLI "
+        "flag, and `infrastructure/git/committed_check.py` takes its answer from that flag "
+        "rather than from the file, which is what makes the name-level schema pin the right "
+        "floor. B3 added the check and no config reader with it, so nothing here has gone "
+        "false.",
+    ),
     # `test_config_key_call_sites.py`'s two rows -- "Nothing reads it, its
     # description says so" and "those documents say so" -- stood here as `true`
     # while `providers.review.repositories` had no reader. ADR-0030 decision 2

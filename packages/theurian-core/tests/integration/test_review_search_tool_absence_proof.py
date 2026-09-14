@@ -107,6 +107,7 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
+from git_harness import commit_migrations
 from hypothesis import given, seed, settings
 from hypothesis import strategies as st
 from mcp.server import MCPServer
@@ -559,6 +560,10 @@ class _Corpora:
 
 
 def _cli(*args: str) -> None:
+    if args[:2] == ("migrate", "apply"):
+        # ADR-0034: commit the migration (tracked, byte-identical to HEAD) before
+        # apply; a behavioural no-op today, green once the committed-check lands.
+        commit_migrations()
     result = runner.invoke(app, [*args, "--json"], catch_exceptions=False)
     assert result.exit_code == 0, result.stdout + (result.stderr or "")
 

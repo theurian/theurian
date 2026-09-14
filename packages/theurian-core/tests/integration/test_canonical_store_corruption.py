@@ -54,6 +54,7 @@ from typing import Any, Final, override
 
 import pytest
 import typer.main
+from git_harness import commit_migrations
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
@@ -656,6 +657,10 @@ class Corpus:
 
 
 def _run(*args: str) -> None:
+    if args[:2] == ("migrate", "apply"):
+        # ADR-0034: commit the migration (tracked, byte-identical to HEAD) before
+        # apply; a behavioural no-op today, green once the committed-check lands.
+        commit_migrations()
     result = runner.invoke(app, [*args, "--json"], catch_exceptions=False)
     assert result.exit_code == 0, result.stdout + (result.stderr or "")
 
@@ -700,6 +705,10 @@ def _invoke(*args: str) -> tuple[int, str]:
     this sweep looking at what an operator sees rather than at what the runner
     happened to keep.
     """
+    if args[:2] == ("migrate", "apply"):
+        # ADR-0034: commit the migration (tracked, byte-identical to HEAD) before
+        # apply; a behavioural no-op today, green once the committed-check lands.
+        commit_migrations()
     result = runner.invoke(app, [*args, "--json"])
     text = (result.stdout or "") + (result.stderr or "")
     if result.exception is not None and not isinstance(result.exception, SystemExit):
@@ -2527,6 +2536,10 @@ class Published:
 
 def _publish(*args: str) -> Published:
     """Run one ``--json`` command and record every channel it wrote to."""
+    if args[:2] == ("migrate", "apply"):
+        # ADR-0034: commit the migration (tracked, byte-identical to HEAD) before
+        # apply; a behavioural no-op today, green once the committed-check lands.
+        commit_migrations()
     result = runner.invoke(app, [*args, "--json"])
     escaped = result.exception
     if isinstance(escaped, SystemExit):

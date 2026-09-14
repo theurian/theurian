@@ -281,6 +281,16 @@ def test_a_published_index_carrying_a_secret_exits_six_not_one(tmp_path: pathlib
     (root / ".theurian/migrations/01K1AAAAAA01234567890ABCDE-legacy.yaml").write_text(
         _MIGRATION, encoding="utf-8"
     )
+    # ADR-0034: `migrate apply` refuses a migration that is not committed (tracked
+    # and byte-identical to HEAD). Commit it first -- a behavioural no-op today
+    # that keeps this contract test green once the committed-check lands.
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)  # noqa: S607
+    subprocess.run(
+        ["git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "commit the migration"],  # noqa: S607
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
     applied = _in_project(root, home, "migrate", "apply", "--json")
     assert applied.returncode == 0, applied.stderr
 

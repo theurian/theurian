@@ -1630,6 +1630,10 @@ def _load_one(
         depends_on=tuple(MigrationId(d) for d in document.get("dependsOn", [])),
         description=document.get("description"),
         source_path=str(path.relative_to(project_root)),
+        # The bytes `checksum` digested, carried for the committed-check so it can
+        # hash them with `git hash-object` rather than re-reading the file and
+        # losing the check-to-load race (ADR-0034, T-15).
+        source_bytes=raw,
     )
 
 

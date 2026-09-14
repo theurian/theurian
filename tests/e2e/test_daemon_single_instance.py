@@ -113,6 +113,16 @@ def running_daemon(tmp_path: Path) -> Iterator[Daemon]:
     (root / ".theurian/knowledge/architecture/auth.md").write_text(BODY)
     (root / f".theurian/migrations/{MIGRATION_ID}-auth.yaml").write_text(MIGRATION)
     cli("project", "register", "--json")
+    # ADR-0034: `migrate apply` refuses a migration that is not committed (tracked
+    # and byte-identical to HEAD). Commit it first -- a behavioural no-op today
+    # that keeps this daemon fixture green once the committed-check lands.
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)  # noqa: S607
+    subprocess.run(
+        ["git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "commit the migration"],  # noqa: S607
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
     cli("migrate", "apply", "--json")
 
     port = _free_port()

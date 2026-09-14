@@ -82,10 +82,11 @@ design.
 Those are the jobs of your agent runtime, of Git, and of CI, and Theurian is
 built to leave them there. Approval is the act of merging a pull request — there
 is no approval command and no approver field anywhere in this codebase, **and
-nothing in the code checks that the merge happened**: `migrate apply` applies
-whatever is in `.theurian/migrations/`, committed or not. The review is a
-workflow convention rather than a check Theurian makes (T-15's recorded
-residual). CI is welcome to read Theurian and block a pull request on what it
+nothing in the code checks that the merge happened**: `migrate apply` refuses an
+uncommitted migration by default (`--allow-uncommitted` restores the old
+behaviour), but a local commit on a local branch passes, so it enforces the
+commit and not the merge. The review is a workflow convention rather than a
+check Theurian makes (T-15's recorded residual). CI is welcome to read Theurian and block a pull request on what it
 finds; the thing that blocked is CI.
 
 Everything below follows from that boundary:

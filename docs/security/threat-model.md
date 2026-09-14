@@ -1930,7 +1930,7 @@ input and both remaining controls have something to check.
 
 **On the `$ref` path, what still stands in for the two owed controls is the
 absence of the request** — and that is now a claim about *that* path rather than
-about the package, because one site does reach out (the fourth bullet below).
+about the package, because one site does reach out (the fifth bullet below).
 *Never fetched* is pinned separately from the recording, because reading the
 recorded output cannot see a fetch performed beside it: a mutation that recorded
 every ref exactly as before and added a real `urlopen` beside it survived the
@@ -1949,25 +1949,36 @@ other's blind spots.
   and `git fetch` reach the network without Theurian importing a client. It
   watches `subprocess`, the `os` spawn/exec family — `system`, `popen`, `spawn*`,
   `posix_spawn*` and `exec*` — and `asyncio.create_subprocess_*`, and permits
-  **four** sites. Three take no argument vector from a document: the `git`
+  **five** sites. Four take no argument vector from a document: the `git`
   context reads in `cli/context.py`; the service runner in
-  `infrastructure/services/runner.py`; and, since ADR-0029's trailer source
-  landed, `infrastructure/git/trailer_source.py`, which runs `git log` over the
-  pinned `refs/remotes/origin/main` to read `Review-Finding:` trailers. That
-  third one is a spawn and **not** a network client — `git log` reads local
-  object storage and the local remote-tracking ref, contacting no remote — and
-  its argument vector is four constants with the ref pinned rather than passed,
-  so nothing a document or a config carries reaches it.
+  `infrastructure/services/runner.py`; since ADR-0029's trailer source landed,
+  `infrastructure/git/trailer_source.py`, which runs `git log` over the pinned
+  `refs/remotes/origin/main` to read `Review-Finding:` trailers; and, since
+  ADR-0034's T-15 check landed, `infrastructure/git/committed_check.py`, which
+  runs `git cat-file blob HEAD:<path>` to answer whether the migration file
+  `migrate apply` is about to run is committed unmodified at `HEAD`. The last two
+  are spawns and **not** network clients — `git log` and `git cat-file` read
+  local object storage (and, for the trailer source, the local remote-tracking
+  ref), contacting no remote — and each takes a fixed vector: the trailer
+  source's is four constants with the ref pinned rather than passed, and the
+  committed check's is four elements whose one built argument begins with the
+  literal `HEAD:`, so a migration filename can neither be read as an option nor
+  name a different revision. Neither can be handed a URL or a remote, so nothing
+  a document or a config carries reaches either. The committed check resolves
+  `git` to an absolute path — ADR-0030 clause 5's tier, not the bare-`git` tier
+  its `cli/context.py` sibling uses, because this call gates a write — and both
+  bound the wait with `GIT_TIMEOUT_SECONDS`.
 
-  **The fourth reaches GitHub on purpose**, and its arrival is what retired this
+  **The fifth reaches GitHub on purpose**, and its arrival is what retired this
   entry's absence argument: `infrastructure/github/gh_cli.py` spawns the
   operator's `gh` as `gh api graphql --hostname github.com` (ADR-0030). Its
   destination *does* come from configuration, which is exactly the moment SEC-10's
   repository allowlist stopped being owed and started running — see *Controls*
-  above. This entry said "two sites" and named the first two until 2026-09-02, and
-  "three" until ADR-0030's adapter landed; the pinned set (`PROCESS_SPAWN_SITES`
-  in `tests/unit/test_network_call_sites.py`) is what the count is held against,
-  by `test_threat_model_t7_claims.py`.
+  above. This entry said "two sites" and named the first two until 2026-09-02,
+  "three" until ADR-0030's adapter landed, and "four" until ADR-0034's committed
+  check landed; the pinned set (`PROCESS_SPAWN_SITES` in
+  `tests/unit/test_network_call_sites.py`) is what the count is held against, by
+  `test_threat_model_t7_claims.py`.
 - **The socket layer, behaviourally.**
   `test_parsing_a_hostile_document_opens_no_socket` watches
   `socket.create_connection`, `socket.socket` and `socket.getaddrinfo` while
@@ -1992,7 +2003,7 @@ the flag read `false`, because no tool exposed either; slice 3 registered
 `review.search` and moved it. What the `true` says is *an ingestion call surface
 exists that a client may call*, and nothing wider: **no MCP tool spawns `gh`**, a
 fetch stays an operator's act through `theurian review ingest`, and the flip adds
-no site to the four this entry counts above.
+no site to the five this entry counts above.
 
 The window before it is a **bounded residual, recorded rather than argued
 away**: for slices 1 and 2 the machine-readable answer read `false` while a
@@ -2243,10 +2254,19 @@ does not approve, so the human's merge is the approval. `theurian ingest` is the
 same shape — it records a content-hash manifest and stores no body, and
 promotion runs through a migration and a human (`ingest_command`'s docstring).
 
-**Residual: nothing enforces the merge.** `migrate apply` applies whatever is in
-`.theurian/migrations/`, committed or not — the human's review is a workflow
-convention, not a check the code makes, and the actors table's untrusted
-same-UID process can run it directly.
+**Residual: the commit is enforced; the merge is not.** Since ADR-0034's T-15
+check (Phase B slice B3), `migrate apply` refuses by default a migration file
+that is not committed — tracked by git and byte-identical to `HEAD`, read
+through `infrastructure/git/committed_check.py` and enforced in
+`cli/commands.py`'s pre-apply band; `--allow-uncommitted` restores the old
+behaviour for development and recovery. What the check does **not** prove is
+that the commit reached a reviewed branch: a local commit on a local branch
+satisfies it, because *merged into the default branch* is a branch-protection
+fact held by a forge, not by the working tree (ADR-0034 decision 1 and *What
+this does not close*). So the human's review of the merge stays a workflow
+convention rather than a check the code makes, and the actors table's untrusted
+same-UID process can still apply its own migration by committing it first — a
+speed bump, not a wall.
 
 **The second standing control acts after the fact, not at the trigger point:**
 removing a secret once it is in is a different operation — superseding the
@@ -2381,7 +2401,9 @@ a separate point:*
   convenience rather than a control.
 - **A migration written straight into `.theurian/migrations/` never meets the
   scan at all**, because it never passes through `accept`. That is the same
-  residual as "nothing enforces the merge" above, seen from the scanner's side.
+  residual as "the merge is not enforced" above, seen from the scanner's side:
+  the T-15 check refuses an *uncommitted* file by default, but a file committed
+  straight into the directory clears it and still bypasses the accept-path scan.
 - **The detector will miss things, and will fire on things that are not
   secrets.** A credential that resembles neither a known shape nor random output
   is invisible to it, and there is no per-finding suppression: a false positive

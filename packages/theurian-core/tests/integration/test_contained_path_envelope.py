@@ -168,6 +168,7 @@ from typing import Any, Final
 
 import pytest
 import typer.main
+from git_harness import commit_migrations
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
@@ -815,6 +816,10 @@ class Observation:
 
 
 def _run(*args: str) -> None:
+    if args[:2] == ("migrate", "apply"):
+        # ADR-0034: commit the migration (tracked, byte-identical to HEAD) before
+        # apply; a behavioural no-op today, green once the committed-check lands.
+        commit_migrations()
     result = runner.invoke(app, [*args, "--json"], catch_exceptions=False)
     assert result.exit_code == 0, result.stdout + (result.stderr or "")
 
@@ -860,6 +865,10 @@ def _observe(root: Path, *args: str) -> Observation:
     streams.
     """
     before = _pointer_state(root)
+    if args[:2] == ("migrate", "apply"):
+        # ADR-0034: commit the migration (tracked, byte-identical to HEAD) before
+        # apply; a behavioural no-op today, green once the committed-check lands.
+        commit_migrations()
     result = runner.invoke(app, [*args, "--json"])
     escaped = result.exception
     if isinstance(escaped, SystemExit):

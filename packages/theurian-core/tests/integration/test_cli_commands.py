@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from git_harness import commit_migrations
 from hang_guard import CAN_INTERRUPT_A_HANG, fails_rather_than_hanging
 from migration_fixtures import UNREACHED_BODY_PIN, body_pin
 from registry_deletion_cure_claims import (
@@ -175,6 +176,12 @@ def _invoke_argv(words: list[str]) -> tuple[int, dict[str, Any]]:
     (:func:`_following_the_unregister_cure`). Nothing here reaches a shell: the
     words are handed to Typer's runner as argv.
     """
+    if words[:2] == ["migrate", "apply"]:
+        # ADR-0034: `migrate apply` refuses a migration that is not committed
+        # (tracked and byte-identical to HEAD). The `project` fixture chdirs into
+        # the tree, so committing here is a behavioural no-op today and keeps
+        # these applies green once the committed-check lands.
+        commit_migrations()
     result = runner.invoke(app, words, catch_exceptions=False)
     stream = result.stdout if result.exit_code == 0 else (result.stderr or result.stdout)
     return result.exit_code, json.loads(stream) if stream.strip() else {}

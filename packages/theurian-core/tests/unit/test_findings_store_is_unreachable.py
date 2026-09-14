@@ -430,6 +430,12 @@ _INFRASTRUCTURE_NON_SERVING_MODULES: frozenset[str] = frozenset(
         "filesystem/parsers/structured.py",
         "git/__init__.py",
         "git/trailer_source.py",
+        # The migrate-apply committed-file check (ADR-0034, T-15). It runs `git
+        # rev-parse` and `git hash-object` to decide whether a migration is committed
+        # at HEAD; it touches neither the findings store nor the *findings* write path
+        # (WRITE_PATH_MODULES, which stays application/cli) -- the migration write path
+        # is a different arm.
+        "git/committed_check.py",
         # The `gh` review-ingestion adapter (ADR-0030). It reads GitHub and
         # returns `ReviewEvent`/`ReviewThread`/`ReviewSubmission` evidence; the
         # findings store is a different arm entirely -- `Review-Finding:` trailers

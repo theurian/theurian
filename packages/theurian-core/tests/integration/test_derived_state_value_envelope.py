@@ -76,6 +76,7 @@ from typing import Any, Final
 
 import pytest
 import typer.main
+from git_harness import commit_migrations
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 from mcp.types import CallToolResult, TextContent
 from migration_fixtures import body_pin
@@ -191,6 +192,10 @@ class Ran:
 
 
 def _run(*args: str) -> Ran:
+    if args[:2] == ("migrate", "apply"):
+        # ADR-0034: commit the migration (tracked, byte-identical to HEAD) before
+        # apply; a behavioural no-op today, green once the committed-check lands.
+        commit_migrations()
     result = runner.invoke(app, [*args, "--json"])
     escaped = result.exception
     if isinstance(escaped, SystemExit):

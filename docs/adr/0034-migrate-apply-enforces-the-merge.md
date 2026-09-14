@@ -1,6 +1,6 @@
 # ADR-0034: `migrate apply` enforces the merge
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-09-12
 - Deciders: Theurian maintainers
 - Requirements: SEC-17, FR-I3, INV-7, T-12, T-15
@@ -12,9 +12,15 @@
   [#281](https://github.com/theurian/theurian/issues/281) (the
   approval-*provenance* pointer, which is explicitly not this)
 
-**This ADR records a decision and ships no code.** No check runs, no flag
-exists, no module is created; the diff is confined to `docs/`. What slice B3
-owes is named in *Compliance*.
+**This ADR recorded a decision and shipped no code**: no check ran, no flag
+existed and no module was created with it, and its own diff was confined to
+`docs/`. **The decision is implemented as of Phase B slice B3**
+([PR #683](https://github.com/theurian/theurian/pull/683)), which is why the
+status above is `accepted`. *Compliance* names what that slice discharged, with
+the test that discharges it, and what stays owed and where it lives. Nothing
+above *Compliance* is rewritten: the measurements below are dated and anchored
+to `be977ea7`, and re-writing them to today's tree would delete the evidence the
+decision rests on.
 
 **Every repository fact below was measured on 2026-09-12 against `be977ea7`**,
 which is reachable from `origin/main`.
@@ -556,14 +562,20 @@ decision 1's floor does not prove a merge into a protected branch.
 
 ## Compliance
 
-**This ADR ships no behaviour, so it has no shipped test to name.** Its
-enforcement at design time is the measurements it cites; its enforcement at
-implementation time is the tests slice B3 owes. The names below are the
-properties an implementation must pin, not files that exist today — the same
-honest split [ADR-0030](0030-github-review-ingestion-spawns-gh.md) states for
-the same reason.
+**This ADR shipped no behaviour when it was written, so at the time it had no
+shipped test to name.** Its enforcement at design time is the measurements it
+cites; its enforcement at implementation time is the tests slice B3 owed and has
+now delivered. The two halves are kept apart below: what B3 landed is named with
+the test that holds it, and what stays owed keeps the house *Still owed* heading
+and names where it lives — the same honest split
+[ADR-0030](0030-github-review-ingestion-spawns-gh.md) states for the same
+reason.
 
-Measured now, and reproducible from this ADR (2026-09-12, `be977ea7`):
+Measured at `be977ea7` on 2026-09-12 — the state this decision was taken
+against, reproducible from that sha and **deliberately not re-measured**, since
+slice B3 moved several of them (the spawn set is now five, the new module
+exists) and re-writing them to today's tree would delete the evidence the
+decision rests on:
 
 - `migrate apply` reads git **four** times, traced through a `PATH` shim on the
   shipped CLI: `rev-parse --show-toplevel` (`find_git_root`, the one read that
@@ -608,63 +620,84 @@ Measured now, and reproducible from this ADR (2026-09-12, `be977ea7`):
   `_commit`, so decision 1's actor table conditions the MCP-client row on slice
   B4 rather than asserting it.
 
-Still owed, with the milestone that will satisfy it:
+Landed in Phase B slice B3
+([PR #683](https://github.com/theurian/theurian/pull/683)), each item with the
+test that discharges it:
 
-- **Slice B3 — the predicate is tracked *and* byte-identical to `HEAD`
-  (decision 1).** Owed: three driving cases, because two would not separate the
-  predicates — a committed-and-unmodified migration applies; a tracked,
-  staged-but-never-committed one refuses; a committed-then-edited one refuses.
-  The third is the one that distinguishes this predicate from
-  *committed-anywhere-in-history* and is the test that goes RED if the
-  implementation drifts to the weaker check.
-- **Slice B3 — the escape hatch restores the old behaviour and is a flag
-  (decision 2).** Owed: each of the two refusing cases above — staged-never-
-  committed, committed-then-edited — applies under the flag, plus the property
-  that no configuration key selects it — a test that reads the
-  config schema and asserts no key does, in the shape
-  `tests/unit/test_config_key_call_sites.py` already uses for config-key
-  claims.
-- **Slice B3 — the refusal's remedy names the flag, and the predicate reads the
-  loader's own bytes (decision 1).** Owed: the refusal's remedy asserted to name
-  the flag; and a test that the comparison is against `migration.checksum` — for
-  example by driving a file whose working-tree bytes are replaced *after* the
-  load, which must still apply, because the bytes the engine holds are the
-  approved ones. The inverse (replaced before the load) refuses, which is the
-  third driving case above.
+- **The predicate is tracked *and* byte-identical to `HEAD` (decision 1).** Three
+  driving cases separate it from the weaker candidates, in
+  `tests/integration/test_migrate_apply_committed_check.py`: a
+  committed-and-unmodified migration applies
+  (`test_a_committed_unmodified_migration_applies`); a tracked,
+  staged-but-never-committed one refuses
+  (`test_a_staged_but_never_committed_migration_is_refused`); a
+  committed-then-edited one refuses
+  (`test_a_committed_then_edited_migration_is_refused`). The third is the one
+  that goes RED if the implementation drifts to *committed-anywhere-in-history*.
+- **The escape hatch restores the old behaviour, is a flag, and is not a
+  configuration key (decision 2).** `--allow-uncommitted` applies each of the two
+  refusing cases —
+  `test_a_staged_migration_applies_under_the_escape_hatch` and
+  `test_a_committed_then_edited_migration_applies_under_the_escape_hatch` in the
+  file above — and
+  `tests/unit/test_allow_uncommitted_is_not_a_config_key.py::test_no_published_config_key_selects_the_committed_check_escape_hatch`
+  reads the config schema and asserts no key selects it, in the shape
+  `test_config_key_call_sites.py` uses for config-key claims.
+- **The refusal's remedy names the flag, and the predicate reads the loader's own
+  bytes (decision 1).** `test_the_refusal_remedy_names_the_flag` asserts the
+  remedy; and the comparison is against `migration.checksum`, driven both ways in
+  `tests/integration/test_committed_migration_check_adapter.py` — a working-tree
+  edit *after* the load does not change the verdict
+  (`test_a_working_tree_edit_after_the_load_does_not_change_the_verdict`) while an
+  edit *before* the load is seen as modified
+  (`test_an_edit_before_the_load_is_seen_as_modified`), which is the same window
+  the check-then-load alternative loses.
   **Deliberately not owed: a driving case for a tree that is not a git
   repository.** That refusal already ships unconditionally (decision 3), so a
   test of it cannot go RED against this change, and its control — *the same tree
   applies under the flag* — cannot be constructed without replacing project
   resolution. The earlier draft of this ADR owed exactly that test; it is deleted
-  here with the reason, not carried to another milestone.
-- **Slice B3 — the refusal leaves no database behind (decision 4's seat).**
-  Owed: the tree is diffed after a refused apply, in the shape
-  `tests/integration/test_proposal_service.py::test_generation_writes_only_under_the_proposal_directory`
-  uses — the property #63 and #210 established for the refusals already in that
-  band, extended to this one rather than assumed to carry.
-- **Slice B3 — the new spawn site joins `PROCESS_SPAWN_SITES`, and its argument
-  vector is fixed.** Owed: the equality pin grown by exactly one entry, plus the
-  checklist that file states — a test that the vector is fixed by the adapter,
-  that it cannot be handed a URL or a remote, and that it carries a timeout.
-- **Slice B3 — the T-7 spawn bullet moves in the same commit as the set.**
-  `docs/security/threat-model.md`'s bullet spells **four** and names each module
-  path;
+  with the reason, not carried to another milestone.
+- **The refusal leaves no database behind (decision 4's seat).**
+  `tests/integration/test_migrate_apply_committed_check.py::test_a_refused_apply_leaves_no_database_behind`
+  diffs the tree after a refused apply — the property #63 and #210 established
+  for the refusals already in that band, extended to this one rather than assumed
+  to carry.
+- **The new spawn site joins `PROCESS_SPAWN_SITES`, and its argument vector is
+  fixed.** `tests/unit/test_network_call_sites.py`'s `PROCESS_SPAWN_SITES` now
+  holds **five** entries — `infrastructure/git/committed_check.py` is the new one
+  — asserted by equality against the whole set, and
+  `tests/integration/test_committed_migration_check_adapter.py::test_the_git_vector_is_fixed_and_carries_a_timeout`
+  holds that the vector is fixed by the adapter, cannot be handed a URL or a
+  remote, and carries a timeout.
+- **The T-7 spawn bullet moved in the same commit as the set.**
+  `docs/security/threat-model.md`'s bullet now spells **five** and names
+  `infrastructure/git/committed_check.py`;
   `tests/unit/test_threat_model_t7_claims.py::test_the_t7_spawn_bullet_names_every_pinned_spawn_site_and_spells_how_many`
   and
   `tests/unit/test_network_call_sites.py::test_no_module_outside_the_recorded_spawn_sites_can_start_another_program`
-  both go RED when a fifth entry lands — measured, above. Owed: the bullet's
-  number word and module list rewritten in the commit that grows the set, so no
-  commit in between is red.
-- **Slice B3 — the git query is bounded and does not trust its input.** A
-  migration filename reaches the adapter, and a filename is a path. The
-  `HEAD:<path>` form already forecloses the option half — measured, decision 1 —
-  so what is owed is the rest: a filename carrying a `:`, a leading `../`, or a
-  newline, driven through the adapter and asserted to refuse or to resolve to
-  the file it names, never to a different revision.
-- **Slice B3 — the residual population is rewritten *per control*, in the same
-  commit as the check.** The key and its measured exclusion are in decision 5.
-  The T-15 entry narrows rather than closing: what becomes enforced is
-  *committed*, and what stays owed is *merged into a reviewed branch*. Whether
-  that rewrite is faithful is a reading and no mechanical check reaches it,
-  which is said here rather than left to be inferred from a test name beside it.
-  The dated CHANGELOG section is **not** a mover.
+  derive the two sides independently, so no commit in between is red — measured,
+  above.
+- **The git query is bounded and does not trust its input.** The `HEAD:<path>`
+  form already forecloses the option half (measured, decision 1);
+  `tests/integration/test_committed_migration_check_adapter.py::test_an_untrusted_filename_never_resolves_to_a_different_revision`
+  drives a filename carrying a `:`, a leading `../`, or a newline through the
+  adapter and asserts it refuses or resolves to the file it names, never to a
+  different revision.
+- **The residual population is rewritten *per control*, in the same commit as the
+  check.** The key and its measured exclusion are in decision 5. The T-15 entry
+  narrows rather than closing: what becomes enforced is *committed*, and what
+  stays owed is *merged into a reviewed branch*. Whether that rewrite is faithful
+  is a reading and no mechanical check reaches it, which is said here rather than
+  left to be inferred from a test name beside it. The dated CHANGELOG section is
+  **not** a mover.
+
+**Nothing from this ADR's decisions remains owed to a future slice**, so this
+ADR heads no *Still owed* section — the discharge that moves the roadmap's
+literal *Still owed* count down by one (row 10), the first such move in the
+Phase B wave. The two things the check does **not** reach are deliberate floors
+recorded in *What this does not close*, not implementation debt: that the commit
+reached the default branch through a reviewed pull request (raising it needs a
+forge and a network call inside `migrate apply`), and the approval-provenance
+pointer that [#281](https://github.com/theurian/theurian/issues/281) proposes
+and states is itself not an enforcement mechanism.
