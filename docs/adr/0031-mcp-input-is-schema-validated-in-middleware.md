@@ -740,10 +740,9 @@ Still owed, with the milestone that will satisfy it:
 >   it happens: the composed render ceiling, and the worst render the pre-#669
 >   charge admitted at a given cap.
 >
-> Both commits are branch commits of
-> [PR #685](https://github.com/theurian/theurian/pull/685) and not on `main`
-> until that pull request lands — which is why each anchor carries the
-> pull-request qualifier rather than reading as a tree a reader can check out.
+> Both commits are branch commits of this pull request and not on `main` until
+> it lands — which is why each anchor carries the pull-request qualifier rather
+> than reading as a tree a reader can check out.
 > One figure is older than either, and the sentence quoting it says so: the
 > 53,476,811-character reproduction was taken against the interim `2 *` cap this
 > amendment withdrew, not against the cap it ships.
