@@ -28,6 +28,12 @@ rather than about any one request, plus the bounds that must hold before
   is framed, and is told which limit it passed instead of meeting a bare
   ``413`` that names no tool. Both constants are pinned by recomputation and
   the boundary between the two tiers is driven at exact bytes, on both sides.
+* **No ordering of those two caps holds the render budget** (#669, round one).
+  Bytes on the wire and characters under ``{instance!r}`` are not the same
+  quantity: ``repr`` escapes, so a body whose *byte* count is a third of the
+  character budget renders past that budget. What refuses it is the charge
+  ``mcp/validation.py``'s ``_rendered_width`` applies, and that is driven here
+  at the size class that shows it.
 
 Everything here goes through the transport for the reason
 ``test_input_validation_wire.py`` records: ``server.call_tool`` is the SDK's
@@ -71,6 +77,15 @@ UNPUBLISHED_TOOL: Final = "test.without.a.schema"
 #: whole response, so "the refusal does not echo what the caller sent" is
 #: checkable without trusting that a test looked at the right field.
 SENTINEL: Final = "sentinel-value-3b7e41af"
+
+#: A character ``repr`` renders as a six-character ``\uXXXX`` escape while JSON
+#: sends it raw as its own two UTF-8 bytes -- U+0600 ARABIC NUMBER SIGN, a
+#: format character ``str.isprintable`` rejects. Six rendered characters per
+#: code point is the most any BMP character costs, and three rendered characters
+#: per *wire byte* is what makes the gap this transport cannot bound: the seam
+#: :func:`~theurian.mcp.validation._rendered_width` charges for exists because
+#: no byte cap implies a render cap.
+SIX_CHARACTER_RENDER: Final = "؀"
 
 
 @pytest.fixture
@@ -418,6 +433,31 @@ def test_the_transport_body_cap_sits_above_the_rendered_character_bound() -> Non
     )
 
 
+def _raw_call_carrying(query: str, *, ensure_ascii: bool) -> bytes:
+    """A serialized ``tools/call`` carrying ``query``, encoded the caller's way.
+
+    ``ensure_ascii`` is a required keyword rather than a default because the
+    encoding *is* a variable under test in this file. A body's wire size is a
+    function of it, and ``TestClient``'s own ``json=`` kwarg serialises with
+    ``ensure_ascii=False`` (``httpx2._content``) -- so a test that needs one
+    encoding or the other cannot get it through that kwarg and builds the body
+    here instead.
+    """
+    return json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "knowledge.search",
+                "arguments": {"projectId": "demo", "query": query},
+            },
+        },
+        separators=(",", ":"),
+        ensure_ascii=ensure_ascii,
+    ).encode()
+
+
 def _raw_call_of_exactly(size: int) -> bytes:
     """A serialized ``tools/call`` whose body is exactly ``size`` bytes.
 
@@ -429,22 +469,64 @@ def _raw_call_of_exactly(size: int) -> bytes:
     """
 
     def envelope(query: str) -> bytes:
-        return json.dumps(
-            {
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/call",
-                "params": {
-                    "name": "knowledge.search",
-                    "arguments": {"projectId": "demo", "query": query},
-                },
-            },
-            separators=(",", ":"),
-        ).encode()
+        return _raw_call_carrying(query, ensure_ascii=True)
 
     raw = envelope(SENTINEL + "a" * (size - len(envelope(SENTINEL))))
     assert len(raw) == size, (len(raw), size)
     return raw
+
+
+def test_escape_heavy_text_smaller_than_the_render_budget_still_exceeds_it(
+    registry: ProjectRegistry, tmp_path: Path
+) -> None:
+    """The render budget is held by the charge, not by the byte cap above it.
+
+    The premise ``MAX_PARAMS_RENDERED_CHARS`` was first written under -- *"a
+    request's rendered width never exceeds the bytes the caller sent"*, a
+    sentence ``mcp/validation.py`` now carries only to warn against -- is false,
+    and this is the wire shape that shows it.
+    ``jsonschema`` renders a failing instance with ``{instance!r}``, and
+    ``repr`` escapes: :data:`SIX_CHARACTER_RENDER` costs a caller two UTF-8
+    bytes and renders as six characters. So a body **smaller in bytes than
+    ``MAX_PARAMS_RENDERED_CHARS`` itself** -- asserted here, and nowhere near
+    the transport cap -- is already past that budget, and no ordering of the two
+    caps could have refused it.
+
+    What refuses it is :func:`~theurian.mcp.validation._rendered_width` charging
+    every leaf at least what ``repr`` renders it as. Charged its own length
+    instead, this body is counted at a sixth of its true render and reaches
+    ``jsonschema``, which then builds the message the budget exists to prevent
+    -- and the test sees the *schema's* ``maxLength`` refusal rather than this
+    seam's, which is why the assertion is on which tier answered and not on
+    ``isError``.
+
+    Posted raw rather than ``ensure_ascii``-escaped: escaped, the same character
+    costs six wire bytes and the gap disappears. The cheap encoding is the
+    hostile one here, which is why the encoding is chosen explicitly rather than
+    taken from whatever the client happens to emit.
+    """
+    query = SENTINEL + SIX_CHARACTER_RENDER * (MAX_PARAMS_RENDERED_CHARS // 6 + 1)
+    raw = _raw_call_carrying(query, ensure_ascii=False)
+    assert len(raw) < MAX_PARAMS_RENDERED_CHARS, (len(raw), MAX_PARAMS_RENDERED_CHARS)
+
+    with open_client(build_server(registry), tmp_path / "data") as (client, session):
+        answer = client.post("/mcp", content=raw, headers=headers(session))
+
+    assert answer.status_code == 200, (answer.status_code, answer.text[:200])
+    framed = payload(answer)
+    text = framed["result"]["content"][0]["text"]
+    assert framed["result"]["isError"] is True, text
+    assert "characters of content" in text, (
+        f"a body of {len(raw)} wire bytes that renders to "
+        f"{6 * (MAX_PARAMS_RENDERED_CHARS // 6 + 1)} characters was not refused by the "
+        f"rendered-character bound ({MAX_PARAMS_RENDERED_CHARS}); it reached jsonschema, "
+        f"which answered {text!r}. _rendered_width is charging this leaf less than repr "
+        f"renders it as, so the budget is enforced against a count that is not the render"
+    )
+    assert str(MAX_PARAMS_RENDERED_CHARS) in text, text
+    assert "knowledge.search" in text, text
+    assert SENTINEL not in json.dumps(framed), text
+    assert SIX_CHARACTER_RENDER not in json.dumps(framed, ensure_ascii=False), text
 
 
 def test_a_body_between_the_two_caps_meets_the_bounded_refusal_over_the_wire(
