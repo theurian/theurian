@@ -7,18 +7,20 @@ tests (``test_committed_migration_check_adapter.py``,
 present git, so three defensive branches never execute there and survive their own
 deletion:
 
-* ``_head_blob`` returning ``None`` when the git binary did not resolve at
-  construction (``self._git is None``);
-* ``_head_blob`` returning ``None`` when the ``git cat-file`` spawn raises
-  ``OSError`` or times out;
+* ``_run`` returning ``None`` when the git binary did not resolve at construction
+  (``self._git is None``), which makes the committed id ``None`` and the verdict
+  ``NOT_TRACKED``;
+* ``_run`` returning ``None`` when a ``git`` spawn raises ``OSError`` or times out,
+  which the same path folds to ``NOT_TRACKED``;
 * ``_refuse_an_uncommitted_migration`` treating a ``source_path``-less migration as
   ``NOT_TRACKED`` rather than ``COMMITTED``.
 
 Each is correct on ``HEAD`` -- every branch fails closed -- but *unproven*: a
-mutation that turns any of them fail-*open* (return ``b""`` -> a spurious
-``MODIFIED``/``COMMITTED``, or classify a fileless migration ``COMMITTED``) leaves
-the suite green. These tests pin the closed outcome so those mutations are killed.
-The commit body records the exact three mutations and their now-RED output.
+mutation that turns any of them fail-*open* (the committed-id-``None`` verdict
+flipped to ``COMMITTED``, the ``except`` dropped so a spawn error escapes, or a
+fileless migration classified ``COMMITTED``) leaves the suite green. These tests
+pin the closed outcome so those mutations are killed. The commit body records the
+exact mutations and their now-RED output.
 
 They are unit tests because each defensive path is reached by *starving* the real
 dependency, not exercising it: git is mocked absent or made to raise, and the
@@ -58,11 +60,16 @@ from theurian.infrastructure.git.committed_check import (
 
 pytestmark = pytest.mark.unit
 
-#: A checksum that cannot collide with the digest of empty bytes -- the value a
-#: fail-open ``_head_blob`` would hand back. It anchors the assertion that a
-#: ``b""`` return would be classified as *some* comparison other than
-#: ``NOT_TRACKED``, so the fail-closed pin has teeth against the ``b""`` mutant.
-_CHECKSUM: Final = ContentHash.of_bytes(b"the migration file's committed bytes")
+#: The bytes handed to ``compare_to_head`` in the git-starved cases below. In every
+#: one of them the check short-circuits to ``NOT_TRACKED`` before it hashes anything
+#: (git is absent, or the first spawn raises), so the value is never fed to
+#: ``hash-object`` -- it only has to be ``bytes`` of the right shape.
+_SOURCE_BYTES: Final = b"the migration file's committed bytes"
+
+#: The ``Migration.checksum`` the fileless-migration fixture carries. Only the
+#: identity contract needs it (``Migration`` requires a ``ContentHash``); the
+#: committed-check never runs for a ``source_path``-less migration.
+_CHECKSUM: Final = ContentHash.of_bytes(_SOURCE_BYTES)
 
 #: A valid Crockford-base32 ULID (no I/L/O/U); reused from the adapter's fixtures.
 _MIGRATION_ID: Final = "01K1AAAAAA01234567890ABCDE"
@@ -74,26 +81,27 @@ def test_a_check_whose_git_binary_did_not_resolve_reads_not_tracked(
     """When ``git`` cannot be resolved at construction, every file is ``NOT_TRACKED``.
 
     ``__init__`` resolves ``git`` through ``shutil.which`` once; a ``None`` means it
-    vanished mid-command (the module docstring's case). ``_head_blob`` then returns
-    ``None`` without spawning anything, so the verdict is ``NOT_TRACKED`` and the
-    caller refuses -- the fail-closed outcome the adapter promises.
+    vanished mid-command (the module docstring's case). ``_run`` then returns
+    ``None`` without spawning anything, so the committed id is ``None`` and the
+    verdict is ``NOT_TRACKED`` and the caller refuses -- the fail-closed outcome the
+    adapter promises.
 
     The adapter's integration tests all run with a present git, so this branch is
-    never taken there. RED if ``if self._git is None: return None`` is mutated to
-    ``return b""``: the empty blob's digest differs from ``_CHECKSUM``, so the
-    verdict would flip to ``MODIFIED`` -- a fabricated "committed once, edited
-    since" answer for a tree where git could not even be run.
+    never taken there. RED if ``compare_to_head``'s ``if committed_id is None:
+    return HeadComparison.NOT_TRACKED`` is mutated to ``return
+    HeadComparison.COMMITTED``: a tree where git could not even be run would then be
+    called committed, waving the migration through.
     """
     # `committed_check` does `import shutil`, so patching the shared module object
     # is patching the exact `shutil.which` the adapter calls.
     monkeypatch.setattr(shutil, "which", lambda *_a, **_k: None)
     check = CommittedMigrationCheck(Path("/does/not/matter"))
 
-    verdict = check.compare_to_head(".theurian/migrations/x.yaml", _CHECKSUM)
+    verdict = check.compare_to_head(".theurian/migrations/x.yaml", _SOURCE_BYTES)
 
     assert verdict is HeadComparison.NOT_TRACKED, (
         "a check whose git binary did not resolve must fail closed to NOT_TRACKED, "
-        "never hand back empty bytes that read as a real comparison"
+        "never a COMMITTED verdict for a tree git could not even run in"
     )
 
 
@@ -110,20 +118,21 @@ def test_a_check_whose_git_binary_did_not_resolve_reads_not_tracked(
 def test_a_git_spawn_that_raises_reads_not_tracked(
     monkeypatch: pytest.MonkeyPatch, raised: Exception
 ) -> None:
-    """A ``git cat-file`` that times out or fails to spawn is ``NOT_TRACKED`` (SEC-19).
+    """A ``git rev-parse`` that times out or fails to spawn is ``NOT_TRACKED`` (SEC-19).
 
-    ``_head_blob`` catches ``(OSError, subprocess.TimeoutExpired)`` and returns
-    ``None`` -- a spawn that never produced bytes cannot prove a file committed, so
-    the apply refuses rather than trusting an absent answer. Both arms are driven:
-    the timeout (the bound the adapter sets) and the ``OSError`` (git missing, a
-    broken pipe, a resource limit).
+    ``_run`` catches ``(OSError, subprocess.TimeoutExpired)`` and returns ``None`` --
+    a spawn that never produced an id cannot prove a file committed, so the committed
+    id is ``None`` and the apply refuses rather than trusting an absent answer. Both
+    arms are driven: the timeout (the bound the adapter sets) and the ``OSError``
+    (git missing, a broken pipe, a resource limit).
 
     git is mocked *present* so the resolve succeeds and control reaches the
     ``subprocess.run`` call, which is then made to raise. The adapter's integration
     tests spawn a real, fast git, so neither arm executes there. RED if
-    ``except (OSError, subprocess.TimeoutExpired): return None`` is mutated to
-    ``return b""``: the empty blob would read ``MODIFIED``, waving through -- or
-    refusing for the wrong reason -- a migration git never actually answered for.
+    ``_run``'s ``except (OSError, subprocess.TimeoutExpired): return None`` is
+    removed: the raised exception would escape ``compare_to_head`` instead of failing
+    closed, and the apply would abort on an unhandled error rather than refusing with
+    the escape-hatch remedy.
     """
     # git resolves (so control reaches the spawn), and the spawn then raises. Both
     # names are the shared module objects the adapter imported and calls.
@@ -135,11 +144,11 @@ def test_a_git_spawn_that_raises_reads_not_tracked(
     monkeypatch.setattr(subprocess, "run", raise_it)
     check = CommittedMigrationCheck(Path("/repo/root"))
 
-    verdict = check.compare_to_head(".theurian/migrations/x.yaml", _CHECKSUM)
+    verdict = check.compare_to_head(".theurian/migrations/x.yaml", _SOURCE_BYTES)
 
     assert verdict is HeadComparison.NOT_TRACKED, (
-        "a git spawn that raised produced no committed bytes, so the check must fail "
-        "closed to NOT_TRACKED rather than treating an empty read as a comparison"
+        "a git spawn that raised produced no committed id, so the check must fail "
+        "closed to NOT_TRACKED rather than letting the error escape as a comparison"
     )
 
 
@@ -199,8 +208,8 @@ def test_a_migration_with_no_source_path_is_refused_as_uncommitted(
     migration, so this is the only way to reach the branch, and a full CLI run
     cannot.
 
-    RED if ``HeadComparison.NOT_TRACKED if source_path is None`` is mutated to
-    ``HeadComparison.COMMITTED if source_path is None``: the guard would then
+    RED if ``HeadComparison.NOT_TRACKED if source_path is None or source_bytes is
+    None`` is mutated to ``HeadComparison.COMMITTED if ...``: the guard would then
     fail *open* -- the fileless migration would be classified ``COMMITTED``, the
     loop would ``continue``, and the function would return without refusing,
     letting an unbacked in-memory migration apply.

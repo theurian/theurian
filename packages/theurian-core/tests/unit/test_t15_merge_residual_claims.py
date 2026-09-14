@@ -492,8 +492,8 @@ def test_the_t15_residual_names_the_module_the_committed_check_lives_in() -> Non
 def test_the_committed_check_is_a_recorded_process_spawn_site() -> None:
     """RED means the committed check's ``git`` spawn left the pinned spawn-site set.
 
-    ``migrate apply``'s check runs ``git cat-file blob HEAD:<path>`` to decide
-    whether a migration is committed, and that spawn is accounted for on
+    ``migrate apply``'s check runs ``git rev-parse`` and ``git hash-object`` to
+    decide whether a migration is committed, and those spawns are accounted for on
     ``test_network_call_sites.PROCESS_SPAWN_SITES`` (which T-7's spawn bullet is held
     against). If the adapter is deleted the set loses its member and the narrowing
     the four records state has nothing behind it; if it is relocated, the derived
@@ -508,8 +508,9 @@ def test_the_committed_check_is_a_recorded_process_spawn_site() -> None:
     assert (_CHECK_MODULE_PATH, "subprocess") in spawn_sites, (
         f"`({_CHECK_MODULE_PATH!r}, 'subprocess')` is not in PROCESS_SPAWN_SITES:\n  "
         + "\n  ".join(f"{path} :: {name}" for path, name in sorted(spawn_sites))
-        + "\n\nThe committed check spawns `git cat-file` to answer whether a "
-        "migration is committed at HEAD, so it must be a recorded spawn site. If it "
+        + "\n\nThe committed check spawns `git` (rev-parse and hash-object) to "
+        "answer whether a migration is committed at HEAD, so it must be a recorded "
+        "spawn site. If it "
         "is MISSING here, the check was removed or its module moved -- in which case "
         "the T-15 narrowing the four records now state describes a control this build "
         "no longer carries, and the prose arms must revert with it."

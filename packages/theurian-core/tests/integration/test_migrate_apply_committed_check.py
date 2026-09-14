@@ -2,11 +2,12 @@
 
 The merge is this project's approval model (ADR-0013 point 4). ADR-0034 decision 1
 makes ``migrate apply`` refuse, by default, a migration file that is not
-**committed** -- tracked by git *and* byte-identical to ``HEAD`` -- so a file that
-was never reviewed cannot become knowledge, and slice B4's protocol write path
-cannot slip a migration past the human. This module drives that refusal through
-the real CLI, which is where :func:`_refuse_an_uncommitted_migration` is seated
-(before ``create_database``, decision 4).
+**committed** -- tracked by git *and* whose applied bytes hash, under the path's
+gitattributes, to the id committed at ``HEAD`` -- so a file that was never reviewed
+cannot become knowledge, and slice B4's protocol write path cannot slip a migration
+past the human. This module drives that refusal through the real CLI, which is where
+:func:`_refuse_an_uncommitted_migration` is seated (before ``create_database``,
+decision 4).
 
 **These tests are the sole committed proof that the check can fail.** Every other
 ``migrate apply`` harness in the suite commits its migration first (the
@@ -27,6 +28,21 @@ Three driving cases separate the predicate from its two weaker candidates
   *committed anywhere in history* (the approved bytes are in ``HEAD``, the bytes
   that would apply are not). This is the case that reddens if the implementation
   drifts to the weaker check.
+
+Four further cases pin the blob-id mechanism and its refusal message:
+
+* under ``.gitattributes`` ``*.yaml text eol=lf``, a **CRLF-authored, committed,
+  git-clean** migration *applies* -- the id comparison normalizes both sides, so
+  the earlier content-hash shape's false ``MODIFIED`` (which refused every text
+  migration on the Windows default) is gone (the code-review HIGH's regression);
+* the same normalization must not over-normalize: a committed CRLF migration whose
+  content is then **genuinely edited** still refuses, so eol handling never masks a
+  real drift;
+* a **mixed set** -- one migration committed, a later one staged but never
+  committed -- refuses and names the uncommitted one, so the loop checks every
+  migration rather than stopping at the first committed one;
+* the refusal **names the offending file**, so an agent is told which migration to
+  commit.
 """
 
 from __future__ import annotations
@@ -81,6 +97,27 @@ operations:
       sourceAnchors:
         - provider: git
           sourceUri: git://demo/auth-policy.md
+"""
+
+#: A second migration that ``dependsOn`` the first, so the set's topological order
+#: (Kahn's, ULID tie-break) always checks the first before it. It carries a
+#: ``createItem`` only -- no body file needed -- and a distinct ULID (Crockford
+#: base32: no I/L/O/U). The mixed-set test commits the first and leaves this one
+#: staged, so the refusal must reach *this* migration, not stop at the committed one.
+SECOND_MIGRATION_ID: Final = "01K1BBBBBB01234567890ABCDE"
+SECOND_MIGRATION_RELPATH: Final = f".theurian/migrations/{SECOND_MIGRATION_ID}-second.yaml"
+SECOND_MIGRATION: Final = f"""apiVersion: theurian.dev/v1
+id: {SECOND_MIGRATION_ID}
+createdAt: 2026-08-02T11:00:00+09:00
+author: engineer@example.com
+dependsOn:
+  - {MIGRATION_ID}
+operations:
+  - op: createItem
+    itemId: architecture.second-policy
+    kind: architecture
+    namespace: backend
+    owner: platform-team
 """
 
 _STATE_DATABASE_GLOB: Final = "theurian-state-*.sqlite"
@@ -145,16 +182,57 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
-def _assert_uncommitted_refusal(exit_code: int, payload: dict[str, Any], *, reason: str) -> None:
-    """The refusal is the uncommitted one (ADR-0034), not some other guard.
+@pytest.fixture
+def eol_lf_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A registered project whose migration is **committed CRLF under ``eol=lf``**.
 
-    Pins the exit code, that the message is the committed-check's own, that it
-    carries the *reason* half distinguishing the two refusing predicates, and that
-    the remedy names ``--allow-uncommitted`` -- so a green here cannot be an
-    unrelated failure (a bad ULID, a missing body) wearing the same exit code.
+    ``.gitattributes`` declares ``*.yaml text eol=lf``, and the migration is authored
+    with CRLF line endings and committed. Git's clean filter normalizes the stored
+    blob to LF, so the working-tree bytes (CRLF) differ from the committed blob (LF)
+    while ``git status`` reports the tree clean -- the exact shape that the earlier
+    content-hash check read as a false ``MODIFIED`` and that refused every text
+    migration on the Windows default (``core.autocrlf``). The body ``.md`` is left
+    LF, unaffected by the ``*.yaml`` attribute, so its ``contentSha256`` still
+    matches. Redirects ``HOME``/``THEURIAN_DATA_DIR`` like ``project``.
+    """
+    root = tmp_path / "demo"
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "config", "user.email", "test@example.com")
+    _git(root, "config", "user.name", "Test")
+    _git(root, "config", "commit.gpgsign", "false")
+
+    monkeypatch.setenv("THEURIAN_DATA_DIR", str(tmp_path / "datadir"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(root)
+
+    assert _invoke("init")[0] == 0
+    assert _invoke("project", "register")[0] == 0
+    (root / ".gitattributes").write_text("*.yaml text eol=lf\n")
+    (root / ".theurian" / "knowledge" / "architecture" / "auth-policy.md").write_text(BODY)
+    # Author the migration with CRLF endings; git stores it LF (the eol=lf clean
+    # filter), so the committed blob and the worktree bytes differ by line ending.
+    (root / MIGRATION_RELPATH).write_bytes(MIGRATION.replace("\n", "\r\n").encode("utf-8"))
+
+    _git(root, "add", ".gitattributes", ".theurian/knowledge", MIGRATION_RELPATH)
+    _git(root, "commit", "-q", "-m", "init with a CRLF migration under eol=lf")
+    return root
+
+
+def _assert_uncommitted_refusal(
+    exit_code: int, payload: dict[str, Any], *, headline: str, reason: str
+) -> None:
+    """The refusal is the committed-check's own (ADR-0034), not some other guard.
+
+    Pins the exit code, that the message carries the *headline* split by verdict (a
+    ``MODIFIED`` file "differs from the version committed at HEAD"; a ``NOT_TRACKED``
+    file "is not committed"), the *reason* half distinguishing the two refusing
+    predicates, the shared "approval model is the merge" clause, and that the remedy
+    names ``--allow-uncommitted`` -- so a green here cannot be an unrelated failure
+    (a bad ULID, a missing body) wearing the same exit code.
     """
     assert exit_code == EXIT_STATE_ERROR, payload
-    assert "is not committed" in payload.get("error", ""), payload
+    assert headline in payload.get("error", ""), payload
     assert reason in payload["error"], payload
     assert "approval model is the merge" in payload["error"], payload
     assert "--allow-uncommitted" in payload.get("remedy", ""), payload
@@ -183,16 +261,20 @@ def test_a_staged_but_never_committed_migration_is_refused(project: Path) -> Non
     """``git add`` with no commit reviews nothing, so the apply refuses (decision 1).
 
     This is the case that distinguishes the predicate from *tracked*: the file is
-    in the index but not at ``HEAD``, so ``git cat-file blob HEAD:<path>`` fails and
-    the check reads ``NOT_TRACKED``. RED if the refusal is removed, or if the
-    predicate is relaxed to accept a merely-tracked file.
+    in the index but not at ``HEAD``, so ``git rev-parse --verify --quiet
+    HEAD:<path>`` finds no committed id and the check reads ``NOT_TRACKED``. RED if
+    the refusal is removed, or if the predicate is relaxed to accept a
+    merely-tracked file.
     """
     _git(project, "add", MIGRATION_RELPATH)  # staged, never committed
 
     exit_code, payload = _invoke("migrate", "apply")
 
     _assert_uncommitted_refusal(
-        exit_code, payload, reason="git does not track it at HEAD, so it was never committed"
+        exit_code,
+        payload,
+        headline="is not committed",
+        reason="git does not track it at HEAD, so it was never committed",
     )
 
 
@@ -200,16 +282,17 @@ def test_a_committed_then_edited_migration_is_refused(project: Path) -> None:
     """The bytes that would apply are not the bytes that were approved (decision 1).
 
     Committed once and edited since: the approved bytes are in ``HEAD``, the
-    working-tree bytes the loader digests are not, so the check reads ``MODIFIED``.
-    This is the case that reddens if the implementation drifts to the weaker
-    *committed-anywhere-in-history* predicate -- that predicate would find the
-    approved bytes in history and wave the edited file through.
+    working-tree bytes the loader reads are not, so their applied id differs from the
+    committed id and the check reads ``MODIFIED``. This is the case that reddens if
+    the implementation drifts to the weaker *committed-anywhere-in-history*
+    predicate -- that predicate would find the approved bytes in history and wave the
+    edited file through.
     """
     _git(project, "add", MIGRATION_RELPATH)
     _git(project, "commit", "-q", "-m", "add migration")
     # Edit the working tree after the commit. A trailing comment keeps the document
     # schema-valid (so `resolve_context` still loads it) while changing its bytes,
-    # so `migration.checksum` no longer matches the version at HEAD.
+    # so the applied blob id no longer matches the version at HEAD.
     migration_path = project / MIGRATION_RELPATH
     migration_path.write_text(migration_path.read_text() + "# edited after the commit\n")
 
@@ -218,7 +301,8 @@ def test_a_committed_then_edited_migration_is_refused(project: Path) -> None:
     _assert_uncommitted_refusal(
         exit_code,
         payload,
-        reason="its working-tree bytes differ from the version committed at HEAD",
+        headline="differs from the version committed at HEAD",
+        reason="the bytes that would apply are not the committed ones",
     )
 
 
@@ -295,4 +379,126 @@ def test_a_refused_apply_leaves_no_database_behind(project: Path) -> None:
     assert exit_code == EXIT_STATE_ERROR
     assert _state_databases(project) == [], (
         "a refused (uncommitted) apply must leave no canonical-state database behind"
+    )
+
+
+# -- the blob-id mechanism: git's normalization is on both sides -------------------
+
+
+def test_a_committed_crlf_migration_under_eol_lf_applies(eol_lf_project: Path) -> None:
+    """A committed, git-clean CRLF migration applies under ``eol=lf`` (code-review HIGH).
+
+    The migration is committed and the tree is clean under its ``*.yaml text eol=lf``
+    attribute, but its working-tree bytes are CRLF while the stored blob is LF. The
+    earlier content-hash check hashed the CRLF working-tree bytes, found they differ
+    from the LF blob, and refused a *committed* migration with a false ``MODIFIED`` --
+    which refused every text migration on the Windows ``core.autocrlf`` default. The
+    blob-id check hashes the applied bytes through ``git hash-object --path=``, which
+    applies the same ``eol=lf`` clean filter git applied on commit, so the applied id
+    equals the committed id and the migration applies.
+
+    RED before the fix (and RED under the ``--path=``-dropping mutation recorded in
+    the commit body): a raw-content comparison reads ``MODIFIED`` and refuses, so the
+    apply exits non-zero and builds no state.
+    """
+    exit_code, payload = _invoke("migrate", "apply")
+
+    assert exit_code == 0, payload
+    assert _state_databases(eol_lf_project), (
+        "a committed, git-clean CRLF migration under eol=lf must apply -- its applied "
+        "id equals HEAD's once git's normalization is on both sides of the comparison"
+    )
+
+
+def test_a_committed_migration_edited_under_eol_lf_still_refuses(eol_lf_project: Path) -> None:
+    """EOL normalization must not over-normalize: a real content edit still refuses.
+
+    The fix normalizes line endings so a CRLF-vs-LF difference is not a refusal. It
+    must not go further and mask a genuine content change. The committed CRLF
+    migration is edited to change its ``author`` -- a real content drift, not just an
+    EOL flip -- while keeping CRLF endings. ``hash-object --path=`` normalizes the
+    endings but the changed bytes still hash to a different id than ``HEAD``, so the
+    check reads ``MODIFIED`` and refuses.
+
+    RED if the comparison is mutated to always-``COMMITTED`` (``return
+    HeadComparison.COMMITTED`` in place of the ``MODIFIED`` verdict): the edited
+    migration would then apply, which is the one way the EOL fix could go wrong -- too
+    lax. Proven by that mutation in the commit body.
+    """
+    edited = MIGRATION.replace("author: engineer@example.com", "author: attacker@example.com")
+    (eol_lf_project / MIGRATION_RELPATH).write_bytes(edited.replace("\n", "\r\n").encode("utf-8"))
+
+    exit_code, payload = _invoke("migrate", "apply")
+
+    _assert_uncommitted_refusal(
+        exit_code,
+        payload,
+        headline="differs from the version committed at HEAD",
+        reason="the bytes that would apply are not the committed ones",
+    )
+    assert _state_databases(eol_lf_project) == [], (
+        "a genuinely edited migration must refuse and build no state, even when only "
+        "its line endings are normalized"
+    )
+
+
+# -- the loop checks every migration, and the refusal names the offender -----------
+
+
+def test_a_mixed_set_refuses_when_a_later_migration_is_uncommitted(project: Path) -> None:
+    """A committed migration followed by a staged one refuses, naming the staged one.
+
+    The set is two migrations: the first committed, the second (``dependsOn`` the
+    first, so it is checked *after* it) staged but never committed. ``migrate apply``
+    must check every migration, reach the uncommitted second one, and refuse -- naming
+    it, not the committed first one -- with no state built.
+
+    RED if ``_refuse_an_uncommitted_migration``'s ``if comparison is
+    HeadComparison.COMMITTED: continue`` is mutated to ``return``: the loop would stop
+    at the committed first migration and never check the second, so the apply would
+    proceed on an uncommitted migration -- a real fail-open. Proven by that mutation
+    in the commit body.
+    """
+    (project / SECOND_MIGRATION_RELPATH).write_text(SECOND_MIGRATION)
+    _git(project, "add", MIGRATION_RELPATH)
+    _git(project, "commit", "-q", "-m", "add the first migration")
+    _git(project, "add", SECOND_MIGRATION_RELPATH)  # staged, never committed
+
+    exit_code, payload = _invoke("migrate", "apply")
+
+    _assert_uncommitted_refusal(
+        exit_code,
+        payload,
+        headline="is not committed",
+        reason="git does not track it at HEAD, so it was never committed",
+    )
+    assert SECOND_MIGRATION_RELPATH in payload["error"], (
+        "the refusal must name the uncommitted second migration, not stop at the "
+        "committed first one"
+    )
+    assert MIGRATION_RELPATH not in payload["error"], (
+        "the committed first migration is not the offender and must not be named"
+    )
+    assert _state_databases(project) == [], "a refused mixed-set apply builds no state"
+
+
+def test_the_refusal_names_the_offending_migration_file(project: Path) -> None:
+    """The refusal message carries the offending migration's project-relative path.
+
+    An agent or script that dropped a file into ``.theurian/migrations/`` is told
+    *which* migration to commit. The label is the migration's ``source_path``.
+
+    RED if ``label = source_path if source_path is not None else ...`` is mutated to a
+    constant such as ``label = "unknown-migration"``: the offending file's path would
+    vanish from the message and the reader would not know what to commit. Proven by
+    that mutation in the commit body.
+    """
+    _git(project, "add", MIGRATION_RELPATH)  # staged, never committed
+
+    exit_code, payload = _invoke("migrate", "apply")
+
+    assert exit_code == EXIT_STATE_ERROR, payload
+    assert MIGRATION_RELPATH in payload["error"], (
+        f"the refusal must name the offending migration {MIGRATION_RELPATH!r}; got "
+        f"{payload.get('error')!r}"
     )

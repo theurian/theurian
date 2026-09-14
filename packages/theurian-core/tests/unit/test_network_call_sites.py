@@ -268,18 +268,19 @@ NETWORK_CLIENT_SITES = {
 #:   launchd and systemd adapters run ``launchctl`` and ``systemctl`` through.
 #:   Adapter-controlled argument vectors, never user input (its own ``noqa: S603``
 #:   says so), and a twenty-second timeout.
-#: - ``infrastructure/git/committed_check.py`` runs ``git cat-file blob
-#:   HEAD:<path>`` to answer whether a migration file is committed unmodified at
-#:   ``HEAD`` -- the check ``migrate apply`` makes before it applies (ADR-0034,
-#:   T-15). Like ``git log`` it reads local object storage and contacts no
-#:   remote, so it is *not* a network client -- it is on this list only because it
-#:   spawns a process. Its vector is four elements (``git cat-file blob`` + one
-#:   built ``HEAD:<path>`` object argument); the object argument begins with the
-#:   literal ``HEAD:``, so a migration filename cannot be read as an option or
-#:   name a different revision, and it cannot be handed a URL or a remote. The
-#:   binary is resolved to an absolute path -- ADR-0030 clause 5's tier and not
-#:   the bare-``git`` tier its ``cli/context.py`` sibling uses, because this call
-#:   gates a write. Timeout ``GIT_TIMEOUT_SECONDS`` (5s).
+#: - ``infrastructure/git/committed_check.py`` runs ``git rev-parse --verify
+#:   --quiet HEAD:<path>`` (the committed id) and ``git hash-object --stdin
+#:   --path=<path>`` (the applied id) to answer whether a migration file is
+#:   committed unmodified at ``HEAD`` -- the check ``migrate apply`` makes before it
+#:   applies (ADR-0034, T-15). Like ``git log`` both read local object storage and
+#:   contact no remote, so it is *not* a network client -- it is on this list only
+#:   because it spawns a process. Each vector is the adapter's: the ``rev-parse``
+#:   object argument begins with the literal ``HEAD:``, and the ``hash-object`` path
+#:   is the ``--path=<value>`` form, so a migration filename cannot be read as an
+#:   option or name a different revision, and neither call can be handed a URL or a
+#:   remote. The binary is resolved to an absolute path -- ADR-0030 clause 5's tier
+#:   and not the bare-``git`` tier its ``cli/context.py`` sibling uses, because this
+#:   call gates a write. Timeout ``GIT_TIMEOUT_SECONDS`` (5s) on each.
 #: - ``infrastructure/git/trailer_source.py`` runs ``git log origin/main`` to read
 #:   ``Review-Finding:`` trailers (ADR-0029). It is *not* a network client: unlike
 #:   ``git fetch``, ``git log`` reads local object storage and the local
