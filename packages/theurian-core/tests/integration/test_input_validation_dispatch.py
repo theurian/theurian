@@ -20,6 +20,14 @@ rather than about any one request, plus the bounds that must hold before
   each bound against a synthetic schema set; what is owed here is that a real
   inbound ``tools/call`` past each bound is refused over the wire, and that the
   refusal is bounded -- it does not echo the oversized payload back.
+* **The two caps a request meets are ordered, and the order is driven** (#669).
+  ``daemon/server.py``'s :data:`MAX_REQUEST_BODY_BYTES` is the byte bound the
+  transport answers ``413`` past, and ``mcp/validation.py``'s
+  :data:`MAX_PARAMS_RENDERED_CHARS` is the character bound this seam refuses
+  past. The first sits above the second, so a request between them arrives,
+  is framed, and is told which limit it passed instead of meeting a bare
+  ``413`` that names no tool. Both constants are pinned by recomputation and
+  the boundary between the two tiers is driven at exact bytes, on both sides.
 
 Everything here goes through the transport for the reason
 ``test_input_validation_wire.py`` records: ``server.call_tool`` is the SDK's
@@ -37,19 +45,20 @@ from typing import Any, Final
 
 import pytest
 from mcp.server import MCPServer
-from mcp.server.transport_security import DEFAULT_MAX_REQUEST_BODY_SIZE
 
 from theurian.application.project_service import ProjectRegistry
 from theurian.daemon.runner import build_server
+from theurian.daemon.server import MAX_REQUEST_BODY_BYTES
 from theurian.mcp.tools import _tool
 from theurian.mcp.validation import (
     MAX_PARAMS_NESTING,
     MAX_PARAMS_NODES,
     MAX_PARAMS_RENDERED_CHARS,
 )
+from theurian.security.paths import MAX_SOURCE_FILE_BYTES
 
 from mcp_server_probe import loaded_input_schemas, registered_tool_names  # isort: skip
-from mcp_wire_session import headers, mcp_session, open_client  # isort: skip
+from mcp_wire_session import headers, mcp_session, open_client, payload  # isort: skip
 
 pytestmark = pytest.mark.integration
 
@@ -303,31 +312,40 @@ def test_arguments_past_the_node_bound_are_refused_over_the_wire(
     assert str(MAX_PARAMS_NODES) in text, text
 
 
-def test_the_widest_body_this_transport_admits_is_refused_without_echoing_it(
+def test_the_widest_body_the_schema_tier_can_see_is_refused_without_echoing_it(
     registry: ProjectRegistry, tmp_path: Path
 ) -> None:
     """One node, unbounded width: the axis a node count cannot see.
 
     A single string is one node and renders to as many characters as it holds,
     which is what ``MAX_PARAMS_NODES`` is blind to. Driven at the widest value
-    that can actually arrive -- see the test below for why that is the
-    transport's limit and not :data:`MAX_PARAMS_RENDERED_CHARS` -- and the
-    assertion is decision 4's: the answer names a key path and a constraint, and
-    is orders of magnitude smaller than the request. A refusal that quoted the
-    value back would make this boundary a ~1x amplifier of the caller's own
-    bytes (#17).
+    that still reaches ``jsonschema`` -- :data:`MAX_PARAMS_RENDERED_CHARS`, this
+    seam's own bound, which since #669 is the *lower* of the two caps a request
+    meets and therefore the one that decides how wide a string the schema ever
+    sees. The assertion is decision 4's: the answer names a key path and a
+    constraint, and is orders of magnitude smaller than the request. A refusal
+    that quoted the value back would make this boundary a ~1x amplifier of the
+    caller's own bytes (#17).
+
+    The sizing was ``DEFAULT_MAX_REQUEST_BODY_SIZE - 500`` while the SDK's 4 MiB
+    default was the first ceiling an inbound body met. ``build_app`` now passes
+    its own :data:`MAX_REQUEST_BODY_BYTES`, so that default governs nothing this
+    daemon serves and a size derived from it would be a number with no live
+    meaning -- re-anchored here to the constant that does govern.
 
     **The value opens with the sentinel**, so "nothing of what the caller sent
     came back" is checked by searching the whole response rather than by reading
     the one field this test remembered to look at -- and a *bounded* echo, the
     120-character one ``_echo`` would produce, fails it exactly as an unbounded
-    one does. A 4 MiB payload of one repeated character would survive that
-    mutation: the response is still small, and a prefix assertion on ``"aaa..."``
-    only catches an echo longer than whatever prefix was guessed.
+    one does. A payload of one repeated character would survive that mutation:
+    the response is still small, and a prefix assertion on ``"aaa..."`` only
+    catches an echo longer than whatever prefix was guessed.
     """
-    # Room for the JSON-RPC envelope around it, so the body itself stays under
-    # the cap the test below measures.
-    oversized = SENTINEL + "a" * (DEFAULT_MAX_REQUEST_BODY_SIZE - 500 - len(SENTINEL))
+    # Room inside the rendered-character budget for the rest of the arguments --
+    # the keys and `projectId` are charged against it too -- so what answers is
+    # the schema and not this seam's own width refusal, which the test below
+    # drives on purpose.
+    oversized = SENTINEL + "a" * (MAX_PARAMS_RENDERED_CHARS - 500 - len(SENTINEL))
 
     with mcp_session(build_server(registry), tmp_path / "data") as call:
         answer = call("knowledge.search", {"projectId": "demo", "query": oversized})
@@ -340,46 +358,210 @@ def test_the_widest_body_this_transport_admits_is_refused_without_echoing_it(
     assert len(json.dumps(answer)) < len(oversized) // 1000, len(json.dumps(answer))
 
 
-def test_the_rendered_character_bound_sits_above_what_the_transport_will_carry(
-    registry: ProjectRegistry, tmp_path: Path
-) -> None:
-    """:data:`MAX_PARAMS_RENDERED_CHARS` cannot be reached over this transport,
-    and this records it rather than endorsing it.
+def test_the_transport_body_cap_is_derived_from_the_cap_on_a_landed_file() -> None:
+    """:data:`MAX_REQUEST_BODY_BYTES` is a derivation, and is pinned as one (#669).
 
-    ``build_app`` calls ``streamable_http_app`` without ``max_request_body_size``,
-    so the SDK's own :data:`DEFAULT_MAX_REQUEST_BODY_SIZE` applies -- 4 MiB,
-    against this module's 12 MiB. A body past it is answered ``413`` by
-    ``RequestBodyLimitMiddleware`` before any MCP framing exists, so the bounded
-    refusal ``validation.py`` builds for this axis is unreachable at this seam in
-    the shipped default configuration.
+    The largest legitimate body this daemon is sized for is a write-intent one,
+    and what bounds that is its landed form:
+    :data:`~theurian.security.paths.MAX_SOURCE_FILE_BYTES` (ADR-0032 decision
+    3). The ``2 *`` is the worst realistic JSON wire expansion of such a body --
+    every character taking a two-byte escape, or ``ensure_ascii``-escaped CJK --
+    and the ``+ 1 MiB`` is headroom for the JSON-RPC envelope around it.
 
-    Both halves are measured rather than transcribed: the relationship from the
-    two live constants, and the 413 from a real POST one byte past the cap. The
-    pin has teeth in both directions -- raising the transport limit above
-    :data:`MAX_PARAMS_RENDERED_CHARS` makes this daemon's own refusal reachable
-    and owes it a wire test, and lowering
-    :data:`MAX_PARAMS_RENDERED_CHARS` under the transport limit does the same.
-    Either way somebody has to look, which is the whole point of writing the
-    relationship down.
+    Recomputed from the live constants rather than compared against the
+    17,825,792 it evaluates to today. A transcribed total would stay green
+    against a cap re-derived from a different base, and would have to be edited
+    by hand to describe a change it was supposed to catch. The factors are also
+    what decides which encodings still meet the bare ``413`` -- the residual
+    recorded on the constant itself -- so moving one is a decision to re-record,
+    not a number to retune.
     """
-    assert MAX_PARAMS_RENDERED_CHARS > DEFAULT_MAX_REQUEST_BODY_SIZE, (
-        f"MAX_PARAMS_RENDERED_CHARS ({MAX_PARAMS_RENDERED_CHARS}) is no longer above "
-        f"the transport's own body limit ({DEFAULT_MAX_REQUEST_BODY_SIZE}), so this "
-        f"daemon's bounded refusal for that axis is now reachable over the wire and "
-        f"owes a test that drives it"
+    assert MAX_REQUEST_BODY_BYTES == 2 * MAX_SOURCE_FILE_BYTES + 1024 * 1024, (
+        f"MAX_REQUEST_BODY_BYTES ({MAX_REQUEST_BODY_BYTES}) is no longer "
+        f"2 * MAX_SOURCE_FILE_BYTES ({MAX_SOURCE_FILE_BYTES}) + 1 MiB. The derivation is "
+        f"what daemon/server.py records a rationale for: the multiplier bounds the wire "
+        f"expansion of a body that lands at MAX_SOURCE_FILE_BYTES, and the addend is "
+        f"JSON-RPC envelope headroom. If the base or either factor moved, the recorded "
+        f"residual -- which encodings still meet the bare 413 at a landed size the store "
+        f"would accept -- moved with it and owes a re-measurement, not an edit here"
     )
 
-    with open_client(build_server(registry), tmp_path / "data") as (client, session):
-        request = {
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/call",
-            "params": {
-                "name": "knowledge.search",
-                "arguments": {"projectId": "demo", "query": "a" * DEFAULT_MAX_REQUEST_BODY_SIZE},
-            },
-        }
-        refused = client.post("/mcp", json=request, headers=headers(session))
 
-    assert refused.status_code == 413, refused.status_code
+def test_the_transport_body_cap_sits_above_the_rendered_character_bound() -> None:
+    """The ordering #669 decided, pinned from both live constants.
+
+    A request meets two caps, at two tiers. Past
+    :data:`MAX_REQUEST_BODY_BYTES` the SDK's ``RequestBodyLimitMiddleware``
+    answers a bare ``413 Request body too large`` before any MCP framing exists
+    -- it names no tool, carries no remedy, and has no refusal shape. Past
+    :data:`MAX_PARAMS_RENDERED_CHARS` ``validation.py`` answers a framed refusal
+    that names the tool and the limit passed. Which one a caller gets is decided
+    entirely by which constant is larger, so the ordering is the behaviour and
+    is asserted rather than described.
+
+    Both directions have teeth. Lowering the transport cap under
+    :data:`MAX_PARAMS_RENDERED_CHARS` makes the rendered-width refusal
+    unreachable again and re-opens #669's class -- that is the state this
+    project shipped in until #669, and the wire tests below would then be
+    driving a ``413`` while claiming a framed refusal. Raising
+    :data:`MAX_PARAMS_RENDERED_CHARS` above the transport cap does the same from
+    the other side.
+    """
+    assert MAX_REQUEST_BODY_BYTES > MAX_PARAMS_RENDERED_CHARS, (
+        f"the transport's body cap ({MAX_REQUEST_BODY_BYTES} bytes) no longer sits above "
+        f"this daemon's rendered-character bound ({MAX_PARAMS_RENDERED_CHARS}), so a "
+        f"request wide enough to pass the second one is answered by the bare 413 of a "
+        f"tier that knows no tools, and mcp/validation.py's bounded refusal for that "
+        f"axis is unreachable over the shipped transport -- #669's class, re-opened. "
+        f"Whichever constant moved, the decision to re-record is which refusal a caller "
+        f"between the two bounds receives"
+    )
+
+
+def _raw_call_of_exactly(size: int) -> bytes:
+    """A serialized ``tools/call`` whose body is exactly ``size`` bytes.
+
+    The envelope overhead is measured from the serialized skeleton rather than
+    counted by hand, and the padding is ASCII, so one character is one byte and
+    the total is exact. The caller asserts the length before posting: a body
+    that is merely "about" the cap cannot tell a ``>`` from a ``>=``, and that
+    is the whole distinction the boundary tests below exist to pin.
+    """
+
+    def envelope(query: str) -> bytes:
+        return json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "knowledge.search",
+                    "arguments": {"projectId": "demo", "query": query},
+                },
+            },
+            separators=(",", ":"),
+        ).encode()
+
+    raw = envelope(SENTINEL + "a" * (size - len(envelope(SENTINEL))))
+    assert len(raw) == size, (len(raw), size)
+    return raw
+
+
+def test_a_body_between_the_two_caps_meets_the_bounded_refusal_over_the_wire(
+    registry: ProjectRegistry, tmp_path: Path
+) -> None:
+    """The refusal #669 made reachable, driven where only it can answer.
+
+    13 MiB of query is past :data:`MAX_PARAMS_RENDERED_CHARS` and under
+    :data:`MAX_REQUEST_BODY_BYTES`, so it is the size class that distinguishes
+    the two tiers: it arrives, is framed, and meets ``validation.py``'s own
+    bounded refusal. Before #669 the same request was answered ``413`` by a tier
+    that knows no tools, which is why the constant's docstring could claim a
+    refusal shipped code could not produce.
+
+    Asserted on the refusal's *wording* -- the unit and the limit -- and not on
+    ``isError`` alone, because every oversize axis this seam refuses sets
+    ``isError``; what says the width bound is the one that answered is the text
+    it interpolates. And the response carries none of what was sent: this is the
+    widest body that reaches MCP framing at all, so an echo here is the largest
+    amplifier the surface has.
+    """
+    query = SENTINEL + "a" * (13 * 1024 * 1024 - len(SENTINEL))
+
+    with mcp_session(build_server(registry), tmp_path / "data") as call:
+        answer = call("knowledge.search", {"projectId": "demo", "query": query})
+
+    result = answer["result"]
+    text = result["content"][0]["text"]
+    assert result["isError"] is True, text
+    assert "characters of content" in text, text
+    assert str(MAX_PARAMS_RENDERED_CHARS) in text, text
+    assert "knowledge.search" in text, text
+    assert SENTINEL not in json.dumps(answer), text
+
+
+def test_a_write_intent_sized_body_arrives_and_is_refused_by_its_schema(
+    registry: ProjectRegistry, tmp_path: Path
+) -> None:
+    """#669's own acceptance: the body ADR-0032 sizes for can reach MCP framing.
+
+    :data:`~theurian.security.paths.MAX_SOURCE_FILE_BYTES` is the byte cap
+    ADR-0032 decision 3 puts on the file a proposal lands, so a write-intent
+    call carries a body of that size class -- and until #669 the SDK's
+    unrecorded 4 MiB default answered it ``413`` before any tool was named. That
+    is the precondition slice B4 needs, and it is asserted here as *which tier
+    refuses*: the schema, naming the tool and the constraint it failed, rather
+    than a transport tier that knows neither.
+
+    ``mcp_session``'s own ``assert response.status_code == 200`` is load-bearing
+    -- a ``413`` fails this test inside the helper before any assertion below
+    runs -- and the schema's wording is what proves the refusal came from the
+    tier that reads contracts. ``knowledge.search`` stands in for the write tool
+    because it is registered today; what is under test is the wire size class,
+    which is a property of the transport and not of the tool.
+    """
+    query = SENTINEL + "a" * (MAX_SOURCE_FILE_BYTES - len(SENTINEL))
+
+    with mcp_session(build_server(registry), tmp_path / "data") as call:
+        answer = call("knowledge.search", {"projectId": "demo", "query": query})
+
+    result = answer["result"]
+    text = result["content"][0]["text"]
+    assert result["isError"] is True, text
+    assert "knowledge.search" in text and "maxLength" in text, text
+    assert "characters of content" not in text, text
+    assert SENTINEL not in json.dumps(answer), text
+
+
+def test_a_body_of_exactly_the_transport_cap_still_reaches_mcp_framing(
+    registry: ProjectRegistry, tmp_path: Path
+) -> None:
+    """The admitted side of the boundary, at the exact byte.
+
+    ``RequestBodyLimitMiddleware`` compares ``declared_size > max_body_size``,
+    so the cap itself is admitted; a test sized "near" the cap cannot tell that
+    from ``>=`` and would stay green through an off-by-one that starts refusing
+    a body this daemon means to serve. The answer is a framed MCP message --
+    the query is far past :data:`MAX_PARAMS_RENDERED_CHARS`, so what it meets is
+    this seam's bounded refusal, which is the point: at the cap the caller is
+    still told which limit it passed.
+    """
+    raw = _raw_call_of_exactly(MAX_REQUEST_BODY_BYTES)
+
+    with open_client(build_server(registry), tmp_path / "data") as (client, session):
+        answer = client.post("/mcp", content=raw, headers=headers(session))
+
+    assert answer.status_code == 200, (answer.status_code, answer.text[:200])
+    framed = payload(answer)
+    assert framed["result"]["isError"] is True, framed
+    assert SENTINEL not in json.dumps(framed), framed
+
+
+def test_a_body_one_byte_past_the_transport_cap_is_refused_without_echoing_it(
+    registry: ProjectRegistry, tmp_path: Path
+) -> None:
+    """The refused side of the same boundary, one byte along.
+
+    Paired with the test above, this is what makes a silently moved cap fail a
+    test rather than a comment: the two together pin
+    :data:`MAX_REQUEST_BODY_BYTES` to the exact byte at which the answer stops
+    being an MCP message and becomes a transport ``413``.
+
+    What comes back is the SDK's bare ``Request body too large`` -- no tool, no
+    remedy, no refusal shape -- which is inherent to a tier that runs before any
+    MCP framing exists and is why the cap is set where a legitimate request does
+    not meet it. The size assertion is the one that matters for #17: this is the
+    largest body the process accepts at all, so a ``413`` that quoted any of it
+    back would be the surface's biggest amplifier, and it is checked by
+    searching the whole response for the sentinel rather than by trusting that
+    the body looked short.
+    """
+    raw = _raw_call_of_exactly(MAX_REQUEST_BODY_BYTES + 1)
+
+    with open_client(build_server(registry), tmp_path / "data") as (client, session):
+        refused = client.post("/mcp", content=raw, headers=headers(session))
+
+    assert refused.status_code == 413, (refused.status_code, refused.text[:200])
+    assert len(refused.content) < 100, len(refused.content)
+    assert SENTINEL not in refused.text, refused.text[:200]
     assert "aaaa" not in refused.text, refused.text[:200]

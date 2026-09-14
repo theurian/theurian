@@ -114,33 +114,26 @@ MAX_PARAMS_NESTING: Final = 32
 MAX_PARAMS_NODES: Final = 100_000
 
 #: How many characters of rendered scalar content a request's arguments may hold
-#: in total. **It is not the ceiling a request actually meets over this
-#: transport.** ``build_app`` calls ``streamable_http_app`` without
-#: ``max_request_body_size`` (``daemon/server.py``), so the SDK's own
-#: ``DEFAULT_MAX_REQUEST_BODY_SIZE`` -- 4 MiB,
-#: ``mcp/server/transport_security.py``, measured 2026-09-13 against
-#: ``mcp==2.1.1`` -- is the effective bound: ``RequestBodyLimitMiddleware``
-#: answers ``413 Request body too large`` at a third of this constant, before any
-#: MCP framing exists. So this bound is unreachable over the shipped transport in
-#: the default configuration, and what it defends is a composition that raises or
-#: removes that transport cap -- an explicit ``max_request_body_size``, another
-#: transport, or a seat that reaches this module with no HTTP tier in front of it
-#: -- where this seam's bounded refusal is what a caller gets instead of a bare
-#: ``413`` that names no tool and carries no remedy.
+#: in total, and **the ceiling a request actually meets over this transport**.
+#: ``build_app`` passes ``max_request_body_size=MAX_REQUEST_BODY_BYTES``
+#: (``daemon/server.py``, derived there from ``security/paths.py``'s
+#: ``MAX_SOURCE_FILE_BYTES``), and that bound sits *above* this one. Because JSON
+#: carries no aliases, a request's rendered width never exceeds the bytes the
+#: caller sent, so a body between the two caps arrives, is framed, and meets this
+#: seam's bounded refusal -- which names the tool and the limit it passed --
+#: instead of the bare ``413 Request body too large`` that the transport tier
+#: emits before any MCP framing exists. This bound is therefore reachable in the
+#: shipped default configuration, and it is the refusal a caller gets.
 #:
-#: An earlier rationale here sized the bound *above* ``security/paths.py``'s 8 MiB
-#: ``MAX_SOURCE_FILE_BYTES`` so that a write-intent ``body`` at the cap ADR-0032
-#: decision 3 assigns it would not be refused at this seam. Measurement falsified
-#: that: such a body is refused one tier up and never reaches MCP framing at all,
-#: so the sizing bought nothing it claimed to buy. Reconciling the two caps is
-#: owed by **#669**, at the slice that opens the write surface; the value here is
-#: that issue's decision to make, not this constant's to pre-empt.
-#:
-#: ``tests/integration/test_input_validation_dispatch.py``'s
-#: ``test_the_rendered_character_bound_sits_above_what_the_transport_will_carry``
-#: pins the live relationship from both constants and drives the ``413`` from a
-#: real POST, so it goes RED if either cap moves and the gap cannot widen
-#: unnoticed while #669 waits.
+#: That ordering is the reconciliation **#669** asked for, and it is deliberate
+#: rather than incidental. Until it landed, ``streamable_http_app`` was called
+#: with no ``max_request_body_size``, so the SDK's own 4 MiB
+#: ``DEFAULT_MAX_REQUEST_BODY_SIZE`` answered ``413`` at a third of this constant
+#: and nothing could reach this seam. The decision, its derivation from
+#: ``MAX_SOURCE_FILE_BYTES``, and the encodings it still leaves meeting the
+#: ``413`` are recorded on ``MAX_REQUEST_BODY_BYTES`` itself, which is the place
+#: to read before moving either cap. ADR-0031's *Still owed* bullet on #669
+#: describes the state before this change and is owed the matching correction.
 #:
 #: It is *not* the same guard ``migration_loader``'s ``MAX_DOCUMENT_RENDERED_CHARS``
 #: is. There, a YAML anchor aliased N deep expands a 500-byte file into millions
