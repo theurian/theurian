@@ -6313,6 +6313,105 @@ counts and moved the #30 integrity comparison to the ungated population
 internally so a restricted deployment never reports `damageDetected` from its own
 ceiling.
 
+#### T-26 — A canonical read materialises a withheld item's body before the gate decides, so a refusal's timing carries the body's size (Information disclosure, High — closed in 0.2.3)
+
+Class: **the canonical read materialises a withheld item's body before the gate
+decides.** Named by root cause, and it is a canonical-**store** problem, not a
+derived-index one. `SqliteCanonicalStore.get_item`/`get_item_exact` read an item
+through `_ITEM_WITH_CURRENT_CONTENT_SQL`, which `LEFT JOIN`s the current revision
+and materialises its **body** to recompute `current_served_content_sha256` for the
+GHSA-3f65 served-content check (T-23). Three read gates decide-then-withhold on
+`status` and `sensitivity` — both columns of the `knowledge_items` pointer row,
+neither needing the body — yet ran that body-joining read first, so refusing a
+*withheld* item scaled the refusal's wall-clock with the withheld body's size. A
+caller holding an item id could time whether the item exists and approximate how
+large its content is. Live in shipped Core 0.2.2; closed in 0.2.3.
+
+**The three shipped faces**, one per gate:
+
+| Face | Gate | The withheld row it leaked |
+| :-- | :-- | :-- |
+| `knowledge.get` | the get handler in `mcp/tools.py` | an explicit id, so a withheld-*status* item (a normal `deprecated` item) reaches the body read directly |
+| `_relation_is_visible` | `mcp/tools.py`, gating a relation edge | an explicit endpoint id, a normal withheld-status endpoint of the edge |
+| `CanonicalVisibility._may_surface` | `application/visibility.py`, the search ranking gate | reached from a search, so its withheld member is a **T-17a-window row**: surfaceable when the index that still ranks it was built, withdrawn after |
+
+**This is neither T-17a nor T-22, and the difference is the root cause.** T-17a is
+*the index still holds the withdrawn rows* — a derived-FTS5-index problem, closed
+by keeping the rows out of the build. T-22 is *the canonical index does not carry
+the gate's column* — a per-above-ceiling-row **count** term on a non-indexed
+`sensitivity` predicate (0.20 µs/row on the scan, 0.54 µs/row on
+`knowledge.status`'s counts; flattening owned by
+[#338](https://github.com/theurian/theurian/issues/338)). This is a third,
+distinct thing: not a statistic and not a count, but a **per-item body
+materialisation** on the pointer-row read, whose cost is the withheld item's own
+body size rather than a slope over how many rows the corpus withholds. The
+substring-scan path stays T-22's and is not a face here: `list_items_by_status`
+already excludes withheld-status and above-ceiling rows in its SQL `WHERE`, so it
+materialises no withheld body, and its residual is #338's count term. Do not fold
+the two together.
+
+**The fix: gate on metadata, read the body only once the item will be served.**
+`get_item_metadata` and `get_item_exact_metadata` (0.2.3) answer the gate from the
+pointer row alone — `_ITEM_METADATA_SQL` projects only `knowledge_items`' own
+columns, with no join to `knowledge_revisions` and so no `body` on the row. A
+withheld item is refused from that read and its body is never materialised. The
+body is read once, through `get_item`/`current_revision`, only after the item has
+cleared status, sensitivity and revision — content the caller may already see on
+every axis but content-identity — which is where the GHSA-3f65 served-content
+check still runs, unchanged, for a *surfaceable* row.
+
+**Closure, measured first.** Three layers, and the order matters: the measurement
+is the closure, the counter is a guard.
+
+1. **Proof — the refusal is size-independent.** Measured out of band (in process,
+   and that caveat is load-bearing here as for T-17a and T-22: no loopback hop, no
+   MCP framing, no JSON encoding), the refusal's wall-clock is identical for a
+   256 B and an 8 MiB withheld body, and sits about **175× below TB-1's 1.40 ms
+   end-to-end floor**. No term of the refusal scales with the withheld body's
+   size — and this holds *regardless of how any test pin is keyed*, because a
+   stopwatch on the refusal does not depend on which method the code called. This
+   is the direct demonstration that the body-size channel is gone. The end-to-end
+   floor a real client meets is 1.40 ms.
+
+2. **Structural basis — there is no body to time.** The refusal path reads
+   `get_item_metadata`, whose `_ITEM_METADATA_SQL` names its columns —
+   `item_id, project_id, namespace, kind, status, current_revision_id, owner,
+   trust_level, sensitivity, tenant_id, acl_group, valid_from, valid_to` — rather
+   than `SELECT *`, and joins no revision. So "materialises no body" holds by
+   construction, not by the incidental fact that `knowledge_items` carries no body
+   column today.
+
+3. **Regression guard, with its blind spot named.** Each face is pinned by a
+   body-read count that goes RED before 0.2.3
+   (`tests/integration/test_pre_gate_body_materialization.py`): the real
+   `knowledge.get` driven over the wire
+   (`test_the_real_knowledge_get_handler_reads_no_body_when_it_withholds`) and the
+   real `_relation_is_visible` and `_may_surface`
+   (`test_relation_gate_reads_no_body_for_a_withheld_endpoint`,
+   `test_may_surface_reads_no_body_for_a_withdrawn_window_row`) each assert the
+   withheld path materialises **zero** bytes, while a surfaceable row still reads
+   its body once (`test_may_surface_reads_the_body_of_a_surfaceable_row`, GHSA-3f65
+   preserved). **These counters are method-name-keyed** — they wrap or patch
+   `get_item`/`get_item_exact`/`get_revision`/`current_revision` and tally which
+   are called, so they prove *the bodyless method was called*, not *no bytes were
+   materialised*. That is a guard, not the proof: were a body column ever added to
+   `knowledge_items` and `_ITEM_METADATA_SQL` reverted to `SELECT *`, the counters
+   would stay green while a body was read again. The explicit-column projection in
+   (2) is what closes that blind spot, and it is a **source fact that no test
+   pins** — recorded as such in `store.py`'s own note on `_ITEM_METADATA_SQL`.
+   Read `counter == 0` as the regression guard; read the size-independence
+   measurement in (1) as the closure.
+
+**Severity: High, and why not Critical.** The channel carries a withheld item's
+existence and the approximate size of its body — metadata about content the caller
+may not read — reachable in the shipped-default 0.2.2 by any authenticated
+localhost session that holds an item id. The timing is a function of the body's
+*size*, not its *bytes*: it is not an extraction channel for content and none was
+demonstrated. By this model's own grading — T-17 is Critical because it recovered
+an arbitrary secret, while a leak that discloses no content the caller may not
+read is High (as T-3 is) — that keeps this High rather than Critical. No release
+is yanked; the fix ships in 0.2.3.
+
 #### T-12 — An agent silently rewrites an approved decision (Tampering, High)
 
 **Controls:** no MCP tool reaches a write path for approved state — not behind a
@@ -7090,6 +7189,7 @@ fix.
 | T-23 | A revision's served content drifts under an unchanged revision id, and a stale index serves it past the gate | I | Critical | Closed in 0.1.0.dev13 — serve gate keyed on `served_content_hash(title, body)` both sides, `INDEX_SCHEMA_VERSION` 6 → 7 forced rebuild; a new face of the derived-state-trust class T-19 (GHSA-3f65-gr36-qqx8); leaf-excerpt only, the `raptorPath[].title` face stays the T-17a residual (GHSA-97q9-xxfg-33r6) |
 | T-24 | A repository ships its own `.theurian/review/` and a local build serves it as review history | T | Medium | Accepted residual, recorded. SEC-15's triple on every row and no promotion path out of the untrusted plane; the tool description and response schema state that the T-19 check is on the *store* and never on who wrote the records. Verifying evidence provenance is unowned, adjacent to [#575](https://github.com/theurian/theurian/issues/575) |
 | T-25 | An MCP error response names the operator's resolved filesystem layout | I | High | Closed in 0.2.0 — GHSA-923w-f36f-jcfq. Constant refusals interpolating nothing across both tool boundaries, executable cures from fixed vocabulary; pinned by the raise-site population test, the no-resolved-form response sweep and the executable-cure ratchet |
+| T-26 | A canonical read materialises a withheld item's body before the gate, so a refusal's timing carries the body's size | I | High | Closed in 0.2.3 — bodyless `get_item_metadata`/`get_item_exact_metadata` gate the three read paths (`knowledge.get`, `_relation_is_visible`, `_may_surface`) on the pointer row, the body read only once a row is surfaceable (GHSA-3f65 preserved). Refusal measured size-independent (256 B vs 8 MiB identical, ~175× below TB-1's 1.40 ms floor); pinned by the zero-body-read counters in `test_pre_gate_body_materialization.py`, method-name-keyed with the explicit-column `_ITEM_METADATA_SQL` projection closing that blind spot. A canonical-store body-materialisation channel, distinct from T-17a (derived-index statistics) and T-22 (a per-row count term, #338) |
 
 ## Explicitly out of scope
 
