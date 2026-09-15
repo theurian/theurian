@@ -33,15 +33,21 @@ files as text and opens no database, no socket, and no temporary directory.
 from __future__ import annotations
 
 import ast
+import inspect
 import pathlib
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 import pytest
 
 import theurian
 from theurian.application.retrieval_service import ResultGate
 from theurian.domain.enums import may_disclose, may_surface
+from theurian.infrastructure.sqlite.store import (
+    _ITEM_METADATA_SQL,
+    _ITEM_WITH_CURRENT_CONTENT_SQL,
+    _item_from_row,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -695,4 +701,169 @@ def test_every_shipped_build_server_call_passes_an_explicit_grant() -> None:
         f"`DEFAULT_CEILING` to a deployment that declared nothing. Pass the "
         f"deployment's grant explicitly -- the way `serve` does -- rather than adding "
         f"the site here."
+    )
+
+
+# -- The metadata read's projection: explicit columns, no revision body -------
+#
+# 0.2.3 closed a size-and-existence timing channel (T-26, SEC-13, T-17). The read
+# gates -- `knowledge.get`, `_relation_is_visible`,
+# `CanonicalVisibility._may_surface` -- decide on `status`/`sensitivity` from the
+# pointer row and must materialise no part of a withheld item's body before they
+# refuse, so a refusal's wall-clock cannot leak that body's size.
+# `_BodyReadCounter` (`tests/integration/test_pre_gate_body_materialization.py`)
+# holds that at run time, but it keys on the *method name*: it counts
+# `get_item_metadata` as a bodyless `metadata_read` whatever SQL that method runs.
+# So if `knowledge_items` ever grew a body column and `_ITEM_METADATA_SQL`
+# (`infrastructure/sqlite/store.py`) regressed to `SELECT *`, or a join to
+# `knowledge_revisions` returned, a body would be materialised again while every
+# counter pin stayed GREEN -- the leak reopened with nothing red.
+#
+# L2 of 0.2.3 made `_ITEM_METADATA_SQL` an explicit-column projection so
+# "materialises no body" is true by construction, not by the incidental fact that
+# today's `knowledge_items` holds no body column -- and its own docstring records
+# that no test pins this, because the counter is method-keyed. These pins are that
+# missing test: they read the live constant the store runs, which the counter
+# cannot see, and go red on exactly the reverts the counter waves through.
+
+
+def _projection_clause(sql: str) -> str:
+    """The text between `SELECT` and `FROM` in a single-table read, from source."""
+    match = re.search(r"\bSELECT\b(.*?)\bFROM\b", sql, re.IGNORECASE | re.DOTALL)
+    assert match is not None, (
+        f"`_ITEM_METADATA_SQL` did not parse as a projecting query:\n{sql!r}\n"
+        f"The reader broke, not the constant -- fix this extractor before trusting a "
+        f"green result, the way `_scope_where_axes` guards its own empty set above."
+    )
+    return match.group(1).strip()
+
+
+def _projected_columns(sql: str) -> set[str]:
+    """The set of column tokens in `sql`'s projection, split on commas, from source."""
+    return {column.strip() for column in _projection_clause(sql).split(",")}
+
+
+def _row_keys_read(func: Callable[..., object]) -> set[str]:
+    """Every `row["<column>"]` key `func` reads, parsed from its live source.
+
+    Derived, never hardcoded: comparing this against the projection catches a
+    column dropped from `_ITEM_METADATA_SQL` while `_item_from_row` still reads it
+    (a `KeyError` at run time) and a column added to the reader without the
+    projection -- both sets taken from the shipped source, so neither can drift
+    from it silently.
+    """
+    tree = ast.parse(inspect.getsource(func))
+    return {
+        node.slice.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "row"
+        and isinstance(node.slice, ast.Constant)
+        and isinstance(node.slice.value, str)
+    }
+
+
+def test_the_metadata_read_projects_explicit_columns_never_a_star() -> None:
+    """`_ITEM_METADATA_SQL` names its columns, so it cannot select a body by `*`.
+
+    The structural half of 0.2.3's body-freeness guarantee, and the half no
+    run-time test holds. `_BodyReadCounter` keys on the method name
+    (`get_item_metadata`), so it counts that read as bodyless whatever the SQL
+    projects; a regression to `SELECT *` -- or `SELECT knowledge_items.*` -- would
+    silently materialise a body column the day one is added to `knowledge_items`,
+    and every timing pin would stay GREEN. This fails on that revert instead
+    (confirmed by reverting `_ITEM_METADATA_SQL` to `SELECT * FROM knowledge_items
+    WHERE ...` in a throwaway tree: this reddens while the counter pins do not).
+    """
+    projection = _projection_clause(_ITEM_METADATA_SQL)
+
+    assert "*" not in projection, (
+        f"`_ITEM_METADATA_SQL` projects `{projection}`, which selects columns by "
+        f"`*`. 0.2.3 (L2) made this an explicit-column projection so a withheld "
+        f"item's gate read materialises no body by construction. `SELECT *` reopens "
+        f"the size-and-existence timing channel the instant `knowledge_items` grows "
+        f"a body column, and `_BodyReadCounter` -- keyed on the method name, not on "
+        f"this SQL -- would not catch it. Name the `knowledge_items` columns "
+        f"`_item_from_row` reads, as the shipped constant does."
+    )
+
+
+def test_the_metadata_read_materialises_nothing_from_the_revisions_table() -> None:
+    """`_ITEM_METADATA_SQL` reads `knowledge_items` alone -- no revision body or title.
+
+    The other way the channel reopens: a join to `knowledge_revisions` -- the shape
+    `_ITEM_WITH_CURRENT_CONTENT_SQL` has, and must have, for the GHSA-3f65 serve
+    gate -- would materialise the current revision's body on the very read the gates
+    decide from. The method-keyed counter would still tally it as a `metadata_read`,
+    so this reads the live constant for the join and the body/title columns instead
+    (confirmed red by adding a `LEFT JOIN knowledge_revisions ... current.body` to
+    the constant in a throwaway tree).
+    """
+    assert re.search(r"\bknowledge_revisions\b", _ITEM_METADATA_SQL, re.IGNORECASE) is None, (
+        f"`_ITEM_METADATA_SQL` names `knowledge_revisions`:\n{_ITEM_METADATA_SQL!r}\n"
+        f"The metadata gate read must touch only `knowledge_items`; a join to the "
+        f"revisions table materialises the body it exists to avoid."
+    )
+    assert re.search(r"\bJOIN\b", _ITEM_METADATA_SQL, re.IGNORECASE) is None, (
+        f"`_ITEM_METADATA_SQL` contains a JOIN:\n{_ITEM_METADATA_SQL!r}\n"
+        f"The gates decide from the pointer row alone; a join is how a body sneaks "
+        f"back onto that read while `_BodyReadCounter` stays GREEN."
+    )
+    assert re.search(r"\b(?:body|title)\b", _ITEM_METADATA_SQL, re.IGNORECASE) is None, (
+        f"`_ITEM_METADATA_SQL` projects a `body`/`title` column:\n{_ITEM_METADATA_SQL!r}\n"
+        f"Those live on `knowledge_revisions`, and pulling either onto the metadata "
+        f"read materialises served content the refusal path must never touch."
+    )
+
+
+def test_the_metadata_projection_is_exactly_the_columns_item_from_row_reads() -> None:
+    """`_ITEM_METADATA_SQL` projects precisely the `knowledge_items` columns the
+    mapper needs -- no more (an extra column could be a body), no fewer (a dropped
+    one is a `KeyError`).
+
+    Both sets are read from live source -- the projection from `_ITEM_METADATA_SQL`,
+    the reader keys from `_item_from_row`'s `row["..."]` subscripts -- so the pin
+    catches a projection that has drifted from its mapper in either direction
+    without hardcoding a copy of either. Under `SELECT *` the projection collapses to
+    `{"*"}` and this inequality reddens too; the equality is what additionally
+    catches a single column quietly added to or dropped from the list.
+    """
+    projected = _projected_columns(_ITEM_METADATA_SQL)
+    read = _row_keys_read(_item_from_row)
+
+    assert projected == read, (
+        f"`_ITEM_METADATA_SQL` projects {sorted(projected)} but `_item_from_row` "
+        f"reads {sorted(read)} from the row.\n\n"
+        f"Only in the projection: {sorted(projected - read)} -- a column selected "
+        f"but never mapped, which for a body column is the timing leak this guards.\n"
+        f"Only in the mapper: {sorted(read - projected)} -- a column read but not "
+        f"selected, a `KeyError` at run time.\n\n"
+        f"Keep the explicit projection and `_item_from_row` in step; the "
+        f"method-keyed `_BodyReadCounter` sees neither side of this drift."
+    )
+
+
+def test_the_full_content_read_does_join_the_revision_body_by_contrast() -> None:
+    """The positive control for the two pins above: the *full* read joins the body.
+
+    `_ITEM_WITH_CURRENT_CONTENT_SQL` is the read the GHSA-3f65 serve gate uses; it
+    must join `knowledge_revisions` and select the current revision's `body`, which
+    is exactly what the metadata read must not do. Asserting the join is present
+    keeps the metadata pins from passing vacuously -- a suite in which *no* read
+    joined the body would satisfy "the metadata read has no join" while the serve
+    gate was itself broken.
+    """
+    upper = _ITEM_WITH_CURRENT_CONTENT_SQL.upper()
+
+    assert "JOIN KNOWLEDGE_REVISIONS" in upper, (
+        f"`_ITEM_WITH_CURRENT_CONTENT_SQL` no longer joins `knowledge_revisions`:\n"
+        f"{_ITEM_WITH_CURRENT_CONTENT_SQL!r}\nThe serve gate needs the current "
+        f"revision's served text to recompute its hash (GHSA-3f65)."
+    )
+    assert re.search(r"\bbody\b", _ITEM_WITH_CURRENT_CONTENT_SQL, re.IGNORECASE) is not None, (
+        f"`_ITEM_WITH_CURRENT_CONTENT_SQL` no longer selects the revision `body`:\n"
+        f"{_ITEM_WITH_CURRENT_CONTENT_SQL!r}\nThis is the read the metadata gate "
+        f"deliberately avoids; if it stops reading the body, the contrast the two "
+        f"pins above rely on is gone."
     )

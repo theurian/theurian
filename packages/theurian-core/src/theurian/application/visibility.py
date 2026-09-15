@@ -144,17 +144,41 @@ class CanonicalVisibility:
         self._include_unapproved = include_unapproved
         self._visible_sensitivities = visible_sensitivities
         self._moment = moment
+        #: The pointer-row read every candidate pays, memoised per item. Bodyless
+        #: since 0.2.3 (`get_item_metadata`): a withheld candidate is refused from
+        #: this alone, so its body is never materialised and its refusal no longer
+        #: scales with its body's size. This is the read :meth:`item` returns.
         self._items: dict[str, KnowledgeItem | None] = {}
+        #: The full read -- body joined, `current_served_content_sha256`
+        #: recomputed -- paid only by a candidate that has already cleared status,
+        #: sensitivity and revision, for the GHSA-3f65 content-identity check.
+        #: Memoised per item so a document's many chunks share one body read.
+        self._served: dict[str, KnowledgeItem | None] = {}
 
     def cleared(self, ranked: Sequence[Ranked]) -> tuple[Ranked, ...]:
         """Every row of ``ranked`` is asked about, including once fifty have passed.
 
         Not short-circuited at :data:`~theurian.application.retrieval_service.CANDIDATE_DEPTH`,
         although the caller truncates there and the rest of the work is thrown
-        away. Stopping early makes the number of ``get_item`` calls — and so the
-        time the call takes — a function of how many rows were withheld above the
-        fiftieth visible one, one row at a time, which is the same quantity every
-        field in the response has been arranged not to state (SEC-13, T-17).
+        away. Stopping early makes the number of per-candidate canonical reads —
+        and so the time the call takes — a function of how many rows were withheld
+        above the fiftieth visible one, one row at a time, which is the same
+        quantity every field in the response has been arranged not to state
+        (SEC-13, T-17).
+
+        **The per-candidate read is bodyless since 0.2.3, and this splits the T-17
+        residual from a distinct channel that lived on the same read.** Until 0.2.3
+        the per-candidate read was ``get_item``, which joins the current revision
+        and materialises its body; a *withheld* candidate's body was read before
+        :meth:`_may_surface` refused it, so the refusal's duration scaled with that
+        body's size — an existence-and-size oracle a caller could time (the
+        pre-gate body-materialization channel, fixed in 0.2.3). The per-candidate
+        read is now ``get_item_metadata``, the pointer row alone: status,
+        sensitivity and revision decide the gate from it, and the body is read —
+        through ``get_item``, once, memoised on ``self._served`` — only for a row
+        that has already cleared those axes and is going to be served. So the
+        *count* of per-candidate reads still moves with the withheld count (the
+        T-17 residual below, unchanged), while its per-read *size* no longer does.
 
         **Two counts move here and they are not the same number — this docstring
         stated one of them under the other's name, and it is the second quantity
@@ -162,19 +186,21 @@ class CanonicalVisibility:
 
         - **``Visibility.item`` calls** are ``len(ranked)``, one per ranked row.
           All but the first per document are a ``dict`` lookup and reach no store;
-        - **``CanonicalReadSession.get_item`` calls** are the *distinct item
-          count* of ``ranked``, because :meth:`item` memoises on ``self._items``
-          for the life of the request. This is the number a canonical store can
-          observe, so this is the number T-17 is about.
+        - **``CanonicalReadSession.get_item_metadata`` calls** are the *distinct
+          item count* of ``ranked``, because :meth:`item` memoises on
+          ``self._items`` for the life of the request. This is the number a
+          canonical store can observe, so this is the number T-17 is about. (The
+          body-carrying ``get_item`` calls are the distinct *surfaceable* item
+          count, a subset, and carry no withheld row.)
 
         The two differ by chunking rather than marginally:
         :data:`~theurian.domain.chunking.TARGET_CHARS` is 1,000, so one document
         is several rows. Measured on 400 documents of Japanese prose at 8,410
         characters each, nine chunks apiece: 3,600 ``Visibility.item`` calls
-        against **400** ``get_item`` calls. The old claim named ``len(ranked)``
-        for both, which overstates the leak by the chunks-per-document factor —
-        a safe direction, and still wrong in a number that feeds the issue #15
-        decision.
+        against **400** per-candidate canonical reads. The old claim named
+        ``len(ranked)`` for both, which overstates the leak by the
+        chunks-per-document factor — a safe direction, and still wrong in a number
+        that feeds the issue #15 decision.
 
         **Walking the whole ranking does not make the canonical read count
         independent of the withheld count, and this docstring used to say it
@@ -199,7 +225,12 @@ class CanonicalVisibility:
         **on a published build that still holds the withdrawn rows.** That scope
         is the whole claim rather than a caveat on it: the line exists because
         the withdrawn rows are in the file the retriever ranked, and the
-        withdrawal→purge trigger removes *this* term rather than reducing it.
+        withdrawal→purge trigger removes *this* term rather than reducing it. These
+        figures and the ``ec0dbcd`` ones below were taken before 0.2.3, when the
+        per-candidate read was body-carrying ``get_item``; 0.2.3 leaves the *shape*
+        (linear in the withheld document count) and shrinks each read to a bodyless
+        ``get_item_metadata``, so the magnitude here is an upper bound on the
+        current per-read cost, not the current cost.
 
         **On a purged build there is no line left to be linear.** Re-measured
         2026-09-01 against a real index and its purged twin (`ec0dbcd`;
@@ -279,12 +310,21 @@ class CanonicalVisibility:
         return tuple(surfaced)
 
     def item(self, item_id: str) -> KnowledgeItem | None:
-        """The item behind a chunk, or ``None`` if there is nothing to ask about.
+        """The item's pointer row behind a chunk, or ``None`` if there is nothing
+        to ask about.
 
         Public because the caller that shapes a result needs the item's *current*
-        status for the payload, and it has already been paid for here. Reading it
-        again from the store would be a second read that could, across a session
-        boundary, disagree with the one that admitted the row.
+        status and sensitivity for the payload, and this pointer-row read has
+        already been paid for here. Reading it again from the store would be a
+        second read that could, across a session boundary, disagree with the one
+        that admitted the row.
+
+        Bodyless since 0.2.3: this is ``get_item_metadata``, the read that decides
+        the status/sensitivity/revision gate. It carries no
+        ``current_served_content_sha256`` (no body was read to hash), so the
+        content-identity check reads the full item separately -- see
+        :meth:`_may_surface`. The shaper needs only status and sensitivity, both
+        of which are on this row.
 
         ``None`` covers two cases the caller treats identically, because they are
         identical to it: the store no longer holds the item, and the row does not
@@ -295,7 +335,8 @@ class CanonicalVisibility:
         return self._items[item_id]
 
     def _lookup(self, item_id: str) -> KnowledgeItem | None:
-        """One canonical read, or ``None`` if the id cannot survive validation.
+        """One bodyless canonical read, or ``None`` if the id cannot survive
+        validation.
 
         **``item_id`` is index data, and the argument for treating it as such was
         already written below — for the *other* id on the same row.**
@@ -328,7 +369,35 @@ class CanonicalVisibility:
             validated = ItemId(item_id)
         except DomainError:
             return None
-        return self._store.get_item(self._context, validated)
+        return self._store.get_item_metadata(self._context, validated)
+
+    def _served_item(self, item_id: ItemId) -> KnowledgeItem | None:
+        """The full read behind the GHSA-3f65 content check, memoised per item.
+
+        Reached only from :meth:`_may_surface`, and only for a row that has
+        already cleared status, sensitivity and revision through the bodyless
+        :meth:`item` read -- so a *withheld* candidate never gets here and its body
+        is never materialised (0.2.3). ``item_id`` is ``item.item_id``, which
+        :meth:`item`'s ``get_item_metadata`` already resolved through any alias, so
+        no ``DomainError`` can arise and the row is the canonical one the metadata
+        gate just cleared.
+
+        Read by :meth:`get_item_exact`, not :meth:`get_item`: the id is already
+        canonical, and the content check wants the current served content of *that*
+        gated item, not of wherever a second alias hop would lead. ``get_item``
+        would run ``_resolve_alias`` again -- idempotent for a plain canonical id,
+        but in the T-21 shape where the canonical id is itself an ``addAlias`` key
+        it would read a *different* item's body, so the served-vs-recorded hashes
+        would disagree and the surfaceable row would be withheld on the strength of
+        an unrelated document. ``get_item_exact`` reads the item ``item`` names; it
+        is the same joined read, recomputing ``current_served_content_sha256`` from
+        the current revision's title and body -- the value the content-identity
+        check needs.
+        """
+        key = item_id.value
+        if key not in self._served:
+            self._served[key] = self._store.get_item_exact(self._context, item_id)
+        return self._served[key]
 
     def _may_surface(self, row: Ranked) -> bool:
         item = self.item(row.item_id)
@@ -391,7 +460,15 @@ class CanonicalVisibility:
         # would raise here rather than simply fail to match.
         if item.current_revision_id.value != row.revision_id:
             return False
-        # Content identity, not only revision identity (GHSA-3f65). The revision
+        # Content identity, not only revision identity (GHSA-3f65). **This is the
+        # first read of the body on this path, and it is reached only here --
+        # after status, sensitivity and revision have already cleared on the
+        # bodyless pointer row (0.2.3).** A withheld candidate was refused above
+        # from `item` alone, so its body was never materialised and its refusal did
+        # not scale with its size; a candidate that reaches this line is one the
+        # caller may see on every axis but content identity, so reading its body to
+        # verify that identity discloses nothing the earlier gates did not already
+        # admit. The revision
         # check above trusts that a `revision_id` names one immutable body (INV-1),
         # and on the write path it does. But the state database is a derived,
         # unsigned, git-ignored file (ADR-0004, SEC-7): the *served* content can be
@@ -424,9 +501,11 @@ class CanonicalVisibility:
         # (SEC-13, the displacement defect PR #112 reopened twice). No request
         # parameter reaches this comparison, so it is safe to apply where `moment`
         # must not.
+        served = self._served_item(item.item_id)
         return (
-            item.current_served_content_sha256 is not None
-            and item.current_served_content_sha256.value == row.served_content_sha256
+            served is not None
+            and served.current_served_content_sha256 is not None
+            and served.current_served_content_sha256.value == row.served_content_sha256
         )
 
 

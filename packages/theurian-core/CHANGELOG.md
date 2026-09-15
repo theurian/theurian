@@ -175,6 +175,41 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   The identical under-charge in the migration loader's own walk is filed
   separately ([#693](https://github.com/theurian/theurian/issues/693)).
 
+### Security
+
+<!-- cut: assign the advisory id (GHSA / CVE / release note) for the T-26 timing side-channel -->
+
+- **A read-surface timing side-channel let a caller infer a withheld item's
+  existence and the approximate size of its body from the timing of its refusal**
+  (**HIGH.** The advisory id — a GHSA, a CVE, or a plain release note — is
+  assigned at the cut; T-26 in
+  [the threat model](../../docs/security/threat-model.md) carries the
+  measurements). Live in shipped Core 0.2.2. Three read gates —
+  `knowledge.get`, the relation-edge gate `_relation_is_visible`, and the search
+  ranking gate `CanonicalVisibility._may_surface` — decide whether to surface an
+  item on its `status` and `sensitivity`, both columns of the `knowledge_items`
+  pointer row, yet read the current revision's whole **body** first, through
+  `SqliteCanonicalStore.get_item`/`get_item_exact`, which join and materialise it
+  to recompute the served-content hash the GHSA-3f65 check needs. Refusing a
+  *withheld* item after that read made the refusal's wall-clock scale with the
+  withheld body's size, so a caller holding an item id could time whether the
+  item exists and approximate how large its content is — metadata about content
+  it may not read. It is **existence and approximate size, not content bytes**:
+  the timing tracks the body's size, not its contents, so no content-byte
+  recovery was demonstrated, which is why this is HIGH and not Critical.
+
+  **Fixed by gating on item metadata before any body read.** Two bodyless reads,
+  `get_item_metadata` and `get_item_exact_metadata`, project only the
+  `knowledge_items` columns the gate needs — no revisions join, no body — so a
+  withheld item is refused from its pointer row alone and its body is never
+  materialised; the refusal's cost no longer varies with the withheld body's
+  size (measured identical at 256 B and 8 MiB, about 175× below the loopback
+  floor). The body is read once, only after an item has cleared status,
+  sensitivity and revision and is going to be served, which preserves the
+  GHSA-3f65 served-content check for visible rows. Pinned by zero-body-read
+  counters over all three faces, RED before this change
+  (`tests/integration/test_pre_gate_body_materialization.py`).
+
 ## [0.2.2] - 2026-09-14
 
 ### Fixed
