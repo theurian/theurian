@@ -1483,8 +1483,13 @@ _ITEM_WITH_CURRENT_CONTENT_SQL: Final = (
 #: no body" is true by construction, not by the incidental fact that today's
 #: `knowledge_items` holds no body column. Were one ever added to this table, a
 #: `SELECT *` here would silently read it -- and the `_BodyReadCounter` pin keys
-#: on the method name, not on this SQL, so no test would catch it. Adding a
-#: non-body column that `_item_from_row` needs means extending this list too.
+#: on the method name, not on this SQL, so it would not catch that: the counter
+#: tallies this read as bodyless whatever the SQL projects. What does catch it is
+#: `test_gate_call_sites.py`'s explicit-column projection pin, which parses this
+#: constant and reddens on a `SELECT *` or a `knowledge_revisions` join -- so
+#: "materialises no body" is a guarded structural guarantee here (T-26), not an
+#: unpinned one. Adding a non-body column that `_item_from_row` needs means
+#: extending this list too.
 _ITEM_METADATA_SQL: Final = (
     "SELECT item_id, project_id, namespace, kind, status, current_revision_id, "
     "owner, trust_level, sensitivity, tenant_id, acl_group, valid_from, valid_to "
