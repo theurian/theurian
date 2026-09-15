@@ -114,7 +114,9 @@ def _registered_tool_names(tree: ast.Module) -> frozenset[str]:
             continue
         for keyword in node.keywords:
             if keyword.arg == "name" and isinstance(keyword.value, ast.Constant):
-                names.add(keyword.value.value)
+                value = keyword.value.value
+                if isinstance(value, str):
+                    names.add(value)
     return frozenset(names)
 
 

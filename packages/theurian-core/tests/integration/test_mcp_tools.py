@@ -2737,11 +2737,12 @@ def test_the_object_a_write_intent_tool_is_handed_is_the_draft_only_facade(
     for name in sorted(WRITE_INTENT_TOOLS):
         body = getattr(tools[name].fn, "__wrapped__", tools[name].fn)
         freevars = body.__code__.co_freevars
-        assert "_draft_only_proposals" in freevars, (
+        closure = body.__closure__
+        assert closure is not None and "_draft_only_proposals" in freevars, (
             f"{name} no longer closes over the draft-only factory, so this test cannot "
             f"reach the object the tool is handed: {freevars}"
         )
-        factory = body.__closure__[freevars.index("_draft_only_proposals")].cell_contents
+        factory = closure[freevars.index("_draft_only_proposals")].cell_contents
 
         facade, _paths = factory("demo")
 
@@ -2780,10 +2781,11 @@ def test_a_planted_tool_calling_accept_goes_red_for_the_extended_canonical_write
     def planted_write(projectId: str) -> dict[str, str]:  # noqa: N803  # pragma: no cover
         # Registered to be walked, never called. `accept` and `_commit` are real
         # approved-state movers on `ProposalService`; naming them here is what a
-        # tool that reached a canonical write would do.
-        mover = ProposalService
-        mover.accept(mover, projectId)
-        mover._commit(mover)
+        # tool that reached a canonical write would do. Typed `Any` so the never-run
+        # call shapes are the responsibility of `_referenced_names`, not of mypy.
+        mover: Any = ProposalService
+        mover.accept(projectId)
+        mover._commit()
         return {}
 
     planted = planted_server._tool_manager.get_tool("knowledge.plantedWrite")

@@ -262,14 +262,16 @@ class _McpClient:
         return {tool["name"] for tool in response["result"]["tools"]}
 
     def call(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        return self._post(
+        response = self._post(
             {
                 "jsonrpc": "2.0",
                 "id": 2,
                 "method": "tools/call",
                 "params": {"name": tool, "arguments": arguments},
             }
-        )["result"]
+        )
+        result: dict[str, Any] = response["result"]
+        return result
 
     def approved_view(self) -> dict[str, Any]:
         """What the read tools say about approved knowledge, read through the daemon.

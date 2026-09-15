@@ -43,7 +43,7 @@ from theurian.domain.enums import (
     SpecificationStatus,
     TrustLevel,
 )
-from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId
+from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId, SpecId
 from theurian.domain.knowledge import SourceAnchor
 from theurian.domain.migration import (
     AddAlias,
@@ -71,8 +71,8 @@ NOW = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
 
 ITEM = ItemId("architecture.auth-policy")
 TARGET = ItemId("architecture.session-store")
-SPEC = ItemId("architecture.auth-spec")
-SPEC_SUCCESSOR = ItemId("architecture.auth-spec-v2")
+SPEC = SpecId("architecture.auth-spec")
+SPEC_SUCCESSOR = SpecId("architecture.auth-spec-v2")
 EXISTING_ALIAS = ItemId("architecture.legacy-auth")
 NEW_ALIAS = ItemId("architecture.new-auth")
 
@@ -135,7 +135,7 @@ _BASE_OPERATIONS: tuple[Operation, ...] = (
         spec_id=SPEC,
         item_id=ITEM,
         source_uri="git://demo/spec.md",
-        content_format="text/markdown",
+        content_format=MARKDOWN,
         status=SpecificationStatus.ACTIVE,
     ),
     AddEvidence(item_id=ITEM, anchor=EVIDENCE_ANCHOR, description="Base evidence for removal"),
@@ -160,7 +160,7 @@ _ADMITTED_OPERATION: dict[OperationKind, Operation] = {
         spec_id=SPEC_SUCCESSOR,
         item_id=ITEM,
         source_uri="git://demo/spec-v2.md",
-        content_format="text/markdown",
+        content_format=MARKDOWN,
         status=SpecificationStatus.DRAFT,
     ),
     OperationKind.SUPERSEDE_SPECIFICATION: SupersedeSpecification(
@@ -240,11 +240,10 @@ def test_the_base_corpus_holds_the_read_controls_the_invariant_measures() -> Non
     }
 
 
-@pytest.mark.parametrize(
-    "kind",
-    sorted(V1_OPERATION_KINDS, key=lambda k: k.value),
-    ids=lambda k: k.value,
-)
+_SORTED_ADMITTED: list[OperationKind] = sorted(V1_OPERATION_KINDS, key=lambda kind: kind.value)
+
+
+@pytest.mark.parametrize("kind", _SORTED_ADMITTED, ids=[kind.value for kind in _SORTED_ADMITTED])
 def test_an_admitted_operation_preserves_status_and_sensitivity_except_deprecate(
     kind: OperationKind,
 ) -> None:

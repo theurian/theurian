@@ -59,7 +59,7 @@ from theurian.domain.context import RequestContext
 from theurian.domain.identifiers import ProjectId
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore
 
-from mcp_wire_session import mcp_session  # isort: skip
+from mcp_wire_session import ToolCall, mcp_session  # isort: skip
 
 pytestmark = pytest.mark.integration
 
@@ -355,7 +355,7 @@ ITEM_ID_POSITIONS: Final = (
 )
 
 
-def _draft(call: Any, operation: dict[str, Any]) -> dict[str, Any]:
+def _draft(call: ToolCall, operation: dict[str, Any]) -> dict[str, Any]:
     return call(
         "knowledge.generateMigrationDraft",
         {
