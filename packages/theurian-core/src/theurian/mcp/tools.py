@@ -52,6 +52,7 @@ from theurian.application.proposal_service import (
     DraftedMigration,
     DraftedProposal,
     MigrationDocumentValidator,
+    ProposalError,
     ProposalRequest,
     ProposalService,
 )
@@ -1459,16 +1460,31 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
     # `mcp/admission.py`'s module docstring both state.
     review_search_admission = AdmissionGate(MAX_CONCURRENT_SEARCHES)
 
-    def _with_remedy(exc: ProjectError) -> ToolError:
-        """A ``ProjectError``, with its remedy still attached.
+    def _with_remedy(exc: TheurianError) -> ToolError:
+        """A ``TheurianError``, with its remedy still attached.
 
-        ``ProjectError`` carries the cure on a separate attribute, and the SDK
+        ``TheurianError`` carries the cure on a separate attribute, and the SDK
         re-raises anything that escapes a tool as
         ``ToolError(f"Error executing tool {name}: {e}")`` -- which keeps
         ``str(exc)`` and drops ``exc.remedy``. A registry file that is not JSON
         therefore reached every agent as an error naming no way out, while
         ``theurian project list`` printed the cure for the same byte of the same
         file. Folded into the message because the wire has one field for both.
+
+        **Typed on ``TheurianError``, not ``ProjectError``, because the write-intent
+        tools route their own designed refusals through here** (ADR-0032 decision 3).
+        ``ProposalService`` raises :class:`ProposalError` -- a ``TheurianError`` that
+        is *not* a ``ProjectError`` -- whose ``remedy`` names the redirect a refused
+        operation needs: ``createItem``/``upsertRevision`` to ``knowledge.proposeChange``,
+        ``changeSensitivity``/``restoreItem`` to the CLI, and the concurrency and
+        empty-field cures ``draft`` refuses with. Those refusals cross a tool body
+        that catches :class:`ProposalError` and re-raises through here, so their cure
+        is folded into the wire message rather than dropped at the ``_forwarding``
+        seam (which crosses a below-body ``TheurianError`` as ``str(exc)`` alone, for
+        the mcp 2.0.0 parity reason its own docstring gives). Everything this uses --
+        ``str(exc)``, ``exc.remedy``, the ``ProjectPathEscapeError`` test -- is defined
+        on ``TheurianError``, so the widening changes nothing for the ``ProjectError``
+        callers below.
 
         Named for the conversion rather than for the registry, because the
         registry was only where it was noticed: the state pointer's failures
@@ -3290,33 +3306,49 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         """
         facade, paths = _draft_only_proposals(projectId)
         anchors = _wire_source_anchors(sourceAnchors)
-        request = ProposalRequest(
-            item_id=ItemId(itemId),
-            title=title,
-            kind=_closed_value(KnowledgeKind, kind, "kind"),
-            owner=owner,
-            author=author,
-            description=description,
-            body=body,
-            content_type=MediaType(contentType),
-            evidence=_wire_evidence(evidence, agentId, taskId, anchors),
-            source_anchors=anchors,
-            labels=tuple(labels or ()),
-            scope_paths=tuple(scopePaths or ()),
-            trust_level=(
-                None if trustLevel is None else _closed_value(TrustLevel, trustLevel, "trustLevel")
-            ),
-            sensitivity=(
-                None
-                if sensitivity is None
-                else _closed_value(Sensitivity, sensitivity, "sensitivity")
-            ),
-            namespace=namespace,
-            expected_revision=(
-                None if expectedRevision is None else RevisionId.parse(expectedRevision)
-            ),
-        )
-        drafted = facade.draft(request, local=local)
+        try:
+            request = ProposalRequest(
+                item_id=ItemId(itemId),
+                title=title,
+                kind=_closed_value(KnowledgeKind, kind, "kind"),
+                owner=owner,
+                author=author,
+                description=description,
+                body=body,
+                content_type=MediaType(contentType),
+                evidence=_wire_evidence(evidence, agentId, taskId, anchors),
+                source_anchors=anchors,
+                labels=tuple(labels or ()),
+                scope_paths=tuple(scopePaths or ()),
+                trust_level=(
+                    None
+                    if trustLevel is None
+                    else _closed_value(TrustLevel, trustLevel, "trustLevel")
+                ),
+                sensitivity=(
+                    None
+                    if sensitivity is None
+                    else _closed_value(Sensitivity, sensitivity, "sensitivity")
+                ),
+                namespace=namespace,
+                expected_revision=(
+                    None if expectedRevision is None else RevisionId.parse(expectedRevision)
+                ),
+            )
+            drafted = facade.draft(request, local=local)
+        except ProposalError as exc:
+            # A designed write-intent refusal names its cure in `exc.remedy`
+            # (ADR-0032 decision 3): the optimistic-concurrency guard
+            # (`_check_expected_revision`), the empty-field and INV-8 checks on
+            # `ProposalRequest`, and the `--local` ignore-rule refusal all raise
+            # `ProposalError`. Routed through `_with_remedy` so the cure is folded
+            # into the wire message; left to reach the `_forwarding` seam it would
+            # cross as `str(exc)` alone and the caller would be told the refusal
+            # with nothing to do about it (#491's drop, on this surface). Only
+            # `ProposalError` is caught: a below-body infrastructure `TheurianError`
+            # (`StateDatabaseUnreadableError` from the caller-scoped revision read)
+            # keeps its `_forwarding` parity crossing, unchanged.
+            raise _with_remedy(exc) from exc
         return _drafted_proposal_payload(drafted, paths.root)
 
     @_tool(
@@ -3347,9 +3379,24 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         forwards the document.
         """
         facade, paths = _draft_only_proposals(projectId)
-        drafted = facade.draft_from_document(
-            document, evidence=_wire_evidence(evidence, agentId, taskId, ()), local=local
-        )
+        try:
+            drafted = facade.draft_from_document(
+                document, evidence=_wire_evidence(evidence, agentId, taskId, ()), local=local
+            )
+        except ProposalError as exc:
+            # The v1 operation-set gate refuses a pulled kind by naming its
+            # redirect in `exc.remedy` (ADR-0032 decision 3):
+            # `createItem`/`upsertRevision` to `knowledge.proposeChange`,
+            # `changeSensitivity`/`restoreItem` (and any fifteenth kind) to
+            # `theurian migrate apply`. That redirect is the whole point of the
+            # refusal -- an arbitrary-vendor agent hitting a pulled kind is stuck
+            # without it -- so it is folded into the wire message through
+            # `_with_remedy` rather than dropped at the `_forwarding` seam. The
+            # `--local` ignore-rule refusal is a `ProposalError` too and crosses
+            # the same way. Only `ProposalError` is caught: `require_evidence`'s
+            # INV-8 refusal and the injected validator carry their actionable text
+            # in the message itself, which `_forwarding` already preserves.
+            raise _with_remedy(exc) from exc
         return _drafted_migration_payload(drafted, paths.root)
 
     return server

@@ -152,20 +152,23 @@ def _proposals(registry: ProjectRegistry) -> set[str]:
 def test_a_content_operation_is_refused_to_the_content_path_over_the_wire(
     demo: ProjectRegistry, tmp_path: Path, kind: str
 ) -> None:
-    """createItem/upsertRevision are refused through the tool, naming the content path.
+    """createItem/upsertRevision are refused through the tool, redirected to the content path.
 
     Parametrized over ``_REFUSED_TO_CONTENT_PATH`` rather than a hand-written pair,
     so the driving count moves with the enum-derived set (ADR-0032 decision 3): a
     kind added to that set joins this by existing, and one removed leaves it. The
     v1 gate reads only ``op``, so a minimal operation reaches the refusal.
 
-    The refusal's *message* is asserted, not its remedy: ``_forwarding`` crosses a
-    below-body ``TheurianError`` as ``ToolError(str(exc))`` and drops ``exc.remedy``
-    by design (mcp 2.0.0 parity, ``mcp/tools.py``), so the "Use
-    knowledge.proposeChange" redirect stays behind on the wire. The message
-    distinguishes the content-path family -- "it moves knowledge content, which the
-    content path owns" -- which is what a wire caller actually reads. The remedy's
-    wording is pinned at the service level by ``test_generate_migration_draft.py``.
+    **The redirect target reaches the wire.** The tool body catches the v1 gate's
+    ``ProposalError`` and re-raises through ``_with_remedy``, which folds
+    ``exc.remedy`` into the message, so the "Use the knowledge.proposeChange tool"
+    redirect is what a wire caller actually reads -- not just the message-half
+    "it moves knowledge content, which the content path owns". Before that catch, the
+    refusal reached the ``_forwarding`` seam, which crosses a below-body
+    ``TheurianError`` as ``ToolError(str(exc))`` and dropped ``exc.remedy``, so an
+    arbitrary-vendor agent hitting a pulled kind was told the refusal with no
+    destination (the MEDIUM cluster 3 found). The remedy's wording is pinned at the
+    service level by ``test_generate_migration_draft.py``; this pins that it crosses.
     """
     with mcp_session(build_server(demo), tmp_path / "data") as call:
         answer = call(
@@ -182,6 +185,10 @@ def test_a_content_operation_is_refused_to_the_content_path_over_the_wire(
     text = result["content"][0]["text"]
     assert kind in text, text
     assert "content path" in text, text
+    # The redirect itself, folded in by `_with_remedy`. RED before the tool-body
+    # catch, when the `_forwarding` seam dropped `exc.remedy`: the whole point of the
+    # refusal, so a caller has somewhere to go (ADR-0032 decision 3).
+    assert "knowledge.proposeChange" in text, text
     assert _proposals(demo) == set(), "a refused content operation wrote a proposal"
 
 
@@ -189,19 +196,20 @@ def test_a_content_operation_is_refused_to_the_content_path_over_the_wire(
 def test_a_read_control_operation_is_refused_to_the_cli_over_the_wire(
     demo: ProjectRegistry, tmp_path: Path, kind: str
 ) -> None:
-    """changeSensitivity/restoreItem are refused through the tool, naming the CLI.
+    """changeSensitivity/restoreItem are refused through the tool, redirected to the CLI.
 
     Parametrized over ``_REFUSED_TO_CLI`` for the same reason as above: the two
     non-content read-control movers are pulled in v1 because the reviewer of the
     pull request cannot see what they admit, and are authored through the CLI
     instead.
 
-    As with the content-path family, the *message* is asserted rather than the
-    remedy -- ``_forwarding`` drops ``exc.remedy`` on the wire -- so what a caller
-    reads is "it changes who may read an item, and the reviewer of the pull request
-    cannot see what that admits", which distinguishes this family from the
-    content-path one. The "theurian migrate apply" redirect is pinned at the
-    service level by ``test_generate_migration_draft.py``.
+    As with the content-path family, the redirect reaches the wire: the tool body
+    routes the v1 gate's ``ProposalError`` through ``_with_remedy``, so a caller reads
+    both the message-half "it changes who may read an item, and the reviewer of the
+    pull request cannot see what that admits" *and* the "theurian migrate apply"
+    redirect that tells them where to author it instead. The redirect used to stay
+    behind at the ``_forwarding`` seam (the MEDIUM cluster 3 found); the remedy's
+    wording is pinned at the service level by ``test_generate_migration_draft.py``.
     """
     with mcp_session(build_server(demo), tmp_path / "data") as call:
         answer = call(
@@ -218,6 +226,9 @@ def test_a_read_control_operation_is_refused_to_the_cli_over_the_wire(
     text = result["content"][0]["text"]
     assert kind in text, text
     assert "who may read an item" in text, text
+    # The CLI redirect itself, folded in by `_with_remedy`. RED before the tool-body
+    # catch dropped `exc.remedy` at the `_forwarding` seam (ADR-0032 decision 3).
+    assert "theurian migrate apply" in text, text
     assert _proposals(demo) == set(), "a refused read-control operation wrote a proposal"
 
 
@@ -445,3 +456,55 @@ def test_the_body_size_bound_is_a_schema_constraint_on_the_body_key(demo: Projec
     assert "body" in refusal.message, refusal.message
     assert "published input schema" in refusal.message, refusal.message
     assert over_long not in refusal.message, "the refusal echoed the oversized body back"
+
+
+# -- The proposeChange tool's own catch folds its designed remedy in ---------
+
+
+def test_the_concurrency_guard_redirect_reaches_the_wire(
+    demo: ProjectRegistry, tmp_path: Path
+) -> None:
+    """proposeChange's optimistic-concurrency refusal names its cure on the wire.
+
+    ``knowledge.proposeChange`` has its own ``except ProposalError`` seam, separate
+    from ``generateMigrationDraft``'s, so it is driven separately: an update to an
+    item that already exists, with no ``expectedRevision``, is refused by
+    ``_check_expected_revision`` with a ``ProposalError`` whose ``remedy`` names the
+    concrete cure ("Pass --expected-revision <current> to update it"). The demo item
+    ``architecture.auth-policy`` is approved and in view of the caller-scoped
+    revision read, so the guard fires the "already exists" branch.
+
+    The assertion is on the *remedy*'s own phrase ("Pass --expected-revision"), which
+    lives only in ``exc.remedy`` and not in the message -- so it is RED before the
+    tool-body catch, when the ``_forwarding`` seam crossed the refusal as
+    ``str(exc)`` and dropped the cure, and GREEN once ``_with_remedy`` folds it in
+    (ADR-0032 decision 3). A source anchor is supplied so the request clears INV-8
+    and the empty-field checks and actually reaches the concurrency guard.
+    """
+    with mcp_session(build_server(demo), tmp_path / "data") as call:
+        answer = call(
+            "knowledge.proposeChange",
+            {
+                "projectId": "demo",
+                "itemId": "architecture.auth-policy",
+                "title": "Authentication policy",
+                "kind": "architecture",
+                "owner": "platform-team",
+                "author": "platform-team@example.com",
+                "description": "Tighten the token lifetime.",
+                "body": "# Authentication policy\n\nTokens live one hour.\n",
+                "contentType": "text/markdown",
+                "evidence": EVIDENCE,
+                "sourceAnchors": [{"provider": "git", "sourceUri": "git://demo/auth-policy.md"}],
+            },
+        )
+
+    result = answer["result"]
+    assert result["isError"] is True, answer
+    text = result["content"][0]["text"]
+    # The message-half already says an update must state a revision; the cure that
+    # names *which* revision to pass lives only in the remedy, dropped by
+    # `_forwarding` until the tool body routed the refusal through `_with_remedy`.
+    assert "already exists at revision" in text, text
+    assert "Pass --expected-revision" in text, text
+    assert _proposals(demo) == set(), "a refused concurrency guard wrote a proposal"
