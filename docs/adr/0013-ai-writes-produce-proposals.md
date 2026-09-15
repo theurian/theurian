@@ -356,9 +356,50 @@ Landed in Milestone 7, by the `theurian propose` CL:
   so the surviving siblings hold the same property against the input that is
   still reachable.
 
+Landed in Phase B slice B4, by the write-intent MCP tool surface
+([ADR-0032](0032-the-write-intent-mcp-tool-surface.md)):
+
+- The E2E this section owed — approved knowledge is unchanged after a full agent
+  session that calls every write-intent tool — is
+  `tests/e2e/test_write_intent_session.py::test_a_session_calling_every_write_intent_tool_leaves_approved_knowledge_unchanged`.
+  It is no longer vacuous: `knowledge.proposeChange` and
+  `knowledge.generateMigrationDraft` are registered, so a session has something
+  to call. Against a real daemon it calls each, and approved knowledge is
+  asserted unchanged two ways — the read tools report the identical status and
+  approved item *through* the daemon, and the canonical store's main file and the
+  approved bodies are byte-identical on disk (SQLite's read-time WAL and SHM
+  sidecars excluded, since a read creates empty ones). **The non-vacuity control
+  is that each call is asserted to have landed a distinct proposal**, so a
+  session that called nothing cannot pass the unchanged-knowledge assertion for
+  the wrong reason.
+- The structural guarantee this ADR's Milestone-3 entry above names is now held
+  by two controls rather than one, and the stronger one is new.
+  `test_no_registered_tool_can_reach_a_canonical_write` still walks the bytecode
+  of every registered tool, and it now covers the two new ones; its forbidden set
+  grew `accept` and `_commit`, driven by
+  `test_mcp_tools.py::test_a_planted_tool_calling_accept_goes_red_for_the_extended_canonical_write_pin`.
+  But that sweep reaches one level and does not enter a collaborator's body, so
+  it cannot by itself hold "no tool reaches approved state". What holds that is
+  `::test_no_write_intent_tool_captures_an_object_that_moves_approved_state`,
+  a closure walk over the **built** server asserting each write-intent tool holds
+  a draft-only facade and never a `ProposalService`, with
+  `::test_the_closure_walk_flags_a_tool_that_captures_a_canonical_writer` as the
+  control that the walk has teeth (ADR-0032 decision 8).
+- `tests/e2e/test_daemon_single_instance.py::test_the_tool_set_is_read_only` is
+  the Milestone-3 entry that could not survive this slice and did not: it is now
+  `::test_the_tool_set_is_exactly_the_published_nine`, an equality over the nine
+  registered names, beside `::test_capabilities_report_write_tools` for the
+  `writeTools` value. Named here because the Milestone-3 list above still cites
+  the old name, and an accepted ADR records what was true when it was written.
+
 Still owed, with the milestone that brings the feature under test:
 
-- An E2E test asserting approved knowledge is unchanged after a full agent session
-  that calls every write-intent tool (M7). The CLI's `propose` shares the
-  `ProposalService` those tools will use, but no write-intent MCP tool is
-  registered yet, so the property still holds vacuously today.
+- **The session's coverage set is committed, not derived, so a third
+  write-intent tool does not join it by registering** (slice B5). The E2E above
+  holds a `WRITE_INTENT_CALLS` dict of arguments per tool and asserts every
+  member of it is registered — which reddens when a listed tool stops being
+  registered or is renamed, and does **not** redden when a registered
+  write-intent tool is absent from the dict. `review.generateKnowledgeCandidate`
+  ([ADR-0033](0033-knowledge-candidate-generation.md)) is that third tool; the
+  slice that registers it extends the dict, or this section's property quietly
+  stops covering the surface it names.
