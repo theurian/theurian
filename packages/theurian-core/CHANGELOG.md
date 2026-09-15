@@ -55,6 +55,145 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   the relationship between them is driven, under *the daemon chooses and records
   the request body cap it reads* below.
 
+- **Two write-intent MCP tools, so "AI proposes" is a protocol rather than only a
+  CLI** ([ADR-0032](../../docs/adr/0032-the-write-intent-mcp-tool-surface.md),
+  Phase B slice B4). `knowledge.proposeChange` drafts a content change from
+  inline text and maps 1:1 onto `ProposalService.draft`.
+  `knowledge.generateMigrationDraft` lands a caller-authored migration document
+  through `ProposalService.draft_from_document`. Both write the same proposal
+  directory `theurian propose` writes — a migration, any body, and
+  `evidence.json` — for a human to review and merge. An agent from any vendor
+  now reaches the proposal path that was Claude-Code-and-a-terminal before.
+
+  **Neither reaches an approved-state write, and what holds that is structural.**
+  The tools are handed a `DraftOnlyProposals` facade
+  (`application/draft_only_proposals.py`) whose reachable attribute set is
+  exactly `{draft, draft_from_document}` — never a `ProposalService` — so
+  `accept` and `_commit` are unreachable, not as a method and not one attribute
+  hop away through a stored reference.
+  `tests/integration/test_mcp_tools.py::test_no_write_intent_tool_captures_an_object_that_moves_approved_state`
+  walks each registered write-intent tool's closure cells over the **built**
+  server and asserts none captures an object exposing an approved-state mover,
+  with `::test_the_closure_walk_flags_a_tool_that_captures_a_canonical_writer` as
+  the sibling control that the walk has teeth. The bytecode sweep that enumerates
+  every registered tool grew `accept` and `_commit` into its forbidden set, driven
+  by a planted tool whose body calls them
+  (`::test_a_planted_tool_calling_accept_goes_red_for_the_extended_canonical_write_pin`);
+  it reaches one level and does not enter a collaborator's body, which is why the
+  facade is the control and the sweep is the second, narrower one.
+  `docs/security/threat-model.md`'s T-12 control sentence was rewritten in the
+  registration commit to say which of the two holds which clause.
+
+  **`generateMigrationDraft` admits ten of `OperationKind`'s fourteen members and
+  refuses four with a redirect.** `createItem` and `upsertRevision` are sent to
+  `knowledge.proposeChange`; `changeSensitivity` and `restoreItem` are sent to
+  `theurian migrate apply`, because a declassification and a readmission move a
+  read control and this surface does not take that. The admitted and refused sets
+  are a pinned partition of `OperationKind`
+  (`tests/unit/test_draft_only_proposals.py::test_the_v1_operation_set_partitions_operation_kind`),
+  so a fifteenth kind is admitted or refused by a deliberate edit and never by
+  omission, and the gate is fail-closed for a kind in neither set. Applying any
+  admitted operation leaves every item's `(status, sensitivity)` pair unchanged,
+  `deprecateItem` excepted — the one admitted kind that moves a status, and only
+  in the withdrawing direction — driven over the whole admitted set in
+  `tests/unit/test_admitted_ops_preserve_read_controls.py`.
+
+  **A refusal about an item this caller may not read is the refusal about an item
+  that was never stored** (ADR-0032 decision 6, SEC-13). `proposeChange`'s
+  optimistic-concurrency refusal reads a caller-scoped current-revision lookup
+  that consults `may_surface` and `may_disclose`, so a `rejected` item or one
+  above the deployment's serving ceiling answers `None` and the refusal carries
+  neither a current-revision id nor a status word;
+  `generateMigrationDraft` consults no item at generation, so a document naming an
+  out-of-view item at any of the six schema-derived item-id positions drafts
+  indistinguishably from one naming an absent id.
+  `tests/integration/test_write_intent_disclosure_oracle.py` holds both over a
+  corpus carrying two withheld rows, with the control that those rows really hold
+  a revision the lookup suppresses and the control that an **in-view** item's
+  refusal still carries its revision — without which a lookup returning `None`
+  for everything would satisfy the equality while breaking the concurrency
+  remedy. The lookup is `may_surface`'s seventh call site and `may_disclose`'s
+  sixth, both added to the exact-equality sets in
+  `tests/unit/test_gate_call_sites.py` in the same commit.
+
+  **What this is not.** It is not an approval path: approved knowledge still
+  changes only through a migration a human merged, and `migrate apply` enforces
+  the *commit* and not the merge (T-15's recorded residual). It is not the whole
+  of Phase B — `review.generateKnowledgeCandidate` is ADR-0033's and registers at
+  slice B5, and the remaining planned `knowledge.*` tools stay planned. And
+  ADR-0013's owed end-to-end — approved knowledge is byte-identical after a real
+  daemon session that calls every write-intent tool, now
+  `tests/e2e/test_write_intent_session.py` and no longer vacuous — calls every
+  member of a *committed* argument set and asserts each is registered; nothing
+  makes a newly registered write-intent tool join that set, so slice B5 extends
+  it by hand.
+
+- **Two published input schemas, one per new tool, enforced before either handler
+  is entered** — `schemas/mcp/knowledge-propose-change-input.schema.json` and
+  `schemas/mcp/knowledge-generate-migration-draft-input.schema.json` (SEC-12,
+  [ADR-0031](../../docs/adr/0031-mcp-input-is-schema-validated-in-middleware.md),
+  ADR-0032 decision 3). Both compose the shared tool context by `$ref` and close
+  with `unevaluatedProperties: false`.
+
+  **There is no path, URI, or reference field anywhere in either input**
+  (ADR-0032 decision 2). The body is inline text: the daemon runs as the
+  operator, so a body path would be a read primitive over the operator's whole
+  filesystem laundered into a proposal directory and, by ADR-0013 point 7, into a
+  pull request. An absent parameter has nothing to get wrong about symlinks, case
+  folding, Unicode normalisation or TOCTOU. **That absence is a property of the
+  two files as shipped and no test recomputes it** — the owed structural check is
+  recorded in ADR-0032's *Still owed*.
+
+  The bounds are published on `knowledge.proposeChange`, which is the file with
+  caller text in it: `body` at `maxLength` **26,214,400**, the same
+  number as `MAX_REQUEST_BODY_BYTES`, pinned to that constant by
+  `tests/unit/test_input_schema_bounds.py`; `itemId` at `MAX_IDENTIFIER_LENGTH`
+  (200), the bound `ItemId` itself enforces; `labels[]` with `uniqueItems`, so a
+  duplicate is refused at the wire with a key path rather than as a validation
+  failure over a document the caller cannot see; and `contentType` as a closed
+  three-member enum, because there is no filename on this path to derive a media
+  type from. **The `body` bound counts code points while the constant it
+  transcribes counts bytes**, so it admits up to four times the bytes it names —
+  recorded rather than re-litigated at
+  [#691](https://github.com/theurian/theurian/issues/691). Two further limits are
+  recorded and open: over the shipped transport that `maxLength` is not the
+  refusal a caller meets, because the rendered-character bound and the transport
+  cap are both tighter and fire first
+  ([#699](https://github.com/theurian/theurian/issues/699)) — the published bound
+  is driven against the loaded schema rather than over the wire for that reason —
+  and the shared context's top-level `snapshotId`, `agentId` and `taskId` stay
+  admitted and unread on these two tools as on the other seven
+  ([#665](https://github.com/theurian/theurian/issues/665)).
+  `knowledge.generateMigrationDraft`'s envelope publishes no length bound of its
+  own: it constrains only that a `document` object and an `evidence` object
+  arrive, and the document is bounded by the middleware's structural limits
+  (nesting, node count, rendered width) and the transport cap, while the
+  migration schema and the v1 operation set are checked inside the service — so
+  an agent reaching for a refused operation is redirected rather than told which
+  fields its incomplete operation is missing. Only the
+  **evidence** block's `agentId` and `taskId` are authoritative and reach the
+  proposal; a top-level one that disagrees with its evidence counterpart is
+  refused in the handler, with agreement and absence both accepted so the check is
+  not satisfied by refusing every call that carries the field
+  (`tests/integration/test_write_intent_wire.py`).
+
+- **Every designed refusal on the two new tools carries its redirect on the
+  wire.** A refusal that names nowhere to go leaves an arbitrary-vendor agent
+  stuck: `generateMigrationDraft`'s four pulled kinds each name the surface that
+  does take them, and `proposeChange`'s concurrency guard and its
+  empty-field/INV-8 checks each name their cure. Those cures live in the
+  exception's `remedy`, and the `_forwarding` seam every tool is registered
+  through crosses a below-body `TheurianError` as `ToolError(str(exc))` for mcp
+  2.0.0 parity — which drops `remedy`. Each tool body therefore catches its own
+  `ProposalError` and re-raises through `_with_remedy`, the seam the read tools
+  already use to fold a cure into the message; only `ProposalError` is caught, so
+  an infrastructure `TheurianError` from below keeps its parity crossing
+  untouched. Driven over the transport rather than asserted about the exception:
+  `tests/integration/test_write_intent_wire.py` asserts the redirect name is in
+  the **wire message** for the four pulled kinds and for the concurrency guard.
+  Recorded here rather than under *Fixed* because no released build ever carried
+  the defect — the surface it is a property of is new in this release.
+
 ### Changed
 
 - **BREAKING — an unknown or extra key on any MCP tool call is refused rather than
@@ -139,6 +278,33 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `413` at a landed size the store would accept — C0 controls other than `\b`
   `\t` `\n` `\f` `\r`, which have no remedy because raw C0 is illegal JSON, and
   DEL (U+007F), which has one: send it raw instead of `ensure_ascii`-escaped.
+- **`system.capabilities` reports `writeTools: true`, and the tool set a client
+  sees grows from seven names to nine**
+  ([ADR-0032](../../docs/adr/0032-the-write-intent-mcp-tool-surface.md)
+  decision 5). Old shape: `writeTools: false`, beside a note reading "No
+  write-intent tool exists. Approved knowledge changes only through a
+  human-authored migration (ADR-0013)." New shape: `writeTools: true`, beside
+  "Write-intent MCP tools emit proposals for human review. No MCP tool writes
+  approved knowledge; it changes only through a merged, human-authored migration
+  (ADR-0013)." The flag's narrowed meaning is worth reading as narrowly as it is
+  written: **a write-intent tool exists that a client may call**, and not that a
+  client may write approved knowledge. It stays a build constant, the same string
+  in every deployment of this build, which is why it may be published on a
+  surface that resolves no project.
+
+  **Not a protocol change** — `protocolVersion` stays `theurian/v1` and the tool
+  set grows additively; no existing call's answer moves, no argument is newly
+  refused, and a client that reads the flag gets a true answer in both eras.
+  **The flag and the first registration move in one commit**, in both directions:
+  `tests/unit/test_write_tools_flag_claims.py::test_writetools_reads_true_exactly_when_a_write_intent_tool_is_registered`
+  reads the flag's literal and the registered names out of `mcp/tools.py`'s
+  source and demands they agree, with
+  `::test_the_coupling_checker_demands_the_other_state_when_either_side_moves` as
+  the bidirectional control — so a flag flipped ahead of its feature and a tool
+  registered while the flag lags each redden. The nine names are pinned over a
+  real client by
+  `tests/e2e/test_daemon_single_instance.py::test_the_tool_set_is_exactly_the_published_nine`,
+  and the value by `::test_capabilities_report_write_tools`.
 
 ### Fixed
 
