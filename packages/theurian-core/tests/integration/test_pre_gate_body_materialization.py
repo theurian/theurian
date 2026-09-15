@@ -668,10 +668,12 @@ def test_may_surface_reads_the_body_of_a_surfaceable_row(database: Path) -> None
             "the visible row surfaces"
         )
         assert store.metadata_reads == 1, "the gate read the pointer row first"
-        # The content check reads the body through the joined `get_item`, which
-        # recomputes the served-content hash; the join materialises the 8 MiB body
-        # in SQLite even though the returned `KnowledgeItem` does not expose it, so
-        # the read is counted but its bytes are not observable on the return value.
+        # The content check reads the body through the joined `get_item_exact` (the
+        # id is already canonical, so `_served_item` reads it exactly, not through
+        # `get_item`'s second alias resolution), which recomputes the served-content
+        # hash; the join materialises the 8 MiB body in SQLite even though the
+        # returned `KnowledgeItem` does not expose it, so the read is counted but its
+        # bytes are not observable on the return value.
         assert store.body_reads == 1, "then read the body once, for the content check"
 
 

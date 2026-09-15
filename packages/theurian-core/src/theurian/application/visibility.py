@@ -377,15 +377,26 @@ class CanonicalVisibility:
         Reached only from :meth:`_may_surface`, and only for a row that has
         already cleared status, sensitivity and revision through the bodyless
         :meth:`item` read -- so a *withheld* candidate never gets here and its body
-        is never materialised (0.2.3). ``item_id`` is the one :meth:`item` already
-        validated and found, so no ``DomainError`` can arise: this is
-        ``get_item``'s joined read, which recomputes
-        ``current_served_content_sha256`` from the current revision's title and
-        body, the value the content-identity check needs.
+        is never materialised (0.2.3). ``item_id`` is ``item.item_id``, which
+        :meth:`item`'s ``get_item_metadata`` already resolved through any alias, so
+        no ``DomainError`` can arise and the row is the canonical one the metadata
+        gate just cleared.
+
+        Read by :meth:`get_item_exact`, not :meth:`get_item`: the id is already
+        canonical, and the content check wants the current served content of *that*
+        gated item, not of wherever a second alias hop would lead. ``get_item``
+        would run ``_resolve_alias`` again -- idempotent for a plain canonical id,
+        but in the T-21 shape where the canonical id is itself an ``addAlias`` key
+        it would read a *different* item's body, so the served-vs-recorded hashes
+        would disagree and the surfaceable row would be withheld on the strength of
+        an unrelated document. ``get_item_exact`` reads the item ``item`` names; it
+        is the same joined read, recomputing ``current_served_content_sha256`` from
+        the current revision's title and body -- the value the content-identity
+        check needs.
         """
         key = item_id.value
         if key not in self._served:
-            self._served[key] = self._store.get_item(self._context, item_id)
+            self._served[key] = self._store.get_item_exact(self._context, item_id)
         return self._served[key]
 
     def _may_surface(self, row: Ranked) -> bool:
