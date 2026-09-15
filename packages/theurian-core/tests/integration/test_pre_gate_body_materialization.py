@@ -17,11 +17,24 @@ the number of bytes the refusal path materialises for a withheld item. This modu
 pins that number at **zero** for every withheld face, at any body size -- so the
 signal collapses by construction, which is the durable form of "the two corpora
 take the same time" (the 8 MiB two-corpora ``P``-values are measured out of band).
-:class:`_BodyReadCounter` is the instrument: it tallies the body-materialising
-reads (``get_item``/``get_item_exact``/``get_revision``/``current_revision``)
-separately from the bodyless metadata reads, so a regression that reads a withheld
-body again turns these zeros non-zero. Each pin is RED before 0.2.3, where the
-withheld path read the body through the joined ``get_item``/``get_item_exact``.
+Two instruments carry that count. :class:`_BodyReadCounter` wraps one
+``SqliteCanonicalStore`` instance and tallies the body-materialising reads
+(``get_item``/``get_item_exact``/``get_revision``/``current_revision``)
+separately from the bodyless metadata reads; :class:`_HandlerBodyReads` patches
+the same reads on the *class*, so it reaches the store the shipped
+``knowledge.get`` builds for itself. A regression that reads a withheld body
+again turns these zeros non-zero either way.
+
+**Each pin that drives shipped code is RED before 0.2.3**, where the withheld
+path read the body through the joined ``get_item``/``get_item_exact``: faces 2
+and 3 call the real ``_relation_is_visible`` and ``CanonicalVisibility.cleared``,
+and face 1 is driven end to end by
+``test_the_real_knowledge_get_handler_reads_no_body_when_it_withholds`` over
+``build_server``/``call_tool``. The face-1 *replica* reproductions
+(``test_knowledge_get_reads_...``) instead replay the gate's read sequence over
+:class:`_BodyReadCounter` to show what each path materialises; they do not run the
+handler, so the real-handler wire pin is what fails when the gate's
+``get_item_metadata`` is reverted to ``get_item``.
 
 **The three shipped faces**, each with the withheld corpus member the class needs:
 
@@ -54,13 +67,28 @@ residual there is a bounded per-row VM-steps term on a non-indexed predicate
 
 from __future__ import annotations
 
+import asyncio
+import json
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Final
+from typing import Any, Final
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 
+from theurian.application.authorization import (
+    DEPLOYMENT_ACL_GROUPS,
+    DEPLOYMENT_TENANT,
+    AuthorizationGrant,
+)
+from theurian.application.project_service import (
+    BuildProvenance,
+    ProjectPaths,
+    ProjectRegistry,
+)
 from theurian.application.visibility import CanonicalVisibility
+from theurian.daemon.runner import build_server
 from theurian.domain.context import RequestContext
 from theurian.domain.enums import (
     KnowledgeKind,
@@ -82,7 +110,8 @@ from theurian.domain.knowledge import (
 )
 from theurian.domain.project import Project
 from theurian.domain.ranking import Ranked
-from theurian.domain.values import MARKDOWN, ValidityPeriod
+from theurian.domain.state import ActiveState, StateHash
+from theurian.domain.values import MARKDOWN, ContentHash, ValidityPeriod
 from theurian.infrastructure.sqlite.connection import create_database, write_transaction
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore, SqliteWriter
 from theurian.mcp.tools import _relation_is_visible
@@ -302,14 +331,15 @@ def test_metadata_read_matches_the_full_read_without_the_body(database: Path) ->
             assert exact_metadata.current_served_content_sha256 is None
 
 
-# -- Face 1: knowledge.get's gate ---------------------------------------------
+# -- Face 1: knowledge.get's gate (replica reproductions) ---------------------
 #
 # knowledge.get reads the item, gates on status/sensitivity, refuses if withheld,
 # and only on the visible path reads the body -- through `current_revision`. The
 # tool builds its own store, so the gate sequence is reproduced here over the
-# counter to measure the bytes each path materialises; the wire behaviour is
-# covered by the e2e refusal tests, and the tool now calls `get_item_metadata`
-# where this reproduces it.
+# counter to show the bytes each path materialises. These do NOT drive the
+# handler, so reverting the gate's real read leaves them green: the real-handler
+# pins that fail on that revert are `test_the_real_knowledge_get_handler_*`,
+# below.
 
 
 def _knowledge_get_body_reads(store: _BodyReadCounter, item_id: ItemId) -> int:
@@ -346,6 +376,210 @@ def test_knowledge_get_reads_the_body_on_the_visible_path(database: Path) -> Non
         _knowledge_get_body_reads(store, VISIBLE_ID)
         assert store.body_bytes == EIGHT_MIB, "the visible item's body is served"
         assert store.metadata_reads == 1
+
+
+# -- Face 1, pinned against the REAL knowledge.get handler --------------------
+#
+# The two tests above replay knowledge.get's read *sequence* over the counter;
+# they do not drive the shipped tool, so reverting the gate's real read
+# (``mcp/tools.py``'s ``knowledge_get``: ``get_item_metadata`` -> the
+# body-joining ``get_item``) leaves them green -- which is the whole reason a
+# real-handler pin has to exist beside them. The two below drive the registered
+# tool through ``build_server``/``call_tool`` and count the body-materialising
+# reads the handler's *own* ``SqliteCanonicalStore`` makes, by a class-level
+# patch, so the withheld pin goes RED the instant the gate reads a body again.
+
+#: This deployment serves every sensitivity, so the withheld item below is
+#: withheld on *status* alone (``deprecated``) and not on the disclosure axis --
+#: the same isolation the face-2/3 tests keep, one gate at a time.
+_GRANT: Final = AuthorizationGrant(
+    tenant=DEPLOYMENT_TENANT,
+    sensitivities=EVERY_SENSITIVITY,
+    acl_groups=DEPLOYMENT_ACL_GROUPS,
+)
+
+#: One state for the whole fixture. ``b`` * 64 is a legible content hash the
+#: pointer, the database filename and the provenance record all agree on.
+STATE: Final = StateHash(ContentHash("b" * 64))
+
+
+class _HandlerBodyReads:
+    """Counts the body-materialising reads the *real* handler's store makes.
+
+    ``knowledge.get`` constructs its own :class:`SqliteCanonicalStore`, so an
+    instance wrapper like :class:`_BodyReadCounter` cannot reach it. This patches
+    the body-JOIN entry points on the class instead: ``get_item`` and
+    ``get_item_exact`` (each joins the current revision's body) and
+    ``current_revision`` (the visible path's body read). ``get_revision`` is
+    deliberately left unpatched -- ``current_revision`` calls it internally, so
+    counting both would double-count the one visible-path read and blur the
+    ``== 1`` the visible pin makes.
+    """
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.body_reads = 0
+        for name in ("get_item", "get_item_exact", "current_revision"):
+            original = getattr(SqliteCanonicalStore, name)
+            monkeypatch.setattr(SqliteCanonicalStore, name, self._counting(original))
+
+    def _counting(self, original: Callable[..., Any]) -> Callable[..., Any]:
+        def wrapper(store: SqliteCanonicalStore, *args: Any, **kwargs: Any) -> Any:
+            self.body_reads += 1
+            return original(store, *args, **kwargs)
+
+        return wrapper
+
+
+def _registered_project(root: Path, *, withheld_status: KnowledgeStatus) -> ProjectRegistry:
+    """A registered project the shipped ``knowledge.get`` resolves and serves.
+
+    One approved item and one item at ``withheld_status``, each with an 8 MiB
+    current-revision body, written straight to canonical -- no index build,
+    because ``knowledge.get`` reads canonical and the leak this pins is on that
+    read. The active-state pointer, the registry entry and the build-provenance
+    record are the three things ``_resolve`` checks before any body is read, and
+    ``record_expected_surfaceable_count`` matches the #30 integrity detector, so
+    the real handler runs end to end against a healthy state -- a clean refusal on
+    the withheld id and no ``integrity`` key on the visible one.
+    """
+    paths = ProjectPaths.of(root)
+    paths.state.mkdir(parents=True, exist_ok=True)
+    paths.runtime.mkdir(parents=True, exist_ok=True)
+
+    database = paths.database_for(STATE)
+    create_database(database, state_hash=str(STATE), engine_version=1)
+    with write_transaction(database, paths.write_lock) as connection:
+        writer = SqliteWriter(connection)
+        writer.register_project(
+            Project(
+                project_id=PROJECT,
+                root_path=str(root),
+                repository_url=None,
+                default_branch="main",
+                knowledge_directory=PurePosixPath(".theurian"),
+                registered_at=CREATED,
+            )
+        )
+        writer.append_revision(_revision(VISIBLE_ID, VISIBLE_REV, LARGE_BODY))
+        writer.put_item(_item(VISIBLE_ID, VISIBLE_REV, KnowledgeStatus.APPROVED))
+        writer.append_revision(_revision(WITHHELD_ID, WITHHELD_REV, LARGE_BODY))
+        writer.put_item(_item(WITHHELD_ID, WITHHELD_REV, withheld_status))
+        # What `migrate apply` records inside its own transaction (#30 PR2); without
+        # it the integrity detector reads the missing record as damage, so the
+        # withheld path answers "could not be fully read" and the visible path
+        # carries an `integrity` key -- a healthy state must produce neither here.
+        writer.record_expected_surfaceable_count(PROJECT)
+
+    paths.active_pointer.write_text(
+        json.dumps(
+            ActiveState(
+                state_hash=STATE,
+                database_filename=STATE.database_filename,
+                migration_count=0,
+                updated_at=CREATED.isoformat(),
+            ).to_json()
+        ),
+        encoding="utf-8",
+    )
+
+    registry = ProjectRegistry(path=root / "registry" / "projects.json")
+    registry.path.parent.mkdir(parents=True, exist_ok=True)
+    registry.path.write_text(
+        json.dumps(
+            {
+                PROJECT.value: {
+                    "projectId": PROJECT.value,
+                    "rootPath": str(root),
+                    "knowledgeDirectory": ".theurian",
+                    "registeredAt": CREATED.isoformat(),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    # This installation built the state it serves (ADR-0004, SEC-7); `_resolve`'s
+    # provenance gate refuses a state no record vouches for.
+    BuildProvenance.for_registry(registry).record_state(paths.root, str(STATE))
+    return registry
+
+
+def _knowledge_get(registry: ProjectRegistry, item_id: ItemId) -> dict[str, Any]:
+    """Drive the shipped ``knowledge.get`` tool over the wire and return its payload."""
+
+    async def invoke() -> Any:
+        server = build_server(registry, _GRANT)
+        return await server.call_tool(
+            "knowledge.get", {"projectId": PROJECT.value, "itemId": item_id.value}
+        )
+
+    result = asyncio.run(invoke())
+    structured = getattr(result, "structured_content", None)
+    assert structured is not None, "knowledge.get published no structured content"
+    payload: dict[str, Any] = structured
+    return payload
+
+
+def _knowledge_get_refusal(registry: ProjectRegistry, item_id: ItemId) -> str:
+    """Drive the shipped ``knowledge.get`` on an id it must refuse; return the message."""
+
+    async def invoke() -> Any:
+        server = build_server(registry, _GRANT)
+        return await server.call_tool(
+            "knowledge.get", {"projectId": PROJECT.value, "itemId": item_id.value}
+        )
+
+    with pytest.raises(SdkToolError) as raised:
+        asyncio.run(invoke())
+    return str(raised.value)
+
+
+def test_the_real_knowledge_get_handler_reads_no_body_when_it_withholds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The shipped ``knowledge.get``, driven over the wire, materialises zero bytes
+    of a withheld item's 8 MiB body before it refuses (SEC-13, T-17).
+
+    This is the pin the two replica reproductions above could not be: it patches
+    the body-JOIN reads on the store the tool builds *for itself* and drives the
+    real handler, so it goes RED the instant the gate's ``get_item_metadata`` is
+    reverted to the body-joining ``get_item`` (``mcp/tools.py``, ``knowledge_get``)
+    -- the exact pre-0.2.3 leak, which the replica left green because it never ran
+    the handler. Existence and size of content a caller may not read must not be
+    timeable.
+    """
+    registry = _registered_project(tmp_path, withheld_status=KnowledgeStatus.DEPRECATED)
+    counter = _HandlerBodyReads(monkeypatch)
+
+    message = _knowledge_get_refusal(registry, WITHHELD_ID)
+
+    assert "is not present" in message, "the withheld item is refused as absent"
+    assert counter.body_reads == 0, (
+        "the real handler read no body before refusing a withheld item; reverting "
+        "the gate's `get_item_metadata` to `get_item` reintroduces the pre-0.2.3 read"
+    )
+
+
+def test_the_real_knowledge_get_handler_reads_the_body_on_the_visible_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same handler still reads the visible item's body exactly once, through
+    ``current_revision``, after the metadata gate cleared it.
+
+    So the withheld pin above measures a real difference between the two paths --
+    body withheld vs body served -- rather than a handler that never reads a body
+    at all, which is the ``== 0`` a broken no-read would also pass.
+    """
+    registry = _registered_project(tmp_path, withheld_status=KnowledgeStatus.DEPRECATED)
+    counter = _HandlerBodyReads(monkeypatch)
+
+    payload = _knowledge_get(registry, VISIBLE_ID)
+
+    assert payload["itemId"] == VISIBLE_ID.value, "the visible item is served"
+    assert payload["body"] == LARGE_BODY, "with its whole 8 MiB body"
+    assert counter.body_reads == 1, (
+        "the visible path reads the body once, via `current_revision`; the gate read "
+        "the pointer row through the bodyless `get_item_metadata`"
+    )
 
 
 # -- Face 2: _relation_is_visible ---------------------------------------------
