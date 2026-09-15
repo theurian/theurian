@@ -6316,8 +6316,16 @@ ceiling.
 #### T-12 — An agent silently rewrites an approved decision (Tampering, High)
 
 **Controls:** no MCP tool reaches a write path for approved state — not behind a
-flag, not behind a permission. Write-intent tools emit proposal files. A test
-enumerates every registered tool and asserts none reaches a canonical write.
+flag, not behind a permission. The two write-intent tools
+(`knowledge.proposeChange`, `knowledge.generateMigrationDraft`) emit proposal
+files, and the control that holds "no tool reaches approved state" is a
+**structural** one: they are handed a draft-only facade
+(`application/draft_only_proposals.py`, ADR-0032 decision 8) whose reachable
+surface is the two draft entries alone, so neither `accept` nor `_commit` is
+reachable from a tool. The bytecode sweep that enumerates every registered tool
+and asserts none reaches a *canonical* write is a second, narrower control: it
+reaches one level and so does not, by itself, hold the first clause — which is
+why the facade above is what does (ADR-0032 decision 8).
 
 #### T-18 — A reused revision id resolves an approved item to a withheld item's body (Information disclosure, **Critical** — closed in 0.1.0.dev3)
 

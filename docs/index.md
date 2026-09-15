@@ -80,19 +80,28 @@ That makes an answer inspectable instead of merely plausible.
 Theurian keeps an explicit boundary between AI output and approved engineering
 knowledge.
 
-**No MCP write tool can directly create approved knowledge.** Every tool a
-client can call today is read-only, and `system.capabilities` reports
-`writeTools: false`.
+**No MCP tool can directly create approved knowledge.** The write-intent tools a
+client can call — `knowledge.proposeChange` and `knowledge.generateMigrationDraft`
+— emit a proposal a human reviews and merges, never approved state, and
+`system.capabilities` reports `writeTools: true` beside a note that no MCP tool
+writes approved knowledge (ADR-0032).
 
 This is intentional.
 
-Proposing happens at the CLI today: `theurian propose` writes a proposal file a
-human reviews and merges. Write-intent MCP tools are designed and not built;
-when they land they emit the same proposal file.
+Proposing happens two ways, and they write the same thing. At the CLI,
+`theurian propose` writes a proposal file a human reviews and merges. Over MCP,
+the two write-intent tools draft through the same `ProposalService` and land the
+same proposal directory — a migration, any body, and `evidence.json` — so an
+agent from any vendor reaches the path that was a terminal before.
 
 **What is enforced, and what is convention.** That no MCP tool writes approved
-knowledge is enforced — a test walks the bytecode of every registered tool to
-hold it. That a human merged the proposal is *not*: `migrate apply` refuses an
+knowledge is enforced structurally: the write-intent tools are handed a
+draft-only facade whose reachable surface is the two draft entries alone, so the
+accept path is not reachable from a tool at all (ADR-0032 decision 8). A second,
+narrower test walks the bytecode of every registered tool and holds that none
+reaches a canonical write — it sees one level and does not enter a
+collaborator's body, which is why the facade is what carries the claim. That a
+human merged the proposal is *not* enforced: `migrate apply` refuses an
 uncommitted migration by default (`--allow-uncommitted` restores the old
 behaviour), so the commit is a check the code makes, but a local commit on a
 local branch passes and the merge itself stays a workflow convention (T-15's
@@ -144,7 +153,7 @@ most important engineering questions.
 | Was this reviewed? | Usually unknown | **Trust and status travel with it** |
 | Is it still valid? | Usually unknown | **Freshness is queryable** |
 | Where did this claim come from? | Often a document link | **Source provenance** |
-| Can an AI silently promote its own output to approved knowledge? | Depends on the system | **No, over MCP** — no write tool exists. On the CLI path `migrate apply` now refuses an uncommitted migration by default, but a local commit still passes, so the code enforces the commit and the merge stays a workflow convention (T-15's recorded residual). |
+| Can an AI silently promote its own output to approved knowledge? | Depends on the system | **No, over MCP** — the write-intent tools emit a proposal a human reviews and merges, and reach no approved-state write (a draft-only facade holds this, ADR-0032). On the CLI path `migrate apply` now refuses an uncommitted migration by default, but a local commit still passes, so the code enforces the commit and the merge stays a workflow convention (T-15's recorded residual). |
 
 The goal is not to replace search.
 

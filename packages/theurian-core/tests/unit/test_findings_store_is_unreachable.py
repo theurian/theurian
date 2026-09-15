@@ -342,6 +342,10 @@ _APPLICATION_NON_SERVING_MODULES: frozenset[str] = frozenset(
     {
         "__init__.py",
         "authorization.py",
+        # The draft-only facade onto ProposalService (ADR-0032 decision 8). It
+        # narrows a service's surface to its two draft entries and reaches no
+        # store: it holds no findings store and no other, and serves nothing.
+        "draft_only_proposals.py",
         "forest_builder.py",
         "index_builder.py",
         "index_secret_scan.py",
@@ -1297,6 +1301,12 @@ KNOWN_TOOL_NAMES = frozenset(
         # assume; its own disclosure round is ADR-0030's, not ADR-0029's.
         "review.search",
         "system.capabilities",
+        # The two write-intent tools (ADR-0032). They draft proposals through a
+        # draft-only facade and reach no symbol of the findings store, which the
+        # two arms below check rather than assume; their disclosure round is
+        # ADR-0032's, not ADR-0029's.
+        "knowledge.proposeChange",
+        "knowledge.generateMigrationDraft",
     }
 )
 

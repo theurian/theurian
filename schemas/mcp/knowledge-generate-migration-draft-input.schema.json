@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theurian.dev/schemas/mcp/knowledge-generate-migration-draft-input.schema.json",
+  "title": "Input to the `knowledge.generateMigrationDraft` MCP tool",
+  "x-theurian-tool": "knowledge.generateMigrationDraft",
+  "description": "What a caller may send to `knowledge.generateMigrationDraft`, the operations write-intent tool (ADR-0032 decision 3). SEC-12 validates every call against this file before it reaches application code, in the MCP server middleware (ADR-0031 decision 2). The tool takes a caller-authored migration document and lands it as a proposal through `ProposalService.draft_from_document`, reaching no approved-state write (ADR-0013).\n\n**The v1 operation set is enforced in the service, not here.** The document is checked against the published migration schema and the closed v1 operation set inside `ProposalService.draft_from_document` (ADR-0032 decision 3): it admits ten of the fourteen `OperationKind` members and refuses `createItem`/`upsertRevision` to `knowledge.proposeChange` and `changeSensitivity`/`restoreItem` to the CLI. This boundary schema constrains only the *envelope* — that a document object and an evidence object arrive — so an agent that reaches for a refused operation is redirected by the service rather than told which schema fields its incomplete operation is missing.\n\n**There is no path, URI, or reference field (ADR-0032 decision 2).** No admitted operation names a `contentFile`, so this path lands no body and has no body path to contain; the proposal directory and migration filename are minted from ids the service chooses, never from caller text.\n\n**Composition.** The context — `projectId`, and the optional `snapshotId`, `agentId` and `taskId` — arrives by `$ref` to `tool-context.schema.json`, closed with `unevaluatedProperties: false` (ADR-0031 decision 1). `projectId` is required by the referent and is not repeated here.\n\n**Evidence is authoritative (ADR-0032 decision 4),** exactly as on `knowledge.proposeChange`: `evidence.agentId`/`evidence.taskId` are required and reach the proposal; a top-level context field that disagrees with its evidence counterpart is refused in the handler.",
+  "type": "object",
+  "allOf": [{ "$ref": "https://theurian.dev/schemas/mcp/tool-context.schema.json" }],
+  "required": ["document", "evidence"],
+  "unevaluatedProperties": false,
+  "properties": {
+    "document": {
+      "type": "object",
+      "description": "The migration document to land as a proposal. Its internal shape is validated against the published migration schema, and its operations against the v1 set, inside the service — this boundary constrains only that an object arrives. It is bounded by the middleware's structural limits (nesting, node count) and the transport body cap; a document larger or deeper than those is refused before it reaches the service."
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agentId", "taskId", "model", "reasoning"],
+      "description": "Where the proposed change came from and why (ADR-0013 point 5). Provenance only. Authoritative for `agentId`/`taskId` (ADR-0032 decision 4).",
+      "properties": {
+        "agentId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Which agent drafted this. Required, and what reaches the evidence record."
+        },
+        "taskId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The unit of work it came out of. Required."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The model identity that produced it. Required."
+        },
+        "reasoning": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Why the evidence supports the claim. Required."
+        }
+      }
+    },
+    "local": {
+      "type": "boolean",
+      "description": "Draft under .theurian/proposals-local/ instead (ADR-0028). Defaults to false."
+    }
+  }
+}

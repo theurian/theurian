@@ -379,12 +379,6 @@ PROSE_ONLY: Final[tuple[tuple[str, str, str], ...]] = (
     ),
     (
         THREAT_MODEL,
-        "no MCP tool reaches a write path",
-        "The control is an absence -- no MCP tool reaches a write path -- and its pin is "
-        "described as an enumeration test without a file name.",
-    ),
-    (
-        THREAT_MODEL,
         "write-time enforcement of INV-2",
         "A list opener: `append_revision`, `InvariantViolationError` and the pointer guard "
         "are named in the bullets beneath it, past the blank line the extent rule stops at.",

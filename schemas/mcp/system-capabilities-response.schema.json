@@ -82,7 +82,7 @@
         },
         "writeTools": {
           "type": "boolean",
-          "description": "Whether any write-intent tool exists. `false`, and structurally so (ADR-0013): no MCP path reaches approved state, and a structural test walks every registered tool's bytecode for the write gateways. When write-intent tools arrive they emit proposal files rather than mutating approved state, which is a different promise from this one."
+          "description": "Whether any write-intent tool exists. `true` since ADR-0032 registered `knowledge.proposeChange` and `knowledge.generateMigrationDraft`. It says a write-intent tool exists that a client may call, not that a client may write approved knowledge: no MCP path reaches approved state, the tools emit proposal files a human reviews and merges, and each is handed a draft-only facade whose reachable surface is the two draft entries alone (ADR-0032 decision 8) — a structural test also walks every registered tool's bytecode for the write gateways (ADR-0013)."
         }
       }
     }

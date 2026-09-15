@@ -3,11 +3,13 @@
 Protocol version: `theurian/v1`. Transport: Streamable HTTP at
 `http://127.0.0.1:7419/mcp`.
 
-Today, Core registers seven callable MCP tools:
+Today, Core registers nine callable MCP tools:
 
 - `knowledge.search`
 - `knowledge.get`
 - `knowledge.status`
+- `knowledge.proposeChange`
+- `knowledge.generateMigrationDraft`
 - `project.list`
 - `review.findings`
 - `review.search`
@@ -15,10 +17,13 @@ Today, Core registers seven callable MCP tools:
 
 `system.capabilities` is the runtime boundary for clients. In this build it
 reports `reviewFindings: true` and `reviewIngestion: true` — `review.findings`
-and `review.search` are both callable — beside `writeTools: false` and
-`traceability: false`, which mean the write-intent and traceability tools
-described below are designed protocol shape, not callable tools in the current
-server. `reviewIngestion: true` is a statement about *callable tools* and nothing
+and `review.search` are both callable — and `writeTools: true`, because the
+write-intent tools `knowledge.proposeChange` and `knowledge.generateMigrationDraft`
+are registered (ADR-0032); they emit a proposal a human reviews and merges and
+reach no approved-state write, which is what the capabilities note says. Only
+`traceability: false` still marks a tool described below as designed protocol
+shape rather than a callable tool in the current server. `reviewIngestion: true`
+is a statement about *callable tools* and nothing
 wider: it says an ingestion call surface exists that a client may call, published
 beside `reviewIngestionScope: "public-allowlisted"`, and it does not say a client
 may start an ingestion run — no tool spawns `gh`, and a fetch stays an operator's
@@ -33,7 +38,8 @@ act through `theurian review ingest` (see below).
 ```
 
 `projectId` is **required** on every project-scoped tool that ships today:
-`knowledge.search`, `knowledge.get`, `knowledge.status`, `review.findings` and
+`knowledge.search`, `knowledge.get`, `knowledge.status`, `knowledge.proposeChange`,
+`knowledge.generateMigrationDraft`, `review.findings` and
 `review.search`. Omitting it is a
 validation error, never a fallback to "the last one used". With ten subagents
 sharing one daemon, an implicit default resolves one agent's query against
@@ -72,6 +78,8 @@ is the only tier that still sees the keys a caller actually sent.
 | `knowledge.search` | [`knowledge-search-input.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/knowledge-search-input.schema.json) |
 | `knowledge.get` | [`knowledge-get-input.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/knowledge-get-input.schema.json) |
 | `knowledge.status` | [`knowledge-status-input.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/knowledge-status-input.schema.json) |
+| `knowledge.proposeChange` | [`knowledge-propose-change-input.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/knowledge-propose-change-input.schema.json) |
+| `knowledge.generateMigrationDraft` | [`knowledge-generate-migration-draft-input.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/knowledge-generate-migration-draft-input.schema.json) |
 | `project.list` | [`project-list-input.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/project-list-input.schema.json) |
 | `review.findings` | [`review-findings-input.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/review-findings-input.schema.json) |
 | `review.search` | [`review-search-input.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/review-search-input.schema.json) |
@@ -133,14 +141,16 @@ stays below this surface as a backstop and is unreachable through this contract.
 | `knowledge.trace` | Planned | Follow relations from an item |
 | `knowledge.listChanges` | Planned | What changed between two snapshots |
 | `knowledge.checkFreshness` | Planned | Which knowledge is outside its validity window |
-| `knowledge.proposeChange` | Planned write-intent | Emit a proposal; no approved-state write |
+| `knowledge.proposeChange` | Shipped write-intent | Draft a content change (a body and its revision) as a proposal; no approved-state write (ADR-0032) |
 | `knowledge.submitFeedback` | Planned | Record retrieval quality signals |
-| `knowledge.generateMigrationDraft` | Planned write-intent | Emit a proposal; no approved-state write |
+| `knowledge.generateMigrationDraft` | Shipped write-intent | Draft a migration document as a proposal; the operations path, v1 admitting ten operation kinds; no approved-state write (ADR-0032) |
 
-### Planned write-intent tools do not write approved state
+### Write-intent tools do not write approved state
 
-No MCP write-intent tool exists in the current server. ADR-0013's designed
-write-intent tools produce proposal directories like this illustrative shape:
+The two write-intent tools are registered (ADR-0032). They reach no approved-state
+write: each holds a draft-only facade whose reachable surface is the two draft
+entries alone, so approval stays a human merging a pull request (ADR-0013). They
+produce proposal directories like this shape:
 
 ```text
 .theurian/proposals/<proposal-id>/
@@ -149,14 +159,19 @@ write-intent tools produce proposal directories like this illustrative shape:
 └── evidence.json      # anchors and the reasoning trail
 ```
 
-There is no MCP path to approved state today — not a flag, not a permission.
-`system.capabilities` reports `writeTools: false`, and a test enumerates every
-registered tool and asserts none reaches a canonical write
-([ADR-0013](../adr/0013-ai-writes-produce-proposals.md)). Proposals happen
-through the CLI today: `theurian propose` drafts one, and `theurian propose
-accept` moves the files into place. The intended approval path is human review
-and merge in Git; Core does not verify that a migration was merged before
-`theurian migrate apply` reads it.
+There is no MCP path to approved state — not a flag, not a permission.
+`system.capabilities` reports `writeTools: true` because the write-intent tools
+are registered (ADR-0032), and the control that holds "no tool reaches approved
+state" is that each is handed a draft-only facade whose reachable surface is the
+two draft entries alone, so neither `accept` nor `_commit` is reachable from a
+tool ([ADR-0032](../adr/0032-the-write-intent-mcp-tool-surface.md) decision 8); a
+second test enumerates every registered tool and asserts none reaches a canonical
+write ([ADR-0013](../adr/0013-ai-writes-produce-proposals.md)). Proposals can be
+drafted over MCP by `knowledge.proposeChange` and
+`knowledge.generateMigrationDraft`, or at the CLI: `theurian propose` drafts one,
+and `theurian propose accept` moves the files into place. The intended approval
+path is human review and merge in Git; Core does not verify that a migration was
+merged before `theurian migrate apply` reads it.
 
 ### Result shape
 

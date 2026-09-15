@@ -356,9 +356,69 @@ Landed in Milestone 7, by the `theurian propose` CL:
   so the surviving siblings hold the same property against the input that is
   still reachable.
 
+Landed in Phase B slice B4, by the write-intent MCP tool surface
+([ADR-0032](0032-the-write-intent-mcp-tool-surface.md)):
+
+- The E2E this section owed — approved knowledge is unchanged after a full agent
+  session that calls every write-intent tool — is
+  `tests/e2e/test_write_intent_session.py::test_a_session_calling_every_write_intent_tool_leaves_approved_knowledge_unchanged`.
+  It is no longer vacuous: `knowledge.proposeChange` and
+  `knowledge.generateMigrationDraft` are registered, so a session has something
+  to call. Against a real daemon it calls each, and approved knowledge is
+  asserted unchanged two ways — the read tools report the identical status and
+  approved item *through* the daemon, and the canonical store's main file and the
+  approved bodies are byte-identical on disk (SQLite's read-time WAL and SHM
+  sidecars excluded, since a read creates empty ones). **The non-vacuity control
+  is that each call is asserted to have landed a distinct proposal**, so a
+  session that called nothing cannot pass the unchanged-knowledge assertion for
+  the wrong reason.
+- The structural guarantee this ADR's Milestone-3 entry above names is now held
+  by two controls rather than one, and the stronger one is new.
+  `test_no_registered_tool_can_reach_a_canonical_write` still walks the bytecode
+  of every registered tool, and it now covers the two new ones; its forbidden set
+  grew `accept` and `_commit`, driven by
+  `test_mcp_tools.py::test_a_planted_tool_calling_accept_goes_red_for_the_extended_canonical_write_pin`.
+  But that sweep reaches one level and does not enter a collaborator's body, so
+  it cannot by itself hold "no tool reaches approved state". What holds that is
+  `::test_no_write_intent_tool_captures_an_object_that_moves_approved_state`,
+  a closure walk over the **built** server asserting each write-intent tool holds
+  a draft-only facade and never a `ProposalService`, with
+  `::test_the_closure_walk_flags_a_tool_that_captures_a_canonical_writer` as the
+  control that the walk has teeth (ADR-0032 decision 8).
+- `tests/e2e/test_daemon_single_instance.py::test_the_tool_set_is_read_only` is
+  the Milestone-3 entry that could not survive this slice and did not: it is now
+  `::test_the_tool_set_is_exactly_the_published_nine`, an equality over the nine
+  registered names, beside `::test_capabilities_report_write_tools` for the
+  `writeTools` value. Named here because the Milestone-3 list above still cites
+  the old name, and an accepted ADR records what was true when it was written.
+
+- **The session's coverage set is derived from the daemon, so a third
+  write-intent tool joins it by registering.** This was recorded as owed to slice
+  B5 while the set was committed: the E2E asserted every member of its
+  `WRITE_INTENT_CALLS` dict was registered, which reddens when a listed tool stops
+  being registered or is renamed and does **not** redden when a registered
+  write-intent tool is absent from the dict — so "calls every write-intent tool"
+  was a claim the test could not make. It now reads every registered tool's
+  published input schema off `tools/list`, takes the write-intent ones to be those
+  requiring an `evidence` object, and asserts that derived set *equals* the
+  arguments it carries. `review.generateKnowledgeCandidate`
+  ([ADR-0033](0033-knowledge-candidate-generation.md)) is the third tool, and it
+  builds its `proposal.Evidence` "from the tool's own `evidence` input, exactly as
+  ADR-0032's tools take them", so it enters the derived set by registering and the
+  slice that registers it is told to add its arguments rather than trusted to
+  remember.
+
 Still owed, with the milestone that brings the feature under test:
 
-- An E2E test asserting approved knowledge is unchanged after a full agent session
-  that calls every write-intent tool (M7). The CLI's `propose` shares the
-  `ProposalService` those tools will use, but no write-intent MCP tool is
-  registered yet, so the property still holds vacuously today.
+- **The derived set is keyed on evidence requiredness, which is what a tool
+  *asks of a caller* and not what it does** (recorded, not owed to a slice).
+  ADR-0032 decision 4 makes `agentId`, `taskId`, `model` and `reasoning` required
+  on every write-intent call, and `require_evidence` refuses twice — in
+  `Evidence.__post_init__` and again in `ProposalRequest.__post_init__` — so a
+  tool that asked for no evidence could not package a proposal at all, and the
+  gap between the key and the property is closed by the domain rather than by the
+  test. What would fall outside it is a write-intent tool that writes something
+  other than a proposal; this ADR does not admit one, and admitting one is a
+  different decision. The mis-key in the other direction fails closed: a read tool
+  that grew an `evidence` input would be demanded in the session's argument set
+  and redden until somebody settled which it is.

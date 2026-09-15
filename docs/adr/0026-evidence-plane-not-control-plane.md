@@ -101,19 +101,28 @@ machine-checked would itself be the kind of false claim it exists to prevent.
 Held by tests today — **one clause of the three**:
 
 - **"Does not approve", on the MCP surface.** `system.capabilities` reports
-  `writeTools: false`, and
+  `writeTools: true` since slice B4 registered the two write-intent tools
+  (`knowledge.proposeChange`, `knowledge.generateMigrationDraft`), but both are
+  draft-only: they emit a proposal a human reviews and merges and reach no
+  approved-state write. What holds "does not approve" is a **structural** control
+  — the two tools are handed a draft-only facade whose reachable surface is the
+  two draft entries alone, so the accept path is not reachable from a tool at all
+  (`application/draft_only_proposals.py`, ADR-0032 decision 8). A second, narrower
+  test —
   `tests/integration/test_mcp_tools.py::test_no_registered_tool_can_reach_a_canonical_write`
-  walks the bytecode of every registered tool rather than trusting the tool list,
-  so a write path added later fails the suite instead of shipping. This holds the
+  — walks the bytecode of every registered tool rather than trusting the tool
+  list, so a *canonical* write path added later fails the suite instead of
+  shipping; it reaches one level and does not enter a collaborator's body, which
+  is why the facade is what carries the "does not approve" claim. This holds the
   MCP half only; that a human *merged* the proposal is T-15's recorded residual
   and is held by nothing.
 
-> The other capability flags — `traceability: false`, and `writeTools: false`
-> beside it — are asserted with their reasoning in `test_mcp_tools.py`, and it is
-> worth saying what that does and does not do for this ADR. It is evidence of
-> *capability honesty*: a flag cannot be flipped ahead of the feature it
-> advertises. It is not evidence of the boundary. A build could report every flag
-> truthfully and still orchestrate.
+> The other capability flag that still reads `false` — `traceability: false` — is
+> asserted with its reasoning in `test_mcp_tools.py`, and it is worth saying what
+> that does and does not do for this ADR. It is evidence of *capability honesty*:
+> a flag cannot be flipped ahead of the feature it advertises. It is not evidence
+> of the boundary. A build could report every flag truthfully and still
+> orchestrate.
 >
 > `reviewFindings: true` joined that pinned block with ADR-0029's serving slice
 > and is asserted the same way. It is the case in the other direction — a flag
@@ -130,6 +139,15 @@ Held by tests today — **one clause of the three**:
 > ADR-0013 keeps write intent off this surface. What moved is what a caller may
 > *read*. The boundary is where it was: ingested review content is evidence a
 > caller reads, and it gates nothing.
+>
+> `writeTools: true` is that case once more, and is recorded here for the reason
+> `reviewFindings` was: this paragraph named it among the flags reading `false`,
+> and slice B4 landed the two write-intent tools it advertises. It moved *with*
+> the feature, not ahead of it. This one is not a read-side flag, so it is worth
+> being exact about why it leaves the boundary where it was: the tools are
+> draft-only (the facade named in the bullet above), so what a caller gained is
+> the ability to *propose* a change, and approving one still happens off this
+> surface. Proposing is not approving, orchestrating, or enforcing.
 
 Held by prose and review, not by a test:
 

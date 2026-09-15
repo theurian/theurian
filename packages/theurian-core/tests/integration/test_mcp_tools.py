@@ -44,6 +44,7 @@ from theurian.application.project_service import (
     read_active_index_pointer,
     read_active_state,
 )
+from theurian.application.proposal_service import ProposalService
 from theurian.application.retrieval_service import CANDIDATE_DEPTH, FIRST_PASS_DEPTH
 from theurian.cli.main import app
 from theurian.daemon.runner import build_server
@@ -61,7 +62,7 @@ from theurian.infrastructure.sqlite.connection import (
 )
 from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore, SqliteWriter
-from theurian.mcp.tools import MAX_PROJECT_ID_CHARS, MAX_RESULTS, is_forwarding_wrapper
+from theurian.mcp.tools import MAX_PROJECT_ID_CHARS, MAX_RESULTS, _tool, is_forwarding_wrapper
 
 pytestmark = pytest.mark.integration
 
@@ -1920,9 +1921,11 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
     package's own constants; `schemaVersion` against `SCHEMA_VERSION`, the
     same precedent `test_wire_contract.py` already set for
     `knowledge.status`; and `note` to the substring that carries its one
-    load-bearing claim (ADR-0013's "no write-intent tool exists"), plus a
-    second assertion ruling out the note also asserting the opposite while
-    that substring stays intact. Before this, mutations on all four --
+    load-bearing claim (ADR-0013's "no MCP tool writes approved knowledge",
+    since ADR-0032 registered the write-intent tools and retired the older
+    "no write-intent tool exists" wording), plus a second assertion ruling out
+    the note also asserting the opposite while that substring stays intact.
+    Before this, mutations on all four --
     including inverting `note`'s meaning -- survived the whole suite.
     `version` and `protocolVersion` are not incidental metadata either --
     they re-publish the same two process constants `theurian compat check`
@@ -1954,7 +1957,16 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
         "un-indexed project it has ever seen. A mutation doing exactly that "
         "survived the whole suite (#129)."
     )
-    assert result["capabilities"]["writeTools"] is False
+    assert result["capabilities"]["writeTools"] is True, (
+        "the two write-intent tools (knowledge.proposeChange, "
+        "knowledge.generateMigrationDraft) are registered, so ADR-0032 decision 5 "
+        "flips this flag in the same commit that registers the first one -- a flag "
+        "that lagged its feature would ship a false answer to a security question "
+        "(ADR-0026). It does not say a client may write approved knowledge: no MCP "
+        "tool reaches an approved-state write, and the tools hold a draft-only "
+        "facade (ADR-0032 decision 8). A mutation flipping this to False survives "
+        "only until the note's own claim is read."
+    )
     assert result["capabilities"]["hybridRetrieval"] is True
     assert result["capabilities"]["knowledgeGet"] is True
     assert result["capabilities"]["raptor"] is True, (
@@ -2089,22 +2101,26 @@ async def test_capabilities_report_what_is_and_is_not_built(registry: ProjectReg
         "gate see a different protocol reported here than the one it was "
         "actually checked against."
     )
-    assert "No write-intent tool exists" in result["note"], (
+    assert "No MCP tool writes approved knowledge" in result["note"], (
         "the response's only prose statement of ADR-0013 -- ADR-0013 is why "
-        "no MCP path reaches approved state. The note's meaning can be "
-        "inverted (`No write-intent tool exists` -> `A write-intent tool "
-        "exists`) while every other assertion here keeps passing, so this "
-        "pins the load-bearing substring rather than the sentence's exact "
-        "wording, which is free to change around it."
+        "no MCP path reaches approved state. Since ADR-0032 registered the "
+        "write-intent tools, the note no longer says 'no write-intent tool "
+        "exists' (that is now false); the load-bearing claim that survives is "
+        "that no MCP tool *writes approved knowledge* -- the tools emit "
+        "proposals a human reviews and merges. The claim's meaning can be "
+        "inverted (`No MCP tool writes approved knowledge` -> `An MCP tool "
+        "writes approved knowledge`) while every other assertion here keeps "
+        "passing, so this pins the load-bearing substring rather than the "
+        "sentence's exact wording, which is free to change around it."
     )
-    assert "A write-intent tool" not in result["note"], (
+    assert "An MCP tool writes approved knowledge" not in result["note"], (
         "closes the gap the substring pin above leaves open on its own: a "
-        "mutation that appends a contradicting clause -- 'No write-intent "
-        "tool exists, except a write-intent tool exists for admins' -- keeps "
-        "the first substring intact and would otherwise survive. The pair "
-        "still permits wording that neither negates the first substring nor "
-        "introduces this one, so this is a substring pin against the two "
-        "meanings that matter, not a pin on the sentence's exact wording."
+        "mutation that appends a contradicting clause -- 'No MCP tool writes "
+        "approved knowledge, except an MCP tool writes approved knowledge for "
+        "admins' -- keeps the first substring intact and would otherwise "
+        "survive. The pair still permits wording that neither negates the first "
+        "substring nor introduces this one, so this is a substring pin against "
+        "the two meanings that matter, not a pin on the sentence's exact wording."
     )
     assert result["schemaVersion"] == SCHEMA_VERSION, (
         "`schemaVersion` moves on its own schedule too, the same reasoning "
@@ -2316,6 +2332,28 @@ def _project_with_body(
 #: ``write_transaction``, so a tool that touches neither name cannot write.
 WRITE_GATEWAYS = frozenset({"SqliteWriter", "write_transaction"})
 
+#: The application-layer movers into approved state (ADR-0032 decision 8). The
+#: canonical-write gateways above are one control; they are not the whole of "no
+#: tool reaches approved state", because ``ProposalService.accept`` reaches a
+#: canonical write only *inside* ``_commit``, which moves files into
+#: ``.theurian/migrations/`` and ``.theurian/knowledge/`` -- approved state in
+#: everything but the merge -- and the walk below reaches one level, so a tool
+#: closing over a ``ProposalService`` and calling ``accept()`` would pass the
+#: gateway sweep while reaching a write. So these names join the forbidden set
+#: directly, and the write-intent tools pass it because they hold a
+#: :class:`~theurian.application.draft_only_proposals.DraftOnlyProposals` facade
+#: whose reachable surface is the two draft entries alone -- neither ``accept``
+#: nor ``_commit`` is on it.
+#:
+#: **Its reach is one level, and that is the recorded bound** (decision 8's second
+#: bullet, the shape ADR-0030 uses): the walk sees names in the registered
+#: callable's own code chain and does not enter a collaborator's body, so this
+#: catches a *direct* call and nothing deeper. The structural facade walk over the
+#: built server is what holds the property that does not depend on the walk's
+#: reach; the positive control that a planted ``accept()`` in a tool body goes RED
+#: here is slice B4 cluster 3's driving test.
+APPROVED_STATE_MOVERS = frozenset({"accept", "_commit"})
+
 
 def _mutating_method_names() -> frozenset[str]:
     """Methods that exist only on the writer.
@@ -2450,7 +2488,7 @@ def test_no_registered_tool_can_reach_a_canonical_write(registry: ProjectRegistr
     would have caught it: a guard whose reach is asserted nowhere reports an
     empty search as a clean one.
     """
-    forbidden = WRITE_GATEWAYS | _mutating_method_names()
+    forbidden = WRITE_GATEWAYS | _mutating_method_names() | APPROVED_STATE_MOVERS
     server = build_server(registry)
     offenders: dict[str, set[str]] = {}
 
@@ -2539,6 +2577,236 @@ def test_every_registered_tool_goes_through_the_forwarding_seam(
     assert not is_forwarding_wrapper(raw_tool.fn), (
         "a raw `server.tool` registration read as the forwarding seam, so the "
         "assertion above cannot distinguish a seam-wrapped tool from a raw one"
+    )
+
+
+# -- The draft-only facade holds the property the bytecode sweep cannot -----
+#
+# Decision 8's second bullet: the sweep above reaches one level and forbids the
+# mover *names*, so it catches a tool body that *calls* `accept`/`_commit`
+# directly (the driving test below proves that) but not a write hidden a level
+# deeper. What actually holds "no write-intent tool reaches approved state" is
+# the draft-only facade at the composition root: the tools close over a per-call
+# factory, never a `ProposalService`, and the object that factory hands them
+# exposes no approved-state mover. These two tests check that structurally over
+# the built server -- the facade's in-isolation incapacity is
+# `tests/unit/test_draft_only_proposals.py`'s.
+
+#: The write-intent tools, named rather than discovered, so this set is a claim a
+#: reviewer can check against the registration. A tool added to the surface joins
+#: these checks by being added here, deliberately.
+WRITE_INTENT_TOOLS = frozenset({"knowledge.proposeChange", "knowledge.generateMigrationDraft"})
+
+
+def _closure_collaborators(function: Any) -> list[Any]:
+    """Every object captured in the closure-cell graph reachable from *function*.
+
+    Descends through function and method closure cells -- following
+    ``__wrapped__``, so the forwarding seam's wrapper does not hide the body --
+    and collects each cell's contents. It deliberately does **not** follow a
+    bound method's ``__self__`` and does **not** recurse an object's attribute
+    graph: the property ADR-0032 decision 8 owes is that a write-intent tool
+    captures no *object* whose own attribute surface moves approved state. A
+    ``ProposalService`` captured in a cell is such an object -- ``dir(service)``
+    carries ``accept`` and ``_commit``. The :class:`DraftOnlyProposals` facade is
+    not, and neither is the factory the tools close over: the facade hides the
+    service inside its own closures, "which no attribute walk enumerates" (its
+    own docstring), so following ``__self__`` would flag the very design the
+    decision prescribes.
+    """
+    seen: set[int] = set()
+    collaborators: list[Any] = []
+    stack: list[Any] = [function]
+    while stack:
+        obj = stack.pop()
+        if id(obj) in seen:
+            continue
+        seen.add(id(obj))
+        collaborators.append(obj)
+        target: Any = obj
+        while target is not None and hasattr(target, "__code__"):
+            for cell in getattr(target, "__closure__", None) or ():
+                try:
+                    stack.append(cell.cell_contents)
+                except ValueError:
+                    continue
+            target = getattr(target, "__wrapped__", None)
+    return collaborators
+
+
+def test_no_write_intent_tool_captures_an_object_that_moves_approved_state(
+    registry: ProjectRegistry,
+) -> None:
+    """ADR-0032 decision 8's facade control, as a structural property of the built
+    server rather than a promise.
+
+    The canonical-write sweep reaches one level; this is the half it names as
+    owed. It walks each write-intent tool's closure-cell collaborators and asserts
+    none exposes ``accept`` or ``_commit`` as an attribute -- so the tool cannot be
+    holding a ``ProposalService``, which carries both. The tools hold the
+    per-call ``_draft_only_proposals`` factory, whose own collaborators are the
+    read-side resolver, the registry, the grant, the provenance and the validator;
+    none moves approved state.
+
+    Two premises, both of which would otherwise let this pass vacuously: the
+    write-intent tools must be registered, or it pins nothing; and the walk must
+    reach a captured *object* (not only functions), or the ``hasattr`` check has
+    nothing to bite on and a ``ProposalService`` in a cell would slip past a walk
+    that only ever saw code objects.
+    """
+    server = build_server(registry)
+    tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
+
+    assert WRITE_INTENT_TOOLS.issubset(tools), (
+        f"the write-intent tools are not registered, so this pins nothing: {sorted(tools)}"
+    )
+
+    offenders: dict[str, list[str]] = {}
+    for name in sorted(WRITE_INTENT_TOOLS):
+        collaborators = _closure_collaborators(tools[name].fn)
+        assert any(isinstance(obj, ProjectRegistry) for obj in collaborators), (
+            f"{name}'s closure walk reached no captured object -- only code objects. A "
+            f"walk that never enumerates an object would report a captured ProposalService "
+            f"as clean, so the green below would mean nothing"
+        )
+        held = sorted(
+            f"{type(obj).__name__}.{mover}"
+            for obj in collaborators
+            for mover in APPROVED_STATE_MOVERS
+            if hasattr(obj, mover)
+        )
+        if held:
+            offenders[name] = held
+
+    assert not offenders, (
+        f"a write-intent tool closes over an object that moves approved state: {offenders}. "
+        f"The tools must hold the DraftOnlyProposals facade (built per call by "
+        f"`_draft_only_proposals`), never a ProposalService (ADR-0032 decision 8)"
+    )
+
+
+def test_the_closure_walk_flags_a_tool_that_captures_a_canonical_writer() -> None:
+    """The teeth for the walk above: a tool that *does* capture a mover-exposing
+    object is flagged.
+
+    Without this control, a walk that reached nothing would pass the real tools
+    while catching nothing -- the exact failure shape the bytecode sweep's own
+    premise check (:func:`test_the_walk_reaches_a_real_tool_body`) exists for. A
+    stand-in with ``accept`` and ``_commit`` is captured in a tool body's closure;
+    the same walk and the same ``APPROVED_STATE_MOVERS`` set must name it.
+    """
+
+    class _Mover:
+        def accept(self, proposal_id: object) -> None: ...  # pragma: no cover - never called
+
+        def _commit(self) -> None: ...  # pragma: no cover - never called
+
+    captured = _Mover()
+
+    def tool_that_holds_a_service() -> dict[str, str]:  # pragma: no cover - never called
+        return {"held": type(captured).__name__}
+
+    held = sorted(
+        f"{type(obj).__name__}.{mover}"
+        for obj in _closure_collaborators(tool_that_holds_a_service)
+        for mover in APPROVED_STATE_MOVERS
+        if hasattr(obj, mover)
+    )
+
+    assert held == ["_Mover._commit", "_Mover.accept"], (
+        f"the closure walk did not flag a tool capturing an accept/_commit mover: {held}. "
+        f"If it cannot catch this, its green over the real tools means nothing"
+    )
+
+
+def test_the_object_a_write_intent_tool_is_handed_is_the_draft_only_facade(
+    registry: ProjectRegistry,
+) -> None:
+    """Decision 8: the composition root hands each write-intent tool a
+    :class:`DraftOnlyProposals` facade, not a ``ProposalService``.
+
+    The tool closes over the per-call ``_draft_only_proposals`` factory; invoking
+    it against a real registered project yields the object the tool would actually
+    call through, and that object is the facade -- which exposes neither ``accept``
+    nor ``_commit``. This is the positive side of the walk above: not merely that
+    no mover is captured, but that the thing handed over is the draft-only facade.
+    """
+    server = build_server(registry)
+    tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
+
+    for name in sorted(WRITE_INTENT_TOOLS):
+        body = getattr(tools[name].fn, "__wrapped__", tools[name].fn)
+        freevars = body.__code__.co_freevars
+        closure = body.__closure__
+        assert closure is not None and "_draft_only_proposals" in freevars, (
+            f"{name} no longer closes over the draft-only factory, so this test cannot "
+            f"reach the object the tool is handed: {freevars}"
+        )
+        factory = closure[freevars.index("_draft_only_proposals")].cell_contents
+
+        facade, _paths = factory("demo")
+
+        assert type(facade).__name__ == "DraftOnlyProposals", (
+            f"{name} is handed a {type(facade).__name__}, not the draft-only facade"
+        )
+        assert not isinstance(facade, ProposalService), (
+            f"{name} is handed a ProposalService itself -- accept/_commit are one call away"
+        )
+        for mover in APPROVED_STATE_MOVERS:
+            assert not hasattr(facade, mover), (
+                f"{name}'s facade exposes {mover}; the write surface must be draft-only "
+                f"(ADR-0032 decision 8)"
+            )
+
+
+def test_a_planted_tool_calling_accept_goes_red_for_the_extended_canonical_write_pin() -> None:
+    """The positive control ADR-0032 decision 8 names for the canonical-write sweep.
+
+    ``test_no_registered_tool_can_reach_a_canonical_write`` forbids
+    ``WRITE_GATEWAYS | _mutating_method_names() | APPROVED_STATE_MOVERS``. The last
+    term is cluster 2's extension, and its whole job is to catch a tool that calls
+    ``accept``/``_commit`` directly -- because those reach a canonical write only
+    *inside* ``_commit`` and so appear in neither of the other two sets. This drives
+    that: a planted tool whose body calls both movers is RED for the extended
+    forbidden set and -- the teeth of the extension -- would be GREEN for the
+    pre-extension set the canonical-write pin carried before cluster 2.
+
+    Registered through the ``_tool`` seam on a throwaway server, so ``Tool.fn`` is
+    the forwarding wrapper and ``_referenced_names`` reaches the body through
+    ``__wrapped__`` exactly as the real pin does.
+    """
+    planted_server = MCPServer("planted-accept-control")
+
+    @_tool(planted_server, name="knowledge.plantedWrite", description="a planted write path")
+    def planted_write(projectId: str) -> dict[str, str]:  # noqa: N803  # pragma: no cover
+        # Registered to be walked, never called. `accept` and `_commit` are real
+        # approved-state movers on `ProposalService`; naming them here is what a
+        # tool that reached a canonical write would do. Typed `Any` so the never-run
+        # call shapes are the responsibility of `_referenced_names`, not of mypy.
+        mover: Any = ProposalService
+        mover.accept(projectId)
+        mover._commit()
+        return {}
+
+    planted = planted_server._tool_manager.get_tool("knowledge.plantedWrite")
+    assert planted is not None
+    reached = _referenced_names(planted.fn)
+
+    extended = WRITE_GATEWAYS | _mutating_method_names() | APPROVED_STATE_MOVERS
+    assert reached & extended == {"accept", "_commit"}, (
+        f"the planted accept/_commit tool is not caught by the extended forbidden set: "
+        f"{sorted(reached & extended)}. The canonical-write pin would pass a tool that "
+        f"reaches approved state through `accept`/`_commit`"
+    )
+
+    pre_extension = WRITE_GATEWAYS | _mutating_method_names()
+    caught_without_extension = sorted(reached & pre_extension)
+    assert not caught_without_extension, (
+        f"the planted tool is caught without APPROVED_STATE_MOVERS "
+        f"({caught_without_extension}), so cluster 2's extension has no teeth -- it was "
+        f"already covered, and decision 8's gap would not exist. `accept` and `_commit` "
+        f"must be absent from WRITE_GATEWAYS and the writer-only method names for the "
+        f"extension to matter"
     )
 
 

@@ -237,6 +237,31 @@ ARGUMENT_VALUES: Final[dict[str, Any]] = {
     "projectId": PROJECT_ID,
     "query": "authentication",
     "itemId": ITEM_ID,
+    # The write-intent tools' required fields (ADR-0032). The sweep fills only
+    # *required* arguments, so a `proposeChange` call carries no source anchor and
+    # no `authored-in-theurian` label and meets an INV-8 refusal -- which
+    # `_response_text` catches and sweeps like any other, after `_resolve` has run
+    # against the layout under test. `generateMigrationDraft`'s document is a
+    # schema-valid v1 operation, so on a healthy layout it drafts and its relative
+    # paths are what the sweep checks carry no resolved location.
+    "title": "Retry budget",
+    "kind": "architecture",
+    "owner": "platform-team",
+    "author": "engineer@example.com",
+    "description": "Record the retry budget the API review settled on.",
+    "body": "# Retry budget\n\nThree attempts, then fail loudly.\n",
+    "contentType": "text/markdown",
+    "evidence": {
+        "agentId": "claude-code",
+        "taskId": "task-7",
+        "model": "claude-opus-5",
+        "reasoning": "The review settled the retry budget at three attempts.",
+    },
+    "document": {
+        "author": "engineer@example.com",
+        "description": "Deprecate the auth policy.",
+        "operations": [{"op": "deprecateItem", "itemId": ITEM_ID}],
+    },
 }
 
 runner = CliRunner()

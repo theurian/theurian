@@ -64,7 +64,10 @@ bound, with the answer being to add it here in the change that writes it. Three
 rounds have now added a row after the fact, which is the cost of an enumeration
 and is recorded rather than argued away: a derived population, keyed on the
 narrating spellings across the whole corpus, is the shape that would not need
-the fourth.
+the fourth. This enumerated pin is a stopgap for the class closure tracked in
+#706 -- the shared-flags derived-capability-narration sweep, under which no
+tracked-prose narration disagrees with the live flag -- so the next reader knows
+enumeration is not the closure.
 
 **Each site is read the way its own reader reads it.** A Python comment through
 ``tokenize``, because comments are not in a syntax tree; a test's assertion

@@ -455,6 +455,50 @@ _DRIVE: Final[dict[str, tuple[dict[str, Any], ...]]] = {
         {"projectId": "demo", "q": "token"},
     ),
     "system.capabilities": ({},),
+    # The write-intent tools (ADR-0032). Driven with arguments that reach the body
+    # and draft a proposal successfully -- `call_tool` re-raises a refusal, so an
+    # INV-8 or op-set refusal would crash the drive rather than exercise the body.
+    # Neither touches the findings store: `proposeChange`'s caller-scoped
+    # current-revision lookup reads the *canonical* store, and
+    # `generateMigrationDraft` reads none. A new item id (not the fixture's) so the
+    # concurrency check admits a first revision, and `authored-in-theurian` for
+    # INV-8.
+    "knowledge.proposeChange": (
+        {
+            "projectId": "demo",
+            "itemId": "architecture.retry-budget",
+            "title": "Retry budget",
+            "kind": "architecture",
+            "owner": "platform-team",
+            "author": "engineer@example.com",
+            "description": "Record the retry budget the API review settled on.",
+            "body": "# Retry budget\n\nThree attempts, then fail loudly.\n",
+            "contentType": "text/markdown",
+            "evidence": {
+                "agentId": "claude-code",
+                "taskId": "task-7",
+                "model": "claude-opus-5",
+                "reasoning": "The review thread settled the retry budget at three attempts.",
+            },
+            "labels": ["authored-in-theurian"],
+        },
+    ),
+    "knowledge.generateMigrationDraft": (
+        {
+            "projectId": "demo",
+            "document": {
+                "author": "engineer@example.com",
+                "description": "Deprecate the auth policy.",
+                "operations": [{"op": "deprecateItem", "itemId": ITEM_ID}],
+            },
+            "evidence": {
+                "agentId": "claude-code",
+                "taskId": "task-7",
+                "model": "claude-opus-5",
+                "reasoning": "The item is superseded by the new policy.",
+            },
+        },
+    ),
 }
 
 

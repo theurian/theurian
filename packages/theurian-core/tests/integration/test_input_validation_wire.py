@@ -214,6 +214,8 @@ def test_a_method_that_is_not_a_tool_call_passes_through_untouched(
         "knowledge.search",
         "knowledge.get",
         "knowledge.status",
+        "knowledge.proposeChange",
+        "knowledge.generateMigrationDraft",
         "project.list",
         "review.findings",
         "review.search",
