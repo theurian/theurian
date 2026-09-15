@@ -1122,8 +1122,10 @@ def _relation_is_visible(
     the gate as ``P``, publishing the edge ``W`` authored -- its rejection
     ``note``, where the secret that caused the rejection lives -- on ``P``'s
     response (SEC-13, T-21). So each endpoint is read through
-    :meth:`~theurian.domain.ports.canonical_store.CanonicalReadSession.get_item_exact`,
-    the row the id literally names. The principle the split records:
+    :meth:`~theurian.domain.ports.canonical_store.CanonicalReadSession.get_item_exact_metadata`,
+    the row the id literally names -- its pointer columns alone, since this gate
+    reads only ``status`` and ``sensitivity`` and a withheld endpoint's body must
+    not be read to withhold it (0.2.3). The principle the split records:
     **reachability may resolve an alias; authority -- a visibility decision on a
     referenced id -- must read the literally-named row.** The cost is one extra
     primary-key lookup per edge for the near end, which is the fetched item and
@@ -1137,11 +1139,16 @@ def _relation_is_visible(
     rejected.
     """
     for endpoint_id in (relation.source_item_id, relation.target_item_id):
-        # `get_item_exact`, not `get_item`: a visibility decision on a referenced
-        # id reads the row that id names. Resolving the alias here would let a
-        # rejected endpoint that is also an alias key clear the gate as the
-        # approved item the alias points at (SEC-13, T-21).
-        endpoint = store.get_item_exact(context, endpoint_id)
+        # `get_item_exact_metadata`, not `get_item_exact`: a visibility decision on
+        # a referenced id reads the row that id names, judged by its own status
+        # (resolving the alias here would let a rejected endpoint that is also an
+        # alias key clear the gate as the approved item the alias points at --
+        # SEC-13, T-21). The *metadata* form because this gate reads only `status`
+        # and `sensitivity` and never the body: the joined `get_item_exact`
+        # materialised a *withheld* endpoint's body before withholding it, so the
+        # refusal's duration scaled with that body's size (0.2.3, pre-gate body
+        # materialization). It reads none now.
+        endpoint = store.get_item_exact_metadata(context, endpoint_id)
         if endpoint is None:
             return False
         if not may_surface(endpoint.status, include_unapproved=include_unapproved):
@@ -2015,7 +2022,16 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             raise ToolError(msg) from exc
 
         with SqliteCanonicalStore(database) as store:
-            item = store.get_item(context, wanted)
+            # `get_item_metadata`, not `get_item`: the gate below decides on
+            # `status` and `sensitivity`, both on the pointer row, and a *withheld*
+            # item's body must not be read before it is refused. `get_item` joins
+            # the current revision and materialises its body, so refusing a withheld
+            # item after that read made the refusal's duration scale with the body's
+            # size -- a caller could time existence and approximate size of content
+            # it may not read (0.2.3, pre-gate body materialization). The body is
+            # read below, once, only on the surfaceable path, through
+            # `current_revision`; this read never touches it.
+            item = store.get_item_metadata(context, wanted)
             # Both axes, and the same refusal for either (#119). An item above this
             # deployment's ceiling is withheld exactly as a retired one is: the
             # caller already holds the id, so a message that distinguished "above

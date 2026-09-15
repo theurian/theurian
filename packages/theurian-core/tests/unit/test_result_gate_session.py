@@ -172,6 +172,20 @@ class _RecordingSession:
         self._log.append("get_item")
         return self._known.get(item_id.value)
 
+    def get_item_metadata(
+        self,
+        context: RequestContext,  # noqa: ARG002 - named by the port; this fake is project-blind
+        item_id: ItemId,
+    ) -> KnowledgeItem | None:
+        # The per-candidate read since 0.2.3: the gate decides status, sensitivity
+        # and revision from it, and a withheld candidate is refused here without
+        # its body ever being read. Logged under its own name -- the read-count
+        # assertions below count *this* read (it is the one every candidate pays,
+        # the T-17a duration residual), while "get_item" is the body-carrying
+        # content read only a surfaceable candidate reaches.
+        self._log.append("get_item_metadata")
+        return self._known.get(item_id.value)
+
     def get_item_exact(
         self,
         context: RequestContext,  # noqa: ARG002 - named by the port; this fake is project-blind
@@ -183,6 +197,14 @@ class _RecordingSession:
         # "get_item", and a gate that later routed a read through the exact form
         # would silently inflate those counts if the two shared a label.
         self._log.append("get_item_exact")
+        return self._known.get(item_id.value)
+
+    def get_item_exact_metadata(
+        self,
+        context: RequestContext,  # noqa: ARG002 - named by the port; this fake is project-blind
+        item_id: ItemId,
+    ) -> KnowledgeItem | None:
+        self._log.append("get_item_exact_metadata")
         return self._known.get(item_id.value)
 
     def get_revision(
@@ -213,10 +235,12 @@ def _admit(log: list[str], source: CandidateSource) -> None:
 def test_the_canonical_session_is_acquired_before_the_retrievers_run() -> None:
     """Acquisition happens on the way in, not on the first row that needs judging.
 
-    The order is the assertion. A session acquired at its first ``get_item``
-    would appear *after* the source ran, and only when the source had produced
-    something for the visibility to judge — which is the leak, stated as a
-    sequence rather than as a stopwatch.
+    The order is the assertion. A session acquired at its first read would appear
+    *after* the source ran, and only when the source had produced something for
+    the visibility to judge — which is the leak, stated as a sequence rather than
+    as a stopwatch. The row is unknown to the session, so the bodyless
+    per-candidate read (``get_item_metadata``, 0.2.3) refuses it and no
+    body-carrying ``get_item`` follows.
     """
     log: list[str] = []
 
@@ -227,7 +251,7 @@ def test_the_canonical_session_is_acquired_before_the_retrievers_run() -> None:
 
     _admit(log, source)
 
-    assert log == ["acquired", "retrieved", "get_item", "released"]
+    assert log == ["acquired", "retrieved", "get_item_metadata", "released"]
 
 
 def test_a_query_that_matches_nothing_still_pays_for_the_session() -> None:
@@ -250,7 +274,7 @@ def test_a_query_that_matches_nothing_still_pays_for_the_session() -> None:
 
     _admit(log, source)
 
-    assert "get_item" not in log, "nothing was judged, which is the precondition"
+    assert "get_item_metadata" not in log, "nothing was judged, which is the precondition"
     assert log == ["acquired", "retrieved", "released"], (
         "and the session was still acquired, so the two requests cost the same"
     )
@@ -328,6 +352,12 @@ def _measure(withheld: int, placement: str) -> _Measured:
     Every row carries its own item id, so the per-item memoisation inside
     ``CanonicalVisibility`` collapses nothing here and a read count is a row
     count.
+
+    ``reads`` counts ``get_item_metadata`` -- the bodyless per-candidate read
+    every ranked row pays since 0.2.3, and so the one that carries the T-17a
+    duration residual. The body-carrying ``get_item`` read a surfaceable row also
+    makes is deliberately not counted here: it is the visible-row subset and does
+    not move with the withheld count, which is the quantity this file measures.
     """
     visible = tuple(_row(number) for number in range(VISIBLE_HEAD))
     withdrawn = tuple(_row(VISIBLE_HEAD + number) for number in range(withheld))
@@ -342,7 +372,7 @@ def _measure(withheld: int, placement: str) -> _Measured:
         visible_sensitivities=EVERY_SENSITIVITY,
     ).cleared(ranking)
 
-    return _Measured(cleared=len(admitted), reads=log.count("get_item"))
+    return _Measured(cleared=len(admitted), reads=log.count("get_item_metadata"))
 
 
 def test_the_canonical_read_count_is_the_ranking_length_and_so_the_withheld_count() -> None:
@@ -350,15 +380,26 @@ def test_the_canonical_read_count_is_the_ranking_length_and_so_the_withheld_coun
 
     **This is a pin on an accepted residual, not on a safety property**, and
     reading it the other way is how the residual would be defended rather than
-    closed. ``cleared`` is total over its input, so the canonical read count is
-    ``len(ranked)`` and nothing else about the ranking — the same count whichever
-    end the withdrawn rows sit at, which is why both placements are measured.
-    ``cleared`` is driven here directly with a whole match set, which is the shape
-    the scan below the trigram floor hands it — no ``LIMIT``, so the length *is*
-    the visible rows plus the withheld ones and a request pays for documents its
-    caller may not read. Measured at about 15 us per distinct document, and on
-    this pipeline at 6.047 ms with 400 documents retired after the build against
-    0.163 ms with none: linear, one row at a time, with no threshold in it,
+    closed. ``cleared`` is total over its input, so the per-candidate canonical
+    read count is ``len(ranked)`` and nothing else about the ranking — the same
+    count whichever end the withdrawn rows sit at, which is why both placements are
+    measured. ``cleared`` is driven here directly with a whole match set, which is
+    the shape the scan below the trigram floor hands it — no ``LIMIT``, so the
+    length *is* the visible rows plus the withheld ones and a request pays a
+    lookup for documents its caller may not read.
+
+    **The per-candidate read is bodyless since 0.2.3, so what this pins is the
+    read *count*, not a body-sized cost.** Until 0.2.3 that read was ``get_item``,
+    which materialised a withheld row's body before ``cleared`` refused it, so the
+    residual carried a *second* channel — the refusal's duration scaled with the
+    withheld body's size (the pre-gate body-materialization channel). ``_measure``
+    now counts ``get_item_metadata``, the pointer-row read that decides the gate;
+    the body is read only for a surfaceable row, through ``get_item``, and never
+    for a withheld one. The figures that follow — about 15 us per distinct
+    document, 6.047 ms with 400 documents retired after the build against 0.163 ms
+    with none — were taken before 0.2.3 with the body-carrying read, so they are an
+    upper bound on the current per-read cost; what reproduces and what this test
+    pins is the *count* being linear, one row at a time, with no threshold in it,
     **for as long as the ranking handed to ``cleared`` still carries the
     withdrawn rows.** That condition is the claim's scope rather than a caveat on
     it, and this test supplies the condition by hand: the ranking above is
@@ -545,4 +586,7 @@ def test_a_row_naming_an_id_the_domain_refuses_is_withheld_rather_than_raised(
     ).cleared((row,))
 
     assert cleared == (), "a row the domain will not name cannot be shown"
-    assert log.count("get_item") == 0, "and the id is never handed to the canonical store"
+    assert log.count("get_item_metadata") == 0, (
+        "and the id is never handed to the canonical store -- the per-candidate "
+        "read never happens, because the domain refused the id first"
+    )

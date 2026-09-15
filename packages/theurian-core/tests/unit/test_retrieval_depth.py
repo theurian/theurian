@@ -478,6 +478,17 @@ class _ControlledValiditySession:
         # exists to satisfy the port `CanonicalVisibility` depends on (T-21).
         return self.get_item(context, item_id)
 
+    def get_item_metadata(self, context: RequestContext, item_id: ItemId) -> KnowledgeItem | None:
+        # The bodyless pre-gate (0.2.3). This fake carries no body, so it answers
+        # the metadata read from the same in-memory item; the gate reads only
+        # status, sensitivity and revision from it.
+        return self.get_item(context, item_id)
+
+    def get_item_exact_metadata(
+        self, context: RequestContext, item_id: ItemId
+    ) -> KnowledgeItem | None:
+        return self.get_item(context, item_id)
+
     def get_revision(
         self, context: RequestContext, revision_id: RevisionId
     ) -> KnowledgeRevision | None:
@@ -631,6 +642,16 @@ class _SensitivitySession:
     def get_item_exact(self, context: RequestContext, item_id: ItemId) -> KnowledgeItem | None:
         # This fake resolves no alias, so the exact read is the resolving one; it
         # exists to satisfy the port `CanonicalVisibility` depends on (T-21).
+        return self.get_item(context, item_id)
+
+    def get_item_metadata(self, context: RequestContext, item_id: ItemId) -> KnowledgeItem | None:
+        # The bodyless pre-gate (0.2.3); this fake answers it from the same
+        # in-memory item, and the sensitivity axis withholds here on metadata alone.
+        return self.get_item(context, item_id)
+
+    def get_item_exact_metadata(
+        self, context: RequestContext, item_id: ItemId
+    ) -> KnowledgeItem | None:
         return self.get_item(context, item_id)
 
     def get_revision(
