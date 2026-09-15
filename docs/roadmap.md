@@ -12,12 +12,18 @@ benchmark.
 
 **This document describes direction and design. It is not a description of
 shipped capability.** `knowledge.trace` and `knowledge.impact` do not exist.
-Neither does any write-intent MCP tool, nor an evaluation harness. The **review
-ingestion adapter was on that list and no longer belongs on it**: ADR-0030
-slice 1 landed `theurian review ingest`, and the re-measured table below carries
-the flag flip that goes with it. What ships today is what
-[`system.capabilities`](protocol/mcp-tools.md) reports, and that report is the
-authority every sentence below was checked against:
+Neither does an evaluation harness. **Two items have left that list since it was
+written, and each left by a different phase's work.** The **review ingestion
+adapter was on that list and no longer belongs on it**: ADR-0030 slice 1 landed
+`theurian review ingest`, and the re-measured table below carries the flag flip
+that goes with it. **The write-intent MCP tools left it second** —
+`knowledge.proposeChange` and `knowledge.generateMigrationDraft` register as of
+[ADR-0032](adr/0032-the-write-intent-mcp-tool-surface.md) (Phase B slice B4),
+and the note below the re-measured table carries that flip. Neither departure is
+Phase B *finished*: what each moved is stated where the flip is recorded, and
+the phase's own Exit criteria row is the authority for the rest. What ships
+today is what [`system.capabilities`](protocol/mcp-tools.md) reports, and that
+report is the authority every sentence below was checked against:
 
 | Flag | Value at `f702736` |
 | :-- | :-- |
@@ -56,9 +62,12 @@ and never one without the other
 
 **Re-measured 2026-09-10 on the ADR-0030 slice-3 branch
 ([#630](https://github.com/theurian/theurian/pull/630)), and one row moved.** The
-table above is left as the dated reading it is; this one is the current answer,
-obtained by building the server and calling the tool rather than by reading the
-handler's literals:
+table above is left as the dated reading it is, and so is this one — its right
+column is a **second dated reading and not a standing answer**, which is the
+correction ADR-0032 forced: it was written as "the current answer", and a later
+slice moved a second row without this sentence noticing. The reading was obtained
+by building the server and calling the tool rather than by reading the handler's
+literals:
 
 | Flag | Value at `f702736` | Re-measured 2026-09-10 |
 | :-- | :-- | :-- |
@@ -75,6 +84,23 @@ The three flags that joined after `f702736` — `sensitivityEnforcement`,
 `true`, `true` and `"public-allowlisted"`. They stay out of both columns for the
 reason given above: a table anchored to a commit does not gain rows the commit
 never had.
+
+**`writeTools` moved after that reading, on the Phase B slice-B4 branch
+([#698](https://github.com/theurian/theurian/pull/698)), and reads `true`.**
+Recorded here rather than as a third column, for the same reason: a column is a
+reading, and one reading per row is enough to see the direction.
+[ADR-0032](adr/0032-the-write-intent-mcp-tool-surface.md) decision 5 ties the
+flip to the first registration, in one commit and in both directions —
+`knowledge.proposeChange` and `knowledge.generateMigrationDraft` register, and
+the value and the registration are held to each other by
+`tests/unit/test_write_tools_flag_claims.py::test_writetools_reads_true_exactly_when_a_write_intent_tool_is_registered`,
+so neither a flag flipped ahead of its feature nor a tool registered while the
+flag lags can land quietly. **Read the value as narrowly as it is written**: it
+says a write-intent tool exists that a client may call, and not that a client may
+write approved knowledge. No MCP tool reaches an approved-state write — the tools
+are handed a draft-only facade whose reachable surface is the two draft entries
+alone (ADR-0032 decision 8) — and approval is still a human merging a pull
+request.
 
 What moved the one row is
 [ADR-0030](adr/0030-github-review-ingestion-spawns-gh.md) slice 3, and the value
@@ -133,7 +159,7 @@ defect twice. Derived from the table rather than asserted: at `f702736` on
 | An agent cannot change approved knowledge directly | Stronger than usually stated. The write-intent MCP tools (`writeTools: true` since ADR-0032) emit a proposal a human reviews and merges and reach no approved-state write: they hold a draft-only facade whose reachable surface is the two draft entries alone (ADR-0032 decision 8), and a test walks the bytecode of every registered tool to hold that none reaches a canonical write (ADR-0013). | shipped |
 | Git-native | Canonical state rebuilds from Git-tracked YAML migrations and body files into an empty database (FR-K4, [ADR-0004](adr/0004-sqlite-is-a-derived-artifact.md)). SQLite is always derived. But the CI job that would *prove* it — rebuild from empty and compare — does not exist; `rg empty-db-rebuild` returns four documents saying so and no workflow ([#64](https://github.com/theurian/theurian/issues/64)). Mechanism ships; the proof is owed. | partial |
 | Evidence-backed knowledge | INV-8: every revision carries at least one `SourceAnchor` or the `authored-in-theurian` label, enforced in the dataclass constructor. Every search result carries provenance. | shipped |
-| Local-first, reached over MCP | Loopback-only daemon (127.0.0.1:7419, bearer token), and an offline CI job proves "no API key needed" on every commit that touches Core, its schemas, tests, tools or the toolchain ([ADR-0009](adr/0009-no-llm-vendor-lock-in.md)). `core.yml` is path-filtered and `docs/**` is not among its paths, so a docs-only commit — this one included — does not run it. MCP is Streamable HTTP, and every tool it exposes is read-only. | shipped |
+| Local-first, reached over MCP | Loopback-only daemon (127.0.0.1:7419, bearer token), and an offline CI job proves "no API key needed" on every commit that touches Core, its schemas, tests, tools or the toolchain ([ADR-0009](adr/0009-no-llm-vendor-lock-in.md)). `core.yml` is path-filtered and `docs/**` is not among its paths, so a docs-only commit — this one included — does not run it. MCP is Streamable HTTP. **Every tool it exposes was read-only until ADR-0032**; the two write-intent tools it now exposes write a proposal directory and nothing else — `test_proposal_service.py::test_generation_writes_only_under_the_proposal_directory` diffs the whole tree for the service both tools draft through — and no tool reaches an approved-state write. | shipped |
 | Provenance | A revision carries `author`, `source_commit`, `source_anchors`; a proposal carries `evidence.json` (`agentId`, `model`, reasoning). But `evidence.json` is an input a human reads during review — Core does not read it — and the record of *who approved* exists only outside Theurian, in Git. | partial |
 | Trust and validity | Validity windows (`validFrom`/`validTo`) and `asOf` search are implemented. **`trustLevel` is published on every result and filtered on by no query; `sensitivity` was in that sentence until [#119](https://github.com/theurian/theurian/issues/119) and is now an enforced read control.** The `chunks` table carries both columns; no retrieval query selects or filters on `trust_level`. What a caller sees is **published from canonical, not read off the index row**: `sensitivity` is threaded in as the *item's* current authority and `trustLevel` comes from `revision.metadata`, deliberately, because a `changeSensitivity` moves an item's classification without writing a new revision (`mcp/results.py`, SEC-14). `SqliteIndexStore._scope` now emits three predicates rather than two — `chunks.project_id = ?`, `chunks.status = ?` unless `include_unapproved`, and `chunks.sensitivity IN (…)` against the deployment's declared ceiling — and `_node_scope` emits the same three over `nodes`; a build writes no row above that ceiling, and a reclassification past it purges the published build (ADR-0025). Its docstring names `trust_level` and `namespace` as the columns "no query reads". "Theurian has a trust model" is a true sentence for one axis of three, which is what keeps this row *partial*: `trustLevel` is still a label, and tenant and ACL group are held by write-time refusal rather than by any predicate. | partial |
 | Knowledge lifecycle | Six statuses exist (`draft`, `proposed`, `approved`, `deprecated`, `superseded`, `rejected`). **No transition graph is enforced anywhere** — a case-insensitive search for `transition` across `packages/theurian-core/src/` returns nothing, so a migration writing `rejected → approved` applies. Separately, `SURFACEABLE_STATUSES` is `{APPROVED, DRAFT, PROPOSED}`, so `rejected`, `superseded` and `deprecated` are unreachable under any flag. | partial |
@@ -178,10 +204,18 @@ not; **absent** — effectively nothing.
   content addressing by SHA-256, six statuses, approved-only by default, and
   `rejected` unreachable under any flag as the place a rejection's reasoning can
   safely live.
-- **"AI proposes" enforced structurally *on the MCP surface*** — no write tool
-  exists there, and a bytecode-walk test over every registered tool holds that
-  none reaches a canonical write. **The rest of the chain — proposal directory →
-  PR → human merge → `migrate apply` — is only partly enforced.** Since
+- **"AI proposes" enforced structurally *on the MCP surface*** — since
+  [ADR-0032](adr/0032-the-write-intent-mcp-tool-surface.md) there are two write
+  tools there, and the guarantee is that neither reaches an **approved-state**
+  write: they are handed a draft-only facade whose reachable surface is exactly
+  the two draft entries, so `accept` and `_commit` are unreachable from a tool
+  (decision 8, held by a closure walk over the built server in
+  `tests/integration/test_mcp_tools.py`). The bytecode-walk test over every
+  registered tool still holds that none reaches a *canonical* write, and is the
+  narrower of the two controls: it sees names in the registered callable's own
+  code chain and does not enter a collaborator's body. **The rest of the chain —
+  proposal directory → PR → human merge → `migrate apply` — is only partly
+  enforced.** Since
   ADR-0034's T-15 check (Phase B slice B3), `migrate apply` refuses by default a
   migration that is not committed at `HEAD` (`--allow-uncommitted` restores the
   old behaviour), so the *commit* is now a check the code makes. The *merge* is
@@ -279,9 +313,18 @@ not; **absent** — effectively nothing.
 - **Governed metadata** — `trustLevel` and `sensitivity` can be set at propose
   time ([#249](https://github.com/theurian/theurian/issues/249), shipped in
   `0.1.0.dev7`) and are published on every result. Nothing reads them (#119).
-- **The agent write path** — the `theurian propose` CLI only. The write-intent
-  MCP tools (`knowledge.proposeChange` and siblings) are designed in ADR-0013 and
-  unimplemented.
+- **The agent write path** — no longer the `theurian propose` CLI only.
+  `knowledge.proposeChange` and `knowledge.generateMigrationDraft` register as of
+  [ADR-0032](adr/0032-the-write-intent-mcp-tool-surface.md) (Phase B slice B4),
+  drafting through the same `ProposalService` the CLI drafts through, so an agent
+  from any vendor reaches the proposal path. **It stays *partial* for three
+  reasons, none of them the tools.** `review.generateKnowledgeCandidate` is the
+  third write-intent tool ADR-0013 designs and is ADR-0033's, registering at
+  slice B5. `generateMigrationDraft` carries ten of the fourteen `OperationKind`
+  members, refusing `createItem`/`upsertRevision` to the content tool and
+  `changeSensitivity`/`restoreItem` to the CLI (decision 3). And the phase's own
+  Exit criteria row asks for a demonstration of propose → PR → merge → apply from
+  a second client, which is F ① work and has not run.
 - **Dense retrieval** — the port and an exact cosine scan exist. The default
   embedder is a hashed character n-gram vectoriser, and its own module says
   "**This is not a semantic model, and it does not pretend to be**". It is not
@@ -330,7 +373,7 @@ not; **absent** — effectively nothing.
   | SEC-8 (resource bounds) | `MAX_YAML_BYTES` (4 MiB), the YAML loader's nesting-depth refusal, `read_source_file`'s `MAX_SOURCE_FILE_BYTES` cap, `MAX_BUDGET_TOKENS` (32,000) and `MAX_QUERY_CHARS` (2,000), `MAX_PROJECTION_CHARS` (2 MiB) | the wall-clock timeout and the archive expansion ratio ([#215](https://github.com/theurian/theurian/issues/215)), plus the discrete defects [#232](https://github.com/theurian/theurian/issues/232), [#245](https://github.com/theurian/theurian/issues/245) and [#26](https://github.com/theurian/theurian/issues/26) |
   | SEC-10 (SSRF) | external `$ref` targets are **recorded, never fetched** (`parsers/openapi.py`, cited to SEC-10 and T-7), and — since [ADR-0030](adr/0030-github-review-ingestion-spawns-gh.md) — the **repository allowlist**, read and enforced before the `gh` review adapter spawns anything | the scheme and private-network allowlists **in the raw-URL context**, owed against the `$ref` fetcher ([#429](https://github.com/theurian/theurian/issues/429); #129 closed on the wording, not the controls). On the `gh` path the scheme allowlist has no URL to read and private-network rejection is *reduced* rather than discharged, with ADR-0030's four-member divergence class recorded as the residual |
   | SEC-11 (secret scanning) | the approval gate, over everything an acceptance lands: `theurian propose accept` scans every body it would land, the migration document's author-written field values (title, description, labels, scope paths, `contentType`, the date fields and — since [#349](https://github.com/theurian/theurian/issues/349) — the parsed `contentFile`), each operation's free text and chosen names, and every string of a source anchor ([#336](https://github.com/theurian/theurian/issues/336)); and, with them, the artifacts the acceptance writes — the migration file's raw bytes (a YAML comment and every field as written), the migration filename, and each landed body path ([#349](https://github.com/theurian/theurian/issues/349)); and the proposal's `evidence.json`, scanned whole-text under the same policy although the command lands it nowhere, because it tells the author to commit the directory the record sits in ([#361](https://github.com/theurian/theurian/issues/361)) — `block` by default per `security.secretScan` (ADR-0027 decision 3), with an in-house best-effort detector whose finding locations are fixed literals that never reproduce the value. Refusals on that path scan every author-derived string they would print — both whole and as the cut that will print, since the detector is not monotone under truncation — and drop it whole if either scan reports ([#360](https://github.com/theurian/theurian/issues/360), [#339](https://github.com/theurian/theurian/issues/339)) | the gate's reach is the *detector's* reach, so a fragment a third party truncated before it can still be printed — measured through the real CLI on PyYAML's `Mark.get_snippet`; `migration_loader.py` still prefixes a landed migration's filename onto every `MigrationError`, which is a different producer's population — reached through `resolve_context`, so by every command that resolves a project context — and the remaining member of the echo family ([#537](https://github.com/theurian/theurian/issues/537)); the `accept --json` `migrationFile`/`bodyFiles` **success** fields print landed paths full-length by recorded decision, since a redacted path reports nothing; a secret-shaped landed path reaches that field under `warn`, under `off`, or under `block` when the detector misses it, and under `warn` the same string is already published redacted beside it; `theurian index build` is SEC-11's second control since [#329](https://github.com/theurian/theurian/issues/329) — it scans every body it indexes, with the source anchors and relation notes served beside it, over every text channel of the approved, in-ceiling corpus this deployment serves by default on every rebuild, and reports rather than refusing because by then the content is already served; an unapproved body reachable through `includeUnapproved` and a superseded revision in the store are outside that population, recorded as residuals in the threat model and `SECURITY.md` — while `theurian ingest` runs no scan of its own and needs none, because it stores no content and draft-time advisory scanning remains owed ([#330](https://github.com/theurian/theurian/issues/330); #198 is closed, having shipped the `propose accept` half described in the left column) |
-  | SEC-12 (MCP input schema validation) | the control itself, since [ADR-0031](adr/0031-mcp-input-is-schema-validated-in-middleware.md): one published input schema per registered tool under `schemas/mcp/*-input.schema.json`, validated by `mcp/middleware.py`'s `InputValidationMiddleware` — wired into `build_server`, above the SDK's argument coercion, which is the only tier that sees the keys a caller sent — so an unknown key is refused rather than dropped, a registered tool that resolves to no loaded schema is refused at dispatch, a schema set that will not load whole stops the server being built, and a refusal names a key path and a constraint instead of echoing the caller's value | the unit a published `maxLength` on a write-intent `body` counts — JSON Schema counts code points, while the byte cap it transcribes is in landed bytes, so a bound written as the one admits up to four times the other ([#691](https://github.com/theurian/theurian/issues/691)); a decision on `snapshotId`, `agentId` and `taskId`, which the enforced contract now admits and no handler reads ([#665](https://github.com/theurian/theurian/issues/665)); and the value-domain constraints [ADR-0032](adr/0032-the-write-intent-mcp-tool-surface.md) decision 3 assigns, whose driving cases fall due with the write surface |
+  | SEC-12 (MCP input schema validation) | the control itself, since [ADR-0031](adr/0031-mcp-input-is-schema-validated-in-middleware.md): one published input schema per registered tool under `schemas/mcp/*-input.schema.json`, validated by `mcp/middleware.py`'s `InputValidationMiddleware` — wired into `build_server`, above the SDK's argument coercion, which is the only tier that sees the keys a caller sent — so an unknown key is refused rather than dropped, a registered tool that resolves to no loaded schema is refused at dispatch, a schema set that will not load whole stops the server being built, and a refusal names a key path and a constraint instead of echoing the caller's value | the unit a published `maxLength` on a write-intent `body` counts — JSON Schema counts code points, while the byte cap it transcribes is in landed bytes, so a bound written as the one admits up to four times the other ([#691](https://github.com/theurian/theurian/issues/691)); a decision on `snapshotId`, `agentId` and `taskId`, which the enforced contract now admits and no handler reads ([#665](https://github.com/theurian/theurian/issues/665)); and, on the write surface itself, a published bound a caller cannot actually meet — the `body` `maxLength` is shadowed over the shipped transport by the tighter rendered-character bound and the transport cap, both of which fire first ([#699](https://github.com/theurian/theurian/issues/699)), so it is driven against the loaded schema rather than over the wire. The value-domain constraints [ADR-0032](adr/0032-the-write-intent-mcp-tool-surface.md) decision 3 assigns have **left this column**: slice B4 published both input schemas with the `body` cap and `uniqueItems` on `labels[]`, and their driving cases landed with the tools (`tests/integration/test_write_intent_wire.py`, `tests/unit/test_input_schema_bounds.py`) — what is left of that row is the unit question above, which is #691's and not decision 3's |
   | SEC-16 (imperative text as data; a delimited untrusted region in summarization prompts) | the first half, by other means: SEC-15's safety triple rides every result, and the `SummarizationProvider` port docstring states the rule for summarizers | the delimited untrusted region itself. There is no summarization *prompt* to delimit — the default summarizer is extractive and calls no LLM — so this falls due with the first abstractive adapter (Phase F ④). No open issue tracks it |
 
   T-16 is graded **Critical** in [the threat model](security/threat-model.md) —
@@ -381,8 +424,10 @@ approval*, Theurian's responsibility is exactly three things:
    evidence). Its status stops at `proposed`.
 3. **Distribute what approval recorded.** A human's Git merge is the intended —
    not the enforced — route to `approved`, and then every agent sees the same
-   truth. What is enforced is that no MCP tool writes; `migrate apply` will apply
-   an uncommitted migration a same-UID process put in `.theurian/migrations/`
+   truth. What is enforced is that no MCP tool writes **approved knowledge** —
+   the phrasing matters since ADR-0032, because two MCP tools do now write, and
+   what they write is a proposal directory. `migrate apply` will still apply an
+   uncommitted migration a same-UID process put in `.theurian/migrations/`
    (T-15's recorded residual, and Phase B's Security row carries it).
 
 **Sequencing, assignment, and progress state do not live in Theurian.** Starting
@@ -412,6 +457,13 @@ approval-as-merge — is unchanged.
 
 ③ is not a predicate-only change, and the diagram's single "sensitivity" line
 understates it: see Phase 0's `#119` rows for the four-part shape.
+
+**① and ③ have since shipped**, and the `*` markers below are kept as the
+diagram's own legend rather than re-keyed per change: ③ closed with #119 in
+Phase 0, and ① with [ADR-0032](adr/0032-the-write-intent-mcp-tool-surface.md) in
+Phase B slice B4 — the `WR` node's two tools are `knowledge.proposeChange` and
+`knowledge.generateMigrationDraft`, and the edge it draws to Git is the whole of
+what they reach.
 
 ```mermaid
 flowchart TB
@@ -699,14 +751,14 @@ Anything independent may run in parallel.
 | :-- | :-- |
 | **Goal** | Let an agent from any vendor create a proposal over MCP, and collect `KnowledgeCandidate`s from GitHub reviews. Promote the "proposes" in "AI proposes" from a CLI to a protocol. |
 | **User value** | The spec-agent / code-agent / review-agent → proposal → human-approval shape works for agents other than Claude Code. A shared write path across agents opens for the first time. |
-| **Architecture** | The write-intent tools ADR-0013 already specifies (`knowledge.proposeChange`, `knowledge.generateMigrationDraft`, `review.generateKnowledgeCandidate`). Every one of them outputs a proposal file and nothing else — and each is added to the existing bytecode-walk test that holds no registered tool reachable to a canonical write. Review ingestion is an `infrastructure/github/` adapter plus normalisation, designed in [`review-knowledge.md`](architecture/review-knowledge.md). |
+| **Architecture** | The write-intent tools ADR-0013 already specifies (`knowledge.proposeChange`, `knowledge.generateMigrationDraft`, `review.generateKnowledgeCandidate`). Every one of them outputs a proposal file and nothing else — and each is added to the existing bytecode-walk test that holds no registered tool reachable to a canonical write. **The first two shipped in slice B4** ([ADR-0032](adr/0032-the-write-intent-mcp-tool-surface.md)); the third is [ADR-0033](adr/0033-knowledge-candidate-generation.md)'s and registers at slice B5. What slice B4 found is that the bytecode sweep is not, by itself, the control this row describes: it reaches one level and does not enter a collaborator's body, so a tool holding a `ProposalService` and calling `accept` would pass it. The tools are handed a draft-only facade instead, and a closure walk over the built server is what holds "reaches no approved-state write" (ADR-0032 decision 8). Review ingestion is an `infrastructure/github/` adapter plus normalisation, designed in [`review-knowledge.md`](architecture/review-knowledge.md). |
 | **Schema** | The proposal format is unchanged. `KnowledgeCandidate` uses the domain model that already exists. |
-| **MCP / API** | New tools plus their wire schemas (additive; a protocol bump is not expected). `writeTools: true`, and the `system.capabilities` note updated with it. |
+| **MCP / API** | New tools plus their wire schemas (additive; a protocol bump is not expected). `writeTools: true`, and the `system.capabilities` note updated with it. **Done for the first two tools in slice B4**: the registered set went from seven names to nine — appendix row 6 below carries the nine and recomputes them from the built server (`test_documented_tool_set.py`) — two input schemas landed under `schemas/mcp/`, `writeTools` and the note moved in the same commit as the registration (ADR-0032 decision 5), and `protocolVersion` stayed `theurian/v1` — the expectation this row recorded, now a measurement. |
 | **Migration** | None. |
-| **Security** | **The preconditions are already recorded in the threat model.** SEC-10's repository allowlist ships — read and enforced before the `gh` review adapter spawns anything ([ADR-0030](adr/0030-github-review-ingestion-spawns-gh.md)) — while the URL allowlists stay owed in the raw-URL context ([#429](https://github.com/theurian/theurian/issues/429); #129 closed on the wording, not the controls). SEC-11 (secret scanning) ships at the approval gate — `theurian propose accept` scans every body it would land **and the migration document's author-written fields with it** ([#336](https://github.com/theurian/theurian/issues/336)), `block` by default per `security.secretScan` (ADR-0027 decision 3) — so the title and the published source anchors (provider, sourceUri, repository, commitSha, filePath), which appear verbatim on every result, are covered at the gate; index-time scanning shipped under [#329](https://github.com/theurian/theurian/issues/329) and `theurian ingest` runs no scan of its own — #198 is closed, having shipped the `propose accept` half above — and a proposal's `evidence.json` is scanned at accept since [#361](https://github.com/theurian/theurian/issues/361), leaving *draft*-time advisory scanning as the owed half of [#330](https://github.com/theurian/theurian/issues/330); the surfaces that describe what is and is not in force are regression-pinned by `test_config_key_call_sites.py` and `test_examples.py`. SEC-12 (JSON Schema validation of MCP input) becomes mandatory the moment a write-intent tool opens, and it **ships ahead of that opening** ([ADR-0031](adr/0031-mcp-input-is-schema-validated-in-middleware.md)): every `tools/call` is validated against that tool's published input schema in an SDK `ServerMiddleware` before dispatch, and a registered tool that resolves to no loaded schema is refused there rather than served — so a write-intent tool joins the control by being registered instead of by being remembered. What SEC-12 still owes the write path is the value-domain half [ADR-0032](adr/0032-the-write-intent-mcp-tool-surface.md) decision 3 assigns — the `body` cap and `uniqueItems` on `labels[]` — whose driving cases arrive with the tools. **T-15's merge residual was a Phase B precondition, and slice B3 satisfied its commit half**: opening a protocol-level write path multiplies the callers who can put a file in `.theurian/migrations/`, so `migrate apply` now refuses by default a migration that is not committed at `HEAD` ([ADR-0034](adr/0034-migrate-apply-enforces-the-merge.md); `--allow-uncommitted` restores the old behaviour). What stays owed is the merge itself — a local commit on a local branch still passes, because *merged into a reviewed branch* is a forge fact, not a working-tree one. `evidence.json`'s `agentId` and `model` become the only record of origin in a multi-agent setting, so their being required is preserved. |
-| **Tests** | The e2e ADR-0013 explicitly records as owed — after an agent session that calls every write-intent tool, approved state is unchanged — is discharged here. |
+| **Security** | **The preconditions are already recorded in the threat model.** SEC-10's repository allowlist ships — read and enforced before the `gh` review adapter spawns anything ([ADR-0030](adr/0030-github-review-ingestion-spawns-gh.md)) — while the URL allowlists stay owed in the raw-URL context ([#429](https://github.com/theurian/theurian/issues/429); #129 closed on the wording, not the controls). SEC-11 (secret scanning) ships at the approval gate — `theurian propose accept` scans every body it would land **and the migration document's author-written fields with it** ([#336](https://github.com/theurian/theurian/issues/336)), `block` by default per `security.secretScan` (ADR-0027 decision 3) — so the title and the published source anchors (provider, sourceUri, repository, commitSha, filePath), which appear verbatim on every result, are covered at the gate; index-time scanning shipped under [#329](https://github.com/theurian/theurian/issues/329) and `theurian ingest` runs no scan of its own — #198 is closed, having shipped the `propose accept` half above — and a proposal's `evidence.json` is scanned at accept since [#361](https://github.com/theurian/theurian/issues/361), leaving *draft*-time advisory scanning as the owed half of [#330](https://github.com/theurian/theurian/issues/330); the surfaces that describe what is and is not in force are regression-pinned by `test_config_key_call_sites.py` and `test_examples.py`. SEC-12 (JSON Schema validation of MCP input) becomes mandatory the moment a write-intent tool opens, and it **ships ahead of that opening** ([ADR-0031](adr/0031-mcp-input-is-schema-validated-in-middleware.md)): every `tools/call` is validated against that tool's published input schema in an SDK `ServerMiddleware` before dispatch, and a registered tool that resolves to no loaded schema is refused there rather than served — so a write-intent tool joins the control by being registered instead of by being remembered. The value-domain half [ADR-0032](adr/0032-the-write-intent-mcp-tool-surface.md) decision 3 assigns — the `body` cap and `uniqueItems` on `labels[]` — **arrived with the tools in slice B4** and is published in `schemas/mcp/knowledge-propose-change-input.schema.json`. Two limits on it are recorded rather than closed, and the §1 SEC-12 row carries both: the `maxLength` counts code points where the constant it transcribes counts bytes ([#691](https://github.com/theurian/theurian/issues/691)), and over the shipped transport it is shadowed by the tighter rendered-character bound and the transport cap ([#699](https://github.com/theurian/theurian/issues/699)). **T-15's merge residual was a Phase B precondition, and slice B3 satisfied its commit half**: opening a protocol-level write path multiplies the callers who can put a file in `.theurian/migrations/`, so `migrate apply` now refuses by default a migration that is not committed at `HEAD` ([ADR-0034](adr/0034-migrate-apply-enforces-the-merge.md); `--allow-uncommitted` restores the old behaviour). What stays owed is the merge itself — a local commit on a local branch still passes, because *merged into a reviewed branch* is a forge fact, not a working-tree one. `evidence.json`'s `agentId` and `model` become the only record of origin in a multi-agent setting, so their being required is preserved. |
+| **Tests** | The e2e ADR-0013 explicitly records as owed — after an agent session that calls every write-intent tool, approved state is unchanged — is discharged here. **Landed in slice B4** as `tests/e2e/test_write_intent_session.py`, against a real daemon: the canonical store and the approved bodies are byte-identical afterwards, and the session is asserted to have landed a distinct proposal per tool, so a session that called none cannot pass it. Its coverage set is a committed dict asserted to be registered, which catches a listed tool that stops being registered but not a *newly* registered one — slice B5 extends it by hand, and ADR-0013's *Still owed* says so. |
 | **Benchmark** | No retrieval impact. Candidate quality is judged by the human reviewing; automatic quality scoring is a non-goal. |
-| **Exit criteria** | A demonstration of propose → PR → merge → apply from both Claude Code and Codex (or any plain MCP client). **Not `reviewIngestion: true`** — ADR-0030 slice 3 moved that flag ahead of this phase, on the serving half alone, so it is already satisfied and no longer discriminates. What this phase owes is the half the flag does not report: a `KnowledgeCandidate` generated from an ingested review thread. |
+| **Exit criteria** | A demonstration of propose → PR → merge → apply from both Claude Code and Codex (or any plain MCP client). **Not `reviewIngestion: true`** — ADR-0030 slice 3 moved that flag ahead of this phase, on the serving half alone, so it is already satisfied and no longer discriminates. What this phase owes is the half the flag does not report: a `KnowledgeCandidate` generated from an ingested review thread. **`writeTools: true` does not discriminate either**, for the same reason one slice over: slice B4 moved it (ADR-0032 decision 5), and what this row asks for is a *demonstration* from a second client, which is F ①'s adapter and has not run. |
 | **Dependencies** | Phase 0 — #119 and SEC-12 first. Both have landed: #119 in Phase 0, and SEC-12 in this phase's own slice B2 ([ADR-0031](adr/0031-mcp-input-is-schema-validated-in-middleware.md)), ahead of the tools it gates. The ordering is about *writers* increasing, not gates. |
 | **Risks** | A new prompt-injection surface: review text is untrusted content, and turning it into a candidate is precisely the path by which an injected instruction becomes a knowledge candidate. The existing safety triple and never-auto-approve (FR-V4) absorb it, but the threat model's T-3 section needs the candidate path added. |
 

@@ -74,10 +74,12 @@ agents, CI, and people all *consult*. It is deliberately not a control point.
 Instruction files such as `AGENTS.md` and `CLAUDE.md`, and generic repository
 rules, tell agents how to behave. Agent memory preserves working context and
 preferences. Theurian complements both by recording engineering knowledge
-through migrations and serving it through a read-only MCP surface, with status,
-trust level, freshness, and source provenance alongside each result. When an
-approved item records the rationale, an agent can query it before revisiting a
-design.
+through migrations and serving it over MCP, with status, trust level, freshness,
+and source provenance alongside each result. When an approved item records the
+rationale, an agent can query it before revisiting a design. Most of the MCP
+tools it exposes read; the two write-intent ones emit a proposal for a human to
+review, and no tool writes approved knowledge — the *Works with* section below
+names the whole set.
 
 Those are the jobs of your agent runtime, of Git, and of CI, and Theurian is
 built to leave them there. Approval is the act of merging a pull request — there
