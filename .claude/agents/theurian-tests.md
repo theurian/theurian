@@ -51,6 +51,13 @@ Watch for assertions that hold regardless of the implementation:
 Markers: `pytest.mark.unit`, `integration`, `e2e`, `asyncio`. Coverage floor is
 80% and `filterwarnings = error` — a leaked file handle or socket fails the run.
 
+**An e2e test still commits under `test:` or `test(mcp):`, never `test(e2e):`.**
+The Conventional-Commits CI gate's scope is `[a-z-]+` — no digits — so `e2e` (or
+any scope with a digit) fails the check and blocks the PR. A test living in
+`tests/e2e/` takes `test:` or the subsystem it exercises (`test(mcp)` for the
+write-intent tools). This is the commit-scope-lowercase-letters-only family; it
+cost two reworks on one slice before landing here.
+
 ## How a test should read
 
 The name is a sentence about behaviour, not about a method:
