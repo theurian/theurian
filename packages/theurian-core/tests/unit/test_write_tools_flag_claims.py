@@ -1,5 +1,5 @@
 """``writeTools``'s published meaning: coupled to the registrations, and narrated
-by six records (ADR-0032 decision 5).
+by ten records (ADR-0032 decision 5).
 
 ``writeTools`` is a security claim published on ``system.capabilities``, not a
 label: ``false`` says no write-intent tool a client may call exists, and
@@ -21,46 +21,63 @@ pins the *coupling*, not the new value. Both facts are read from
 capability dict, and the tool ``name``s a contributor registered through the one
 ``_tool`` seam.
 
-**Six records narrate the value, both ways round.** The flip falsified every
+**Ten records narrate the value, both ways round.** The flip falsified every
 record that described a read-only MCP surface, and the two commits that corrected
 them -- the registration commit and the documentation commit after it -- shipped
 with nothing holding the correction. That is the state a re-tensing lands in: the
 wording is freshly right, nobody rereads what was just written, and the next
-rewrite has no reason to keep it. Every one of these six could be reworded back
+rewrite has no reason to keep it. Every one of these ten could be reworded back
 to the read-only era with the coupling arm above still green, because that arm
 reaches no prose file at all. This is the ratchet
 ``test_review_ingestion_flag_claims.py`` built for its own flag, built here for
-this one:
+this one. The last four were added after the first six: the two commits that
+corrected them did not reach four more records -- ADR-0026's *Compliance* section,
+this module's own subject file twice over (its module docstring and its
+``@_tool``-count comment in ``daemon/server.py``), and ADR-0029's runtime
+companion -- and each stood unpinned until this row was written.
 
-===================================== =============================================
-Record                                What the flip falsified in it
-===================================== =============================================
-``mcp/tools.py``'s capability comment the narration the flip *added*, beside the value
-``README.md``                         four narrations, from *Alongside* to *Works with*
-``docs/index.md``                     the AI-proposes lead and the enforcement note
-``docs/protocol/mcp-tools.md``        the runtime-boundary paragraph and the write section
-``docs/roadmap.md``                   six, from the §0 preamble to the §6 principle row
-``docs/security/threat-model.md``     T-12's *Controls* sentence
-===================================== =============================================
+========================================= ======================================================
+Record                                    What the flip falsified in it
+========================================= ======================================================
+``mcp/tools.py``'s capability comment     the narration the flip *added*, beside the value
+``mcp/tools.py``'s module docstring       the *Read-only* heading and the Milestone-3 sentence
+``README.md``                             four narrations, from *Alongside* to *Works with*
+``docs/index.md``                         the AI-proposes lead and the enforcement note
+``docs/protocol/mcp-tools.md``            the runtime-boundary paragraph and the write section
+``docs/roadmap.md``                       six, from the §0 preamble to the §6 principle row
+``docs/security/threat-model.md``         T-12's *Controls* sentence
+``docs/adr/0026``'s *Compliance* section  the two ``writeTools: false`` sentences re-tensed
+``daemon/server.py``'s tool-count comment the read-only framing and the ``mcp/tools.py:7`` count
+``docs/adr/0029``                         the *known read-only tool set* clause
+========================================= ======================================================
 
 A prose pin alone would keep the ``true``-era wording against a build that had
 flipped back; a value pin alone would keep the value against records still
 describing the read-only era. So the fact side is
 :func:`_published_flag` -- the same value the coupling arm reads, out of
 ``mcp/tools.py``'s own capability dict -- and it *selects* which wording each
-record must carry and which it must not. Flip the flag and all six are RED until
+record must carry and which it must not. Flip the flag and all ten are RED until
 they are re-tensed; re-tense one backwards and it is RED until the flag moves.
 
-**Narrates, not mentions.** Many records name this flag; these six tell a reader
+The daemon comment's ``mcp/tools.py:7`` fragment is forbidden as *read-only-era
+framing*, not as a count: the live tool count is pinned structurally, from the
+tree rather than from the prose, by
+``test_transport_body_cap.py::test_the_server_comment_states_the_live_at_tool_registration_count``.
+
+**Narrates, not mentions.** Many records name this flag; these ten tell a reader
 what its value *is* and reason from it, which is what makes them false rather
 than merely dated when it moves. Two kinds are deliberately **not** here. A
 *dated reading* is correct as history: ``docs/roadmap.md`` carries
 ``| `writeTools` | `false` |`` in two tables anchored to commit ``f702736``, and
 nothing below forbids those cells -- every ``false``-era fragment quoted here is
-prose. An ADR's *Context* and *Decision* sections are the same case: they record
-what was true when the decision was taken.
+prose. An ADR's *Context* and *Decision* sections record what was true when the
+decision was taken, and are not in this population. An ADR's *Compliance* section
+is the opposite -- it is maintained rather than frozen, re-tensed as each flag it
+lists moves (this slice's flip edited ADR-0026's *Compliance* narration and
+ADR-0029's runtime-companion clause), which is why those two are narrations this
+pin holds where the *Context* sentences are not.
 
-**The population is enumerated rather than derived -- a seventh narration would
+**The population is enumerated rather than derived -- an eleventh narration would
 not redden this**, and that is the honest bound. The answer is to add it here in
 the change that writes it. A derived population, keyed on the narrating spellings
 across the whole corpus, is the shape that would not need the edit;
@@ -68,10 +85,14 @@ across the whole corpus, is the shape that would not need the edit;
 after three rounds added a row to it after the fact.
 
 **Each record is read the way its own reader reads it.** A Python comment through
-``tokenize``, because comments are discarded before a syntax tree exists; Markdown
-as prose with its block quoting removed and its soft wraps flattened, because
-every one of these documents wraps mid-sentence and a quotation that spans a line
-break reports itself missing otherwise.
+``tokenize``, because comments are discarded before a syntax tree exists; a module
+docstring through the syntax tree, because ``mcp/tools.py`` states its
+``**No canonical write.**`` paragraph as the docstring at the top of the file
+while its ``true``-era capability narration is a ``#`` comment beside the value --
+two records in one file, each read the way it is written; Markdown as prose with
+its block quoting removed and its soft wraps flattened, because every one of these
+documents wraps mid-sentence and a quotation that spans a line break reports
+itself missing otherwise.
 
 **What this does not hold.** That the flag's value is *correct behaviour* -- that
 the daemon really registers the tools and answers ``true`` over the wire. That is
@@ -80,8 +101,9 @@ the daemon really registers the tools and answers ``true`` over the wire. That i
 walk beside ``test_no_registered_tool_can_reach_a_canonical_write``. Every arm
 here would pass against a daemon that registered nothing and declared ``true``.
 
-Pure: it reads six repository files -- one of them twice, for the two claims --
-and opens no database, no socket and no temporary directory.
+Pure: it reads nine repository files -- ``mcp/tools.py`` three times, for the
+coupling value, its capability comment and its module docstring -- and opens no
+database, no socket and no temporary directory.
 """
 
 from __future__ import annotations
@@ -104,6 +126,9 @@ _DOCS_INDEX: Final = REPO_ROOT / "docs/index.md"
 _PROTOCOL_DOC: Final = REPO_ROOT / "docs/protocol/mcp-tools.md"
 _ROADMAP: Final = REPO_ROOT / "docs/roadmap.md"
 _THREAT_MODEL: Final = REPO_ROOT / "docs/security/threat-model.md"
+_BOUNDARY_ADR: Final = REPO_ROOT / "docs/adr/0026-evidence-plane-not-control-plane.md"
+_DAEMON_SERVER: Final = REPO_ROOT / "packages/theurian-core/src/theurian/daemon/server.py"
+_FINDINGS_ADR: Final = REPO_ROOT / "docs/adr/0029-review-findings-are-governed-knowledge.md"
 
 #: The flag whose value this module couples to a registration.
 _FLAG: Final = "writeTools"
@@ -309,6 +334,26 @@ def _markdown_prose(source: pathlib.Path) -> str:
     )
 
 
+def _module_docstring(source: pathlib.Path) -> str:
+    """*source*'s module docstring, flattened.
+
+    Read out of the syntax tree rather than by importing the module, so this pin
+    does not depend on ``mcp/tools.py`` importing cleanly, and so a docstring
+    stripped by ``-O`` at some future runtime is not what is being checked. It is a
+    different reader from :func:`_comment_text` on the same file:
+    ``mcp/tools.py``'s ``**No canonical write.**`` paragraph is the docstring at
+    the top of the file, while its ``true``-era capability narration is a ``#``
+    comment beside the value -- two records in one file, each read the way it is
+    written.
+    """
+    docstring = ast.get_docstring(ast.parse(source.read_text(encoding="utf-8")))
+    assert docstring, (
+        f"{source.name} has no module docstring, so the row that reads it would assert its "
+        f"sentences against nothing and pass vacuously"
+    )
+    return _flattened(docstring)
+
+
 #: Each record that **narrates** the flag's value, what it must say, and what it
 #: must not, per published value.
 #:
@@ -448,6 +493,57 @@ _ERA_NARRATIONS: Final[tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]], 
             "tool and asserts none reaches a canonical write.",
         ),
     ),
+    (
+        "docs/adr/0026-evidence-plane-not-control-plane.md (Compliance)",
+        "boundary-adr",
+        (
+            "`writeTools: true` since slice B4 registered the two write-intent tools",
+            "the two tools are handed a draft-only facade whose reachable surface is the two "
+            "draft entries alone, so the accept path is not reachable from a tool at all "
+            "(`application/draft_only_proposals.py`, ADR-0032 decision 8)",
+            "`writeTools: true` is that case once more",
+        ),
+        (
+            "`system.capabilities` reports `writeTools: false`, and",
+            "The other capability flags — `traceability: false`, and `writeTools: false` beside it",
+        ),
+    ),
+    (
+        "mcp/tools.py (the module docstring)",
+        "tools-docstring",
+        (
+            "**No canonical write.**",
+            "Slice B4 registered two write-intent tools here -- ``knowledge.proposeChange`` "
+            "and ``knowledge.generateMigrationDraft`` -- and they emit proposal files a human "
+            "reviews and merges rather than mutating approved state; a draft-only facade holds "
+            "that they reach no approved-state write (ADR-0032 decision 8).",
+        ),
+        (
+            "**Read-only.** Nothing in this module reaches a canonical write.",
+            "Milestone 3 ships no write-intent tools at all, and when they arrive",
+        ),
+    ),
+    (
+        "daemon/server.py (the @_tool-count comment)",
+        "daemon-comment",
+        (
+            "the seven read-side tools sit far below this",
+            "write-intent tools B4 registered, ``knowledge.proposeChange`` and",
+        ),
+        (
+            "every tool registered today is read-side",
+            "answers ``mcp/tools.py:7``",
+        ),
+    ),
+    (
+        "docs/adr/0029-review-findings-are-governed-knowledge.md",
+        "findings-adr",
+        (
+            "registers exactly the known tool set (the read-side tools plus the two "
+            "write-intent tools slice B4 registered, `KNOWN_TOOL_NAMES`)",
+        ),
+        ("registers exactly the known read-only tool set",),
+    ),
 )
 
 
@@ -460,11 +556,15 @@ _ERA_NARRATIONS: Final[tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]], 
 #: not describe, and green for the wrong reason.
 _ERA_READERS: Final[dict[str, Callable[[], str]]] = {
     "tools-comment": lambda: _comment_text(_TOOLS),
+    "tools-docstring": lambda: _module_docstring(_TOOLS),
     "readme": lambda: _markdown_prose(_README),
     "docs-index": lambda: _markdown_prose(_DOCS_INDEX),
     "protocol-doc": lambda: _markdown_prose(_PROTOCOL_DOC),
     "roadmap": lambda: _markdown_prose(_ROADMAP),
     "threat-model": lambda: _markdown_prose(_THREAT_MODEL),
+    "boundary-adr": lambda: _markdown_prose(_BOUNDARY_ADR),
+    "daemon-comment": lambda: _comment_text(_DAEMON_SERVER),
+    "findings-adr": lambda: _markdown_prose(_FINDINGS_ADR),
 }
 
 
@@ -498,7 +598,7 @@ def _assert_states_the_era(label: str, text: str, published: object) -> None:
         + "".join(f"\n  missing: {sentence}" for sentence in missing)
         + "".join(f"\n  stale:   {sentence}" for sentence in stale)
         + "\n\nIf the flag moved, this record is re-tensed in the same commit: it is one of "
-        "the six that narrate the value rather than merely mention it, and a record "
+        "the ten that narrate the value rather than merely mention it, and a record "
         "describing an era the build has left is read as current by everyone who opens it. "
         "If the flag did not move, the record drifted and the wording is what gets restored."
     )
@@ -517,9 +617,10 @@ def test_each_record_narrates_the_flag_the_capability_dict_publishes(
     The failure this closes is the one the coupling arm above cannot see: it reads
     ``mcp/tools.py`` and nothing else, so every prose record that stated the
     read-only era could be restored to its ``false``-era wording with the whole
-    suite green. Two commits corrected these six and neither left anything holding
-    the correction, which is exactly the route
-    ``test_review_ingestion_flag_claims.py`` was built to close for its own flag.
+    suite green. Two commits corrected the first six and a later documentation
+    commit corrected four more, and none left anything holding the correction,
+    which is exactly the route ``test_review_ingestion_flag_claims.py`` was built
+    to close for its own flag.
 
     The pin is bidirectional because either side can move. A record reworded back
     to the read-only era is RED against a build that publishes ``true``; a build
