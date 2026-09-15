@@ -1477,7 +1477,19 @@ _ITEM_WITH_CURRENT_CONTENT_SQL: Final = (
 #: serve gate reads as unverifiable. Unlike `_ITEM_WITH_CURRENT_CONTENT_SQL`, the
 #: whole predicate is in the constant: there is no join to disambiguate a column
 #: against, so the unqualified `WHERE` binds `knowledge_items` directly.
-_ITEM_METADATA_SQL: Final = "SELECT * FROM knowledge_items WHERE project_id = ? AND item_id = ?"
+#:
+#: The projection names its columns rather than `SELECT *` on purpose: these are
+#: exactly the `knowledge_items` columns `_item_from_row` reads, so "materialises
+#: no body" is true by construction, not by the incidental fact that today's
+#: `knowledge_items` holds no body column. Were one ever added to this table, a
+#: `SELECT *` here would silently read it -- and the `_BodyReadCounter` pin keys
+#: on the method name, not on this SQL, so no test would catch it. Adding a
+#: non-body column that `_item_from_row` needs means extending this list too.
+_ITEM_METADATA_SQL: Final = (
+    "SELECT item_id, project_id, namespace, kind, status, current_revision_id, "
+    "owner, trust_level, sensitivity, tenant_id, acl_group, valid_from, valid_to "
+    "FROM knowledge_items WHERE project_id = ? AND item_id = ?"
+)
 
 
 def _item_with_current_content_from_row(row: sqlite3.Row) -> KnowledgeItem:
