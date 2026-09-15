@@ -24,7 +24,9 @@ from theurian.application.proposal_service import (
     V1_OPERATION_KINDS,
     DraftedMigration,
     DraftedProposal,
+    ProposalError,
     ProposalRequest,
+    _refuse_operations_outside_the_v1_set,
 )
 from theurian.domain.enums import KnowledgeKind
 from theurian.domain.identifiers import (
@@ -174,6 +176,52 @@ def test_the_v1_operation_set_partitions_operation_kind() -> None:
     assert len(V1_OPERATION_KINDS) == 10
     assert content == _REFUSED_TO_CONTENT_PATH
     assert cli == _REFUSED_TO_CLI
+
+
+def test_a_kind_routed_into_no_set_is_refused_fail_closed_not_redirected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """RED means an unrouted OperationKind is silently dropped instead of refused.
+
+    The partition test above keeps every current kind in exactly one of the three
+    sets, so no kind reaches the fail-closed ``raise`` at the tail of
+    :func:`_refuse_operations_outside_the_v1_set` today -- which is why a pre-empt
+    mutation of that ``raise`` to ``continue`` survived the whole suite: the branch
+    is unreachable by construction, and an unreachable ``raise`` and an unreachable
+    ``continue`` are the same behaviour. This drives it by construction. It drops
+    one admitted kind out of ``V1_OPERATION_KINDS`` so that kind routes into none of
+    the three sets -- exactly what an unrouted fifteenth ``OperationKind`` would do
+    -- and feeds a document carrying it.
+
+    The refusal must be the fail-closed one, told apart from its two redirect
+    siblings by the message it carries: the generic ``does not carry {op} in v1.``
+    with the ``theurian migrate apply`` remedy, not the content-path redirect
+    (which speaks of a body the kind moves) nor the CLI redirect (which speaks of a
+    read boundary it changes). Both siblings name an onward path an unrouted kind
+    has none of, so asserting the exact message is what proves the fail-closed arm
+    fired rather than one of them -- and under the ``continue`` mutation the kind is
+    dropped, no error is raised, and this goes RED (ADR-0032 decision 3).
+    """
+    unrouted = OperationKind.DEPRECATE_ITEM
+    monkeypatch.setattr(
+        "theurian.application.proposal_service.V1_OPERATION_KINDS",
+        V1_OPERATION_KINDS - {unrouted},
+    )
+    document: Mapping[str, object] = {"operations": [{"op": unrouted.value, "itemId": "a.b"}]}
+
+    with pytest.raises(ProposalError) as caught:
+        _refuse_operations_outside_the_v1_set(document)
+
+    error = caught.value
+    assert str(error) == f"generateMigrationDraft does not carry {unrouted.value} in v1.", (
+        "the unrouted kind was refused, but with a redirect sibling's message rather than the "
+        "fail-closed one -- a future kind would be sent to a content or CLI path it does not "
+        "belong to"
+    )
+    assert error.remedy == (
+        f"Author the {unrouted.value} operation as a migration and apply it with "
+        "`theurian migrate apply` once a human has reviewed it."
+    ), error.remedy
 
 
 def _evidence() -> Evidence:
