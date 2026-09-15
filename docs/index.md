@@ -80,9 +80,11 @@ That makes an answer inspectable instead of merely plausible.
 Theurian keeps an explicit boundary between AI output and approved engineering
 knowledge.
 
-**No MCP write tool can directly create approved knowledge.** Every tool a
-client can call today is read-only, and `system.capabilities` reports
-`writeTools: false`.
+**No MCP tool can directly create approved knowledge.** The write-intent tools a
+client can call — `knowledge.proposeChange` and `knowledge.generateMigrationDraft`
+— emit a proposal a human reviews and merges, never approved state, and
+`system.capabilities` reports `writeTools: true` beside a note that no MCP tool
+writes approved knowledge (ADR-0032).
 
 This is intentional.
 
@@ -144,7 +146,7 @@ most important engineering questions.
 | Was this reviewed? | Usually unknown | **Trust and status travel with it** |
 | Is it still valid? | Usually unknown | **Freshness is queryable** |
 | Where did this claim come from? | Often a document link | **Source provenance** |
-| Can an AI silently promote its own output to approved knowledge? | Depends on the system | **No, over MCP** — no write tool exists. On the CLI path `migrate apply` now refuses an uncommitted migration by default, but a local commit still passes, so the code enforces the commit and the merge stays a workflow convention (T-15's recorded residual). |
+| Can an AI silently promote its own output to approved knowledge? | Depends on the system | **No, over MCP** — the write-intent tools emit a proposal a human reviews and merges, and reach no approved-state write (a draft-only facade holds this, ADR-0032). On the CLI path `migrate apply` now refuses an uncommitted migration by default, but a local commit still passes, so the code enforces the commit and the merge stays a workflow convention (T-15's recorded residual). |
 
 The goal is not to replace search.
 

@@ -1301,6 +1301,12 @@ KNOWN_TOOL_NAMES = frozenset(
         # assume; its own disclosure round is ADR-0030's, not ADR-0029's.
         "review.search",
         "system.capabilities",
+        # The two write-intent tools (ADR-0032). They draft proposals through a
+        # draft-only facade and reach no symbol of the findings store, which the
+        # two arms below check rather than assume; their disclosure round is
+        # ADR-0032's, not ADR-0029's.
+        "knowledge.proposeChange",
+        "knowledge.generateMigrationDraft",
     }
 )
 
