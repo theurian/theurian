@@ -320,6 +320,11 @@ _UNGATED_BY_CONSTRUCTION: Final[Mapping[tuple[str, str], str]] = {
     ("__post_init__", "AUTHORED_IN_THEURIAN"): "a domain literal",
     ("_refuse_a_document_the_schema_rejects", "MIGRATION_API_VERSION"): "a domain literal",
     ("_refuse_past_the_operation_cap", "MAX_UPSERT_OPERATIONS"): "this module's own constant",
+    # `raw` is an operation's `op`, interpolated only inside the arms reached
+    # *after* `OperationKind(raw)` succeeded -- so it is one of the fourteen
+    # closed OperationKind values, this build's own vocabulary, never arbitrary
+    # caller text (ADR-0032 decision 3's op-set gate).
+    ("_refuse_operations_outside_the_v1_set", "raw"): "a value of the closed OperationKind enum",
     ("_evidence_indeterminate", "EVIDENCE_FILE"): "this module's own constant",
     ("_evidence_unscannable", "EVIDENCE_FILE"): "this module's own constant",
     ("_inferred_answer", "EVIDENCE_FILE"): "this module's own constant",

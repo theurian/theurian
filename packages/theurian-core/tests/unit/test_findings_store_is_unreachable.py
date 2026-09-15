@@ -342,6 +342,10 @@ _APPLICATION_NON_SERVING_MODULES: frozenset[str] = frozenset(
     {
         "__init__.py",
         "authorization.py",
+        # The draft-only facade onto ProposalService (ADR-0032 decision 8). It
+        # narrows a service's surface to its two draft entries and reaches no
+        # store: it holds no findings store and no other, and serves nothing.
+        "draft_only_proposals.py",
         "forest_builder.py",
         "index_builder.py",
         "index_secret_scan.py",

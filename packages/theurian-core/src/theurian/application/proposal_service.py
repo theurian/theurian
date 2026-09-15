@@ -108,6 +108,7 @@ from theurian.domain.migration import (
     MIGRATION_API_VERSION,
     CreateItem,
     Migration,
+    OperationKind,
     UpsertRevision,
 )
 from theurian.domain.ports import Clock, IdGenerator
@@ -303,6 +304,58 @@ _REDACTED_REPORT: Final = "a report whose own text appears to carry a secret"
 #: other accept-path read takes, so the two-channel peak this bound assumes is
 #: unconditional rather than depending on how each destination came to exist.
 MAX_UPSERT_OPERATIONS: Final = 250
+
+#: ``generateMigrationDraft``'s two content-mover refusals: the operations
+#: ``knowledge.proposeChange`` owns (ADR-0032 decision 3). A ``createItem`` or
+#: ``upsertRevision`` here would build a second body pipeline against a
+#: hand-authored document -- the digest pin, the per-revision body path, the
+#: replacement guard -- which is the two-procedures-disagree defect ADR-0027
+#: records. Refused, with the content path named.
+_REFUSED_TO_CONTENT_PATH: Final = frozenset(
+    {OperationKind.CREATE_ITEM, OperationKind.UPSERT_REVISION}
+)
+
+#: ``generateMigrationDraft``'s two read-control refusals: the operations v1
+#: pulls because the reviewer of the pull request cannot see what they move
+#: (ADR-0032 decision 3). ``changeSensitivity`` widens who may read an item by an
+#: amount that depends on the deployment's sensitivity ceiling, which is not in
+#: the migration; ``restoreItem`` readmits from any status -- ``rejected``
+#: included, the one status no flag surfaces -- with no transition check. Both are
+#: authored by a human through the CLI instead.
+_REFUSED_TO_CLI: Final = frozenset({OperationKind.CHANGE_SENSITIVITY, OperationKind.RESTORE_ITEM})
+
+#: The ten operation kinds ``generateMigrationDraft`` admits in v1 (ADR-0032
+#: decision 3): the closed ``OperationKind`` set minus the two content movers and
+#: the two non-content read-control movers.
+#:
+#: **Enumerated rather than derived by subtraction**, so a fifteenth
+#: ``OperationKind`` added to the enum lands in *none* of these three sets and is
+#: refused fail-closed by :func:`_refuse_operations_outside_the_v1_set`, while
+#: ``test_the_v1_operation_set_partitions_operation_kind`` reddens -- the new kind
+#: is admitted or refused by a deliberate edit here, never by omission. Deriving
+#: this as ``frozenset(OperationKind) - refused`` would auto-admit that kind and
+#: make the partition test tautological.
+V1_OPERATION_KINDS: Final = frozenset(
+    {
+        OperationKind.DEPRECATE_ITEM,
+        OperationKind.ADD_RELATION,
+        OperationKind.REMOVE_RELATION,
+        OperationKind.ADD_ALIAS,
+        OperationKind.REMOVE_ALIAS,
+        OperationKind.CHANGE_OWNER,
+        OperationKind.REGISTER_SPECIFICATION,
+        OperationKind.SUPERSEDE_SPECIFICATION,
+        OperationKind.ADD_EVIDENCE,
+        OperationKind.REMOVE_EVIDENCE,
+    }
+)
+
+#: Operation fields whose value is an item id (``$defs/itemId``), for the
+#: informational ``itemId`` list a ``draft_from_document`` evidence record
+#: carries. Spec ids (``specId``/``supersededBy``) are deliberately excluded:
+#: ``evidence.json``'s ``itemId`` is read only by the accept-path cross-check,
+#: which speaks of items.
+_ITEM_ID_OPERATION_FIELDS: Final = ("itemId", "sourceItemId", "targetItemId", "alias")
 
 #: Where a secret-scan finding sits when the text it was found in is an artifact
 #: ``accept`` lands rather than a field of the migration document (#349).
@@ -616,6 +669,26 @@ class DraftedProposal:
 
 
 @dataclass(frozen=True, slots=True)
+class DraftedMigration:
+    """What one call to :meth:`ProposalService.draft_from_document` wrote.
+
+    The operations path lands no body: its v1 operation set
+    (:data:`V1_OPERATION_KINDS`) carries no ``contentFile``, so there is no
+    revision id, no digest and no body destination -- the fields that separate
+    this from :class:`DraftedProposal`. ``operations`` names the kinds landed, in
+    document order, so a caller can confirm what it proposed without reading the
+    migration back.
+    """
+
+    proposal_id: ProposalId
+    directory: Path
+    migration_id: MigrationId
+    migration_file: Path
+    evidence_file: Path
+    operations: tuple[OperationKind, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class MovedFile:
     """One file ``accept`` relocated, and whether it landed on something."""
 
@@ -877,6 +950,110 @@ class ProposalService:
             content_file=content_file.as_posix(),
             content_sha256=digest,
             body_destination=self._paths.knowledge / relative_body,
+        )
+
+    def draft_from_document(
+        self, document: Mapping[str, object], *, evidence: Evidence, local: bool = False
+    ) -> DraftedMigration:
+        """Land a caller-supplied migration document as a proposal (ADR-0032 decision 3).
+
+        ``generateMigrationDraft``'s service entry. Where :meth:`draft` builds the
+        migration itself from a :class:`ProposalRequest`, this takes a migration
+        document a caller authored -- the operations path, for the twelve things a
+        migration can say that a body and a revision cannot -- and lands it through
+        the *same* identifier minting, containment and accept-time posture, so a
+        proposal reached this way is indistinguishable from a drafted one once on
+        disk.
+
+        **The v1 operation set is enforced here, in the service, not in the tool**
+        (:func:`_refuse_operations_outside_the_v1_set`), for the reason the
+        secret-scan policy is read here rather than injected: a control a caller
+        can omit by omission is not a control, and a second write-intent root is
+        exactly what this method exists for. The gate admits
+        :data:`V1_OPERATION_KINDS`, refuses ``createItem``/``upsertRevision`` to
+        ``knowledge.proposeChange`` and ``changeSensitivity``/``restoreItem`` to
+        the CLI, and runs on the raw document ahead of validation for the same
+        reason :func:`_refuse_past_the_operation_cap` does -- so an agent that
+        reaches for a refused operation is redirected rather than told which schema
+        fields its incomplete operation is missing.
+
+        **The migration's identity is the service's to mint.** ``apiVersion``,
+        ``id`` and ``createdAt`` are stamped over whatever the caller sent
+        (:func:`_document_with_minted_identity`), so a caller cannot choose an id
+        that collides with a landed migration or backdate the record;
+        ``author``, ``description`` and ``operations`` are the caller's and reach
+        validation unchanged.
+
+        **Validation is the injected** :data:`MigrationDocumentValidator`, the same
+        callable :meth:`draft` calls and ``_refuse_unless_the_union_applies``
+        re-runs at accept -- never a direct loader import (ADR-0003), which would
+        give this path a second validator the accept-time rehearsal is not
+        holding.
+
+        No caller-controlled string reaches the filesystem: the proposal directory
+        is the minted proposal id, the migration file is the minted migration id
+        plus a kebab slug, and no admitted operation names a ``contentFile``, so
+        there is no body path to contain.
+
+        Raises:
+            ProposalError: If any operation is outside the v1 set, or a
+                ``--local`` draft cannot make ``.theurian/proposals-local/``
+                git-ignored. No proposal directory is written in either case.
+            MigrationError: If the built document does not satisfy the published
+                schema or exceeds its bounds (from the injected validator). No
+                proposal directory is written.
+            InvariantViolationError: If ``evidence`` evidences nothing (ADR-0013
+                point 5), enforced on this generation path as well as on the
+                :class:`Evidence` constructor.
+        """
+        # ADR-0013 point 5 on the generation path, not only on the value handed
+        # in -- the same second call `ProposalRequest.__post_init__` makes, so an
+        # `Evidence` built by any other route still cannot package a proposal.
+        require_evidence(evidence)
+        operations = _refuse_operations_outside_the_v1_set(document)
+
+        proposal_id = ProposalId(self._ids.new_ulid().value)
+        migration_id = MigrationId(self._ids.new_ulid().value)
+        stamped = _document_with_minted_identity(
+            document,
+            migration_id=migration_id,
+            created_at=self._clock.now().replace(microsecond=0).isoformat(),
+        )
+        self._validate(stamped)
+
+        if local:
+            # Before a byte is written, for the reason `draft` states: `--local`'s
+            # confidentiality is the ignore rule, and a stale block is refused
+            # rather than written and then falsely reported as ignored.
+            self._ensure_local_is_ignored()
+
+        parent = self._paths.proposals_local if local else self._paths.proposals
+        directory = parent / proposal_id.value
+        directory.mkdir(parents=True)
+
+        evidence_file = directory / EVIDENCE_FILE
+        evidence_file.write_text(
+            json.dumps(
+                _operations_evidence_document(
+                    evidence, proposal_id, migration_id, _document_item_ids(stamped)
+                ),
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        migration_file = directory / migration_file_name(
+            migration_id, kebab_slug(_slug_source(stamped), fallback="migration")
+        )
+        migration_file.write_text(_to_yaml(stamped), encoding="utf-8")
+
+        return DraftedMigration(
+            proposal_id=proposal_id,
+            directory=directory,
+            migration_id=migration_id,
+            migration_file=migration_file,
+            evidence_file=evidence_file,
+            operations=operations,
         )
 
     def _ensure_local_is_ignored(self) -> None:
@@ -3558,6 +3735,125 @@ def _refuse_past_the_operation_cap(document: Mapping[str, object]) -> None:
     )
 
 
+def _refuse_operations_outside_the_v1_set(
+    document: Mapping[str, object],
+) -> tuple[OperationKind, ...]:
+    """Admit :data:`V1_OPERATION_KINDS` and refuse the four v1 pulls (ADR-0032 decision 3).
+
+    Runs on the *raw* caller document, ahead of schema validation, for the reason
+    :func:`_refuse_past_the_operation_cap` runs there: it reads only each
+    operation's ``op`` field, so an agent that reaches for a refused operation is
+    redirected -- ``createItem``/``upsertRevision`` to ``knowledge.proposeChange``,
+    ``changeSensitivity``/``restoreItem`` to the CLI -- rather than told which
+    schema fields its incomplete operation is missing. A malformed entry is
+    skipped and left for the validator that runs next to refuse on its own terms;
+    an operation whose kind is classified into none of the three sets -- a
+    fifteenth ``OperationKind`` nobody routed -- is refused fail-closed, and
+    ``test_the_v1_operation_set_partitions_operation_kind`` reddens so the routing
+    is a deliberate edit rather than an omission.
+
+    Returns the admitted kinds in document order, for :class:`DraftedMigration`.
+    """
+    operations = document.get("operations")
+    if not isinstance(operations, list):
+        return ()
+    admitted: list[OperationKind] = []
+    for operation in operations:
+        if not isinstance(operation, Mapping):
+            continue
+        raw = operation.get("op")
+        if not isinstance(raw, str):
+            continue
+        try:
+            kind = OperationKind(raw)
+        except ValueError:
+            continue
+        if kind in V1_OPERATION_KINDS:
+            admitted.append(kind)
+            continue
+        if kind in _REFUSED_TO_CONTENT_PATH:
+            raise ProposalError(
+                f"generateMigrationDraft does not carry {raw}: it moves knowledge content, "
+                "which the content path owns.",
+                remedy="Use the knowledge.proposeChange tool, which carries a body and the "
+                "revision that moves it.",
+            )
+        if kind in _REFUSED_TO_CLI:
+            raise ProposalError(
+                f"generateMigrationDraft does not carry {raw} in v1: it changes who may read an "
+                "item, and the reviewer of the pull request cannot see what that admits.",
+                remedy=f"Author the {raw} operation as a migration and apply it with "
+                "`theurian migrate apply` once a human has reviewed it.",
+            )
+        raise ProposalError(
+            f"generateMigrationDraft does not carry {raw} in v1.",
+            remedy=f"Author the {raw} operation as a migration and apply it with "
+            "`theurian migrate apply` once a human has reviewed it.",
+        )
+    return tuple(admitted)
+
+
+def _document_with_minted_identity(
+    document: Mapping[str, object], *, migration_id: MigrationId, created_at: str
+) -> dict[str, object]:
+    """A copy of ``document`` with the service-controlled identity stamped in.
+
+    ``apiVersion``, ``id`` and ``createdAt`` are the service's to mint -- the same
+    three :func:`_migration_document` controls for :meth:`ProposalService.draft`
+    -- so a caller cannot choose a migration id that collides with a landed one or
+    backdate the record. They lead the result, so ``_to_yaml`` renders them at the
+    top in the order a reviewer reads (what this is, then who owns it and why).
+    Everything else the caller sent (``author``, ``description``, ``operations``,
+    ``dependsOn``) follows in caller order and reaches the injected validator,
+    which refuses anything the schema does not allow. A caller-supplied
+    ``apiVersion``/``id``/``createdAt`` is dropped rather than copied, so the
+    minted identity is the only one that survives.
+    """
+    stamped: dict[str, object] = {
+        "apiVersion": MIGRATION_API_VERSION,
+        "id": migration_id.value,
+        "createdAt": created_at,
+    }
+    for key, value in document.items():
+        if key not in stamped:
+            stamped[key] = value
+    return stamped
+
+
+def _slug_source(document: Mapping[str, object]) -> str:
+    """The human-readable text a ``draft_from_document`` migration file is named for.
+
+    The document's ``description`` when it has one -- a directory-listing aid, the
+    same role the revision title plays for :meth:`ProposalService.draft`. Empty
+    (or non-ASCII) falls back to ``"migration"`` in :func:`kebab_slug`.
+    """
+    description = document.get("description")
+    return description if isinstance(description, str) else ""
+
+
+def _document_item_ids(document: Mapping[str, object]) -> tuple[str, ...]:
+    """Item ids the document's operations name, sorted and deduplicated.
+
+    Read from the item-id-typed operation fields (:data:`_ITEM_ID_OPERATION_FIELDS`)
+    for the informational ``itemId`` list in a ``draft_from_document`` evidence
+    record. A best-effort read over the raw document: a malformed entry
+    contributes nothing rather than raising, because the validator that follows
+    owns the shape.
+    """
+    operations = document.get("operations")
+    if not isinstance(operations, list):
+        return ()
+    ids: set[str] = set()
+    for operation in operations:
+        if not isinstance(operation, Mapping):
+            continue
+        for field_name in _ITEM_ID_OPERATION_FIELDS:
+            value = operation.get(field_name)
+            if isinstance(value, str):
+                ids.add(value)
+    return tuple(sorted(ids))
+
+
 def _parse_migration(data: bytes, path: Path) -> Mapping[str, object]:
     """Parse an accepted proposal's migration into the mapping the accept path reads.
 
@@ -4155,10 +4451,44 @@ def _evidence_document(
     ``metadata.sourceAnchors`` on the revision (INV-8) -- and neither list
     substitutes for the other.
     """
+    return _evidence_record(evidence, proposal_id, migration_id, item_id.value)
+
+
+def _operations_evidence_document(
+    evidence: Evidence,
+    proposal_id: ProposalId,
+    migration_id: MigrationId,
+    item_ids: tuple[str, ...],
+) -> dict[str, object]:
+    """The evidence record for a :meth:`ProposalService.draft_from_document` proposal.
+
+    The same record :func:`_evidence_document` writes, with ``itemId`` carrying
+    the *list* of item ids the operations name (:func:`_document_item_ids`)
+    instead of a single one. An operations migration touches several items, or
+    none an :func:`_evidence_item_ids` cross-check would confirm -- the accept
+    path reads only ``createItem``/``upsertRevision`` there -- so the field is
+    informational for the human reviewer, and a list is the honest shape.
+    """
+    return _evidence_record(evidence, proposal_id, migration_id, list(item_ids))
+
+
+def _evidence_record(
+    evidence: Evidence,
+    proposal_id: ProposalId,
+    migration_id: MigrationId,
+    item_id_field: str | list[str],
+) -> dict[str, object]:
+    """The shared ``evidence.json`` shape for both generation paths.
+
+    ``item_id_field`` is a single string for :meth:`ProposalService.draft` -- so
+    its record is byte-identical to what it has always written -- and a list for
+    :meth:`ProposalService.draft_from_document`. :func:`_evidence_item_ids` reads
+    either.
+    """
     return {
         "proposalId": proposal_id.value,
         "migrationId": migration_id.value,
-        "itemId": item_id.value,
+        "itemId": item_id_field,
         "agentId": evidence.agent_id.value,
         "taskId": evidence.task_id.value,
         "model": evidence.model,
