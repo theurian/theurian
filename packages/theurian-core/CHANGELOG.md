@@ -304,7 +304,16 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   registered while the flag lags each redden. The nine names are pinned over a
   real client by
   `tests/e2e/test_daemon_single_instance.py::test_the_tool_set_is_exactly_the_published_nine`,
-  and the value by `::test_capabilities_report_write_tools`.
+  and the value by `::test_capabilities_report_write_tools`. **The records that
+  narrate the value are held to it too**, by
+  `::test_each_record_narrates_the_flag_the_capability_dict_publishes` in the same
+  module: the six documents that describe the MCP surface — `mcp/tools.py`'s
+  capability comment, `README.md`, `docs/index.md`, `docs/protocol/mcp-tools.md`,
+  `docs/roadmap.md` and the threat model's T-12 — must carry the wording the
+  published value selects and must not carry the read-only era's, so a record
+  reworded back is RED while the flag reads `true`, and a flag flipped back is RED
+  while the records still say `true`. The population is enumerated, not derived: a
+  seventh narration joins it by a deliberate edit in the change that writes it.
 
 ### Fixed
 
