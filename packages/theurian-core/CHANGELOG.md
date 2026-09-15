@@ -123,10 +123,13 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   slice B5, and the remaining planned `knowledge.*` tools stay planned. And
   ADR-0013's owed end-to-end — approved knowledge is byte-identical after a real
   daemon session that calls every write-intent tool, now
-  `tests/e2e/test_write_intent_session.py` and no longer vacuous — calls every
-  member of a *committed* argument set and asserts each is registered; nothing
-  makes a newly registered write-intent tool join that set, so slice B5 extends
-  it by hand.
+  `tests/e2e/test_write_intent_session.py` and no longer vacuous — derives that
+  "every" from the daemon: it reads each registered tool's published input schema
+  off `tools/list`, takes the write-intent ones to be those requiring an
+  `evidence` object (ADR-0032 decision 4), and asserts that set *equals* the
+  argument sets it carries. A newly registered write-intent tool with no arguments
+  reddens it instead of going silently undriven, so slice B5's third tool is
+  demanded rather than remembered.
 
 - **Two published input schemas, one per new tool, enforced before either handler
   is entered** — `schemas/mcp/knowledge-propose-change-input.schema.json` and

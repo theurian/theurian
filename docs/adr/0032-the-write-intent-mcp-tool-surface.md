@@ -1114,8 +1114,13 @@ the property as it was written and states what actually holds it:
   write-intent tool appending to an approved body reddens the digest assertion —
   cited to that commit rather than restated here.
   **[ADR-0013](0013-ai-writes-produce-proposals.md)'s own *Still owed* entry moved
-  to a *Landed in Phase B slice B4* section naming this test**, and that section
-  records the one residual its coverage set carries — see *Still owed* below.
+  to a *Landed in Phase B slice B4* section naming this test**, and the coverage
+  residual that section first recorded — a committed argument set, which cannot
+  redden when a *newly* registered write-intent tool is missing from it — was
+  closed in the same slice: the set is now derived from `tools/list`, keyed on
+  decision 4's required `evidence` object, and asserted equal to the arguments the
+  session carries. What remains is the bound of that key, recorded in ADR-0013's
+  *Still owed* rather than here, since it is that ADR's property.
 - **Every wire field carries its published input schema (ADR-0031).** Landed:
   `schemas/mcp/knowledge-propose-change-input.schema.json` and
   `schemas/mcp/knowledge-generate-migration-draft-input.schema.json` ship, and

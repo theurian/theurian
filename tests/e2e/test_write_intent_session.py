@@ -14,11 +14,21 @@ against a live daemon, and afterwards the canonical store and the approved
 knowledge bodies are byte-identical -- while the proposal directory has grown by
 exactly the calls made.
 
-**Not vacuous.** A session that called no write-intent tool would satisfy
-"approved knowledge is unchanged" trivially -- that is the state ADR-0013 records
-today. So the write-intent tool set is read from ``tools/list`` and every member
-is called and asserted to have landed a proposal; the test fails if the set is
-empty or if a member was not exercised.
+**"Every" is derived, not committed.** A session that called no write-intent tool
+would satisfy "approved knowledge is unchanged" trivially, and a session that
+called only the tools somebody remembered to list would satisfy it almost as
+cheaply. So the write-intent set is **derived from what the daemon publishes**:
+every registered tool whose input schema requires an ``evidence`` object is one
+(:func:`_write_intent_tools`), and that set must equal the argument sets this
+module carries. A newly registered write-intent tool with no entry in
+:data:`WRITE_INTENT_CALLS` therefore reddens this test instead of going silently
+unexercised -- which is the residual ADR-0013's *Still owed* recorded against the
+committed-set shape this replaces.
+
+**Not vacuous.** The derived set is asserted non-empty before it is compared, so
+a build that registered no write-intent tool -- or a schema shape this reader
+stopped seeing -- reports itself rather than passing as "nothing to call". Every
+member is then called and asserted to have landed a distinct proposal.
 """
 
 from __future__ import annotations
@@ -89,7 +99,9 @@ EVIDENCE = {
 
 #: The arguments each write-intent tool is driven with. Every registered
 #: write-intent tool must have an entry here, or the session cannot claim to call
-#: "every" one -- the test asserts the two sets agree.
+#: "every" one -- and which tools those are is read off the daemon by
+#: :func:`_write_intent_tools` rather than repeated here, so this dict is checked
+#: against the surface instead of defining it.
 WRITE_INTENT_CALLS: dict[str, dict[str, Any]] = {
     "knowledge.proposeChange": {
         "projectId": "demo",
@@ -257,9 +269,15 @@ class _McpClient:
         parsed: dict[str, Any] = json.loads(match.group(1) if match else raw)
         return parsed
 
-    def tools(self) -> set[str]:
+    def tool_schemas(self) -> dict[str, dict[str, Any]]:
+        """Every registered tool's published input schema, by name.
+
+        The schema rather than the name alone, because what makes a tool
+        write-intent is visible in what it requires of a caller and is not
+        recoverable from a list of names -- see :func:`_write_intent_tools`.
+        """
         response = self._post({"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}})
-        return {tool["name"] for tool in response["result"]["tools"]}
+        return {tool["name"]: tool.get("inputSchema", {}) for tool in response["result"]["tools"]}
 
     def call(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
         response = self._post(
@@ -318,6 +336,37 @@ def _tree_digest(*roots: Path) -> str:
     return digest.hexdigest()
 
 
+#: What marks a registered tool as write-intent, over the wire.
+#:
+#: ADR-0032 decision 4: ``agentId``, ``taskId``, ``model`` and ``reasoning`` are
+#: **required on every write-intent call**, and the object that carries them is
+#: ``evidence``. A tool that drafts a proposal cannot package one without it --
+#: ``require_evidence`` refuses twice, once in ``Evidence.__post_init__`` and again
+#: in ``ProposalRequest.__post_init__``, so that "rejected at generation" is a
+#: property of the generation path rather than of one constructor. No read tool
+#: asks for it, because a read records no provenance.
+#:
+#: It is the *registration* that answers this, which is the whole point: ADR-0033's
+#: `review.generateKnowledgeCandidate` builds its `proposal.Evidence` "from the
+#: tool's own ``evidence`` input, exactly as ADR-0032's tools take them", so it
+#: joins this set by registering rather than by somebody remembering to add it.
+WRITE_INTENT_INPUT_KEY = "evidence"
+
+
+def _write_intent_tools(schemas: dict[str, dict[str, Any]]) -> set[str]:
+    """Which registered tools are write-intent, derived rather than listed.
+
+    Keyed on the published input schema's ``required`` list, so the answer comes
+    from the daemon's own surface. A hand-written list here would reintroduce
+    exactly the drift this replaces: it would be checked against itself.
+    """
+    return {
+        name
+        for name, schema in schemas.items()
+        if WRITE_INTENT_INPUT_KEY in schema.get("required", ())
+    }
+
+
 def _proposal_count(root: Path) -> int:
     proposals = root / ".theurian/proposals"
     if not proposals.exists():
@@ -336,10 +385,14 @@ def test_a_session_calling_every_write_intent_tool_leaves_approved_knowledge_unc
     no MCP tool wrote approved knowledge -- while the proposal directory has grown
     by exactly the calls made, which is where "AI proposes" lands.
 
-    The session's coverage is the control: the write-intent tools are read off
-    ``tools/list`` and every one is called and asserted to have returned a
-    proposal id. A session that reached none of them would pass the
-    unchanged-knowledge assertion for the wrong reason.
+    The session's coverage is the control, and it is **derived from the daemon**:
+    the write-intent tools are the registered ones whose published input schema
+    requires ``evidence`` (ADR-0032 decision 4), that set must equal the argument
+    sets this module carries, and every member is called and asserted to have
+    returned a distinct proposal id. A session that reached none of them would
+    pass the unchanged-knowledge assertion for the wrong reason; a session that
+    reached all the ones somebody listed while a tenth registered unlisted would
+    pass it for a subtler one, and the equality is what forbids both.
     """
     root = running_daemon.root
     approved = (root / ".theurian/state", root / ".theurian/knowledge")
@@ -348,10 +401,25 @@ def test_a_session_calling_every_write_intent_tool_leaves_approved_knowledge_unc
     before_proposals = _proposal_count(root)
 
     with _McpClient(running_daemon.port, running_daemon.token) as client:
-        registered_write_intent = client.tools() & set(WRITE_INTENT_CALLS)
-        assert registered_write_intent == set(WRITE_INTENT_CALLS), (
-            f"the session does not carry an argument set for every registered write-intent "
-            f"tool, so it cannot claim to call every one: registered={sorted(client.tools())}"
+        schemas = client.tool_schemas()
+        registered_write_intent = _write_intent_tools(schemas)
+
+        assert registered_write_intent, (
+            f"no registered tool publishes a required `{WRITE_INTENT_INPUT_KEY}` input, so "
+            f"this session has nothing to drive and every assertion below would hold "
+            f"vacuously. Either the build registers no write-intent tool, or the published "
+            f"input schemas stopped carrying evidence the way ADR-0032 decision 4 requires: "
+            f"registered={sorted(schemas)}"
+        )
+        driven = set(WRITE_INTENT_CALLS)
+        assert registered_write_intent == driven, (
+            f"the registered write-intent tools and the argument sets this session carries "
+            f"are not the same set, so it cannot claim to call every one.\n"
+            f"  registered but undriven: {sorted(registered_write_intent - driven)}\n"
+            f"  driven but unregistered: {sorted(driven - registered_write_intent)}\n"
+            f"A registered tool with no entry above is a write path this test claims to "
+            f"exercise and does not (ADR-0013's owed E2E); add its arguments in the change "
+            f"that registers it."
         )
 
         before_view = client.approved_view()

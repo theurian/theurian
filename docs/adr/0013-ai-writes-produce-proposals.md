@@ -392,14 +392,33 @@ Landed in Phase B slice B4, by the write-intent MCP tool surface
   `writeTools` value. Named here because the Milestone-3 list above still cites
   the old name, and an accepted ADR records what was true when it was written.
 
+- **The session's coverage set is derived from the daemon, so a third
+  write-intent tool joins it by registering.** This was recorded as owed to slice
+  B5 while the set was committed: the E2E asserted every member of its
+  `WRITE_INTENT_CALLS` dict was registered, which reddens when a listed tool stops
+  being registered or is renamed and does **not** redden when a registered
+  write-intent tool is absent from the dict — so "calls every write-intent tool"
+  was a claim the test could not make. It now reads every registered tool's
+  published input schema off `tools/list`, takes the write-intent ones to be those
+  requiring an `evidence` object, and asserts that derived set *equals* the
+  arguments it carries. `review.generateKnowledgeCandidate`
+  ([ADR-0033](0033-knowledge-candidate-generation.md)) is the third tool, and it
+  builds its `proposal.Evidence` "from the tool's own `evidence` input, exactly as
+  ADR-0032's tools take them", so it enters the derived set by registering and the
+  slice that registers it is told to add its arguments rather than trusted to
+  remember.
+
 Still owed, with the milestone that brings the feature under test:
 
-- **The session's coverage set is committed, not derived, so a third
-  write-intent tool does not join it by registering** (slice B5). The E2E above
-  holds a `WRITE_INTENT_CALLS` dict of arguments per tool and asserts every
-  member of it is registered — which reddens when a listed tool stops being
-  registered or is renamed, and does **not** redden when a registered
-  write-intent tool is absent from the dict. `review.generateKnowledgeCandidate`
-  ([ADR-0033](0033-knowledge-candidate-generation.md)) is that third tool; the
-  slice that registers it extends the dict, or this section's property quietly
-  stops covering the surface it names.
+- **The derived set is keyed on evidence requiredness, which is what a tool
+  *asks of a caller* and not what it does** (recorded, not owed to a slice).
+  ADR-0032 decision 4 makes `agentId`, `taskId`, `model` and `reasoning` required
+  on every write-intent call, and `require_evidence` refuses twice — in
+  `Evidence.__post_init__` and again in `ProposalRequest.__post_init__` — so a
+  tool that asked for no evidence could not package a proposal at all, and the
+  gap between the key and the property is closed by the domain rather than by the
+  test. What would fall outside it is a write-intent tool that writes something
+  other than a proposal; this ADR does not admit one, and admitting one is a
+  different decision. The mis-key in the other direction fails closed: a read tool
+  that grew an `evidence` input would be demanded in the session's argument set
+  and redden until somebody settled which it is.
