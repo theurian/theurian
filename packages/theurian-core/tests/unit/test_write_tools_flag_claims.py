@@ -82,7 +82,11 @@ not redden this**, and that is the honest bound. The answer is to add it here in
 the change that writes it. A derived population, keyed on the narrating spellings
 across the whole corpus, is the shape that would not need the edit;
 ``test_review_ingestion_flag_claims.py`` records the same bound and the same cost
-after three rounds added a row to it after the fact.
+after three rounds added a row to it after the fact. This enumerated pin is a
+stopgap for the class closure tracked in #706 -- the shared-flags
+derived-capability-narration sweep, under which no tracked-prose narration
+disagrees with the live flag -- so the next reader knows enumeration is not the
+closure.
 
 **Each record is read the way its own reader reads it.** A Python comment through
 ``tokenize``, because comments are discarded before a syntax tree exists; a module
