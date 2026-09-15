@@ -47,11 +47,22 @@ The wire-side counterpart is
 ``tests/integration/test_input_validation_dispatch.py``, which pins the formula
 itself, drives a landed-size body of each script class through the transport,
 and drives the ``413`` boundary at exact bytes.
+
+The same body-cap comment also narrates *how many* tools that surface holds --
+``mcp/tools.py:N``, the answer to its own ``git grep -c '^    @_tool($'`` -- and
+that ``N`` went stale from 7 to 9 in silence when slice B4 registered the two
+write-intent tools, because nothing recomputed it from the tree. It is a
+derivation like the multiplier is, so
+:func:`test_the_server_comment_states_the_live_at_tool_registration_count` pins it
+like one: it recomputes the count from ``mcp/tools.py``'s own decorators and holds
+the comment's ``N`` equal to it, from the tree rather than from the prose.
 """
 
 from __future__ import annotations
 
+import ast
 import json
+import re
 from fractions import Fraction
 from json.encoder import encode_basestring, encode_basestring_ascii
 from typing import Final
@@ -59,6 +70,7 @@ from typing import Final
 import pytest
 from escape_class_sweep import CODE_POINTS, SURROGATES, class_of, landed_bytes, sweep
 from wire_escape_classes import COVERED_CLASSES, RESIDUAL_CLASSES, WIRE_CLASSES
+from write_lock_claims import REPO_ROOT
 
 from theurian.daemon.server import MAX_REQUEST_BODY_BYTES
 from theurian.security.paths import MAX_SOURCE_FILE_BYTES
@@ -706,4 +718,75 @@ def test_no_two_rows_record_the_same_pair_of_factors() -> None:
         f"them from a correct one -- every member measures its row's factors either way -- so "
         f"the boundary rests entirely on `class_of`. A new collision needs that said out "
         f"loud; a collision that disappeared means a factor moved"
+    )
+
+
+# -- The tool count the comment states is the live registration count ----------
+
+_TOOLS_MODULE: Final = REPO_ROOT / "packages/theurian-core/src/theurian/mcp/tools.py"
+_SERVER_MODULE: Final = REPO_ROOT / "packages/theurian-core/src/theurian/daemon/server.py"
+
+#: The count ``daemon/server.py``'s body-cap comment prints for the answer to its
+#: own ``git grep -c '^    @_tool($' -- packages/theurian-core/src``, captured out
+#: of the ``mcp/tools.py:<N>`` it writes it as.
+_STATED_TOOL_COUNT: Final = re.compile(r"mcp/tools\.py:(\d+)")
+
+
+def _live_at_tool_decorator_count() -> int:
+    """How many ``@_tool(...)`` registrations ``mcp/tools.py`` carries, from its tree.
+
+    The AST equivalent of the comment's own ``git grep -c '^    @_tool($'``: every
+    function whose decorators include a call to ``_tool``. Recomputed from the live
+    source so the pin holds a derivation, not a transcription of the prose it checks
+    (``pin-derivations-not-prose``).
+    """
+    tree = ast.parse(_TOOLS_MODULE.read_text(encoding="utf-8"), filename=_TOOLS_MODULE.name)
+    return sum(
+        1
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        for decorator in node.decorator_list
+        if isinstance(decorator, ast.Call)
+        and isinstance(decorator.func, ast.Name)
+        and decorator.func.id == "_tool"
+    )
+
+
+def _tool_count_the_server_comment_states() -> int:
+    """The tool count ``daemon/server.py``'s body-cap comment prints, read from source.
+
+    Exactly one occurrence is expected: the comment states the count once, as the
+    surface ``MAX_REQUEST_BODY_BYTES`` is sized for. Zero would mean the derivation
+    stopped citing the count and this pin is holding nothing to nothing.
+    """
+    matches = _STATED_TOOL_COUNT.findall(_SERVER_MODULE.read_text(encoding="utf-8"))
+    assert len(matches) == 1, (
+        f"daemon/server.py states an `mcp/tools.py:<count>` in {len(matches)} places, "
+        f"expected 1. The body-cap comment derives its sizing from that count, so zero means "
+        f"the derivation no longer names it and there is nothing here to pin"
+    )
+    return int(matches[0])
+
+
+def test_the_server_comment_states_the_live_at_tool_registration_count() -> None:
+    """RED means ``daemon/server.py``'s body-cap comment miscounts the registered tools.
+
+    The comment sizes ``MAX_REQUEST_BODY_BYTES`` for "the surface ADR-0032 designs
+    and slice B4 registered", and prints that surface's size as the answer to
+    ``git grep -c '^    @_tool($' -- packages/theurian-core/src`` --
+    ``mcp/tools.py:N``. That narration went stale from 7 to 9 in silence when B4
+    registered the two write-intent tools, because nothing recomputed ``N`` from the
+    tree. This pins the derivation: ``N`` must equal the live count of ``@_tool(...)``
+    decorators in ``mcp/tools.py``, so a tool added or removed without re-counting
+    the comment reddens here rather than shipping a wrong count beside a
+    security-relevant transport bound (``pin-derivations-not-prose``).
+    """
+    stated = _tool_count_the_server_comment_states()
+    live = _live_at_tool_decorator_count()
+
+    assert stated == live, (
+        f"daemon/server.py's body-cap comment says mcp/tools.py registers {stated} tools, but "
+        f"the live tree carries {live} `@_tool(...)` decorators. That comment cites the count "
+        f"as the surface the transport body cap is sized for -- re-count it in the same change "
+        f"that adds or removes a tool"
     )
