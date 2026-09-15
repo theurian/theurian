@@ -54,15 +54,17 @@ UNAUTHENTICATED_PATHS: Final = frozenset({"/health"})
 #: it rather than left at a default.
 #:
 #: **Derived, not chosen.** The largest legitimate body this daemon is sized for
-#: is a write-intent one -- every tool registered today is read-side and sits far
-#: below this, so the sizing is for the surface ADR-0032 designs and slice B4
-#: registers (``git grep -c '^    @_tool($' -- packages/theurian-core/src``
-#: answers ``mcp/tools.py:7``, 2026-09-15: ``knowledge.search``/``.get``/
-#: ``.status``, ``project.list``, ``review.findings``/``.search``,
-#: ``system.capabilities``. The pattern is anchored to the decorator's own
-#: indentation because an unanchored one counts this very sentence, which is how
-#: the first recording of it came to answer 8) -- and what bounds
-#: such a body is its *landed* form:
+#: is a write-intent one -- the seven read-side tools sit far below this, so the
+#: sizing is for the surface ADR-0032 designs and slice B4 registered
+#: (``git grep -c '^    @_tool($' -- packages/theurian-core/src`` answers
+#: ``mcp/tools.py:9``, 2026-09-15: seven read-side --
+#: ``knowledge.search``/``.get``/``.status``, ``project.list``,
+#: ``review.findings``/``.search``, ``system.capabilities`` -- plus the two
+#: write-intent tools B4 registered, ``knowledge.proposeChange`` and
+#: ``knowledge.generateMigrationDraft``. The pattern is anchored to the
+#: decorator's own indentation because an unanchored one counts this very
+#: sentence, which is how the first recording of it came to answer 8) -- and what
+#: bounds such a body is its *landed* form:
 #: :data:`~theurian.security.paths.MAX_SOURCE_FILE_BYTES` is the byte cap on the
 #: file a proposal writes (ADR-0032 decision 3).
 #:

@@ -6,9 +6,12 @@ Three rules hold across every tool here:
 no "last used project" fallback, because with many agents sharing one daemon an
 implicit default resolves one agent's query against another agent's project.
 
-**Read-only.** Nothing in this module reaches a canonical write. Milestone 3
-ships no write-intent tools at all, and when they arrive they will emit proposal
-files rather than mutating approved state.
+**No canonical write.** Nothing in this module reaches a canonical write. Slice
+B4 registered two write-intent tools here -- ``knowledge.proposeChange`` and
+``knowledge.generateMigrationDraft`` -- and they emit proposal files a human
+reviews and merges rather than mutating approved state; a draft-only facade holds
+that they reach no approved-state write (ADR-0032 decision 8). Every other tool
+is read-side.
 
 **Labelled results.** Every knowledge-bearing result carries the trust triple.
 Knowledge bodies contain sentences like "always validate input before

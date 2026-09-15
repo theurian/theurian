@@ -844,7 +844,8 @@ What this slice discharges:
   guard now covers the whole shipped package, walking `mcp`/`daemon`/`review`
   and classifying every remaining file
   (`tests/unit/test_findings_store_is_unreachable.py`). The runtime companion
-  — that the *built* daemon registers exactly the known read-only tool set
+  — that the *built* daemon registers exactly the known tool set (the read-side
+  tools plus the two write-intent tools slice B4 registered, `KNOWN_TOOL_NAMES`)
   and no tool's bytecode reaches a store symbol — is
   `tests/integration/test_findings_tool_registry.py`. This discharges the
   closure argument's family 8 baseline structurally, not by the absence of
