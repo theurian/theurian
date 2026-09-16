@@ -73,6 +73,25 @@ jobs:
           # SURVIVED, and an unattended job files that as a finding no human can
           # reproduce. Cost is core.yml's ~4 MiB, paid once a night.
           fetch-depth: 0
+          # This is the only workflow here that runs suite code under mutation
+          # while holding a token that can write to the tracker, and by default
+          # `actions/checkout` leaves that token in the workspace at
+          # `.git/config` as an `http.https://github.com/.extraheader`. The
+          # driver already strips GH_TOKEN and GITHUB_TOKEN from the harness's
+          # child environment, and `--with-git` writes each copied tree a fresh
+          # `[core]`-only config rather than copying this one -- but neither
+          # reaches a file that stays readable, at a known path, to every
+          # process seven mutated full-suite walks start. An environment strip
+          # cannot unset a file.
+          #
+          # Nothing here needs the credential. The clone above is already done
+          # when this takes effect, the sweep pushes nothing, and the fallback
+          # `git fetch` in the next step reads a public repository
+          # anonymously -- measured 2026-09-16, an unauthenticated
+          # `GET /theurian/theurian/info/refs?service=git-upload-pack`
+          # answered HTTP 200. Should this repository ever go private, that
+          # fetch is what fails, loudly, before the sweep runs.
+          persist-credentials: false
 
       - name: The tracking ref one of those rules reads by name
         run: |
