@@ -106,8 +106,15 @@ def _visible(text: str) -> str:
     every pin pass while the published page carried nothing. Stripping first
     means a hidden section reaches the heading-not-found assertion instead,
     which is the honest failure: the claims are not on the page.
+
+    The `\\Z` alternative carries the other half. CommonMark ends a comment at
+    `-->` **or at end of document**, so one unclosed `<!--` line above the
+    section hides every byte after it from every rendered reader -- and
+    `orchestration.md` contains no `-->` anywhere to re-close it. A pattern
+    that required the closing delimiter stripped nothing in that case and left
+    the section, and so every pin below it, green against an invisible page.
     """
-    return re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+    return re.sub(r"<!--.*?(?:-->|\Z)", "", text, flags=re.DOTALL)
 
 
 def _flat(text: str) -> str:
