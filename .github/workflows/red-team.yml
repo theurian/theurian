@@ -11,8 +11,13 @@ on:
   schedule:
     # 01:17 UTC daily: off the hour, because every top-of-hour cron on GitHub
     # queues together and is delayed as a block, and early enough that this
-    # job's whole 150-minute ceiling (01:17-03:47 UTC) clears security.yml's
-    # weekly `23 5 * * 1` by more than an hour even on a Monday that starts late.
+    # job's whole 165-minute ceiling (01:17-04:02 UTC) clears security.yml's
+    # weekly `23 5 * * 1` by 81 minutes, even on a Monday that starts late.
+    #
+    # That figure is `timeout-minutes` below, not a second budget: the two moved
+    # apart once already, this comment claiming 150 minutes and 03:47 while the
+    # job carried 165. Move both, or the margin stated here is not the one the
+    # job actually leaves.
     - cron: "17 1 * * *"
   workflow_dispatch:
     inputs:
