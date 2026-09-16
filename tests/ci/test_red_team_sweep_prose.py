@@ -312,6 +312,26 @@ def _sweep_filing() -> ModuleType:
     return sweep_filing
 
 
+def test_a_commented_out_section_is_invisible_to_every_rule_in_this_module() -> None:
+    """Every rule below greps the section, and raw bytes survive being commented.
+
+    The adversarial round wrapped this section in `<!-- -->` and watched all of
+    them pass while the published page carried nothing.
+    """
+    assert "hidden" not in _visible("before <!-- hidden --> after")
+
+
+def test_an_unclosed_comment_hides_every_byte_after_it_as_well() -> None:
+    """CommonMark ends a comment at `-->` *or* at end of document.
+
+    The second half of that rule is what a pattern requiring the closing
+    delimiter misses, and `orchestration.md` carries no `-->` anywhere to
+    re-close one: a single `<!--` line above the heading hid the section from
+    every rendered reader while every pin below it stayed green.
+    """
+    assert "hidden" not in _visible("<!--\nhidden")
+
+
 def test_both_documents_carry_the_release_cut_step_word_for_word() -> None:
     """A citation is only worth anything if the cited document carries the step.
 
