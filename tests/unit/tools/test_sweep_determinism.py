@@ -6,10 +6,11 @@ regenerate exactly that mutation from the date in the title, without the sweep's
 machine, its process memory or its ordering of a directory walk. Every rule here
 exists so that "re-run the sweep for 2026-09-16" is a complete instruction.
 
-The rotation rules are pinned against a *synthetic* census, so they stay claims
-about the scheme rather than about whatever ``packages/theurian-core/src`` holds
-today; the real census is then checked separately for the properties the scheme
-assumes of it (non-empty, sorted, no ``__init__.py``).
+The rotation and advance rules are pinned against a *synthetic* census, so they
+stay claims about the scheme rather than about whatever
+``packages/theurian-core/src`` holds today; the real census is then checked
+separately for the properties the scheme assumes of it (non-empty, sorted, no
+``__init__.py``).
 """
 
 from __future__ import annotations
@@ -27,6 +28,23 @@ pytestmark = pytest.mark.unit
 #: A census small enough to enumerate by hand, so every expectation below is a
 #: pinned value rather than a restatement of the implementation.
 _SYNTHETIC = ("a.py", "b.py", "c.py", "d.py", "e.py")
+
+#: The same census after one module is added -- the event that re-indexes every
+#: date's draw, and the one this file must not be sensitive to.
+_GROWN = (*_SYNTHETIC, "f.py")
+
+#: What each synthetic file holds, so that "barren" is a property of the source
+#: rather than of a stub: only ``b.py`` and ``c.py`` carry an operator family the
+#: generator can reach, and the rest have the shape real barren modules have --
+#: a column tuple, SQL text, a table name. ``f.py`` belongs to ``_GROWN`` only.
+_SYNTHETIC_SOURCES = {
+    "a.py": "COLUMNS = ('id', 'body')\n",
+    "b.py": "def fits(size: int) -> bool:\n    return size < 3\n",
+    "c.py": "DEFAULT = True\n",
+    "d.py": "QUERY = 'SELECT id FROM item'\n",
+    "e.py": "TABLE = 'item'\n",
+    "f.py": "TITLE_COLUMN = 'title'\n",
+}
 
 #: One real night, used wherever a rule has to hold against real source.
 _NIGHT = date(2026, 9, 16)
@@ -138,27 +156,50 @@ def _pinned_night(night: date = _NIGHT) -> sweep_mutations.Generated:
     return sweep_mutations.first_productive(walk, _source_of, on=night)
 
 
-def test_a_barren_target_advances_to_the_next_file_in_the_rotation() -> None:
-    """The 2026-09-16 rotation really does start on a file with nothing to mutate.
+def _landings(census: tuple[str, ...]) -> tuple[str, ...]:
+    """The file each possible draw ends up sweeping, in census order.
 
-    ``review_search_sql.py`` is SQL text and column tuples: no comparison, no
-    boolean literal, no ``and``. Stopping there would file nothing and prove
-    nothing, and the night would read clean. The advance is what turns a barren
-    draw into an ordinary night, and it must land on the *next* file rather than
-    on an arbitrary one, or the run stops being reproducible.
+    Every draw, not a chosen one: consecutive ordinals cover every remainder
+    modulo the census length, so ``len(census)`` consecutive nights are the whole
+    population of starting positions.
     """
-    walk = sweep_census.rotation(sweep_census.census(), _NIGHT)
+    by_draw = {}
+    for offset in range(len(census)):
+        night = date.fromordinal(739870 + offset)
+        walk = sweep_census.rotation(census, night)
+        by_draw[walk[0]] = sweep_mutations.first_productive(
+            walk, _SYNTHETIC_SOURCES.__getitem__, on=night
+        ).path
+    return tuple(by_draw[path] for path in census)
 
-    barren = sweep_mutations.candidates(walk[0], _source_of(walk[0]), on=_NIGHT)
-    landed = _pinned_night()
 
-    assert barren.candidates == ()
-    assert landed.path != walk[0]
-    assert landed.path == next(
+def test_a_barren_target_advances_to_the_next_productive_file_in_the_rotation() -> None:
+    """A draw with nothing to mutate has to become an ordinary night, not a clean one.
+
+    Every census holds modules of constants, SQL text and column tuples, and a
+    night that stopped on one would file nothing while proving nothing. The
+    advance must land on the *next* productive file in the walk -- wrapping past
+    the end of the census when the draw is late in it -- rather than on an
+    arbitrary productive one, or the run stops being reproducible from the date.
+
+    Pinned against the synthetic census at two sizes, which is #727: the earlier
+    form asserted that one hand-picked date drew a barren file out of the *live*
+    census, and since the draw is ``ordinal % len``, adding a production module
+    anywhere re-indexed that date and failed the assertion in unrelated pull
+    requests. What the sweep guarantees is about the draws, not about the tree.
+    """
+    barren = tuple(
         path
-        for path in walk
-        if sweep_mutations.candidates(path, _source_of(path), on=_NIGHT).candidates
+        for path, source in _SYNTHETIC_SOURCES.items()
+        if not sweep_mutations.candidates(path, source, on=_NIGHT).candidates
     )
+
+    over_five = _landings(_SYNTHETIC)
+    over_six = _landings(_GROWN)
+
+    assert barren == ("a.py", "d.py", "e.py", "f.py")
+    assert over_five == ("b.py", "b.py", "c.py", "b.py", "b.py")
+    assert over_six == ("b.py", "b.py", "c.py", "b.py", "b.py", "b.py")
 
 
 def test_a_census_where_nothing_can_be_mutated_refuses_to_report_a_clean_night() -> None:
