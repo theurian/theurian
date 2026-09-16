@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shlex
 import shutil
@@ -192,16 +193,50 @@ def _source_of(path: str) -> str:
     return (REPO_ROOT / path).read_text(encoding="utf-8")
 
 
+#: Names the harness's children must not inherit.
+#:
+#: The harness runs this repository's whole dependency tree under mutation --
+#: seven full suite walks, roughly two hours, unattended, nightly -- and
+#: ``mutate_run._child_env`` builds each suite's environment from
+#: ``dict(os.environ)``. Whatever this driver holds is therefore what every one
+#: of those processes holds, and in CI that is a token with ``issues:write``.
+#: The red-team workflow is the only one in this repository pairing suite
+#: execution with a write token.
+#:
+#: A subtraction rather than an allow-list, deliberately: ``tools/mutate.py``
+#: needs ``UV_CACHE_DIR`` to keep each isolated tree's virtualenv warm, ``HOME``
+#: to find it when that is unset, and git's own configuration. A scrubbed
+#: environment would make every tree build from scratch or fail outright, and
+#: that half of the fix is the half no security assertion notices going wrong.
+#:
+#: The driver keeps the token for itself -- it files through ``gh`` afterwards,
+#: in a process this does not touch.
+_TOKENS_THE_HARNESS_MUST_NOT_SEE: Final = frozenset({"GH_TOKEN", "GITHUB_TOKEN"})
+
+
+def _harness_env() -> dict[str, str]:
+    """This process's environment, minus the tracker tokens."""
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if name not in _TOKENS_THE_HARNESS_MUST_NOT_SEE
+    }
+
+
 def _run_mutate(argv: Sequence[str]) -> int:
     """Run the harness, letting its output through to the log as it goes.
 
     Not captured: a batch runs for tens of minutes and its per-mutation lines are
     the only sign of progress a workflow log has. ``cwd`` is the checkout because
-    the harness resolves repository-relative anchors against its own root.
+    the harness resolves repository-relative anchors against its own root, and
+    ``env`` is this process's own minus the tracker tokens (see
+    :data:`_TOKENS_THE_HARNESS_MUST_NOT_SEE`).
     """
     print(f"harness   {' '.join(argv)}", flush=True)
     try:
-        completed = subprocess.run(list(argv), cwd=REPO_ROOT, check=False)  # noqa: S603
+        completed = subprocess.run(  # noqa: S603
+            list(argv), cwd=REPO_ROOT, env=_harness_env(), check=False
+        )
     except OSError as error:
         raise SweepError(f"could not run the mutation harness: {error}") from error
     return completed.returncode
