@@ -80,7 +80,10 @@ theurian  http://127.0.0.1:7419/mcp  THEURIAN_MCP_TOKEN    enabled  Bearer token
 `codex mcp get theurian` prints the same entry in full, including the
 `streamable_http` transport.
 
-Then make a real call:
+Both commands read the config back and nothing else: with `THEURIAN_MCP_TOKEN`
+unset their output is byte-identical, and an entry pointing at a dead port still
+lists as `enabled`. They confirm the entry, not the connection. The call below
+is the one that does:
 
 ```sh
 codex exec --approve-for-me -C "$(mktemp -d)" --skip-git-repo-check "Use the theurian MCP server's knowledge.search tool to search project theurian for 'single local daemon'. Report the number of results and the item ids. Do not run any shell commands."
@@ -114,8 +117,8 @@ yet and the refusal names `theurian migrate apply` in the project as the remedy.
 codex mcp remove theurian
 ```
 
-That deletes the table and re-serialises the section around it, with the comment
-loss described above. Nothing else moves: no daemon is stopped, no knowledge is
+That deletes the table and rewrites the rest of `mcp_servers` exactly as the add
+did, comments and all. Nothing else moves: no daemon is stopped, no knowledge is
 deleted. Your team's knowledge lives in Git.
 
 ## What this is not
@@ -127,7 +130,6 @@ SessionStart and ships twelve `/theurian:*` commands. Neither is here; run
 **A packaged plugin.** Codex 0.154.0 has a plugin and marketplace system —
 `codex plugin marketplace`, and `codex features list` reports `hooks` and
 `plugins` stable and enabled — and Theurian publishes nothing to it. Both
-absences are this integration's scope rather than a limit of Codex: registering
-a running daemon is one command, so this integration is this file, and it lives
-in the monorepo
+absences are scope decisions, not limits of Codex: registering a running daemon
+is one command, so this integration is this file, and it lives in the monorepo
 ([ADR-0001](../../docs/adr/0001-monorepo-with-independent-artifacts.md)).
