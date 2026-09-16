@@ -307,6 +307,64 @@ def test_a_label_numbers_every_operator_the_file_offers_not_only_the_usable_ones
     assert widened.label == f"sweep-2026-09-16-02-lt-to-le-l{wanted}"
 
 
+#: A form feed used as a page separator -- the conventional one in Python source,
+#: and a character ``str.splitlines`` treats as a line break while ``ast`` and
+#: ``tokenize`` treat it as whitespace inside a line. Written as a raw byte, not
+#: an escape, because the escape would be four ordinary characters and would test
+#: nothing.
+_PAGE_BREAK_FIXTURE = (
+    "def described(value):\n"
+    '    """A docstring that says True on purpose."""\n'
+    "    return value\n"
+    "\n"
+    "\x0cdef gated(flag):\n"
+    "    return flag is True\n"
+)
+
+
+def test_a_form_feed_does_not_shift_every_offset_after_it() -> None:
+    """The line model has to be the tokenizer's, not ``str.splitlines``'.
+
+    ``splitlines`` breaks on ``\x0c`` and five other characters that Python's
+    own grammar does not, so one page separator put this module's numbering a
+    line ahead of ``ast``'s for the rest of the file. The reviewer's
+    reproduction then emitted an anchor that was unique, parsed, and mutated a
+    *docstring* under a label claiming a ``True``/``False`` flip in code -- a
+    SURVIVED fabricated from a mutation that never touched a branch, and its
+    mirror, a KILLED holding nothing.
+
+    The assertion is that the anchor names the code and that applying it flips
+    the operator the label claims, because "it produced something" was never the
+    problem.
+    """
+    generated = sweep_mutations.candidates(_PATH, _PAGE_BREAK_FIXTURE, on=_NIGHT)
+
+    assert len(generated.candidates) == 1
+    only = generated.candidates[0]
+    mutated = _PAGE_BREAK_FIXTURE.replace(only.old, only.new, 1)
+    assert only.old == "    return flag is True"
+    assert only.new == "    return flag is False"
+    assert "A docstring that says True on purpose." in mutated
+    ast.parse(mutated)
+
+
+def test_a_windows_line_ending_keeps_its_offsets() -> None:
+    """The other side of the split-on-newline model, which it must not break.
+
+    ``\r\n`` is one break to Python and the ``\r`` sits at the end of the line,
+    past every column offset -- so a model built on ``"\n"`` handles it without
+    a special case. Asserted rather than assumed, since a naive fix could have
+    left the ``\r`` shifting each line's length by one.
+    """
+    source = "def gated(flag):\r\n    return flag is True\r\n"
+
+    generated = sweep_mutations.candidates(_PATH, source, on=_NIGHT)
+
+    assert len(generated.candidates) == 1
+    assert generated.candidates[0].swapped_from == "True"
+    assert source.count(generated.candidates[0].old) == 1
+
+
 def test_a_file_with_nothing_to_mutate_yields_no_candidates_rather_than_raising() -> None:
     """A barren target is an ordinary night, not an error.
 

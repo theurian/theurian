@@ -152,13 +152,36 @@ def evenly_spaced[Item](items: Sequence[Item], limit: int) -> tuple[Item, ...]:
 
 
 def _line_index(source: str) -> tuple[tuple[str, ...], tuple[int, ...]]:
-    """Each source line, and the absolute offset it starts at."""
-    lines = source.splitlines(keepends=True)
+    """Each source line, and the absolute offset it starts at.
+
+    Split on ``"\n"`` and not with :meth:`str.splitlines`, because the two
+    disagree about what a line is and only one of them agrees with the
+    tokenizer. ``splitlines`` also breaks on ``\x0b``, ``\x0c``, ``\x1c``
+    -``\x1e``, ``\x85``, ``\u2028`` and ``\u2029``; Python's own grammar
+    breaks on ``\n``, ``\r\n`` and ``\r``, and treats a form feed as ordinary
+    whitespace *within* a line -- it is the conventional page separator in
+    Python source.
+
+    One form feed was therefore enough to put this module's line numbering one
+    ahead of ``ast``'s for the rest of the file, and every offset computed from
+    it lands somewhere else. The reviewer's reproduction anchored a mutation on a
+    docstring while the label claimed a ``True``/``False`` flip in code: a
+    SURVIVED verdict fabricated out of a mutation that never touched a branch,
+    and its mirror, a KILLED that holds nothing. Correct today only because no
+    file in the census carries such a character (0 of 139, measured 2026-09-16).
+
+    ``\r\n`` needs no special case: the ``\r`` stays at the end of the line
+    where every column offset is already past it. A lone ``\r`` would still
+    diverge, and nothing here can reach one -- :func:`sweep_census.census` and
+    the driver read sources through :meth:`Path.read_text`, whose universal
+    newline translation turns both into ``\n`` before this sees them.
+    """
+    lines = source.split("\n")
     starts: list[int] = []
     running = 0
     for line in lines:
         starts.append(running)
-        running += len(line)
+        running += len(line) + 1  # the separator `split` removed
     return tuple(lines), tuple(starts)
 
 
