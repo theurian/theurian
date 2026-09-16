@@ -365,6 +365,52 @@ class SqliteCanonicalStore:
             _item_with_current_content_from_row,
         )
 
+    def get_item_metadata(self, context: RequestContext, item_id: ItemId) -> KnowledgeItem | None:
+        """`get_item`'s pointer row **without joining its body** (0.2.3).
+
+        `get_item` above `LEFT JOIN`s the current revision to recompute
+        `current_served_content_sha256` from its title and body, so SQLite
+        materialises the whole body before the caller has decided anything. Every
+        gate that reads then withholds -- `knowledge.get`, `_relation_is_visible`,
+        `CanonicalVisibility._may_surface` -- decides on `status` and
+        `sensitivity`, both of which live on `knowledge_items` itself, yet paid to
+        read a *withheld* item's body first: the refusal's wall-clock then scaled
+        with that body's size, an existence-and-size oracle a caller could measure
+        for content it may not read. This read answers the gate from the pointer
+        row alone; the body is read through `get_item` only once the item has
+        cleared status and sensitivity and is going to be served.
+
+        Resolves aliases like `get_item` -- reachability may follow a rename. The
+        returned item carries `current_served_content_sha256=None` because no body
+        was read to hash, exactly as `list_items` leaves it, so the serve gate
+        treats it as unverifiable and withholds on it: the GHSA-3f65 content check
+        must therefore read the full item through `get_item`, never this one.
+        """
+        resolved = self._resolve_alias(context.project_id, item_id)
+        return self._read_one(
+            _ITEM_METADATA_SQL,
+            (context.project_id.value, resolved.value),
+            _item_from_row,
+        )
+
+    def get_item_exact_metadata(
+        self, context: RequestContext, item_id: ItemId
+    ) -> KnowledgeItem | None:
+        """`get_item_metadata` with no `_resolve_alias` (T-21), the body-free
+        counterpart of `get_item_exact`.
+
+        `_relation_is_visible` gates each endpoint on status and sensitivity alone
+        and never needs the body, so it reads the row the id literally names
+        through this: a visibility decision on a *referenced* id judges the named
+        row by its own status, and now does so without materialising that row's
+        body (0.2.3).
+        """
+        return self._read_one(
+            _ITEM_METADATA_SQL,
+            (context.project_id.value, item_id.value),
+            _item_from_row,
+        )
+
     def _resolve_alias(self, project_id: ProjectId, item_id: ItemId) -> ItemId:
         alias = self._read_one(
             "SELECT item_id FROM knowledge_aliases WHERE project_id = ? AND alias = ?",
@@ -1416,6 +1462,38 @@ _ITEM_WITH_CURRENT_CONTENT_SQL: Final = (
     "LEFT JOIN knowledge_revisions AS current_revision "
     "  ON current_revision.project_id = knowledge_items.project_id "
     "  AND current_revision.revision_id = knowledge_items.current_revision_id "
+)
+
+
+#: The metadata-only read behind `get_item_metadata`/`get_item_exact_metadata`:
+#: `knowledge_items`' own columns, with **no join to `knowledge_revisions`** and
+#: so no `body` column on the row (0.2.3). The gates that read-then-withhold --
+#: `knowledge.get`, `_relation_is_visible`, `CanonicalVisibility._may_surface` --
+#: decide on `status` and `sensitivity`, which live here; reading the current
+#: revision's body before that decision made a withheld item's refusal scale with
+#: its body size, a size-and-existence oracle a caller could measure. `_item_from_row`
+#: maps it -- the same mapper `list_items` uses -- leaving
+#: `current_served_content_sha256` `None` (there is no body to hash), which the
+#: serve gate reads as unverifiable. Unlike `_ITEM_WITH_CURRENT_CONTENT_SQL`, the
+#: whole predicate is in the constant: there is no join to disambiguate a column
+#: against, so the unqualified `WHERE` binds `knowledge_items` directly.
+#:
+#: The projection names its columns rather than `SELECT *` on purpose: these are
+#: exactly the `knowledge_items` columns `_item_from_row` reads, so "materialises
+#: no body" is true by construction, not by the incidental fact that today's
+#: `knowledge_items` holds no body column. Were one ever added to this table, a
+#: `SELECT *` here would silently read it -- and the `_BodyReadCounter` pin keys
+#: on the method name, not on this SQL, so it would not catch that: the counter
+#: tallies this read as bodyless whatever the SQL projects. What does catch it is
+#: `test_gate_call_sites.py`'s explicit-column projection pin, which parses this
+#: constant and reddens on a `SELECT *` or a `knowledge_revisions` join -- so
+#: "materialises no body" is a guarded structural guarantee here (T-26), not an
+#: unpinned one. Adding a non-body column that `_item_from_row` needs means
+#: extending this list too.
+_ITEM_METADATA_SQL: Final = (
+    "SELECT item_id, project_id, namespace, kind, status, current_revision_id, "
+    "owner, trust_level, sensitivity, tenant_id, acl_group, valid_from, valid_to "
+    "FROM knowledge_items WHERE project_id = ? AND item_id = ?"
 )
 
 

@@ -76,6 +76,17 @@ CRITICAL, which is reported as one whatever perspective it came from.
 **Supply chain (OSS-7, T-16)**
 - Dependencies pinned. No step claims to have verified something it did not.
 
+## Isolation — perturb in your own clone, never the shared review worktree
+
+Reproduce a finding by running, and run every perturbation somewhere no one else
+is reading. A teeth-check or a timing re-attack that mutates source — reverting a
+fixed line, planting a probe row — belongs in a fresh `git clone` at a non-dot
+path (`git fetch origin main`, clear `__pycache__`), never in the shared worktree
+you were handed. A mutation left in the shared tree corrupts every other reviewer
+running there and reads as the fix's own committed state. If you ever touch the
+shared tree, restore it byte-identical and say so in your report. (Burned in
+after a teeth-check dirtied the shared worktree during the 0.2.3 round.)
+
 ## Reporting
 
 Severity, `file:line`, the concrete attack or disclosure, and a specific fix.

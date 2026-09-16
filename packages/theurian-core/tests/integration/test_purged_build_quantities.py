@@ -306,13 +306,20 @@ class Measured:
 
 
 class CountingReadSession:
-    """A real `SqliteCanonicalStore` session with a tally on `get_item`.
+    """A real `SqliteCanonicalStore` session with a tally on `get_item_metadata`.
 
     A decorator rather than a fake, so every answer the gate acts on comes from a
     real SQLite read of a real state database. The only thing added is the
     counter, and the counter is the instrument: T-17's residual is *how many
     times the canonical store was asked*, which no published field reports and
     no return value carries.
+
+    The tally is on `get_item_metadata`, the bodyless per-candidate read the gate
+    makes since 0.2.3 -- the read *every* ranked row pays, and so the one that
+    carries the T-17a duration residual. The body-carrying `get_item` is tallied
+    separately: it is the surfaceable-item subset, does not move with the withheld
+    count, and no longer materialises a withheld row's body at all (0.2.3, the
+    pre-gate body-materialization channel).
 
     **The context-manager pair is the session's, and :func:`_measure` enters it
     through this class rather than beside it.** `CanonicalReadSession` declares
@@ -327,6 +334,11 @@ class CountingReadSession:
 
     def __init__(self, inner: SqliteCanonicalStore) -> None:
         self._inner = inner
+        #: The per-candidate read (0.2.3): every ranked row pays one, so this is
+        #: the T-17a duration residual `_measure` reports as `canonical_reads`.
+        self.get_item_metadata_calls = 0
+        #: The body-carrying read, made only for a surfaceable row. Tallied so a
+        #: regression that materialised a withheld body again would show here.
         self.get_item_calls = 0
 
     def list_items(self, context: RequestContext) -> tuple[KnowledgeItem, ...]:
@@ -336,8 +348,17 @@ class CountingReadSession:
         self.get_item_calls += 1
         return self._inner.get_item(context, item_id)
 
+    def get_item_metadata(self, context: RequestContext, item_id: ItemId) -> KnowledgeItem | None:
+        self.get_item_metadata_calls += 1
+        return self._inner.get_item_metadata(context, item_id)
+
     def get_item_exact(self, context: RequestContext, item_id: ItemId) -> KnowledgeItem | None:
         return self._inner.get_item_exact(context, item_id)
+
+    def get_item_exact_metadata(
+        self, context: RequestContext, item_id: ItemId
+    ) -> KnowledgeItem | None:
+        return self._inner.get_item_exact_metadata(context, item_id)
 
     def get_revision(
         self, context: RequestContext, revision_id: RevisionId
@@ -517,11 +538,11 @@ def _measure(corpus: Corpus, index: SqliteIndexStore, *, query: str, lexical: bo
     """Drive `_visible_ranking` over one build and count what it spent.
 
     The gate is a real `CanonicalVisibility` over a real `SqliteCanonicalStore`
-    session, so `get_item` is an actual SQLite read and the per-request
-    memoisation in the path is the shipped one. It has nothing to do under this
-    fixture, where one chunk per document makes every ranked row a distinct item
-    -- :attr:`Measured.canonical_reads` records why the count is still defined as
-    the distinct one.
+    session, so `get_item_metadata` (the per-candidate read) is an actual SQLite
+    read and the per-request memoisation in the path is the shipped one. It has
+    nothing to do under this fixture, where one chunk per document makes every
+    ranked row a distinct item -- :attr:`Measured.canonical_reads` records why the
+    count is still defined as the distinct one.
 
     The session, not this function, owns the handle: `CountingReadSession`
     forwards the ``with`` to the store it wraps, so the handle is acquired at
@@ -549,7 +570,11 @@ def _measure(corpus: Corpus, index: SqliteIndexStore, *, query: str, lexical: bo
             visible_sensitivities=EVERY_SENSITIVITY,
         )
         ranked = RetrievalService._visible_ranking(fetch, visible)
-        reads = session.get_item_calls
+        # The per-candidate read (`get_item_metadata`) is the T-17a residual: it is
+        # the read every ranked row pays, so it -- not the body-carrying `get_item`,
+        # which only a surfaceable row reaches -- is what moves with the withheld
+        # count (0.2.3).
+        reads = session.get_item_metadata_calls
 
     return Measured(
         passes=len(rows_per_pass),

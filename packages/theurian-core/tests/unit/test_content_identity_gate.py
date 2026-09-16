@@ -21,6 +21,7 @@ Pure: the store is a fake, and no file is opened.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import final
 
@@ -83,8 +84,12 @@ class _Session:
     clear here fails for the content hash and nothing else. ``drifted`` and
     ``hashless`` name the item ids whose current-revision hash disagrees with the
     row, or is absent; every other known row is honest. ``reads`` counts the
-    ``get_item`` calls, so a test can show the gate walked the whole ranking
-    rather than stopping at a drifted row.
+    body-carrying ``get_item`` calls -- the content read the gate makes only for a
+    row that has already cleared status, sensitivity and revision (0.2.3) -- so a
+    test can show every row here (all approved, so all reach the content check)
+    was content-checked rather than short-circuited at a drifted one. The bodyless
+    ``get_item_metadata`` pre-gate is uncounted and carries no served hash, exactly
+    as the real store leaves it.
     """
 
     def __init__(
@@ -108,20 +113,12 @@ class _Session:
     def list_items(self, context: RequestContext) -> tuple[KnowledgeItem, ...]:
         raise NotImplementedError  # pragma: no cover - CanonicalVisibility never lists
 
-    def get_item(
-        self,
-        context: RequestContext,  # noqa: ARG002 - project-blind fake
-        item_id: ItemId,
-    ) -> KnowledgeItem | None:
-        self.reads += 1
+    def _pointer_row(self, item_id: ItemId) -> KnowledgeItem | None:
+        """The item's pointer columns, or ``None`` if unknown -- served hash unset,
+        exactly as `get_item_metadata` leaves it (no body was read to hash)."""
         row = self._rows.get(item_id.value)
         if row is None:
             return None
-        content = (
-            None
-            if item_id.value in self._hashless
-            else _canonical_hash(row, drifted=item_id.value in self._drifted)
-        )
         return KnowledgeItem(
             item_id=item_id,
             project_id=PROJECT,
@@ -133,11 +130,40 @@ class _Session:
             trust_level=TrustLevel.REVIEWED,
             sensitivity=Sensitivity.INTERNAL,
             validity=ValidityPeriod(valid_from=NOW),
-            current_served_content_sha256=content,
         )
+
+    def get_item(
+        self,
+        context: RequestContext,  # noqa: ARG002 - project-blind fake
+        item_id: ItemId,
+    ) -> KnowledgeItem | None:
+        self.reads += 1
+        item = self._pointer_row(item_id)
+        if item is None:
+            return None
+        content = (
+            None
+            if item_id.value in self._hashless
+            else _canonical_hash(self._rows[item_id.value], drifted=item_id.value in self._drifted)
+        )
+        return replace(item, current_served_content_sha256=content)
+
+    def get_item_metadata(
+        self,
+        context: RequestContext,  # noqa: ARG002 - project-blind fake
+        item_id: ItemId,
+    ) -> KnowledgeItem | None:
+        # Bodyless pre-gate: no served hash, and uncounted, because the read this
+        # test's `reads` measures is the body-carrying content check below.
+        return self._pointer_row(item_id)
 
     def get_item_exact(self, context: RequestContext, item_id: ItemId) -> KnowledgeItem | None:
         return self.get_item(context, item_id)
+
+    def get_item_exact_metadata(
+        self, context: RequestContext, item_id: ItemId
+    ) -> KnowledgeItem | None:
+        return self.get_item_metadata(context, item_id)
 
     def get_revision(
         self, context: RequestContext, revision_id: RevisionId
@@ -207,8 +233,10 @@ def test_a_drifted_row_does_not_occupy_a_candidate_slot(drifted: int, drifted_fi
     invariance ``test_result_gate_session`` requires of the status axis, here for
     content drift. A drifted row that displaced a visible one would change this
     set; one that short-circuited the walk would change the read count. Neither
-    moves: ``cleared`` is total, so the canonical read count is the ranking
-    length, and every honest row survives.
+    moves: every row here is approved, so every row reaches the body-carrying
+    content check, and ``cleared`` is total -- so the content-read count is the
+    ranking length and every honest row survives. A drifted row is dropped *at*
+    the content check (0.2.3), not before it, which is why its read still counts.
     """
     visible = tuple(_row(number) for number in range(VISIBLE_HEAD))
     drifted_rows = tuple(_row(VISIBLE_HEAD + number) for number in range(drifted))
@@ -224,7 +252,8 @@ def test_a_drifted_row_does_not_occupy_a_candidate_slot(drifted: int, drifted_fi
         "visible row instead of dropping the drifted one"
     )
     assert session.reads == len(ranking), (
-        "the gate must walk the whole ranking -- a read count short of its length "
-        "means a drifted row stopped `cleared` early, the short-circuit SEC-13 "
-        "keeps out of this method so a withheld row cannot count toward the cut"
+        "the gate must content-check the whole ranking -- a body-read count short "
+        "of its length means a drifted row stopped `cleared` early, the "
+        "short-circuit SEC-13 keeps out of this method so a withheld row cannot "
+        "count toward the cut"
     )

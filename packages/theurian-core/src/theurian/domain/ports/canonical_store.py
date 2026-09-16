@@ -421,11 +421,13 @@ class CanonicalReadSession(Protocol):
 
     **Not a port, and deliberately outside the register.** ADR-0003's closed set
     is :data:`theurian.domain.ports.ALL_PORTS` -- see point 5's Milestone 7
-    amendment -- and this is not in it. Of its six members, ``list_items``,
+    amendment -- and this is not in it. Of its eight members, ``list_items``,
     ``get_item`` and ``get_revision`` are :class:`CanonicalStore`'s own narrowed
-    in; ``get_item_exact`` is the alias-free read T-21 needs and that port does
-    not offer; ``__enter__`` and ``__exit__`` add the handle lifetime it
-    deliberately does not express. No :class:`CanonicalStore` method returns one.
+    in; ``get_item_exact`` is the alias-free read T-21 needs, and
+    ``get_item_metadata``/``get_item_exact_metadata`` are the body-free reads the
+    timing gate needs (0.2.3) -- none of which that port offers; ``__enter__`` and
+    ``__exit__`` add the handle lifetime it deliberately does not express. No
+    :class:`CanonicalStore` method returns one.
 
     Injection is per consumer rather than one shared factory, and the two
     annotations differ: ``ResultGate`` (``application/retrieval_service.py``)
@@ -488,6 +490,35 @@ class CanonicalReadSession(Protocol):
         :func:`~theurian.mcp.tools._relation_is_visible` gates each relation
         endpoint through this exact read, so an endpoint that is also an alias
         key is judged by its own status and not the alias target's (SEC-13, T-21).
+        """
+        ...
+
+    def get_item_metadata(self, context: RequestContext, item_id: ItemId) -> KnowledgeItem | None:
+        """:meth:`get_item`'s pointer row alone -- no revision body read (0.2.3).
+
+        A gate that withholds on status or sensitivity needs only the item's own
+        columns, and reading the current revision's body before that decision made
+        a withheld item's refusal scale with the body's size -- an
+        existence-and-size side channel a caller could time. This read answers the
+        gate from the pointer row; the body is read through :meth:`get_item` only
+        once the item is confirmed surfaceable and is going to be served. Resolves
+        aliases like :meth:`get_item`. The returned item carries
+        ``current_served_content_sha256=None``: no body was read to compute it, so
+        the serve gate treats it as unverifiable and withholds -- which is why the
+        GHSA-3f65 content-identity check reads the full item, never this one.
+        """
+        ...
+
+    def get_item_exact_metadata(
+        self, context: RequestContext, item_id: ItemId
+    ) -> KnowledgeItem | None:
+        """:meth:`get_item_metadata` resolving no alias (T-21), the body-free
+        counterpart of :meth:`get_item_exact`.
+
+        A visibility decision on a *referenced* id reads the row that id names and
+        gates it on status and sensitivity alone
+        (:func:`~theurian.mcp.tools._relation_is_visible`), so it needs no body and
+        now reads none.
         """
         ...
 
