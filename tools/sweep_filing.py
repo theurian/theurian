@@ -12,10 +12,11 @@ shell, and the body travels on stdin (``--body-file -``) rather than as an
 argument. Backticks and ``$( )`` are then ordinary bytes, the body stays out of
 the runner's process list, and no argument-length limit applies.
 
-**The markdown channel.** A source line may contain three backticks -- this
-repository's own docstrings do -- and inside a fixed three-backtick fence such a
-line closes the block, spilling the rest of the issue (including the ratchet
-stub) into prose. Fences are therefore sized against their content.
+**The markdown channel.** A source line may contain three backticks -- one
+production module does today, ``infrastructure/filesystem/parsers/markdown.py``,
+measured 2026-09-16 -- and inside a fixed three-backtick fence such a line
+closes the block, spilling the rest of the issue (including the ratchet stub)
+into prose. Fences are therefore sized against their content.
 
 The issue ends with the "Proposed automation" stub: CLAUDE.md's ratchet says
 every adversarial finding proposes its own automation before it closes, and this

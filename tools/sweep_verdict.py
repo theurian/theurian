@@ -36,6 +36,14 @@ UNHELD_VERDICTS: Final = frozenset({"SURVIVED", "HUNG"})
 SURVIVORS: Final = "survivors"
 UNTRUSTED: Final = "run-untrusted"
 
+#: ``tools/mutate.py``'s "the run itself cannot be trusted" exit code -- an
+#: anchor that did not match, a restore that did not restore, a control that was
+#: not green, or a mutation that reached the real checkout. Named here because
+#: two modules branch on it and a bare 2 in either would read as an ordinary
+#: count. Pinned against the harness's own documented codes in
+#: ``tests/unit/tools/test_sweep_verdict.py``.
+UNTRUSTED_EXIT: Final = 2
+
 
 @dataclass(frozen=True)
 class Outcome:

@@ -5,9 +5,9 @@ file, and refuses the batch otherwise -- ``_apply_edit`` raises, the run reports
 ``ERROR`` and exits 2. A generator that emits a two-occurrence anchor therefore
 does not produce a wrong verdict; it produces a sweep that spent an hour of CI
 and answered nothing. A generator that emits a *zero*-occurrence anchor is worse,
-and that is not hypothetical for this repository: mutate.py's own module
-docstring records "a missing anchor produces a run that tests nothing while
-reporting SURVIVED".
+and that is not hypothetical for this repository: ``mutate_edits._apply_edit``'s
+own docstring records that "a missing anchor produces a run that tests nothing
+while reporting SURVIVED".
 
 So uniqueness is checked here, by the generator, before a spec is written. The
 widening ladder is segment -> full source line -> skip, and the fixture below is

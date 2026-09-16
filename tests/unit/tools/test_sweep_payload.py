@@ -190,10 +190,12 @@ def test_shell_metacharacters_in_a_path_survive_into_the_payload_as_text() -> No
 def test_a_code_fence_inside_a_mutated_line_cannot_close_the_block_around_it() -> None:
     """The markdown channel: source text is data inside the fence, not syntax.
 
-    Any Python file may contain three backticks -- this repository's own
-    docstrings do. Rendered inside a three-backtick fence, such a line closes it,
-    and everything after it (including the ratchet stub) renders as prose. The
-    fence is therefore sized against the content rather than fixed.
+    Any Python file may contain three backticks, and one production module does
+    today -- ``infrastructure/filesystem/parsers/markdown.py``, measured
+    2026-09-16, which is one rotation away from being a target. Rendered inside a
+    three-backtick fence, such a line closes it, and everything after it
+    (including the ratchet stub) renders as prose. The fence is therefore sized
+    against the content rather than fixed.
     """
     fenced = _candidate("sweep-y")
     mutated = sweep_mutations.Candidate(

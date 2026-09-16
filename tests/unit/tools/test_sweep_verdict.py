@@ -51,6 +51,22 @@ def test_the_control_label_is_the_one_the_harness_actually_writes() -> None:
     assert sweep_verdict.CONTROL_LABEL == mutate._CONTROL_LABEL
 
 
+def test_the_untrusted_exit_code_is_the_one_the_harness_actually_returns() -> None:
+    """The other half of the seam, taken from the harness rather than from its docs.
+
+    The sweep branches on exit 2 in two places -- whether a missing results file
+    is expected, and whether the night files a run-untrusted issue. If the
+    harness ever returned something else for an untrusted run, both branches
+    would silently take the trusted path and a batch that proved nothing would be
+    read as a batch that proved everything.
+
+    Driven through ``mutate.main`` with no arguments at all, which is the
+    cheapest untrusted run there is: it refuses before building a tree, running
+    a suite or touching the checkout.
+    """
+    assert mutate.main([]) == sweep_verdict.UNTRUSTED_EXIT
+
+
 def test_a_full_house_of_killed_mutations_over_a_green_control_is_clean() -> None:
     """AC3's precondition: the one shape that is allowed to file nothing.
 

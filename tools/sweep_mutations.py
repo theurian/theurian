@@ -9,8 +9,9 @@ names a *branch* that some test was supposed to distinguish.
 **The anchor is the hard part, not the operator.** ``tools/mutate.py`` takes an
 exact ``--old`` string and requires it to occur once in the file. An anchor that
 occurs twice makes the harness exit 2 and the night answers nothing; an anchor
-that occurs *zero* times is worse, because (mutate.py's own words) "a missing
-anchor produces a run that tests nothing while reporting SURVIVED". So every
+that occurs *zero* times is worse, because (``mutate_edits._apply_edit``'s own
+words) "a missing anchor produces a run that tests nothing while reporting
+SURVIVED". So every
 anchor here is checked for uniqueness by this module before a spec is written,
 on a ladder: the expression as written, then the whole source line, then the
 candidate is dropped -- and a drop is *reported*, never swallowed, because a
