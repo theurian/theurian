@@ -6,9 +6,12 @@ Three rules hold across every tool here:
 no "last used project" fallback, because with many agents sharing one daemon an
 implicit default resolves one agent's query against another agent's project.
 
-**Read-only.** Nothing in this module reaches a canonical write. Milestone 3
-ships no write-intent tools at all, and when they arrive they will emit proposal
-files rather than mutating approved state.
+**No canonical write.** Nothing in this module reaches a canonical write. Slice
+B4 registered two write-intent tools here -- ``knowledge.proposeChange`` and
+``knowledge.generateMigrationDraft`` -- and they emit proposal files a human
+reviews and merges rather than mutating approved state; a draft-only facade holds
+that they reach no approved-state write (ADR-0032 decision 8). Every other tool
+is read-side.
 
 **Labelled results.** Every knowledge-bearing result carries the trust triple.
 Knowledge bodies contain sentences like "always validate input before
@@ -25,7 +28,7 @@ from __future__ import annotations
 import functools
 import inspect
 import shlex
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
@@ -35,6 +38,7 @@ from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 
 from theurian import __protocol_version__, __version__
 from theurian.application.authorization import DEPLOYMENT_TENANT, AuthorizationGrant
+from theurian.application.draft_only_proposals import DraftOnlyProposals
 from theurian.application.project_service import (
     ACTIVE_POINTER_REMEDY,
     FINDINGS_STORE_ID,
@@ -47,14 +51,38 @@ from theurian.application.project_service import (
     read_active_state,
     verify_state_provenance,
 )
+from theurian.application.proposal_service import (
+    DraftedMigration,
+    DraftedProposal,
+    MigrationDocumentValidator,
+    ProposalError,
+    ProposalRequest,
+    ProposalService,
+)
 from theurian.application.retrieval_service import DEFAULT_BUDGET_TOKENS
 from theurian.domain.context import RequestContext
-from theurian.domain.enums import Sensitivity, may_disclose, may_surface
+from theurian.domain.enums import (
+    KnowledgeKind,
+    Sensitivity,
+    TrustLevel,
+    may_disclose,
+    may_surface,
+)
 from theurian.domain.errors import InvalidIdentifierError, TheurianError
-from theurian.domain.identifiers import MAX_IDENTIFIER_LENGTH, ItemId, ProjectId
-from theurian.domain.knowledge import KnowledgeRelation
+from theurian.domain.identifiers import (
+    MAX_IDENTIFIER_LENGTH,
+    AgentId,
+    ItemId,
+    ProjectId,
+    RevisionId,
+    TaskId,
+)
+from theurian.domain.knowledge import KnowledgeRelation, SourceAnchor
 from theurian.domain.ports.canonical_store import CanonicalReadSession
+from theurian.domain.proposal import Evidence
 from theurian.domain.state import ActiveState
+from theurian.domain.values import MediaType
+from theurian.infrastructure.determinism import SystemClock, UlidGenerator
 from theurian.infrastructure.sqlite.findings_store import (
     FindingsStoreError,
     SqliteReviewFindingStore,
@@ -1188,16 +1216,166 @@ def _tenant_boundary_refusal(grant: AuthorizationGrant) -> ToolError:
     )
 
 
+#: What a caller does after a write-intent tool has drafted a proposal. The
+#: judgement and the moves are the human's; nothing here has been approved and
+#: nothing has moved into approved state (ADR-0013). One shape for the CLI and the
+#: tools, so a human reading a `theurian propose` result and an agent reading a
+#: tool result see the same next steps.
+_PROPOSAL_NEXT_STEPS: Final = (
+    "A proposal was written. Nothing has been approved and nothing has moved into approved state.",
+    "Review it, then run `theurian propose accept <proposalId>` to move the "
+    "migration and any body into place. That is the file moves, not the approval.",
+    "Open a pull request with the proposal directory in it. The merge is the approval (ADR-0013).",
+)
+
+
+def _relative_posix(path: Path, root: Path) -> str:
+    """A path reported relative to the project root, POSIX-shaped for the wire."""
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:  # pragma: no cover - every path here is built from the root
+        return path.as_posix()
+
+
+def _closed_value[E](enum_cls: type[E], raw: str, field: str) -> E:
+    """Parse a closed-vocabulary wire field, or refuse naming the valid values.
+
+    The vocabulary stays a handler refusal rather than a published ``enum`` for
+    ``kind``/``trustLevel``/``sensitivity`` (the reason ``knowledge-search`` gives
+    for keeping vocabulary off the schema): the refusal names the valid set,
+    where ``does not satisfy`` would not. ``contentType`` is the one exception the
+    schema closes, because ADR-0032 decision 1 makes it a closed enum on the wire.
+    """
+    try:
+        return enum_cls(raw)  # type: ignore[call-arg]
+    except ValueError as exc:
+        valid = ", ".join(member.value for member in enum_cls)  # type: ignore[attr-defined]
+        raise ToolError(f"`{field}` must be one of: {valid}.") from exc
+
+
+def _wire_source_anchors(raw: list[dict[str, Any]] | None) -> tuple[SourceAnchor, ...]:
+    """Build the source anchors from the wire, or none.
+
+    One wire field fills both ``Evidence.anchors`` and
+    ``ProposalRequest.source_anchors`` (ADR-0032 decision 1): a caller has one
+    answer to "where did this come from", and the two domain fields have separate
+    readers. The per-anchor shape is validated by the published schema before
+    this runs, so a missing ``provider``/``sourceUri`` is refused at the wire.
+    """
+    if not raw:
+        return ()
+    return tuple(
+        SourceAnchor(
+            provider=str(anchor["provider"]),
+            source_uri=str(anchor["sourceUri"]),
+            repository=anchor.get("repository"),
+            commit_sha=anchor.get("commitSha"),
+            file_path=anchor.get("filePath"),
+        )
+        for anchor in raw
+    )
+
+
+def _wire_evidence(
+    evidence: Mapping[str, object],
+    agent_id_top: str | None,
+    task_id_top: str | None,
+    anchors: tuple[SourceAnchor, ...],
+) -> Evidence:
+    """Build the :class:`Evidence` a write-intent call carries (ADR-0032 decision 4).
+
+    The ``evidence`` object is authoritative for ``agentId`` and ``taskId``. When a
+    top-level tool-context field is present and **disagrees** with its evidence
+    counterpart, the call is refused rather than resolved by precedence -- the two
+    spellings would otherwise record one identity in ``evidence.json`` and a
+    different one in whatever observes the request. The refusal carries no project
+    content. Requiredness of ``model`` and ``reasoning`` is enforced by
+    :class:`Evidence` itself (ADR-0013 point 5).
+    """
+    agent = str(evidence.get("agentId", ""))
+    task = str(evidence.get("taskId", ""))
+    if agent_id_top is not None and agent_id_top != agent:
+        raise ToolError(
+            "agentId is stated twice and the two disagree. The evidence.agentId is "
+            "authoritative; send one identity, or omit the top-level agentId."
+        )
+    if task_id_top is not None and task_id_top != task:
+        raise ToolError(
+            "taskId is stated twice and the two disagree. The evidence.taskId is "
+            "authoritative; send one identity, or omit the top-level taskId."
+        )
+    return Evidence(
+        agent_id=AgentId(agent),
+        task_id=TaskId(task),
+        model=str(evidence.get("model", "")),
+        reasoning=str(evidence.get("reasoning", "")),
+        anchors=anchors,
+    )
+
+
+def _drafted_proposal_payload(drafted: DraftedProposal, root: Path) -> dict[str, Any]:
+    """The ``knowledge.proposeChange`` result: the CLI's ``_drafted_payload`` shape.
+
+    One payload shape for two front ends (ADR-0032 decision 1): a human reading a
+    ``theurian propose`` result and an agent reading this tool result look at the
+    same proposal.
+    """
+    return {
+        "proposalId": drafted.proposal_id.value,
+        "proposalDirectory": _relative_posix(drafted.directory, root),
+        "migrationId": drafted.migration_id.value,
+        "migrationFile": drafted.migration_file.name,
+        "revisionId": drafted.revision_id.value,
+        "expectedRevision": (
+            None if drafted.expected_revision is None else drafted.expected_revision.value
+        ),
+        "bodyFile": _relative_posix(drafted.body_file, root),
+        "evidenceFile": _relative_posix(drafted.evidence_file, root),
+        "contentFile": drafted.content_file,
+        "contentSha256": drafted.content_sha256.value,
+        "bodyDestination": _relative_posix(drafted.body_destination, root),
+        "nextSteps": list(_PROPOSAL_NEXT_STEPS),
+    }
+
+
+def _drafted_migration_payload(drafted: DraftedMigration, root: Path) -> dict[str, Any]:
+    """The ``knowledge.generateMigrationDraft`` result.
+
+    The operations path lands no body, so there is no revision id, digest or body
+    destination; ``operations`` names the kinds landed, in document order, so a
+    caller can confirm what it proposed without reading the migration back.
+    """
+    return {
+        "proposalId": drafted.proposal_id.value,
+        "proposalDirectory": _relative_posix(drafted.directory, root),
+        "migrationId": drafted.migration_id.value,
+        "migrationFile": drafted.migration_file.name,
+        "evidenceFile": _relative_posix(drafted.evidence_file, root),
+        "operations": [operation.value for operation in drafted.operations],
+        "nextSteps": list(_PROPOSAL_NEXT_STEPS),
+    }
+
+
 def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the set
-    server: MCPServer, registry: ProjectRegistry, grant: AuthorizationGrant
+    server: MCPServer,
+    registry: ProjectRegistry,
+    grant: AuthorizationGrant,
+    validate: MigrationDocumentValidator,
 ) -> MCPServer:
-    """Register Milestone 3's read-only tools.
+    """Register the read tools and the write-intent tools (ADR-0013, ADR-0032).
 
     ``grant`` is what this deployment's one principal may see, resolved once by
     the composition root (``daemon/runner.build_server``) rather than re-asked per
     call. Required rather than defaulted: a tool surface that can be registered
     without an authorization decision is a surface where forgetting one is
     invisible.
+
+    ``validate`` is the migration-document schema check the write-intent tools'
+    :class:`~theurian.application.proposal_service.ProposalService` needs. It is
+    injected here rather than imported, because locating and reading ``schemas/``
+    is an adapter's job (ADR-0003); the MCP composition root fills the same
+    parameter ``cli/propose_commands.py`` does, so the generator and the
+    accept-time rehearsal cannot come to hold two different validators.
     """
 
     # Derived from the registry rather than re-read from the environment, so the
@@ -1292,16 +1470,31 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
     # `mcp/admission.py`'s module docstring both state.
     review_search_admission = AdmissionGate(MAX_CONCURRENT_SEARCHES)
 
-    def _with_remedy(exc: ProjectError) -> ToolError:
-        """A ``ProjectError``, with its remedy still attached.
+    def _with_remedy(exc: TheurianError) -> ToolError:
+        """A ``TheurianError``, with its remedy still attached.
 
-        ``ProjectError`` carries the cure on a separate attribute, and the SDK
+        ``TheurianError`` carries the cure on a separate attribute, and the SDK
         re-raises anything that escapes a tool as
         ``ToolError(f"Error executing tool {name}: {e}")`` -- which keeps
         ``str(exc)`` and drops ``exc.remedy``. A registry file that is not JSON
         therefore reached every agent as an error naming no way out, while
         ``theurian project list`` printed the cure for the same byte of the same
         file. Folded into the message because the wire has one field for both.
+
+        **Typed on ``TheurianError``, not ``ProjectError``, because the write-intent
+        tools route their own designed refusals through here** (ADR-0032 decision 3).
+        ``ProposalService`` raises :class:`ProposalError` -- a ``TheurianError`` that
+        is *not* a ``ProjectError`` -- whose ``remedy`` names the redirect a refused
+        operation needs: ``createItem``/``upsertRevision`` to ``knowledge.proposeChange``,
+        ``changeSensitivity``/``restoreItem`` to the CLI, and the concurrency and
+        empty-field cures ``draft`` refuses with. Those refusals cross a tool body
+        that catches :class:`ProposalError` and re-raises through here, so their cure
+        is folded into the wire message rather than dropped at the ``_forwarding``
+        seam (which crosses a below-body ``TheurianError`` as ``str(exc)`` alone, for
+        the mcp 2.0.0 parity reason its own docstring gives). Everything this uses --
+        ``str(exc)``, ``exc.remedy``, the ``ProjectPathEscapeError`` test -- is defined
+        on ``TheurianError``, so the widening changes nothing for the ``ProjectError``
+        callers below.
 
         Named for the conversion rather than for the registry, because the
         registry was only where it was noticed: the state pointer's failures
@@ -1682,6 +1875,81 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             raise _with_remedy(exc) from exc
 
         return paths, database, active
+
+    def _accept_is_unreachable(*_args: Any, **_kwargs: Any) -> Any:  # pragma: no cover
+        # The write-intent tools hold a `DraftOnlyProposals` facade, whose
+        # reachable surface is the two draft entries alone (ADR-0032 decision 8),
+        # so `accept`/`_commit` are never called on this path. The
+        # `ProposalService` constructor still requires the accept-only
+        # collaborators, so they are wired to fail closed rather than to a silent
+        # no-op: if a future change ever reached one, it is a loud crash and not a
+        # wrong acceptance.
+        raise RuntimeError(
+            "the MCP write surface holds a draft-only facade; the accept path is "
+            "unreachable from a tool (ADR-0032 decision 8)"
+        )
+
+    def _draft_only_proposals(project_id_raw: str) -> tuple[DraftOnlyProposals, ProjectPaths]:
+        """Build the caller-scoped draft-only facade for one write-intent call.
+
+        The write-intent tools are handed **this**, never a ``ProposalService``:
+        the service is a local of this function, captured only inside the
+        facade's own closures, so no attribute reachable from a tool names
+        ``accept`` or ``_commit`` (ADR-0032 decision 8). Resolution runs through
+        :func:`_resolve`, so a write-intent call inherits every read-side gate --
+        the tenant boundary, the unregistered-project refusal that names only what
+        is registered, the built-state and provenance checks (SEC-13, ADR-0004).
+
+        ``current_revision`` is **caller-scoped** (ADR-0032 decision 6): it reads
+        the same canonical store the read tools serve from and consults
+        ``may_surface``/``may_disclose``, so an item this caller may not see --
+        ``rejected``, or above the deployment's ceiling -- answers ``None``, and
+        ``proposeChange``'s optimistic-concurrency refusal about it carries no
+        current-revision id and cannot be told from a refusal about an absent
+        item. For an in-view item it returns the real revision, which is the whole
+        remedy of a concurrency failure.
+        """
+        paths, database, _active = _resolve(project_id_raw)
+        project_id = ProjectId(project_id_raw)
+        context = RequestContext(project_id=project_id)
+
+        def current_revision(item_id: ItemId) -> RevisionId | None:
+            with SqliteCanonicalStore(database) as store:
+                # `get_item_metadata`, not `get_item`: the gate below decides on
+                # `status`/`sensitivity`, both on the pointer row, so a *withheld*
+                # item's body must not be read before its refusal. `get_item` joins
+                # the current revision and materialises its body, making the refusal's
+                # duration scale with that body's size -- the write-path face of the
+                # refusal-timing oracle (T-26). The metadata row carries
+                # `current_revision_id`, the only field this closure returns, so its
+                # `current_served_content_sha256=None` (no body hashed) is immaterial.
+                item = store.get_item_metadata(context, item_id)
+            if item is None or item.current_revision_id is None:
+                return None
+            # `include_unapproved=True`: a write author may legitimately update a
+            # draft, so the broadest surfaceable view is the one that answers
+            # "does this item exist and what is its current revision". A retired
+            # status (`rejected`/`deprecated`/`superseded`) is withheld under this
+            # flag too, and an above-ceiling item fails the disclosure gate, so
+            # either returns `None` -- indistinguishable from "does not exist".
+            if not may_surface(item.status, include_unapproved=True) or not may_disclose(
+                item.sensitivity, visible=grant.sensitivities
+            ):
+                return None
+            return item.current_revision_id
+
+        service = ProposalService(
+            paths=paths,
+            project_id=project_id,
+            clock=SystemClock(),
+            ids=UlidGenerator(),
+            validate=validate,
+            current_revision=current_revision,
+            landed_migration=_accept_is_unreachable,
+            landed_migrations=_accept_is_unreachable,
+            rehearse=_accept_is_unreachable,
+        )
+        return DraftOnlyProposals(service), paths
 
     @_tool(
         server,
@@ -3000,12 +3268,162 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 # scope of every build alike.
                 "reviewIngestionScope": "public-allowlisted",
                 "traceability": False,
-                "writeTools": False,
+                # **The narrowed meaning, now that it is `true`: a write-intent
+                # tool exists that a client may call.** ADR-0032 decision 5 ties
+                # this flip to the first registration, in one commit and in both
+                # directions (ADR-0026's capability honesty): `knowledge.proposeChange`
+                # and `knowledge.generateMigrationDraft` are registered and emit a
+                # proposal a human reviews and merges. It does **not** say a client
+                # may write approved knowledge -- no MCP tool reaches an approved-state
+                # write, which stays a human merging a pull request (ADR-0013). The
+                # tools hold a draft-only facade whose reachable surface is the two
+                # draft entries alone (ADR-0032 decision 8), so `accept`/`_commit`
+                # are unreachable from a tool.
+                "writeTools": True,
             },
             "note": (
-                "No write-intent tool exists. Approved knowledge changes only "
-                "through a human-authored migration (ADR-0013)."
+                "Write-intent MCP tools emit proposals for human review. No MCP "
+                "tool writes approved knowledge; it changes only through a merged, "
+                "human-authored migration (ADR-0013)."
             ),
         }
+
+    @_tool(
+        server,
+        name="knowledge.proposeChange",
+        description=(
+            "Draft a knowledge change as a reviewable proposal (ADR-0013). Writes a "
+            "proposal a human reviews and merges; it does not write approved "
+            "knowledge. The body is inline text."
+        ),
+    )
+    def knowledge_propose_change(  # noqa: PLR0913, PLR0917 - each is a published field
+        projectId: str,  # noqa: N803
+        itemId: str,  # noqa: N803
+        title: str,
+        kind: str,
+        owner: str,
+        author: str,
+        description: str,
+        body: str,
+        contentType: str,  # noqa: N803
+        evidence: dict[str, Any],
+        sourceAnchors: list[dict[str, Any]] | None = None,  # noqa: N803
+        labels: list[str] | None = None,
+        scopePaths: list[str] | None = None,  # noqa: N803
+        namespace: str | None = None,
+        trustLevel: str | None = None,  # noqa: N803
+        sensitivity: str | None = None,
+        expectedRevision: str | None = None,  # noqa: N803
+        agentId: str | None = None,  # noqa: N803
+        taskId: str | None = None,  # noqa: N803
+        local: bool = False,
+    ) -> dict[str, Any]:
+        """Draft a content change (a body and its revision) as a proposal.
+
+        Maps 1:1 onto ``ProposalService.draft`` through the draft-only facade
+        (ADR-0032 decision 1): it adds no behaviour of its own -- the service mints
+        the identifiers, chooses the paths, validates the migration and refuses an
+        unguarded update. It reaches no approved-state write (ADR-0013): approval
+        is a human merging a pull request.
+
+        The body is **inline text** (ADR-0032 decision 2). There is no path
+        parameter, by construction, so this tool is not a read primitive over the
+        operator's filesystem.
+        """
+        facade, paths = _draft_only_proposals(projectId)
+        anchors = _wire_source_anchors(sourceAnchors)
+        try:
+            request = ProposalRequest(
+                item_id=ItemId(itemId),
+                title=title,
+                kind=_closed_value(KnowledgeKind, kind, "kind"),
+                owner=owner,
+                author=author,
+                description=description,
+                body=body,
+                content_type=MediaType(contentType),
+                evidence=_wire_evidence(evidence, agentId, taskId, anchors),
+                source_anchors=anchors,
+                labels=tuple(labels or ()),
+                scope_paths=tuple(scopePaths or ()),
+                trust_level=(
+                    None
+                    if trustLevel is None
+                    else _closed_value(TrustLevel, trustLevel, "trustLevel")
+                ),
+                sensitivity=(
+                    None
+                    if sensitivity is None
+                    else _closed_value(Sensitivity, sensitivity, "sensitivity")
+                ),
+                namespace=namespace,
+                expected_revision=(
+                    None if expectedRevision is None else RevisionId.parse(expectedRevision)
+                ),
+            )
+            drafted = facade.draft(request, local=local)
+        except ProposalError as exc:
+            # A designed write-intent refusal names its cure in `exc.remedy`
+            # (ADR-0032 decision 3): the optimistic-concurrency guard
+            # (`_check_expected_revision`), the empty-field and INV-8 checks on
+            # `ProposalRequest`, and the `--local` ignore-rule refusal all raise
+            # `ProposalError`. Routed through `_with_remedy` so the cure is folded
+            # into the wire message; left to reach the `_forwarding` seam it would
+            # cross as `str(exc)` alone and the caller would be told the refusal
+            # with nothing to do about it (#491's drop, on this surface). Only
+            # `ProposalError` is caught: a below-body infrastructure `TheurianError`
+            # (`StateDatabaseUnreadableError` from the caller-scoped revision read)
+            # keeps its `_forwarding` parity crossing, unchanged.
+            raise _with_remedy(exc) from exc
+        return _drafted_proposal_payload(drafted, paths.root)
+
+    @_tool(
+        server,
+        name="knowledge.generateMigrationDraft",
+        description=(
+            "Draft a migration document as a reviewable proposal (ADR-0013, ADR-0032 "
+            "decision 3). The operations path, for the changes a body and a revision "
+            "cannot express. Writes a proposal a human reviews and merges; it does "
+            "not write approved knowledge."
+        ),
+    )
+    def knowledge_generate_migration_draft(  # noqa: PLR0913, PLR0917 - each is a published field
+        projectId: str,  # noqa: N803
+        document: dict[str, Any],
+        evidence: dict[str, Any],
+        agentId: str | None = None,  # noqa: N803
+        taskId: str | None = None,  # noqa: N803
+        local: bool = False,
+    ) -> dict[str, Any]:
+        """Land a caller-authored migration document as a proposal.
+
+        Calls ``ProposalService.draft_from_document`` through the draft-only facade
+        (ADR-0032 decision 3), which holds the v1 operation-set gate: it admits ten
+        of the fourteen ``OperationKind`` members and refuses the two content
+        movers to ``knowledge.proposeChange`` and the two non-content read-control
+        movers to the CLI. This tool does not re-gate; it builds the evidence and
+        forwards the document.
+        """
+        facade, paths = _draft_only_proposals(projectId)
+        try:
+            drafted = facade.draft_from_document(
+                document, evidence=_wire_evidence(evidence, agentId, taskId, ()), local=local
+            )
+        except ProposalError as exc:
+            # The v1 operation-set gate refuses a pulled kind by naming its
+            # redirect in `exc.remedy` (ADR-0032 decision 3):
+            # `createItem`/`upsertRevision` to `knowledge.proposeChange`,
+            # `changeSensitivity`/`restoreItem` (and any fifteenth kind) to
+            # `theurian migrate apply`. That redirect is the whole point of the
+            # refusal -- an arbitrary-vendor agent hitting a pulled kind is stuck
+            # without it -- so it is folded into the wire message through
+            # `_with_remedy` rather than dropped at the `_forwarding` seam. The
+            # `--local` ignore-rule refusal is a `ProposalError` too and crosses
+            # the same way. Only `ProposalError` is caught: `require_evidence`'s
+            # INV-8 refusal and the injected validator carry their actionable text
+            # in the message itself, which `_forwarding` already preserves.
+            raise _with_remedy(exc) from exc
+        return _drafted_migration_payload(drafted, paths.root)
 
     return server

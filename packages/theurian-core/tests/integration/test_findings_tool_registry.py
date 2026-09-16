@@ -68,6 +68,12 @@ KNOWN_TOOL_NAMES = frozenset(
         # so, rather than this comment.
         "review.search",
         "system.capabilities",
+        # The two write-intent tools (ADR-0032). They emit a proposal a human
+        # reviews and merges, hold a draft-only facade, and reach **no** symbol in
+        # :data:`STORE_SYMBOLS`: they touch the proposal directory, never the
+        # findings store, which the equality below is what says.
+        "knowledge.proposeChange",
+        "knowledge.generateMigrationDraft",
     }
 )
 

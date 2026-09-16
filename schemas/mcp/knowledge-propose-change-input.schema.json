@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theurian.dev/schemas/mcp/knowledge-propose-change-input.schema.json",
+  "title": "Input to the `knowledge.proposeChange` MCP tool",
+  "x-theurian-tool": "knowledge.proposeChange",
+  "description": "What a caller may send to `knowledge.proposeChange`, the content write-intent tool (ADR-0032 decision 1). SEC-12 validates every call against this file before it reaches application code, in the MCP server middleware (ADR-0031 decision 2). The tool maps 1:1 onto `ProposalService.draft`: it writes a proposal directory a human reviews and merges, and reaches no approved-state write (ADR-0013).\n\n**The body is inline text, and there is no path, URI, or reference field anywhere in this input (ADR-0032 decision 2).** This is a structural security property, not a refusal a handler makes: the daemon runs as the operator, so a body path would be a read primitive over the operator's filesystem — private keys, `~/.claude.json`, anything the operator can read — laundered into a proposal directory and, by ADR-0013 point 7, into a pull request. An absent parameter has nothing to be got right about symlinks, case folding, Unicode normalisation or TOCTOU on.\n\n**Composition.** The context every project-scoped call carries — `projectId`, and the optional `snapshotId`, `agentId` and `taskId` — arrives by `$ref` to `tool-context.schema.json` rather than being restated here. The closure is `unevaluatedProperties: false` and not `additionalProperties: false`, which under a `$ref` composition rejects the very context fields it referenced (ADR-0031 decision 1). `projectId` is required by the referent and is not repeated in this file's `required`.\n\n**Evidence is authoritative, and requiredness is preserved over the wire (ADR-0032 decision 4).** `evidence.agentId` and `evidence.taskId` are required and are what reach the proposal's evidence record; the top-level tool-context `agentId`/`taskId` remain optional ambient provenance and are never read into a proposal. When a top-level field is present and disagrees with its evidence counterpart, the call is refused in the handler — a cross-field equality between a `$ref`'d context property and a nested one is a constraint a schema states only awkwardly.\n\n**`body` carries a `maxLength` in code points; the transport cap is bytes.** The whole request body is rejected above `MAX_REQUEST_BODY_BYTES` at the transport (`daemon/server.py`, #669). This field-level `maxLength` counts code points while that cap counts bytes, and the unit is recorded rather than re-litigated at [#691](https://github.com/theurian/theurian/issues/691); it is a sound over-approximation of the byte cap that no admitted request can exceed.\n\n**What this file constrains, and what it leaves to the handler.** Shape, length and the closed `contentType` set. The other vocabularies (`kind`, `trustLevel`, `sensitivity`) stay handler refusals with a remedy that names the valid values, and the identifier grammar of `itemId` and `expectedRevision` stays a handler refusal too, for the reason `knowledge-search-input.schema.json` records.",
+  "type": "object",
+  "allOf": [{ "$ref": "https://theurian.dev/schemas/mcp/tool-context.schema.json" }],
+  "required": [
+    "itemId",
+    "title",
+    "kind",
+    "owner",
+    "author",
+    "description",
+    "body",
+    "contentType",
+    "evidence"
+  ],
+  "unevaluatedProperties": false,
+  "properties": {
+    "itemId": {
+      "type": "string",
+      "maxLength": 200,
+      "description": "The knowledge id the proposal is for, e.g. architecture.retry-policy. At most 200 characters, which is `MAX_IDENTIFIER_LENGTH` — the bound `ItemId` itself enforces. A well-formed id this caller may not read and one that was never stored are the same answer (SEC-13, ADR-0032 decision 6): a refusal about an out-of-view item carries no current-revision id and no status."
+    },
+    "title": {
+      "type": "string",
+      "description": "Human title for the revision. Refused empty by the handler."
+    },
+    "kind": {
+      "type": "string",
+      "description": "What sort of knowledge, e.g. architecture, decision, security. The closed set is `KnowledgeKind`; an unknown value is refused by the handler with a remedy naming the valid kinds, rather than answered here with `does not satisfy`."
+    },
+    "owner": {
+      "type": "string",
+      "description": "Team that owns this knowledge. Refused empty by the handler."
+    },
+    "author": {
+      "type": "string",
+      "description": "The human who will own the change. Refused empty by the handler."
+    },
+    "description": {
+      "type": "string",
+      "description": "Why the change is being made. Refused empty by the handler."
+    },
+    "body": {
+      "type": "string",
+      "maxLength": 26214400,
+      "description": "The revision body, as inline text (ADR-0032 decision 2 — never a path, URI, or reference). At most `MAX_REQUEST_BODY_BYTES` code points; the transport rejects a larger request in bytes first (#669), and the code-point/byte unit is #691."
+    },
+    "contentType": {
+      "type": "string",
+      "enum": ["text/markdown", "application/json", "application/yaml"],
+      "description": "The media type of `body`. A closed enum (ADR-0032 decision 1): the CLI derives it from a filename suffix, and there is no file on this path, so the caller states the type instead."
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agentId", "taskId", "model", "reasoning"],
+      "description": "Where the proposed change came from and why (ADR-0013 point 5). Provenance only: Theurian does not authenticate agents. This object is authoritative for `agentId` and `taskId` (ADR-0032 decision 4).",
+      "properties": {
+        "agentId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Which agent drafted this. Required, and what reaches the evidence record."
+        },
+        "taskId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The unit of work it came out of. Required."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The model identity that produced it. Required."
+        },
+        "reasoning": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Why the evidence supports the claim. Required — a proposal with no reasoning is rejected at generation."
+        }
+      }
+    },
+    "sourceAnchors": {
+      "type": "array",
+      "description": "Where this knowledge came from (FR-R5, INV-8). One wire field fills both the reviewed evidence record and the migration's own `metadata.sourceAnchors`. A revision needs at least one anchor, or the `authored-in-theurian` label; the handler refuses a request that has neither.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["provider", "sourceUri"],
+        "properties": {
+          "provider": { "type": "string", "description": "Anchor provider, e.g. git or github." },
+          "sourceUri": { "type": "string", "description": "Where this knowledge came from." },
+          "repository": { "type": ["string", "null"], "description": "Repository the anchor names, if any." },
+          "commitSha": { "type": ["string", "null"], "description": "Commit the anchor pins, if any." },
+          "filePath": { "type": ["string", "null"], "description": "File the anchor names, if any." }
+        }
+      }
+    },
+    "labels": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string" },
+      "description": "Free-form labels to group this knowledge by. `uniqueItems` because the migration's `revisionMetadata.labels` is `uniqueItems`, so a duplicate is refused at the wire with a key path rather than as a validation failure over a document the caller cannot see (ADR-0032 decision 3). Pass `authored-in-theurian` to declare the knowledge originates here and carries no external source."
+    },
+    "scopePaths": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Globs this knowledge governs, e.g. src/**. The order is kept."
+    },
+    "namespace": {
+      "type": ["string", "null"],
+      "description": "Namespace to record. Absent defaults to the item id's own."
+    },
+    "trustLevel": {
+      "type": ["string", "null"],
+      "description": "How much scrutiny this content has had. Absent means \"not stated\" — never a stamped default, which would assert a judgement the caller did not make (#249). The closed set is `TrustLevel`; an unknown value is a handler refusal."
+    },
+    "sensitivity": {
+      "type": ["string", "null"],
+      "description": "Disclosure class. Absent means \"not stated\", never a stamped default. The closed set is `Sensitivity`; an unknown value is a handler refusal."
+    },
+    "expectedRevision": {
+      "type": ["string", "null"],
+      "description": "The current revision id of an existing item (ADR-0006 optimistic concurrency). Required for an update and refused on a first revision — the handler derives which from the caller's own view of the approved set (ADR-0032 decision 6)."
+    },
+    "local": {
+      "type": "boolean",
+      "description": "Draft under .theurian/proposals-local/ instead (ADR-0028). Defaults to false. A parameter of the act, not a field of the reviewed text."
+    }
+  }
+}

@@ -110,8 +110,11 @@ _TOOL_NAME: Final = re.compile(r"`([a-z][a-z0-9]*\.[a-z][a-zA-Z0-9]*)`")
 #: The README sentence that enumerates the set, keyed on the phrase that names
 #: what the enumeration *is*. Not keyed on any tool name: a key naming one member
 #: would stop matching exactly when someone rewrote the list, and the sentence
-#: would drop out of the population rather than fail.
-README_KEY: Final = "read-only tools"
+#: would drop out of the population rather than fail. Not "read-only tools" any
+#: more either: ADR-0032 registered the two write-intent tools, so the set is no
+#: longer read-only, and the sentence names what the enumeration is rather than a
+#: property it no longer has.
+README_KEY: Final = "tools this daemon exposes"
 
 #: The protocol document's opening claim, same rule. The bullet list that follows
 #: it is the block after this one.
@@ -194,13 +197,20 @@ def _the_one_block_carrying(blocks: tuple[str, ...], key: str, *, record: str) -
 
 
 def _readme_sentence() -> str:
-    """The one *Works with* sentence that enumerates the callable tools."""
+    """The one *Works with* sentence that enumerates the callable tools.
+
+    Whitespace-flattened but **case-preserved**: `_collapsed` lowercases, which was
+    harmless while every tool name was lower-case and silently wrong the moment a
+    camelCase name landed (ADR-0032's `knowledge.proposeChange` /
+    `knowledge.generateMigrationDraft`). `_TOOL_NAME` matches mixed case, so the
+    extracted names must keep theirs; `README_KEY` is matched case-insensitively
+    against the flattened fragment instead.
+    """
     blocks = _blocks(README.read_text(encoding="utf-8"))
     index = _the_one_block_carrying(blocks, README_KEY, record="README's tool enumeration")
+    flattened = " ".join(blocks[index].split())
     sentences = [
-        sentence
-        for sentence in _SENTENCE_BREAK.split(_collapsed(blocks[index]))
-        if README_KEY in sentence
+        sentence for sentence in _SENTENCE_BREAK.split(flattened) if README_KEY in sentence.lower()
     ]
 
     assert len(sentences) == 1, (

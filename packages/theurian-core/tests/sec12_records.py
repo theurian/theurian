@@ -23,11 +23,13 @@ one place for that to be right.
 * **ADR-0031's Amendment 1** is a ``##`` section, anchored to a line start and
   to that level because the file refers to "Amendment 1" three times in running
   text.
-* **The CHANGELOG's #669 entries** are bullets inside ``[Unreleased]`` rather
+* **The CHANGELOG's #669 entries** are bullets inside a release section rather
   than a section of their own, and that section carries #665's and #693's
   entries too -- so the bullets are selected by the issue they name, and a pin
   counting figures across the whole section would pair a neighbour's number
-  with this issue's claim.
+  with this issue's claim. The section is found by the bullets it carries, not
+  by its name: they sit under ``[Unreleased]`` only until a release cut moves
+  them, whole, into that release's dated section.
 
 Every locator asserts what it found before returning it. An empty read is the
 failure mode an absence arm cannot distinguish from safety.
@@ -57,9 +59,11 @@ CHANGELOG: Final = REPO_ROOT / "packages/theurian-core/CHANGELOG.md"
 #: the three in-text references to "Amendment 1" cannot open the slice.
 _AMENDMENT_HEAD: Final = "\n## Amendment 1 "
 
-#: Where the unreleased section starts. Its bullets are split on a line-start
-#: ``- ``, and the ones naming the issue are the record.
-_UNRELEASED_HEAD: Final = "\n## [Unreleased]"
+#: Where a release section starts: a ``## [<release>]`` heading, anchored to a
+#: line start and to that level so the ``### Added`` sub-headings inside one
+#: cannot open a section. A section's bullets are split on a line-start ``- ``,
+#: and the ones naming the issue are the record.
+_SECTION_HEAD: Final = re.compile(r"^## \[[^]]+\].*$", re.MULTILINE)
 
 
 def t11_residual_paragraph() -> str:
@@ -94,24 +98,47 @@ def amendment_one() -> str:
 
 
 def changelog_entries(issue: str) -> str:
-    """The unreleased CHANGELOG bullets that name ``issue``, joined."""
+    """The CHANGELOG bullets that name ``issue``, joined.
+
+    Located by the section that *carries* the bullets rather than by section
+    name. The entries sit under ``[Unreleased]`` until a release cut moves them,
+    unchanged, into that release's dated section -- so a locator hardcoding
+    ``[Unreleased]`` reads an empty string on the day the cut lands, which is the
+    failure mode every arm below reports as a clean record.
+    """
     text = CHANGELOG.read_text(encoding="utf-8")
 
-    assert text.count(_UNRELEASED_HEAD) == 1, (
-        f"the CHANGELOG carries {text.count(_UNRELEASED_HEAD)} `[Unreleased]` headings, expected 1"
+    heads = [match.start() for match in _SECTION_HEAD.finditer(text)]
+    assert heads, (
+        "the CHANGELOG carries no `## [<release>]` section heading, so this locator has "
+        "nothing to slice on and every arm reading this record reads an empty string"
     )
-    rest = text.split(_UNRELEASED_HEAD, 1)[1]
-    end = rest.find("\n## ")
-    unreleased = rest[:end] if end >= 0 else rest
     # Word-boundary, so `#669` does not match `#6691`: the CHANGELOG names
     # issues by number in running prose, and a substring match would fold a
     # neighbouring issue's bullet into this record the day one is filed.
     names_issue = re.compile(rf"{re.escape(issue)}(?![0-9])")
-    bullets = [block for block in re.split(r"\n(?=- )", unreleased) if names_issue.search(block)]
+    # A list rather than a heading-keyed mapping, so two sections carrying the
+    # same heading text -- the duplicate-``[Unreleased]`` case the name-keyed
+    # locator asserted against -- stay two entries and redden below, instead of
+    # collapsing into one and silently reading whichever came last.
+    carrying: list[tuple[str, list[str]]] = []
+    for start, end in zip(heads, [*heads[1:], len(text)], strict=True):
+        # ``rstrip`` so a record does not carry the blank line that separates it
+        # from the next heading: the slice ends at its own record, whatever
+        # follows it.
+        section = text[start:end].rstrip("\n")
+        bullets = [block for block in re.split(r"\n(?=- )", section) if names_issue.search(block)]
+        if bullets:
+            carrying.append((section.split("\n", 1)[0], bullets))
 
-    assert bullets, (
-        f"the CHANGELOG's [Unreleased] section holds no bullet naming {issue}, so every arm "
-        f"reading this record reads an empty string. Either the entries moved into a "
-        f"released section -- in which case this locator follows them -- or they were dropped"
+    assert carrying, (
+        f"no CHANGELOG section holds a bullet naming {issue}, so every arm reading this "
+        f"record reads an empty string. The entries were dropped -- a release cut only "
+        f"moves them into a dated section, which this locator follows"
     )
-    return "\n".join(bullets)
+    assert len(carrying) == 1, (
+        f"bullets naming {issue} sit in {[heading for heading, _ in carrying]}, expected "
+        f"one section. Split across two, this locator cannot tell which is the record, and "
+        f"a pin reading it would pair one section's figures with another's claim"
+    )
+    return "\n".join(carrying[0][1])

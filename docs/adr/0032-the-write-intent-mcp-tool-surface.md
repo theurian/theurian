@@ -639,11 +639,12 @@ they may read needs to know it is `rejected` in order to fix the document.
   them. The guarantees that live *above* the service, in
   `cli/propose_commands.py`, do not travel, and decision 3 names both of them
   rather than letting this bullet imply they do.
-- **The capability surface stays honest at every commit.** *Once the coupling
-  pin in Compliance lands*, no window exists in which the machine-readable
-  answer and the registered tool set disagree — until then decision 5 is a rule
-  a reviewer enforces, and this line is scoped to say so rather than claiming a
-  property nothing holds.
+- **The capability surface stays honest at every commit.** No window exists in
+  which the machine-readable answer and the registered tool set disagree. This
+  line was scoped to *once the coupling pin in Compliance lands*, because until
+  then decision 5 was a rule a reviewer enforces; the pin landed with slice B4 as
+  `tests/unit/test_write_tools_flag_claims.py::test_writetools_reads_true_exactly_when_a_write_intent_tool_is_registered`,
+  so the scoping is discharged rather than deleted.
 
 ### Negative
 
@@ -661,12 +662,13 @@ they may read needs to know it is `rejected` in order to fix the document.
   that reaches for `changeSensitivity` or `restoreItem` is told to use the CLI
   and has no tool to be redirected to. That is a deliberate cost of decision 3
   and it will read as a limitation before it reads as a design.
-- **Two of the three tools' owed controls are new work, not inherited.**
+- **Two of the three tools' owed controls were new work, not inherited.**
   Decision 6's caller-scoped revision lookup and decision 8's draft-only facade
-  are properties nothing in the tree holds today; the sweeps that look like they
-  hold them do not. Naming that here is the point of the two *Compliance*
-  entries, and pretending otherwise is what the round that found this was
-  correcting.
+  were properties nothing in the tree held when this ADR was accepted; the sweeps
+  that looked like they held them did not. Naming that here was the point of the
+  two *Compliance* entries, and pretending otherwise is what the round that found
+  this was correcting. **Both were built in slice B4** — `DraftOnlyProposals` and
+  the lookup `register` injects — and *Compliance* names what holds each.
 
 ### Neutral
 
@@ -695,16 +697,28 @@ they may read needs to know it is `rejected` in order to fix the document.
    readmission needs the three things decision 3 names — a transition-aware
    refusal, a wire-required `reason`, and a decision about whether the
    enforcement seat is the tool or the engine (Phase D's ADR candidate #1).
-5. **Whether any residual disclosure survives decision 6's bind.** The bind
-   names the shape and **two** seats — a caller-scoped `CurrentRevisionLookup`
-   for `proposeChange`, and, if decision 3's open question is answered *at
-   generation*, whatever scopes the alias guard's status for
-   `generateMigrationDraft` — and slice B4 owes the two-corpora equality that
-   would find a residual on both. Until that
-   runs, this ADR asserts a design and not a measurement — which is why the
-   equality covers refusals as well as responses, and why *timing* is inside its
-   scope: a lookup that folds a longer set for an in-view item than for a
-   missing id is a duration channel, the family ADR-0033 decision 5 names.
+5. **Whether any residual disclosure survives decision 6's bind — answered at
+   slice B4, and now a measurement.** The bind names the shape and **two**
+   seats — a caller-scoped `CurrentRevisionLookup` for `proposeChange`, and, if
+   decision 3's open question is answered *at generation*, whatever scopes the
+   alias guard's status for `generateMigrationDraft`. Slice B4 ran the equality
+   this owed on both — in the same-corpus shape the decision-6 compliance entry
+   records, not the two-corpora one asked for here; that entry states the
+   difference and the one channel the same-corpus form cannot catch (one carried
+   by collection-wide state): the **value** channel by the disclosure oracle
+   (`test_write_intent_disclosure_oracle.py`), the **duration** channel by the
+   zero-body-read pin (`test_pre_gate_body_materialization.py`) plus an
+   out-of-band timing measurement. On the value channel the refusal a caller
+   reads carries no residual, to that entry's recorded reach. On the duration
+   channel the body-size term is **closed** by the body-free lookup
+   (`get_item_metadata`, T-26 face 4), so a refusal's timing no longer scales
+   with a withheld body; the one residual is a content-independent existence term
+   of ~9 µs — a withheld item that exists reads a bodyless pointer row where an
+   absent id reads nothing — which carries no withheld content, sits about 155×
+   below the ~1.40 ms transport floor (TB-1), and is not a gradeable disclosure.
+   The equality covered refusals as well as responses, which is why *timing* was
+   in scope: the duration channel decision 6's *does not close* row named is the
+   ~9 µs existence term this measurement bounds, not the body-size one B4 removed.
 6. **Rate, size and concurrency bounds on a write-intent call.** A caller able
    to make the daemon spend work no recorded limit bounds is the T-6 family's;
    [#26](https://github.com/theurian/theurian/issues/26)'s concurrency cap is
@@ -725,14 +739,26 @@ they may read needs to know it is `rejected` in order to fix the document.
 
 ## Compliance
 
-**This ADR ships no behaviour, so it has no shipped test to name.** Its
-enforcement at design time is the measurements it cites; its enforcement at
-implementation time is the tests slice B4 owes. The names below are the
-properties an implementation must pin, not files that exist today — the same
-honest split [ADR-0030](0030-github-review-ingestion-spawns-gh.md) states for
-the same reason.
+**When this ADR was accepted it shipped no behaviour, so it had no shipped test
+to name.** Its enforcement at design time was the measurements it cites; its
+enforcement at implementation time was the tests slice B4 owed, and the *Still
+owed* list below was written as properties an implementation must pin rather
+than as files that existed — the same honest split
+[ADR-0030](0030-github-review-ingestion-spawns-gh.md) states for the same
+reason.
 
-Measured now, and reproducible from this ADR (2026-09-12, `be977ea7`):
+**Slice B4 has since landed, and the sentence above is corrected in place rather
+than left standing:** the behaviour ships, and the section now partitions three
+ways — the dated design-time measurements, unchanged; what slice B4 discharged,
+each entry naming its test; and what is still owed, each naming its owner. An
+entry that landed in a *different* shape from the one this ADR asked for says so
+in its own words, because the difference is the part a later reader has to be
+able to attack.
+
+Measured when this ADR was accepted, and reproducible from it (2026-09-12,
+`be977ea7`). **A dated reading, not a standing one** — slice B4 moved several of
+these, and the *Landed* entries below say which rather than editing the readings
+here:
 
 - The `writeTools` population is **18 lines across 10 files**, with the key and
   its measured exclusions in *Context*, and the capabilities *note* is a second
@@ -786,114 +812,191 @@ Measured now, and reproducible from this ADR (2026-09-12, `be977ea7`):
   `require_evidence` — with the reason for the second recorded in
   `require_evidence`'s own docstring.
 
-Still owed, with the milestone that will satisfy it:
+Landed in Phase B slice B4, with the test that discharges each. Each entry keeps
+the property as it was written and states what actually holds it:
 
-- **Slice B4 — both tools register through `_tool`, and the walk covers them.**
-  Owed: the existing
+- **Both tools register through `_tool`, and the walk covers them.** Landed:
   `tests/integration/test_mcp_tools.py::test_no_registered_tool_can_reach_a_canonical_write`
-  and `::test_every_registered_tool_goes_through_the_forwarding_seam` green over
-  the enlarged built server — with the *positive control* that matters here,
-  that the sweep actually reaches the new tools rather than passing over a set
-  it never enumerated.
-- **Slice B4 — no write-intent tool holds an object that can move approved
-  state, and the sweep is not what holds it (decision 8).** Two owed controls,
-  because one of them reaches one level and the other does not:
-  1. **A draft-only facade at the MCP composition root.** The write-intent tools
-     are handed an object whose reachable surface does **not** include `accept`
-     or `_commit` — not a `ProposalService`. Owed: a structural test over the
-     **built** server that, for each registered write-intent tool, enumerates the
-     closure's collaborators and asserts no reachable attribute named for an
-     approved-state mover. This is what actually holds the property, because it
-     does not depend on the walk's reach.
-  2. **The forbidden-name set grows to the application-layer movers.**
-     `_mutating_method_names`'s result is joined with the `ProposalService`
-     methods that move files into `.theurian/migrations/` and
-     `.theurian/knowledge/` — `accept` and `_commit` at minimum. Owed with its
-     **recorded bound**, in the shape ADR-0030 uses: the walk sees names in the
-     registered callable's own code chain and does not enter a collaborator's
-     body, so this catches a direct call and nothing deeper. That bound is the
-     reason control 1 exists beside it rather than instead of it.
-- **Slice B4 — `docs/security/threat-model.md`'s T-12 control sentence is
-  rewritten in the registration commit.** It reads "no MCP tool reaches a write
-  path for approved state … A test enumerates every registered tool and asserts
-  none reaches a canonical write." Once a write-intent tool registers, the
-  sentence must name *which* control holds the first clause — the facade test
-  above — rather than leaving the canonical-write sweep to carry a claim it does
-  not make. Whether the rewrite is faithful is a reading; that it happens in the
-  same commit is not optional.
-- **Slice B4 — `writeTools` and the capability note move in the registration
-  commit (decision 5).** Owed: the two assertions that move on a value flip —
-  `tests/integration/test_mcp_tools.py::test_capabilities_report_what_is_and_is_not_built`
-  and
-  `tests/e2e/test_daemon_single_instance.py::test_capabilities_report_no_write_tools`
-  (:649), which is a **value** assertion over a real client — plus the note's own
-  assertion. Two further pins move at *registration* time rather than on a value
-  flip and are listed separately because they are a different trigger: the pinned
-  capability-**key** set in `test_mcp_tools.py`, and
-  `tests/e2e/test_daemon_single_instance.py::test_the_tool_set_is_read_only`
-  (:402), whose `assert tools == [...]` is an equality over the seven registered
-  names and does not notice a flag value at all.
-  **Only two assertions move on a value flip today** — mutation-measured in
-  *Context* — so a further owed item is the one that closes the gap: a
-  **value-level** wire-contract assertion, so that the flag cannot land
-  half-moved with the conformance suite still green. The wire-contract file's
-  present `writeTools` case is a *type* negative and stays one; what is added is
-  a positive assertion of the value a real response carries.
-  The property to pin is the *coupling*, not the new value: a test that goes RED
-  when a write-intent tool is registered while the flag still reads `false`, in
-  the shape
-  `tests/unit/test_review_ingestion_flag_claims.py::test_each_record_narrates_the_flag_the_capability_dict_publishes`
-  already uses for `reviewIngestion` — including its control, that the checker
-  demands the other era when the flag moves.
-- **Slice B4 — the prose sites that record the retiring meaning move in the same
-  commit.** The key is in *Context*; the movers are the sentences stating that
-  *no write-intent tool exists*, as distinct from the sentences stating the
-  flag's *value*. Whether that rewrite is faithful is a reading and no
-  mechanical check reaches it, which is said here rather than left to be
-  inferred from a test name beside it.
-- **Slice B4 — a file path is refused by construction (decision 2).** The owed
-  property is structural, not a refusal test: the published input schema names
-  no path-shaped field and the handler signature has no path parameter, so the
-  check is that no write-intent tool's input schema declares one. A refusal test
-  would pin today's spelling of a rejection; this pins the absence of the
-  parameter.
-- **Slice B4 — `generateMigrationDraft` refuses four kinds and admits ten
-  (decision 3).** Owed: **four** driving cases, one per refused kind —
-  `createItem` and `upsertRevision` with a remedy naming
-  `knowledge.proposeChange`, `changeSensitivity` and `restoreItem` each with a
-  remedy naming the CLI — plus at least one admitted kind landing a proposal, so
-  the refusal is not satisfied by a tool that refuses everything. That is five
-  driving cases in total, and the count moves with the refused set rather than
-  being stated beside it: the refused set is asserted against `OperationKind`
-  itself rather than listed, so a fifteenth kind added later is admitted or
-  refused deliberately rather than by omission.
-- **Slice B4 — applying any admitted operation leaves every item's
-  `(status, sensitivity)` pair unchanged, `deprecateItem` excepted.** Owed: a
-  structural test over the admitted set that applies each kind and compares the
-  pair before and after, with `deprecateItem` — the one admitted kind that moves
-  a read control, and only in the withdrawing direction — as the named
-  exception and the control that the test would catch a widening. Today that
-  property is held by a keyword at a call site and nothing else:
+  and `::test_every_registered_tool_goes_through_the_forwarding_seam` are green
+  over the enlarged built server, and
+  `tests/unit/test_tool_error_type_contract.py::test_every_tool_is_registered_through_the_one_seam`
+  holds that the two new tools go through the one seam rather than around it. The
+  *positive control* that matters here is
+  `test_mcp_tools.py::test_the_walk_reaches_a_real_tool_body`: the sweep is
+  asserted to reach a real body, so it cannot pass over a set it never
+  enumerated.
+- **No write-intent tool holds an object that can move approved state, and the
+  sweep is not what holds it (decision 8).** Two controls landed, because one of
+  them reaches one level and the other does not:
+  1. **A draft-only facade at the MCP composition root.** `DraftOnlyProposals`
+     (`application/draft_only_proposals.py`) captures the two entries as closures
+     rather than storing the `ProposalService`, so its reachable surface is
+     exactly `{draft, draft_from_document}` — `accept` and `_commit` are not
+     reachable as a method and not one attribute hop away through a `_service`
+     reference. Landed:
+     `test_mcp_tools.py::test_no_write_intent_tool_captures_an_object_that_moves_approved_state`
+     walks each registered write-intent tool's closure cells over the **built**
+     server; `::test_the_closure_walk_flags_a_tool_that_captures_a_canonical_writer`
+     is the sibling control that a captured mover *is* flagged, and the same test
+     carries a non-vacuity guard that the walk reaches a real captured object;
+     `::test_the_object_a_write_intent_tool_is_handed_is_the_draft_only_facade`
+     invokes the per-call factory a tool closes over and asserts what comes back
+     is the facade and not a `ProposalService`. At the unit level
+     `tests/unit/test_draft_only_proposals.py` holds the facade's own surface,
+     including that it keeps no bound method back to the service.
+  2. **The forbidden-name set grew to the application-layer movers.**
+     `_mutating_method_names`'s result is joined with `APPROVED_STATE_MOVERS`,
+     `{accept, _commit}`. Landed with a *driving* test rather than an assertion:
+     `::test_a_planted_tool_calling_accept_goes_red_for_the_extended_canonical_write_pin`
+     plants a tool whose body calls them and asserts it is RED for the extended
+     set and GREEN for the pre-extension one, so the extension has teeth against
+     the counterexample the one-level sweep would otherwise miss. **The recorded
+     bound stands unchanged**: the walk sees names in the registered callable's
+     own code chain and does not enter a collaborator's body, so it catches a
+     direct call and nothing deeper. That bound is the reason control 1 exists
+     beside it rather than instead of it.
+- **`docs/security/threat-model.md`'s T-12 control sentence was rewritten in the
+  registration commit.** It read "no MCP tool reaches a write path for approved
+  state … A test enumerates every registered tool and asserts none reaches a
+  canonical write", where the first clause is stronger than the third. It now
+  names the two tools, names the draft-only facade as what holds "no tool reaches
+  approved state", and calls the canonical-write sweep "a second, narrower
+  control: it reaches one level and so does not, by itself, hold the first
+  clause". Whether the rewrite is faithful is a reading and no mechanical check
+  reaches it; that it happened in the same commit is what was not optional, and
+  it did.
+- **`writeTools` and the capability note moved in the registration commit
+  (decision 5).** Landed, with no intermediate state: the flag, the note, both
+  registrations and every assertion they falsify are one commit. The two
+  assertions that move on a value flip moved —
+  `tests/integration/test_mcp_tools.py::test_capabilities_report_what_is_and_is_not_built`,
+  and the e2e value assertion over a real client, now
+  `tests/e2e/test_daemon_single_instance.py::test_capabilities_report_write_tools`
+  (it was `::test_capabilities_report_no_write_tools`) — along with the note's own
+  assertion, which now demands *"No MCP tool writes approved knowledge"* and
+  forbids the opposite, where it used to demand *"No write-intent tool exists"*.
+  **Of the two pins this entry expected to move at *registration* time, one did
+  and one did not, and the difference is recorded rather than smoothed:** the
+  tool-set equality moved and is now
+  `::test_the_tool_set_is_exactly_the_published_nine` (it was
+  `::test_the_tool_set_is_read_only`), an equality over the **nine** registered
+  names that still does not notice a flag value at all; the pinned
+  capability-**key** set in `test_mcp_tools.py` did **not** move, and could not
+  have — registering a tool adds no capability *key*, and `writeTools` was
+  already one of them.
+
+  **The coupling is what got pinned, and it is a new test rather than one of the
+  above**: `tests/unit/test_write_tools_flag_claims.py::test_writetools_reads_true_exactly_when_a_write_intent_tool_is_registered`
+  reads both facts out of `mcp/tools.py`'s source — the value a contributor
+  wrote, and the names registered through the one `_tool` seam — and demands
+  `writeTools` read `true` exactly when a write-intent tool is registered, with
+  `::test_the_coupling_checker_demands_the_other_state_when_either_side_moves`
+  as the bidirectional control. It mirrors
+  `tests/unit/test_review_ingestion_flag_claims.py`'s shape, as this entry asked.
+  **The one instrument named here that did not land is the wire-contract
+  positive**: `test_wire_contract.py`'s `writeTools` case is still the *type*
+  negative it was, and the response schema still types the field `boolean` with
+  no `const`, so the conformance suite alone stays green on either value. The
+  property that item existed for — the flag cannot land half-moved — is held by
+  the coupling pin and the e2e value assertion instead; the gap between the
+  property and the instrument is recorded in *Still owed* rather than closed by
+  calling them the same thing.
+- **The prose sites that record the retiring meaning moved.** The registration
+  commit moved `README.md`, `docs/index.md`, `docs/protocol/mcp-tools.md` and two
+  rows of `docs/roadmap.md` — *An agent cannot change approved knowledge
+  directly* in §0, and appendix row 6's registered figure and names;
+  the documentation cluster that follows the round moved the rest of the roadmap
+  (§0's opening, §1's *Shipped* and *Partial* entries and its SEC-12 row, §2's
+  *Distribute what approval recorded*, §3's change ①, and the Phase B
+  Architecture, MCP/API, Security, Tests and Exit-criteria rows), the README's
+  *Alongside instructions and memory* paragraph, `docs/index.md`'s
+  *What is enforced, and what is convention*, and this ADR and
+  [ADR-0013](0013-ai-writes-produce-proposals.md). Whether that rewrite is
+  faithful is a reading and no mechanical check reaches it, which is said here
+  rather than left to be inferred from a test name beside it. Two mechanical
+  checks do reach part of it —
+  `tests/integration/test_documented_tool_set.py` recomputes the README's and the
+  protocol page's tool lists from the built server, and the roadmap appendix
+  row 6's registered figure and nine names with them.
+- **`generateMigrationDraft` refuses four kinds and admits ten (decision 3).**
+  Landed twice, at the service and over the wire.
+  `tests/integration/test_generate_migration_draft.py` drives the service entry:
+  an admitted kind lands a proposal, a content operation is refused to the
+  content path, a read-control operation is refused to the CLI, and a mixed
+  document is refused on its *first* unadmitted operation.
+  `tests/integration/test_write_intent_wire.py` drives the same through the
+  registered tool over the transport, where a wiring defect lives, with the
+  refused cases parametrized over `_REFUSED_TO_CONTENT_PATH`/`_REFUSED_TO_CLI` so
+  the case count moves with the enum-derived set rather than being stated beside
+  it, and `::test_the_wire_refused_set_is_exactly_the_two_pulled_pairs` asserting
+  the refused set is a disjoint four against `OperationKind`. The partition
+  itself is pinned by
+  `tests/unit/test_draft_only_proposals.py::test_the_v1_operation_set_partitions_operation_kind`,
+  so a fifteenth kind is admitted or refused deliberately and never by omission,
+  and the gate is fail-closed for a kind in neither set. **The redirect wording
+  reaches the wire**, which it did not at first: a `ProposalError` crossing the
+  `_forwarding` seam loses `exc.remedy` for mcp 2.0.0 parity, so each tool body
+  catches its own `ProposalError` and re-raises through `_with_remedy`, and the
+  wire tests assert the redirect name is in the **message** rather than that
+  `.remedy` is set.
+- **Applying any admitted operation leaves every item's `(status, sensitivity)`
+  pair unchanged, `deprecateItem` excepted.** Landed:
+  `tests/unit/test_admitted_ops_preserve_read_controls.py` applies each admitted
+  `OperationKind` against a corpus carrying every precondition an admitted
+  operation needs — a relation and an alias to remove, a spec to supersede, an
+  evidence anchor to remove — and compares every item's `(status, sensitivity)`
+  pair before and after. Only `deprecateItem` may move the status half of its own
+  item, to `DEPRECATED`, and must leave its sensitivity and every other item
+  untouched. Two controls keep it from degrading:
+  `::test_the_admitted_operation_map_covers_the_v1_set` asserts the map's
+  coverage against `V1_OPERATION_KINDS`, so a fifteenth admitted kind must be
+  given a real operation here, and
+  `::test_the_base_corpus_holds_the_read_controls_the_invariant_measures`
+  asserts the corpus has something to measure. The landing commit records a
+  mutation run behind it — `changeOwner` grown a `sensitivity=` keyword at its
+  call site flips the item's class and reddens this test — and that result is
+  cited to its commit rather than restated here as a fresh measurement. Before
+  this, the property was held by a keyword at a call site and nothing else:
   `application/migration_engine.py:536` spells `_replace_item(item,
   owner=operation.owner)` while `_replace_item` (`:727-737`) accepts
   `{"sensitivity", "owner", "trust_level", "status"}`, so an admitted operation
   that grew a second keyword would move a read control with no test going RED.
   This turns round 3's closure argument into a pinned property rather than a
   declaration.
-- **Slice B4 — a refusal about an out-of-view item is indistinguishable from one
-  about an absent item, on **both** tools (decision 6).** Owed: one battery of
-  calls answered identically over a corpus that **held** withheld items — a
-  `rejected` item, one above the deployment's sensitivity ceiling — and one that
-  never did, covering **responses and refusals**, with the control that the
-  battery actually reaches the withheld items. Timing is inside the battery's
-  scope for the reason decision 6's *does not close* row gives. The fixture is
-  synthetic, which is the only way to have a withheld row in a corpus whose
-  scope excludes them (ADR-0030 decision 6's reasoning, one surface over).
+- **A refusal about an out-of-view item is indistinguishable from one about an
+  absent item, on **both** tools (decision 6).** Landed as
+  `tests/integration/test_write_intent_disclosure_oracle.py`, and **in a
+  different shape from the one asked for here, which is worth stating rather than
+  smoothing over.** This entry asked for one battery run against two corpora —
+  one that held the withheld items and one that never did. What landed is a
+  *same-corpus* equality: one synthetic corpus holding two withheld rows
+  (`rejected-store`, withheld by `may_surface`, and `confidential-item`, above
+  the default serving ceiling) and one in view, with each answer about an
+  out-of-view id compared against the answer about an id nothing ever stored.
+  The two forms differ in what they can catch — a two-corpora run would also
+  catch a channel carried by collection-wide state, which this one cannot — and
+  they agree on the channel decision 6 names, which is the refusal a caller
+  reads. The **withheld-reach control** is
+  `::test_the_out_of_view_items_really_hold_a_revision_the_lookup_suppresses`:
+  all three items are asserted to hold a real current revision, so a `None` from
+  the caller-scoped lookup is suppression and not genuine absence. The fixture is
+  synthetic, which is the only way to have a withheld row in a corpus whose scope
+  excludes them (ADR-0030 decision 6's reasoning, one surface over). **Refusals
+  are asserted to carry no status, not only no revision id.** **Timing is
+  measured at slice B4 by a separate instrument** — this oracle covers *content*
+  and does not measure duration; the duration channel is closed by the body-free
+  caller-scoped lookup (`get_item_metadata`, T-26 face 4) and pinned by the
+  zero-body-read counter (`test_pre_gate_body_materialization.py`), recorded in
+  the decision-6 *Landed* entry below, no longer in *Still owed*.
+
   **The battery covers `generateMigrationDraft` as well as `proposeChange`**, at
-  a minimum one admitted operation per item-id-bearing input *position*. Over
-  the ten admitted kinds those positions are **six** distinct property names,
-  read off the schema rather than listed by hand — every property whose `$ref`
-  resolves to `#/$defs/itemId`:
+  one admitted operation per item-id-bearing input *position*. Over the ten
+  admitted kinds those positions are **six** distinct property names, read off
+  the schema rather than listed by hand — every property whose `$ref` resolves to
+  `#/$defs/itemId` — and the derivation below is now recomputed in the suite by
+  `::test_the_six_positions_are_the_schema_derived_item_id_positions`, so a
+  fifteenth operation with a seventh position reddens it rather than silently
+  falling outside the battery:
 
   ```python
   # run from the repository root; prints the table below
@@ -935,16 +1038,46 @@ Still owed, with the milestone that will satisfy it:
   the alias guard's message is the one that publishes a status today
   (decision 3), so a battery written against the revision id alone would pass a
   build that answered `(status rejected)`.
-- **Slice B4 — the wire path's `CurrentRevisionLookup` is caller-scoped
-  (decision 6).** Owed: a test that the lookup the MCP composition root injects
-  returns `None` for an item the caller may not see, with the control that it
-  returns the revision for one the caller may — without the control, a lookup
-  that returned `None` for everything would pass while breaking the
-  optimistic-concurrency remedy for in-view items.
-  **This item moves pinned counts elsewhere, and they are named here so the
-  commit that adds a call site is the commit that moves them.** A lookup that
-  consults `may_surface`/`may_disclose` (decision 6's stated authority) adds one
-  or two call sites, and four records are keyed to the current sets:
+- **The wire path's `CurrentRevisionLookup` is caller-scoped (decision 6).**
+  Landed: `register` builds the lookup at the MCP composition root and it
+  consults `may_surface` and `may_disclose`, so an item this caller may not see
+  answers `None`.
+  `test_write_intent_disclosure_oracle.py::test_proposechange_refuses_an_out_of_view_item_like_an_absent_one`
+  drives it, and `::test_proposechange_carries_the_revision_for_an_in_view_item`
+  is the control the entry asks for — without it, a lookup returning `None` for
+  everything would satisfy the equality while breaking the
+  optimistic-concurrency remedy for in-view items. The landing commit records a
+  mutation run in both directions — dropping the `may_surface`/`may_disclose`
+  gate leaks the out-of-view revision, and returning `None` for everything drops
+  the in-view one — cited to that commit rather than restated here.
+
+  **And the lookup is body-free (T-26 face 4).** It reads `get_item_metadata`,
+  not the body-joining `get_item`, so a withheld item's refusal materialises no
+  body and its *timing* is content-independent — it does not scale with the
+  withheld body's size.
+  `test_pre_gate_body_materialization.py::test_the_real_propose_change_handler_reads_no_body_before_a_withheld_refusal`
+  pins the zero body read on the withheld refusal (RED when the closure's
+  `get_item_metadata` reverts to `get_item`), and
+  `::test_the_real_propose_change_handler_names_the_current_revision_for_an_in_view_draft`
+  pins `include_unapproved=True` in the lookup — the `draft`/`proposed` statuses
+  `may_surface` treats differently under the flag — so the in-view concurrency
+  remedy the #210 class depends on stays live. The one residual is a
+  content-independent existence term of ~9 µs (a withheld item that exists reads a
+  bodyless pointer row; an absent id reads nothing), about 155× below the
+  ~1.40 ms transport floor (TB-1) and not a gradeable disclosure — the
+  measurement open-question 5 owed.
+
+  **This item moved the pinned counts it said it would, in the commit that added
+  the call site.** The lookup is one call site on each gate, so
+  `STATUS_GATE_CALL_SITES` is **7** and `DISCLOSURE_GATE_CALL_SITES` is **6**,
+  both carrying the new `("mcp/tools.py", "register._draft_only_proposals.current_revision")`
+  entry, and both prose counts in `domain/enums.py` moved with them — `may_surface`'s
+  docstring now reads *seven* and `may_disclose`'s *six*, each with the new site
+  enumerated. The disclosure *axis* was not touched, so
+  `requirements-analysis.md`'s `enforced-axes` block and `SECURITY.md`'s copy of
+  it did not move. **The table below is the reading this ADR was accepted
+  against and is kept as that**, not corrected in place: it is what the four
+  records held before the lookup landed.
 
   | Record | What it holds now | Measured |
   | :-- | :-- | :-- |
@@ -963,31 +1096,115 @@ Still owed, with the milestone that will satisfy it:
   "**three** enforced axes — `chunks.project_id`, `chunks.status` and
   `chunks.sensitivity`") and `SECURITY.md`'s copy of it move too; the same test
   file checks both against what `_scope` emits, token set and spelled count.
-- **Slice B4 — an `agentId`/`taskId` stated twice and disagreeing is refused
-  (decision 4).** Owed: a driving case with the tool-context field and the
-  evidence field set to different values, asserting the refusal; with the
-  controls that agreement is accepted and that the top-level field absent is
-  accepted, so the check is not satisfied by refusing every call that carries
-  both.
-- **Slice B4 — the operations path lands through the same guards as the content
-  path, reached through the injected validator.** Owed: a test that a document
-  drafted through the new service entry produces a proposal directory `theurian
-  propose accept` accepts, driven through the shipped commands rather than
-  asserted about the service; plus the structural property that the new entry
-  calls the injected `MigrationDocumentValidator` and imports no loader symbol
-  directly (ADR-0003), so the accept-time rehearsal and the generator cannot
-  come to hold two different validators.
-- **Slice B4 — the CLI-only guarantees have wire equivalents (decision 3).**
-  Owed: a driving case per row of that decision's table — a `body` past the
-  published `maxLength` refused at the schema, and duplicate `labels[]` refused
-  by `uniqueItems` — asserted as *schema* refusals with a key path, not as
-  validation failures arriving from inside the generator.
-- **Slice B4 — ADR-0013's owed E2E is discharged.** "Approved knowledge is
-  unchanged after a full agent session that calls every write-intent tool",
-  against a real daemon, with the session actually calling each registered
-  write-intent tool — a session that called none would pass it vacuously, which
-  is the state ADR-0013 records today. **ADR-0013's own *Still owed* entry moves
-  from owed to landed in the same commit, naming the test.**
-- **Slice B4 — every wire field carries its published input schema
-  (ADR-0031).** Owed there rather than here, and named here because this surface
-  is the one that makes it mandatory.
+- **An `agentId`/`taskId` stated twice and disagreeing is refused (decision 4).**
+  Landed over the wire, with both controls:
+  `test_write_intent_wire.py::test_a_top_level_identity_that_disagrees_with_evidence_is_refused`,
+  `::test_a_top_level_identity_that_agrees_is_accepted` and
+  `::test_the_top_level_identity_absent_is_accepted` — so the check is not
+  satisfied by a build that refuses every call carrying the field. The evidence
+  block stays the authoritative one; the top-level pair remains ambient
+  provenance no handler reads into a proposal, which is
+  [#665](https://github.com/theurian/theurian/issues/665)'s standing residual and
+  not something this decision closes.
+- **The operations path lands through the same guards as the content path,
+  reached through the injected validator.** Landed in part.
+  `test_generate_migration_draft.py::test_it_reaches_the_injected_validator`
+  spies the injected `MigrationDocumentValidator` and asserts the document it saw
+  is the *stamped* one — the minted id, not a caller value — so the generator and
+  the accept-time rehearsal validate the same bytes;
+  `::test_the_landed_migration_is_schema_valid_and_carries_the_operation`
+  re-validates the written file against the published migration schema;
+  `::test_the_service_mints_the_migration_id_over_a_caller_supplied_one` holds
+  that a caller cannot choose an id that collides with a landed migration; and
+  `::test_a_document_the_schema_rejects_is_refused_and_nothing_is_written` is the
+  nothing-written arm. **Two halves of this entry did not land** and are in
+  *Still owed*: the end-to-end drive through `theurian propose accept`, and a
+  test for the structural no-direct-loader-import property.
+- **The CLI-only guarantees have wire equivalents (decision 3).** Landed, and the
+  two rows landed differently. Duplicate `labels[]` is a *schema* refusal naming
+  the `labels` key path over the wire
+  (`test_write_intent_wire.py::test_duplicate_labels_are_refused_by_the_schema_over_the_wire`).
+  The `body` cap is published as a `maxLength` on the `body` key and pinned to
+  `MAX_REQUEST_BODY_BYTES` by `tests/unit/test_input_schema_bounds.py`, but
+  `::test_the_body_size_bound_is_a_schema_constraint_on_the_body_key` drives it
+  against the **loaded schema** rather than over the wire, because over the wire
+  the rendered-character bound and the transport cap are both tighter and fire
+  first — so the published `maxLength` is not the refusal a caller meets
+  ([#699](https://github.com/theurian/theurian/issues/699)). The unit it counts
+  is [#691](https://github.com/theurian/theurian/issues/691)'s. Both are recorded
+  in *Still owed* rather than read as discharged.
+- **ADR-0013's owed E2E is discharged.** Landed as
+  `tests/e2e/test_write_intent_session.py::test_a_session_calling_every_write_intent_tool_leaves_approved_knowledge_unchanged`:
+  against a real daemon the session calls each write-intent tool, and approved
+  knowledge is asserted unchanged two ways — the read tools report the identical
+  status and approved item *through* the daemon, and the canonical store's main
+  file and the approved bodies are byte-identical on disk (SQLite's read-time WAL
+  and SHM sidecars excluded, since a read creates empty ones). The non-vacuity
+  control is that each call is asserted to have landed a distinct proposal. The
+  landing commit records a mutation run against an isolated branch build — a
+  write-intent tool appending to an approved body reddens the digest assertion —
+  cited to that commit rather than restated here.
+  **[ADR-0013](0013-ai-writes-produce-proposals.md)'s own *Still owed* entry moved
+  to a *Landed in Phase B slice B4* section naming this test**, and the coverage
+  residual that section first recorded — a committed argument set, which cannot
+  redden when a *newly* registered write-intent tool is missing from it — was
+  closed in the same slice: the set is now derived from `tools/list`, keyed on
+  decision 4's required `evidence` object, and asserted equal to the arguments the
+  session carries. What remains is the bound of that key, recorded in ADR-0013's
+  *Still owed* rather than here, since it is that ADR's property.
+- **Every wire field carries its published input schema (ADR-0031).** Landed:
+  `schemas/mcp/knowledge-propose-change-input.schema.json` and
+  `schemas/mcp/knowledge-generate-migration-draft-input.schema.json` ship, and
+  both tools join `test_input_validation_wire.py`'s per-tool parametrization, so
+  they are covered by ADR-0031's fail-closed rule — a registered tool that
+  resolves to no loaded schema is refused at dispatch — rather than by being
+  remembered. Owed there rather than here, and named here because this surface is
+  the one that makes it mandatory.
+
+Still owed, with the milestone that will satisfy it:
+
+**The first three below are addressed to a slice and to no issue.** Measured
+2026-09-15, `gh issue list --state open --search "write-intent OR proposeChange
+OR generateMigrationDraft OR facade OR draft-only"` returns nothing that covers
+any of them, so this section is their only owner — a reader should treat that as
+the gap it is rather than assume a tracker entry exists. The last three each name
+their issue. (Open-question 5's timing measurement, formerly a fourth
+slice-addressed item here, landed at slice B4 and moved to the decision-6
+*Landed* entry above.)
+
+- **Slice B5 or later — a file path is refused by construction, and nothing
+  recomputes it (decision 2).** The property holds as shipped: neither published
+  input schema declares a path, URI, or reference field, and neither handler
+  signature has a path parameter. **What is owed is the check**, and the shape
+  matters — a refusal test would pin today's spelling of a rejection, while what
+  this needs is a structural test that no write-intent tool's input schema
+  declares a path-shaped field. Today the absence is held by review and by
+  ADR-0031's `unevaluatedProperties: false` refusing any key the schema does not
+  name, which stops a *caller* smuggling one and does nothing about a schema
+  someone widens.
+- **Slice B5 or later — a value-level wire-contract assertion on `writeTools`.**
+  The *Landed* entry above records why: the conformance file's case is a type
+  negative and the response schema types the field `boolean` with no `const`, so
+  the conformance suite alone is green on either value. The coupling pin and the
+  e2e value assertion hold the property; this closes the gap between the property
+  and the instrument this ADR named.
+- **Slice B5 or later — the two halves of the operations-path entry that did not
+  land.** A test that a document drafted through `draft_from_document` produces a
+  proposal directory `theurian propose accept` accepts, driven through the
+  shipped commands rather than asserted about the service; and a structural test
+  that the entry imports no migration-loader symbol directly (ADR-0003). The
+  second holds today by reading `application/proposal_service.py`'s imports, and
+  by nothing else.
+- **[#691](https://github.com/theurian/theurian/issues/691) — the unit the
+  published `body` `maxLength` counts.** JSON Schema counts code points; the
+  constant it transcribes counts bytes, so the bound admits up to four times the
+  bytes it names. Recorded, not closed.
+- **[#699](https://github.com/theurian/theurian/issues/699) — that `maxLength` is
+  unreachable over the shipped transport.** The rendered-character bound and the
+  transport cap are both tighter and fire first, so a caller never meets the
+  bound this surface publishes.
+- **[#665](https://github.com/theurian/theurian/issues/665) — the top-level
+  `snapshotId`, `agentId` and `taskId`.** Admitted by the enforced contract on
+  both new tools, as on the other seven, and read by no handler. Decision 4 makes
+  the *evidence* pair authoritative and refuses a disagreeing top-level one; it
+  does not make the top-level trio read.

@@ -409,16 +409,21 @@ def test_an_unregistered_project_is_refused(running_daemon: Daemon) -> None:
 # -- Tool surface ----------------------------------------------------------
 
 
-def test_the_tool_set_is_read_only(running_daemon: Daemon) -> None:
-    """ADR-0013. Milestone 3 ships no write-intent tool at all, so there is no
-    path from MCP to approved state -- not behind a flag, not behind a
-    permission.
+def test_the_tool_set_is_exactly_the_published_nine(running_daemon: Daemon) -> None:
+    """ADR-0013, ADR-0032. The two write-intent tools are registered now, so this
+    is no longer a read-only surface -- but there is still no path from MCP to an
+    approved-state write. `knowledge.proposeChange` and
+    `knowledge.generateMigrationDraft` emit a proposal a human reviews and merges;
+    no tool creates, updates or applies approved knowledge, not behind a flag and
+    not behind a permission.
     """
     with _McpClient(running_daemon.port, running_daemon.token, "probe") as client:
         tools = client.tools()
 
     assert tools == [
+        "knowledge.generateMigrationDraft",
         "knowledge.get",
+        "knowledge.proposeChange",
         "knowledge.search",
         "knowledge.status",
         "project.list",
@@ -426,6 +431,8 @@ def test_the_tool_set_is_read_only(running_daemon: Daemon) -> None:
         "review.search",
         "system.capabilities",
     ]
+    # No tool *approves* or *applies*: the write-intent tools propose, and their
+    # names carry none of these verbs.
     for name in tools:
         assert not any(verb in name for verb in ("create", "update", "delete", "write", "apply"))
 
@@ -656,8 +663,13 @@ def test_results_carry_provenance_and_trust_labels(running_daemon: Daemon) -> No
     assert hit["trustLevel"] == "reviewed"
 
 
-def test_capabilities_report_no_write_tools(running_daemon: Daemon) -> None:
+def test_capabilities_report_write_tools(running_daemon: Daemon) -> None:
+    """ADR-0032 decision 5: the flag flips with the first write-intent registration.
+
+    `writeTools: true` says a write-intent tool exists that a client may call, not
+    that a client may write approved knowledge -- the tools emit proposals.
+    """
     with _McpClient(running_daemon.port, running_daemon.token, "probe") as client:
         capabilities = client.call("system.capabilities", {})
 
-    assert capabilities["capabilities"]["writeTools"] is False
+    assert capabilities["capabilities"]["writeTools"] is True

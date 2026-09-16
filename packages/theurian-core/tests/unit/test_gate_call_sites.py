@@ -202,7 +202,7 @@ DISCLOSURE_GATE = may_disclose.__name__
 #: ``knowledge.get`` and was added after the count was written. A count in a
 #: docstring is enforced by nothing; this set is.
 #:
-#: The six, by responsibility, and the behavioural test that holds each to
+#: The seven, by responsibility, and the behavioural test that holds each to
 #: gating (so removing a site is caught here *and* the removal turns one red):
 #:   - the index builder decides what to write
 #:     (``test_index_builder`` withholds unapproved from the index);
@@ -214,6 +214,9 @@ DISCLOSURE_GATE = may_disclose.__name__
 #:     endpoint of a relation before publishing it
 #:     (``test_knowledge_get_will_not_hand_over_what_search_withheld`` and the
 #:     relation-visibility tests in ``tests/integration/test_mcp_tools.py``);
+#:   - the write-intent tools' caller-scoped current-revision lookup consults it so
+#:     an item this caller may not see answers ``None`` (ADR-0032 decision 6), the
+#:     driving test being slice B4 cluster 3's;
 #:   - the withdrawal purge decides which revisions a still-published index must
 #:     stop holding (ADR-0024 decision 5) — the one *inverse* use, naming what is
 #:     non-surfaceable so the purge and the surfacing gate cannot disagree
@@ -226,13 +229,21 @@ STATUS_GATE_CALL_SITES = {
     ("mcp/search.py", "_scan"),
     ("mcp/tools.py", "_relation_is_visible"),
     ("mcp/tools.py", "register.knowledge_get"),
+    # The write-intent tools' caller-scoped current-revision lookup (ADR-0032
+    # decision 6): it consults the gate so an item this caller may not see answers
+    # `None`, which keeps `proposeChange`'s optimistic-concurrency refusal from
+    # oracling a `rejected` item's existence. The driving test that it returns
+    # `None` for a withheld item and the revision for an in-view one is slice B4
+    # cluster 3's.
+    ("mcp/tools.py", "register._draft_only_proposals.current_revision"),
 }
 
 #: Every place the product consults the disclosure gate, as
 #: ``(module path under theurian/, enclosing function)``.
 #:
-#: Five: three canonical-side read paths a caller can reach content through
-#: (#119 phase 2), the build side that decides what exists to be reached
+#: Six: three canonical-side read paths a caller can reach content through
+#: (#119 phase 2), the write-intent tools' caller-scoped current-revision lookup
+#: (ADR-0032 decision 6), the build side that decides what exists to be reached
 #: (#119 phase 3), and the purge that removes it from a build already published
 #: (#119 phase 5), each with the test that holds it to gating:
 #:   - the ranked path's canonical re-check on the item's *current* level
@@ -284,6 +295,11 @@ DISCLOSURE_GATE_CALL_SITES = {
     ("application/visibility.py", "CanonicalVisibility._may_surface"),
     ("mcp/tools.py", "_relation_is_visible"),
     ("mcp/tools.py", "register.knowledge_get"),
+    # The write-intent tools' caller-scoped current-revision lookup (ADR-0032
+    # decision 6): the disclosure half of the same lookup, so an item above the
+    # deployment's ceiling answers `None` and the concurrency refusal about it
+    # cannot be told from one about an absent item. Cluster 3 drives it.
+    ("mcp/tools.py", "register._draft_only_proposals.current_revision"),
 }
 
 

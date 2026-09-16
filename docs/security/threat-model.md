@@ -6438,6 +6438,24 @@ path reads no body. The timing measurement corroborates it; it is not the proof.
    itself. Its methodology, figures and reproduction are recorded in
    [the work log](../work-logs/2026-09-16-t26-timing.md).
 
+**Face 4 — the write path, built body-free at slice B4 (0.3.0).** ADR-0032's
+write-intent tools add a fourth consumer of the same canonical read:
+`knowledge.proposeChange`'s optimistic-concurrency check reads a caller-scoped
+`current_revision` closure (`mcp/tools.py`, `_draft_only_proposals`) to answer
+"what revision is this item at". It reads `get_item_metadata`, not the
+body-joining `get_item`, so a withheld item's `expectedRevision` refusal
+materialises no body and its timing does not scale with the withheld body's
+size — the write path never shipped the leak (`proposeChange` is unreleased,
+landing at 0.3.0). Pinned by the same zero-body-read counter over the real
+handler
+(`test_pre_gate_body_materialization.py::test_the_real_propose_change_handler_reads_no_body_before_a_withheld_refusal`,
+RED when the closure's `get_item_metadata` reverts to `get_item`). The accepted
+residual is the read paths' shape: a content-independent existence term (~9 µs —
+a withheld item that exists reads a bodyless pointer row, an absent id reads
+nothing), which carries no withheld content, does not scale with body size, and
+sits ~155× below TB-1's 1.40 ms floor — not a gradeable disclosure. This closes
+T-26 across every consumer of the canonical read, read and write.
+
 **Severity: High, and why not Critical.** The channel carries a withheld item's
 existence and the approximate size of its body — metadata about content the caller
 may not read — reachable in the shipped-default 0.2.2 by any authenticated
@@ -6451,8 +6469,16 @@ is yanked; the fix ships in 0.2.3.
 #### T-12 — An agent silently rewrites an approved decision (Tampering, High)
 
 **Controls:** no MCP tool reaches a write path for approved state — not behind a
-flag, not behind a permission. Write-intent tools emit proposal files. A test
-enumerates every registered tool and asserts none reaches a canonical write.
+flag, not behind a permission. The two write-intent tools
+(`knowledge.proposeChange`, `knowledge.generateMigrationDraft`) emit proposal
+files, and the control that holds "no tool reaches approved state" is a
+**structural** one: they are handed a draft-only facade
+(`application/draft_only_proposals.py`, ADR-0032 decision 8) whose reachable
+surface is the two draft entries alone, so neither `accept` nor `_commit` is
+reachable from a tool. The bytecode sweep that enumerates every registered tool
+and asserts none reaches a *canonical* write is a second, narrower control: it
+reaches one level and so does not, by itself, hold the first clause — which is
+why the facade above is what does (ADR-0032 decision 8).
 
 #### T-18 — A reused revision id resolves an approved item to a withheld item's body (Information disclosure, **Critical** — closed in 0.1.0.dev3)
 
@@ -7225,7 +7251,7 @@ fix.
 | T-23 | A revision's served content drifts under an unchanged revision id, and a stale index serves it past the gate | I | Critical | Closed in 0.1.0.dev13 — serve gate keyed on `served_content_hash(title, body)` both sides, `INDEX_SCHEMA_VERSION` 6 → 7 forced rebuild; a new face of the derived-state-trust class T-19 (GHSA-3f65-gr36-qqx8); leaf-excerpt only, the `raptorPath[].title` face stays the T-17a residual (GHSA-97q9-xxfg-33r6) |
 | T-24 | A repository ships its own `.theurian/review/` and a local build serves it as review history | T | Medium | Accepted residual, recorded. SEC-15's triple on every row and no promotion path out of the untrusted plane; the tool description and response schema state that the T-19 check is on the *store* and never on who wrote the records. Verifying evidence provenance is unowned, adjacent to [#575](https://github.com/theurian/theurian/issues/575) |
 | T-25 | An MCP error response names the operator's resolved filesystem layout | I | High | Closed in 0.2.0 — GHSA-923w-f36f-jcfq. Constant refusals interpolating nothing across both tool boundaries, executable cures from fixed vocabulary; pinned by the raise-site population test, the no-resolved-form response sweep and the executable-cure ratchet |
-| T-26 | A canonical read materialises a withheld item's body before the gate, so a refusal's timing carries the body's size | I | High | Closed in 0.2.3 — bodyless `get_item_metadata`/`get_item_exact_metadata` gate the three read paths (`knowledge.get`, `_relation_is_visible`, `_may_surface`) on the pointer row, the body read only once a row is surfaceable (GHSA-3f65 preserved). Size-independent **by construction**: `_ITEM_METADATA_SQL` projects only `knowledge_items` columns and materialises no body, pinned bidirectionally by the zero-body-read counters (`test_pre_gate_body_materialization.py`) and the explicit-column projection fact test (`test_gate_call_sites.py`, RED on a `SELECT *` or a revisions join — closing the counters' method-name-keyed blind spot). Corroborated out of band: refusal identical at 256 B and 8 MiB, ~175× below TB-1's 1.40 ms floor (work log 2026-09-16-t26-timing). A canonical-store body-materialisation channel, distinct from T-17a (derived-index statistics) and T-22 (a per-row count term, #338) |
+| T-26 | A canonical read materialises a withheld item's body before the gate, so a refusal's timing carries the body's size | I | High | Closed in 0.2.3 — bodyless `get_item_metadata`/`get_item_exact_metadata` gate the three read paths (`knowledge.get`, `_relation_is_visible`, `_may_surface`) on the pointer row, the body read only once a row is surfaceable (GHSA-3f65 preserved). ADR-0032's write-intent surface adds a fourth consumer — `proposeChange`'s caller-scoped `current_revision` lookup — also body-free (`get_item_metadata`), closed on the write path at slice B4 (0.3.0) with a content-independent ~9 µs existence residual ~155× below the same floor. Size-independent **by construction**: `_ITEM_METADATA_SQL` projects only `knowledge_items` columns and materialises no body, pinned bidirectionally by the zero-body-read counters (`test_pre_gate_body_materialization.py`) and the explicit-column projection fact test (`test_gate_call_sites.py`, RED on a `SELECT *` or a revisions join — closing the counters' method-name-keyed blind spot). Corroborated out of band: refusal identical at 256 B and 8 MiB, ~175× below TB-1's 1.40 ms floor (work log 2026-09-16-t26-timing). A canonical-store body-materialisation channel, distinct from T-17a (derived-index statistics) and T-22 (a per-row count term, #338) |
 
 ## Explicitly out of scope
 

@@ -228,18 +228,21 @@ def may_surface(status: KnowledgeStatus, *, include_unapproved: bool) -> bool:
     that caused the rejection still lives.
 
     Beside the set it reads, and in the domain, because it is consulted from
-    six call sites: the index builder decides what to write; ``knowledge.search``
+    seven call sites: the index builder decides what to write; ``knowledge.search``
     decides what to return on each of its two answer paths; ``knowledge.get``
     decides both what to hand over by id and, per edge, whether a related item is
-    surfaceable before it publishes the relation; and the withdrawal purge decides
+    surfaceable before it publishes the relation; the withdrawal purge decides
     which revisions a still-published index must stop holding (ADR-0024 decision
     5), the one *inverse* use -- it names what is non-surfaceable so the purge and
-    the surfacing gate cannot disagree about what is withheld. The builder used to
-    inline the two comparisons instead of calling this, which is one copy of a
-    security rule too many -- ``knowledge.get`` having *no* copy is how a caller
-    who could not search for a withheld item could still fetch it. The sites are
-    spelled out and pinned in ``tests/unit/test_gate_call_sites.py`` so a seventh
-    cannot land unnoticed.
+    the surfacing gate cannot disagree about what is withheld; and the write-intent
+    tools' caller-scoped current-revision lookup consults it so an item this caller
+    may not see answers ``None`` and ``knowledge.proposeChange``'s
+    optimistic-concurrency refusal cannot oracle its existence (ADR-0032 decision
+    6). The builder used to inline the two comparisons instead of calling this,
+    which is one copy of a security rule too many -- ``knowledge.get`` having *no*
+    copy is how a caller who could not search for a withheld item could still fetch
+    it. The sites are spelled out and pinned in
+    ``tests/unit/test_gate_call_sites.py`` so an eighth cannot land unnoticed.
     """
     if status not in SURFACEABLE_STATUSES:
         return False
@@ -270,12 +273,15 @@ def may_disclose(sensitivity: Sensitivity, *, visible: frozenset[Sensitivity]) -
     would come back -- the reason
     :class:`~theurian.application.visibility.Visibility` refuses one too.
 
-    Consulted from five call sites, each spelled out and pinned in
+    Consulted from six call sites, each spelled out and pinned in
     ``tests/unit/test_gate_call_sites.py``: the ranked path's canonical re-check
     (``CanonicalVisibility._may_surface``), ``knowledge.get``'s gate on the item it
     hands over by id, the per-edge gate on each endpoint of a relation before it is
-    published, the index builder, which decides what is *written* rather than what
-    is shown, and the withdrawal purge, which decides which revisions a
+    published, the write-intent tools' caller-scoped current-revision lookup, which
+    consults it so an item above this deployment's ceiling answers ``None`` and the
+    concurrency refusal about it cannot be told from one about an absent item
+    (ADR-0032 decision 6), the index builder, which decides what is *written* rather
+    than what is shown, and the withdrawal purge, which decides which revisions a
     *still-published* build must stop holding once an item is reclassified past the
     ceiling that build ran under (``revisions_to_purge``, #119, ADR-0025 part 2) --
     the one *inverse* use, as it is for :func:`may_surface`. The last two are not

@@ -39,6 +39,7 @@ from typing import Any, Final
 
 import pytest
 
+from theurian.daemon.server import MAX_REQUEST_BODY_BYTES
 from theurian.domain.identifiers import MAX_IDENTIFIER_LENGTH
 from theurian.mcp import tools, validation
 from theurian.mcp.findings import MAX_FILTER_CHARS as FINDINGS_MAX_FILTER_CHARS
@@ -63,6 +64,20 @@ BOUNDS: Final[dict[tuple[str, str], tuple[str, int, str]]] = {
         MAX_IDENTIFIER_LENGTH,
         "domain/identifiers.py -- `ItemId` refuses a longer value, so no stored id can be "
         "longer and a longer one could name nothing",
+    ),
+    ("knowledge-propose-change-input.schema.json", "properties/itemId"): (
+        "MAX_IDENTIFIER_LENGTH",
+        MAX_IDENTIFIER_LENGTH,
+        "domain/identifiers.py -- `ItemId` refuses a longer value; the write-intent tool "
+        "echoes the id in a refusal, so it is bounded before the echo the same way "
+        "`knowledge.get`'s is",
+    ),
+    ("knowledge-propose-change-input.schema.json", "properties/body"): (
+        "MAX_REQUEST_BODY_BYTES",
+        MAX_REQUEST_BODY_BYTES,
+        "daemon/server.py -- the transport rejects a request body larger than this in "
+        "bytes (#669). This field bounds code points, a sound over-approximation of that "
+        "byte cap; the unit mismatch is recorded at #691, not re-litigated here",
     ),
     ("knowledge-search-input.schema.json", "properties/query"): (
         "MAX_QUERY_CHARS",

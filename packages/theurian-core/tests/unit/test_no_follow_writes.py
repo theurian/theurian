@@ -527,6 +527,16 @@ _PROJECT_WRITERS_OUTSIDE_THE_CLASS: Final[dict[str, str]] = {
         "underneath that fresh directory. There is no path here a repository can "
         "pre-plant a link at."
     ),
+    "application/proposal_service.py::ProposalService.draft_from_document": (
+        "the same mechanism `draft` above records: both writes land in a directory "
+        "this same call just created with `directory.mkdir(parents=True)` (no "
+        "`exist_ok`), which raises `FileExistsError` over a pre-existing directory "
+        "rather than reusing one a clone delivered, and the directory name is a "
+        "freshly minted ULID a repository cannot predict. It writes only "
+        "`evidence.json` and the migration file as direct children of that fresh "
+        "directory -- the operations path lands no body -- so there is no path here "
+        "a repository can pre-plant a link at."
+    ),
 }
 
 
