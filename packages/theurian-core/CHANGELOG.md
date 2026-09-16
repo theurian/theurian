@@ -175,15 +175,15 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   The identical under-charge in the migration loader's own walk is filed
   separately ([#693](https://github.com/theurian/theurian/issues/693)).
 
-### Security
+## [0.2.3] - 2026-09-16
 
-<!-- cut: assign the advisory id (GHSA / CVE / release note) for the T-26 timing side-channel -->
+### Security
 
 - **A read-surface timing side-channel let a caller infer a withheld item's
   existence and the approximate size of its body from the timing of its refusal**
-  (**HIGH.** The advisory id — a GHSA, a CVE, or a plain release note — is
-  assigned at the cut; T-26 in
-  [the threat model](../../docs/security/threat-model.md) carries the
+  (**HIGH.** The advisory id is
+  [GHSA-qg39-w622-q4xw](https://github.com/theurian/theurian/security/advisories/GHSA-qg39-w622-q4xw);
+  T-26 in [the threat model](../../docs/security/threat-model.md) carries the
   measurements). Live in shipped Core 0.2.2. Three read gates —
   `knowledge.get`, the relation-edge gate `_relation_is_visible`, and the search
   ranking gate `CanonicalVisibility._may_surface` — decide whether to surface an
@@ -10304,7 +10304,8 @@ error is the one reading the release notes to decide whether to upgrade.
 - Migration `contentFile` paths are rejected at both schema and runtime level if
   they escape the project root.
 
-[Unreleased]: https://github.com/theurian/theurian/compare/core-v0.2.2...main
+[Unreleased]: https://github.com/theurian/theurian/compare/core-v0.2.3...main
+[0.2.3]: https://github.com/theurian/theurian/compare/core-v0.2.2...core-v0.2.3
 [0.2.2]: https://github.com/theurian/theurian/compare/core-v0.2.1...core-v0.2.2
 [0.2.1]: https://github.com/theurian/theurian/compare/core-v0.2.0...core-v0.2.1
 [0.2.0]: https://github.com/theurian/theurian/compare/core-v0.1.0...core-v0.2.0
