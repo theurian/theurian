@@ -337,6 +337,11 @@ def test_the_section_states_the_hour_the_workflow_is_actually_scheduled_for() ->
     schedule = _triggers(_workflow()).get("schedule")
 
     assert schedule, f"{WORKFLOW} has no `schedule:`; the section says the sweep runs nightly"
+    assert len(schedule) == 1, (
+        f"{WORKFLOW} carries {len(schedule)} cron entries; the section describes one nightly "
+        "run, and its budget arithmetic and its clearance of security.yml are both written "
+        "against one. Rewrite the section rather than re-deriving from the first entry"
+    )
     minute, hour, day, month, weekday = str(schedule[0]["cron"]).split()
     assert (day, month, weekday) == ("*", "*", "*"), (
         f"the cron {schedule[0]['cron']!r} is not daily, so the section's wording needs "
