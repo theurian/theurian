@@ -83,22 +83,30 @@ theurian  http://127.0.0.1:7419/mcp  THEURIAN_MCP_TOKEN    enabled  Bearer token
 Then make a real call:
 
 ```sh
-codex exec --approve-for-me "Use the theurian MCP server's project.list tool and list the project ids it returns. Do not run any shell commands."
+codex exec --approve-for-me -C "$(mktemp -d)" --skip-git-repo-check "Use the theurian MCP server's knowledge.search tool to search project theurian for 'single local daemon'. Report the number of results and the item ids. Do not run any shell commands."
 ```
 
 ```text
-mcp: theurian/project.list started
-mcp: theurian/project.list (completed)
+mcp: theurian/knowledge.search started
+mcp: theurian/knowledge.search (completed)
 ```
 
-`--approve-for-me` is load-bearing. Without it `codex exec` runs with approval
-policy `never`, and that same call ends `MCP tool call requires approval, but
-approval policy is never` without reaching the daemon. The flag approves it
-automatically and runs the session under the workspace-write sandbox.
+Three flags, one reason each. `--approve-for-me` routes *every* approval request
+in the session through automatic review, and it is needed because a plain
+`codex exec` runs with approval policy `never` and refuses the tool call before
+it runs: `MCP tool call requires approval, but approval policy is never`. That
+review runs under the workspace-write sandbox, and `-s read-only` will not
+compose with it — `the argument '--approve-for-me' cannot be used with
+'--sandbox <SANDBOX_MODE>'` — so `-C` and `--skip-git-repo-check` pin the
+writable workspace to an empty throwaway directory instead of wherever you
+happen to be standing. Telling the model not to run shell commands is an
+instruction, not a boundary; the working root is the boundary.
 
-`project.list` is the right first call because it answers from the registry.
-`knowledge.search` needs built state, and until `theurian migrate apply` has run
-in the project it refuses with that command as the remedy.
+Run this to check the wiring once, not as a way to work day to day.
+
+If the search refuses with `no built knowledge state`, that project has no index
+yet and the refusal names `theurian migrate apply` in the project as the remedy.
+`project.list` answers from the registry and works before that.
 
 ## Remove
 
