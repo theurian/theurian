@@ -135,6 +135,11 @@ def test_a_surviving_mutation_prints_the_whole_payload_under_dry_run(
     assert "async sweep: 2 mutation(s) not held in" in printed
     assert sweep_filing.AUTOMATION_INSTRUCTION in printed
     assert "```diff" in printed
+    # The body prints the harness argv it was actually given, so the `--with-git`
+    # the default carries has to survive into the issue: a reader who reproduces
+    # the batch without it gets a control-red and no verdict (#527).
+    assert "- **Harness:** `uv run --frozen python" in printed
+    assert "tools/mutate.py --with-git`" in printed
 
 
 def test_an_untrusted_harness_run_files_rather_than_reading_clean(
@@ -343,19 +348,34 @@ def test_a_substituted_harness_is_named_even_on_a_night_that_files_nothing(
     assert "substituted" in printed
 
 
-def test_the_default_harness_is_the_real_one(tmp_path: Path) -> None:
-    """The flag defaults to ``tools/mutate.py`` and the workflow passes no override.
+def test_the_default_harness_is_the_real_one_and_lends_it_a_git(tmp_path: Path) -> None:
+    """The unattended night runs ``tools/mutate.py``, and runs it so it can answer.
 
     A default pointing anywhere else would make every unattended night a
     rehearsal, and nothing in the output of a rehearsal says which repository's
     suite it measured.
+
+    ``--with-git`` is the half that is easy to drop and impossible to notice
+    without running the real harness. The copy the harness builds has no ``.git``,
+    and since the compliance census landed ``claim_surfaces.repo_root`` raises
+    there instead of skipping: measured 2026-09-16 in a default prepared tree,
+    ``tests/integration/audit/test_census_audits_run.py`` comes back 11 failed --
+    the count issue #527 recorded -- which turns the control RED and makes the
+    harness exit 2. Every night would then file ``run-untrusted`` and none would
+    carry a verdict.
+
+    The flag is asserted as a literal rather than through
+    ``DEFAULT_MUTATE_COMMAND``. Comparing the argv against the constant it was
+    built from agrees with that constant whatever it says, so it is the line
+    above that would stay green if the flag were dropped again.
     """
     mutate, gh = _FakeMutate(), _FakeGh()
 
     sweep.main(_argv(tmp_path / "r.json"), mutate_runner=mutate, gh_runner=gh)
 
     assert mutate.argv[: len(sweep.DEFAULT_MUTATE_COMMAND)] == sweep.DEFAULT_MUTATE_COMMAND
-    assert mutate.argv[len(sweep.DEFAULT_MUTATE_COMMAND) - 1].endswith("tools/mutate.py")
+    assert [item for item in mutate.argv if item.endswith("tools/mutate.py")]
+    assert "--with-git" in mutate.argv
 
 
 def test_a_night_asked_for_no_mutations_fails_rather_than_reporting_a_clean_run(

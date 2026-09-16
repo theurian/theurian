@@ -79,12 +79,36 @@ WORKERS: Final = 2
 #: announced on stdout on every path -- a run whose verdicts came from something
 #: else is not evidence about this repository's suite, and "0 findings" from such
 #: a run reads exactly like the real thing.
+#:
+#: **``--with-git`` is not optional here, it is what makes a verdict possible.**
+#: The harness copies the checkout without ``.git``, and since the compliance
+#: census landed, ``tools/audit/claim_surfaces.repo_root`` raises
+#: ``SystemExit("no .git found at or above ...")`` in such a copy rather than
+#: skipping. Measured 2026-09-16 in a default prepared tree at ``f0e58408``:
+#: ``tests/integration/audit/test_census_audits_run.py`` comes back **11
+#: failed**, which is the same count issue #527 recorded and which turns the
+#: harness's unmutated control RED. A nightly without this flag would therefore
+#: exit 2 and file a ``run-untrusted`` issue every single night and never a real
+#: verdict. #527 is closed as a recorded quirk, not as a fix -- neither of its
+#: two options was taken, so the flag is the whole remedy.
+#:
+#: It also buys what it was built for: without it the four rules that read a
+#: *blob* skip, so a mutation whose only killer is one of them comes back
+#: SURVIVED from a run that never executed the test holding it. For an
+#: unattended job that files what it finds, that is a fabricated finding.
+#:
+#: The flag needs a plain repository at the checkout's ``.git``. A CI checkout is
+#: one; a linked worktree is not, so running this driver's default harness from a
+#: worktree fails loudly with the harness's own message and files
+#: ``run-untrusted``. That is the right failure, and it is why a rehearsal with
+#: ``--mutate-cmd`` cannot exercise this path.
 DEFAULT_MUTATE_COMMAND: Final = (
     "uv",
     "run",
     "--frozen",
     "python",
     str(REPO_ROOT / "tools/mutate.py"),
+    "--with-git",
 )
 
 #: Runs the harness and returns its exit code. Injected by the tests, which
