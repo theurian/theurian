@@ -66,6 +66,9 @@ excluded from the published documentation site for that reason.
   lifecycle.
 - Restate the applicable fences **in** the brief. A fence read once elsewhere
   measurably does not prevent the act; only a fence in the brief does.
+- Put brevity discipline in every implementation brief: comments, docstrings,
+  helpers, abstractions, and prose are added only when they remove real
+  ambiguity, and the implementer runs a deletion pass before reporting done.
 - When the assignment runs the CLI, restate the dev-machine fences by name:
   `--dry-run` only for `theurian setup` and `theurian uninstall`, absolute
   binary path with the working directory set in the same command, `HOME` /
@@ -106,6 +109,11 @@ excluded from the published documentation site for that reason.
 - Sweep every fix diff for **new universal prose** before dispatching a
   re-review. Each fix-authored *covers / closes / cannot / all / never* sentence
   becomes a derivation, an enumeration with an escape table, or is deleted.
+- Sweep every fix diff for **ceremonial prose** before re-review: comments,
+  docstrings, and test narration that restate names, types, control flow, or
+  the assertion are deleted rather than edited. Rendered prose — help text,
+  tool and schema descriptions — is outside the sweep; it changes at its own
+  surface's review weight.
 - Re-verify a prose correction at code-review weight unless the sentence is
   wheel-shipped or a security claim.
 - Run the reviewers' own methods before dispatching round two: mutation over the
