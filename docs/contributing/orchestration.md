@@ -181,7 +181,8 @@ here rather than into that PR's round. Two things run under that promise.
 ([`.github/workflows/red-team.yml`](../../.github/workflows/red-team.yml)) runs
 `tools/sweep.py` at 01:17 UTC daily against one production file: the census
 rotated by the date, advanced past any file with nothing to mutate, at most six
-mutations, a full suite walk each. A night that does not come back clean files
+mutations, one full suite walk each and one more for the unmutated control —
+seven walks on a full night. A night that does not come back clean files
 what it saw **with the commit it ran against** — the target is
 `ordinal % census-size`, so a date alone stops reproducing the night as soon as
 `main` moves (`tools/sweep_filing.py` records the measurement: 0 of 30 dates
@@ -200,6 +201,19 @@ is the ritual and not a frequency, deliberately: a cadence nobody performs stops
 silently, and no runs produce no issues, which reads as a clean tracker. It binds
 from the first tag cut after this rule lands on `main`: a release already tagged
 when it lands predates the ritual rather than skipping it.
+
+**What the two legs reach.** The nightly one is census-limited mutation
+sampling, not coverage. Measured in the round on
+[#730](https://github.com/theurian/theurian/pull/730), against a 139-module
+census: 24 of those modules are barren and never become a target; the median wait
+before a productive module is first attacked is 59 nights; a module that is drawn
+gets at most six of as many as 63 candidates; and the tree it is attacked against
+is that night's, not a later reader's. The census is the production tree alone,
+so `tools/`, `tests/` and `docs/` sit outside it entirely — 38 of 60 sampled
+merged pull requests touch no census file at all, among them the two that built
+this sweep and wrote this section. **Neither leg is triggered by a diff.** The
+nightly one samples the tree; the release-cut pass is the half that attacks what
+has accumulated since the last cut.
 
 **Where it lands.** Both file under the `async-sweep` label and enter
 [the filing filter](#the-filing-filter)'s triage like any other filing.
