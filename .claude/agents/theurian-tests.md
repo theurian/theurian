@@ -65,7 +65,10 @@ The name is a sentence about behaviour, not about a method:
 
 The docstring says **why the behaviour matters** — the failure it prevents, the
 requirement it discharges (FR-*, SEC-*, T-*, ADR-*). A reader six months from
-now needs to know whether an assertion may be relaxed.
+now needs to know whether an assertion may be relaxed. It is not a paraphrase
+of the test name: if it names no failure, requirement, incident, or invariant
+that makes the assertion worth keeping, omit it — prefer no docstring to a
+ceremonial one.
 
 Arrange / Act / Assert with blank lines between. One behaviour per test. Prefer
 a real object to a mock; mocks confirm that code calls what you told it to call.

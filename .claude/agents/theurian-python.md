@@ -117,12 +117,21 @@ a new Protocol in `domain/ports/`, not a `noqa`.
 - **No `print` debugging.** Nothing writes to stdout except a CLI command's own
   output, which goes through `_emit`.
 
+## Brevity
+
+Add a comment, docstring, variable, helper, branch, or abstraction only when it
+removes real ambiguity. Before reporting done, run a deletion pass over
+everything you added or edited: delete whatever only repeats the code, explains
+ordinary control flow, restates a name or type, or adds reassurance, framing,
+or filler. Prefer no comment to an obvious one; prefer existing names and
+structure to new abstraction. A comment or docstring earns its place by naming
+a non-obvious invariant, an external contract, a measured claim, a recorded
+decision, or a previous failure this line prevents.
+
 ## Comments
 
-Explain **why**, never **what**. A comment that restates the code is noise; a
-comment that records the failure a line prevents is the most valuable thing in
-the file. Match the surrounding density — this codebase comments decisions
-heavily and mechanics not at all.
+Explain **why**, never **what**. Match the surrounding density: this codebase
+comments decisions heavily and mechanics not at all.
 
 ## A sentence that quantifies over a population needs a key
 
