@@ -53,12 +53,24 @@ jobs:
       # job files the nights the driver itself could not complete. Nothing here
       # writes code, a release, or a checks result.
       issues: write
-    # The driver's budget: six mutations plus the harness's own control is
-    # seven full-suite walks across two workers, which it documents as about
-    # two hours. This ceiling is a hang backstop above that figure, not a
-    # target -- and it is the only bound on the run step, which prints a line
-    # per mutation and would otherwise be indistinguishable from a wedged one.
-    timeout-minutes: 150
+    # Sized against the harness's own bound rather than the driver's "about two
+    # hours". `mutate._default_timeout(2)` is (920 + 240 * 2) * 1.5 = 2100 s
+    # that ONE run may take before the harness calls it hung, and six mutations
+    # plus the control is seven runs over two workers: ceil(7 / 2) = 4 waves,
+    # 8400 s = 140 min for the Sweep step alone, before a depth-0 checkout, two
+    # tree copies and three `uv sync` runs (this job's, and one per tree).
+    #
+    # 150 therefore sat BELOW the harness's own worst case, which is the wrong
+    # side of a ceiling whose breach is a CANCELLATION: `failure()` does not
+    # fire on one, so the ceiling firing would have killed the job with the
+    # alarm at the end of it never running -- the exact silent stop this
+    # workflow exists to prevent (#724). 165 is 140 + 25.
+    #
+    # Both walk constants are laptop-measured, so 140 min is an extrapolation
+    # and not a figure from this runner. The first positive-control dispatch
+    # records the observed control-green seconds to reconcile against; that
+    # acceptance is recorded in the pull request.
+    timeout-minutes: 165
     steps:
       - uses: actions/checkout@v7
         with:
@@ -194,8 +206,12 @@ jobs:
         # failing step before the driver starts would otherwise leave a red run
         # nobody is watching -- a sweep that stops sweeping looks exactly like a
         # sweep finding nothing. `failure()` does not fire on a cancellation,
-        # which is deliberate: a cancelled run is somebody's decision, not a
-        # silent stop.
+        # which is right for the cancellations that are somebody's decision and
+        # wrong for the one that is not: a breach of this job's own ceiling
+        # cancels it, and this step does not run. That gap is #724, and it is
+        # why the ceiling above is sized over the harness's own bound instead
+        # of under it -- covering it properly needs a watchdog outside this
+        # run, reading the previous run's conclusion.
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
