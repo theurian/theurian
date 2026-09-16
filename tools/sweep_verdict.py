@@ -78,10 +78,14 @@ def read_results(document: str) -> tuple[Outcome, ...]:
     because a file was truncated spends a triage slot on a broken job. The driver
     turns this into exit 1, which is what the workflow alarms on.
 
-    The document has been an object since #566; the bare list it used to be is
-    rejected rather than accepted, because a reader that took it would be reading
-    verdicts without the options block that says what they cover -- ``deselect``
-    above all.
+    The document has been an object since #566, and the bare list it used to be
+    is refused rather than read. Not because anything here consumes the options
+    block -- this parser reads ``outcomes`` and nothing else -- but because the
+    block is what records *what the verdicts cover*, ``deselect`` above all, and
+    a run whose record cannot carry that is a run whose verdicts nobody can
+    qualify afterwards. The filed issue and its reader are the consumers that
+    matter; accepting the older shape would file verdicts stripped of the one
+    caveat that can make "0 survived" mean less than it says.
     """
     try:
         loaded = json.loads(document)

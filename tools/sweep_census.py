@@ -10,9 +10,21 @@ whoever picks it up has to be able to regenerate that exact mutation from those
 two facts. Nothing here may depend on the machine, the clock beyond the date, or
 the order a directory walk returned.
 
-**Fair.** Every production file has to come up, and no file may come up twice
-before all the others have. ``ordinal % len`` gives both; a hash of the date
-gives neither, and the difference is invisible on any single night.
+**Spread.** Against a *fixed* census, ``ordinal % len`` walks every file before
+repeating any of it, which a hash of the date does not -- and the difference is
+invisible on any single night, so it is worth choosing deliberately.
+
+That guarantee does not survive contact with this repository, and saying it did
+was a claim nothing here can keep. The census is recomputed nightly, so its
+length moves, and the index moves with it: measured across one week of growth,
+0 of 30 dates resolved to the same file, and an adversarial replay over 47 real
+nights drew 39 distinct targets with 6 repeats -- repeats arriving well before
+the census had been walked. **What holds is determinism, not coverage.** Given
+a census and a date the target is fixed and reproducible; the interval before
+every file has been attacked is unbounded while the census churns, which is why
+a filed finding carries the commit it ran against and why the section in
+``docs/contributing/orchestration.md`` describes the nightly leg as sampling
+rather than as coverage.
 
 The census deliberately drops ``__init__.py``: in this codebase those are
 re-export surfaces, and the three operators in :mod:`sweep_mutations` have
@@ -74,7 +86,13 @@ def rotation(files: Sequence[str], on: date) -> tuple[str, ...]:
     a module of constants and dataclasses holds no comparison, no boolean literal
     and no ``and``. The driver walks this sequence until one file yields
     candidates, and because the sequence is a rotation rather than a slice, that
-    walk both terminates and can reach every file.
+    walk both terminates and can reach every file *in this call*.
+
+    That reach is per-call and says nothing across nights: a file this rotation
+    could have reached may be at a different index tomorrow, because the census
+    it indexes into is recomputed each time. See the module docstring -- what
+    this scheme guarantees is determinism given a census and a date, not that
+    every file is eventually attacked.
     """
     if not files:
         raise SweepError("an empty census cannot be rotated; there is no file to attack")
