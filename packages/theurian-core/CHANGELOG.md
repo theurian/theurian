@@ -114,7 +114,19 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   for everything would satisfy the equality while breaking the concurrency
   remedy. The lookup is `may_surface`'s seventh call site and `may_disclose`'s
   sixth, both added to the exact-equality sets in
-  `tests/unit/test_gate_call_sites.py` in the same commit.
+  `tests/unit/test_gate_call_sites.py` in the same commit. That lookup is also
+  **body-free** — it reads `get_item_metadata`, not the body-joining `get_item`
+  — so a withheld item's refusal materialises no body and its *timing* does not
+  scale with the withheld body's size, closing T-26's fourth and last face on the
+  write path (the three read-surface faces shipped in `[0.2.3]`). The residual is
+  a content-independent existence term of ~9 µs — a withheld item that exists
+  reads a bodyless pointer row where an absent id reads nothing — which carries no
+  withheld content and sits about 155× below the ~1.40 ms transport floor.
+  `tests/integration/test_pre_gate_body_materialization.py` pins the zero body
+  read on the withheld write-path refusal
+  (`test_the_real_propose_change_handler_reads_no_body_before_a_withheld_refusal`)
+  and the `include_unapproved` draft lookup that keeps the in-view concurrency
+  remedy live (`..._names_the_current_revision_for_an_in_view_draft`).
 
   **What this is not.** It is not an approval path: approved knowledge still
   changes only through a migration a human merged, and `migrate apply` enforces

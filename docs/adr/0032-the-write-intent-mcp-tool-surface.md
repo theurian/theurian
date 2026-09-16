@@ -697,16 +697,28 @@ they may read needs to know it is `rejected` in order to fix the document.
    readmission needs the three things decision 3 names — a transition-aware
    refusal, a wire-required `reason`, and a decision about whether the
    enforcement seat is the tool or the engine (Phase D's ADR candidate #1).
-5. **Whether any residual disclosure survives decision 6's bind.** The bind
-   names the shape and **two** seats — a caller-scoped `CurrentRevisionLookup`
-   for `proposeChange`, and, if decision 3's open question is answered *at
-   generation*, whatever scopes the alias guard's status for
-   `generateMigrationDraft` — and slice B4 owes the two-corpora equality that
-   would find a residual on both. Until that
-   runs, this ADR asserts a design and not a measurement — which is why the
-   equality covers refusals as well as responses, and why *timing* is inside its
-   scope: a lookup that folds a longer set for an in-view item than for a
-   missing id is a duration channel, the family ADR-0033 decision 5 names.
+5. **Whether any residual disclosure survives decision 6's bind — answered at
+   slice B4, and now a measurement.** The bind names the shape and **two**
+   seats — a caller-scoped `CurrentRevisionLookup` for `proposeChange`, and, if
+   decision 3's open question is answered *at generation*, whatever scopes the
+   alias guard's status for `generateMigrationDraft`. Slice B4 ran the equality
+   this owed on both — in the same-corpus shape the decision-6 compliance entry
+   records, not the two-corpora one asked for here; that entry states the
+   difference and the one channel the same-corpus form cannot catch (one carried
+   by collection-wide state): the **value** channel by the disclosure oracle
+   (`test_write_intent_disclosure_oracle.py`), the **duration** channel by the
+   zero-body-read pin (`test_pre_gate_body_materialization.py`) plus an
+   out-of-band timing measurement. On the value channel the refusal a caller
+   reads carries no residual, to that entry's recorded reach. On the duration
+   channel the body-size term is **closed** by the body-free lookup
+   (`get_item_metadata`, T-26 face 4), so a refusal's timing no longer scales
+   with a withheld body; the one residual is a content-independent existence term
+   of ~9 µs — a withheld item that exists reads a bodyless pointer row where an
+   absent id reads nothing — which carries no withheld content, sits about 155×
+   below the ~1.40 ms transport floor (TB-1), and is not a gradeable disclosure.
+   The equality covered refusals as well as responses, which is why *timing* was
+   in scope: the duration channel decision 6's *does not close* row named is the
+   ~9 µs existence term this measurement bounds, not the body-size one B4 removed.
 6. **Rate, size and concurrency bounds on a write-intent call.** A caller able
    to make the daemon spend work no recorded limit bounds is the T-6 family's;
    [#26](https://github.com/theurian/theurian/issues/26)'s concurrency cap is
@@ -970,9 +982,12 @@ the property as it was written and states what actually holds it:
   the caller-scoped lookup is suppression and not genuine absence. The fixture is
   synthetic, which is the only way to have a withheld row in a corpus whose scope
   excludes them (ADR-0030 decision 6's reasoning, one surface over). **Refusals
-  are asserted to carry no status, not only no revision id.** **Timing is not
-  measured**, and stays in *Still owed* with the reason decision 6's *does not
-  close* row gives.
+  are asserted to carry no status, not only no revision id.** **Timing is
+  measured at slice B4 by a separate instrument** — this oracle covers *content*
+  and does not measure duration; the duration channel is closed by the body-free
+  caller-scoped lookup (`get_item_metadata`, T-26 face 4) and pinned by the
+  zero-body-read counter (`test_pre_gate_body_materialization.py`), recorded in
+  the decision-6 *Landed* entry below, no longer in *Still owed*.
 
   **The battery covers `generateMigrationDraft` as well as `proposeChange`**, at
   one admitted operation per item-id-bearing input *position*. Over the ten
@@ -1035,6 +1050,22 @@ the property as it was written and states what actually holds it:
   mutation run in both directions — dropping the `may_surface`/`may_disclose`
   gate leaks the out-of-view revision, and returning `None` for everything drops
   the in-view one — cited to that commit rather than restated here.
+
+  **And the lookup is body-free (T-26 face 4).** It reads `get_item_metadata`,
+  not the body-joining `get_item`, so a withheld item's refusal materialises no
+  body and its *timing* is content-independent — it does not scale with the
+  withheld body's size.
+  `test_pre_gate_body_materialization.py::test_the_real_propose_change_handler_reads_no_body_before_a_withheld_refusal`
+  pins the zero body read on the withheld refusal (RED when the closure's
+  `get_item_metadata` reverts to `get_item`), and
+  `::test_the_real_propose_change_handler_names_the_current_revision_for_an_in_view_draft`
+  pins `include_unapproved=True` in the lookup — the `draft`/`proposed` statuses
+  `may_surface` treats differently under the flag — so the in-view concurrency
+  remedy the #210 class depends on stays live. The one residual is a
+  content-independent existence term of ~9 µs (a withheld item that exists reads a
+  bodyless pointer row; an absent id reads nothing), about 155× below the
+  ~1.40 ms transport floor (TB-1) and not a gradeable disclosure — the
+  measurement open-question 5 owed.
 
   **This item moved the pinned counts it said it would, in the commit that added
   the call site.** The lookup is one call site on each gate, so
@@ -1132,12 +1163,14 @@ the property as it was written and states what actually holds it:
 
 Still owed, with the milestone that will satisfy it:
 
-**The first four below are addressed to a slice and to no issue.** Measured
+**The first three below are addressed to a slice and to no issue.** Measured
 2026-09-15, `gh issue list --state open --search "write-intent OR proposeChange
 OR generateMigrationDraft OR facade OR draft-only"` returns nothing that covers
 any of them, so this section is their only owner — a reader should treat that as
 the gap it is rather than assume a tracker entry exists. The last three each name
-their issue.
+their issue. (Open-question 5's timing measurement, formerly a fourth
+slice-addressed item here, landed at slice B4 and moved to the decision-6
+*Landed* entry above.)
 
 - **Slice B5 or later — a file path is refused by construction, and nothing
   recomputes it (decision 2).** The property holds as shipped: neither published
@@ -1155,12 +1188,6 @@ their issue.
   the conformance suite alone is green on either value. The coupling pin and the
   e2e value assertion hold the property; this closes the gap between the property
   and the instrument this ADR named.
-- **Slice B5 or later — a timing measurement across decision 6's lookup.** The
-  disclosure oracle covers *content* on both tools and does not measure duration.
-  Decision 6's *does not close* row states the exposure: a lookup that folds a
-  longer set for an in-view item than for a missing id is a duration channel, the
-  family [ADR-0033](0033-knowledge-candidate-generation.md) decision 5 names.
-  Until it is measured, the timing half of that row is a design assertion.
 - **Slice B5 or later — the two halves of the operations-path entry that did not
   land.** A test that a document drafted through `draft_from_document` produces a
   proposal directory `theurian propose accept` accepts, driven through the
