@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shlex
 import shutil
 import subprocess
@@ -133,6 +134,15 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     )
     parser.add_argument("--repo", default=None, help="owner/name; omitted lets gh infer it")
     parser.add_argument(
+        "--commit",
+        default=None,
+        help=(
+            "the sha this night ran against, 7-40 lowercase hex. The filed issue "
+            "leads its reproduction with `git checkout <sha>`, because the date alone "
+            "does not fix which file the sweep attacks"
+        ),
+    )
+    parser.add_argument(
         "--mutate-cmd",
         default=None,
         help=(
@@ -149,6 +159,33 @@ def _night_of(raw: str) -> date:
         return date.fromisoformat(raw)
     except ValueError as error:
         raise SweepError(f"--date {raw!r} is not a YYYY-MM-DD date: {error}") from error
+
+
+#: What a commit may look like before it is written into a shell instruction.
+#:
+#: Seven is git's own abbreviation floor and forty is a full sha-1. The class
+#: holds no metacharacter, no space and no upper case, which is the point: this
+#: is the one repository-derived string the payload puts inside a block written
+#: to be *pasted into a shell* rather than read as data, so it is refused rather
+#: than escaped.
+_COMMIT_SHAPE: Final = re.compile(r"[0-9a-f]{7,40}")
+
+
+def _commit_of(raw: str | None) -> str | None:
+    """A validated sha, or ``None`` when the caller did not have one.
+
+    Refusing early matters for more than injection: a night that cannot write a
+    true reproduction instruction should not spend two hours of CI earning the
+    right to write a false one.
+    """
+    if raw is None:
+        return None
+    if _COMMIT_SHAPE.fullmatch(raw) is None:
+        raise SweepError(
+            f"--commit {raw!r} is not 7-40 lowercase hex. This value is pasted into a "
+            "`git checkout` line in the filed issue, so it is refused rather than escaped"
+        )
+    return raw
 
 
 def _source_of(path: str) -> str:
@@ -208,6 +245,7 @@ def _sweep(
     args: argparse.Namespace, mutate_runner: MutateRunner, gh_runner: sweep_filing.Runner
 ) -> int:
     night = _night_of(args.date)
+    commit = _commit_of(args.commit)
     harness = tuple(shlex.split(args.mutate_cmd)) if args.mutate_cmd else DEFAULT_MUTATE_COMMAND
     if harness != DEFAULT_MUTATE_COMMAND:
         print(f"WARNING   --mutate-cmd substituted the mutation harness with {' '.join(harness)};")
@@ -251,6 +289,7 @@ def _sweep(
             outcomes=outcomes,
             reading=reading,
             skipped=len(generated.skipped),
+            commit=commit,
         )
     )
     if args.dry_run:

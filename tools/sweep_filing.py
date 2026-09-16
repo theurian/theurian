@@ -90,6 +90,15 @@ class Night:
     reading: Reading
     #: Candidates the generator dropped for want of a unique anchor.
     skipped: int
+    #: The commit the sweep ran against, when the caller knew it.
+    #:
+    #: Without it the reproduction instruction is false. Which file a date
+    #: resolves to depends on the census *contents* -- every production module,
+    #: so adding or removing one anywhere re-resolves the target -- and which of
+    #: its candidates are anchorable depends on that file's contents. `main`
+    #: moves daily, so a command pasted a week later sweeps a different file,
+    #: comes back clean, and closes a finding that is still live.
+    commit: str | None = None
 
 
 @dataclass(frozen=True)
@@ -198,6 +207,45 @@ def _headline(night: Night) -> str:
     return f"async sweep: {UNTRUSTED} on {night.target} ({night.on})"
 
 
+def _reproduce_section(night: Night) -> list[str]:
+    """How to get this exact batch back, and what that depends on.
+
+    The date does **not** fix the batch on its own, and saying so was this
+    section's defect: the target is resolved by indexing into a census of every
+    production module, so a module added or removed anywhere in the tree
+    re-points a given date, and a file's own edits change which of its candidates
+    can be anchored. A triager reproducing against a later `main` sweeps a
+    different file, gets a clean run, and closes a live finding on the strength
+    of it.
+
+    So a known commit leads the block as a `git checkout`, and an unknown one is
+    said out loud rather than papered over -- an instruction that cannot be made
+    true has to carry its own precondition.
+    """
+    lines = ["## Reproduce", ""]
+    if night.commit is not None:
+        lines.append(
+            "The batch is a function of the date **and of the tree it ran against**: "
+            "the census is every production module, so one added or removed anywhere "
+            "re-resolves which file a date names. Check that tree out first."
+        )
+        script = f"git checkout {night.commit}\n{' '.join(night.command)}"
+    else:
+        lines.append(
+            "This run recorded no commit, and the date alone does not fix the batch: "
+            "the census is every production module, so one added or removed anywhere "
+            "re-resolves which file a date names. Run this against the **same commit** "
+            "the night ran on, or it will sweep a different file and come back clean."
+        )
+        script = " ".join(night.command)
+    lines.append(
+        "It also re-runs the batch: `--dry-run` suppresses the filing, not the harness, "
+        "so expect one full suite walk per mutation plus one for the control."
+    )
+    lines.extend(("", _block(script, "sh"), ""))
+    return lines
+
+
 def build_payload(night: Night) -> Payload:
     """The issue this night files.
 
@@ -217,18 +265,11 @@ def build_payload(night: Night) -> Payload:
         f"- **Harness exit:** {night.mutate_exit}",
         f"- **Harness:** {_inline(' '.join(night.harness))}",
         f"- **Candidates dropped for a non-unique anchor:** {night.skipped}",
-        "",
     ]
-    reproduce = [
-        "## Reproduce",
-        "",
-        "The mutations are a function of the date, so this regenerates exactly the ones "
-        "above. It also re-runs them: `--dry-run` suppresses the filing, not the batch, "
-        "so expect one full suite walk per mutation plus one for the control.",
-        "",
-        _block(" ".join(night.command), "sh"),
-        "",
-    ]
+    if night.commit is not None:
+        header.append(f"- **Commit:** {_inline(night.commit)}")
+    header.append("")
+    reproduce = _reproduce_section(night)
     automation = [AUTOMATION_HEADING, "", AUTOMATION_INSTRUCTION]
     body = "\n".join(
         [

@@ -395,6 +395,101 @@ def test_a_night_asked_for_no_mutations_fails_rather_than_reporting_a_clean_run(
     assert mutate.argv == ()
 
 
+def test_the_commit_the_workflow_passes_reaches_the_filed_issue(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The workflow knows the sha; the issue is the only place it can survive to.
+
+    `--commit` exists because the reproduction instruction is false without it:
+    the target is resolved against the census *contents*, so a triager working a
+    week later sweeps a different file unless the issue says which tree to stand
+    on. A flag the driver accepted and dropped on the floor would leave the
+    instruction exactly as wrong as before, which is why this asserts on the
+    rendered body and not on the parsed arguments.
+    """
+    mutate, gh = _FakeMutate(exit_code=1, verdicts="SURVIVED"), _FakeGh()
+    sha = "0123456789abcdef0123456789abcdef01234567"
+
+    code = sweep.main(
+        _argv(tmp_path / "r.json", "--dry-run", "--commit", sha),
+        mutate_runner=mutate,
+        gh_runner=gh,
+    )
+
+    printed = capsys.readouterr().out
+    assert code == 0
+    assert f"- **Commit:** `{sha}`" in printed
+    assert f"git checkout {sha}" in printed
+
+
+@pytest.mark.parametrize(
+    "commit",
+    [
+        "0123456",
+        "0123456789abcdef0123456789abcdef01234567",
+        "abcdef7",
+    ],
+)
+def test_a_well_shaped_commit_is_accepted(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], commit: str
+) -> None:
+    """Seven hex digits is git's own abbreviation floor; forty is a full sha-1.
+
+    Both ends are accepted because both are what a caller legitimately has: a
+    workflow passes `${{ github.sha }}` in full, a human pastes what `git log
+    --oneline` printed.
+    """
+    mutate, gh = _FakeMutate(exit_code=1, verdicts="SURVIVED"), _FakeGh()
+
+    code = sweep.main(
+        _argv(tmp_path / "r.json", "--dry-run", "--commit", commit),
+        mutate_runner=mutate,
+        gh_runner=gh,
+    )
+
+    assert code == 0
+    assert f"git checkout {commit}" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "commit",
+    [
+        "012345",
+        "0123456789abcdef0123456789abcdef012345678",
+        "0123456ABCDEF",
+        "0123456;rm -rf ~",
+        "0123456 && echo pwned",
+        "$(id)abc",
+        "main",
+        "",
+    ],
+)
+def test_a_commit_that_is_not_a_commit_fails_the_sweep(tmp_path: Path, commit: str) -> None:
+    """The one repo-derived string that reaches the body *inside a shell block*.
+
+    Everything else the payload carries is delimited as data and read by a human;
+    `git checkout <sha>` is an instruction written to be pasted into a shell. So
+    this value is not escaped, it is *refused* unless it is 7-40 lowercase hex --
+    a shape with no metacharacter in it at all. Too short is refused as well,
+    because six hex digits is below git's abbreviation floor and an ambiguous
+    prefix makes the instruction fail in a way that reads like the finding.
+
+    The harness is never started: a night that cannot write a true reproduction
+    instruction should not spend two hours earning the right to write a false
+    one.
+    """
+    mutate, gh = _FakeMutate(), _FakeGh()
+
+    code = sweep.main(
+        _argv(tmp_path / "r.json", "--dry-run", "--commit", commit),
+        mutate_runner=mutate,
+        gh_runner=gh,
+    )
+
+    assert code == 1
+    assert mutate.argv == ()
+
+
 def test_a_date_that_is_not_a_date_fails_the_sweep(tmp_path: Path) -> None:
     """The target is a function of the date, so an unparseable date selects nothing.
 

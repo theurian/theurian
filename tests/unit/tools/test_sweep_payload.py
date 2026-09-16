@@ -57,13 +57,14 @@ def _candidate(
     )
 
 
-def _night(
+def _night(  # noqa: PLR0913 - a builder for a ten-field record; every field is varied by a test
     *,
     target: str = "packages/theurian-core/src/theurian/x.py",
     candidates: tuple[sweep_mutations.Candidate, ...] = (),
     outcomes: tuple[sweep_verdict.Outcome, ...] = (),
     reading: sweep_verdict.Reading | None = None,
     mutate_exit: int = 1,
+    commit: str | None = "9f2c1ab4d5e6f70819a2b3c4d5e6f7089a1b2c3d",
 ) -> sweep_filing.Night:
     picked = candidates or (_candidate("sweep-2026-09-16-00-le-to-lt-l42"),)
     reported = outcomes or (
@@ -85,6 +86,7 @@ def _night(
             unheld=(picked[0].label,),
         ),
         skipped=3,
+        commit=commit,
     )
 
 
@@ -243,6 +245,58 @@ def test_a_backtick_in_a_path_cannot_close_the_code_span_it_sits_in() -> None:
     assert sweep_filing._inline(tricky) == f"```{tricky}```"
     assert sweep_filing._inline(trailing) == f"`` {trailing} ``"
     assert tricky in sweep_filing.build_payload(_night(target=tricky)).body
+
+
+def test_the_reproduce_block_checks_out_the_commit_the_night_ran_against() -> None:
+    """A reproduction that lands on a different file closes a live finding.
+
+    The target is not a function of the date alone. It is a function of the date,
+    the census *contents* and the file contents: the census is every production
+    module, so adding or removing one anywhere in the tree re-resolves which file
+    a given ordinal names, and editing a file changes which of its candidates are
+    anchorable. `main` moves daily. A triager who pastes the command a week later
+    therefore sweeps a different file, sees it come back clean, and closes an
+    issue whose finding is still live -- which is worse than no reproduction
+    instruction, because it carries the authority of one.
+
+    The commit is what makes the instruction true, so it leads the block.
+    """
+    body = sweep_filing.build_payload(_night(commit="abc1234")).body
+
+    reproduce = body.split("## Reproduce", 1)[1]
+    assert "git checkout abc1234" in reproduce
+    assert reproduce.index("git checkout abc1234") < reproduce.index("tools/sweep.py")
+    assert "- **Commit:** `abc1234`" in body
+
+
+def test_a_body_with_no_commit_states_the_precondition_it_cannot_satisfy() -> None:
+    """When nothing pinned the tree, the issue has to say so rather than imply it.
+
+    A sweep run by hand has no commit to quote. Printing the bare command there
+    would make exactly the claim this pair of tests exists to remove -- that the
+    date is enough -- so the intro states the precondition in words instead.
+    """
+    body = sweep_filing.build_payload(_night(commit=None)).body
+
+    reproduce = body.split("## Reproduce", 1)[1]
+    assert "git checkout" not in reproduce
+    assert "same commit" in reproduce
+    assert "- **Commit:**" not in body
+
+
+@pytest.mark.parametrize("commit", ["abc1234", None])
+def test_no_payload_claims_the_date_alone_fixes_which_mutations_run(commit: str | None) -> None:
+    """The false sentence, asserted absent on both shapes rather than replaced once.
+
+    It read "The mutations are a function of the date, so this regenerates
+    exactly the ones above". Measured false: the census contents and the file
+    contents are inputs too. Checking both the commit and the no-commit body is
+    what stops the claim surviving in whichever branch the fix did not touch.
+    """
+    body = sweep_filing.build_payload(_night(commit=commit)).body
+
+    assert "a function of the date, so this regenerates" not in body
+    assert "regenerates exactly the ones above" not in body
 
 
 def test_the_dedup_marker_is_a_digest_no_path_can_forge() -> None:
