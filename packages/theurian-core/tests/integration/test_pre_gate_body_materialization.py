@@ -139,6 +139,13 @@ VISIBLE_ID2: Final = ItemId("architecture.also-keep")
 VISIBLE_REV2: Final = RevisionId("01K1C" + f"{3:021d}")
 WITHHELD_ID: Final = ItemId("architecture.gone")
 WITHHELD_REV: Final = RevisionId("01K1G" + f"{2:021d}")
+#: An in-view *unapproved* item: pointer status ``draft``, sensitivity in view. It
+#: exists so the write-path revision lookup is driven over a status that
+#: ``may_surface`` treats differently under ``include_unapproved`` True vs False --
+#: which ``approved``/``deprecated`` do not. A small body: nothing here measures it.
+DRAFT_ID: Final = ItemId("architecture.evolving")
+DRAFT_REV: Final = RevisionId("01K1D" + f"{4:021d}")
+DRAFT_BODY: Final = "# evolving\n\nA draft the author may still update.\n"
 
 
 class _BodyReadCounter:
@@ -434,13 +441,16 @@ def _registered_project(root: Path, *, withheld_status: KnowledgeStatus) -> Proj
     """A registered project the shipped ``knowledge.get`` resolves and serves.
 
     One approved item and one item at ``withheld_status``, each with an 8 MiB
-    current-revision body, written straight to canonical -- no index build,
-    because ``knowledge.get`` reads canonical and the leak this pins is on that
-    read. The active-state pointer, the registry entry and the build-provenance
-    record are the three things ``_resolve`` checks before any body is read, and
-    ``record_expected_surfaceable_count`` matches the #30 integrity detector, so
-    the real handler runs end to end against a healthy state -- a clean refusal on
-    the withheld id and no ``integrity`` key on the visible one.
+    current-revision body, plus an in-view ``draft`` item (small body) the write
+    path exercises -- written straight to canonical -- no index build, because
+    ``knowledge.get`` reads canonical and the leak this pins is on that read. The
+    active-state pointer, the registry entry and the build-provenance record are
+    the three things ``_resolve`` checks before any body is read, and
+    ``record_expected_surfaceable_count`` -- run after every write, so it counts
+    the draft too (``draft`` is in ``SURFACEABLE_STATUSES``) -- matches the #30
+    integrity detector, so the real handler runs end to end against a healthy
+    state -- a clean refusal on the withheld id and no ``integrity`` key on the
+    visible one.
     """
     paths = ProjectPaths.of(root)
     paths.state.mkdir(parents=True, exist_ok=True)
@@ -464,6 +474,8 @@ def _registered_project(root: Path, *, withheld_status: KnowledgeStatus) -> Proj
         writer.put_item(_item(VISIBLE_ID, VISIBLE_REV, KnowledgeStatus.APPROVED))
         writer.append_revision(_revision(WITHHELD_ID, WITHHELD_REV, LARGE_BODY))
         writer.put_item(_item(WITHHELD_ID, WITHHELD_REV, withheld_status))
+        writer.append_revision(_revision(DRAFT_ID, DRAFT_REV, DRAFT_BODY))
+        writer.put_item(_item(DRAFT_ID, DRAFT_REV, KnowledgeStatus.DRAFT))
         # What `migrate apply` records inside its own transaction (#30 PR2); without
         # it the integrity detector reads the missing record as damage, so the
         # withheld path answers "could not be fully read" and the visible path
@@ -820,4 +832,29 @@ def test_the_real_propose_change_handler_names_the_current_revision_for_an_in_vi
     assert VISIBLE_REV.value in message, (
         "the in-view refusal names the item's real current revision, so the lookup is "
         "live and discriminating rather than returning None for everything"
+    )
+
+
+def test_the_real_propose_change_handler_names_the_current_revision_for_an_in_view_draft(
+    tmp_path: Path,
+) -> None:
+    """A stale ``expectedRevision`` on an in-view *draft* is refused with the draft's
+    real current revision named -- the optimistic-concurrency remedy the #210
+    unguarded-update class depends on for draft/proposed items (ADR-0032 decision 6).
+
+    This pins ``include_unapproved=True`` in the caller-scoped ``current_revision``
+    lookup, which the approved-item control cannot: ``may_surface`` treats ``draft``
+    (and ``proposed``) alone differently under the flag. Flip it to
+    ``include_unapproved=False`` and the draft answers ``None`` -- the refusal
+    collapses to the absent-shaped "does not exist yet", naming no revision, so a
+    second create for this draft would slip past the "already exists" guard.
+    """
+    registry = _registered_project(tmp_path, withheld_status=KnowledgeStatus.DEPRECATED)
+
+    message = _propose_change_refusal(registry, DRAFT_ID, STALE_EXPECTED_REVISION)
+
+    assert "conflict at apply" in message, "the in-view draft hits the concurrency guard"
+    assert DRAFT_REV.value in message, (
+        "the in-view draft refusal names its real current revision, so the lookup "
+        "surfaces the draft (include_unapproved=True) rather than answering None"
     )
