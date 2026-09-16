@@ -2565,8 +2565,8 @@ a separate point:*
   Three further tests each reach less than the paragraph above, so take them for
   what they hold and no more:
   `packages/theurian-core/tests/integration/test_retrieval_service.py::test_retired_knowledge_is_never_indexed_even_when_asked_for`
-  builds with `include_unapproved=True` and asserts the deprecated, superseded
-  and rejected items produce no hits;
+  applies one `deprecateItem` and asserts the deprecated item produces no hits
+  under `include_unapproved=True`;
   `::test_the_surfaceable_statuses_exclude_everything_retired` pins that the set
   excludes every retired status and contains `approved` — four membership
   assertions, which say nothing about `draft` or `proposed`; and
