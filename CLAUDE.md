@@ -577,6 +577,39 @@ a false report, even if the CRITICAL was fixed.
 
 ## Standing conventions
 
+### Brevity
+
+Code and prose must be minimal.
+
+Do not add a comment, docstring, variable, helper, branch, abstraction, or
+sentence unless it removes real ambiguity.
+
+Before reporting done, run a deletion pass over everything you added or edited.
+Delete anything that only:
+
+- repeats the code
+- explains ordinary control flow
+- restates a name or type
+- says what a test already says
+- adds reassurance, framing, or filler
+
+Prefer no comment to an obvious comment. Prefer one direct sentence to a
+paragraph. Prefer existing names and structure to new abstraction.
+
+A comment or docstring is allowed only when it names one of these:
+
+- a non-obvious invariant
+- an external contract
+- a measured claim
+- a recorded decision, or the alternative it rejects
+- a previous failure this line prevents
+
+Two surfaces are outside the deletion pass: prose that renders to a caller — a
+Typer command docstring is the `--help` text, an MCP tool or schema
+`description` is wire contract — changes at that surface's own review weight,
+and governed records (ADR compliance sections, amendment blocks, work-log
+reasoning) are amended, never trimmed.
+
 ### Language
 
 Theurian is open source. Anything that persists in the repository is read during

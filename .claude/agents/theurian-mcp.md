@@ -69,4 +69,9 @@ Run the daemon for real against a temporary `THEURIAN_DATA_DIR`, call the tool
 over HTTP, and read the response. In-process tests miss the transport; the
 transport is where this project's MCP bugs have been.
 
+Comments and docstrings follow CLAUDE.md's Brevity rule: add prose only where
+it removes real ambiguity, and run a deletion pass before reporting done. Tool
+and schema `description`s are wire contract, not commentary — the pass never
+deletes them; change them at the tool's own review weight.
+
 Report in the caller's language.
