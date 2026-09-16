@@ -190,7 +190,7 @@ resolved to the same file across one week of this repository's growth). Its
 `workflow_dispatch` `date` input is the lever that makes a clean night mean
 something: it aims the rotation at a file whose verdict is already known, and
 until an instrument has been heard to speak, its zero is not evidence
-(INSTRUMENT's first line).
+(INSTRUMENT's first rule).
 
 **The agent pass.** Before a release tag is cut, `theurian-adversarial-review`
 runs over `origin/main` at the candidate commit and files what it finds under the
@@ -216,7 +216,9 @@ nightly one samples the tree; the release-cut pass is the half that attacks what
 has accumulated since the last cut.
 
 **Where it lands.** Both file under the `async-sweep` label and enter
-[the filing filter](#the-filing-filter)'s triage like any other filing.
+[the filing filter](#the-filing-filter)'s triage like any other filing. A machine
+filing arrives carrying that label and nothing else: Priority, Type and the two
+dates are the orchestrator's to set when it picks the issue up.
 
 **The ratchet.** An `async-sweep` finding closes when the automation covering it
 lands — a test, a lint rule, or a CI gate — or when a decline is recorded in the
