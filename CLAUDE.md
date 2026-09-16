@@ -211,20 +211,19 @@ round. **Everywhere else that hour is overhead** — spending it everywhere trip
 hours-per-unit-of-work while output stayed flat — so outside the top row
 **adversarial review runs async, after merge**: a standing red-team sweep over
 `main`, nightly single-file mutation runs included, whose findings enter the
-filing-time triage like any other. Building that sweep and its ratchet is tracked
-in [#378](https://github.com/theurian/theurian/issues/378), and until it runs the
-**middle** row is the one left uncovered — the top row is sync either way. So
-while #378 is open, a middle-row change whose claim the routing table sends to
-the adversarial reviewer gets that review **sync**, or the PR says the claim went
-unattacked. Async adversarial on a *disclosure* surface is the one trade that
-never pays — it swaps a sync hour for an embargo week, six GHSAs at days each.
+filing-time triage like any other. That sweep runs nightly, and an agent pass
+runs at each release cut; both file under `async-sweep`, and the operational
+detail is in
+[orchestration.md](docs/contributing/orchestration.md#the-async-red-team-sweep).
+Async adversarial on a *disclosure* surface is the one trade that never pays —
+it swaps a sync hour for an embargo week, six GHSAs at days each.
 
 So weigh the review before dispatching it, not after:
 
 | Blast radius of a wrong change | Review weight |
 | :-- | :-- |
 | Disclosure, governed state, security claims, wire contract | Full **sync** round — all three, before the flip |
-| Behaviour a trier runs, but no disclosure surface | Code review sync; adversarial async, when the claims table calls it. The async sweep is not built yet ([#378](https://github.com/theurian/theurian/issues/378)) — until it runs, dispatch that adversarial review sync, or record in the PR that the claim went unattacked |
+| Behaviour a trier runs, but no disclosure surface | Code review sync; adversarial async, when the claims table calls it — it arrives from the standing sweep (nightly mutation runs, plus the release-cut pass), not from a review dispatched for this PR |
 | Prose, process guidance, CI plumbing, mechanical moves — wrong means "misleading, revertible" | One light pass (code review alone), same day, no round |
 
 **Static gates stay sync and strengthen — the ratchet:** every adversarial or
