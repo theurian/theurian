@@ -299,6 +299,84 @@ def test_no_payload_claims_the_date_alone_fixes_which_mutations_run(commit: str 
     assert "regenerates exactly the ones above" not in body
 
 
+#: Three markdown constructs GitHub's renderer honours in an issue body, and one
+#: backtick run to close a naive code span. Rendered live by the security review
+#: through GFM: a working link, a loaded image, a collapsible block.
+_HOSTILE_SUMMARY = "1 failed ](evil) <img src=x onerror=1> <details>hidden</details> `` tick"
+
+
+def test_a_harness_summary_carrying_markdown_lands_as_inert_text() -> None:
+    """The verdict line's summary is repository text, and it was undelimited.
+
+    Its two sources are pytest's last printed line -- which quotes whatever a
+    test printed or a source line a failure echoed -- and a ``HarnessError``
+    string, which carries up to eighty characters of the anchor verbatim
+    (``mutate_edits._apply_edit``). So a source line is enough to put live HTML
+    in an issue on a tracker, filed unattended by a token with issues:write.
+
+    Asserted on the rendered body rather than on ``_inline``: a check that the
+    helper escapes correctly says nothing about whether this caller reached it,
+    and not reaching it was the defect.
+    """
+    outcomes = (
+        sweep_verdict.Outcome("__control__", "control-green", 903.2, ""),
+        sweep_verdict.Outcome("sweep-a", "SURVIVED", 512.5, _HOSTILE_SUMMARY),
+    )
+
+    body = sweep_filing.build_payload(_night(outcomes=outcomes)).body
+
+    line = next(item for item in body.splitlines() if "SURVIVED" in item and "sweep-a" in item)
+    assert _HOSTILE_SUMMARY in line
+    assert line.count("```") >= 2
+    assert line.endswith("```")
+
+
+def test_an_unknown_verdict_is_delimited_like_every_other_repo_derived_string() -> None:
+    """The verdict is read out of the harness's JSON, so it is not a closed set here.
+
+    A record written by a future harness -- or a corrupted one -- can carry any
+    string in that field, and it was rendered straight into ``**bold**``. The
+    allow-list keeps the ordinary line clean; anything off it is data.
+    """
+    outcomes = (
+        sweep_verdict.Outcome("__control__", "control-green", 903.2, ""),
+        sweep_verdict.Outcome("sweep-a", "<img src=x> [click](evil)", 512.5, ""),
+    )
+
+    body = sweep_filing.build_payload(_night(outcomes=outcomes)).body
+
+    line = next(item for item in body.splitlines() if "sweep-a" in item)
+    assert "`<img src=x> [click](evil)`" in line
+    assert "**<img" not in line
+
+
+@pytest.mark.parametrize("verdict", sorted(sweep_filing.KNOWN_VERDICTS))
+def test_a_verdict_the_harness_really_writes_still_reads_as_plain_emphasis(verdict: str) -> None:
+    """The allow-list has to admit what the harness actually produces.
+
+    An allow-list that admitted nothing would satisfy the rule above by
+    rendering every line as code -- safe, and unreadable. These six are the
+    strings ``mutate_run`` writes into the ``verdict`` field.
+    """
+    outcomes = (sweep_verdict.Outcome("sweep-a", verdict, 1.0, ""),)
+
+    body = sweep_filing.build_payload(_night(outcomes=outcomes)).body
+
+    assert f"- **{verdict}**" in body
+
+
+def test_the_allow_list_covers_every_verdict_the_sweep_itself_branches_on() -> None:
+    """Two modules naming the same strings, pinned against each other.
+
+    ``sweep_verdict`` decides clean-or-file by comparing against ``KILLED``,
+    ``control-green`` and the unheld set. If this list drifted from those, a
+    legitimate verdict would start rendering as code -- cosmetic, but the first
+    sign of the two modules disagreeing about what the harness emits.
+    """
+    assert sweep_verdict.UNHELD_VERDICTS <= sweep_filing.KNOWN_VERDICTS
+    assert {"KILLED", "control-green", "control-red"} <= sweep_filing.KNOWN_VERDICTS
+
+
 def test_the_dedup_marker_is_a_digest_no_path_can_forge() -> None:
     """The key the comment-instead-of-open decision turns on.
 

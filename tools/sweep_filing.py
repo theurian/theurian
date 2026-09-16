@@ -12,6 +12,17 @@ shell, and the body travels on stdin (``--body-file -``) rather than as an
 argument. Backticks and ``$( )`` are then ordinary bytes, the body stays out of
 the runner's process list, and no argument-length limit applies.
 
+**Which strings are repository text.** The list is longer than it looks, and
+under-reading it was this module's own defect. The target path comes from a
+directory walk; the mutation label and the two slices of source come from the
+generator; and **the harness's per-outcome ``summary`` and ``verdict`` come from
+``tools/mutate.py``'s JSON record** -- the summary being pytest's last printed
+line (whatever a test printed, or the source a failure echoed) or a
+``HarnessError`` string carrying up to eighty characters of the anchor verbatim
+(``mutate_edits._apply_edit``). Every one of them is delimited. The summary and
+the verdict were not, and a source line was enough to put a live image and a
+collapsible block into an issue filed unattended by a token with issues:write.
+
 **The markdown channel.** A source line may contain three backticks -- one
 production module does today, ``infrastructure/filesystem/parsers/markdown.py``,
 measured 2026-09-16 -- and inside a fixed three-backtick fence such a line
@@ -50,6 +61,16 @@ AUTOMATION_HEADING: Final = "## Proposed automation"
 AUTOMATION_INSTRUCTION: Final = (
     "This finding closes only when a test, lint rule, or CI gate covering it lands, "
     "or a decline is recorded here."
+)
+
+#: The verdicts ``tools/mutate.py`` actually writes, which may render as plain
+#: emphasis. Anything else in that field -- a future harness, a corrupted record
+#: -- is repository text like any other and goes through :func:`_inline`. An
+#: allow-list rather than an escape because the ordinary line is read dozens of
+#: times per issue and ``**SURVIVED**`` scans better than code; pinned against
+#: ``sweep_verdict``'s own strings so the two modules cannot drift apart quietly.
+KNOWN_VERDICTS: Final = frozenset(
+    {"SURVIVED", "KILLED", "HUNG", "ERROR", "control-green", "control-red"}
 )
 
 _MARKER_PREFIX: Final = "<!-- async-sweep-target: "
@@ -193,10 +214,9 @@ def _verdict_section(night: Night) -> list[str]:
     # completes, so its own order is whatever the workers happened to do; a body
     # built in that order would differ between two runs of one night.
     for outcome in sorted(night.outcomes, key=lambda item: (not item.is_control, item.label)):
-        summary = f" -- {outcome.summary}" if outcome.summary else ""
-        lines.append(
-            f"- **{outcome.verdict}** {_inline(outcome.label)} ({outcome.seconds:.1f}s){summary}"
-        )
+        summary = f" -- {_inline(outcome.summary)}" if outcome.summary else ""
+        verdict = outcome.verdict if outcome.verdict in KNOWN_VERDICTS else _inline(outcome.verdict)
+        lines.append(f"- **{verdict}** {_inline(outcome.label)} ({outcome.seconds:.1f}s){summary}")
     return lines
 
 
