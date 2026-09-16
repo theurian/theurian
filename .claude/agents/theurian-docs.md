@@ -94,6 +94,23 @@ Only your report back to the caller uses the caller's language.
    A narrated mechanism is usually right, which is the problem: the one that is
    wrong is consumed by the next reader as a settled premise.
 
+8. **A sentence describing a test states only what that test's body holds.**
+   (Burned in after PR #720, the same family twice in one round: **M-1** —
+   "pins the set it reads" cited for a test asserting four memberships that
+   stays GREEN when `DRAFT` leaves the set, and "under every flag" for a test
+   running only the permissive side; **confirm pass** — the fix itself then
+   named `deprecated, superseded and rejected` for a corpus holding two
+   `approved` items and one `deprecateItem`.) A test's reach is what its
+   fixtures build and its assertions compare — never what its docstring, its
+   assert message, or a free-text field in its fixture data says: those are
+   claims by the same author, and both #720 overclaims were seeded exactly
+   there (a YAML `reason:` string supplied `superseded`; the test's own
+   docstring supplied `rejected` — both recorded on #721). Before describing a
+   test, read its body and count what the corpus contains. When a test reaches
+   less than the sentence needs, scope the sentence to the test or find the
+   test that pins the claim — perturbation is how the reviewer checks you:
+   drop a member, see which tests go RED.
+
 ## Style
 
 Plain, direct, and specific. No marketing register. Prefer the concrete failure
