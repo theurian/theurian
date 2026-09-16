@@ -2535,7 +2535,7 @@ a separate point:*
   own: the detector is best effort, and a false positive would otherwise be
   silent data loss plus a governance act the build has no authority to take.
 - **Two parts of the store sit outside that population, deliberately.** A `draft`
-  or `rejected` body is reachable by a caller who passes `includeUnapproved`, and
+  or `proposed` body is reachable by a caller who passes `includeUnapproved`, and
   a **superseded revision** stays in the canonical store; neither is scanned by a
   default build. The first is a T-17 consequence and not an oversight — reading a
   withheld row into a published count is how the existence of withheld content
@@ -2544,6 +2544,22 @@ a separate point:*
   them. The second has no such switch: a revision the corpus has superseded is
   where a credential still lives until the history is rewritten, which is why the
   remedy says to rotate the value *first* and supersede second.
+  **A `rejected` body belongs to the second part, not the first.** This bullet
+  read "`draft` or `rejected`" until [#657](https://github.com/theurian/theurian/issues/657)
+  — a description of the gate as weaker than it is.
+  `SURFACEABLE_STATUSES` is `{approved, draft, proposed}`, and `may_surface`
+  returns `False` for anything outside that set *before* it reads the flag
+  (`domain/enums.py`), so no value of `includeUnapproved` reaches a `rejected`,
+  `deprecated` or `superseded` body — a rejected revision is where the secret
+  that caused the rejection still lives. The builder consults that same gate, so
+  those bodies are never indexed and therefore never scanned by *any* build:
+  `--include-unapproved` is not a remedy for them.
+  `packages/theurian-core/tests/integration/test_retrieval_service.py::test_retired_knowledge_is_never_indexed_even_when_asked_for`
+  builds with `include_unapproved=True` and asserts the absence,
+  `::test_the_surfaceable_statuses_exclude_everything_retired` pins the set it
+  reads, and
+  `packages/theurian-core/tests/integration/test_absence_proof.py::test_a_rejected_item_is_never_written_into_the_index`
+  holds the index side under every flag.
 - **`theurian propose` does not scan at draft time.** A refusal there would tell
   an author sooner, but `accept` is the gate, so a draft-time scan is a
   convenience rather than a control.
