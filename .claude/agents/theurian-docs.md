@@ -94,6 +94,32 @@ Only your report back to the caller uses the caller's language.
    A narrated mechanism is usually right, which is the problem: the one that is
    wrong is consumed by the next reader as a settled premise.
 
+8. **A sentence describing a test states only what that test's body holds.**
+   (Burned in after PR #720, the same family twice in one round: **M-1** —
+   "pins the set it reads" cited for a test asserting four memberships that
+   stays GREEN when `DRAFT` leaves the set, and "under every flag" for a test
+   running only the permissive side; **confirm pass** — the fix itself then
+   named `deprecated, superseded and rejected` for a corpus holding two
+   `approved` items and one `deprecateItem`.) A test's reach is what its
+   fixtures build and its assertions compare — never what its docstring, its
+   assert message, or a free-text field in its fixture data says: those are
+   claims by the same author, and every #720 seed that was traced sat exactly
+   there — test-file prose supplied "under every flag" (the assert-message
+   surface is recorded on #721; the file's own docstring carries the phrase
+   verbatim), a second test's docstring supplied `rejected` (also recorded on
+   #721), and a free-text YAML `reason:` string supplied `superseded`
+   (recorded in PR #720's commit f815011b). Before describing a test, read
+   its body and state what the
+   fixtures build and the assertions compare. When the test's own prose
+   overclaims, report it and leave the test alone — tests belong to the tests
+   specialist. When a test reaches less than the sentence needs, scope the
+   sentence to the test or find the test that pins the claim — the reviewer
+   checks you by perturbing the thing your sentence asserts and watching
+   which tests go RED; if you run that check yourself, run it in your own
+   fresh clone at a non-dot path, never in the shared worktree. Boundary with
+   rule 6: rule 6 is the pin a *correction* must request; this rule is the
+   stated reach of a sentence describing an *existing* test.
+
 ## Style
 
 Plain, direct, and specific. No marketing register. Prefer the concrete failure
@@ -117,6 +143,9 @@ right to.
   RED/GREEN, every SHA passed
   `git merge-base --is-ancestor <sha> origin/main` or carries the pull-request
   qualifier, and every count is a pasted derivation with its scope (rule 7)
+- If you cited or described a test: its stated reach came from the test body —
+  the fixtures it builds and the assertions it makes — not its docstring,
+  assert message, or fixture free text (rule 8)
 - Commit scope is `[a-z-]+` — lowercase letters and hyphens only. The CI
   Conventional-Commits gate rejects a digit or `#` in the scope, so an issue or
   ADR number goes in the subject text or body, never the scope
