@@ -101,9 +101,10 @@ in the session through automatic review, and it is needed because a plain
 it runs: `MCP tool call requires approval, but approval policy is never`. That
 review runs under the workspace-write sandbox, and `-s read-only` will not
 compose with it — `the argument '--approve-for-me' cannot be used with
-'--sandbox <SANDBOX_MODE>'` — so `-C` and `--skip-git-repo-check` pin the
-writable workspace to an empty throwaway directory instead of wherever you
-happen to be standing. Telling the model not to run shell commands is an
+'--sandbox <SANDBOX_MODE>'` — so `-C` and `--skip-git-repo-check` pin the working
+root to a throwaway directory instead of wherever you happen to be standing.
+Workspace-write allows `/tmp` and `$TMPDIR` besides that root; what pinning it
+keeps out is your repository. Telling the model not to run shell commands is an
 instruction, not a boundary; the working root is the boundary.
 
 Codex records that root as trusted, appending a `[projects.…]` table for it — the
@@ -114,9 +115,12 @@ written once; two identical runs left one.
 
 Run this to check the wiring once, not as a way to work day to day.
 
-If the search refuses with `no built knowledge state`, that project has no index
-yet and the refusal names `theurian migrate apply` in the project as the remedy.
-`project.list` answers from the registry and works before that.
+If the search refuses with `no built knowledge state`, that project has no built
+canonical state yet, and the refusal names `theurian migrate apply` in the
+project as the remedy. A missing *index* is a different thing and not a refusal:
+the search answers with an unranked substring scan and tells you to run
+`theurian index build`. `project.list` answers from the registry and works
+before either.
 
 ## Remove
 
