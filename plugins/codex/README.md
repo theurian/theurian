@@ -86,7 +86,8 @@ lists as `enabled`. They confirm the entry, not the connection. The call below
 is the one that does:
 
 ```sh
-codex exec --approve-for-me -C "$(mktemp -d)" --skip-git-repo-check "Use the theurian MCP server's knowledge.search tool to search project theurian for 'single local daemon'. Report the number of results and the item ids. Do not run any shell commands."
+mkdir -p /tmp/theurian-codex-check
+codex exec --approve-for-me -C /tmp/theurian-codex-check --skip-git-repo-check "Use the theurian MCP server's knowledge.search tool to search project theurian for 'single local daemon'. Report the number of results and the item ids. Do not run any shell commands."
 ```
 
 ```text
@@ -104,6 +105,12 @@ compose with it — `the argument '--approve-for-me' cannot be used with
 writable workspace to an empty throwaway directory instead of wherever you
 happen to be standing. Telling the model not to run shell commands is an
 instruction, not a boundary; the working root is the boundary.
+
+Codex records that root as trusted, appending a `[projects.…]` table for it — the
+resolved path, so `/private/tmp/…` on macOS — to `$CODEX_HOME/config.toml`. That
+one is an append: unlike `codex mcp add` it leaves the rest of the file as you
+wrote it. The path is fixed rather than a fresh `mktemp -d` so the entry is
+written once; two identical runs left one.
 
 Run this to check the wiring once, not as a way to work day to day.
 
