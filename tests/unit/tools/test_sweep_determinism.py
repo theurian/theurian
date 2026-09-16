@@ -99,11 +99,12 @@ def test_consecutive_nights_walk_the_whole_census_before_repeating() -> None:
     **The frozen synthetic census is the condition, not a convenience.** This
     property holds only while the census does not change, and the real one is
     recomputed nightly: measured across one week of this repository's growth, 0
-    of 30 dates resolved to the same file, and an adversarial replay over 47
-    real nights drew 39 distinct targets with 6 repeats. So this pins the
-    *scheme* -- given a fixed population, the index walks it before repeating --
-    and deliberately not a claim about the sweep's coverage of the production
-    tree, which :mod:`sweep_census`'s own docstring now declines to make.
+    of 30 dates resolved to the same file, and a replay across real nights drew
+    repeats well before the census had been walked (measured in PR #730's review
+    round). So this pins the *scheme* -- given a fixed population, the index
+    walks it before repeating -- and deliberately not a claim about the sweep's
+    coverage of the production tree, which :mod:`sweep_census`'s own docstring
+    now declines to make.
     """
     start = _FIRST_NIGHT
 

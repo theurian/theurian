@@ -17,9 +17,9 @@ invisible on any single night, so it is worth choosing deliberately.
 That guarantee does not survive contact with this repository, and saying it did
 was a claim nothing here can keep. The census is recomputed nightly, so its
 length moves, and the index moves with it: measured across one week of growth,
-0 of 30 dates resolved to the same file, and an adversarial replay over 47 real
-nights drew 39 distinct targets with 6 repeats -- repeats arriving well before
-the census had been walked. **What holds is determinism, not coverage.** Given
+0 of 30 dates resolved to the same file, and a replay across real nights drew
+repeats well before the census had been walked (measured in PR #730's review
+round). **What holds is determinism, not coverage.** Given
 a census and a date the target is fixed and reproducible; the interval before
 every file has been attacked is unbounded while the census churns, which is why
 a filed finding carries the commit it ran against and why the section in
