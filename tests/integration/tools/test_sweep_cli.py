@@ -267,7 +267,11 @@ def test_the_harness_is_told_where_to_write_and_how_many_workers_to_use(
 
     assert mutate.argv[mutate.argv.index("--json") + 1] == str(results.resolve())
     assert Path(mutate.argv[mutate.argv.index("--spec") + 1]).is_absolute()
-    assert mutate.argv[mutate.argv.index("--workers") + 1] == str(sweep.WORKERS)
+    # The literal, not `str(sweep.WORKERS)`: an assertion built from the constant
+    # it checks agrees with that constant whatever it says, which is the shape
+    # that let `--with-git` go missing once already.
+    assert mutate.argv[mutate.argv.index("--workers") + 1] == "2"
+    assert sweep.WORKERS == 2
 
 
 def test_a_relative_results_path_is_resolved_before_the_harness_sees_it(
@@ -299,6 +303,75 @@ def test_a_relative_results_path_is_resolved_before_the_harness_sees_it(
     handed = Path(mutate.argv[mutate.argv.index("--json") + 1])
     assert handed.is_absolute()
     assert handed == tmp_path / "nightly.json"
+
+
+def test_the_reproduction_command_cannot_file_on_its_reader_s_behalf(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The issue prints a command written to be pasted, so it must be safe to paste.
+
+    Whoever reproduces a finding runs that line with their own credentials.
+    Without `--dry-run` the driver would file at the end of it -- a second issue
+    on the same thread, authored by the triager, every time anybody checks.
+    Deleting the flag from `_reproduction` currently changes nothing that any
+    test reads, which is why the pin is on the rendered block and not on the
+    function.
+    """
+    mutate, gh = _FakeMutate(exit_code=1, verdicts="SURVIVED"), _FakeGh()
+
+    sweep.main(_argv(tmp_path / "r.json", "--dry-run"), mutate_runner=mutate, gh_runner=gh)
+
+    printed = capsys.readouterr().out
+    block = printed.split("## Reproduce", 1)[1].split("```sh", 1)[1].split("```", 1)[0]
+    assert block.strip().endswith("--dry-run")
+    assert "tools/sweep.py" in block
+
+
+def test_last_night_s_results_are_not_read_as_tonight_s(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A harness that exits without writing must not inherit the previous record.
+
+    The workflow writes the record to a fixed name, so a rerun on a runner with
+    a cached workspace -- or any local rerun -- finds yesterday's file already
+    there. A harness that then exits 2 before writing anything leaves the driver
+    reading a complete, well-formed document belonging to another night, and the
+    filed issue reports its verdicts as tonight's. Fabricated evidence, in the
+    one artifact the whole job exists to produce.
+
+    Asserted on the label, because that is the part a reader would act on.
+    """
+    results = tmp_path / "r.json"
+    results.write_text(
+        json.dumps(
+            {
+                "options": {"workers": 2},
+                "outcomes": [
+                    {
+                        "label": "__control__",
+                        "verdict": "control-green",
+                        "seconds": 1.0,
+                        "summary": "",
+                    },
+                    {
+                        "label": "sweep-from-a-night-that-is-over",
+                        "verdict": "SURVIVED",
+                        "seconds": 1.0,
+                        "summary": "",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    mutate, gh = _FakeMutate(exit_code=2, write=False), _FakeGh()
+
+    code = sweep.main(_argv(results, "--dry-run"), mutate_runner=mutate, gh_runner=gh)
+
+    printed = capsys.readouterr().out
+    assert code == 0
+    assert "sweep-from-a-night-that-is-over" not in printed
+    assert sweep_filing.UNTRUSTED_TITLE in printed
 
 
 def test_two_dry_runs_of_one_night_print_the_same_thing(

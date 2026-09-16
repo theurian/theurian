@@ -296,6 +296,14 @@ def _sweep(
         )
 
     results = Path(args.results).resolve()
+    # Removed before the harness starts, never after. The workflow writes the
+    # record to a fixed name, so a rerun on a cached workspace -- or any local
+    # rerun -- finds the previous night's file already there, and a harness that
+    # exits before writing leaves the driver reading a complete, well-formed
+    # document belonging to another night. The issue would then report those
+    # verdicts as tonight's: fabricated evidence, in the one artifact the job
+    # exists to produce.
+    results.unlink(missing_ok=True)
     with tempfile.TemporaryDirectory(prefix="theurian-sweep-") as scratch:
         spec = Path(scratch) / "mutations.json"
         spec.write_text(
