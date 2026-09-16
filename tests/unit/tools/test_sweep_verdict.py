@@ -105,6 +105,58 @@ def test_a_mutation_the_suite_does_not_hold_is_a_finding(verdict: str, exit_code
     assert reading.unheld == ("m1",)
 
 
+def test_a_survivor_in_an_untrusted_batch_is_not_a_finding_about_the_suite() -> None:
+    """Exit 2 voids a SURVIVED exactly as it voids a KILLED.
+
+    The survivors branch guards on the exit code, and nothing reached that guard:
+    the code review perturbed the whole condition to a bare ``if unheld:`` and
+    every test stayed green, because no case here paired an unheld verdict with
+    an untrusted run. A SURVIVED under exit 2 came from a batch whose own harness
+    says it proves nothing -- a restore that did not restore, a mutation that
+    reached the real checkout -- and filing it as a gap in the suite sends
+    somebody to write a test for a mutation that may never have been applied.
+    """
+    outcomes = sweep_verdict.read_results(
+        _document(_GREEN_CONTROL, _outcome("m0", "SURVIVED"), _outcome("m1", "KILLED"))
+    )
+
+    reading = sweep_verdict.classify(mutate_exit=2, outcomes=outcomes, submitted=2)
+
+    assert reading.reason == sweep_verdict.UNTRUSTED
+
+
+def test_a_survivor_over_a_red_control_is_not_a_finding_about_the_suite() -> None:
+    """A tree that was already RED cannot say which mutations it holds.
+
+    With no baseline, a mutation's SURVIVED means only that the suite failed the
+    same way with the mutation as without it -- which is not evidence that
+    nothing holds the property. This is the guard the review found unpinned by
+    dropping ``green_control`` from the condition.
+    """
+    outcomes = sweep_verdict.read_results(
+        _document(_outcome("__control__", "control-red"), _outcome("m0", "SURVIVED"))
+    )
+
+    reading = sweep_verdict.classify(mutate_exit=1, outcomes=outcomes, submitted=1)
+
+    assert reading.reason == sweep_verdict.UNTRUSTED
+
+
+def test_a_survivor_in_an_incomplete_batch_is_not_a_finding_about_the_suite() -> None:
+    """One verdict for six mutations: five questions went unasked.
+
+    The one that did come back is not thereby trustworthy -- a batch that lost
+    five jobs lost them for a reason, and the surviving record is a fragment of a
+    run nobody can account for. Filing the fragment as a finding also hides the
+    loss, because the issue reads like an ordinary night.
+    """
+    outcomes = sweep_verdict.read_results(_document(_GREEN_CONTROL, _outcome("m0", "SURVIVED")))
+
+    reading = sweep_verdict.classify(mutate_exit=1, outcomes=outcomes, submitted=6)
+
+    assert reading.reason == sweep_verdict.UNTRUSTED
+
+
 def test_an_untrusted_harness_run_files_even_though_no_mutation_survived() -> None:
     """AC5. Exit 2 means every verdict in the batch is worthless, including KILLED.
 
