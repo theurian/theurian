@@ -21,6 +21,13 @@ on:
       - "uv.lock"
       - ".github/workflows/core.yml"
       - ".github/workflows/release-core.yml"
+      # The three below are read BY `tests/ci/`, whose prose pins hold this
+      # repository's workflow text and its process documentation to each other.
+      # An edit to one of them is exactly what breaks those pins, and without
+      # these lines it is the one change that runs none of them.
+      - ".github/workflows/red-team.yml"
+      - "docs/contributing/orchestration.md"
+      - "docs/contributing/release.md"
       # The corpus governance guard has to run when only the corpus changes:
       # an edited body with its `contentSha256` re-pinned to match is the
       # exact shape it exists to catch, and nothing else here would run.
@@ -37,6 +44,13 @@ on:
       - "uv.lock"
       - ".github/workflows/core.yml"
       - ".github/workflows/release-core.yml"
+      # The three below are read BY `tests/ci/`, whose prose pins hold this
+      # repository's workflow text and its process documentation to each other.
+      # An edit to one of them is exactly what breaks those pins, and without
+      # these lines it is the one change that runs none of them.
+      - ".github/workflows/red-team.yml"
+      - "docs/contributing/orchestration.md"
+      - "docs/contributing/release.md"
       # The corpus governance guard has to run when only the corpus changes:
       # an edited body with its `contentSha256` re-pinned to match is the
       # exact shape it exists to catch, and nothing else here would run.
