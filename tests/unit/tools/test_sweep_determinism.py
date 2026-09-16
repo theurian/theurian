@@ -14,16 +14,22 @@ assumes of it (non-empty, sorted, no ``__init__.py``).
 
 from __future__ import annotations
 
+import json
 from datetime import date
+from pathlib import Path
 
 import pytest
 import sweep_census
+import sweep_mutations
 
 pytestmark = pytest.mark.unit
 
 #: A census small enough to enumerate by hand, so every expectation below is a
 #: pinned value rather than a restatement of the implementation.
 _SYNTHETIC = ("a.py", "b.py", "c.py", "d.py", "e.py")
+
+#: One real night, used wherever a rule has to hold against real source.
+_NIGHT = date(2026, 9, 16)
 
 
 def test_the_target_is_the_ordinal_of_the_date_modulo_the_census() -> None:
@@ -120,3 +126,117 @@ def test_the_real_census_reads_the_same_twice() -> None:
     which is also what the rotation indexes.
     """
     assert sweep_census.census() == sweep_census.census()
+
+
+def _source_of(path: str) -> str:
+    return Path(sweep_census.REPO_ROOT / path).read_text(encoding="utf-8")
+
+
+def _pinned_night(night: date = _NIGHT) -> sweep_mutations.Generated:
+    """One real night, selected and generated exactly as the driver does it."""
+    walk = sweep_census.rotation(sweep_census.census(), night)
+    return sweep_mutations.first_productive(walk, _source_of, on=night)
+
+
+def test_a_barren_target_advances_to_the_next_file_in_the_rotation() -> None:
+    """The 2026-09-16 rotation really does start on a file with nothing to mutate.
+
+    ``review_search_sql.py`` is SQL text and column tuples: no comparison, no
+    boolean literal, no ``and``. Stopping there would file nothing and prove
+    nothing, and the night would read clean. The advance is what turns a barren
+    draw into an ordinary night, and it must land on the *next* file rather than
+    on an arbitrary one, or the run stops being reproducible.
+    """
+    walk = sweep_census.rotation(sweep_census.census(), _NIGHT)
+
+    barren = sweep_mutations.candidates(walk[0], _source_of(walk[0]), on=_NIGHT)
+    landed = _pinned_night()
+
+    assert barren.candidates == ()
+    assert landed.path != walk[0]
+    assert landed.path == next(
+        path
+        for path in walk
+        if sweep_mutations.candidates(path, _source_of(path), on=_NIGHT).candidates
+    )
+
+
+def test_a_census_where_nothing_can_be_mutated_refuses_to_report_a_clean_night() -> None:
+    """The silent-stop guard at the generation layer.
+
+    A rotation that walks every file and finds nothing has not swept anything.
+    Returning "no candidates" to the driver would let the night exit 0 with no
+    issue filed, which is indistinguishable from a sweep that ran and found
+    nothing wrong.
+    """
+    with pytest.raises(sweep_census.SweepError):
+        sweep_mutations.first_productive(("one.py", "two.py"), lambda _: "VALUE = 3\n", on=_NIGHT)
+
+
+def test_generating_the_same_night_twice_writes_byte_identical_specs() -> None:
+    """The other half of AC1: selection *and* generation reproduce.
+
+    Serialised before comparing, because the spec file is the artefact handed to
+    ``tools/mutate.py`` and a JSON document is where a set's iteration order or a
+    dict's insertion order would surface. Comparing the dataclasses would miss
+    an ordering that only the encoder sees.
+    """
+    first = _pinned_night().picked(6)
+    second = _pinned_night().picked(6)
+
+    assert json.dumps(sweep_mutations.spec_entries(first)) == json.dumps(
+        sweep_mutations.spec_entries(second)
+    )
+    assert first
+
+
+def test_a_candidate_keeps_its_label_when_the_night_asks_for_fewer_mutations() -> None:
+    """A label names a candidate in the file, not a slot in tonight's batch.
+
+    The filed issue is the durable artefact, and it names labels. If the same
+    source position were called ``-00-`` under ``--max-mutations 6`` and ``-01-``
+    under a different limit, two issues about the same defect would not be
+    recognisable as such, and a reproduction typed from the issue would apply a
+    different mutation than the one that survived.
+    """
+    night = _pinned_night()
+
+    six = night.picked(6)
+    one = night.picked(1)
+
+    assert len(one) == 1
+    assert one[0].label in {candidate.label for candidate in six}
+    assert one[0].label == six[0].label
+
+
+def test_a_label_carries_the_date_the_night_ran() -> None:
+    """Reproduction starts from the issue title, which carries only a date.
+
+    A label without the date makes two nights' findings on one file collide in
+    search, and makes "re-run the sweep for that night" guesswork.
+    """
+    generated = _pinned_night().picked(2)
+
+    assert all(candidate.label.startswith("sweep-2026-09-16-") for candidate in generated)
+
+
+def test_most_of_the_production_tree_has_something_to_mutate() -> None:
+    """A rotation whose files are mostly barren sweeps almost nothing.
+
+    Every barren draw is answered by advancing, so a low yield does not break a
+    night -- it makes the night attack a neighbour instead, and the file the date
+    actually named goes unswept for ever. Measured 2026-09-16 at ``e46fab2a``:
+    115 of 139 files yield at least one anchorable mutation, 1138 candidates in
+    total against 494 dropped for a non-unique anchor. The floor below is half
+    the census, which that measurement clears comfortably and which an
+    over-eager skip rule would not.
+    """
+    files = sweep_census.census()
+
+    productive = [
+        target
+        for target in files
+        if sweep_mutations.candidates(target, _source_of(target), on=_NIGHT).candidates
+    ]
+
+    assert len(productive) >= len(files) // 2
