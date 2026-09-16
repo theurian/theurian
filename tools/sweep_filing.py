@@ -1,0 +1,337 @@
+"""What a night that did not come back clean puts on the tracker.
+
+Two rules shape everything here, and they are about the same thing from two
+sides: **the strings in this payload are data, and the sweep read them off the
+repository.** A file path comes from a directory walk and two slices of source
+come from somebody's module. None of that is attacker-controlled today; all of
+it is treated as though it were, because the job runs on a runner holding a
+token with issue-write scope.
+
+**The process channel.** ``gh`` is invoked with a list argv and never through a
+shell, and the body travels on stdin (``--body-file -``) rather than as an
+argument. Backticks and ``$( )`` are then ordinary bytes, the body stays out of
+the runner's process list, and no argument-length limit applies.
+
+**The markdown channel.** A source line may contain three backticks -- this
+repository's own docstrings do -- and inside a fixed three-backtick fence such a
+line closes the block, spilling the rest of the issue (including the ratchet
+stub) into prose. Fences are therefore sized against their content.
+
+The issue ends with the "Proposed automation" stub: CLAUDE.md's ratchet says
+every adversarial finding proposes its own automation before it closes, and this
+is where a sweep finding acquires that obligation.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import subprocess
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from datetime import date
+from typing import Final
+
+from sweep_census import SweepError
+from sweep_mutations import Candidate
+from sweep_verdict import SURVIVORS, UNTRUSTED, Outcome, Reading
+
+#: The tracker label the sweep files under. It already exists; nothing here
+#: creates labels, and ``gh issue create`` fails outright on an unknown one.
+LABEL: Final = "async-sweep"
+
+AUTOMATION_HEADING: Final = "## Proposed automation"
+
+#: PR-2 writes the process rule this anchors. Kept as one sentence, last in the
+#: body, because it is an instruction about what closes the issue.
+AUTOMATION_INSTRUCTION: Final = (
+    "This finding closes only when a test, lint rule, or CI gate covering it lands, "
+    "or a decline is recorded here."
+)
+
+_MARKER_PREFIX: Final = "<!-- async-sweep-target: "
+
+#: How many open issues under the label to look through for an existing thread.
+#: A sweep that files nightly cannot plausibly need more, and an unbounded page
+#: walk would turn a rate-limited listing into a long silent retry.
+_LIST_LIMIT: Final = "100"
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    """What running one external command produced."""
+
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+#: Runs one command and returns what it produced. Injected so no test has to
+#: reach the real ``gh`` -- and so the real one can be a single shell-free call.
+Runner = Callable[[Sequence[str], str], CommandResult]
+
+
+@dataclass(frozen=True)
+class Night:
+    """Everything the filed issue has to be able to say about one sweep."""
+
+    on: date
+    target: str
+    #: The harness argv, so a reader can tell a substituted one from the real one.
+    harness: tuple[str, ...]
+    #: The sweep invocation itself, so the night can be reproduced from the issue.
+    command: tuple[str, ...]
+    mutate_exit: int
+    picked: tuple[Candidate, ...]
+    outcomes: tuple[Outcome, ...]
+    reading: Reading
+    #: Candidates the generator dropped for want of a unique anchor.
+    skipped: int
+
+
+@dataclass(frozen=True)
+class Payload:
+    """The issue as it will be filed, and the key that finds it again."""
+
+    title: str
+    body: str
+    marker: str
+
+
+def target_marker(path: str) -> str:
+    """The hidden key that says which file an open issue is about.
+
+    A digest rather than the path itself. The path is repository text, and a
+    path containing ``-->`` would close the HTML comment early -- leaving a
+    marker that matches nothing and a body whose first line is half a comment, so
+    every night on that file would open a new issue instead of joining a thread.
+    The human-readable path is in the body a few lines below, where it cannot
+    break anything.
+    """
+    digest = hashlib.sha256(path.encode("utf-8")).hexdigest()[:16]
+    return f"{_MARKER_PREFIX}{digest} -->"
+
+
+def _fence(text: str) -> str:
+    """A fence at least one backtick longer than the longest run inside the text."""
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    return "`" * max(3, longest + 1)
+
+
+def _block(text: str, language: str = "") -> str:
+    fence = _fence(text)
+    return f"{fence}{language}\n{text}\n{fence}"
+
+
+def _diff(candidate: Candidate) -> str:
+    """One mutation, as a diff whose lines can be pasted back as anchors.
+
+    No space after the marker: an anchor is an exact string and its leading
+    indentation is part of it, so a diff that inserted a space would be one
+    nobody could apply.
+    """
+    removed = "\n".join(f"-{line}" for line in candidate.old.splitlines())
+    added = "\n".join(f"+{line}" for line in candidate.new.splitlines())
+    return _block(f"{removed}\n{added}", "diff")
+
+
+def _mutation_section(night: Night) -> list[str]:
+    lines = ["## Mutations"]
+    if not night.picked:
+        lines.append("None: the harness was handed no mutation at all.")
+        return lines
+    for candidate in night.picked:
+        lines.append("")
+        lines.append(
+            f"### `{candidate.label}`\n\n"
+            f"Line {candidate.line}, `{candidate.swapped_from}` to "
+            f"`{candidate.swapped_to}`, anchored on the {candidate.anchor}."
+        )
+        lines.append("")
+        lines.append(_diff(candidate))
+    return lines
+
+
+def _verdict_section(night: Night) -> list[str]:
+    lines = ["## Verdicts"]
+    if not night.outcomes:
+        lines.append("")
+        lines.append("None: the harness recorded no outcome before it stopped.")
+        return lines
+    lines.append("")
+    # Sorted, control first. The harness appends each outcome as its future
+    # completes, so its own order is whatever the workers happened to do; a body
+    # built in that order would differ between two runs of one night.
+    for outcome in sorted(night.outcomes, key=lambda item: (not item.is_control, item.label)):
+        summary = f" -- {outcome.summary}" if outcome.summary else ""
+        lines.append(f"- **{outcome.verdict}** `{outcome.label}` ({outcome.seconds:.1f}s){summary}")
+    return lines
+
+
+def _headline(night: Night) -> str:
+    if night.reading.reason == SURVIVORS:
+        count = len(night.reading.unheld)
+        return f"async sweep: {count} mutation(s) not held in {night.target} ({night.on})"
+    return f"async sweep: {UNTRUSTED} on {night.target} ({night.on})"
+
+
+def build_payload(night: Night) -> Payload:
+    """The issue this night files.
+
+    Everything the reader needs to act without re-running anything: which file,
+    which night, what each mutation changed, what each verdict was, and the exact
+    command that reproduces the batch.
+    """
+    marker = target_marker(night.target)
+    header = [
+        marker,
+        "",
+        "The nightly red-team sweep over `main` (#378) did not come back clean.",
+        "",
+        f"- **Night:** {night.on}",
+        f"- **Target:** `{night.target}`",
+        f"- **Reading:** {night.reading.detail}",
+        f"- **Harness exit:** {night.mutate_exit}",
+        f"- **Harness:** `{' '.join(night.harness)}`",
+        f"- **Candidates dropped for a non-unique anchor:** {night.skipped}",
+        "",
+    ]
+    reproduce = ["## Reproduce", "", _block(" ".join(night.command), "sh"), ""]
+    automation = [AUTOMATION_HEADING, "", AUTOMATION_INSTRUCTION]
+    body = "\n".join(
+        [
+            *header,
+            *_verdict_section(night),
+            "",
+            *_mutation_section(night),
+            "",
+            *reproduce,
+            *automation,
+        ]
+    )
+    return Payload(title=_headline(night), body=body, marker=marker)
+
+
+def run_command(argv: Sequence[str], stdin: str = "") -> CommandResult:
+    """Run one command with a list argv. There is no shell anywhere in this call.
+
+    ``shell`` is left at its default rather than passed explicitly, so that the
+    source check in ``tests/unit/tools/test_sweep_gh_invocation.py`` -- which
+    greps these modules for a request for one -- cannot be confused by a literal
+    that says the opposite of what it means. That check fires on this docstring
+    too if the phrase is spelled out here, which is the check working.
+    """
+    try:
+        completed = subprocess.run(  # noqa: S603 - argv is a list built in this module
+            list(argv),
+            input=stdin,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as error:
+        raise SweepError(f"could not run {argv[0]!r}: {error}") from error
+    return CommandResult(
+        returncode=completed.returncode, stdout=completed.stdout, stderr=completed.stderr
+    )
+
+
+def existing_issue(listing: str, marker: str) -> int | None:
+    """The open issue already tracking this target, if there is one.
+
+    The lowest matching number rather than the first, because ``gh`` returns
+    newest first and "the thread for this file" is the oldest one: a night that
+    commented on whichever issue happened to sort first would split one file's
+    history across every issue ever opened for it.
+
+    An unreadable listing raises rather than reading as empty. Empty means "open
+    a new issue", so a rate-limited or malformed response would open a duplicate
+    every night for as long as it lasted.
+    """
+    try:
+        loaded = json.loads(listing)
+    except json.JSONDecodeError as error:
+        raise SweepError(f"`gh issue list` did not return JSON: {error}") from error
+    if not isinstance(loaded, list):
+        raise SweepError("`gh issue list` returned something that is not a list of issues")
+    matches: list[int] = []
+    for entry in loaded:
+        if not isinstance(entry, dict):
+            raise SweepError("`gh issue list` returned an entry that is not an issue object")
+        if marker in str(entry.get("body", "")):
+            matches.append(int(entry["number"]))
+    return min(matches) if matches else None
+
+
+def _repo_flag(repo: str | None) -> tuple[str, ...]:
+    """``--repo owner/name``, or nothing at all.
+
+    Nothing, rather than an empty value: ``gh`` reads ``--repo ''`` as a
+    malformed repository and fails, so a night without the flag would file
+    nothing.
+    """
+    return ("--repo", repo) if repo else ()
+
+
+def list_argv(gh: str, repo: str | None) -> tuple[str, ...]:
+    """The open issues under the sweep's label, with the bodies the marker hides in."""
+    return (
+        gh,
+        "issue",
+        "list",
+        *_repo_flag(repo),
+        "--label",
+        LABEL,
+        "--state",
+        "open",
+        "--limit",
+        _LIST_LIMIT,
+        "--json",
+        "number,body",
+    )
+
+
+def create_argv(gh: str, repo: str | None, title: str) -> tuple[str, ...]:
+    """A new thread. The body is not here; it goes in on stdin."""
+    return (
+        gh,
+        "issue",
+        "create",
+        *_repo_flag(repo),
+        "--title",
+        title,
+        "--label",
+        LABEL,
+        "--body-file",
+        "-",
+    )
+
+
+def comment_argv(gh: str, repo: str | None, number: int) -> tuple[str, ...]:
+    """Another night on a file that already has an open thread."""
+    return (gh, "issue", "comment", str(number), *_repo_flag(repo), "--body-file", "-")
+
+
+def file_finding(payload: Payload, *, repo: str | None, runner: Runner, gh: str) -> str:
+    """Put this payload on the tracker, and say what happened to it.
+
+    Every failure raises. "Filed" has to mean the tracker took it: a night that
+    found a surviving mutation and could not file it has produced nothing a human
+    will ever see, and reporting success there would silence the workflow's alarm
+    in exactly the case it exists for.
+    """
+    listed = runner(list_argv(gh, repo), "")
+    if listed.returncode != 0:
+        raise SweepError(f"`gh issue list` failed ({listed.returncode}): {listed.stderr.strip()}")
+
+    number = existing_issue(listed.stdout, payload.marker)
+    if number is None:
+        result = runner(create_argv(gh, repo, payload.title), payload.body)
+        action = "opened a new issue"
+    else:
+        result = runner(comment_argv(gh, repo, number), payload.body)
+        action = f"commented on #{number}"
+    if result.returncode != 0:
+        raise SweepError(f"`gh issue` failed ({result.returncode}): {result.stderr.strip()}")
+    return f"{action}: {result.stdout.strip() or payload.title}"

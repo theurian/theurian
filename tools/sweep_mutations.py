@@ -105,8 +105,8 @@ class Candidate:
     old: str
     new: str
     line: int
-    original_token: str
-    mutated_token: str
+    swapped_from: str
+    swapped_to: str
     #: Which rung of the widening ladder produced ``old`` -- reported so a reader
     #: of the filed issue knows whether the anchor is the expression itself or
     #: the line that carries it.
@@ -118,7 +118,7 @@ class Skip:
     """A mutation the generator could describe but could not anchor."""
 
     line: int
-    original_token: str
+    swapped_from: str
     reason: str
 
 
@@ -322,7 +322,7 @@ def candidates(path: str, source: str, *, on: date) -> Generated:
         line = source.count("\n", 0, token.start) + 1
         anchored = _anchored(source, node_span, token, replacement)
         if anchored is None:
-            skipped.append(Skip(line=line, original_token=token.text, reason="anchor-not-unique"))
+            skipped.append(Skip(line=line, swapped_from=token.text, reason="anchor-not-unique"))
             continue
         rung, old, new = anchored
         emitted.append(
@@ -335,8 +335,8 @@ def candidates(path: str, source: str, *, on: date) -> Generated:
                 old=old,
                 new=new,
                 line=line,
-                original_token=token.text,
-                mutated_token=replacement,
+                swapped_from=token.text,
+                swapped_to=replacement,
                 anchor=rung,
             )
         )

@@ -220,8 +220,8 @@ def test_applying_a_candidate_changes_exactly_the_operator_it_names() -> None:
 
         ast.parse(mutated)
         assert len(differing) == 1, candidate.label
-        assert before[differing[0]] == candidate.original_token, candidate.label
-        assert after[differing[0]] == candidate.mutated_token, candidate.label
+        assert before[differing[0]] == candidate.swapped_from, candidate.label
+        assert after[differing[0]] == candidate.swapped_to, candidate.label
 
 
 def test_every_mutation_the_real_tree_would_run_applies_cleanly_and_once() -> None:
@@ -256,7 +256,7 @@ def test_every_mutation_the_real_tree_would_run_applies_cleanly_and_once() -> No
             ]
             ast.parse(mutated)
             assert len(differing) == 1, candidate.label
-            assert after[differing[0]] == candidate.mutated_token, candidate.label
+            assert after[differing[0]] == candidate.swapped_to, candidate.label
             checked += 1
 
     assert checked >= 400
@@ -278,7 +278,7 @@ def test_an_operator_behind_non_ascii_text_still_anchors_where_it_actually_is() 
     """
     generated = sweep_mutations.candidates(_PATH, _WIDE_FIXTURE, on=_NIGHT)
 
-    by_token = {candidate.original_token: candidate for candidate in generated.candidates}
+    by_token = {candidate.swapped_from: candidate for candidate in generated.candidates}
 
     assert set(by_token) == {"==", "True"}
     assert by_token["=="].old == 'state == "確定"'
