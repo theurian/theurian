@@ -140,10 +140,23 @@ jobs:
           # NIGHT. Exit 1 means the sweep could not run or could not file, which
           # is the only case worth alarming on, so nothing here softens it.
           GH_TOKEN: ${{ github.token }}
+          # The sha the filed issue leads its reproduction with. The target is a
+          # function of the date, the census SIZE and the file's own contents, so
+          # `--date` alone stops reproducing the night as soon as main moves:
+          # over one week of this repository's growth, 130 modules to 139, 0 of
+          # 30 dates resolved to the same file (`sweep_filing.py`). Passed
+          # through `env:` like the dispatch date even though this one is
+          # server-side metadata -- the value that is sometimes trusted and the
+          # value that never is should not be told apart by how they are
+          # written. The driver refuses anything that is not 7-40 lowercase hex
+          # rather than escaping it, because it lands inside a `git checkout`
+          # line written to be pasted into a shell.
+          SWEEP_COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
           uv run --frozen python tools/sweep.py \
             --date "$SWEEP_DATE" \
+            --commit "$SWEEP_COMMIT" \
             --max-mutations 6 \
             --json sweep-results.json
 

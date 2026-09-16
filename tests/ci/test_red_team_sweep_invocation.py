@@ -52,6 +52,16 @@ REQUIRED_FLAGS = ("--date", "--max-mutations", "--json")
 #: Flags that turn the night into a rehearsal while leaving it green.
 FORBIDDEN_FLAGS = ("--dry-run", "--mutate-cmd")
 
+#: The workflow expression naming the commit the job checked out, with its
+#: whitespace normalised away so `${{github.sha}}` and `${{ github.sha }}` are
+#: the same answer. Nothing else identifies the tree the night ran against:
+#: `github.ref` is a moving branch and a literal is stale the day it is typed.
+COMMIT_EXPRESSION = "${{github.sha}}"
+
+
+def _squeezed(text: str) -> str:
+    return "".join(text.split())
+
 
 def _sweep_step() -> dict[str, Any]:
     """The one step in the workflow that runs the driver."""
@@ -87,6 +97,50 @@ def test_the_night_is_invoked_with_the_arguments_it_cannot_work_without(flag: st
     refuses, and the artifact the alarm reads would be empty.
     """
     assert flag in str(_sweep_step()["run"])
+
+
+def test_the_sweep_step_passes_the_commit_it_ran_against() -> None:
+    """A night with no `--commit` files a reproduction instruction that is false.
+
+    The target is a function of the date, the census SIZE and the file's own
+    contents -- not the date alone. `sweep_filing.py` records the measurement:
+    over one week of this repository's growth, 130 modules to 139, **0 of 30
+    dates resolved to the same file**. So an issue whose Reproduce block says
+    only "run it with this date" sends the next reader at a different file
+    within days of being filed, and the surviving mutation it describes cannot
+    be reproduced at all. The driver renders `git checkout <sha>` when it is
+    given one, and silently cannot when it is not.
+
+    Two properties, because the flag alone is not the claim. It must carry
+    `github.sha` -- the tree this job actually checked out -- and it must arrive
+    through the environment rather than being interpolated into the script,
+    which is the same discipline the dispatch date is held to. `github.sha` is
+    server-side metadata and not attacker-shaped; the rule is here so that the
+    trusted and the untrusted value cannot be told apart by how they are
+    written, which is what makes an unsafe one visible when it appears.
+    """
+    step = _sweep_step()
+    run = str(step["run"])
+    env = cast(dict[str, Any], step.get("env", {}))
+
+    carriers = [name for name, value in env.items() if _squeezed(str(value)) == COMMIT_EXPRESSION]
+    assert carriers, (
+        f"no environment variable on the sweep step holds {COMMIT_EXPRESSION}, so the "
+        f"filed issue cannot name the tree it ran against; the step's env is {sorted(env)}"
+    )
+    assert COMMIT_EXPRESSION not in _squeezed(run), (
+        f"{COMMIT_EXPRESSION} is interpolated straight into the run script. Pass it "
+        "through the environment like the dispatch date, so that no value in this "
+        "step has to be trusted by inspection."
+    )
+    accepted = sorted(
+        {form for name in carriers for form in (f'--commit "${name}"', f'--commit "${{{name}}}"')}
+    )
+    assert any(form in run for form in accepted), (
+        "the sweep step does not pass --commit from the environment variable holding "
+        f"{COMMIT_EXPRESSION}, so the night files a Reproduce block with no `git "
+        f"checkout` line. Accepted forms: {accepted}"
+    )
 
 
 @pytest.mark.parametrize("flag", FORBIDDEN_FLAGS)
