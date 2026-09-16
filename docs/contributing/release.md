@@ -42,6 +42,14 @@ checks:
 
 Both fail outside the release workflow, so they are worth seeing before the tag.
 
+**The async red-team sweep's release-cut pass runs here too.**
+`theurian-adversarial-review` runs over `origin/main` at the candidate commit, and
+what it finds is filed under the `async-sweep` label. It sits in this step rather
+than at §4 because a round takes wall clock and its findings can change what
+ships: met at the tag it is either skipped or it stalls a push already under way.
+What closes one of its findings, and why the anchor is the cut rather than a
+cadence, is in [orchestration.md](orchestration.md#the-async-red-team-sweep).
+
 ### 2. Version and changelog
 
 Update `packages/theurian-core/pyproject.toml` and `__version__`, then move the
@@ -534,6 +542,11 @@ the moment someone is deciding whether to tag.
 - [ ] *(CI)* Format, lint, mypy, tests green
 - [ ] Coverage reviewed
 - [ ] Every dependency pinned; `uv.lock` committed
+- [ ] *(no check)* The async red-team sweep's release-cut pass has run over
+      `origin/main` at the candidate commit, and what it filed is triaged or
+      declined — §1 above, and
+      [orchestration.md](orchestration.md#the-async-red-team-sweep). Nothing in
+      CI can see whether an agent ran
 - [ ] *(no check)* The canonical state rebuilds from an empty database —
       [#64](https://github.com/theurian/theurian/issues/64). There is no command
       to run; this is a judgement about whether the release changed migration

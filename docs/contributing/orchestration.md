@@ -191,12 +191,15 @@ something: it aims the rotation at a file whose verdict is already known, and
 until an instrument has been heard to speak, its zero is not evidence
 (INSTRUMENT's first line).
 
-**The agent pass.** Before a release tag is cut ([release.md](release.md)),
-`theurian-adversarial-review` runs over `origin/main` at the candidate commit and
-files what it finds under the same label. The anchor is the ritual and not a
-frequency, deliberately: a cadence nobody performs stops silently, and no runs
-produce no issues, which reads as a clean tracker. It binds from the first cut
-after this rule lands — earlier cuts predate the ritual rather than skipping it.
+**The agent pass.** Before a release tag is cut, `theurian-adversarial-review`
+runs over `origin/main` at the candidate commit and files what it finds under the
+same label. The step is [release.md's §1 Prepare](release.md#1-prepare), and the
+Release checklist carries it as a *(no check)* item — "The async red-team sweep's
+release-cut pass has run over `origin/main` at the candidate commit". The anchor
+is the ritual and not a frequency, deliberately: a cadence nobody performs stops
+silently, and no runs produce no issues, which reads as a clean tracker. It binds
+from the first tag cut after this rule lands on `main`: a release already tagged
+when it lands predates the ritual rather than skipping it.
 
 **Where it lands.** Both file under the `async-sweep` label and enter
 [the filing filter](#the-filing-filter)'s triage like any other filing.
