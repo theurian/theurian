@@ -47,11 +47,34 @@ pytestmark = pytest.mark.unit
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 DOC = REPO_ROOT / "docs" / "contributing" / "orchestration.md"
+RELEASE_DOC = REPO_ROOT / "docs" / "contributing" / "release.md"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "red-team.yml"
 
 #: The section this file answers for. A heading rather than a line number, so
 #: the anchor survives every edit above it.
 ANCHOR = "### The async red-team sweep"
+
+#: The one literal in this module, and a literal on purpose.
+#:
+#: Every other rule recomputes its expectation from a live source, because a
+#: rule that restated a value would agree with the document and with nothing
+#: else. This is not a value: it is a *sentence two documents have to share*.
+#: `release.md`'s checklist owns the step and `orchestration.md` quotes it, and
+#: the drift worth catching is a section citing a ritual step the ritual does
+#: not carry. There is no third source to derive from, so the shared key is the
+#: arbiter -- and rewording it in both documents is meant to require touching
+#: this line.
+RELEASE_CUT_ITEM = (
+    "The async red-team sweep's release-cut pass has run over `origin/main` at the candidate commit"
+)
+
+#: `release.md` carries two `### 1. Prepare` headings: one under
+#: `## Releasing Core`, one under `## Releasing the plugin`. The release-cut
+#: pass belongs to the Core ritual, so the parent heading is part of the anchor.
+#: "The string appears somewhere in the file" would be satisfied by the plugin
+#: section, which is a different release on a different cadence.
+CORE_PREPARE = "### 1. Prepare"
+CORE_PREPARE_PARENT = "## Releasing Core"
 
 #: Small integers as the doc spells them. Only the range a mutation budget can
 #: plausibly take: a value outside it fails loudly, which is correct, because a
@@ -70,24 +93,45 @@ _SPELLED: dict[int, str] = {
 }
 
 
-def _section() -> str:
-    """The section's text, with its line wrapping flattened.
+def _flat(text: str) -> str:
+    """One line, single-spaced.
 
-    Flattened because markdown joins a single newline into a space, so the
-    rendered sentence a reader sees is not the bytes on disk -- "at most six\\n
-    mutations" reads as one phrase and must be matched as one. Every rule below
-    compares against what the reader gets.
+    Markdown joins a single newline into a space, so the sentence a reader sees
+    is not the bytes on disk -- "at most six\\nmutations" reads as one phrase and
+    has to be matched as one. Every rule compares against what the reader gets.
     """
-    lines = DOC.read_text(encoding="utf-8").splitlines()
-    assert ANCHOR in lines, f"{DOC} no longer carries the anchor {ANCHOR!r}"
-    start = lines.index(ANCHOR) + 1
-    body: list[str] = []
-    for line in lines[start:]:
-        if re.match(r"^#{1,6}\s", line):
-            break
-        body.append(line)
-    assert body, f"the section under {ANCHOR!r} is empty"
-    return " ".join(" ".join(body).split())
+    return " ".join(text.split())
+
+
+def _section_of(path: pathlib.Path, anchor: str, *, under: str | None = None) -> str:
+    """The flattened body under ``anchor``, optionally only the one below ``under``.
+
+    ``under`` is for documents that repeat a heading. `release.md` has two
+    `### 1. Prepare` sections, and a rule that accepted either would let the
+    plugin release satisfy a claim about the Core one.
+    """
+    lines = path.read_text(encoding="utf-8").splitlines()
+    parent: str | None = None
+    body: list[str] | None = None
+    for line in lines:
+        if body is None and re.match(r"^#{1,2}\s", line):
+            parent = line
+        if body is not None:
+            if re.match(r"^#{1,6}\s", line):
+                break
+            body.append(line)
+        elif line == anchor and (under is None or parent == under):
+            body = []
+    assert body is not None, f"{path.name} carries no {anchor!r}" + (
+        f" under {under!r}" if under is not None else ""
+    )
+    assert any(line.strip() for line in body), f"the section under {anchor!r} is empty"
+    return _flat("\n".join(body))
+
+
+def _section() -> str:
+    """The sweep section of `orchestration.md`."""
+    return _section_of(DOC, ANCHOR)
 
 
 def _workflow() -> dict[str, Any]:
@@ -148,6 +192,38 @@ def _sweep_filing() -> ModuleType:
     import sweep_filing
 
     return sweep_filing
+
+
+def test_both_documents_carry_the_release_cut_step_word_for_word() -> None:
+    """A citation is only worth anything if the cited document carries the step.
+
+    The section tells a reader that the release ritual gates on the sweep's
+    release-cut pass, and points at `release.md` for it. If that checklist item
+    is reworded or dropped, the section goes on describing a gate that nobody is
+    held to -- and the failure is silent in the direction that matters, because
+    the release still ships and the tracker still looks quiet.
+
+    Both directions are one assertion each against the same shared key, so
+    deleting it from either document reddens this.
+    """
+    assert RELEASE_CUT_ITEM in _flat(RELEASE_DOC.read_text(encoding="utf-8"))
+    assert RELEASE_CUT_ITEM in _section()
+
+
+def test_the_core_prepare_step_names_the_agent_that_runs_the_pass() -> None:
+    """The checklist says the pass has run; §1 is where it says who runs it.
+
+    A checklist item with no step behind it is an instruction with no procedure,
+    and whoever is cutting the tag has to invent one. The agent's name is the
+    procedure -- it is what makes "has run" checkable rather than aspirational.
+
+    Anchored under `## Releasing Core` rather than "somewhere in release.md":
+    the plugin release has its own `### 1. Prepare`, and a rule that accepted
+    either would stay green with the Core step deleted.
+    """
+    prepare = _section_of(RELEASE_DOC, CORE_PREPARE, under=CORE_PREPARE_PARENT)
+
+    assert "theurian-adversarial-review" in prepare
 
 
 def test_the_section_states_the_hour_the_workflow_is_actually_scheduled_for() -> None:
