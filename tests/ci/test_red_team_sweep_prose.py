@@ -37,6 +37,7 @@ from __future__ import annotations
 import pathlib
 import re
 import sys
+from pathlib import PurePosixPath
 from types import ModuleType
 from typing import Any, cast
 
@@ -178,8 +179,8 @@ def _alarm_title() -> str:
     return titles[0]
 
 
-def _sweep_filing() -> ModuleType:
-    """`tools/sweep_filing.py`, imported the way the tools tests import it.
+def _tools_on_path() -> None:
+    """Put `tools/` on `sys.path`.
 
     `tools/` is a flat script directory rather than a package, and no conftest
     puts it on the path for `tests/ci/`, so this file does it itself rather than
@@ -189,6 +190,25 @@ def _sweep_filing() -> ModuleType:
     tools = str(REPO_ROOT / "tools")
     if tools not in sys.path:
         sys.path.insert(0, tools)
+
+
+def _sweep_census() -> ModuleType:
+    """`tools/sweep_census.py`, imported the way :func:`_sweep_filing` imports its own."""
+    _tools_on_path()
+    import sweep_census
+
+    return sweep_census
+
+
+def _sweep_filing() -> ModuleType:
+    """`tools/sweep_filing.py`, imported the way the tools tests import it.
+
+    `tools/` is a flat script directory rather than a package, and no conftest
+    puts it on the path for `tests/ci/`, so this file does it itself rather than
+    depending on another directory's conftest having been imported first -- that
+    ordering holds under a full run and breaks under `pytest tests/ci`.
+    """
+    _tools_on_path()
     import sweep_filing
 
     return sweep_filing
@@ -224,6 +244,46 @@ def test_the_core_prepare_step_names_the_agent_that_runs_the_pass() -> None:
     prepare = _section_of(RELEASE_DOC, CORE_PREPARE, under=CORE_PREPARE_PARENT)
 
     assert "theurian-adversarial-review" in prepare
+
+
+#: Top-level directories the section names as outside the census. Each is
+#: checked against the live census root rather than taken on trust.
+OUTSIDE_THE_CENSUS = ("tools", "tests", "docs")
+
+
+def test_the_section_names_directories_the_census_really_does_exclude() -> None:
+    """The scope claim is the one sentence in the section that bounds the sweep.
+
+    "`tools/`, `tests/` and `docs/` sit outside it entirely" is what tells a
+    reader that a green nightly says nothing about the tooling, the suite or the
+    documentation -- and it is true only because the census root is a path inside
+    `packages/`. Widen that root and the sentence quietly inverts: the sweep
+    would start sampling files the section promised it never touches, and the
+    reader's model of what a clean night covers would be wrong in the direction
+    that grants false comfort.
+
+    Checked by asking the live root whether each directory is under it, not by
+    comparing strings: a root of `""` or `"."` reads as the whole repository and
+    is exactly the widening this catches. A widening that keeps all three
+    outside -- to `packages/`, say -- stays green, and correctly so: what is
+    pinned is the sentence's truth, not the root's exact value. Freezing the
+    root string here instead would restate a literal and catch nothing the
+    constant does not already say about itself.
+
+    The round's measured figures in the same paragraph -- the census size, the
+    barren count, the median wait -- are deliberately **not** pinned here. They
+    are dated observations of one round against one tree, not invariants, and a
+    rule that froze them would fail on every honest commit that adds a module.
+    """
+    root = PurePosixPath(_sweep_census().CENSUS_ROOT)
+    section = _section()
+
+    for name in OUTSIDE_THE_CENSUS:
+        assert not PurePosixPath(name).is_relative_to(root), (
+            f"{name}/ now sits inside the census root {root}; the section's scope "
+            "sentence has become false and needs rewriting, not re-deriving"
+        )
+        assert f"`{name}/`" in section
 
 
 def test_the_section_states_the_hour_the_workflow_is_actually_scheduled_for() -> None:
