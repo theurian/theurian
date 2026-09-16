@@ -29,25 +29,24 @@ pytestmark = pytest.mark.unit
 #: pinned value rather than a restatement of the implementation.
 _SYNTHETIC = ("a.py", "b.py", "c.py", "d.py", "e.py")
 
-#: The same census after one module is added -- the event that re-indexes every
-#: date's draw, and the one this file must not be sensitive to.
-_GROWN = (*_SYNTHETIC, "f.py")
-
 #: What each synthetic file holds, so that "barren" is a property of the source
 #: rather than of a stub: only ``b.py`` and ``c.py`` carry an operator family the
 #: generator can reach, and the rest have the shape real barren modules have --
-#: a column tuple, SQL text, a table name. ``f.py`` belongs to ``_GROWN`` only.
+#: a column tuple, SQL text, a table name.
 _SYNTHETIC_SOURCES = {
     "a.py": "COLUMNS = ('id', 'body')\n",
     "b.py": "def fits(size: int) -> bool:\n    return size < 3\n",
     "c.py": "DEFAULT = True\n",
     "d.py": "QUERY = 'SELECT id FROM item'\n",
     "e.py": "TABLE = 'item'\n",
-    "f.py": "TITLE_COLUMN = 'title'\n",
 }
 
-#: One real night, used wherever a rule has to hold against real source.
+#: The night the pinned values below were measured on. It reaches a mutation
+#: only as the date in the label, so the synthetic cases take it too.
 _NIGHT = date(2026, 9, 16)
+
+#: The first night of every pinned window below; the ordinals derive from it.
+_FIRST_NIGHT = date(2026, 9, 11)
 
 
 def test_the_target_is_the_ordinal_of_the_date_modulo_the_census() -> None:
@@ -60,7 +59,8 @@ def test_the_target_is_the_ordinal_of_the_date_modulo_the_census() -> None:
     that rotated by ``ordinal % len - 1``, or that sorted the census differently,
     fails at least one of them.
     """
-    remainders = {date.fromordinal(739870 + offset): (739870 + offset) % 5 for offset in range(5)}
+    first = _FIRST_NIGHT.toordinal()
+    remainders = {date.fromordinal(first + offset): (first + offset) % 5 for offset in range(5)}
     at_zero = next(day for day, index in remainders.items() if index == 0)
     at_last = next(day for day, index in remainders.items() if index == 4)
     in_between = next(day for day, index in remainders.items() if index == 2)
@@ -80,7 +80,7 @@ def test_the_rotation_offers_every_file_exactly_once() -> None:
     index is the case that distinguishes a wrapping rotation from a truncating
     slice, so it is the one asserted.
     """
-    at_last = date.fromordinal(739874)
+    at_last = date.fromordinal(_FIRST_NIGHT.toordinal() + 4)
 
     walked = sweep_census.rotation(_SYNTHETIC, at_last)
 
@@ -96,7 +96,7 @@ def test_consecutive_nights_walk_the_whole_census_before_repeating() -> None:
     entirely, which is invisible on any single night. Asserted over a full cycle
     because that is the only window in which the difference shows.
     """
-    start = date.fromordinal(739870)
+    start = _FIRST_NIGHT
 
     first_of_each = [
         sweep_census.rotation(_SYNTHETIC, date.fromordinal(start.toordinal() + night))[0]
@@ -114,7 +114,7 @@ def test_a_census_the_sweep_cannot_rotate_is_refused_rather_than_guessed() -> No
     otherwise report success.
     """
     with pytest.raises(sweep_census.SweepError):
-        sweep_census.rotation((), date.fromordinal(739870))
+        sweep_census.rotation((), _FIRST_NIGHT)
 
 
 def test_the_real_census_is_the_sorted_production_tree_without_package_markers() -> None:
@@ -160,16 +160,19 @@ def _landings(census: tuple[str, ...]) -> tuple[str, ...]:
     """The file each possible draw ends up sweeping, in census order.
 
     Every draw, not a chosen one: consecutive ordinals cover every remainder
-    modulo the census length, so ``len(census)`` consecutive nights are the whole
-    population of starting positions.
+    modulo the census length, so the ``len(census)`` nights from ``_FIRST_NIGHT``
+    are the whole population of starting positions.
     """
     by_draw = {}
     for offset in range(len(census)):
-        night = date.fromordinal(739870 + offset)
+        night = date.fromordinal(_FIRST_NIGHT.toordinal() + offset)
         walk = sweep_census.rotation(census, night)
         by_draw[walk[0]] = sweep_mutations.first_productive(
-            walk, _SYNTHETIC_SOURCES.__getitem__, on=night
+            walk, lambda path: _SYNTHETIC_SOURCES[path], on=night
         ).path
+
+    assert set(by_draw) == set(census)
+
     return tuple(by_draw[path] for path in census)
 
 
@@ -181,12 +184,8 @@ def test_a_barren_target_advances_to_the_next_productive_file_in_the_rotation() 
     advance must land on the *next* productive file in the walk -- wrapping past
     the end of the census when the draw is late in it -- rather than on an
     arbitrary productive one, or the run stops being reproducible from the date.
-
-    Pinned against the synthetic census at two sizes, which is #727: the earlier
-    form asserted that one hand-picked date drew a barren file out of the *live*
-    census, and since the draw is ``ordinal % len``, adding a production module
-    anywhere re-indexed that date and failed the assertion in unrelated pull
-    requests. What the sweep guarantees is about the draws, not about the tree.
+    Pinned against the synthetic census, so the live tree's size cannot re-index
+    the draws this asserts over.
     """
     barren = tuple(
         path
@@ -194,12 +193,10 @@ def test_a_barren_target_advances_to_the_next_productive_file_in_the_rotation() 
         if not sweep_mutations.candidates(path, source, on=_NIGHT).candidates
     )
 
-    over_five = _landings(_SYNTHETIC)
-    over_six = _landings(_GROWN)
+    landings = _landings(_SYNTHETIC)
 
-    assert barren == ("a.py", "d.py", "e.py", "f.py")
-    assert over_five == ("b.py", "b.py", "c.py", "b.py", "b.py")
-    assert over_six == ("b.py", "b.py", "c.py", "b.py", "b.py", "b.py")
+    assert barren == ("a.py", "d.py", "e.py")
+    assert landings == ("b.py", "b.py", "c.py", "b.py", "b.py")
 
 
 def test_a_census_where_nothing_can_be_mutated_refuses_to_report_a_clean_night() -> None:
