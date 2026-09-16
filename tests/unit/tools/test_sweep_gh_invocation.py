@@ -195,6 +195,11 @@ def test_the_night_a_body_describes_is_the_night_that_was_run() -> None:
     Cheap, and it is the shape a refactor produces: the driver holds the date in
     two places (the CLI argument and the generated labels), and a builder handed
     the wrong one files an issue nobody can reproduce.
+
+    Asserted on the body alone. This night is untrusted, and every untrusted
+    night shares one standing title with no date in it -- so the body is the only
+    place the date can be, and the only place it needs to be: the thread collects
+    nights, and each comment has to say which one it is.
     """
     payload = sweep_filing.build_payload(
         sweep_filing.Night(
@@ -212,5 +217,5 @@ def test_the_night_a_body_describes_is_the_night_that_was_run() -> None:
         )
     )
 
-    assert "2026-09-16" in payload.title
+    assert payload.title == sweep_filing.UNTRUSTED_TITLE
     assert "2026-09-16" in payload.body

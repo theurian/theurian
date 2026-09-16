@@ -157,7 +157,8 @@ def test_an_untrusted_harness_run_files_rather_than_reading_clean(
 
     printed = capsys.readouterr().out
     assert code == 0
-    assert "run-untrusted" in printed
+    assert sweep_filing.UNTRUSTED_TITLE in printed
+    assert sweep_filing.UNTRUSTED_MARKER in printed
 
 
 def test_an_untrusted_run_that_wrote_no_results_file_still_files(
@@ -176,7 +177,7 @@ def test_an_untrusted_run_that_wrote_no_results_file_still_files(
     code = sweep.main(_argv(tmp_path / "r.json", "--dry-run"), mutate_runner=mutate, gh_runner=gh)
 
     assert code == 0
-    assert "run-untrusted" in capsys.readouterr().out
+    assert sweep_filing.UNTRUSTED_TITLE in capsys.readouterr().out
 
 
 def test_a_harness_that_claims_success_but_wrote_nothing_fails_the_sweep(

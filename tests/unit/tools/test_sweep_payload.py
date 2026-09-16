@@ -145,6 +145,11 @@ def test_an_untrusted_run_says_so_in_its_title() -> None:
     "One mutation survived" is a gap in the suite. "The run cannot be trusted"
     is a gap in the *sweep*, and triaging it as the former sends somebody
     looking for a missing test that nothing measured.
+
+    The untrusted title is the standing one and carries no file and no date --
+    every untrusted night comments on one thread -- so what distinguishes the two
+    is asserted as the title itself, and as the absence of the survivors phrasing
+    that would send the reader looking for a test.
     """
     payload = sweep_filing.build_payload(
         _night(
@@ -155,8 +160,76 @@ def test_an_untrusted_run_says_so_in_its_title() -> None:
         )
     )
 
-    assert sweep_verdict.UNTRUSTED in payload.title
+    assert payload.title == sweep_filing.UNTRUSTED_TITLE
+    assert "not held in" not in payload.title
     assert "exited 2" in payload.body
+
+
+def _untrusted(target: str) -> sweep_filing.Payload:
+    return sweep_filing.build_payload(
+        _night(
+            target=target,
+            mutate_exit=2,
+            reading=sweep_verdict.Reading(
+                reason=sweep_verdict.UNTRUSTED, detail="the harness exited 2"
+            ),
+        )
+    )
+
+
+def test_every_untrusted_night_joins_one_standing_thread() -> None:
+    """A broken harness is a statement about the harness, not about a file.
+
+    Keyed per target, one persistent failure -- a test broken on `main` for a
+    week, a control that keeps timing out -- opens a *new* issue every night,
+    because the rotation names a different file each night. The code review
+    measured 28 distinct targets over 30 nights: 28 issues for one cause, which
+    also fills the hundred-issue dedup window in about three and a half months
+    and silently breaks the survivors dedup that shares it.
+
+    So the untrusted reading gets a constant key and a constant title, and the
+    nights accumulate as comments on one thread. Which file each night happened
+    to draw is still in the body, where it belongs: it is a detail of the night,
+    not the identity of the finding.
+    """
+    first = _untrusted("packages/theurian-core/src/theurian/one.py")
+    second = _untrusted("packages/theurian-core/src/theurian/two.py")
+
+    assert first.marker == second.marker == sweep_filing.UNTRUSTED_MARKER
+    assert first.title == second.title == sweep_filing.UNTRUSTED_TITLE
+    assert first.body.startswith(sweep_filing.UNTRUSTED_MARKER)
+    assert "one.py" in first.body
+    assert "two.py" in second.body
+
+
+def test_a_surviving_mutation_is_still_a_finding_about_its_own_file() -> None:
+    """The other half: survivors must not collapse onto one thread.
+
+    A mutation the suite does not hold is a statement about *that file's* tests,
+    and two files' gaps are two findings. Collapsing them would bury the second
+    one in the first one's comments -- which is the mirror of the defect above,
+    and a fix aimed only at the untrusted branch is what would cause it.
+    """
+    first = sweep_filing.build_payload(_night(target="packages/theurian-core/src/theurian/one.py"))
+    second = sweep_filing.build_payload(_night(target="packages/theurian-core/src/theurian/two.py"))
+
+    assert first.marker != second.marker
+    assert first.marker != sweep_filing.UNTRUSTED_MARKER
+    assert first.title != second.title
+    assert "one.py" in first.title
+
+
+def test_the_standing_untrusted_thread_still_dates_and_names_each_night() -> None:
+    """One thread must not mean one indistinguishable pile of comments.
+
+    Whoever picks up the standing issue needs to know which nights are in it and
+    what each of them was attacking -- otherwise the constant key trades a
+    triage flood for an unreadable log.
+    """
+    payload = _untrusted("packages/theurian-core/src/theurian/one.py")
+
+    assert "- **Night:** 2026-09-16" in payload.body
+    assert "- **Target:** `packages/theurian-core/src/theurian/one.py`" in payload.body
 
 
 def test_two_runs_of_one_night_produce_the_same_body() -> None:

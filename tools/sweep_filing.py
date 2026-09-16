@@ -48,7 +48,7 @@ from typing import Final
 
 from sweep_census import SweepError
 from sweep_mutations import Candidate
-from sweep_verdict import SURVIVORS, UNTRUSTED, Outcome, Reading
+from sweep_verdict import UNTRUSTED, Outcome, Reading
 
 #: The tracker label the sweep files under. It already exists; nothing here
 #: creates labels, and ``gh issue create`` fails outright on an unknown one.
@@ -74,6 +74,22 @@ KNOWN_VERDICTS: Final = frozenset(
 )
 
 _MARKER_PREFIX: Final = "<!-- async-sweep-target: "
+
+#: The key and the title every untrusted night shares.
+#:
+#: A run the harness could not stand behind is a statement about the *harness*,
+#: not about the file the rotation happened to draw -- and keying it per target
+#: made one persistent cause open one issue a night. The code review measured 28
+#: distinct targets over 30 nights: 28 issues for one broken test, which also
+#: fills the hundred-issue dedup window in about three and a half months and then
+#: silently breaks the per-target dedup that shares it.
+#:
+#: Constant, so the nights accumulate as comments on one standing thread -- the
+#: shape an alarm already has. Which file each night drew, and when, stays in the
+#: body, where it is a detail of the night rather than the identity of the
+#: finding.
+UNTRUSTED_MARKER: Final = "<!-- async-sweep-untrusted -->"
+UNTRUSTED_TITLE: Final = "async sweep: the harness could not produce a verdict"
 
 #: How many open issues under the label to look through for an existing thread.
 #: A sweep that files nightly cannot plausibly need more, and an unbounded page
@@ -220,11 +236,21 @@ def _verdict_section(night: Night) -> list[str]:
     return lines
 
 
+def _is_untrusted(night: Night) -> bool:
+    return night.reading.reason == UNTRUSTED
+
+
 def _headline(night: Night) -> str:
-    if night.reading.reason == SURVIVORS:
-        count = len(night.reading.unheld)
-        return f"async sweep: {count} mutation(s) not held in {night.target} ({night.on})"
-    return f"async sweep: {UNTRUSTED} on {night.target} ({night.on})"
+    """The issue title, which is also half of what a reader dedups by eye.
+
+    A survivors night names its file, because a mutation the suite does not hold
+    is a statement about that file's tests and two files' gaps are two findings.
+    An untrusted night does not, because it is the same finding every time.
+    """
+    if _is_untrusted(night):
+        return UNTRUSTED_TITLE
+    count = len(night.reading.unheld)
+    return f"async sweep: {count} mutation(s) not held in {night.target} ({night.on})"
 
 
 def _reproduce_section(night: Night) -> list[str]:
@@ -273,7 +299,7 @@ def build_payload(night: Night) -> Payload:
     which night, what each mutation changed, what each verdict was, and the exact
     command that reproduces the batch.
     """
-    marker = target_marker(night.target)
+    marker = UNTRUSTED_MARKER if _is_untrusted(night) else target_marker(night.target)
     header = [
         marker,
         "",
