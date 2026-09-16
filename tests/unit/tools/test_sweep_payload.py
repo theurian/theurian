@@ -111,9 +111,15 @@ def test_the_body_carries_the_diff_of_every_mutation_that_was_run() -> None:
     Both sides are rendered with no space after the marker, so the anchor's own
     indentation survives into the issue: an anchor is an exact string, and a diff
     that adds a space to it is a diff nobody can paste back.
+
+    The fence is three backticks when nothing in the content demands more. Sizing
+    it purely against the content would give a *one*-backtick opener for the
+    ordinary case, which is not a fenced block at all -- the whole diff would
+    render as a paragraph with its leading minus signs eaten as list markers.
     """
     payload = sweep_filing.build_payload(_night())
 
+    assert "```diff\n" in payload.body
     assert "-        if used <= budget:" in payload.body
     assert "+        if used < budget:" in payload.body
 
@@ -214,6 +220,29 @@ def test_a_code_fence_inside_a_mutated_line_cannot_close_the_block_around_it() -
     assert f"-{_HOSTILE_OLD}" in payload.body
     assert "````diff" in payload.body
     assert payload.body.rstrip().endswith(sweep_filing.AUTOMATION_INSTRUCTION)
+
+
+def test_a_backtick_in_a_path_cannot_close_the_code_span_it_sits_in() -> None:
+    """The same markdown rule as the fence above, one line up: inline code spans.
+
+    The header renders the target inside a code span, and a single backtick in
+    the value closes it -- so the rest of that line, and every delimiter after
+    it, shifts by one. Sizing the block fences and leaving the spans fixed would
+    have left the injection family half-closed on the only channel a reader
+    actually looks at.
+
+    CommonMark's two rules, both asserted: a delimiter longer than any run inside
+    the value, and -- when the value begins or ends with a backtick -- one space
+    of padding at *each* end, since the renderer only strips a leading space if
+    there is a trailing one to match it. Padding one side alone would leave the
+    space visible in the rendered path.
+    """
+    tricky = "packages/theurian-core/src/theurian/``odd``.py"
+    trailing = "packages/theurian-core/src/theurian/odd`"
+
+    assert sweep_filing._inline(tricky) == f"```{tricky}```"
+    assert sweep_filing._inline(trailing) == f"`` {trailing} ``"
+    assert tricky in sweep_filing.build_payload(_night(target=tricky)).body
 
 
 def test_the_dedup_marker_is_a_digest_no_path_can_forge() -> None:

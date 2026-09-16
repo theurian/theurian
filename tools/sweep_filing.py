@@ -16,7 +16,8 @@ the runner's process list, and no argument-length limit applies.
 production module does today, ``infrastructure/filesystem/parsers/markdown.py``,
 measured 2026-09-16 -- and inside a fixed three-backtick fence such a line
 closes the block, spilling the rest of the issue (including the ratchet stub)
-into prose. Fences are therefore sized against their content.
+into prose. Every delimiter here is therefore sized against the text it holds,
+inline code spans (:func:`_inline`) as well as blocks (:func:`_block`).
 
 The issue ends with the "Proposed automation" stub: CLAUDE.md's ratchet says
 every adversarial finding proposes its own automation before it closes, and this
@@ -114,15 +115,33 @@ def target_marker(path: str) -> str:
     return f"{_MARKER_PREFIX}{digest} -->"
 
 
-def _fence(text: str) -> str:
-    """A fence at least one backtick longer than the longest run inside the text."""
+def _fence(text: str, minimum: int = 1) -> str:
+    """A run of backticks at least one longer than the longest run inside the text."""
     longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
-    return "`" * max(3, longest + 1)
+    return "`" * max(minimum, longest + 1)
 
 
 def _block(text: str, language: str = "") -> str:
-    fence = _fence(text)
+    """A fenced block whose fence the text cannot close. Three backticks minimum."""
+    fence = _fence(text, minimum=3)
     return f"{fence}{language}\n{text}\n{fence}"
+
+
+def _inline(text: str) -> str:
+    """One code span holding arbitrary text, by CommonMark's own two rules.
+
+    The delimiter is longer than any run inside, and a value that begins or ends
+    with a backtick is padded with one space at each end -- which CommonMark
+    strips again when it renders, so the reader sees the value and not the
+    padding. Without both, a path or a label carrying a backtick closes its own
+    span and the rest of the line renders as prose.
+
+    Not for multi-line text: a code span cannot contain a blank line, and the
+    values passed here (a path, a label, an operator, an argv) never do.
+    """
+    fence = _fence(text)
+    padding = " " if text.startswith("`") or text.endswith("`") else ""
+    return f"{fence}{padding}{text}{padding}{fence}"
 
 
 def _diff(candidate: Candidate) -> str:
@@ -145,9 +164,9 @@ def _mutation_section(night: Night) -> list[str]:
     for candidate in night.picked:
         lines.append("")
         lines.append(
-            f"### `{candidate.label}`\n\n"
-            f"Line {candidate.line}, `{candidate.swapped_from}` to "
-            f"`{candidate.swapped_to}`, anchored on the {candidate.anchor}."
+            f"### {_inline(candidate.label)}\n\n"
+            f"Line {candidate.line}, {_inline(candidate.swapped_from)} to "
+            f"{_inline(candidate.swapped_to)}, anchored on the {candidate.anchor}."
         )
         lines.append("")
         lines.append(_diff(candidate))
@@ -166,7 +185,9 @@ def _verdict_section(night: Night) -> list[str]:
     # built in that order would differ between two runs of one night.
     for outcome in sorted(night.outcomes, key=lambda item: (not item.is_control, item.label)):
         summary = f" -- {outcome.summary}" if outcome.summary else ""
-        lines.append(f"- **{outcome.verdict}** `{outcome.label}` ({outcome.seconds:.1f}s){summary}")
+        lines.append(
+            f"- **{outcome.verdict}** {_inline(outcome.label)} ({outcome.seconds:.1f}s){summary}"
+        )
     return lines
 
 
@@ -191,10 +212,10 @@ def build_payload(night: Night) -> Payload:
         "The nightly red-team sweep over `main` (#378) did not come back clean.",
         "",
         f"- **Night:** {night.on}",
-        f"- **Target:** `{night.target}`",
+        f"- **Target:** {_inline(night.target)}",
         f"- **Reading:** {night.reading.detail}",
         f"- **Harness exit:** {night.mutate_exit}",
-        f"- **Harness:** `{' '.join(night.harness)}`",
+        f"- **Harness:** {_inline(' '.join(night.harness))}",
         f"- **Candidates dropped for a non-unique anchor:** {night.skipped}",
         "",
     ]
