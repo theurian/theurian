@@ -104,10 +104,11 @@ Only your report back to the caller uses the caller's language.
    fixtures build and its assertions compare — never what its docstring, its
    assert message, or a free-text field in its fixture data says: those are
    claims by the same author, and every #720 seed that was traced sat exactly
-   there — the assert message supplied "under every flag", the test's own
-   docstring supplied `rejected` (both surfaces recorded on #721), and a
-   free-text YAML `reason:` string supplied `superseded` (recorded in
-   f815011b). Before describing a test, read its body and state what the
+   there — test-file prose supplied "under every flag" (the assert-message
+   surface is recorded on #721; the file's own docstring carries the phrase
+   verbatim), a second test's docstring supplied `rejected` (also recorded on
+   #721), and a free-text YAML `reason:` string supplied `superseded`
+   (recorded in PR #720's commit f815011b). Before describing a test, read its body and state what the
    fixtures build and the assertions compare. When the test's own prose
    overclaims, report it and leave the test alone — tests belong to the tests
    specialist. When a test reaches less than the sentence needs, scope the
