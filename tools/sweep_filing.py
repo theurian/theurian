@@ -198,7 +198,16 @@ def build_payload(night: Night) -> Payload:
         f"- **Candidates dropped for a non-unique anchor:** {night.skipped}",
         "",
     ]
-    reproduce = ["## Reproduce", "", _block(" ".join(night.command), "sh"), ""]
+    reproduce = [
+        "## Reproduce",
+        "",
+        "The mutations are a function of the date, so this regenerates exactly the ones "
+        "above. It also re-runs them: `--dry-run` suppresses the filing, not the batch, "
+        "so expect one full suite walk per mutation plus one for the control.",
+        "",
+        _block(" ".join(night.command), "sh"),
+        "",
+    ]
     automation = [AUTOMATION_HEADING, "", AUTOMATION_INSTRUCTION]
     body = "\n".join(
         [
