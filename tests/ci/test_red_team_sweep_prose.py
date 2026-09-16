@@ -94,6 +94,19 @@ _SPELLED: dict[int, str] = {
 }
 
 
+def _visible(text: str) -> str:
+    """The document with its HTML comments removed.
+
+    Markdown hides `<!-- ... -->` from the reader while leaving every byte in the
+    file, so a section commented out wholesale still satisfies any rule that
+    greps the raw text -- the adversarial round wrapped this one and watched
+    every pin pass while the published page carried nothing. Stripping first
+    means a hidden section reaches the heading-not-found assertion instead,
+    which is the honest failure: the claims are not on the page.
+    """
+    return re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+
+
 def _flat(text: str) -> str:
     """One line, single-spaced.
 
@@ -111,7 +124,7 @@ def _section_of(path: pathlib.Path, anchor: str, *, under: str | None = None) ->
     `### 1. Prepare` sections, and a rule that accepted either would let the
     plugin release satisfy a claim about the Core one.
     """
-    lines = path.read_text(encoding="utf-8").splitlines()
+    lines = _visible(path.read_text(encoding="utf-8")).splitlines()
     parent: str | None = None
     body: list[str] | None = None
     for line in lines:
