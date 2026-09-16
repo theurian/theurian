@@ -80,6 +80,13 @@ RELEASE_CUT_ITEM = (
 CORE_PREPARE = "### 1. Prepare"
 CORE_PREPARE_PARENT = "## Releasing Core"
 
+#: The checklist the release-cut item is an item *of*. Its Core and plugin
+#: halves are bolded leads inside one `##` section rather than headings of their
+#: own, so `under=` cannot separate them the way it separates the two
+#: `### 1. Prepare` sections -- the plugin half is cut off by its lead instead.
+RELEASE_CHECKLIST = "## Release checklist"
+PLUGIN_CHECKLIST_LEAD = "**Plugin**"
+
 #: Small integers as the doc spells them. Only the range a mutation budget can
 #: plausibly take: a value outside it fails loudly, which is correct, because a
 #: budget of twelve needs the sentence reworded and not just re-derived.
@@ -127,8 +134,8 @@ def _flat(text: str) -> str:
     return " ".join(text.split())
 
 
-def _section_of(path: pathlib.Path, anchor: str, *, under: str | None = None) -> str:
-    """The flattened body under ``anchor``, optionally only the one below ``under``.
+def _section_lines(path: pathlib.Path, anchor: str, *, under: str | None = None) -> list[str]:
+    """The visible lines under ``anchor``, optionally only the one below ``under``.
 
     ``under`` is for documents that repeat a heading. `release.md` has two
     `### 1. Prepare` sections, and a rule that accepted either would let the
@@ -150,7 +157,40 @@ def _section_of(path: pathlib.Path, anchor: str, *, under: str | None = None) ->
         f" under {under!r}" if under is not None else ""
     )
     assert any(line.strip() for line in body), f"the section under {anchor!r} is empty"
-    return _flat("\n".join(body))
+    return body
+
+
+def _section_of(path: pathlib.Path, anchor: str, *, under: str | None = None) -> str:
+    """:func:`_section_lines`, flattened to the one line a reader sees."""
+    return _flat("\n".join(_section_lines(path, anchor, under=under)))
+
+
+def _core_release_checklist_items() -> list[str]:
+    """`release.md`'s Core checklist, one flattened string per `- [ ]` item.
+
+    Three things the raw whole-file read this replaces could not tell apart, all
+    of which leave the citing section describing a gate nobody is held to: the
+    item moved down into the plugin checklist, the item demoted from a checkbox
+    to a prose aside, and the item commented out. Items are cut at the plugin
+    lead and returned individually so each of those is a miss rather than a hit
+    somewhere else in the file.
+    """
+    lines = _section_lines(RELEASE_DOC, RELEASE_CHECKLIST)
+    leads = [i for i, line in enumerate(lines) if line.startswith(PLUGIN_CHECKLIST_LEAD)]
+    assert len(leads) == 1, (
+        f"expected one {PLUGIN_CHECKLIST_LEAD!r} lead splitting {RELEASE_CHECKLIST!r} into its "
+        f"Core and plugin halves, found {len(leads)}; without it the Core half cannot be told "
+        "from the plugin one and this rule would accept either"
+    )
+
+    items: list[str] = []
+    for line in lines[: leads[0]]:
+        if line.startswith("- [ ] "):
+            items.append(line)
+        elif items and line.startswith(" "):
+            items[-1] += " " + line
+    assert items, f"the Core half of {RELEASE_CHECKLIST!r} carries no checklist items at all"
+    return [_flat(item) for item in items]
 
 
 def _section() -> str:
@@ -281,10 +321,13 @@ def test_both_documents_carry_the_release_cut_step_word_for_word() -> None:
     held to -- and the failure is silent in the direction that matters, because
     the release still ships and the tracker still looks quiet.
 
-    Both directions are one assertion each against the same shared key, so
-    deleting it from either document reddens this.
+    Each direction is one assertion against the same shared key, and each is
+    scoped to where the claim has to live: the Core checklist for the item, the
+    sweep section for the citation. A raw whole-file read stood on the release
+    side and accepted the sentence anywhere in `release.md` -- the plugin
+    checklist, a prose aside, or an HTML comment all satisfied it.
     """
-    assert RELEASE_CUT_ITEM in _flat(RELEASE_DOC.read_text(encoding="utf-8"))
+    assert any(RELEASE_CUT_ITEM in item for item in _core_release_checklist_items())
     assert RELEASE_CUT_ITEM in _section()
 
 
