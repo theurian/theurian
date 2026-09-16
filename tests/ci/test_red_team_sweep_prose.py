@@ -2,9 +2,10 @@
 
 `docs/contributing/orchestration.md`'s "The async red-team sweep" section states
 operational facts: when the nightly job runs, how many mutations it spends, what
-its two standing alarm threads are called, and which label its filings land
-under. Every one of those is a value that lives somewhere else and can move
-without the sentence moving with it.
+its two standing alarm threads are called, which label both its producers file
+under, what heading closes a filed body, what the census excludes, and which
+release-ritual step the second leg is anchored to. Every one of those is a value
+that lives somewhere else and can move without the sentence moving with it.
 
 **Why this file and not the invocation gate.** `test_red_team_sweep_invocation.py`
 answers "is the workflow still sweeping" -- its subject is one file, its failure
@@ -18,10 +19,12 @@ mandate bolted onto the first.
 **What is enforced, exactly.** Each rule recomputes the expected phrasing from
 the live source and looks for it in the section: the cron expression is parsed
 and rendered back into the doc's own "HH:MM UTC daily" form, the mutation budget
-is read out of the invocation and spelled as a word, and the two titles and the
-label are taken from the constants themselves. Nothing here restates a literal
-that the doc also states; a rule that did would agree with the doc and with
-nothing else.
+is read out of the invocation and spelled as a word, and the titles, the label
+and the automation heading are taken from the constants themselves. No *value*
+here is restated from the document; a rule that restated one would agree with
+the document and with nothing else. The single exception is deliberate and
+marked as such -- `RELEASE_CUT_ITEM` is not a value but a sentence two
+documents have to share, and it has no third source to be derived from.
 
 **What is not enforced.** That any night actually ran. Every rule here passes
 against a workflow whose schedule fires and a workflow whose schedule is
@@ -368,10 +371,14 @@ def test_the_section_states_the_mutation_budget_the_workflow_actually_passes() -
     """The invocation gate pins that `--max-mutations` is present, not what it says.
 
     The number is the sweep's whole cost model -- six mutations plus the control
-    is seven full suite walks, which is what the job's 150-minute ceiling and the
-    section's "a full suite walk each" are both written against. Raising it in
-    the workflow without touching the prose leaves a documented budget that no
-    longer bounds anything.
+    is the seven full suite walks the section counts, and the job's
+    `timeout-minutes` is set against that arithmetic. Raising the budget without
+    touching the prose leaves a documented bound that bounds nothing.
+
+    The ceiling is referred to and not quoted. This docstring used to quote a
+    figure the workflow had already moved past -- the failure the module exists
+    to catch, one level in. A number written into prose beside the source that
+    owns it goes stale exactly as quietly, including here.
     """
     run = _sweep_step_run()
 
