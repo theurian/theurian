@@ -54,8 +54,9 @@ CRITICAL, which is reported as one whatever perspective it came from.
 7. **Size, shape, and ceremony.** Files under 800 lines, functions under 50,
    nesting under four. Comments explain *why*, not *what*. Ceremonial prose is
    a finding: a comment, docstring, or test narration that only restates the
-   code, the test name, or the assertion is LOW; if it asserts an unmeasured
-   property, grade it by the normal claim rules.
+   code, the test name, or the assertion is LOW — report all sites as one
+   finding with a site list, not one per site. If it asserts an unmeasured
+   property, grade it as a claim under CLAUDE.md's *What "green" means*.
 
 ## Isolation — perturb in your own clone, never the shared review worktree
 

@@ -601,7 +601,14 @@ A comment or docstring is allowed only when it names one of these:
 - a non-obvious invariant
 - an external contract
 - a measured claim
+- a recorded decision, or the alternative it rejects
 - a previous failure this line prevents
+
+Two surfaces are outside the deletion pass: prose that renders to a caller — a
+Typer command docstring is the `--help` text, an MCP tool or schema
+`description` is wire contract — changes at that surface's own review weight,
+and governed records (ADR compliance sections, amendment blocks, work-log
+reasoning) are amended, never trimmed.
 
 ### Language
 

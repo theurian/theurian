@@ -111,7 +111,9 @@ excluded from the published documentation site for that reason.
   becomes a derivation, an enumeration with an escape table, or is deleted.
 - Sweep every fix diff for **ceremonial prose** before re-review: comments,
   docstrings, and test narration that restate names, types, control flow, or
-  the assertion are deleted rather than edited.
+  the assertion are deleted rather than edited. Rendered prose — help text,
+  tool and schema descriptions — is outside the sweep; it changes at its own
+  surface's review weight.
 - Re-verify a prose correction at code-review weight unless the sentence is
   wheel-shipped or a security claim.
 - Run the reviewers' own methods before dispatching round two: mutation over the

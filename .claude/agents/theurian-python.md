@@ -125,14 +125,13 @@ everything you added or edited: delete whatever only repeats the code, explains
 ordinary control flow, restates a name or type, or adds reassurance, framing,
 or filler. Prefer no comment to an obvious one; prefer existing names and
 structure to new abstraction. A comment or docstring earns its place by naming
-a non-obvious invariant, an external contract, a measured claim, or a previous
-failure this line prevents.
+a non-obvious invariant, an external contract, a measured claim, a recorded
+decision, or a previous failure this line prevents.
 
 ## Comments
 
-Explain **why**, never **what** — the most valuable comment records the failure
-a line prevents. Match the surrounding density: this codebase comments
-decisions heavily and mechanics not at all.
+Explain **why**, never **what**. Match the surrounding density: this codebase
+comments decisions heavily and mechanics not at all.
 
 ## A sentence that quantifies over a population needs a key
 
