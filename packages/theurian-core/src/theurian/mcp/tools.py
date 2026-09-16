@@ -1915,7 +1915,15 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
 
         def current_revision(item_id: ItemId) -> RevisionId | None:
             with SqliteCanonicalStore(database) as store:
-                item = store.get_item(context, item_id)
+                # `get_item_metadata`, not `get_item`: the gate below decides on
+                # `status`/`sensitivity`, both on the pointer row, so a *withheld*
+                # item's body must not be read before its refusal. `get_item` joins
+                # the current revision and materialises its body, making the refusal's
+                # duration scale with that body's size -- the write-path face of the
+                # refusal-timing oracle (T-26). The metadata row carries
+                # `current_revision_id`, the only field this closure returns, so its
+                # `current_served_content_sha256=None` (no body hashed) is immaterial.
+                item = store.get_item_metadata(context, item_id)
             if item is None or item.current_revision_id is None:
                 return None
             # `include_unapproved=True`: a write author may legitimately update a
