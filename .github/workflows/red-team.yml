@@ -1,0 +1,258 @@
+name: Red-team sweep
+
+# CLAUDE.md's blast-radius table promises "a standing red-team sweep over
+# `main`, nightly single-file mutation runs included", whose findings enter
+# filing-time triage like any other (#378). `tools/sweep.py` is the night --
+# pick one production file from the census by the date alone, mutate it, run
+# the suite against each mutation, file what survives. This file is the three
+# things the driver cannot supply itself: the clock, a token that may write to
+# the tracker, and an alarm for the nights the driver never got to run.
+on:
+  schedule:
+    # 01:17 UTC daily: off the hour, because every top-of-hour cron on GitHub
+    # queues together and is delayed as a block, and early enough that this
+    # job's whole 150-minute ceiling (01:17-03:47 UTC) clears security.yml's
+    # weekly `23 5 * * 1` by more than an hour even on a Monday that starts late.
+    - cron: "17 1 * * *"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: >-
+          The night to sweep, as YYYY-MM-DD; empty means today. The target file
+          is a pure function of this date, so a chosen date is this job's
+          positive control: it steers the deterministic rotation onto a file
+          whose verdict is already known, which is the only way to tell a
+          working sweep from one that has quietly stopped finding anything.
+        required: false
+        default: ""
+        type: string
+
+# The floor, as in every other workflow here. The sweep job adds the one write
+# it needs; see its own `permissions:` block.
+permissions:
+  contents: read
+
+# Never cancel a sweep in flight. A run is two hours of mutation walks whose
+# only durable output is an issue filed at the end, so a cancellation at 95%
+# throws away the whole night and leaves no record that it happened -- and the
+# next night would inherit nothing, because the target is chosen by date.
+concurrency:
+  group: red-team
+  cancel-in-progress: false
+
+env:
+  UV_VERSION: "0.7.2"
+
+jobs:
+  sweep:
+    name: One night against one file
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # `tools/sweep.py` files what it finds, and the guard at the end of this
+      # job files the nights the driver itself could not complete. Nothing here
+      # writes code, a release, or a checks result.
+      issues: write
+    # Sized against the harness's own bound rather than the driver's "about two
+    # hours". `mutate._default_timeout(2)` is (920 + 240 * 2) * 1.5 = 2100 s
+    # that ONE run may take before the harness calls it hung, and six mutations
+    # plus the control is seven runs over two workers: ceil(7 / 2) = 4 waves,
+    # 8400 s = 140 min for the Sweep step alone, before a depth-0 checkout, two
+    # tree copies and three `uv sync` runs (this job's, and one per tree).
+    #
+    # 150 therefore sat BELOW the harness's own worst case, which is the wrong
+    # side of a ceiling whose breach is a CANCELLATION: `failure()` does not
+    # fire on one, so the ceiling firing would have killed the job with the
+    # alarm at the end of it never running -- the exact silent stop this
+    # workflow exists to prevent (#724). 165 is 140 + 25.
+    #
+    # Both walk constants are laptop-measured, so 140 min is an extrapolation
+    # and not a figure from this runner. The first positive-control dispatch
+    # records the observed control-green seconds to reconcile against; that
+    # acceptance is recorded in the pull request.
+    timeout-minutes: 165
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Full history, and the reason is sharper here than in core.yml.
+          # `tools/sweep.py` runs `tools/mutate.py --with-git`, which lends this
+          # checkout's object store to every mutated tree so that the four
+          # blob-reading census rules RUN instead of skipping -- among them a
+          # `git cat-file` against a frozen historical commit, which a shallow
+          # clone simply does not hold. A shallow clone is present-but-shallow,
+          # so those rules take their own git-shaped skip guard rather than
+          # failing: a mutation whose only killer is one of them then comes back
+          # SURVIVED, and an unattended job files that as a finding no human can
+          # reproduce. Cost is core.yml's ~4 MiB, paid once a night.
+          fetch-depth: 0
+          # This is the only workflow here that runs suite code under mutation
+          # while holding a token that can write to the tracker, and by default
+          # `actions/checkout` leaves that token in the workspace at
+          # `.git/config` as an `http.https://github.com/.extraheader`. The
+          # driver already strips GH_TOKEN and GITHUB_TOKEN from the harness's
+          # child environment, and `--with-git` writes each copied tree a fresh
+          # `[core]`-only config rather than copying this one -- but neither
+          # reaches a file that stays readable, at a known path, to every
+          # process seven mutated full-suite walks start. An environment strip
+          # cannot unset a file.
+          #
+          # Nothing here needs the credential. The clone above is already done
+          # when this takes effect, the sweep pushes nothing, and the fallback
+          # `git fetch` in the next step reads a public repository
+          # anonymously -- measured 2026-09-16, an unauthenticated
+          # `GET /theurian/theurian/info/refs?service=git-upload-pack`
+          # answered HTTP 200. Should this repository ever go private, that
+          # fetch is what fails, loudly, before the sweep runs.
+          persist-credentials: false
+
+      - name: The tracking ref one of those rules reads by name
+        run: |
+          set -euo pipefail
+          # `--with-git` un-skips four rules; the fourth
+          # (`test_live_origin_main_accounts_for_every_trailer_loss_free`) reads
+          # `refs/remotes/origin/main` specifically, and `mutate.py` records that
+          # it "still skips it under --with-git" when the source checkout has no
+          # such tracking ref. `fetch-depth: 0` is expected to provide it -- that
+          # is why release-core.yml's live canary runs on a tag push, where the
+          # checked-out ref is not main at all -- so the fetch below is a
+          # fallback and the final `rev-parse` is the assertion. Fabricated
+          # verdicts are the failure this step refuses to hand to a job that
+          # files issues unattended.
+          if ! git rev-parse --verify --quiet refs/remotes/origin/main >/dev/null; then
+            echo "::notice::checkout left no refs/remotes/origin/main; fetching it explicitly"
+            git fetch --no-tags --quiet origin +refs/heads/main:refs/remotes/origin/main
+          fi
+          git rev-parse refs/remotes/origin/main
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          # Pinned to the interpreter core.yml's `test` job runs. A verdict from
+          # this job is only worth reading as a statement about that suite.
+          python-version: "3.13"
+      # --frozen so a resolution change fails here rather than inside a mutation
+      # walk, where it would read as a killed mutation (ADR-0014).
+      - run: uv sync --frozen
+
+      - name: Resolve the night this run sweeps
+        env:
+          # The dispatch input never appears in script text. It arrives as an
+          # environment variable and leaves this step only through the regex
+          # below -- which is also what makes the `$GITHUB_ENV` write at the end
+          # safe, since a value carrying a newline would otherwise append
+          # arbitrary variables to every later step in this job.
+          RAW_DATE: ${{ inputs.date }}
+        run: |
+          set -euo pipefail
+          night="${RAW_DATE:-}"
+          if [ -z "$night" ]; then
+            night="$(date -u +%F)"
+          # bash's `=~`, deliberately, and not `grep -Eq` with the same pattern:
+          # grep's `^`/`$` are LINE anchors, so it accepts a two-line value whose
+          # second line matches -- measured 2026-09-16, `grep -Eq` said MATCH for
+          # both `x\n2026-09-16` and `2026-09-16\nevil=1` while `[[ =~ ]]` refused
+          # both, POSIX ERE anchoring the whole string. That difference is exactly
+          # the `$GITHUB_ENV` injection this gate exists to stop.
+          elif [[ ! $night =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            echo "::error::date input must be YYYY-MM-DD; refusing to pass it any further"
+            exit 1
+          fi
+          # Shape only. Whether it is a real calendar day is the driver's own
+          # check (`date.fromisoformat`), which exits 1 with the reason, trips
+          # the guard at the end of this job, and leaves a tracker record.
+          echo "night: $night"
+          echo "SWEEP_DATE=$night" >> "$GITHUB_ENV"
+
+      - name: Sweep
+        env:
+          # The driver shells out to `gh` to file. Exit 0 means the night ran and
+          # anything it needed to file was filed -- A FINDING IS A SUCCESSFUL
+          # NIGHT. Exit 1 means the sweep could not run or could not file, which
+          # is the only case worth alarming on, so nothing here softens it.
+          GH_TOKEN: ${{ github.token }}
+          # The sha the filed issue leads its reproduction with. The target is a
+          # function of the date, the census SIZE and the file's own contents, so
+          # `--date` alone stops reproducing the night as soon as main moves:
+          # over one week of this repository's growth, 130 modules to 139, 0 of
+          # 30 dates resolved to the same file (`sweep_filing.py`). Passed
+          # through `env:` like the dispatch date even though this one is
+          # server-side metadata -- the value that is sometimes trusted and the
+          # value that never is should not be told apart by how they are
+          # written. The driver refuses anything that is not 7-40 lowercase hex
+          # rather than escaping it, because it lands inside a `git checkout`
+          # line written to be pasted into a shell.
+          SWEEP_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          uv run --frozen python tools/sweep.py \
+            --date "$SWEEP_DATE" \
+            --commit "$SWEEP_COMMIT" \
+            --max-mutations 6 \
+            --json sweep-results.json
+
+      - uses: actions/upload-artifact@v7
+        # The harness's own record of every mutation and its verdict, kept even
+        # on the nights that failed: on those it is the only evidence of how far
+        # the run got before it stopped.
+        if: always()
+        with:
+          name: sweep-results
+          path: sweep-results.json
+
+      - name: A job that died still leaves a tracker record
+        # The layer above the driver's own filing. The driver can only report a
+        # night it survived; a job killed in checkout, in `uv sync`, or by a
+        # failing step before the driver starts would otherwise leave a red run
+        # nobody is watching -- a sweep that stops sweeping looks exactly like a
+        # sweep finding nothing. `failure()` does not fire on a cancellation,
+        # which is right for the cancellations that are somebody's decision and
+        # wrong for the one that is not: a breach of this job's own ceiling
+        # cancels it, and this step does not run. That gap is #724, and it is
+        # why the ceiling above is sized over the harness's own bound instead
+        # of under it -- covering it properly needs a watchdog outside this
+        # run, reading the previous run's conclusion.
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Not inferred from the checkout's remote: this step has to work on the
+          # runs where checkout itself is what failed.
+          GH_REPO: ${{ github.repository }}
+          ALARM_TITLE: "async-sweep: the nightly job itself failed"
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EVENT_NAME: ${{ github.event_name }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # One standing thread, commented on rather than re-opened nightly. The
+          # match is made here, on an exact title, and not by handing the title to
+          # GitHub's search: search tokenizes, and a near-match read as a miss
+          # opens a duplicate every night for as long as the outage lasts. Both
+          # commands below are unguarded on purpose -- `set -e` aborts the step
+          # rather than falling through to `issue create` with an empty answer.
+          listing="$(gh issue list --label async-sweep --state open --limit 100 \
+            --json number,title)"
+          number="$(printf '%s' "$listing" \
+            | jq -r '[.[] | select(.title == env.ALARM_TITLE)] | .[0].number // empty')"
+
+          # Trusted job metadata only. Nothing from the sweep's own output, the
+          # dispatch input, or any issue body is copied in here; the run log is
+          # the place to read what actually broke.
+          body="$(printf '%s\n' \
+            "The scheduled red-team sweep did not finish. \`tools/sweep.py\` files its own" \
+            "findings and its own untrusted runs; this record is for the nights it never" \
+            "reached that point." \
+            "" \
+            "- night: \`${SWEEP_DATE:-not resolved before the failure}\`" \
+            "- run: ${RUN_URL}" \
+            "- event: \`${EVENT_NAME}\`" \
+            "- commit: \`${COMMIT_SHA}\`" \
+            "" \
+            "The failing step and its output are in the run above. This issue stays open" \
+            "until a night completes; a comment per failed night is the outage's duration.")"
+
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "$ALARM_TITLE" --label async-sweep --body "$body"
+          fi
