@@ -2554,12 +2554,24 @@ a separate point:*
   that caused the rejection still lives. The builder consults that same gate, so
   those bodies are never indexed and therefore never scanned by *any* build:
   `--include-unapproved` is not a remedy for them.
+  The pin on the enumeration itself is
+  `packages/theurian-core/tests/unit/test_schemas.py::test_only_surfaceable_statuses_are_published`:
+  it asserts the published `retrieval-result` schema's `status` enum — a literal
+  list written into the schema file — is *equal* to
+  `{status.value for status in SURFACEABLE_STATUSES}`, so it goes red in both
+  directions, a status added to the live set and one taken out of it.
+  `::test_the_published_status_breakdown_is_exactly_what_the_tool_may_count`
+  holds that same equality for `knowledge.status`'s `itemsByStatus` keys.
+  Three further tests each reach less than the paragraph above, so take them for
+  what they hold and no more:
   `packages/theurian-core/tests/integration/test_retrieval_service.py::test_retired_knowledge_is_never_indexed_even_when_asked_for`
-  builds with `include_unapproved=True` and asserts the absence,
-  `::test_the_surfaceable_statuses_exclude_everything_retired` pins the set it
-  reads, and
+  builds with `include_unapproved=True` and asserts the deprecated, superseded
+  and rejected items produce no hits;
+  `::test_the_surfaceable_statuses_exclude_everything_retired` pins that the set
+  excludes every retired status and contains `approved` — four membership
+  assertions, which say nothing about `draft` or `proposed`; and
   `packages/theurian-core/tests/integration/test_absence_proof.py::test_a_rejected_item_is_never_written_into_the_index`
-  holds the index side under every flag.
+  runs the permissive side only, under `includeUnapproved: true`.
 - **`theurian propose` does not scan at draft time.** A refusal there would tell
   an author sooner, but `accept` is the gate, so a draft-time scan is a
   convenience rather than a control.
