@@ -383,6 +383,23 @@ def test_the_section_states_the_mutation_budget_the_workflow_actually_passes() -
     assert f"at most {_SPELLED[budget]} mutations" in _section()
 
 
+def test_the_section_names_the_heading_every_filed_body_ends_with() -> None:
+    """The ratchet's own anchor, and the fifth constant the section quotes.
+
+    "Every filed body ends with a 'Proposed automation' heading" is what tells a
+    triager where the closing obligation is written down. Renaming
+    `AUTOMATION_HEADING` left every rule here green while the section went on
+    naming a heading no issue carries -- and the reader sent looking for it finds
+    a body that appears to have no obligation attached at all.
+
+    The leading hashes are stripped because the constant is markdown syntax and
+    the section quotes the heading's text.
+    """
+    heading = _sweep_filing().AUTOMATION_HEADING.lstrip("# ")
+
+    assert heading in _section()
+
+
 def test_the_section_quotes_the_standing_thread_title_the_driver_files_under() -> None:
     """A thread title is a search key, and the doc is where a triager gets it.
 
