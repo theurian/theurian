@@ -6,9 +6,8 @@ Registers a Theurian daemon already running on your machine as a streamable HTTP
 MCP server for the Codex CLI, so a Codex session can search the specifications,
 decisions, and reviewed records your team keeps in Theurian.
 
-There is nothing to install here. One `codex mcp add` writes the entry, one
-`codex mcp remove` takes it away. Every command below was run against
-`codex-cli 0.154.0`.
+There is nothing to install here: registration is one command, removal is one
+more. Every command below was run against `codex-cli 0.154.0`.
 
 ---
 
@@ -34,8 +33,8 @@ Setup does not edit your shell profile. Putting that line in it is yours to do.
 codex mcp add theurian --url http://127.0.0.1:7419/mcp --bearer-token-env-var THEURIAN_MCP_TOKEN
 ```
 
-That writes an `[mcp_servers.theurian]` table into `$CODEX_HOME/config.toml` —
-`~/.codex/config.toml` unless `CODEX_HOME` says otherwise:
+That adds a table to `$CODEX_HOME/config.toml` — `~/.codex/config.toml` unless
+`CODEX_HOME` says otherwise:
 
 ```toml
 [mcp_servers.theurian]
@@ -46,6 +45,20 @@ bearer_token_env_var = "THEURIAN_MCP_TOKEN"
 `--bearer-token-env-var` stores the variable's *name*. The token itself never
 enters the file, which is the point: config files get copied into gists, synced
 to dotfile repositories, and pasted into issues (ADR-0011).
+
+**It rewrites the whole `mcp_servers` table to do it, and what you wrote there
+is not what comes back.** Measured at 0.154.0, all of it on servers the command
+was never asked about: comments above a table, inside it, or trailing a value
+are gone; lines carrying a default — `type = "stdio"`, `enabled = true` — are
+dropped; and `startup_timeout_sec = 10` came back as `10.0`. The meaning is
+preserved; the text is not. `codex mcp remove` re-serialises the same way and
+restores nothing. Comments elsewhere in the file are untouched. Nothing warns
+you, and there is no backup.
+
+So back up `config.toml` first if you maintain it by hand — or skip the command
+and add those three lines yourself. A hand-written table is read identically:
+`codex mcp get theurian` reports the same entry from one, and reading never
+rewrites the file.
 
 **Do not use the `-- <command>` form** that `codex mcp add --help` offers for
 stdio servers. A stdio server is spawned once per client, so several Codex
@@ -93,8 +106,9 @@ in the project it refuses with that command as the remedy.
 codex mcp remove theurian
 ```
 
-The entry, and nothing else: no daemon is stopped and no knowledge is deleted.
-Your team's knowledge lives in Git.
+That deletes the table and re-serialises the section around it, with the comment
+loss described above. Nothing else moves: no daemon is stopped, no knowledge is
+deleted. Your team's knowledge lives in Git.
 
 ## What this is not
 
