@@ -236,8 +236,8 @@ def test_every_mutation_the_real_tree_would_run_applies_cleanly_and_once() -> No
 
     The population is every candidate ``picked(6)`` would hand to
     ``tools/mutate.py`` for every file in the census -- 558 mutations measured
-    2026-09-16 at ``e46fab2a``, in about 1.4 s -- rather than a file chosen
-    because it was convenient. Steering this at one comfortable module is the
+    2026-09-16 at ``e46fab2a``, at about 2.3 s for the case -- rather than a file
+    chosen because it was convenient. Steering this at one comfortable module is the
     defect the check exists to prevent.
     """
     checked = 0
