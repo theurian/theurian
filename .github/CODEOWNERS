@@ -23,6 +23,15 @@
 /plugins/claude-code/           @theurian/claude-plugin-maintainers
 
 # ---------------------------------------------------------------------------
+# Codex CLI integration
+#
+# Not a released artifact and not a plugin: a README for registering Core's
+# daemon with another MCP client. What it documents is Core's wire contract and
+# Core's token handling, so it is reviewed by the people who own those.
+# ---------------------------------------------------------------------------
+/plugins/codex/                 @theurian/core-maintainers
+
+# ---------------------------------------------------------------------------
 # The shared contract -- both groups must approve.
 #
 # A schema change alters what Core promises and what every client relies on.
