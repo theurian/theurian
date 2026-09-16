@@ -135,6 +135,19 @@ def _section() -> str:
     return _section_of(DOC, ANCHOR)
 
 
+def _paragraph(section: str, lead: str) -> str:
+    """One bolded paragraph of the section, up to the next bolded lead.
+
+    Scoping matters wherever the section states a fact more than once: a rule
+    that searched the whole section would be satisfied by a different sentence
+    making a different claim, and would stay green with the one it meant deleted.
+    """
+    assert lead in section, f"the section no longer carries the paragraph {lead!r}"
+    rest = section[section.index(lead) + len(lead) :]
+    following = re.search(r"\*\*[A-Z][^*]{0,80}\.\*\*", rest)
+    return rest[: following.start()] if following else rest
+
+
 def _workflow() -> dict[str, Any]:
     return cast(dict[str, Any], yaml.safe_load(WORKFLOW.read_text(encoding="utf-8")))
 
@@ -198,6 +211,28 @@ def _sweep_census() -> ModuleType:
     import sweep_census
 
     return sweep_census
+
+
+def _alarm_labels() -> list[str]:
+    """Every `--label` the workflow's own alarm step passes to `gh`.
+
+    Read the way :func:`_alarm_title` reads its env: the alarm is the *second*
+    producer filing under the sweep's label, and it names that label in shell
+    text rather than importing a constant. Both of its `gh` calls are returned,
+    because the list call and the create call can drift apart -- one finding no
+    thread while the other opens one.
+    """
+    document = _workflow()
+    runs = [
+        str(step.get("run", ""))
+        for job in cast(dict[str, Any], document["jobs"]).values()
+        for step in job.get("steps", [])
+        if isinstance(step.get("env"), dict) and "ALARM_TITLE" in step["env"]
+    ]
+    assert len(runs) == 1, f"expected exactly one alarm step, found {len(runs)}"
+    labels = re.findall(r"--label\s+(\S+)", runs[0])
+    assert labels, f"the alarm step passes no --label at all:\n{runs[0]}"
+    return labels
 
 
 def _sweep_filing() -> ModuleType:
@@ -355,11 +390,34 @@ def test_the_section_quotes_the_title_the_workflows_own_alarm_files_under() -> N
 def test_the_section_names_the_label_both_producers_file_under() -> None:
     """The label is what makes the two producers one queue for triage.
 
-    Matched with its backticks, which is what distinguishes the label from the
-    alarm title that begins with the same characters -- ``async-sweep:`` inside a
-    quoted title would satisfy a bare substring check even with every mention of
-    the label itself deleted.
+    Anchored inside the "Where it lands" paragraph rather than the section as a
+    whole. The section mentions the label twice, so a rule scoped to the whole
+    section stays green with the sentence that actually makes the claim deleted
+    -- it would be satisfied by the Ratchet paragraph describing how a finding
+    closes, which is a different statement.
+
+    Matched with its backticks, which is what separates the label from the alarm
+    title beginning with the same characters: ``async-sweep:`` inside a quoted
+    title satisfies a bare substring check with every real mention gone.
     """
     label = _sweep_filing().LABEL
 
-    assert f"`{label}`" in _section()
+    assert f"`{label}`" in _paragraph(_section(), "**Where it lands.**")
+
+
+def test_the_workflows_own_alarm_files_under_the_same_label() -> None:
+    """ "Both file under the `async-sweep` label" is a claim about two producers.
+
+    Only one of them was checked. The driver's label is a constant this module
+    reads; the alarm step's is shell text in the workflow, and changing it left
+    every pin green -- the section would go on promising one queue while the
+    nights the job died landed in another, invisible to a triager filtering on
+    the label and to a reader of this file.
+
+    Both of the alarm's `gh` calls are checked, because the list call and the
+    create call can drift apart: one finds no thread, the other opens one, and
+    the standing alarm thread silently becomes a new issue every failure.
+    """
+    label = _sweep_filing().LABEL
+
+    assert _alarm_labels() == [label, label]
