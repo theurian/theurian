@@ -418,6 +418,54 @@ def test_an_open_issue_for_the_same_target_is_found_by_its_marker() -> None:
     assert sweep_filing.existing_issue(listing, marker) == 812
 
 
+def test_a_marker_quoted_inside_another_issue_body_does_not_claim_the_thread() -> None:
+    """Matching anywhere in a body lets one file's issue capture another's findings.
+
+    Reproduced by the security review: a trailing comment on an anchorable source
+    line puts the *victim* file's marker inside the diff that the *carrier*
+    file's issue quotes. Because the lookup then matched anywhere and
+    ``min(matches)`` prefers the oldest number, every later night on the victim
+    file would comment on the carrier's thread -- its findings filed under
+    another file's title, where nobody triaging that file would look.
+
+    The builder writes the marker as the body's first line, so that is where the
+    lookup reads it. The carrier body below is the shape the review produced: a
+    legitimate marker of its own, and the victim's marker quoted in a diff.
+    """
+    victim = sweep_filing.target_marker("packages/theurian-core/src/theurian/victim.py")
+    carrier = sweep_filing.target_marker("packages/theurian-core/src/theurian/carrier.py")
+    listing = json.dumps(
+        [
+            {
+                "number": 700,
+                "body": (
+                    f"{carrier}\n\n## Mutations\n\n```diff\n-value = 1  # {victim}\n+value = 2\n```"
+                ),
+            },
+            {"number": 940, "body": f"{victim}\n\nthe victim file's own thread"},
+        ]
+    )
+
+    assert sweep_filing.existing_issue(listing, victim) == 940
+    assert sweep_filing.existing_issue(listing, carrier) == 700
+
+
+def test_a_marker_below_the_first_line_is_not_the_thread_it_names() -> None:
+    """The narrow form of the same rule, with no diff and no second issue.
+
+    A body that merely mentions a marker -- a triager quoting one in prose, a
+    cross-reference -- is not that target's thread. Only the position the builder
+    writes it to counts, and leading whitespace is tolerated because a body
+    round-tripped through the API can acquire it.
+    """
+    marker = sweep_filing.target_marker("packages/theurian-core/src/theurian/x.py")
+    mentioned = json.dumps([{"number": 800, "body": f"see also {marker} for context"}])
+    written = json.dumps([{"number": 800, "body": f"\r\n  {marker}\n\nthe body"}])
+
+    assert sweep_filing.existing_issue(mentioned, marker) is None
+    assert sweep_filing.existing_issue(written, marker) == 800
+
+
 def test_no_open_issue_for_this_target_means_a_new_one() -> None:
     """The other branch: a marker nothing carries opens a thread rather than joining one."""
     marker = sweep_filing.target_marker("packages/theurian-core/src/theurian/x.py")

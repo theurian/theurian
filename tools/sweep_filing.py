@@ -332,6 +332,15 @@ def run_command(argv: Sequence[str], stdin: str = "") -> CommandResult:
 def existing_issue(listing: str, marker: str) -> int | None:
     """The open issue already tracking this target, if there is one.
 
+    Matched at the position the builder writes it -- the body's first line -- and
+    not anywhere in the body. Anywhere was exploitable: the security review put a
+    *victim* file's marker into a trailing comment on an anchorable source line,
+    so the *carrier* file's issue quoted it inside a diff, and every later night
+    on the victim file then commented on the carrier's thread. Its findings would
+    be filed under another file's title, where nobody triaging that file looks.
+    Leading whitespace is tolerated because a body round-tripped through the API
+    can acquire it; nothing else is.
+
     The lowest matching number rather than the first, because ``gh`` returns
     newest first and "the thread for this file" is the oldest one: a night that
     commented on whichever issue happened to sort first would split one file's
@@ -351,7 +360,7 @@ def existing_issue(listing: str, marker: str) -> int | None:
     for entry in loaded:
         if not isinstance(entry, dict):
             raise SweepError("`gh issue list` returned an entry that is not an issue object")
-        if marker in str(entry.get("body", "")):
+        if str(entry.get("body", "")).lstrip().startswith(marker):
             matches.append(int(entry["number"]))
     return min(matches) if matches else None
 
