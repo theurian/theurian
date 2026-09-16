@@ -370,6 +370,11 @@ def test_no_payload_claims_the_date_alone_fixes_which_mutations_run(commit: str 
 
     assert "a function of the date, so this regenerates" not in body
     assert "regenerates exactly the ones above" not in body
+    # Naming the mechanism, not just withdrawing the claim: the census *size* is
+    # what re-points every date at once, and a reader who is not told that reads
+    # "the tree moved" as "someone edited my file".
+    assert "census-size" in body
+    assert "0 of 30 dates" in body
 
 
 #: Three markdown constructs GitHub's renderer honours in an issue body, and one
