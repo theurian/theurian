@@ -223,7 +223,7 @@ So weigh the review before dispatching it, not after:
 | Blast radius of a wrong change | Review weight |
 | :-- | :-- |
 | Disclosure, governed state, security claims, wire contract | Full **sync** round — all three, before the flip |
-| Behaviour a trier runs, but no disclosure surface | Code review sync; adversarial deferred, when the claims table calls it — nothing attacks this PR's own diff, so the claim waits for the release-cut pass, and the PR records which claims it deferred there |
+| Behaviour a trier runs, but no disclosure surface | Code review sync; adversarial deferred, when the claims table calls it — nothing attacks this PR's own diff, so the claim waits for the release-cut pass, and the PR records which claims it deferred under its `## Deferred claims` heading |
 | Prose, process guidance, CI plumbing, mechanical moves — wrong means "misleading, revertible" | One light pass (code review alone), same day, no round |
 
 **Static gates stay sync and strengthen — the ratchet:** every adversarial or

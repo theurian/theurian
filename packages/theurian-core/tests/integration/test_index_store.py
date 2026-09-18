@@ -17,8 +17,9 @@ import pytest
 from theurian.domain.chunking import Chunk
 from theurian.domain.enums import Sensitivity
 from theurian.infrastructure.sqlite.index_scan import SCAN_TERMS, scan_statement
-from theurian.infrastructure.sqlite.index_schema import INDEX_SCHEMA_VERSION
+from theurian.infrastructure.sqlite.index_schema import FTS5_PROBE, INDEX_SCHEMA_VERSION
 from theurian.infrastructure.sqlite.index_store import (
+    DENSE_SIMILARITY_FLOOR,
     MAX_QUERY_CHARS,
     MAX_QUERY_TERMS,
     IndexableChunk,
@@ -95,6 +96,36 @@ def test_this_python_has_fts5() -> None:
     """Lexical search is not optional. If this fails, every search test below
     is testing nothing, so it is asserted once and loudly."""
     assert fts5_available()
+
+
+def test_a_sqlite_build_without_fts5_reports_the_feature_as_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two refusals hang off this returning False, and they are its only callers:
+    ``SqliteIndexStore.create``'s ``Fts5UnavailableError`` and `theurian index
+    build`'s "This Python's SQLite was built without FTS5". A probe that swallowed
+    its ``OperationalError`` and answered True instead would take both of them
+    into a build whose ``CREATE VIRTUAL TABLE ... USING fts5`` fails inside
+    ``INDEX_DDL`` -- a raw driver error out of ``create``, which wraps none, in
+    place of a named refusal carrying a remedy.
+
+    Every runner this suite meets *has* FTS5 -- the test above asserts it -- so the
+    probe statement is swapped for a module name no SQLite build provides. The
+    connection, the ``CREATE VIRTUAL TABLE`` and the ``sqlite3.OperationalError:
+    no such module: ...`` are the real ones; only which module is missing differs
+    from the case in production. Derived from :data:`FTS5_PROBE` rather than
+    copied, so a rewritten probe cannot leave this asserting against a statement
+    the code no longer runs.
+    """
+    perturbed = FTS5_PROBE.replace("fts5(", "fts9(")
+    assert perturbed != FTS5_PROBE, (
+        "precondition: `replace` returns the probe unchanged when its wording no "
+        "longer contains `fts5(`, which would leave this asserting False against "
+        "the working probe on a build that has FTS5"
+    )
+    monkeypatch.setattr("theurian.infrastructure.sqlite.index_store.FTS5_PROBE", perturbed)
+
+    assert fts5_available() is False
 
 
 def test_an_index_records_what_it_was_built_from(store: SqliteIndexStore) -> None:
@@ -574,6 +605,53 @@ def test_a_barely_similar_vector_is_not_returned_at_all(store: SqliteIndexStore)
     ).rows
 
     assert [h.chunk_id for h in hits] == ["near"], "0.11 cosine is noise, not a match"
+
+
+#: A query and a stored vector whose cosine is *exactly*
+#: :data:`DENSE_SIMILARITY_FLOOR`, by construction rather than by luck: every
+#: component is a small integer, so the stored vector's sum of squares is exactly
+#: 16 and its norm exactly 4.0, the query's norm is exactly 1.0, and the dot
+#: product is exactly 1.0 -- one quarter, a dyadic rational, with no rounding in
+#: the float32 storage round-trip or in `_cosine`.
+#:
+#: **That ratio is the constraint, not these components.** Cosine is invariant
+#: under scaling and under permuting the tail the query zeroes out, so
+#: ``[2, 6, 4, 2, 2]`` and ``[1, 1, 2, 3, 1]`` measure exactly 0.25 here too. What
+#: moves off the boundary is a change to the dot product or to the stored norm:
+#: ``[1, 3, 2, 1, 2]`` scores 0.2294 and ``[2, 3, 2, 1, 1]`` scores 0.4588, both a
+#: float clear of the floor, where `<` and `<=` agree and the test below stops
+#: testing anything.
+_AT_FLOOR_QUERY = [1.0, 0.0, 0.0, 0.0, 0.0]
+_AT_FLOOR_VECTOR = [1.0, 3.0, 2.0, 1.0, 1.0]
+
+
+def test_a_vector_exactly_at_the_similarity_floor_is_still_a_match(
+    store: SqliteIndexStore,
+) -> None:
+    """The dense floor excludes what is *below* it; a row sitting on it is a match.
+
+    That is the whole difference between ``similarity < DENSE_SIMILARITY_FLOOR``
+    and ``<=``, and the two comparisons disagree on exactly one similarity. Every
+    other dense fixture in this suite scores comfortably above the floor or
+    comfortably below it, so the boundary itself was free to move inwards
+    unnoticed -- silently narrowing what `useDense=true` will answer at all.
+    """
+    store.add_chunks([_indexable("at-floor", "a")])
+    store.add_embeddings([("at-floor", _AT_FLOOR_VECTOR)])
+
+    hits = store.search_dense(
+        _AT_FLOOR_QUERY, project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
+    ).rows
+
+    assert [h.score for h in hits] == [DENSE_SIMILARITY_FLOOR], (
+        "one row must surface, scoring exactly the live floor: an empty list "
+        "means either the comparison excludes the boundary, or the constant "
+        "moved and the fixture no longer sits on it -- read the expected value "
+        "to tell those apart"
+    )
+    assert [h.chunk_id for h in hits] == ["at-floor"], (
+        "a row whose similarity equals the floor is a match, not noise"
+    )
 
 
 def test_a_query_matching_nothing_returns_nothing(store: SqliteIndexStore) -> None:

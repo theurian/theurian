@@ -12,15 +12,27 @@ rank fusion hides a wrong score. The forest fixtures in
 `test_forest_retrieval.py` mask them a second way: they are built by the real
 `ForestBuilder`, which produces one matched summary node and fewer leaves than
 the limit, so the ceiling, the ordering and the diamond aggregation are never
-exercised and the four SQL mutations below survived every one of them.
+exercised and every `search_summaries` SQL mutation below survived all of them.
 
 Like `test_forest_node_scope.py`, the summary nodes and their ``node_derivation``
 edges are written directly with SQL, the idiom `test_index_purge_nodes.py` uses
-for shapes the real builder cannot produce: >limit leaves under one node, a leaf
-reached by two summary nodes at once, a draft leaf under an approved node, and a
-draft-scope ancestor above an approved leaf. ``SummaryNode.__post_init__`` refuses
-the last two were they built through the domain layer -- which is exactly why the
-gates that stand behind that invariant have no fixture that reaches them.
+for shapes the real builder does not hand a test -- among them >limit leaves
+under one node, which no fixture here gets from it; a leaf reached by two summary
+nodes at once, which it never grounds at one tier; and a childless node, a draft
+leaf under an approved node and a summary over a single child, which the domain
+layer refuses outright. That refusal is exactly why the gates standing behind
+those invariants have no fixture that reaches them: ``SummaryNode.__post_init__``
+rejects a childless node, and a child whose scope differs from the node's own --
+status is one of the components it compares, which is what a draft leaf under an
+approved node is (ADR-0008 decision 1) -- while no node builder in
+`ForestBuilder` emits a summary below ``min_children_per_summary``, which
+``MIN_CHILDREN_FLOOR`` keeps at 2 or more: "a summary of one child is a
+paraphrase of it", as `ForestOptions` says when it refuses a lower setting, for
+the reason ADR-0008 gives.
+
+So a test here writes the rows itself whenever it needs one of those shapes --
+section 6 because a node over a single leaf makes the page it asserts on exactly
+the leaf that node routes to.
 """
 
 from __future__ import annotations
@@ -33,6 +45,7 @@ import pytest
 
 from theurian.domain.chunking import Chunk, IndexableChunk
 from theurian.domain.enums import Sensitivity
+from theurian.infrastructure.sqlite.index_query import to_match_expression, to_trigram_expression
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
 
 pytestmark = pytest.mark.integration
@@ -65,6 +78,12 @@ _WEAK_SUMMARY = ROUTING_TERM + " " + "alpha beta gamma delta epsilon " * 40
 #: term a positive IDF and separate the two scores to ~2.58 against ~0.42, so the
 #: ordering these tests pin is a wide gap rather than a float-epsilon accident.
 _NOISE_SUMMARY = "unrelated summary about something else entirely and more filler words here"
+
+#: A two-character Japanese noun, spelled as its own whitespace-delimited token in
+#: the node text below so ``unicode61`` indexes it as one: an FTS term (the match
+#: floor is one character) and no trigram (that floor is three), which is the
+#: one-sided query `search_summaries` must still route.
+SHORT_CJK_TERM = "認証"
 
 
 def _indexable(
@@ -560,4 +579,57 @@ def test_an_internal_leafs_raptor_path_excludes_a_confidential_ancestor(tmp_path
     joined = " ".join(segment.title for segment in segments).lower()
     assert secret not in joined, (
         "the confidential ancestor's summary text must not ride out on the path"
+    )
+
+
+# -- 6. A query that forms one match expression and not the other still routes -
+
+
+def test_a_query_with_no_trigram_expression_still_routes_through_the_forest(
+    tmp_path: Path,
+) -> None:
+    """FR-R3, ADR-0023. `search_summaries` gives up only when a query forms
+    *neither* an FTS term nor a trigram. A two-character Japanese noun forms one
+    and not the other -- ``to_match_expression``'s floor is one character,
+    ``to_trigram_expression``'s is three -- and it must still seed the ``matched``
+    CTE through the arm it does reach.
+
+    RED against ``if not fts or not trigram``, which answers every such query with
+    an empty exhausted page. That is the CJK blackout ADR-0023 is about, on the
+    forest retriever: 認証, 決済, 監査 and 契約 are two characters each, so the
+    one-sided query is the ordinary Japanese case rather than an edge one. Every
+    other fixture that drives this method directly queries ``forestroutingterm``,
+    which forms both expressions and so cannot tell the two operators apart.
+
+    Only this direction is constructible: ``to_trigram_expression`` selects from
+    the same terms as ``to_match_expression`` at a strictly higher floor, so a
+    non-empty trigram expression implies a non-empty match expression and the
+    mirror case cannot be reached through this entry point. That implication is
+    what leaves the mirror branch with no fixture, so it is pinned on its own in
+    `tests/unit/test_index_query_floors.py` rather than only asserted here.
+    """
+    path = tmp_path / "theurian-index-onesided.sqlite"
+    store = _store(path)
+    store.add_chunks([_indexable("leaf-cjk", "an ordinary paragraph", revision="rev-cjk")])
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        with connection:
+            _node(connection, "domain#0", text=f"{SHORT_CJK_TERM} をめぐる設計判断の要約")
+            _edge_chunk(connection, "domain#0", chunk="leaf-cjk")
+
+    assert to_match_expression(SHORT_CJK_TERM), (
+        "precondition: the query must reach the nodes_fts arm of the matched CTE"
+    )
+    assert not to_trigram_expression(SHORT_CJK_TERM), (
+        "precondition: the query must form no trigram, or both arms are seeded and "
+        "the two operators are indistinguishable"
+    )
+
+    page = store.search_summaries(
+        SHORT_CJK_TERM, project_id=PROJECT, limit=50, visible_sensitivities=EVERY_SENSITIVITY
+    )
+
+    assert [row.chunk_id for row in page.rows] == ["leaf-cjk"], (
+        "the leaf under the matched summary must route out on the one expression "
+        "the query does form"
     )

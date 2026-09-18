@@ -2,6 +2,15 @@
 
 <!-- What changed, and what problem it solves. The diff shows what; explain why. -->
 
+## Deferred claims
+
+<!-- Claims this PR defers to the release-cut adversarial pass, one per line. If
+     nothing is deferred, replace this comment with the single word None. The
+     release-cut gather reads this section with HTML comments stripped, so a
+     comment left in place leaves the section empty, and an empty section comes
+     back to you as a recording failure rather than reading as nothing
+     deferred. -->
+
 ## Scope
 
 <!-- One topic per PR. If this touches two unrelated concerns, split it. -->

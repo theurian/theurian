@@ -100,6 +100,9 @@ excluded from the published documentation site for that reason.
   state, security claims and the wire contract take the full sync round;
   behaviour with no disclosure surface takes code review sync; prose, process
   guidance and CI plumbing take one light pass.
+- Record a claim deferred to the release-cut pass under the PR body's
+  `## Deferred claims` heading, which is the only place the release-cut gather
+  looks.
 - Route by what would settle the claim, not by file type. When the two tables
   disagree, the claims table wins: a prose file asserting a measured property is
   a disclosure-class claim in a light-class file.
@@ -194,7 +197,35 @@ until an instrument has been heard to speak, its zero is not evidence
 
 **The agent pass.** Before a release tag is cut, `theurian-adversarial-review`
 runs over `origin/main` at the candidate commit and files what it finds under the
-same label. The step is [release.md's §1 Prepare](release.md#1-prepare), and the
+same label.
+Whoever dispatches the pass gathers the claims that the pull requests merged since
+the last `core-v*` tag deferred to it, recorded under each PR body's
+`## Deferred claims` heading:
+
+```sh
+set -eu
+tag=$(git describe --abbrev=0 --match 'core-v*')
+since=$(git log -1 --format=%cI "$tag")
+gh pr list --state merged --limit 500 --json number,title,body --search "merged:>=$since"
+```
+
+Each section is read with the template's HTML comments stripped: `None` is a pull
+request that deferred nothing and is skipped; a section that is missing or empty
+is a recording failure to raise with its author, not a second way of saying
+`None`. The dispatch brief hands the rest to `theurian-adversarial-review` as
+claims to attack. `%cI` gives GitHub the tag commit's exact instant, offset
+included; a bare date is read as UTC midnight instead, which at four of this
+repository's first 25 `core-v*` cuts dropped 10 merged pull requests out of the
+window. `--limit` is load-bearing (`gh pr list` returns 30 without it) and
+truncates silently, so a result of exactly 500 may mean the window was cut short —
+widen it and re-run. `set -eu` is what makes a tagless checkout fail loudly: the
+shell stops at `git describe`'s own exit 128, before `gh` runs. Without it that
+status is discarded by the assignment, `git log` fails the same way inside the
+next one, and the search key degenerates to `merged:>=` — which prints `[]` and
+exits 0, byte-identical to a window in which nothing merged. Quoting `"$tag"` is
+what makes that window empty rather than HEAD's own date.
+
+The step is [release.md's §1 Prepare](release.md#1-prepare), and the
 Release checklist carries it as a *(no check)* item — "The async red-team sweep's
 release-cut pass has run over `origin/main` at the candidate commit". The anchor
 is the ritual and not a frequency, deliberately: a cadence nobody performs stops
