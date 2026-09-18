@@ -12,18 +12,40 @@ a commit and Theurian checks it). The path is *author-controlled stored data* --
 one this installation never fetched (threat model T-24). The second is the one
 that was actually open, and the measurement is below.
 
-**One process, for every input, and that is a disclosure control rather than a
-saving.** The adapter used to ask two questions in two spawns -- *does this
-object resolve to a commit* (``rev-parse``), then *did it touch this path*
-(``diff-tree``) -- and the first could answer no on its own. So a refusal about
-an absent object cost one process and a refusal about a real commit cost two,
-and the C4b battery measured the difference end to end at **+7.2 ms, P=1.000**:
-the refusal's *duration* answered "does this object exist here", which is a fact
-about the repository the caller was not granted. ADR-0033 decision 5 binds the
-pair in text **and in duration**, so the two questions collapse into one
-``diff-tree`` call whose outcome is read off the exit code and the output.
+**``fixCommit`` is a git revision *expression* unless the adapter stops it being
+one.** The entry funnel is what stops it: a value that is not a full-length
+lower-case object name is answered ``NO_SUCH_COMMIT`` before any process exists.
+Without it ``HEAD^{/planted}``, ``:/planted|zzzz``, ``main``, ``HEAD~2..HEAD``,
+``refs/heads/main`` and ``HEAD@{0}`` each answered ``VERIFIED`` against a
+repository whose HEAD touched the thread's file (measured, git 2.47.1,
+2026-09-19), so a caller who knew no sha could satisfy ``fix_commit_present`` by
+describing the commit it wanted. ``fix_commit_grammar`` holds the corpus and the
+reasoning; :func:`test_a_fix_commit_that_is_not_a_full_object_name_is_refused_without_spawning`
+drives it here and
+``tests/unit/test_candidate_input_schema.py`` drives the same corpus at the
+wire.
+
+**One process, for every input the grammar admits, and that is a disclosure
+control rather than a saving.** The adapter used to ask two questions in two
+spawns -- *does this object resolve to a commit* (``rev-parse``), then *did it
+touch this path* (``diff-tree``) -- and the first could answer no on its own. So
+a refusal about an absent object cost one process and a refusal about a real
+commit cost two, and the C4b battery measured the difference end to end at
+**+7.2 ms, P=1.000**: the refusal's *duration* answered "does this object exist
+here", which is a fact about the repository the caller was not granted. ADR-0033
+decision 5 binds the pair in text **and in duration**, so the two questions
+collapse into one ``diff-tree`` call whose outcome is read off the exit code and
+the output.
 :func:`test_the_same_request_spawns_the_same_vector_whether_the_object_is_here_or_not`
 is the pin, and it is the one that was RED when this shape was chosen.
+
+**The funnel's own zero-spawn refusal does not reopen that channel, and the
+reason is which fact the split is on.** Whether a value is forty lower-case hex
+digits is a function of the caller's own bytes, computable by the caller without
+asking Theurian anything; whether a well-formed sha is *present here* is a fact
+about the repository. So the funnel splits on the first and the byte-identity
+pins below hold the second: every input the grammar admits costs one process
+carrying the same vector, whatever the repository turns out to hold.
 
 **What each foreclosure is worth, measured on git 2.47.1, 2026-09-19** -- all
 four re-measured under the single-call shape, because two of them had been
@@ -49,13 +71,25 @@ justified by a ``rev-parse`` behaviour that no longer runs:
   and exit 128 with it.
   :func:`test_an_object_that_is_not_a_commit_names_no_commit` is where that goes
   RED.
-* ``--end-of-options`` before the sha -- **defence in depth, with no reachable
-  verdict difference**, and this file says so rather than implying a behavioural
-  pin it does not have. An option-shaped sha exits 128 behind the flag and 129
-  (git's usage error) without it; both are non-zero, so both are the same
-  verdict, and no file was created in either. The flag is held by
-  :func:`test_the_git_vector_is_one_process_fixed_and_forecloses_an_option_a_path_and_magic`
-  and by nothing else.
+* ``--end-of-options`` before the sha -- **defence in depth over a value the
+  funnel has already refused**, and this file says so rather than implying a
+  behavioural pin it does not have. An option-shaped sha exits 128 behind the
+  flag and 129 (git's usage error) without it; both are non-zero, so both were
+  the same verdict even before the funnel, and no file was created in either
+  reading. Since the funnel, no option-shaped value reaches the vector at all,
+  so the flag guards the token position rather than any input a caller can send
+  -- and what holds it is the captured vector in
+  :func:`test_the_git_vector_is_one_process_fixed_and_forecloses_an_option_a_path_and_magic`,
+  which is now captured at an *admitted* sha because a refused one spawns
+  nothing to capture.
+* ``--diff-merges=first-parent`` -- **load-bearing, and the only token here that
+  changes a verdict for an honest input**. ``diff-tree`` prints nothing at all
+  for a merge commit by default, so a conflict-resolving merge that introduced
+  the thread's fix answered ``TOUCHES_NOTHING_HERE`` -- a true fix, correctly
+  named, refused. Measured on git 2.47.1, 2026-09-19 over the three merge shapes
+  :func:`test_a_merge_is_verified_when_it_changed_the_threads_file_against_its_first_parent`
+  drives: the mode is what separates *this merge changed the file* from
+  ``--diff-merges=separate``'s *some parent did*.
 
 Nothing here touches the developer's machine: every ``git`` call names a
 ``tmp_path`` repository with ``cwd``, and the identity and signing settings are
@@ -71,6 +105,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fix_commit_grammar import ADMITTED, REFUSED, RefusedFixCommit
 
 from theurian.domain.review import FixCommitVerdict
 from theurian.infrastructure.git import fix_commit_check
@@ -303,12 +338,11 @@ def test_an_option_shaped_fix_commit_is_refused_and_starts_nothing(repository: P
     """An option-shaped ``fixCommit`` is a revision that resolves to nothing.
 
     **What this pins is the composed outcome, and not any one foreclosure.** The
-    module docstring records the measurement: under the shipped vector this class
-    is closed four times over -- the ``^{commit}`` suffix, ``--end-of-options``,
-    the non-zero-exit check and the hex re-match -- and deleting ``--end-of-options``
-    alone changes no answer, so a green result here is *not* evidence that the
-    flag is present. :func:`test_the_git_vectors_are_fixed_and_foreclose_an_option_a_path_and_magic`
-    is what holds it.
+    module docstring records the measurements: this class is closed four times
+    over -- the entry funnel, the ``^{commit}`` suffix, ``--end-of-options`` and
+    the non-zero-exit check -- and deleting any one of the last three alone
+    changes no answer, so a green result here is *not* evidence that the flag is
+    present. The captured-vector pin below is what holds the flag.
 
     What this case is still worth: it drives the shape a wire caller would
     actually send, asserts the refusal is the ordinary one rather than a crash or
@@ -443,6 +477,360 @@ def _recorded_spawns(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     return calls
 
 
+# ---------------------------------------------------------------------------
+# The entry funnel: `fixCommit` is an object name, never an expression.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def forgeable(tmp_path: Path) -> Iterator[Path]:
+    """A repository in which **every resolvable member of the corpus verifies**.
+
+    The funnel battery's whole value depends on this fixture, because a battery
+    driven at inputs git would have refused anyway measures nothing but a spawn
+    count. So the history is built for the worst case on each axis a revision
+    expression can reach:
+
+    * ``HEAD`` **touches the anchored file**, so a name that resolves to it --
+      ``main``, ``HEAD~0``, ``refs/heads/main``, ``HEAD@{0}`` -- answers
+      ``VERIFIED`` rather than merely resolving;
+    * ``HEAD``'s message carries ``planted``, so the two search forms find it;
+    * there are **three** commits, so ``HEAD~2..HEAD`` is a range that resolves.
+
+    :func:`test_the_forgeable_repository_verifies_the_commit_the_funnel_members_aim_at`
+    is the control that says so, and it is what separates this battery's
+    refusals from a fixture in which nothing could have been verified anyway.
+    """
+    repo = tmp_path / "forgeable"
+    repo.mkdir()
+    _git(repo, "-c", "init.defaultBranch=main", "init", "-q")
+    _commit(repo, FILE_PATH, "def retry():\n    pass\n", "root: add the retry helper")
+    _commit(repo, OTHER_PATH, "notes\n", "add notes")
+    _commit(repo, FILE_PATH, "def retry():\n    return None\n", "planted: fix the deadlock")
+    yield repo
+
+
+def test_the_forgeable_repository_verifies_the_commit_the_funnel_members_aim_at(
+    forgeable: Path,
+) -> None:
+    """The positive control the whole funnel battery rests on.
+
+    Every arm below asserts a refusal, and a refusal is satisfied by an empty
+    repository, by a fixture whose HEAD touches nothing, and by an adapter that
+    refuses everything. What makes those refusals evidence is that the commit the
+    expressions aim at is really here and really touched the anchored file, so
+    the *only* thing separating ``HEAD^{/planted}`` from the sha it resolves to is
+    how the caller spelled it.
+    """
+    head = _git(forgeable, "rev-parse", "HEAD").stdout.strip()
+
+    assert FixCommitCheck(forgeable).verify(head, FILE_PATH) is FixCommitVerdict.VERIFIED, (
+        f"the fixture's HEAD ({head[:12]}…) does not verify against {FILE_PATH} by its own "
+        f"sha, so every refusal in this battery is about a repository in which nothing "
+        f"could have been verified. Fix the fixture before reading any arm below."
+    )
+
+
+@pytest.mark.parametrize("member", REFUSED, ids=[member.label for member in REFUSED])
+def test_a_fix_commit_that_is_not_a_full_object_name_is_refused_without_spawning(
+    forgeable: Path, monkeypatch: pytest.MonkeyPatch, member: RefusedFixCommit
+) -> None:
+    """ADR-0033 decision 3: the caller names a commit, it does not describe one.
+
+    Two reviewers recovered through this independently, and the recovery needs no
+    secret: ``fixCommit`` was spent as a git **revision expression**, and git's
+    revision language can search history by commit message, search every ref,
+    name a branch, count backwards from ``HEAD``, read this machine's reflog, or
+    name a whole range. Each of those satisfies ``fix_commit_present`` without
+    the caller knowing a single object id -- which is the one thing decision 3
+    says the caller has to go and find.
+
+    So the value is funnelled at **entry**: a full-length lower-case object name
+    or nothing, answered ``NO_SUCH_COMMIT`` before a process exists.
+
+    **Both halves are asserted, and they fail for different reasons.** The
+    verdict is the behavioural change, and it is what moved for the resolvable
+    members (each measured ``VERIFIED`` before the funnel, against this
+    fixture). The **zero** spawns is the half every member carries: a refusal
+    that costs a process is one a caller can time, and it is also the half that
+    keeps a caller's own bytes from reaching ``git``'s argv at all -- the
+    universal the spawn-site ratchet in ``tests/unit/test_network_call_sites.py``
+    holds one layer up.
+    """
+    calls = _recorded_spawns(monkeypatch)
+
+    verdict = FixCommitCheck(forgeable).verify(member.value, FILE_PATH)
+
+    assert verdict is FixCommitVerdict.NO_SUCH_COMMIT, (
+        f"{member.label}: {member.value!r} answered {verdict!r}. It is not a full-length "
+        f"object name, and {member.why}. A caller that can describe the commit it wants "
+        f"does not have to find one, and `fix_commit_present` stops being a signal "
+        f"anybody had to earn (ADR-0033 decision 3)."
+    )
+    assert calls == [], (
+        f"{member.label}: {member.value!r} reached git as "
+        f"{[call['args'][1:] for call in calls]}. The funnel refuses at entry, so no "
+        f"value outside the grammar is ever spent as a revision -- and a refusal that "
+        f"spawns is a refusal a caller can time."
+    )
+
+
+@pytest.mark.parametrize("spelling", ["abbreviated", "upper-cased"])
+def test_a_real_commits_other_spellings_are_refused_without_spawning(
+    forgeable: Path, monkeypatch: pytest.MonkeyPatch, spelling: str
+) -> None:
+    """The two members the corpus cannot hold as constants, at the worst instance.
+
+    Both name a commit this repository really has, so both measured ``VERIFIED``
+    before the funnel -- they are the corpus's ``abbreviation`` and
+    ``upper-case`` members with a sha that actually resolves, which no constant
+    can be. They are refused for different reasons and each is worth stating:
+
+    * an **abbreviation** is a prefix, and a prefix that is unique today becomes
+      ambiguous as a repository grows, so the verdict a caller gets for one value
+      would change with history it cannot see;
+    * an **upper-cased** sha is the same object under a second spelling, and a
+      funnel that admitted both would leave two caller strings reaching one
+      verification.
+    """
+    head = _git(forgeable, "rev-parse", "HEAD").stdout.strip()
+    value = head[:7] if spelling == "abbreviated" else head.upper()
+    calls = _recorded_spawns(monkeypatch)
+
+    verdict = FixCommitCheck(forgeable).verify(value, FILE_PATH)
+
+    assert verdict is FixCommitVerdict.NO_SUCH_COMMIT, (
+        f"the {spelling} spelling {value!r} of a commit this repository has answered "
+        f"{verdict!r}. The grammar is full-length lower-case hex, so one object has one "
+        f"spelling a caller may send."
+    )
+    assert calls == [], f"the {spelling} spelling reached git: {[c['args'][1:] for c in calls]}"
+
+
+@pytest.mark.parametrize("value", ADMITTED, ids=[f"{len(value)}-hex" for value in ADMITTED])
+def test_a_value_the_grammar_admits_still_reaches_exactly_one_git_call(
+    forgeable: Path, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """The funnel's other boundary: what it lets through still costs one process.
+
+    A funnel with no admitted side is a verification that verifies nothing, and
+    every refusal arm above would be green against it. Both admitted widths are
+    driven because both are object names a repository can carry: forty for
+    SHA-1 and sixty-four for a ``--object-format=sha256`` repository, which a
+    forty-only grammar would refuse every commit of.
+
+    The verdict is deliberately **not** asserted: neither fabricated sha is an
+    object this fixture holds, so the honest claim here is about the work rather
+    than the answer -- exactly one ``diff-tree``, which is what
+    :func:`test_the_same_request_spawns_the_same_vector_whether_the_object_is_here_or_not`
+    then holds byte-identical across repositories.
+    """
+    calls = _recorded_spawns(monkeypatch)
+
+    FixCommitCheck(forgeable).verify(value, FILE_PATH)
+
+    assert len(calls) == 1, (
+        f"a {len(value)}-hex object name reached {len(calls)} git call(s). The grammar "
+        f"admits both object-name widths, and an admitted value is verified against the "
+        f"repository rather than answered from its spelling."
+    )
+
+
+# ---------------------------------------------------------------------------
+# A merge commit is a commit (code review HIGH-1).
+# ---------------------------------------------------------------------------
+
+
+def _merge_repository(tmp_path: Path, name: str, *, side_touches: bool, main_touches: bool) -> Path:
+    """A repository whose HEAD is a merge, with each side's changes as asked.
+
+    ``--no-ff`` always, so HEAD is a merge commit whatever the two branches did.
+    When both sides touch :data:`FILE_PATH` the merge conflicts and is resolved
+    here, which is the shape the finding was reported against: the resolution
+    text belongs to no parent, so the merge commit itself is the only commit that
+    introduced it.
+    """
+    repo = tmp_path / name
+    repo.mkdir()
+    _git(repo, "-c", "init.defaultBranch=main", "init", "-q")
+    _commit(repo, FILE_PATH, "def retry():\n    pass\n", "root: add the retry helper")
+    _commit(repo, OTHER_PATH, "notes\n", "add notes")
+
+    _git(repo, "checkout", "-q", "-b", "side")
+    if side_touches:
+        _commit(repo, FILE_PATH, "def retry():\n    return 'side'\n", "side: take the lock later")
+    else:
+        _commit(repo, OTHER_PATH, "notes: side\n", "side: note the incident")
+
+    _git(repo, "checkout", "-q", "main")
+    if main_touches:
+        _commit(repo, FILE_PATH, "def retry():\n    return 'main'\n", "main: take the lock later")
+    else:
+        _commit(repo, OTHER_PATH, "notes: main\n", "main: note the rollout")
+
+    merge = subprocess.run(  # noqa: S603
+        ["git", *_GIT_IDENTITY, "merge", "--no-ff", "-m", "merge side into main", "side"],  # noqa: S607
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if merge.returncode != 0:
+        (repo / FILE_PATH).write_text("def retry():\n    return 'resolved'\n", encoding="utf-8")
+        _git(repo, "add", FILE_PATH)
+        _git(repo, "commit", "-q", "--no-edit")
+    return repo
+
+
+#: The three merge shapes, with the verdict first-parent semantics give each.
+#:
+#: Each one rules out a different ``--diff-merges`` mode, which is why three and
+#: not one -- measured on git 2.47.1, 2026-09-19, where the shipped vector
+#: without the token answered ``TOUCHES_NOTHING_HERE`` for all three:
+#:
+#: * **conflict-resolved** is the reported finding: both sides changed the file,
+#:   the merge resolved it, and the resolution is in no parent;
+#: * **side-branch-only** is what ``--diff-merges=combined`` gets wrong -- a
+#:   combined diff suppresses a hunk that came verbatim from one parent, so it
+#:   answers ``TOUCHES_NOTHING_HERE`` for a merge that plainly changed the file
+#:   relative to the branch it landed on;
+#: * **mainline-only** is what ``--diff-merges=separate`` gets wrong -- it
+#:   reports the file for *any* parent that differs, so a merge that changed
+#:   nothing on the first-parent line verifies because the side branch was behind.
+_MERGE_SHAPES: tuple[tuple[str, bool, bool, FixCommitVerdict], ...] = (
+    ("conflict-resolved", True, True, FixCommitVerdict.VERIFIED),
+    ("side-branch-only", True, False, FixCommitVerdict.VERIFIED),
+    ("mainline-only", False, True, FixCommitVerdict.TOUCHES_NOTHING_HERE),
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "side_touches", "main_touches", "expected"),
+    _MERGE_SHAPES,
+    ids=[shape[0] for shape in _MERGE_SHAPES],
+)
+def test_a_merge_is_verified_when_it_changed_the_threads_file_against_its_first_parent(
+    tmp_path: Path, name: str, side_touches: bool, main_touches: bool, expected: FixCommitVerdict
+) -> None:
+    """``diff-tree`` prints nothing for a merge unless it is told which diff to take.
+
+    The failure this closes is the worst kind a verification has: a true fix,
+    correctly named, refused with a message that says *go and find the right
+    commit*. A conflict-resolving merge is often the only commit that carries the
+    fix -- the resolution text is in neither parent -- and under the shipped
+    vector every merge commit answered ``TOUCHES_NOTHING_HERE``, because
+    ``diff-tree`` omits merges by default.
+
+    ``--diff-merges=first-parent`` is the mode, and the three shapes above are
+    what make it *that* mode rather than any mode: the recorded semantics are
+    **this merge changed the file relative to the branch it landed on**, so a
+    merge that only brought the mainline's own earlier change along is not the
+    commit that introduced it -- the mainline commit is, and the caller can name
+    that one.
+
+    **The mode's whole value space was enumerated before these three were
+    chosen**, measured on git 2.47.1, 2026-09-19, so the expected column matches
+    one mode and not a family of them:
+
+    ===============  =======  ============  ========  ========  ==============  ============
+    shape            off      first-parent  separate  combined  dense-combined  remerge-diff
+    ===============  =======  ============  ========  ========  ==============  ============
+    conflict         nothing  **verified**  verified  verified  verified        exit ≠ 0
+    side-branch      nothing  **verified**  verified  nothing   nothing         exit ≠ 0
+    mainline         nothing  **nothing**   verified  nothing   nothing         exit ≠ 0
+    ===============  =======  ============  ========  ========  ==============  ============
+
+    ``off`` is the default and is what shipped; ``separate`` survives the first
+    two arms and dies on the third; ``combined`` and ``dense-combined`` survive
+    the first and die on the second; ``remerge-diff`` is not a mode ``diff-tree``
+    accepts at all. No proper subset of these three shapes picks one column.
+    """
+    repo = _merge_repository(tmp_path, name, side_touches=side_touches, main_touches=main_touches)
+    parents = _git(repo, "rev-list", "--parents", "-n", "1", "HEAD").stdout.split()
+    merge = parents[0]
+
+    verdict = FixCommitCheck(repo).verify(merge, FILE_PATH)
+
+    assert len(parents) == 3, (
+        f"the {name} fixture's HEAD has {len(parents) - 1} parent(s), so it is not a merge "
+        f"and this arm is about an ordinary commit"
+    )
+    assert verdict is expected, (
+        f"the {name} merge answered {verdict!r}, expected {expected!r}.\n\n"
+        f"`--diff-merges=first-parent` is what makes a merge commit diffable at all, and "
+        f"which mode it is decides this arm: `separate` verifies `mainline-only` and "
+        f"`combined` refuses `side-branch-only`. A merge the vector cannot see is a true "
+        f"fix refused, and the caller is told to go and find a commit that does not exist."
+    )
+
+
+def test_a_merges_first_parent_is_still_verified_on_its_own(tmp_path: Path) -> None:
+    """The control for the arm above: first-parent semantics change no plain commit.
+
+    Without it, ``--diff-merges=first-parent`` could be doing something to every
+    verdict rather than to the merges it was added for. The ``mainline-only``
+    fixture is the one that separates the two readings: its merge answers
+    ``TOUCHES_NOTHING_HERE`` while the mainline commit *inside* it touched the
+    file, so a mode that had broken ordinary commits would show here as the
+    parent going quiet too.
+    """
+    repo = _merge_repository(
+        tmp_path, "mainline-only-control", side_touches=False, main_touches=True
+    )
+    first_parent = _git(repo, "rev-list", "--parents", "-n", "1", "HEAD").stdout.split()[1]
+
+    verdict = FixCommitCheck(repo).verify(first_parent, FILE_PATH)
+
+    assert verdict is FixCommitVerdict.VERIFIED, (
+        f"the merge's first parent answered {verdict!r} for the file it changed. The "
+        f"diff-merges mode governs merge commits; an ordinary commit's verdict must not "
+        f"move with it."
+    )
+
+
+# ---------------------------------------------------------------------------
+# A NUL byte reaches `subprocess`, which raises rather than returning.
+# ---------------------------------------------------------------------------
+
+
+def test_a_stored_path_carrying_a_nul_byte_is_a_verdict_and_not_a_crash(
+    repository: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fail-closed reading has to cover the exception ``subprocess`` actually raises.
+
+    ``file_path`` is author-controlled stored data a clone can deliver (T-24),
+    and a NUL byte cannot cross ``subprocess``: it raises ``ValueError: embedded
+    null byte`` from inside the spawn, which is neither ``OSError`` nor
+    ``TimeoutExpired``. So the one exception a *stored* value can provoke was the
+    one the fail-closed ``except`` did not name, and it left the adapter raising
+    through ``verify`` into a caller that may only catch ``TheurianError``.
+
+    The caller-side twin of this is dead since the entry funnel: a ``fixCommit``
+    carrying a NUL is not a full object name, so it never reaches the spawn --
+    the corpus's ``embedded-nul`` member is where that half is held.
+
+    **The sha is taken from the admitted grammar, and the spawn is asserted to
+    have been attempted.** Both are the same guard: with any other sha the funnel
+    answers first, no spawn happens, the verdict is ``NO_SUCH_COMMIT`` anyway,
+    and this arm goes green having never reached the ``except`` it is about.
+    """
+    calls = _recorded_spawns(monkeypatch)
+
+    verdict = FixCommitCheck(repository).verify(ADMITTED[0], "a\x00b")
+
+    assert len(calls) == 1, (
+        f"the verification made {len(calls)} spawn attempt(s), so the stored path never "
+        f"reached `subprocess` and the refusal below came from somewhere else -- the "
+        f"sha has to be a value the grammar admits for this arm to be about the path"
+    )
+    assert verdict is FixCommitVerdict.NO_SUCH_COMMIT, (
+        f"a stored path carrying a NUL byte answered {verdict!r} rather than the "
+        f"fail-closed refusal. Every reading that cannot reach git joins the refusing "
+        f"side; a `ValueError` out of `verify` crosses the tool seam as a traceback "
+        f"about a domain the caller has never heard of."
+    )
+
+
 def test_the_git_vector_is_one_process_fixed_and_forecloses_an_option_a_path_and_magic(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -453,23 +841,28 @@ def test_the_git_vector_is_one_process_fixed_and_forecloses_an_option_a_path_and
     adapter rather than taken from a document, a config, a URL or a remote, and
     the call carries a timeout.
 
-    **One fixture, worst member on both axes**: the sha is option-shaped and the
-    stored path is a pathspec expression, so a single capture shows the caller's
-    value landing behind ``--end-of-options`` and the record's value landing
-    behind ``--`` under ``--literal-pathspecs``.
+    **One fixture, worst member on each axis that still reaches a spawn**: the
+    sha is the widest value the grammar admits and the stored path is a pathspec
+    expression, so a single capture shows the caller's value landing behind
+    ``--end-of-options`` and the record's value landing behind ``--`` under
+    ``--literal-pathspecs``. The sha used to be option-shaped, which was the
+    worst member while any string could be spent as a revision; since the entry
+    funnel such a value is refused before a process exists, so capturing at one
+    would capture nothing and assert over an empty list.
 
     **``--end-of-options`` is held here and nowhere else**, which is why an exact
-    vector equality is worth its brittleness: an option-shaped sha exits non-zero
-    with or without the flag, so no behavioural case can tell. The module
-    docstring records that measurement rather than leaving this pin to imply a
-    coverage it has.
+    vector equality is worth its brittleness: it forecloses a value the funnel
+    already refuses, so no behavioural case can tell whether it is present. The
+    module docstring records that measurement rather than leaving this pin to
+    imply a coverage it has.
 
     RED if the call count moves off one, if a timeout is dropped, if the call
     reaches a shell, if the binary stops being an absolute path, if
-    ``--end-of-options`` / ``--`` / ``--literal-pathspecs`` / ``--root`` leaves
-    the vector, or if the ``^{commit}`` suffix leaves the revision.
+    ``--end-of-options`` / ``--`` / ``--literal-pathspecs`` / ``--root`` /
+    ``--diff-merges=first-parent`` leaves the vector, or if the ``^{commit}``
+    suffix leaves the revision.
     """
-    caller_sha = "--upload-pack=touch pwned"
+    caller_sha = max(ADMITTED, key=len)
     stored_path = f":(exclude){FILE_PATH}"
     calls = _recorded_spawns(monkeypatch)
 
@@ -500,6 +893,7 @@ def test_the_git_vector_is_one_process_fixed_and_forecloses_an_option_a_path_and
         "--name-only",
         "-r",
         "--root",
+        "--diff-merges=first-parent",
         "--end-of-options",
         f"{caller_sha}^{{commit}}",
         "--",
@@ -513,6 +907,11 @@ def test_the_git_vector_is_one_process_fixed_and_forecloses_an_option_a_path_and
     assert "--root" in vector, (
         "`--root` must stay in the vector, or a fix that is the repository's first "
         "commit reports no files and a true fix is refused"
+    )
+    assert "--diff-merges=first-parent" in vector, (
+        "`--diff-merges=first-parent` must stay in the vector, or `diff-tree` prints "
+        "nothing for a merge commit and every fix that landed as a conflict resolution "
+        "is refused as touching nothing"
     )
     assert vector[-4] == "--end-of-options" and vector[-3].endswith("^{commit}"), (
         "the caller's sha must be the token immediately after `--end-of-options` and "

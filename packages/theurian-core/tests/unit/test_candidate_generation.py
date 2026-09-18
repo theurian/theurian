@@ -38,6 +38,7 @@ from fakes.clock import FrozenClock
 from fakes.ids import SeededIdGenerator
 
 from theurian.application.candidate_generation import (
+    UNRESOLVED_RECORD_REFUSAL,
     CandidateGenerationError,
     CandidateGenerator,
     CandidateSubmission,
@@ -801,6 +802,121 @@ def test_a_record_key_the_store_does_not_resolve_reads_no_evidence_file() -> Non
     )
 
 
+def test_a_pull_request_key_holding_a_record_of_another_kind_is_the_uniform_refusal() -> None:
+    """The **second** resolve's kind guard, which no case reached.
+
+    The tool resolves twice: the thread by the caller's key, then the pull
+    request by the number parsed out of that thread's ``event_key``. Only the
+    first resolve's kind guard is driven anywhere else -- a caller can send a
+    pull request's number as ``recordKey`` and reach it -- while the second is
+    reachable only through the **stored** record, because the key it looks up
+    comes from a field an evidence file supplies.
+
+    That makes it a T-24 shape rather than a caller shape: ``.theurian/review/``
+    is source a clone can deliver, so a repository can ship a thread whose
+    ``event_key`` names a number under which it also shipped a *thread*. Without
+    the guard the gate reads ``event.merged`` off a ``ReviewThread`` and the
+    call dies as ``AttributeError`` -- a traceback across the tool seam for a
+    caller who sent a well-formed request, where the designed answer is the
+    uniform refusal decision 5 gives every record that does not arrive.
+    """
+    event = _event()
+    thread = _thread(event)
+    corpus = _Corpus(
+        records={THREAD_FILE: thread, EVENT_FILE: thread},
+        paths={(REPOSITORY, THREAD_KEY): THREAD_FILE, (REPOSITORY, str(PULL_REQUEST)): EVENT_FILE},
+    )
+
+    with pytest.raises(CandidateGenerationError) as refusal:
+        _generator(corpus, _RecordingDrafts()).generate(_submission())
+
+    assert str(refusal.value) == UNRESOLVED_RECORD_REFUSAL, (
+        f"a pull-request key holding a thread was answered {str(refusal.value)!r}. The "
+        f"three shapes that do not produce a record -- a key nothing resolves, a stored "
+        f"record of the wrong kind, and a withheld one -- are one refusal (decision 5), "
+        f"and the alternative here is not a second sentence but an `AttributeError`."
+    )
+
+
+# ---------------------------------------------------------------------------
+# The review category is provenance, never a change the reviewer authored (#754).
+# ---------------------------------------------------------------------------
+
+
+def test_category_is_not_a_field_the_proposal_request_carries() -> None:
+    """#754: a review category is provenance on the candidate, never a request field.
+
+    The migration a proposal becomes records a ``kind`` and a ``namespace``; the
+    review ``category`` is the FR-V2 classification that routed the thread, kept on
+    the ``KnowledgeCandidate`` as provenance rather than mapped onto the change.
+    Were ``category`` a ``ProposalRequest`` field, a later edit could wire it into
+    the written migration and a caller's classification *hint* would silently
+    become a knowledge kind or a namespace a reviewer never chose.
+
+    Read off ``ProposalRequest``'s live fields, so the day one named ``category``
+    is added this reddens -- rather than the behaviour arm below being the only
+    thing that would notice.
+    """
+    fields = {field.name for field in dataclasses.fields(ProposalRequest)}
+
+    assert "category" not in fields, (
+        f"`ProposalRequest` now carries a `category` field ({sorted(fields)}). A review "
+        f"category is a routing hint (FR-V2, #754), not a change the reviewer authored; a "
+        f"field for it on the request is the seam through which it would reach the migration."
+    )
+
+
+def test_the_review_category_moves_neither_the_kind_nor_the_namespace() -> None:
+    """#754: reclassifying the thread changes provenance only, not the change itself.
+
+    ``kind`` is the caller's own ``KnowledgeKind`` and ``namespace`` is the
+    caller's own value, and neither is derived from ``category`` -- so two
+    submissions differing in nothing but their FR-V2 classification must draft the
+    same ``kind`` and the same ``namespace``. A build that read either off
+    ``category`` would let a misclassification silently reroute the knowledge,
+    which is the cost #754 records for treating the hint as a truth claim.
+
+    The two categories are the pair a ``category``-to-``kind`` mapping would most
+    plausibly separate -- a security rule and a coding convention.
+
+    **``namespace`` is left unset, and that is the worst instance rather than a
+    convenience.** A leak that reads ``namespace`` off ``category`` fires in two
+    shapes -- an unconditional ``namespace = category`` and a
+    ``namespace = submission.namespace or category`` fallback -- and only the
+    first is visible when the caller pins ``namespace`` to a value, because the
+    ``or`` short-circuits past a value that is already set. With ``namespace``
+    unset both shapes move it, so the two runs differ and the equality catches
+    either; a fixture that supplied a namespace would let the fallback survive.
+    The premise comes first: the two candidates really do record different
+    categories, or the equality is over one run twice.
+    """
+    kind = KnowledgeKind.CONVENTION
+    drafts = _RecordingDrafts()
+
+    generated = [
+        _generator(_corpus(_event(), _thread(_event())), drafts).generate(
+            _submission(kind=kind, category=category)
+        )
+        for category in (
+            ReviewCommentCategory.SECURITY_RULE,
+            ReviewCommentCategory.CODING_CONVENTION,
+        )
+    ]
+
+    assert generated[0].candidate.category is not generated[1].candidate.category, (
+        "the two runs recorded the same category, so the equality below holds over one "
+        "run twice rather than over a reclassification"
+    )
+    first, second = drafts.requests
+    assert (first.kind, first.namespace) == (second.kind, second.namespace) == (kind, None), (
+        f"reclassifying the thread moved the change: kinds {(first.kind, second.kind)}, "
+        f"namespaces {(first.namespace, second.namespace)}. `category` is a routing hint "
+        f"(FR-V2, #754); `kind` is the caller's own and `namespace` unset stays unset -- "
+        f"neither is derived from `category`, or a misclassification silently reroutes the "
+        f"knowledge."
+    )
+
+
 # ---------------------------------------------------------------------------
 # The mapping onto `ProposalRequest` (decision 1's table).
 # ---------------------------------------------------------------------------
@@ -866,13 +982,75 @@ def test_the_generalization_is_prose_and_the_content_type_says_so() -> None:
     assert drafts.requests[0].content_type == MediaType("text/markdown")
 
 
+#: A submission carrying **two** anchors, which no other fixture in the suite
+#: does. One anchor makes a truncation to the first invisible: ``[:1]`` on the
+#: tuple, a ``next(iter(...))``, or a mapping that carried the head and dropped
+#: the tail all read identically against a one-element input, and the whole
+#: point of ``sourceAnchors`` being an array (FR-R5, INV-8) is that a
+#: generalisation can be anchored to the thread *and* to the commit that closed
+#: it.
+_TWO_ANCHORS: Final = dataclasses.replace(
+    EVIDENCE,
+    anchors=(
+        *EVIDENCE.anchors,
+        SourceAnchor(
+            provider="git",
+            source_uri=f"git://{REPOSITORY}/{FIX_COMMIT}",
+            repository=REPOSITORY,
+            commit_sha=FIX_COMMIT,
+            file_path=FILE_PATH,
+        ),
+    ),
+)
+
+
+def test_every_source_anchor_the_submission_carries_reaches_the_candidate_and_the_request() -> None:
+    """ADR-0032 decision 1: one wire field fills both provenance readers, all of it.
+
+    ``sourceAnchors`` fills ``Evidence.anchors`` *and*
+    ``ProposalRequest.source_anchors``, and the two have different readers --
+    ``evidence.json`` records where the generalisation came from, and the
+    migration's ``metadata.sourceAnchors`` is what a reviewer reads in the pull
+    request. A mapping that carried only the first anchor would satisfy INV-8
+    (a candidate needs at least one) and quietly drop provenance a human is
+    about to grade.
+
+    Asserted as an **equality over the tuple**, on all three surfaces: the
+    candidate's own evidence, the request's evidence, and the request's separate
+    anchor field. Two anchors rather than one, because every other fixture in
+    this suite sends one and a truncation to the head is invisible against those.
+    """
+    drafts = _RecordingDrafts()
+
+    generated = _generator(_corpus(_event(), _thread(_event())), drafts).generate(
+        _submission(evidence=_TWO_ANCHORS)
+    )
+
+    request = drafts.requests[0]
+    assert len(_TWO_ANCHORS.anchors) == 2, "the fixture has to carry more than one anchor"
+    assert generated.candidate.evidence == _TWO_ANCHORS.anchors, (
+        f"the candidate carries {len(generated.candidate.evidence)} of "
+        f"{len(_TWO_ANCHORS.anchors)} anchors the submission sent"
+    )
+    assert (request.evidence.anchors, request.source_anchors) == (
+        _TWO_ANCHORS.anchors,
+        _TWO_ANCHORS.anchors,
+    ), (
+        f"the drafted request carries {len(request.evidence.anchors)} evidence anchors "
+        f"and {len(request.source_anchors)} source anchors of "
+        f"{len(_TWO_ANCHORS.anchors)} sent. Both are filled from the one wire field "
+        f"(ADR-0032 decision 1), and each is read by somebody different."
+    )
+
+
 def test_the_candidates_sensitivity_reaches_the_request_unwidened() -> None:
     """ADR-0033 decision 1: ``sensitivity`` is the candidate's, not a wire field.
 
-    ``KnowledgeCandidate.sensitivity`` carries "Inherited from the review's project
-    default; never widened at generation" on the field itself. Reading it off the
-    wire would let a caller publish a generalization of an internal review at a
-    wider sensitivity than the review it generalises.
+    ``KnowledgeCandidate.sensitivity`` is fixed to the type default ``INTERNAL``
+    and never set at generation, so it is never widened; there is no
+    review-project default, and the field says so. Reading it off the wire would
+    let a caller publish a generalization at a wider sensitivity than the type
+    fixes.
     """
     drafts = _RecordingDrafts()
 

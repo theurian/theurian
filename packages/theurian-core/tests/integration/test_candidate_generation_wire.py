@@ -36,15 +36,26 @@ The project, its git repository and its two commits are
 
 from __future__ import annotations
 
+import json
+import sqlite3
 from collections.abc import Iterator
+from contextlib import closing
 from pathlib import Path
 from typing import Any, Final
 
 import pytest
 import review_candidate_fixtures as corpus
+from fix_commit_grammar import REFUSED
 from review_candidate_project import ServedProject, served_project
 
+from theurian.application.project_service import (
+    REVIEW_SEARCH_STORE_ID,
+    BuildProvenance,
+    ProjectPaths,
+)
 from theurian.daemon.runner import build_server
+from theurian.infrastructure.sqlite.review_search_schema import REVIEW_SEARCH_SCHEMA_VERSION
+from theurian.mcp.tools import REVIEW_SEARCH_UNAVAILABLE_REFUSAL
 
 from mcp_wire_session import mcp_session  # isort: skip
 
@@ -177,6 +188,57 @@ def test_a_thread_meeting_every_signal_lands_a_proposal_over_the_wire(
         "ADR-0013 point 7: a `--local` proposal sits inside the managed ignore block, "
         "where the human review FR-V4 relies on cannot reach it"
     )
+
+
+# -- SEC-12: a revision expression is refused at the wire, with the key path -
+
+#: The member of the grammar corpus this arm sends: the exact expression two
+#: reviewers recovered through, read off the shared table rather than spelled
+#: again so the wire arm and the adapter battery cannot drift to different
+#: vectors.
+_MESSAGE_SEARCH: Final = next(member for member in REFUSED if member.label == "message-search")
+
+
+def test_a_fix_commit_that_describes_a_commit_is_refused_at_the_wire_naming_the_field(
+    project: ServedProject, tmp_path: Path
+) -> None:
+    """ADR-0031 decision 4: the caller is told which field broke, not that no commit matched.
+
+    ``HEAD^{/planted}`` asks git to search history for a commit whose message
+    matches -- the recovery two reviewers reached independently, because it
+    satisfies ``fix_commit_present`` without the caller knowing any object id.
+    The adapter's entry funnel refuses it too; what this seat adds is the
+    **key path**, and the difference is what the caller does next. A gate
+    refusal says *name a fixCommit this repository has that touched the file*,
+    which sends a caller who sent an expression hunting for a better commit; the
+    schema refusal says the value does not satisfy ``fixCommit``'s pattern.
+
+    Three assertions, and the third is ADR-0031 decision 4's other half: the
+    refusal quotes the *schema's* expectation and never the caller's own bytes,
+    so a boundary taking untrusted input does not become an amplifier of it.
+
+    Driven against the thread that meets every other signal, so nothing else
+    about this call could have refused it -- the same arguments with a real sha
+    land a proposal
+    (:func:`test_a_thread_meeting_every_signal_lands_a_proposal_over_the_wire`).
+    """
+    result = _call(project, tmp_path, _arguments(corpus.THREAD_SATISFYING, _MESSAGE_SEARCH.value))
+
+    assert result["isError"] is True, result
+    text = _text(result)
+    assert "published input schema" in text and "fixCommit" in text and "pattern" in text, (
+        f"the refusal does not name the field and the constraint that rejected it: "
+        f"{text!r}. SEC-12 answers a value-domain violation at the wire with the key "
+        f"path (ADR-0031 decision 4); without the published `pattern` this call reaches "
+        f"the handler and comes back as a gate refusal telling the caller to find a "
+        f"better commit, which is not what went wrong. The middleware's own marker is "
+        f"asserted with the field name because the gate refusal's cure says `fixCommit` "
+        f"too, so that word alone does not say which seam answered."
+    )
+    assert _MESSAGE_SEARCH.value not in json.dumps(result), (
+        f"the refusal echoes the caller's own value back: {text!r}"
+    )
+    assert project.proposals() == set(), "a call refused at the wire wrote a proposal"
 
 
 # -- Decision 4: unknown CI is unmet, named, and not the failed sentence -----
@@ -384,6 +446,130 @@ def test_a_record_key_the_store_never_held_is_refused_as_a_wrong_kind_record_is(
         f"the uniform refusal reached the wire without its cure: {absent!r}"
     )
     assert project.proposals() == set(), "a refused unresolved-record call wrote a proposal"
+
+
+# -- The store this tool reads is governed the way `review.search`'s is ------
+
+
+def _store_path(project: ServedProject) -> Path:
+    return ProjectPaths.of(project.root).review_search_for(REVIEW_SEARCH_STORE_ID)
+
+
+def _forget_the_review_build(project: ServedProject) -> None:
+    """Drop this root's ``review`` provenance record, leaving the store on disk.
+
+    The hostile-clone shape, minus the clone: a well-formed, current, fully
+    readable review store that **this installation never built**, which a
+    repository contributor produces with ``git add -f`` past ADR-0004's ignore.
+    Only the one family is dropped -- ``state`` and ``index`` stay, or the call
+    would be refused for an unresolvable project before it reached the review
+    store at all, and the arm would be measuring the wrong guard.
+    """
+    provenance = BuildProvenance.for_registry(project.registry)
+    recorded = json.loads(provenance.path.read_text(encoding="utf-8"))
+    entry = recorded[str(project.root.resolve())]
+
+    assert entry.pop("review", None), (
+        "this project has no `review` provenance record to drop, so the refusal below "
+        "would be the state a fresh project is already in rather than the plant"
+    )
+    provenance.path.write_text(json.dumps(recorded, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def test_a_review_store_this_installation_did_not_build_refuses_as_a_missing_one_does(
+    project: ServedProject, tmp_path: Path
+) -> None:
+    """ADR-0004, SEC-7, T-19: provenance before presence, on this tool's read too.
+
+    The review search store is derived and git-ignored, so presence on disk is
+    evidence of nothing: a contributor force-adds a fabricated one and a victim
+    who clones and registers gets it served as the repository's own review
+    history. ``review.search`` refuses that, and this tool reads the **same
+    store** through its own composition -- so the guard has to be on this path
+    as well, and until it was driven, deleting it left 180 tests green.
+
+    What a missing guard produces here is worse than a bad search result: the
+    fabricated record satisfies five of the seven gate signals, so the call
+    **lands a proposal** built from review history nobody wrote.
+
+    The control comes first and is what makes the refusal mean something: the
+    identical call against the same project, with the provenance record intact,
+    lands a proposal. Then the record is dropped and the same call is refused --
+    byte-identically to the same call against a project whose store file is not
+    there at all, so a victim cannot tell which of the two states they are in
+    and whoever planted the store learns nothing about whether it was detected.
+    """
+    arguments = _arguments(corpus.THREAD_SATISFYING, project.verifying)
+    control = _call(project, tmp_path, arguments)
+    assert control["isError"] is False, control
+    landed = project.proposals()
+
+    _forget_the_review_build(project)
+    planted = _text(_call(project, tmp_path, arguments))
+    _store_path(project).unlink()
+    absent = _text(_call(project, tmp_path, arguments))
+
+    assert REVIEW_SEARCH_UNAVAILABLE_REFUSAL in planted, (
+        f"a review store this installation never built was served to "
+        f"`{TOOL}`: {planted!r}. Provenance is the one thing a repository "
+        f"contributor cannot forge, and without it a planted store reaches the gate."
+    )
+    assert planted == absent, (
+        f"a planted store and an absent one are refused differently:\n"
+        f"  planted -- {planted!r}\n"
+        f"  absent  -- {absent!r}\n\n"
+        f"The difference tells a victim which of the two states they are in, which is "
+        f"the disclosure the shared constant exists to remove."
+    )
+    assert project.proposals() == landed, (
+        "a call refused for an unvouched store still wrote a proposal, so the refusal "
+        "fired after the draft rather than before the read"
+    )
+
+
+def test_a_store_a_superseded_schema_built_is_refused_in_the_request_independent_constant(
+    project: ServedProject, tmp_path: Path
+) -> None:
+    """SEC-13: the adapter's message names the store file, and this tool must not publish it.
+
+    ``SqliteReviewSearchStore`` refuses a store stamped by a schema version it
+    does not serve, and its message names the file and the version -- text that
+    varies with what is on disk. ``review.search`` converts that into one
+    constant for exactly that reason; this tool catches the same exception from
+    the same store and owed the same conversion, and nothing drove it.
+
+    The stamp is moved by hand because there is no older build to run, and the
+    control is the store's *reachability*: the same call against the same
+    project answered before the stamp moved, so what is being measured is the
+    conversion rather than a project that could never have been served.
+    """
+    arguments = _arguments(corpus.THREAD_SATISFYING, project.verifying)
+    control = _call(project, tmp_path, arguments)
+    assert control["isError"] is False, control
+    landed = project.proposals()
+
+    store = _store_path(project)
+    with closing(sqlite3.connect(store)) as connection:
+        connection.execute(
+            "UPDATE review_search_metadata SET review_search_schema_version = ?",
+            (REVIEW_SEARCH_SCHEMA_VERSION + 1,),
+        )
+        connection.commit()
+
+    result = _call(project, tmp_path, arguments)
+    text = _text(result)
+
+    assert result["isError"] is True, result
+    assert REVIEW_SEARCH_UNAVAILABLE_REFUSAL in text, (
+        f"a store stamped by a superseded schema was refused in the adapter's own words "
+        f"rather than in the constant: {text!r}. That message names the file and the "
+        f"failure and varies with the store's state -- the *an error that fires for one "
+        f"input and not another* channel SEC-13 closes."
+    )
+    assert store.name not in text and "superseded" not in text, (
+        f"the refusal carries the adapter's description of what is on disk: {text!r}"
+    )
+    assert project.proposals() == landed, "a refused superseded-store call wrote a proposal"
 
 
 # -- The house result contract: every refusal is isError-classified ----------

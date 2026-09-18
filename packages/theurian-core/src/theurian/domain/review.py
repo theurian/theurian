@@ -333,7 +333,9 @@ class KnowledgeCandidate:
     #: Always ``INFERRED``. A candidate cannot claim review-level trust; that is
     #: precisely what a human reviewer would be granting it.
     trust_level: TrustLevel = field(default=TrustLevel.INFERRED, init=False)
-    #: Inherited from the review's project default; never widened at generation.
+    #: The candidate generator sets no ``sensitivity``, so a generated candidate is
+    #: always the type default ``INTERNAL`` and never widened at generation. There is
+    #: no review-project default; this is not read from one.
     sensitivity: Sensitivity = Sensitivity.INTERNAL
 
     def __post_init__(self) -> None:

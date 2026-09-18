@@ -41,6 +41,7 @@ from collections.abc import Iterator
 from typing import Any, Final
 
 import pytest
+from fix_commit_grammar import ADMITTED, MAX_CHARS, REFUSED, RefusedFixCommit
 from jsonschema import Draft202012Validator
 
 from theurian.application.candidate_generation import CandidateSubmission
@@ -269,9 +270,9 @@ _NOT_CALLER_SETTABLE: Final = {
         "review-level trust, which is exactly what the human reviewer grants"
     ),
     "sensitivity": (
-        "inherited from the review's project default and never widened at generation "
-        "(`KnowledgeCandidate.sensitivity`), so a wire field would let a caller widen "
-        "a disclosure class from the write path"
+        "fixed to `internal` by `KnowledgeCandidate.sensitivity`'s own default and never "
+        "set at generation, so it is never widened and there is no review-project default "
+        "to read; a wire field would let a caller widen a disclosure class from the write path"
     ),
     "contentType": (
         "fixed to `text/markdown`: a generalisation is prose and there is no file whose "
@@ -438,6 +439,90 @@ def test_an_unknown_key_is_refused_by_the_published_schema() -> None:
         f"caller that misspells a field -- or invents one -- is served as though it "
         f"had sent nothing. Close the schema with `unevaluatedProperties: false` "
         f"(ADR-0031 decision 1)."
+    )
+
+
+@pytest.mark.parametrize("value", ADMITTED, ids=[f"{len(value)}-hex" for value in ADMITTED])
+def test_the_published_schema_admits_a_full_object_name_as_a_fix_commit(value: str) -> None:
+    """The admitted side of the grammar, which every refusal below is measured against.
+
+    Both object-name widths, because a ``--object-format=sha256`` repository
+    names its commits in sixty-four hex digits and a forty-only pattern would
+    refuse every commit in one -- a value-domain refusal at the wire, where the
+    caller is told its own correct sha does not satisfy the contract.
+    """
+    validator = _validator()
+
+    assert not list(validator.iter_errors({**_admitted_submission(), "fixCommit": value})), (
+        f"the published schema refuses a {len(value)}-digit object name as `fixCommit`. "
+        f"The grammar admits both widths (`fix_commit_grammar.ADMITTED`), and a pattern "
+        f"that refuses one of them refuses every commit in a repository that uses it."
+    )
+
+
+@pytest.mark.parametrize("member", REFUSED, ids=[member.label for member in REFUSED])
+def test_the_published_schema_refuses_a_fix_commit_that_is_a_revision_expression(
+    member: RefusedFixCommit,
+) -> None:
+    """SEC-12's half of the funnel: a revision expression never reaches the handler.
+
+    ``fixCommit`` is spent against the local repository, and git's revision
+    language lets a caller *describe* a commit -- by message, by branch, by
+    position, by range -- rather than name one, which is the whole of what
+    ADR-0033 decision 3 asks the caller to go and find. The adapter refuses these
+    at entry too (``tests/integration/test_fix_commit_check_adapter.py`` drives
+    this same corpus against a real repository); what this seam adds is the key
+    path, so a caller that sent an expression is told **which field** broke and
+    against what, instead of meeting a gate refusal that reads as *find a better
+    commit* (ADR-0031 decision 4).
+
+    **One member is admitted here and refused by the adapter, and that is
+    measured rather than overlooked.** ``jsonschema`` evaluates ``pattern`` with
+    Python's ``re``, whose ``$`` matches before a trailing newline; the adapter's
+    ``fullmatch`` does not. ``fix_commit_grammar`` carries that verdict on the
+    member itself, which is what stops this arm quietly demanding a
+    Python-specific anchor in a published ECMA-262 pattern.
+
+    The baseline is asserted admitted first: without it every member passes on
+    whatever else the instance was missing, which is the shape a closure check
+    fails open in.
+    """
+    validator = _validator()
+    submission = {**_admitted_submission(), "fixCommit": member.value}
+
+    assert not list(validator.iter_errors(_admitted_submission())), (
+        "the baseline submission this arm perturbs is itself refused, so a refusal below "
+        "would be about whatever else the schema objected to rather than about `fixCommit`"
+    )
+    refused = bool(list(validator.iter_errors(submission)))
+
+    assert refused is member.at_the_wire, (
+        f"{member.label}: the published schema "
+        f"{'admits' if not refused else 'refuses'} {member.value!r} as `fixCommit` and "
+        f"`fix_commit_grammar` records it as "
+        f"{'refused' if member.at_the_wire else 'admitted'} here.\n\n"
+        f"Why it is not an object name: {member.why}.\n\n"
+        f"If the grammar moved, move the corpus, this file's `pattern` and the adapter's "
+        f"entry funnel in one change -- two defences written in two regex dialects are "
+        f"exactly what drifts apart unnoticed."
+    )
+
+
+def test_the_published_fix_commit_bound_is_the_widest_object_name_the_grammar_admits() -> None:
+    """A ``maxLength`` beside the pattern, so an oversized value is refused by its length.
+
+    The pattern alone would refuse a ten-megabyte ``fixCommit``, but only after
+    the regex has been run over it. ``maxLength`` is the constraint that answers
+    from the length, and it is the widest object name rather than a round number
+    -- derived here from the corpus, so a grammar that grew a wider member moves
+    both together.
+    """
+    published = _document().get("properties", {}).get("fixCommit", {})
+
+    assert published.get("maxLength") == MAX_CHARS, (
+        f"{SCHEMA.name} bounds `fixCommit` at {published.get('maxLength')!r}; the widest "
+        f"object name the grammar admits is {MAX_CHARS} characters. That the number is "
+        f"also the live constant the adapter enforces is `test_input_schema_bounds.py`'s."
     )
 
 

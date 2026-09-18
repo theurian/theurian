@@ -26,6 +26,7 @@ Nothing here touches the developer's machine: the git repository is created unde
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import subprocess
 from collections.abc import Collection, Iterator, Mapping
@@ -292,7 +293,25 @@ def _generator(repo: Path, review: Path, service: ProposalService) -> CandidateG
     )
 
 
-def _submission(fix_commit: str) -> CandidateSubmission:
+#: The same evidence carrying a **second** anchor: the thread it generalises and
+#: the commit that closed it. Every other fixture in the suite sends one, which
+#: is what made a truncation to the first invisible all the way to the file --
+#: this is the one place the *written* ``metadata.sourceAnchors`` can show it.
+TWO_ANCHORS = dataclasses.replace(
+    EVIDENCE,
+    anchors=(
+        *EVIDENCE.anchors,
+        SourceAnchor(
+            provider="git",
+            source_uri=f"git://{REPOSITORY}/fix",
+            repository=REPOSITORY,
+            file_path=FILE_PATH,
+        ),
+    ),
+)
+
+
+def _submission(fix_commit: str, *, evidence: Evidence = EVIDENCE) -> CandidateSubmission:
     return CandidateSubmission(
         repository=REPOSITORY,
         record_key=THREAD_KEY,
@@ -305,7 +324,7 @@ def _submission(fix_commit: str) -> CandidateSubmission:
         owner="platform-team",
         author=HUMAN_AUTHOR,
         description="Generalise PR #431's deadlock thread into a locking rule",
-        evidence=EVIDENCE,
+        evidence=evidence,
     )
 
 
@@ -314,12 +333,14 @@ def _submission(fix_commit: str) -> CandidateSubmission:
 # ---------------------------------------------------------------------------
 
 
-def _generate(repository: Path, paths: ProjectPaths, tmp_path: Path) -> Path:
+def _generate(
+    repository: Path, paths: ProjectPaths, tmp_path: Path, *, evidence: Evidence = EVIDENCE
+) -> Path:
     """Generate one candidate against a verifying commit, and answer its directory."""
     touching = _commit(repository, FILE_PATH, "def retry():\n    return None\n", "fix the deadlock")
     review = _evidence_directory(tmp_path)
     generated = _generator(repository, review, _proposal_service(paths)).generate(
-        _submission(touching)
+        _submission(touching, evidence=evidence)
     )
     return generated.proposal.directory
 
@@ -354,6 +375,40 @@ def test_the_written_migration_records_the_candidates_inferred_trust_level(
         f"the written migration records trust level "
         f"{upsert['metadata'].get('trustLevel')!r}. A candidate cannot be "
         f"constructed with any other value, so this is the mapping dropping it."
+    )
+
+
+def test_every_source_anchor_the_submission_carries_reaches_the_written_migration(
+    repository: Path, paths: ProjectPaths, tmp_path: Path
+) -> None:
+    """FR-R5 and INV-8 on the file a reviewer opens, not only on the object in memory.
+
+    ``sourceAnchors`` is where a generalisation came from, and the copy that
+    matters is the one in the pull request: ``metadata.sourceAnchors`` on the
+    written migration is what a human reads before deciding whether the
+    generalisation is fair (FR-V4). A mapping that carried the head of the tuple
+    and dropped the tail satisfies INV-8 -- a candidate needs *an* anchor -- and
+    refuses nothing, so the loss is silent and lands in the record.
+
+    Two anchors, because with one the truncation is unobservable: ``[:1]``,
+    ``next(iter(...))`` and the correct mapping all write the same document.
+    """
+    directory = _generate(repository, paths, tmp_path, evidence=TWO_ANCHORS)
+
+    operations = _migration(directory)["operations"]
+    assert isinstance(operations, list)
+    written = next(op for op in operations if op["op"] == "upsertRevision")["metadata"][
+        "sourceAnchors"
+    ]
+
+    assert len(TWO_ANCHORS.anchors) == 2, "the fixture has to carry more than one anchor"
+    assert [anchor["sourceUri"] for anchor in written] == [
+        anchor.source_uri for anchor in TWO_ANCHORS.anchors
+    ], (
+        f"the written migration records {len(written)} of {len(TWO_ANCHORS.anchors)} "
+        f"anchors the submission carried, in {[a['sourceUri'] for a in written]}. Order "
+        f"is asserted as well as membership: `sourceAnchors` is a list a reviewer reads "
+        f"top down, and the caller chose which anchor comes first."
     )
 
 

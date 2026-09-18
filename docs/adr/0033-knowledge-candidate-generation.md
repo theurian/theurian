@@ -123,7 +123,7 @@ this tool.
 | `content_type` | **not on the candidate.** Fixed to `text/markdown` for this tool — a generalization is prose, and there is no file whose suffix could say otherwise (ADR-0032 decision 2) |
 | `author` | **decided here.** The migration schema defines it as "Identity of the human who authored this change. Agent-generated proposals record the agent separately in `evidence.json`". So `author` is the caller-supplied human-attributable identity the wire input requires, **distinct from `evidence.agentId`**, and the two are never filled from each other |
 | `trust_level` | **`KnowledgeCandidate.trust_level`, and never the wire.** The field is `field(default=TrustLevel.INFERRED, init=False)` (`domain/review.py:307`), so a candidate cannot be constructed carrying any other value; ADR-0032 decision 1's "absent means not stated" does **not** apply on this path, and the owed test below pins `inferred` on the written migration |
-| `sensitivity` | **`KnowledgeCandidate.sensitivity`** (`domain/review.py:309`, defaulting to `Sensitivity.INTERNAL` with "Inherited from the review's project default; never widened at generation" recorded on the field), not a wire field of this tool |
+| `sensitivity` | **`KnowledgeCandidate.sensitivity`** (`domain/review.py`), fixed to `Sensitivity.INTERNAL` by the type's default and never set at generation — `CandidateGenerator.generate` constructs the candidate with no `sensitivity` argument — so it is never widened. There is no review-project default this tool reads; the honest form is `trust_level`'s: fixed internal by the type, never widened at generation. Not a wire field of this tool |
 | `labels`, `scope_paths`, `namespace`, `expected_revision` | as ADR-0032 decision 1 has them |
 
 `KnowledgeCandidate.generator_model` stays what its type says it is: `str | None`
@@ -476,12 +476,16 @@ responses **and its refusals**.
 `docs/architecture/review-knowledge.md` names the same eleven.
 
 The caller chooses one, and ADR-0031's published input schema constrains it to
-that enum. The cost of a wrong choice is bounded and the document already prices
-it: "Classification is a hint that routes a candidate to the right knowledge kind
-and namespace. It is not a truth claim, and a misclassification costs a reviewer
-one correction — not a wrong rule in the knowledge base." A human reads the
-proposal before anything becomes approved knowledge, and re-categorising is an
-edit to a draft.
+that enum. `category` is a caller-supplied hint recorded on the candidate, **not
+a router**: it chooses neither the knowledge `kind` nor the `namespace` — both are
+the caller's own wire fields (decision 1) — and today it is not carried into the
+drafted proposal at all, since `ProposalRequest` has no `category` field and
+`CandidateGenerator._request` maps none
+([#754](https://github.com/theurian/theurian/issues/754) tracks carrying it). The
+cost of a wrong choice is bounded, and `docs/architecture/review-knowledge.md`
+prices it: a misclassification "costs a reviewer one correction — not a wrong rule
+in the knowledge base", because a human reads the proposal before anything becomes
+approved knowledge and re-categorising is an edit to a draft.
 
 This is also why classification is not a place a model would earn its keep
 inside Theurian: the failure mode is a reviewer's one-line correction, and the
@@ -1000,6 +1004,66 @@ Still owed, with the milestone that will satisfy it:
   > storage, which this ADR does not design; the honest statement is that the
   > demonstrated channel is closed and pinned, and the measured one is bounded,
   > recorded and unpinned.
+
+  > **Amended in slice B5 round 1 (2026-09-19,
+  > [PR #744](https://github.com/theurian/theurian/pull/744)): the residual above
+  > was one existence bit only after this round's fix, and the round is what found
+  > the gap.**
+  >
+  > **What the amendment above said, and what round 1 revealed.** The block above
+  > recorded the residual as "one existence bit about a forty-hex sha the caller
+  > already holds" over a space that "is not enumerable", and treated that as the
+  > whole reach. It was false at the commit that wrote it. `fixCommit` reached
+  > `diff-tree`'s revision argument as a git *revision expression*, not as a bare
+  > object name, so a caller could name a commit it did not hold: two reviewers
+  > independently recovered a commit's *message* by sending `HEAD^{/<text>}` and a
+  > ref-search form (`fix_commit_check.py`'s docstring records the exact
+  > alternation the appended `^{commit}` forced), making `fix_commit_present`
+  > answer to a description. The residual was a message-recovery channel over the
+  > repository's reachable history, not one existence bit — the amendment above
+  > priced the *duration* channel it had just closed and was silent about the
+  > *expression* channel that stayed open, because a single `diff-tree` call still
+  > evaluated whatever revision language it was handed.
+  >
+  > **Why the residual is now what that amendment claimed.** A grammar funnel
+  > refuses any `fixCommit` that is not a full-length lower-case object name — 40
+  > or 64 hex digits — with `NO_SUCH_COMMIT` before any process exists
+  > (`re.fullmatch` of `[0-9a-f]{40}|[0-9a-f]{64}` at the adapter entry, the same
+  > pattern and a `maxLength` in the published input schema; shared corpus
+  > `tests/fix_commit_grammar.py`, asked at the wire and here). A revision
+  > expression is not full hex, so it is refused pre-spawn and no revision language
+  > is ever spent. Only past that funnel is the residual one existence bit about a
+  > *valid* object name the caller already holds, over the non-enumerable space the
+  > amendment above named. A grammar miss spawns nothing, so a malformed input
+  > carries no timing arm, and the git-internal duration residual measured above
+  > (+0.14 ms at the adapter, +0.22 ms at the wire) now sits *under* the funnel: it
+  > is reachable only for an input that is already a valid full-hex object name,
+  > which is the reach that amendment assumed it had.
+  >
+  > **The class and its universal, so the sibling is not met as a surprise.** The
+  > root cause is not `fixCommit`; it is **caller-controlled tokens reaching a
+  > subprocess argv**. The universal, stated so it can be refuted by grep: *git —
+  > any spawn — receives MCP-caller bytes only through validated funnels.*
+  > `tests/unit/test_network_call_sites.py`'s `PROCESS_SPAWN_SITES` pins six spawn
+  > sites; exactly one is composed into the daemon/MCP surface a caller's bytes
+  > reach — `fix_commit_check.py`, through `mcp/tools.py` (the only importer of it
+  > under `mcp/`/`daemon/`) — and its two untrusted tokens are both funnelled: the
+  > revision by the full-hex grammar above, the stored `file_path` (T-24,
+  > author-controlled) by `--` and `--literal-pathspecs`. The other five spawns
+  > take operator, configuration or setup input, none of it wire-reachable. A
+  > future tool composing a second spawn module joins this class silently unless
+  > the daemon-composed spawn-module set is pinned, which is the ratchet this class
+  > still owes (recorded in the round-1 closure argument).
+  >
+  > **What is pinned, and what is not.** The demonstrated channel — a revision
+  > expression reaching git — is closed by the funnel and held at both layers
+  > against the shared corpus `tests/fix_commit_grammar.py`: the published schema
+  > pattern by `tests/unit/test_candidate_input_schema.py`, and the adapter's entry
+  > funnel (a refused member spawns nothing) by
+  > `tests/integration/test_fix_commit_check_adapter.py`. T-7's spawn bullet and
+  > `PROCESS_SPAWN_SITES`' note are held to the one-`diff-tree` vector by
+  > `test_threat_model_t7_claims.py`. The git-internal duration residual is
+  > measured, bounded and **unpinned**, as the amendment above records.
 - **Slice B5 — at least one gate test is driven from a record the real adapter
   shape produces.** That is, a `ReviewResolution` built the way
   `review_provider.py` builds one, with `fix_commit` **absent**. What lets a

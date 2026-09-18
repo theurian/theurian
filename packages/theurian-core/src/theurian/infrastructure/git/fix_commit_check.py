@@ -7,11 +7,26 @@ so a gate that read the signal off the stored record would refuse every ingested
 thread while a hand-authored evidence file passed it -- the inversion ADR-0033
 measured and rejected.
 
-**One process, for every input, and that is a disclosure control rather than a
-saving.** This adapter asked two questions in two spawns until C4c -- *does this
-name resolve to a commit* (``rev-parse``), then *did that commit touch this path*
-(``diff-tree``) -- and the first could answer no on its own, so a refusal about an
-absent object cost one process and a refusal about a real commit cost two. The
+**``fixCommit`` is a git revision expression unless the adapter stops it, and the
+entry funnel is what stops it.** ``verify`` refuses anything that is not a
+full-length lower-case object name -- forty hex digits or sixty-four -- with
+``NO_SUCH_COMMIT`` before any process exists. Two reviewers independently
+recovered a commit's message through the revision language: ``HEAD^{/<text>}``
+searches history and ``:/<text>|zzzz`` searches every ref, and the alternation
+puts the appended ``^{commit}`` inside the second branch so the first branch
+still matches -- the suffix forecloses nothing, and a caller who knew no sha
+could satisfy ``fix_commit_present`` (ADR-0033 decision 3) by describing the
+commit it wanted. A grammar miss spawns nothing, so malformed input carries no
+timing arm at all; the residual is one existence bit about a *valid* full-hex
+sha, which the byte-identity pins hold. ``tests/fix_commit_grammar.py`` is the
+shared corpus, asked at the wire and here.
+
+**One process, for every input the grammar admits, and that is a disclosure
+control rather than a saving.** This adapter asked two questions in two spawns
+until C4c -- *does this name resolve to a commit* (``rev-parse``), then *did that
+commit touch this path* (``diff-tree``) -- and the first could answer no on its
+own, so a refusal about an absent object cost one process and a refusal about a
+real commit cost two. The
 C4b battery measured the pair end to end at **+7.2 ms, P=1.000**: the refusal's
 *duration* answered "does this object exist here", which is a fact about the
 repository the caller was not granted. ADR-0033 decision 5 binds the two
@@ -28,9 +43,10 @@ exit 0, output       ``VERIFIED``
 
 **Both arguments are untrusted, and they are untrusted differently.** The sha is
 caller wire input; the path is author-controlled stored data a clone can deliver
-(T-3, T-24). Four tokens hold that, and what each is worth was re-measured under
-this shape on git 2.47.1, 2026-09-19, because two of them had been justified by a
-``rev-parse`` behaviour that no longer runs:
+(T-3, T-24). Five tokens shape the single ``diff-tree`` call, and what each is
+worth was re-measured under this shape on git 2.47.1, 2026-09-19 -- two because a
+``rev-parse`` behaviour that once justified them no longer runs, and
+``--diff-merges=first-parent`` because it is new:
 
 * ``--literal-pathspecs`` -- **load-bearing.** Against a commit touching only
   ``docs/notes.md``, the stored paths ``:(exclude)src/retrying.py``,
@@ -40,6 +56,14 @@ this shape on git 2.47.1, 2026-09-19, because two of them had been justified by 
 * ``--root`` -- **load-bearing.** A repository's first commit reports no files
   without it (measured: empty output where the flag gives ``src/retrying.py``),
   so a fix that *is* the root commit would read as touching nothing.
+* ``--diff-merges=first-parent`` -- **load-bearing, and the only token here that
+  changes a verdict for an honest input.** ``diff-tree`` prints nothing for a
+  merge commit by default, so a conflict-resolving merge that introduced the fix
+  read ``TOUCHES_NOTHING_HERE`` -- a true fix, correctly named, refused. The mode
+  is *this merge changed the file relative to the branch it landed on*, which
+  names the merge rather than some parent; the integration battery enumerates the
+  three merge shapes that rule out ``separate`` and ``combined``, and plain-commit
+  verdicts are unchanged.
 * ``^{commit}`` on the revision -- **load-bearing, for a different reason than it
   used to be.** Under the two-call shape it was what refused a fabricated forty
   hex digits, because ``rev-parse --verify`` accepts a full-width hex string as an
@@ -50,14 +74,17 @@ this shape on git 2.47.1, 2026-09-19, because two of them had been justified by 
   a tree id and a blob id each exit 0 with empty output without it, which this
   module would read as ``TOUCHES_NOTHING_HERE``, i.e. as *a commit was found*,
   and exit 128 with it.
-* ``--end-of-options`` before the sha -- **defence in depth, with no reachable
-  verdict difference**, said plainly rather than implying a behavioural pin. An
-  option-shaped sha exits 128 behind the flag and 129, git's usage error, without
-  it; both are non-zero, so both are ``NO_SUCH_COMMIT``, and no file was created
-  in either reading. ``--`` before the path is the same kind of token on the same
-  vector: it keeps an option-shaped ``filePath`` a pathspec.
+* ``--end-of-options`` before the sha -- **defence in depth over a value the
+  funnel has already refused.** An option-shaped sha exits 128 behind the flag and
+  129, git's usage error, without it; both are non-zero, so both were the same
+  verdict even before the funnel, and no file was created in either reading. Since
+  the funnel, no option-shaped value reaches the vector at all, so the flag guards
+  the token position rather than any input a caller can send. ``--`` before the
+  path is the same kind of token on the same vector, and the one that still guards
+  a live input: the path is not funnelled, so an option-shaped ``filePath`` out of
+  an evidence file stays a pathspec.
 
-``tests/integration/test_fix_commit_check_adapter.py`` holds all four, and names
+``tests/integration/test_fix_commit_check_adapter.py`` holds all five, and names
 which of them a behavioural case can reach and which only its captured-vector pin
 can.
 
@@ -72,6 +99,7 @@ URL -- and is on ``PROCESS_SPAWN_SITES`` only because it spawns a process.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -85,6 +113,13 @@ from theurian.domain.review import FixCommitVerdict
 #: and the ``cli/context.py`` reads bound at; ``trailer_source.py``'s 30 is for a
 #: full-history ``git log``, not one commit.
 GIT_TIMEOUT_SECONDS: Final = 5.0
+
+#: The widest object name the entry funnel admits -- a SHA-256 id, sixty-four
+#: lower-case hex digits -- and so the ``maxLength`` the published input schema
+#: carries for ``fixCommit`` (ADR-0031 decision 6, held by
+#: ``test_input_schema_bounds.py``). A SHA-1 name is forty, the funnel's other
+#: admitted width.
+MAX_FIX_COMMIT_CHARS: Final = 64
 
 
 @final
@@ -104,13 +139,21 @@ class FixCommitCheck:
     def verify(self, commit: str, file_path: str) -> FixCommitVerdict:
         """Which of the three answers *commit* earns against *file_path*.
 
-        One question, whatever the answer turns out to be: the branch that used to
-        skip the second spawn is what made an absent object cheaper to refuse than
-        a real one (module docstring). So the outcome is read off one call rather
-        than chosen between two, and the fail-closed readings -- git absent, a
-        spawn that raised, a timeout -- join the non-zero exits on the refusing
+        The grammar funnel runs first: a *commit* that is not a full-length
+        lower-case object name is ``NO_SUCH_COMMIT`` before any process exists, so
+        no revision expression is ever spent as one (module docstring). *file_path*
+        is not funnelled -- it is author-controlled stored data (T-24) -- so a NUL
+        byte it can carry is caught by ``_run``'s fail-closed ``except`` instead.
+
+        Past the funnel it is one question, whatever the answer turns out to be:
+        the branch that used to skip the second spawn is what made an absent object
+        cheaper to refuse than a real one. So the outcome is read off one call
+        rather than chosen between two, and the fail-closed readings -- git absent,
+        a spawn that raised, a timeout -- join the non-zero exits on the refusing
         side rather than adding a path of their own.
         """
+        if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit) is None:
+            return FixCommitVerdict.NO_SUCH_COMMIT
         completed = self._run(
             [
                 "--literal-pathspecs",
@@ -119,6 +162,7 @@ class FixCommitCheck:
                 "--name-only",
                 "-r",
                 "--root",
+                "--diff-merges=first-parent",
                 "--end-of-options",
                 f"{commit}^{{commit}}",
                 "--",
@@ -140,6 +184,11 @@ class FixCommitCheck:
         ``test_the_module_reaches_a_spawn_from_exactly_one_place`` counts the
         initiations that reach here; the runtime pins beside it count the spawns a
         verification actually makes. Fixed vector, no shell.
+
+        The ``except`` names ``ValueError`` because a NUL byte in the stored
+        ``file_path`` (T-24) raises it out of ``subprocess`` -- neither ``OSError``
+        nor ``TimeoutExpired`` -- and a stored value must earn a verdict, never a
+        traceback across the tool seam.
         """
         if self._git is None:
             return None
@@ -151,5 +200,5 @@ class FixCommitCheck:
                 timeout=GIT_TIMEOUT_SECONDS,
                 check=False,
             )
-        except (OSError, subprocess.TimeoutExpired):
+        except (OSError, ValueError, subprocess.TimeoutExpired):
             return None

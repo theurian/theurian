@@ -281,20 +281,32 @@ NETWORK_CLIENT_SITES = {
 #:   remote. The binary is resolved to an absolute path -- ADR-0030 clause 5's tier
 #:   and not the bare-``git`` tier its ``cli/context.py`` sibling uses, because this
 #:   call gates a write. Timeout ``GIT_TIMEOUT_SECONDS`` (5s) on each.
-#: - ``infrastructure/git/fix_commit_check.py`` runs ``git rev-parse --verify
-#:   --quiet <sha>^{commit}`` and ``git diff-tree`` to answer whether the
-#:   ``fixCommit`` a caller named exists in this repository and touched the file
-#:   the stored review thread is anchored to -- ADR-0033 decision 3's
-#:   verification, which is what makes ``fix_commit_present`` a signal the caller
-#:   has to find something real to satisfy rather than one it asserts. Local
-#:   object storage only, so it is *not* a network client and is on this list
-#:   because it spawns a process. The vector is the adapter's: the ``rev-parse``
-#:   argument is suffixed ``^{commit}`` and the ``diff-tree`` path is passed after
-#:   a ``--`` separator, so a caller-supplied sha cannot be read as an option nor
-#:   a stored ``filePath`` as a revision, and neither call can be handed a URL or
-#:   a remote. The binary is resolved to an absolute path -- ADR-0030 clause 5's
-#:   tier, as its ``committed_check.py`` sibling is, because this call gates a
-#:   promotion signal. Timeout ``GIT_TIMEOUT_SECONDS`` (5s) on each.
+#: - ``infrastructure/git/fix_commit_check.py`` runs one command,
+#:   ``git --literal-pathspecs diff-tree --no-commit-id --name-only -r --root
+#:   --diff-merges=first-parent --end-of-options <sha>^{commit} -- <file_path>``,
+#:   to answer whether the ``fixCommit`` a caller named is a commit here that
+#:   touched the file the stored review thread is anchored to (ADR-0033 decision
+#:   3's verification, which is what makes ``fix_commit_present`` a signal the
+#:   caller has to find something real to satisfy rather than one it asserts).
+#:   Local object storage only, so it is *not* a network client and is on this
+#:   list because it spawns a process. What keeps the sha from being a git
+#:   revision expression is a grammar funnel, not the spawn: before any process
+#:   exists the adapter refuses a sha that is not full length lower case hex,
+#:   forty digits or sixty four, so a revision expression two reviewers used to
+#:   recover a commit by its message is refused before git runs
+#:   (``fix_commit_grammar`` is the corpus both this funnel and the published
+#:   input schema are asked). The retired two call shape, a git rev parse verify
+#:   pass and then a diff tree, is gone: with the re match it credited removed the
+#:   suffix now holds commit only semantics rather than refusing a fabricated sha,
+#:   because diff tree exits nonzero on an absent object on its own. The remaining
+#:   fences are graded rather than listed. The pathspec literal flag refuses a
+#:   stored pathspec expression; the options terminator guards the token position
+#:   the funnel emptied; the path separator keeps an option shaped stored
+#:   ``filePath`` a pathspec; the root flag lets a first commit be a fix; and the
+#:   first parent diff mode lets a conflict resolving merge be one. The binary is
+#:   resolved to an absolute path -- ADR-0030 clause 5's tier, as its
+#:   ``committed_check.py`` sibling is, because this call gates a promotion
+#:   signal. Timeout ``GIT_TIMEOUT_SECONDS`` (5s).
 #: - ``infrastructure/git/trailer_source.py`` runs ``git log origin/main`` to read
 #:   ``Review-Finding:`` trailers (ADR-0029). It is *not* a network client: unlike
 #:   ``git fetch``, ``git log`` reads local object storage and the local
@@ -344,6 +356,170 @@ PROCESS_SPAWN_SITES = {
     ("infrastructure/github/gh_cli.py", "asyncio.create_subprocess_exec"),
     ("infrastructure/services/runner.py", "subprocess"),
 }
+
+
+#: The module every MCP tool is registered in, as a path under ``theurian/``.
+#:
+#: The entry point for the spawn-reachability arm below, and it is the right one
+#: because it is where **caller bytes arrive**: a ``tools/call`` is dispatched to
+#: a handler defined here, so whatever this module composes is what a caller's
+#: own strings can reach. The daemon process is wider -- ``daemon/runner.py``
+#: also imports ``cli/context.py`` for ``schema_root`` -- and that difference is
+#: the premise the arm asserts before it asserts anything else.
+MCP_TOOL_SURFACE = "mcp/tools.py"
+
+#: A second entry point, used only as the discrimination premise: it reaches a
+#: recorded spawn site the tool surface does not.
+DAEMON_COMPOSITION_ROOT = "daemon/runner.py"
+
+#: Every recorded spawn site the MCP tool surface composes, and why each one is
+#: allowed to be handed caller bytes at all.
+#:
+#: **One member, and that is the property.** ``review.generateKnowledgeCandidate``
+#: passes a caller's ``fixCommit`` towards ``git`` (ADR-0033 decision 3), and
+#: what makes that safe is not the spawn site's argument vector alone -- the
+#: vector is fixed, but one of its tokens *is* the caller's string. What bounds
+#: it is the **entry funnel** in front of the adapter: a full-length lower-case
+#: object name or nothing, so what reaches ``git``'s argv is forty or sixty-four
+#: hex digits and the alternative never spawns. Two reviewers recovered a
+#: promotion signal through that token before the funnel existed, by sending a
+#: git revision *expression* instead of an object name.
+#:
+#: So a second member here is not a style question: it is a second path from
+#: caller bytes to ``argv``, and it needs its own funnel, its own corpus and its
+#: own behavioural battery before it is listed. The equality fails on an
+#: addition *and* on a removal, and the failure message says what each means.
+#:
+#: What holds the funnel itself, so the claim above is checkable rather than
+#: asserted: ``tests/integration/test_fix_commit_check_adapter.py``'s
+#: ``test_a_fix_commit_that_is_not_a_full_object_name_is_refused_without_spawning``
+#: (behaviour and zero spawns, over ``fix_commit_grammar``'s corpus) and
+#: ``tests/unit/test_candidate_input_schema.py``'s published-``pattern`` arms
+#: over the same corpus.
+CALLER_REACHABLE_SPAWN_SITES = {
+    ("infrastructure/git/fix_commit_check.py", "subprocess"),
+}
+
+
+def _module_path(dotted: str) -> str | None:
+    """``theurian.mcp.tools`` as ``mcp/tools.py``, when such a module exists.
+
+    ``None`` for a dotted name that is a *symbol* rather than a module -- an
+    ``ImportFrom`` names both, and only the source tree can tell them apart --
+    and for a package, whose ``__init__.py`` is followed under its own name.
+    """
+    relative = dotted.removeprefix("theurian.").replace(".", "/")
+    if (SRC / f"{relative}.py").is_file():
+        return f"{relative}.py"
+    if (SRC / relative / "__init__.py").is_file():
+        return f"{relative}/__init__.py"
+    return None
+
+
+def _import_closure(entry: str) -> frozenset[str]:
+    """Every module under ``theurian/`` that ``entry`` reaches by import.
+
+    Transitive, and over the whole syntax tree rather than the module's top
+    level, so an import written inside a function or behind ``TYPE_CHECKING``
+    counts. Both over-approximate in the direction that costs a review rather
+    than skips one: a deferred import is still a module the process can load,
+    and a ``TYPE_CHECKING`` import of a spawn site is a line away from being a
+    real one.
+
+    **Its bound, stated:** a module reached under a name that does not exist
+    until the line runs -- ``import_module("theurian." + name)`` -- is invisible
+    here, the same floor every scan in this file records. A *relative* import is
+    not part of that bound and is refused outright: the shipped package has none
+    today (measured 2026-09-19), and a walk that silently skipped the first one
+    would under-read the closure and report a reach as absent.
+    """
+    seen: set[str] = set()
+    pending = [entry]
+    while pending:
+        module = pending.pop()
+        if module in seen:
+            continue
+        seen.add(module)
+        tree = ast.parse((SRC / module).read_text(encoding="utf-8"), filename=module)
+        for node in ast.walk(tree):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                assert not node.level, (
+                    f"{module} carries a relative import (`from {'.' * node.level}"
+                    f"{node.module or ''} import ...`), which this walk does not resolve. "
+                    f"The shipped package had none when this scan was written, so the walk "
+                    f"refuses rather than skipping it and under-reading the closure."
+                )
+                names = [node.module or "", *(f"{node.module}.{a.name}" for a in node.names)]
+            for name in names:
+                if name.startswith("theurian") and (found := _module_path(name)) is not None:
+                    pending.append(found)
+    return frozenset(seen)
+
+
+def test_the_mcp_tool_surface_composes_exactly_one_recorded_spawn_site() -> None:
+    """Caller bytes reach ``git`` through one funnel, and a second path fails here.
+
+    :data:`PROCESS_SPAWN_SITES` answers *which modules may start a program*. It
+    says nothing about **which of them a caller can reach**, and that is the
+    question this arm adds: five of the six are CLI-side and never see an MCP
+    caller's string, while the sixth is handed one on purpose.
+
+    The class it ratchets is a measured one rather than a hypothetical. Before
+    ``fix_commit_check``'s entry funnel, the caller's ``fixCommit`` was spent as
+    a git *revision expression*, and two reviewers independently recovered the
+    ``fix_commit_present`` promotion signal through it without knowing any
+    object id. The fix bounds that one token; what stops the next tool
+    reintroducing the class is this equality, because a new spawn site composed
+    into the tool surface reddens here and its author has to say which funnel
+    bounds it.
+
+    **The premise is a discrimination, not a count.** A walk that resolved
+    nothing would report zero spawn sites and read as perfect safety, and a walk
+    that returned every module in the package would report all six and read as
+    an alarm. So the closure is asserted to reach the entry module, to be
+    substantial, and to *exclude* a recorded spawn site that the daemon's own
+    composition root does reach -- ``cli/context.py``, imported by
+    ``daemon/runner.py`` for ``schema_root`` and by nothing under the tool
+    surface (measured 2026-09-19).
+    """
+    surface = _import_closure(MCP_TOOL_SURFACE)
+    daemon = _import_closure(DAEMON_COMPOSITION_ROOT)
+
+    assert MCP_TOOL_SURFACE in surface and len(surface) >= 50, (
+        f"the import walk reached {len(surface)} module(s) from {MCP_TOOL_SURFACE}, and it "
+        f"reached 85 when this floor was measured (2026-09-19). It has resolved almost "
+        f"nothing, and a closure that resolves nothing reports no spawn site at all -- "
+        f"which is indistinguishable from a tool surface that composes none"
+    )
+    assert "cli/context.py" in daemon and "cli/context.py" not in surface, (
+        f"the walk no longer discriminates: `cli/context.py` is "
+        f"{'in' if 'cli/context.py' in surface else 'out of'} the tool surface's closure "
+        f"and {'in' if 'cli/context.py' in daemon else 'out of'} the daemon's. It is a "
+        f"recorded spawn site the daemon composes for `schema_root` and the tool surface "
+        f"does not, so if those two readings ever agree the walk is returning everything "
+        f"or nothing and the equality below measures the walk rather than the product"
+    )
+
+    composed = {(module, watched) for module, watched in PROCESS_SPAWN_SITES if module in surface}
+
+    assert composed == CALLER_REACHABLE_SPAWN_SITES, (
+        f"the MCP tool surface composes {sorted(composed)}; the recorded set is "
+        f"{sorted(CALLER_REACHABLE_SPAWN_SITES)}.\n\n"
+        "ADDED: a second path from a caller's own bytes to a `git`/`gh` argv. Before "
+        "listing it, establish what bounds the caller-supplied token -- a grammar the "
+        "adapter refuses at entry, with a corpus and a battery that drives every member "
+        "of it, and the published input schema refusing the same set at the wire. "
+        "`infrastructure/git/fix_commit_check.py` is the precedent and "
+        "`fix_commit_grammar` is its corpus; what a bare fixed vector buys is recorded "
+        "on `PROCESS_SPAWN_SITES` and is not enough on its own, because the vector's "
+        "shape is fixed while one of its tokens is the caller's.\n\n"
+        "REMOVED: the tool surface no longer reaches the fix-commit verification, so "
+        "`fix_commit_present` is satisfied by something other than a git read -- which "
+        "is the design ADR-0033 decision 3 rejected, and this set is where it shows."
+    )
 
 
 def _dotted(node: ast.AST) -> str | None:

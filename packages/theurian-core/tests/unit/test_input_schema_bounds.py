@@ -41,6 +41,7 @@ import pytest
 
 from theurian.daemon.server import MAX_REQUEST_BODY_BYTES
 from theurian.domain.identifiers import MAX_IDENTIFIER_LENGTH
+from theurian.infrastructure.git.fix_commit_check import MAX_FIX_COMMIT_CHARS
 from theurian.mcp import tools, validation
 from theurian.mcp.findings import MAX_FILTER_CHARS as FINDINGS_MAX_FILTER_CHARS
 from theurian.mcp.review_search import MAX_FILTER_CHARS as REVIEW_SEARCH_MAX_FILTER_CHARS
@@ -85,6 +86,15 @@ BOUNDS: Final[dict[tuple[str, str], tuple[str, int, str]]] = {
         "domain/identifiers.py -- `ItemId` refuses a longer value; the candidate tool echoes "
         "the id in the candidate id it builds, so it is bounded before the echo the same way "
         "`knowledge.proposeChange`'s is",
+    ),
+    ("review-generate-knowledge-candidate-input.schema.json", "properties/fixCommit"): (
+        "MAX_FIX_COMMIT_CHARS",
+        MAX_FIX_COMMIT_CHARS,
+        "infrastructure/git/fix_commit_check.py -- the entry funnel admits a full-length "
+        "lower-case object name and nothing else, so the widest value that can reach the "
+        "verification is a SHA-256 id. A published bound above it admits a value the "
+        "adapter answers `NO_SUCH_COMMIT` for without looking, which reads to the caller "
+        "as *that commit is not here*",
     ),
     ("review-generate-knowledge-candidate-input.schema.json", "properties/body"): (
         "MAX_REQUEST_BODY_BYTES",

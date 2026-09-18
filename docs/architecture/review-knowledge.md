@@ -134,9 +134,12 @@ Comments are classified into the eleven categories from §21 of the brief:
 `reliability-rule`, `coding-convention`, `testing-rule`, `domain-rule`,
 `rejected-approach`, `known-exception`, `incident-prevention`.
 
-Classification is a hint that routes a candidate to the right knowledge kind and
-namespace. It is not a truth claim, and a misclassification costs a reviewer one
-correction — not a wrong rule in the knowledge base.
+Classification is a caller-supplied hint recorded on the candidate, not a router:
+it chooses neither the knowledge kind nor the namespace — those are the caller's
+own wire fields — and today it is not carried into the drafted proposal at all
+([#754](https://github.com/theurian/theurian/issues/754) tracks that). It is not
+a truth claim, and a misclassification costs a reviewer one correction — not a
+wrong rule in the knowledge base.
 
 ## The promotion gate
 

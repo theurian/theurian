@@ -2126,30 +2126,47 @@ other's blind spots.
 
   **The sixth is the only one handed an argument a document supplies.** Since
   ADR-0033's candidate generation landed, `infrastructure/git/fix_commit_check.py`
-  runs `git rev-parse` and then `git diff-tree` to answer whether a caller's
-  `fixCommit` is a commit here that touched the stored thread's `file_path`. Its
-  two inputs are untrusted differently: the sha is caller wire input, and the
-  path is author-controlled stored data a clone can deliver (T-24). Three fences
-  sit on the vector — `--end-of-options` before the sha, `--` before the path,
-  and `--literal-pathspecs` — and the module's own measurement (git 2.47.1,
-  2026-09-18) grades them rather than listing them as equals. The
-  pathspec-magic one is load-bearing: without `--literal-pathspecs` a stored
-  `:(exclude)…` or `:(glob)…` verifies a commit that touched anything *but* the
-  thread's file. `--end-of-options` is defence in depth with no reachable
-  difference under the shipped vector, because the revision carries a `^{commit}`
-  suffix, so an option-shaped value arrives as the token `--all^{commit}` that
-  git fails to resolve either way. That suffix is what refuses a fabricated forty
-  hex digits — `rev-parse --verify` alone accepts a full-width hex string as an
-  object *name* and prints it back at exit 0 — and `diff-tree`'s revision is not
-  the caller's string at all but the id `rev-parse` printed, re-matched as hex
-  before it is spent. The call reaches no network and names no remote
-  (`rev-parse` and `diff-tree` read local object storage), resolves `git` to an
-  absolute path, and bounds each spawn with `GIT_TIMEOUT_SECONDS`.
-  `tests/integration/test_fix_commit_check_adapter.py` captures both vectors at
-  an option-shaped sha and a pathspec-expression path in one fixture and asserts
-  the three fences, `--root`, the `^{commit}` suffix, the printed id reaching
-  `diff-tree`, the absolute binary, the per-call timeout, and that neither call
-  is given a shell.
+  runs one command,
+  `git --literal-pathspecs diff-tree --no-commit-id --name-only -r --root --diff-merges=first-parent --end-of-options <sha>^{commit} -- <file_path>`,
+  to answer whether a caller's `fixCommit` is a commit here that touched the
+  stored thread's `file_path`. Its two inputs are untrusted differently: the sha
+  is caller wire input, and the path is author-controlled stored data a clone can
+  deliver (T-24). **What keeps the sha from being a git revision expression is a
+  grammar funnel, not the spawn.** Before any process exists, the adapter refuses
+  a `fixCommit` that is not a full-length lower-case object name — forty hex
+  digits or sixty-four — with `re.fullmatch` of `[0-9a-f]{40}|[0-9a-f]{64}` at its
+  entry, and the published input schema carries the same pattern and a `maxLength`
+  on `fixCommit`; `tests/fix_commit_grammar.py` is the corpus both are asked. B5
+  round 1 found why that funnel is the control and not a nicety. Until it landed,
+  this entry described a retired two-call shape: it credited a git rev-parse
+  --verify pass with refusing a fabricated forty-hex sha, and told the reader
+  diff-tree received the id rev-parse printed rather than the caller's string,
+  re-matched as hex before it was spent. Neither was true once the two calls
+  collapsed into the single `diff-tree` above, and with that re-match gone the
+  caller's `fixCommit` reached git's revision language directly: two reviewers
+  independently recovered a commit's message by sending a revision expression such
+  as `HEAD^{/<text>}` in place of a sha, making `fix_commit_present` answer to a
+  description rather than to a commit id (the adapter's own docstring records the
+  exact forms). The grammar funnel closes that channel — a revision expression is
+  not full-length hex, so it is refused before the spawn and no revision language
+  is ever spent. Three fences still sit on the one vector, graded by the module's
+  own measurement (git 2.47.1, 2026-09-19) rather than listed as equals.
+  `--literal-pathspecs` is load-bearing: without it a stored `:(exclude)` or
+  `:(glob)` pathspec verifies a commit that touched anything *but* the thread's
+  file. `--` before the path keeps an option-shaped stored `filePath` a pathspec.
+  `--end-of-options` before the sha now guards only the token position the funnel
+  has already emptied, since no option-shaped value survives the grammar. `--root`
+  lets a repository's first commit be a fix and `--diff-merges=first-parent` lets
+  a conflict-resolving merge be one; the `^{commit}` suffix now holds commit-only
+  semantics rather than refusing a fabricated sha, because `diff-tree` exits
+  non-zero on an absent object with or without it. The call reaches no network and
+  names no remote (`diff-tree` reads local object storage), resolves `git` to an
+  absolute path, and bounds the spawn with `GIT_TIMEOUT_SECONDS`.
+  `tests/integration/test_fix_commit_check_adapter.py` captures the one vector at
+  the widest object name the grammar admits and a pathspec-expression stored path
+  and asserts the fences, `--root`, `--diff-merges=first-parent`, the `^{commit}`
+  suffix, the single spawn, the absolute binary, the per-call timeout, and that it
+  is given no shell.
 
   This entry said "two sites" and named the first two until 2026-09-02,
   "three" until ADR-0030's adapter landed, "four" until ADR-0034's committed

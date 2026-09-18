@@ -3312,14 +3312,15 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 # **The narrowed meaning, now that it is `true`: a write-intent
                 # tool exists that a client may call.** ADR-0032 decision 5 ties
                 # this flip to the first registration, in one commit and in both
-                # directions (ADR-0026's capability honesty): `knowledge.proposeChange`
-                # and `knowledge.generateMigrationDraft` are registered and emit a
+                # directions (ADR-0026's capability honesty): `knowledge.proposeChange`,
+                # `knowledge.generateMigrationDraft`, and
+                # `review.generateKnowledgeCandidate` are registered and emit a
                 # proposal a human reviews and merges. It does **not** say a client
                 # may write approved knowledge -- no MCP tool reaches an approved-state
                 # write, which stays a human merging a pull request (ADR-0013). The
                 # tools hold a draft-only facade whose reachable surface is the two
-                # draft entries alone (ADR-0032 decision 8), so `accept`/`_commit`
-                # are unreachable from a tool.
+                # facade entries `draft`/`draft_from_document` alone (ADR-0032
+                # decision 8), so `accept`/`_commit` are unreachable from a tool.
                 "writeTools": True,
             },
             "note": (
