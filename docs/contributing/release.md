@@ -52,18 +52,27 @@ the last `core-v*` tag deferred to it, recorded under each PR body's
 `## Deferred claims` heading:
 
 ```sh
+set -eu
 tag=$(git describe --abbrev=0 --match 'core-v*')
-gh pr list --limit 500 --search "merged:>=$(git log -1 --format=%cI "$tag")"
+since=$(git log -1 --format=%cI "$tag")
+gh pr list --state merged --limit 500 --json number,title,body --search "merged:>=$since"
 ```
 
-The dispatch brief hands them to `theurian-adversarial-review` as claims to attack.
-`%cI` gives GitHub the tag commit's exact instant, offset included; a bare date is
-read as UTC midnight instead, which at four of this repository's first 25 `core-v*`
-cuts dropped 10 merged pull requests out of the window. `--limit` is load-bearing
-(`gh pr list` returns 30 without it) and truncates silently, so a result of exactly
-500 means the window was cut short — widen it and re-run. Quoting `"$tag"` is what
-makes a tagless checkout fail loudly: nested and unquoted, an empty `git describe`
-leaves the window at HEAD's own date and the gather still exits 0.
+Each section is read with the template's HTML comments stripped: `None` is a pull
+request that deferred nothing and is skipped; a section that is missing or empty
+is a recording failure to raise with its author, not a second way of saying
+`None`. The dispatch brief hands the rest to `theurian-adversarial-review` as
+claims to attack. `%cI` gives GitHub the tag commit's exact instant, offset
+included; a bare date is read as UTC midnight instead, which at four of this
+repository's first 25 `core-v*` cuts dropped 10 merged pull requests out of the
+window. `--limit` is load-bearing (`gh pr list` returns 30 without it) and
+truncates silently, so a result of exactly 500 may mean the window was cut short —
+widen it and re-run. `set -eu` is what makes a tagless checkout fail loudly: the
+shell stops at `git describe`'s own exit 128, before `gh` runs. Without it that
+status is discarded by the assignment, `git log` fails the same way inside the
+next one, and the search key degenerates to `merged:>=` — which prints `[]` and
+exits 0, byte-identical to a window in which nothing merged. Quoting `"$tag"` is
+what makes that window empty rather than HEAD's own date.
 
 What closes one of its findings, and why the anchor is the cut rather than a
 cadence, is in [orchestration.md](orchestration.md#the-async-red-team-sweep).

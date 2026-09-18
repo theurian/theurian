@@ -4,9 +4,12 @@
 
 ## Deferred claims
 
-<!-- Claims this PR defers to the release-cut adversarial pass, one per line.
-     Write None if nothing was deferred -- an explicit None is what tells the
-     release-cut gather "deferred nothing" rather than "forgot to record". -->
+<!-- Claims this PR defers to the release-cut adversarial pass, one per line. If
+     nothing is deferred, replace this comment with the single word None. The
+     release-cut gather reads this section with HTML comments stripped, so a
+     comment left in place leaves the section empty, and an empty section comes
+     back to you as a recording failure rather than reading as nothing
+     deferred. -->
 
 ## Scope
 
