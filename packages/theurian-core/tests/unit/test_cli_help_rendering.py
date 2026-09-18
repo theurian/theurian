@@ -19,13 +19,16 @@ installable requirement. Escaping moves the defect between modes rather than
 removing it. With ``rich_markup_mode=None`` both settings take the same Click
 path, so there is one text and it is the source's.
 
-That makes this module's job two things:
+That makes this module's job three things:
 
 - the source text of every help string reaches its own ``--help`` intact --
   measured here for all 27 commands, and in the other mode by
   ``tests/integration/test_cli_help_without_rich.py``;
 - markup being off is *load-bearing*, so it is pinned on the app and
-  demonstrated on a throwaway app that turns it back on and loses the strings.
+  demonstrated on a throwaway app that turns it back on and loses the strings;
+- every registered command has a body to print in the first place (#715). The
+  sweep asks whether the strings that *exist* reach the screen, which is a
+  different question from whether one is there at all.
 
 Four shapes this can take, and which check rejects each. Every row was run:
 
@@ -193,6 +196,14 @@ def help_strings(
     return found
 
 
+def walk_commands(command: Any, path: tuple[str, ...] = ()) -> list[tuple[tuple[str, ...], Any]]:
+    """Every ``(path, command)`` in the tree, each parent before its children."""
+    found = [(path, command)]
+    for name, sub in sorted(getattr(command, "commands", {}).items()):
+        found.extend(walk_commands(sub, (*path, name)))
+    return found
+
+
 def command_paths(command: Any, path: tuple[str, ...] = ()) -> list[tuple[str, ...]]:
     """Every command in the tree, whether or not it carries a help string.
 
@@ -201,10 +212,7 @@ def command_paths(command: Any, path: tuple[str, ...] = ()) -> list[tuple[str, .
     those is a command that happened to print something about itself, which is
     not the population the count below is meant to pin.
     """
-    found = [path]
-    for name, sub in sorted(getattr(command, "commands", {}).items()):
-        found.extend(command_paths(sub, (*path, name)))
-    return found
+    return [found for found, _command in walk_commands(command, path)]
 
 
 def lost_from(
@@ -276,6 +284,33 @@ def test_the_walk_reaches_every_command_and_every_kind_of_help_string() -> None:
         )
     for label in MUST_FIND:
         assert label in found, f"the walk no longer finds `{label}`; see MUST_FIND"
+
+
+def test_every_registered_command_carries_a_help_body() -> None:
+    """A deleted docstring takes a command's whole ``--help`` body with it (#715).
+
+    ``project_list``'s one-line docstring, ``List registered projects.``, is the
+    entirety of ``theurian project list --help``'s body *and* of that command's
+    summary row under ``theurian project --help``. Deleting it left every other
+    check in this module green (#715, verified on a throwaway app). The sweep
+    asks whether the strings that exist reach the screen, and the per-path
+    contribution assertion above is satisfied by the command's ``--json``
+    option help alone -- so nothing read the body.
+
+    Structural over the built tree, so no table of strings has to be kept in
+    step with the commands.
+    """
+    missing = [
+        " ".join(("theurian", *path))
+        for path, command in walk_commands(get_command(app))
+        if not (isinstance(body := getattr(command, "help", None), str) and body.strip())
+    ]
+
+    assert not missing, (
+        f"{len(missing)} command(s) print no --help body, and no summary row in their "
+        f"parent's listing: {missing}. The docstring is that rendered text, which is "
+        "why it sits outside the brevity deletion pass."
+    )
 
 
 def test_every_help_string_reaches_the_screen_intact() -> None:
