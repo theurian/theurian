@@ -65,12 +65,20 @@ _NO_SCHEMA_FRAGMENT: Final = "publishes no input schema for that tool"
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[ServedProject]:
     """The served project, built by ``review_candidate_project``.
 
-    The setup is not this module's subject and is shared with the two-corpora
-    battery ADR-0033 decision 5 owes, so it lives beside the corpus it serves; what
-    matters here is only that the project, its review store and its two commits are
-    all real.
+    The setup is not this module's subject and is shared with ADR-0033 decision
+    5's two-corpora battery (``test_candidate_generation_absence_proof.py``), so
+    it lives beside the corpus it serves; what matters here is only that the
+    project, its review store and its two commits are all real.
+
+    ``withheld`` is stated rather than defaulted, for
+    ``ReviewSearchBuildRequest.withheld_record_keys``' reason: this module's
+    subject is the refusals a caller reaches over a corpus that withholds
+    **nothing**, and a signature that could supply that by omission is how the
+    posture stops being a decision.
     """
-    yield from served_project(tmp_path, monkeypatch)
+    yield from served_project(
+        tmp_path, monkeypatch, records=corpus.evidence_records(), withheld=frozenset()
+    )
 
 
 def _arguments(record_key: str, fix_commit: str, **overrides: Any) -> dict[str, Any]:

@@ -97,6 +97,43 @@ THREAD_NO_FILE_ANCHOR: Final = _node_id("PRRT", "d")
 #: A well-formed thread key this corpus never stores. The uniform refusal's input.
 THREAD_ABSENT: Final = _node_id("PRRT", "e")
 
+#: A thread meeting every gate signal, planted so one corpus can **withhold** it
+#: (ADR-0033 decision 5's two-corpora battery). Identical in every stored field to
+#: :data:`THREAD_SATISFYING` but its id, so what separates the two corpora is the
+#: withholding and not the record's shape -- and so the same call that answers a
+#: miss where the key is withheld lands a **proposal** where it is not, which is
+#: the positive control the equality needs.
+THREAD_WITHHELD: Final = _node_id("PRRT", "m")
+
+#: A pull request one corpus withholds. Its record key is its number, the other
+#: of the two key shapes ``withheld_record_keys`` is matched against, and
+#: withholding it drives the tool's **second** resolve -- the one that looks up
+#: the pull request named by a thread's ``event_key`` -- rather than the first.
+PULL_REQUEST_WITHHELD: Final = 434
+
+#: A thread the caller may see, anchored to :data:`PULL_REQUEST_WITHHELD`. Its own
+#: record is in both corpora; what is withheld is the record it depends on. This
+#: is the neighbour case: a *visible* row whose answer must not move with a row
+#: nobody may be told about.
+THREAD_ON_WITHHELD_PULL_REQUEST: Final = _node_id("PRRT", "n")
+
+#: Text **only** the withheld records carry, planted in every string of theirs a
+#: caller could plausibly receive: a thread's comment, a pull request's title and
+#: its body.
+#:
+#: The distinction from a record *key* is load-bearing. A key is something the
+#: caller sends, so finding one in an answer says only that the request was
+#: echoed; this string is something the caller cannot know, so finding it says a
+#: withheld record's own content reached the wire. A battery that scanned for the
+#: key instead would go red on an echoed request and call it a disclosure.
+#:
+#: Letters ``p``--``z`` only, and no visible record spells anything from that
+#: half of the alphabet, so the disjointness holds by construction rather than by
+#: inspection -- the guard that ranges over the rendered corpus is
+#: ``test_candidate_generation_absence_proof.py``'s
+#: ``test_the_two_corpora_differ_by_exactly_the_withheld_records``.
+WITHHELD_PAYLOAD: Final = "VWXYZPRSTVWXYZ"
+
 
 def _participant(login: str, filler: str) -> ReviewParticipant:
     return ReviewParticipant(
@@ -110,14 +147,19 @@ def _anchor(uri: str) -> SourceAnchor:
     )
 
 
-def _event(number: int, *, ci_successful: bool | None) -> ReviewEvent:
+def _marked(text: str, marker: str) -> str:
+    """``text``, carrying ``marker`` when there is one to carry."""
+    return text if not marker else f"{text} {marker}"
+
+
+def _event(number: int, *, ci_successful: bool | None, marker: str = "") -> ReviewEvent:
     return ReviewEvent(
         project_id=ProjectId("demo"),
         provider=PROVIDER,
         repository=REPOSITORY,
         number=number,
-        title="Take the lock after the read",
-        body="Fixes the retry deadlock reported in the payments incident.",
+        title=_marked("Take the lock after the read", marker),
+        body=_marked("Fixes the retry deadlock reported in the payments incident.", marker),
         author=_participant("author", "f"),
         created_at=datetime(2026, 9, 1, 9, 0, tzinfo=UTC),
         url=f"https://github.com/{REPOSITORY}/pull/{number}",
@@ -133,7 +175,12 @@ def _event(number: int, *, ci_successful: bool | None) -> ReviewEvent:
 
 
 def _thread(
-    external_id: str, *, number: int, file_path: str | None, comment_filler: str
+    external_id: str,
+    *,
+    number: int,
+    file_path: str | None,
+    comment_filler: str,
+    marker: str = "",
 ) -> ReviewThread:
     """One resolved conversation, as ``review_provider.py`` builds one.
 
@@ -150,7 +197,9 @@ def _thread(
             ReviewComment(
                 external_id=_node_id("PRRC", comment_filler),
                 author=_participant("reviewer", "g"),
-                body="This will deadlock under retry. Take the lock after the read.",
+                body=_marked(
+                    "This will deadlock under retry. Take the lock after the read.", marker
+                ),
                 created_at=datetime(2026, 9, 1, 10, 0, tzinfo=UTC),
                 category=ReviewCommentCategory.RELIABILITY_RULE,
             ),
@@ -231,6 +280,61 @@ def evidence_records() -> tuple[EvidenceRecord, ...]:
         ),
     )
 
+
+def visible_corpus() -> tuple[EvidenceRecord, ...]:
+    """:func:`evidence_records`, plus the thread anchored to the withheld pull request.
+
+    The corpus **both** halves of the two-corpora battery hold. The extra thread
+    is visible in both and is the one whose answer must not move with the record
+    it depends on: its ``event_key`` names :data:`PULL_REQUEST_WITHHELD`, whose
+    record one corpus withholds and the other never had.
+    """
+    return (
+        *evidence_records(),
+        _record(
+            _thread(
+                THREAD_ON_WITHHELD_PULL_REQUEST,
+                number=PULL_REQUEST_WITHHELD,
+                file_path=FILE_PATH,
+                comment_filler="q",
+            ),
+            f"https://github.com/{REPOSITORY}/pull/{PULL_REQUEST_WITHHELD}#discussion_r1",
+        ),
+    )
+
+
+def withheld_corpus() -> tuple[EvidenceRecord, ...]:
+    """The records one corpus holds and withholds, and the other never had.
+
+    Two kinds, so both record-key shapes are exercised: a thread is keyed by its
+    node id and a pull request by its number, and a battery that withheld only one
+    would leave the other's key untested.
+
+    Both carry :data:`WITHHELD_PAYLOAD`, which is what a scan for a leak looks
+    for: content the caller cannot know, rather than a key the caller sent.
+    """
+    return (
+        _record(
+            _thread(
+                THREAD_WITHHELD,
+                number=PULL_REQUEST_CI_PASSED,
+                file_path=FILE_PATH,
+                comment_filler="p",
+                marker=WITHHELD_PAYLOAD,
+            ),
+            f"https://github.com/{REPOSITORY}/pull/{PULL_REQUEST_CI_PASSED}#discussion_r3",
+        ),
+        _record(
+            _event(PULL_REQUEST_WITHHELD, ci_successful=True, marker=WITHHELD_PAYLOAD),
+            f"https://github.com/{REPOSITORY}/pull/{PULL_REQUEST_WITHHELD}",
+        ),
+    )
+
+
+#: The keys a withholding build is asked to drop, read off the records' own
+#: ``record_key`` rather than spelled again here: a second spelling is how a
+#: withheld key comes to match one definition and miss the other.
+WITHHELD_KEYS: Final = frozenset(record.record_key for record in withheld_corpus())
 
 #: The run every record above is stamped with. A ULID, unlike the node ids: this
 #: one Theurian mints, so it is Crockford base32 and carries no ``I``/``L``/``O``/``U``.

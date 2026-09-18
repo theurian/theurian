@@ -24,7 +24,7 @@ working directory.
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -47,7 +47,7 @@ from theurian.application.review_search_builder import (
 )
 from theurian.cli.main import app
 from theurian.cli.review_commands import evidence_entries, evidence_fingerprints
-from theurian.infrastructure.review_evidence import ReviewEvidenceStore
+from theurian.infrastructure.review_evidence import EvidenceRecord, ReviewEvidenceStore
 from theurian.infrastructure.sqlite.review_search_store import SqliteReviewSearchStore
 
 runner = CliRunner()
@@ -97,6 +97,11 @@ _GIT_IDENTITY: Final = (
     "-c",
     "commit.gpgsign=false",
 )
+
+#: Author and committer date on every commit this module's projects make, so a
+#: commit sha is a function of content alone. See :func:`served_project` for the
+#: comparison that needs it and the measurement that confirms it.
+_COMMIT_INSTANT: Final = "2026-09-19T12:00:00+00:00"
 
 
 @dataclass(frozen=True)
@@ -165,12 +170,24 @@ def commit_one(repo: Path, relative: str, body: str, message: str) -> str:
     return git(repo, "rev-parse", "HEAD")
 
 
-def land_and_build(registry: ProjectRegistry, root: Path) -> None:
-    """Land the corpus and project it, through the real writer, reader and builder.
+def land_and_build(
+    registry: ProjectRegistry,
+    root: Path,
+    *,
+    records: Sequence[EvidenceRecord],
+    withheld: frozenset[str],
+) -> None:
+    """Land ``records`` and project them, through the real writer, reader and builder.
 
     ``evidence_entries`` is the composition root's own mapping, imported rather
     than re-implemented: a harness that mapped the records itself would keep
     passing over a root that had stopped carrying a field.
+
+    **Neither keyword has a default**, for the reason
+    ``ReviewSearchBuildRequest.withheld_record_keys`` has none: "nothing is
+    withheld" is the state that must never be implicit, and a default parameter
+    is exactly how it would come back. Every caller states its corpus and its
+    withholding posture.
 
     The provenance record is not optional. ``review.search`` -- and any tool
     reading the same store -- refuses one this installation has no record of
@@ -179,17 +196,23 @@ def land_and_build(registry: ProjectRegistry, root: Path) -> None:
     """
     paths = ProjectPaths.of(root)
     evidence = ReviewEvidenceStore(paths.review)
-    evidence.write(corpus.evidence_records(), run=corpus.INGESTION_RUN)
+    evidence.write(tuple(records), run=corpus.INGESTION_RUN)
     store = SqliteReviewSearchStore(paths.review_search_for(REVIEW_SEARCH_STORE_ID))
     ReviewSearchBuilder(
         read_evidence=evidence_entries(evidence),
         list_evidence_fingerprints=evidence_fingerprints(paths.review),
         write=store.replace_all,
-    ).build(ReviewSearchBuildRequest(withheld_record_keys=frozenset()))
+    ).build(ReviewSearchBuildRequest(withheld_record_keys=withheld))
     BuildProvenance.for_registry(registry).record_review(paths.root, REVIEW_SEARCH_STORE_ID)
 
 
-def served_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[ServedProject]:
+def served_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    records: Sequence[EvidenceRecord],
+    withheld: frozenset[str],
+) -> Iterator[ServedProject]:
     """A registered, migrated project serving the corpus, over a real repository.
 
     A generator rather than a fixture, so each consuming module wraps it in its own
@@ -204,9 +227,23 @@ def served_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[
     The two commits are made **after** ``migrate apply``: that command's own
     committed-check sweeps the working tree into a commit, and a file staged before
     it would land there instead of in a commit of its own.
+
+    **Both commit shas are deterministic**, because a caller that builds this
+    project twice compares answers across the two and a ``fixCommit`` that moved
+    with the wall clock would make the two requests differ in the one field the
+    comparison must hold equal. A commit's sha is a function of its tree, its
+    parents, its identity and its **dates**, and the first three are already
+    fixed here; the two ``GIT_*_DATE`` variables fix the last. Measured
+    2026-09-19: two independently built projects answer the same
+    ``verifying``, the same ``unrelated`` and the same ``HEAD``. The evidence
+    files land *after* both commits, so a corpus difference cannot move them --
+    ``test_candidate_generation_absence_proof.py`` asserts that equality rather
+    than assuming it.
     """
     data_dir = tmp_path / "datadir"
     monkeypatch.setenv("THEURIAN_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("GIT_AUTHOR_DATE", _COMMIT_INSTANT)
+    monkeypatch.setenv("GIT_COMMITTER_DATE", _COMMIT_INSTANT)
 
     root = tmp_path / PROJECT_ID
     root.mkdir()
@@ -228,5 +265,5 @@ def served_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[
     unrelated = commit_one(root, corpus.OTHER_FILE_PATH, "PLACEHOLDER = 1\n", "touch another file")
 
     registry = ProjectRegistry.default(data_dir)
-    land_and_build(registry, root)
+    land_and_build(registry, root, records=records, withheld=withheld)
     yield ServedProject(registry=registry, root=root, verifying=verifying, unrelated=unrelated)
