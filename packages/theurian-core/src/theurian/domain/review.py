@@ -238,15 +238,17 @@ class PromotionGate:
     """The signals that decide whether a thread is worth a human's attention.
 
     This gate answers "should someone look at this?", never "is this true?".
-    Every field is an observed fact, so the decision is auditable rather than a
-    model's opinion (FR-V4).
+    Every field records what was observed rather than a model's opinion, so the
+    decision is auditable (FR-V4). ``ci_successful``'s ``None`` records that no
+    CI outcome was observed, which does not satisfy the gate (ADR-0033
+    decision 4).
     """
 
     pull_request_merged: bool
     thread_resolved: bool
     fix_commit_present: bool
     not_dismissed_or_outdated: bool
-    ci_successful: bool
+    ci_successful: bool | None
     generalizable: bool
     has_evidence: bool
 

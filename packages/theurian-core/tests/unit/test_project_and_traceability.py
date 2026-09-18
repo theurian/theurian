@@ -581,6 +581,63 @@ def test_unmet_signals_are_named_so_the_reason_is_actionable() -> None:
     assert gate.unmet() == ("ci_successful", "generalizable")
 
 
+def _gate_with_ci(ci_successful: bool | None) -> PromotionGate:
+    """Builds a gate outside ``_gate``'s ``type: ignore[arg-type]``.
+
+    ``_gate`` funnels its overrides through ``dict[str, object]`` and silences
+    the resulting ``arg-type``, so a ``None`` passed through it type-checks
+    against *any* annotation and pins nothing. ADR-0033 decision 4 widens
+    ``PromotionGate.ci_successful`` to ``bool | None``; this construction is
+    what makes ``mypy`` fail while the annotation still reads ``bool``.
+
+    Every other signal is ``True`` because that is the only shape in which
+    ``ci_successful`` alone can refuse: with any other signal false the gate
+    refuses regardless, and the tests below would hold whatever the tri-state
+    did.
+    """
+    return PromotionGate(
+        pull_request_merged=True,
+        thread_resolved=True,
+        fix_commit_present=True,
+        not_dismissed_or_outdated=True,
+        ci_successful=ci_successful,
+        generalizable=True,
+        has_evidence=True,
+    )
+
+
+def test_an_unknown_ci_result_does_not_satisfy_the_gate() -> None:
+    """ADR-0033 decision 4: unknown is unmet, and ``unmet()`` still names it.
+
+    ``None`` is *nobody has told Theurian whether this thread's fix passed* --
+    the adapter maps pending, expected, absent and unrecognised alike onto it
+    (``ReviewEvent.ci_successful``). Satisfying the gate on it would promote
+    unverified work, and dropping the name from ``unmet()`` would tell the
+    caller the thread is unsuitable when the actionable answer is "go and get a
+    CI result".
+    """
+    gate = _gate_with_ci(None)
+
+    assert not gate.is_satisfied
+    assert gate.unmet() == ("ci_successful",)
+
+
+def test_an_unknown_and_a_failed_ci_result_are_named_identically_by_unmet() -> None:
+    """Why ADR-0033 decision 4 spends a second read on the stored tri-state.
+
+    ``unmet()`` returns the names of the *falsy* signals, and ``None`` and
+    ``False`` are both falsy, so the refusal text cannot be composed from it
+    alone. This going RED means the two have become distinguishable here and
+    that second read has lost its reason to exist.
+    """
+    unknown = _gate_with_ci(None)
+    failed = _gate_with_ci(False)
+
+    assert not unknown.is_satisfied
+    assert not failed.is_satisfied
+    assert unknown.unmet() == failed.unmet() == ("ci_successful",)
+
+
 def _candidate(**overrides: object) -> KnowledgeCandidate:
     base: dict[str, object] = {
         "candidate_id": "cand-1",
