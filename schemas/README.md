@@ -4,9 +4,11 @@ These JSON Schemas are the **contract** between Theurian Core and every client,
 including the Claude Code plugin. They are co-owned: a change here requires
 review from both Core and plugin maintainers (see `.github/CODEOWNERS`).
 
-The plugin never imports Core's Python modules (ADR-0001, CP-2). These schemas
-and the CLI JSON they describe are the entire permitted surface, which is what
-keeps the plugin movable to its own repository.
+Neither plugin tree imports Core's Python modules — a CI job over all of
+`plugins/` fails the build if one does (ADR-0001); CP-2 states the rule for the
+Claude Code plugin. These schemas and the CLI JSON they describe are the entire
+permitted surface, which is what keeps that plugin movable to its own
+repository.
 
 | Directory | Contract |
 | :-- | :-- |
