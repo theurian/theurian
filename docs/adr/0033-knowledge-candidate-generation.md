@@ -609,6 +609,15 @@ Measured now, and reproducible from this ADR (2026-09-12, `be977ea7`):
 - `PromotionGate.ci_successful` is a required `bool` and
   `ReviewEvent.ci_successful` is `bool | None` (`domain/review.py`), which is
   the asymmetry decision 4 closes.
+
+  > **Amended in slice B5 (2026-09-18, the branch commit `ca6246ae` of
+  > [PR #744](https://github.com/theurian/theurian/pull/744)): the asymmetry is
+  > closed.** The measurement above stands as the 2026-09-12 reading at
+  > `be977ea7`; it is no longer the current one.
+  > `PromotionGate.ci_successful` is `bool | None`, and `None` does not satisfy
+  > the gate. The message half of decision 4 — a `None` refusal that differs
+  > from a `False` one — is not in that commit and lands with the tool
+  > registration; the *Still owed* item below carries it.
 - `KnowledgeCandidate` refuses construction with no evidence, an empty body and
   an unmet gate — each pinned in `tests/unit/test_project_and_traceability.py`
   by `::test_candidate_without_evidence_is_rejected_at_generation`,

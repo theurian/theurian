@@ -767,6 +767,22 @@ touch it. Slice 1 work:
 | `ReviewEvent.ci_successful` | `bool \| None` (`domain/review.py:61`) | unchanged | `None` already means *unknown*, and that is the honest value for a PR with no status rollup. |
 | `PromotionGate.ci_successful` | required `bool` (`domain/review.py:152`) | **not touched by Milestone 8** | The gate is candidate-generation machinery, which is out of scope (below). `None` is unrepresentable there today, so *how the gate should treat unknown* is a real open question — assigned to the candidate-generation design, not answered here. |
 
+> **Amended in Phase B slice B5, by the tri-state widening (2026-09-18, the
+> branch commit `ca6246ae` of
+> [PR #744](https://github.com/theurian/theurian/pull/744)). The fourth row's
+> "required `bool`" no longer holds, and the open question it hands over has
+> been answered.** `PromotionGate.ci_successful` is `bool | None`, and `None`
+> does not satisfy the gate —
+> [ADR-0033](0033-knowledge-candidate-generation.md) decision 4. What the row
+> records about Milestone 8 stands: Milestone 8 did not touch the field, and the
+> candidate-generation design settled it exactly where this row assigned it.
+>
+> **The table's two line numbers resolved when this ADR was authored and no
+> longer do.** `domain/review.py:61` and `:152` were both correct at
+> `46d0e869`, this ADR's own commit; the module has grown since and moved both
+> fields. They are left as authored rather than corrected into history — what to
+> follow is the field on `ReviewEvent` and on `PromotionGate`, not the line.
+
 **The measurement, quoted from the design consult (2026-09-05, GraphQL schema
 introspection).** `PullRequestReviewThread`'s fields are:
 
@@ -820,6 +836,15 @@ change the type and does not claim the gate is safe from a shrug. Deciding wheth
 the gate gains a tri-state, refuses construction on unknown, or treats unknown as
 unmet is the candidate-generation design's, and it is listed in *What this does
 not close*.
+
+> **Amended in Phase B slice B5 (2026-09-18, the branch commit `ca6246ae` of
+> [PR #744](https://github.com/theurian/theurian/pull/744)).** The first of
+> those three was chosen: the gate gains the tri-state, so
+> `PromotionGate.ci_successful` is `bool | None` and an unknown is no longer
+> flattened by whoever constructs the gate — it arrives as `None` and does not
+> satisfy it ([ADR-0033](0033-knowledge-candidate-generation.md) decision 4).
+> This ADR's own position is unchanged: it did not change the type, and the
+> deciding was the candidate-generation design's.
 
 **Candidate generation is out of Milestone 8.** FR-V2 classification and FR-V3
 `KnowledgeCandidate` generation are the write-path half of Phase B: they are
@@ -972,6 +997,18 @@ Two inherited controls are named so the serve slice does not rediscover them:
   ADR neither builds nor retires them.
 
 ## What this does not close
+
+> **Amended in Phase B slice B5 (2026-09-18, the branch commit `ca6246ae` of
+> [PR #744](https://github.com/theurian/theurian/pull/744)): item 2's unknown-CI
+> clause is closed.** `PromotionGate.ci_successful` is `bool | None`, unknown is
+> unmet, and [ADR-0033](0033-knowledge-candidate-generation.md) decision 4
+> carries the reasoning. The rest of item 2 stands — FR-V2 classification and
+> FR-V3 generation are designed and not built, and slice B5 is where they land.
+>
+> It sits above the list rather than under item 2 because
+> `tools/audit/owner_position_cites.py` reads an amendment block two blocks
+> below a sentence as retracting it, and under item 2 this block retracted
+> item 1's live `#575` ownership cite instead.
 
 1. **Private-repository ingestion**, and with it the `securityRelated`
    ingestion-time marking plus uniform serve refusal that ADR-0029 assigned to
