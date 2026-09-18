@@ -232,10 +232,12 @@ Four further things this file does not reach, so nobody has to rediscover them:
   and those numbers live in ``FIRST_PASS_DEPTH``'s docstring and in the note
   named above, measured by hand and not re-measured.
 - **``rejected`` items.** :func:`~theurian.domain.enums.may_surface` refuses them
-  under every flag, so :class:`~theurian.application.index_builder.IndexBuilder`
-  never writes one and there is no withheld row for a pair to differ by.
-  :func:`test_a_rejected_item_is_never_written_into_the_index` asserts that
-  premise, because the whole argument rests on it.
+  before it reads the flag, so
+  :class:`~theurian.application.index_builder.IndexBuilder` never writes one and
+  there is no withheld row for a pair to differ by.
+  :func:`test_a_rejected_item_is_never_written_into_the_index` holds that premise
+  on the permissive side -- the read that would show such a row -- and on that
+  side only.
 - **Japanese, and every script without word boundaries.** The alphabet split this
   file's disjointness rests on is Latin, and ``unicode61`` cannot segment CJK --
   which makes the trigram retriever's fifty slots the entire candidate list and a
@@ -1900,11 +1902,18 @@ def test_the_two_alphabets_cannot_produce_a_shared_token_or_trigram() -> None:
 def test_a_rejected_item_is_never_written_into_the_index(tmp_path: Path) -> None:
     """Why this file has no ``rejected`` arm, stated as a test rather than a note.
 
-    :func:`~theurian.domain.enums.may_surface` refuses ``rejected`` under every
-    flag, so :class:`~theurian.application.index_builder.IndexBuilder` never
-    writes one -- which is why a generated pair differing by a rejected item
-    would differ in nothing at all, index statistics included, and would pass
-    while testing nothing.
+    :func:`~theurian.domain.enums.may_surface` refuses ``rejected`` before it
+    reads the flag, so :class:`~theurian.application.index_builder.IndexBuilder`
+    never writes one -- which is why a generated pair differing by a rejected
+    item would differ in nothing at all, index statistics included, and would
+    pass while testing nothing.
+
+    **The read below is the permissive one and the only one this body runs.**
+    ``include_unapproved=True`` is the side that would show such a row, so it is
+    the side worth asking; a build whose two flags disagreed is not ruled out
+    here. ``test_index_secret_scan.py::
+    test_a_rejected_body_is_outside_the_scan_population_under_every_build_flag``
+    runs both, over the build's scan population rather than over this read.
 
     That is a premise of the module docstring's list of blind spots, and a
     premise nothing else in this file could notice breaking. If ``rejected``
@@ -1939,7 +1948,8 @@ def test_a_rejected_item_is_never_written_into_the_index(tmp_path: Path) -> None
     )
     assert page.exhausted, "or the rejected item is merely below the cut"
     assert {row.item_id for row in page.rows} == {visible.item_id}, (
-        "a rejected item must not be in the index under any flag"
+        "a rejected item came back from the permissive read (include_unapproved=True), "
+        "so the builder wrote one"
     )
     assert (
         _call(

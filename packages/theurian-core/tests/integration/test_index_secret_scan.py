@@ -1218,6 +1218,121 @@ def test_a_row_the_build_withheld_is_never_scanned_and_never_counted(bare: Path)
     )
 
 
+#: The item the twin below lands at one status per case. Named for what the
+#: fixture is -- a body whose reachability the status gate decides -- rather than
+#: for any one of the three statuses it is planted at.
+_GATED_ITEM = "architecture.gated-keys"
+_GATED_MIGRATION_ID = "01K1JJJJJJ01234567890ABCDE"
+
+
+def _plant_gated(root: Path, status: str) -> None:
+    """Land :data:`DIRTY_BODY` at ``status``, over a corpus carrying nothing else.
+
+    The approved corpus is the clean one, so every finding any build reports comes
+    from this one row and a case can assert emptiness outright. One helper for
+    every status, so the twin and its controls differ in the status literal and in
+    nothing else -- a fixture built separately per case is one whose emptiness can
+    come from the fixture rather than from the gate.
+    """
+    _corpus(root, dirty=CLEAN_BODY.replace("Authentication", "Rotation"))
+    (root / ".theurian/knowledge/architecture/gated-keys.md").write_text(
+        DIRTY_BODY, encoding="utf-8"
+    )
+    (root / f".theurian/migrations/{_GATED_MIGRATION_ID}-gated.yaml").write_text(
+        _migration(
+            _GATED_MIGRATION_ID,
+            _GATED_ITEM,
+            "01K1JREVJJ01234567890ABCDE",
+            "Gated keys",
+            status,
+            DIRTY_BODY,
+        ),
+        encoding="utf-8",
+    )
+
+    applied = _must(root, "migrate", "apply")
+
+    # The premise under the emptiness the twin asserts: the revision really is in
+    # the canonical store at this status. An apply that landed the item and
+    # dropped its revision exits 0 all the same, and the twin would then be
+    # measuring a row that does not exist. Six operations: createItem and
+    # upsertRevision for each of the three migrations now in the directory.
+    assert any(_GATED_MIGRATION_ID in str(entry) for entry in applied["applied"]), applied
+    assert applied["operationsApplied"] == 6, applied
+
+
+def test_a_rejected_body_is_outside_the_scan_population_under_every_build_flag(
+    bare: Path,
+) -> None:
+    """T-15's aside says `--include-unapproved` is not a remedy for a rejected body (#721).
+
+    ``REJECTED`` is outside ``SURFACEABLE_STATUSES`` and ``may_surface`` refuses
+    it before it reads the flag, so the builder never indexes the row and the scan
+    -- which sits inside the build's own loop, after both filters -- never reads
+    it. Measured true during PR #720's review and held by nothing: index absence
+    and scan absence are different observables, and the index-absence tests the
+    threat model cites do not touch the scan. Were the gate ever to move below the
+    scan call, a credential in a *rejected* revision would be published as a
+    finding -- content of a row no caller may read, disclosed through the build's
+    own report.
+
+    Both flags, because the claim is about every build and the permissive one is
+    where a reader would expect the row to arrive. The controls that keep the two
+    emptinesses from being a blind harness are the cases below: the same body at
+    ``approved`` fires on both builds, and at ``draft`` on the flagged one.
+    """
+    _plant_gated(bare, "rejected")
+
+    code, default_build = _in(bare, "index", "build")
+    flagged_code, flagged = _in(bare, "index", "build", "--include-unapproved")
+
+    assert code == 0, f"a rejected row was scanned by the default build: {default_build}"
+    assert _findings(default_build) == [], (
+        f"a rejected row the build never indexed reached the published findings: {default_build}"
+    )
+    assert flagged_code == 0, (
+        f"`--include-unapproved` reached a rejected row, which `may_surface` refuses "
+        f"before it reads the flag: {flagged}"
+    )
+    assert _findings(flagged) == [], (
+        f"`--include-unapproved` published a finding from a rejected body, so the flag "
+        f"is a route to content no caller may read: {flagged}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "default_reports", "flagged_reports"),
+    [("approved", True, True), ("draft", False, True)],
+)
+def test_the_same_body_is_reported_by_whichever_build_may_index_it(
+    bare: Path, status: str, default_reports: bool, flagged_reports: bool
+) -> None:
+    """The positive controls under the twin: the fixture is detectable, both builds scan.
+
+    The twin asserts two emptinesses, and each has its own way of being green for
+    the wrong reason: a body the detector does not recognise, a default build that
+    scans nothing, or an ``--include-unapproved`` build that never reaches an
+    unapproved row at all. The same helper plants the same body at ``approved``
+    -- indexed by both builds -- and at ``draft``, which only the flagged build
+    indexes, so the twin's second emptiness is measured on an invocation proven to
+    reach unapproved content.
+    """
+    _plant_gated(bare, status)
+
+    reported = {
+        "default": _in(bare, "index", "build"),
+        "flagged": _in(bare, "index", "build", "--include-unapproved"),
+    }
+
+    for label, expected in (("default", default_reports), ("flagged", flagged_reports)):
+        code, payload = reported[label]
+        named = [line for line in _findings(payload) if _GATED_ITEM in line]
+        assert bool(named) is expected and (code == EXIT_SECRET_FOUND) is expected, (
+            f"the {label} build over a {status} body reported {named} at exit {code}; "
+            f"expected {'a finding' if expected else 'nothing'} from this row"
+        )
+
+
 # -- The signal has to clear, and it has to say so when it cannot -------------
 
 #: The migration that runs the remedy the refusal names: a new ``upsertRevision``

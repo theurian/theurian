@@ -1147,9 +1147,14 @@ def test_retired_knowledge_is_never_indexed_even_when_asked_for(project: Path) -
     """SEC-13, T-15. `--include-unapproved` reaches work in progress, never
     knowledge the team has retired.
 
-    A deprecated or rejected revision is one the team decided must not be
-    followed, and a rejected one is also where a secret that caused the
-    rejection still lives. No flag reaches them.
+    A retired revision is one the team decided must not be followed. The corpus
+    below carries one ``deprecateItem`` and nothing else retired, so the side
+    this body measures is ``deprecated``, asked for with
+    ``include_unapproved=True``. The ``rejected`` side is held elsewhere:
+    ``test_absence_proof.py::test_a_rejected_item_is_never_written_into_the_index``
+    reads the index on that same permissive side, and ``test_index_secret_scan.py
+    ::test_a_rejected_body_is_outside_the_scan_population_under_every_build_flag``
+    runs both build flags over the scan population.
     """
     (project / ".theurian/migrations/01K1DAAAAA01234567890ABCDE-deprecate.yaml").write_text(
         """apiVersion: theurian.dev/v1
