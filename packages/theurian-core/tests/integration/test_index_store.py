@@ -117,10 +117,13 @@ def test_a_sqlite_build_without_fts5_reports_the_feature_as_missing(
     copied, so a rewritten probe cannot leave this asserting against a statement
     the code no longer runs.
     """
-    monkeypatch.setattr(
-        "theurian.infrastructure.sqlite.index_store.FTS5_PROBE",
-        FTS5_PROBE.replace("fts5(", "fts9("),
+    perturbed = FTS5_PROBE.replace("fts5(", "fts9(")
+    assert perturbed != FTS5_PROBE, (
+        "precondition: `replace` returns the probe unchanged when its wording no "
+        "longer contains `fts5(`, which would leave this asserting False against "
+        "the working probe on a build that has FTS5"
     )
+    monkeypatch.setattr("theurian.infrastructure.sqlite.index_store.FTS5_PROBE", perturbed)
 
     assert fts5_available() is False
 
@@ -608,10 +611,16 @@ def test_a_barely_similar_vector_is_not_returned_at_all(store: SqliteIndexStore)
 #: :data:`DENSE_SIMILARITY_FLOOR`, by construction rather than by luck: every
 #: component is a small integer, so the stored vector's sum of squares is exactly
 #: 16 and its norm exactly 4.0, the query's norm is exactly 1.0, and the dot
-#: product is exactly 1.0 -- one quarter, with no rounding in the float32 storage
-#: round-trip or in `_cosine`. Nudging any component puts the similarity a float
-#: off the boundary, where `<` and `<=` agree and the test below stops testing
-#: anything.
+#: product is exactly 1.0 -- one quarter, a dyadic rational, with no rounding in
+#: the float32 storage round-trip or in `_cosine`.
+#:
+#: **That ratio is the constraint, not these components.** Cosine is invariant
+#: under scaling and under permuting the tail the query zeroes out, so
+#: ``[2, 6, 4, 2, 2]`` and ``[1, 1, 2, 3, 1]`` measure exactly 0.25 here too. What
+#: moves off the boundary is a change to the dot product or to the stored norm:
+#: ``[1, 3, 2, 1, 2]`` scores 0.2294 and ``[2, 3, 2, 1, 1]`` scores 0.4588, both a
+#: float clear of the floor, where `<` and `<=` agree and the test below stops
+#: testing anything.
 _AT_FLOOR_QUERY = [1.0, 0.0, 0.0, 0.0, 0.0]
 _AT_FLOOR_VECTOR = [1.0, 3.0, 2.0, 1.0, 1.0]
 
@@ -634,12 +643,14 @@ def test_a_vector_exactly_at_the_similarity_floor_is_still_a_match(
         _AT_FLOOR_QUERY, project_id="demo", visible_sensitivities=EVERY_SENSITIVITY
     ).rows
 
+    assert [h.score for h in hits] == [DENSE_SIMILARITY_FLOOR], (
+        "one row must surface, scoring exactly the live floor: an empty list "
+        "means either the comparison excludes the boundary, or the constant "
+        "moved and the fixture no longer sits on it -- read the expected value "
+        "to tell those apart"
+    )
     assert [h.chunk_id for h in hits] == ["at-floor"], (
         "a row whose similarity equals the floor is a match, not noise"
-    )
-    assert hits[0].score == DENSE_SIMILARITY_FLOOR, (
-        "precondition: the fixture must land exactly on the floor -- one float "
-        "above it and this row is kept under either comparison"
     )
 
 

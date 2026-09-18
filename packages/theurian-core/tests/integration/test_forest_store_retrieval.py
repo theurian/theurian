@@ -12,18 +12,27 @@ rank fusion hides a wrong score. The forest fixtures in
 `test_forest_retrieval.py` mask them a second way: they are built by the real
 `ForestBuilder`, which produces one matched summary node and fewer leaves than
 the limit, so the ceiling, the ordering and the diamond aggregation are never
-exercised and the four SQL mutations below survived every one of them.
+exercised and every `search_summaries` SQL mutation below survived all of them.
 
 Like `test_forest_node_scope.py`, the summary nodes and their ``node_derivation``
 edges are written directly with SQL, the idiom `test_index_purge_nodes.py` uses
-for shapes the real builder cannot produce: >limit leaves under one node, a leaf
-reached by two summary nodes at once, a draft leaf under an approved node, and a
-draft-scope ancestor above an approved leaf. ``SummaryNode.__post_init__`` refuses
-the last two were they built through the domain layer -- which is exactly why the
-gates that stand behind that invariant have no fixture that reaches them. The
-one-sided-query node in section 6 is the exception: its shape is ordinary and the
-real builder could produce it, and it is written the same way only to keep the
-query under test on this file's one summary node.
+for shapes the real builder does not hand a test -- among them >limit leaves
+under one node, which no fixture here gets from it; a leaf reached by two summary
+nodes at once, which it never grounds at one tier; and a childless node, a draft
+leaf under an approved node and a summary over a single child, which the domain
+layer refuses outright. That refusal is exactly why the gates standing behind
+those invariants have no fixture that reaches them: ``SummaryNode.__post_init__``
+rejects a childless node, and a child whose scope differs from the node's own --
+status is one of the components it compares, which is what a draft leaf under an
+approved node is (ADR-0008 decision 1) -- while no node builder in
+`ForestBuilder` emits a summary below ``min_children_per_summary``, which
+``MIN_CHILDREN_FLOOR`` keeps at 2 or more: "a summary of one child is a
+paraphrase of it", as `ForestOptions` says when it refuses a lower setting, for
+the reason ADR-0008 gives.
+
+So a test here writes the rows itself whenever it needs one of those shapes --
+section 6 because a node over a single leaf makes the page it asserts on exactly
+the leaf that node routes to.
 """
 
 from __future__ import annotations
@@ -62,12 +71,6 @@ _STRONG_SUMMARY = (ROUTING_TERM + " ") * 20
 #: The routing term once, buried in a long filler body -- a materially worse
 #: ``bm25`` than ``_STRONG_SUMMARY`` for the same query.
 _WEAK_SUMMARY = ROUTING_TERM + " " + "alpha beta gamma delta epsilon " * 40
-#: A two-character Japanese noun, spelled as its own whitespace-delimited token in
-#: the node text below so ``unicode61`` indexes it as one: an FTS term (the match
-#: floor is one character) and no trigram (that floor is three), which is the
-#: one-sided query `search_summaries` must still route.
-SHORT_CJK_TERM = "認証"
-
 #: Non-matching nodes, present only to move ``bm25``'s collection statistics off
 #: the two-document degenerate case: with just the strong and weak nodes in the
 #: table the inverse-document-frequency term is near zero and both scores collapse
@@ -75,6 +78,12 @@ SHORT_CJK_TERM = "認証"
 #: term a positive IDF and separate the two scores to ~2.58 against ~0.42, so the
 #: ordering these tests pin is a wide gap rather than a float-epsilon accident.
 _NOISE_SUMMARY = "unrelated summary about something else entirely and more filler words here"
+
+#: A two-character Japanese noun, spelled as its own whitespace-delimited token in
+#: the node text below so ``unicode61`` indexes it as one: an FTS term (the match
+#: floor is one character) and no trigram (that floor is three), which is the
+#: one-sided query `search_summaries` must still route.
+SHORT_CJK_TERM = "認証"
 
 
 def _indexable(
@@ -595,7 +604,9 @@ def test_a_query_with_no_trigram_expression_still_routes_through_the_forest(
     Only this direction is constructible: ``to_trigram_expression`` selects from
     the same terms as ``to_match_expression`` at a strictly higher floor, so a
     non-empty trigram expression implies a non-empty match expression and the
-    mirror case cannot be reached through this entry point.
+    mirror case cannot be reached through this entry point. That implication is
+    what leaves the mirror branch with no fixture, so it is pinned on its own in
+    `tests/unit/test_index_query_floors.py` rather than only asserted here.
     """
     path = tmp_path / "theurian-index-onesided.sqlite"
     store = _store(path)
