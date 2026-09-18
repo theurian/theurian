@@ -254,7 +254,7 @@ NETWORK_CLIENT_SITES = {
 #: Every place in the shipped package that may start another program, in the same
 #: ``(module path under theurian/, the listed name it reaches)`` shape.
 #:
-#: Five modules. Four take no command from a document, and the fifth is the
+#: Six modules. Five take no command from a document, and the sixth is the
 #: one this pin existed to make visible -- it reaches GitHub on purpose, and what
 #: bounds it is ADR-0030's clauses rather than the absence this file used to
 #: hold:
@@ -281,6 +281,20 @@ NETWORK_CLIENT_SITES = {
 #:   remote. The binary is resolved to an absolute path -- ADR-0030 clause 5's tier
 #:   and not the bare-``git`` tier its ``cli/context.py`` sibling uses, because this
 #:   call gates a write. Timeout ``GIT_TIMEOUT_SECONDS`` (5s) on each.
+#: - ``infrastructure/git/fix_commit_check.py`` runs ``git rev-parse --verify
+#:   --quiet <sha>^{commit}`` and ``git diff-tree`` to answer whether the
+#:   ``fixCommit`` a caller named exists in this repository and touched the file
+#:   the stored review thread is anchored to -- ADR-0033 decision 3's
+#:   verification, which is what makes ``fix_commit_present`` a signal the caller
+#:   has to find something real to satisfy rather than one it asserts. Local
+#:   object storage only, so it is *not* a network client and is on this list
+#:   because it spawns a process. The vector is the adapter's: the ``rev-parse``
+#:   argument is suffixed ``^{commit}`` and the ``diff-tree`` path is passed after
+#:   a ``--`` separator, so a caller-supplied sha cannot be read as an option nor
+#:   a stored ``filePath`` as a revision, and neither call can be handed a URL or
+#:   a remote. The binary is resolved to an absolute path -- ADR-0030 clause 5's
+#:   tier, as its ``committed_check.py`` sibling is, because this call gates a
+#:   promotion signal. Timeout ``GIT_TIMEOUT_SECONDS`` (5s) on each.
 #: - ``infrastructure/git/trailer_source.py`` runs ``git log origin/main`` to read
 #:   ``Review-Finding:`` trailers (ADR-0029). It is *not* a network client: unlike
 #:   ``git fetch``, ``git log`` reads local object storage and the local
@@ -318,13 +332,14 @@ NETWORK_CLIENT_SITES = {
 #:     ``providers.review.repositories``, consulted before any process exists
 #:     (``test_review_allowlist.py``, ``test_gh_review_provider.py``).
 #:
-#: A **fifth** entry is what this pin still exists to make visible: a second path
-#: to GitHub, or any other program started from a page nobody re-reads. The
+#: A **seventh** entry is what this pin still exists to make visible: a second
+#: path to GitHub, or any other program started from a page nobody re-reads. The
 #: equality catches an addition *and* a removal, and the message below says what
 #: each direction means.
 PROCESS_SPAWN_SITES = {
     ("cli/context.py", "subprocess"),
     ("infrastructure/git/committed_check.py", "subprocess"),
+    ("infrastructure/git/fix_commit_check.py", "subprocess"),
     ("infrastructure/git/trailer_source.py", "subprocess"),
     ("infrastructure/github/gh_cli.py", "asyncio.create_subprocess_exec"),
     ("infrastructure/services/runner.py", "subprocess"),

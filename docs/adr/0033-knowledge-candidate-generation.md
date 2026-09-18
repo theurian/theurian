@@ -37,22 +37,30 @@ $ git grep -n "KnowledgeCandidate(" -- packages/theurian-core/src
 $
 ```
 
-**That absence is itself pinned, in three places and two registers.**
+**That absence was itself pinned, in three places and two registers.**
 `tests/unit/test_adr_0030_claims.py::test_nothing_in_the_shipped_package_constructs_a_knowledge_candidate`
-walks every module under `src/` for a call — both the bare-name and the
-attribute spelling — and asserts the site list is empty, with
+walked every module under `src/` for a call — both the bare-name and the
+attribute spelling — and asserted the site list was empty, with
 `::test_the_construction_scan_sees_both_spellings_of_a_construction` as the
-positive control that makes the empty answer mean something. Two documents rest
-on it and are named in the failure message: `README.md`'s *AI proposes, humans
+positive control that makes an empty answer mean something. Two documents rested
+on it and were named in its failure message: `README.md`'s *AI proposes, humans
 approve* row, which quotes the grep, and
 `docs/architecture/review-knowledge.md`'s "no code path generates a candidate".
-A third record leans on it from the security side: `docs/security/threat-model.md`
-lists *No promotion path out of review evidence* as a control in T-24's holds
+A third record leaned on it from the security side: `docs/security/threat-model.md`
+listed *No promotion path out of review evidence* as a control in T-24's holds
 table, citing that same test by name.
 
 So the producer this ADR designs is a change that makes four recorded claims
 false at once, and the pin exists so that the commit "cannot land without
 meeting them" — the test's own words.
+
+Slice B5 moved all four in one commit rather than deleting any of them, so the
+grep above now answers one line. The pin is
+`::test_the_only_construction_site_of_a_knowledge_candidate_is_the_candidate_generator`,
+an equality against one recorded module instead of against the empty set; the
+README row and the architecture page both state *the only construction site is
+the candidate generator*; and T-24's row is *The promotion path out of review
+evidence ends at an unapproved proposal*.
 
 **The model question is the reason this was sequenced last.** ADR-0030 recorded
 it as open rather than answering it: FR-V2 and FR-V3 "raise the model question
@@ -638,6 +646,14 @@ Measured now, and reproducible from this ADR (2026-09-12, `be977ea7`):
   nothing, and
   `tests/unit/test_adr_0030_claims.py::test_nothing_in_the_shipped_package_constructs_a_knowledge_candidate`
   holds it with a positive control.
+
+  > **Amended in slice B5 (2026-09-18): the producer landed and the pin moved
+  > with it.** The measurement above stands as the 2026-09-12 reading at
+  > `be977ea7`; it is no longer the current one. The command answers one line —
+  > `application/candidate_generation.py` — and the pin is
+  > `::test_the_only_construction_site_of_a_knowledge_candidate_is_the_candidate_generator`,
+  > the same scan against one recorded module instead of against the empty set,
+  > with the same positive control.
 - `ReviewCommentCategory` has exactly **11** members (`domain/enums.py`), and
   `docs/architecture/review-knowledge.md`'s Classification section names the
   same eleven.
@@ -734,6 +750,18 @@ Still owed, with the milestone that will satisfy it:
   claim that becomes true is *the only construction site is the candidate
   generator*, which is a pin of the same shape with a non-empty expected set,
   not a deletion.
+
+  > **Amended in slice B5 (2026-09-18): discharged, in one commit.** The pin is
+  > `::test_the_only_construction_site_of_a_knowledge_candidate_is_the_candidate_generator`,
+  > an equality against `application/candidate_generation.py` with
+  > `::test_the_construction_scan_sees_both_spellings_of_a_construction` still
+  > the positive control. Both documents state *the only construction site is
+  > the candidate generator*, held as spelling by
+  > `::test_each_document_still_states_the_claim_its_scan_holds`. T-24's row is
+  > now *The promotion path out of review evidence ends at an unapproved
+  > proposal*, and **no test holds its wording** — the row says so itself rather
+  > than leaving a reader to assume the cite it carries covers the sentence
+  > around it.
 - **Slice B5 — no model is reachable from the candidate path either.** Decision
   1 says Theurian runs no model, and that is a universal whose authority is a
   test that does not exist. Owed: a walk of the built candidate pipeline's

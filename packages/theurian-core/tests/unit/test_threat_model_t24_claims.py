@@ -345,6 +345,148 @@ def test_t24_keeps_its_medium_grade_and_the_paragraph_that_makes_it_falsifiable(
     )
 
 
+#: What T-24's holds table must say now that a promotion path exists at all.
+#:
+#: The row read *No promotion path out of review evidence* until ADR-0033's slice
+#: B5, and it was true: nothing in ``src/`` built a candidate. A control row that
+#: keeps its old label after the control has gone is the worst thing in a security
+#: record -- a reader takes it as a closure -- so the row was rewritten to record
+#: where the path **stops** instead, and this is that wording's pin.
+#:
+#: Three clauses, one per thing that can be dropped on its own, and each hides a
+#: different failure:
+#:
+#: * the **disposition**. Lose it and the row is back to claiming an absence that
+#:   is no longer there;
+#: * the **accepted residual**. This is the half that moved the row's own reach:
+#:   five of the gate's signals are recomputed from the stored record, which is
+#:   the artefact this entry is *about*, so a planted record reaches a draft
+#:   proposal. A rewrite that keeps the disposition and loses this reads as a
+#:   closed class;
+#: * the **bound, gated on accept**. The old row said a fabricated record "cannot
+#:   be indexed" and "cannot be returned by ``knowledge.search`` or
+#:   ``knowledge.get``" flatly. That is now true only *until* ``propose accept``
+#:   moves the proposal and a merged migration runs. Dropping the gate restores a
+#:   false absolute, in the direction that tells an operator they are safe.
+_PROMOTION_PATH_CLAUSES: Final[tuple[tuple[str, str], ...]] = (
+    (
+        "the disposition",
+        "the promotion path out of review evidence ends at an unapproved proposal",
+    ),
+    (
+        "the accepted residual",
+        "so a planted record satisfying them reaches a draft proposal a human reads",
+    ),
+    (
+        "the bound, gated on accept",
+        "a proposal is not canonical state, so nothing indexes it and neither "
+        "knowledge.search nor knowledge.get returns it until theurian propose accept moves it",
+    ),
+)
+
+#: The clause this pin makes false by existing, refused for that reason.
+#:
+#: The rewritten row closed with *"**Not pinned:** no test holds this row's
+#: wording, and none holds *a proposal is not indexed* as a property"*, which was
+#: an accurate statement about the tree when the docs commit was written and
+#: stopped being one the moment the test below landed. The second half stays true
+#: and is deliberately **not** refused: *a proposal is not indexed* is a property
+#: no test holds, it needs a run through ``theurian propose accept``, and a row
+#: that stopped saying so would over-claim the coverage this pin actually gives.
+#:
+#: Refused rather than reported, for :mod:`test_adr_0030_claims`'s withdrawn-gate
+#: reason: a clause that was true when written and false after the change is the
+#: one a rebase against a pre-change branch restores with no conflict to notice.
+_WITHDRAWN_UNPINNED_CLAIM: Final = "no test holds this row's wording"
+
+
+def _assert_the_holds_row_records_where_the_path_stops(body: str) -> None:
+    """The check, in one place so the controls drive the same code the pin does."""
+    for label, clause in _PROMOTION_PATH_CLAUSES:
+        assert clause in body, (
+            f"T-24's holds table no longer states {label}:\n\n  {clause}\n\n"
+            f"This row is a **control** row: a reader scanning it takes each line as "
+            f"something that holds. Since ADR-0033 the promotion path exists, so what "
+            f"the row records is where it stops -- and every clause of that is "
+            f"load-bearing in a different direction. Restore the wording, or, if the "
+            f"path itself moved, move the code, this row and this pin together."
+        )
+    assert _WITHDRAWN_UNPINNED_CLAIM not in body, (
+        f"T-24's holds table says {_WITHDRAWN_UNPINNED_CLAIM!r} again, and this test is "
+        f"what makes that false. Replace the clause with what is still unheld -- "
+        f"*a proposal is not indexed* as a property, which needs a run through "
+        f"`theurian propose accept` -- and leave the wording half to this pin."
+    )
+
+
+def test_t24_records_where_the_promotion_path_out_of_review_evidence_stops() -> None:
+    """RED means a security record still claims a closure ADR-0033 removed.
+
+    **Spelling, and only spelling.** Every clause here would match word for word
+    against a tree that had grown a second construction site or stopped verifying
+    ``fixCommit`` at all. The fact side is elsewhere and is named in the row
+    itself: ``test_adr_0030_claims.py``'s construction-site equality,
+    ``test_project_and_traceability.py``'s two auto-approval pins, and
+    ``test_fix_commit_check_adapter.py``'s captured git vectors. This is the half
+    that keeps the *words*, which is the half that had nothing watching it -- the
+    fact tests name this document in their failure messages and assert nothing
+    about it.
+
+    Both directions, because each moves on its own. The three clauses have to be
+    stated, and the clause that said nobody was holding them may not come back.
+    """
+    body = prose(entry(_THREAT_ID))
+
+    assert body, (
+        "T-24's entry sliced to nothing, so every `in` below would fail and every "
+        "`not in` would pass for a reason that has nothing to do with its wording"
+    )
+
+    _assert_the_holds_row_records_where_the_path_stops(body)
+
+
+def test_the_promotion_path_pin_reports_a_missing_clause() -> None:
+    """The presence direction's control: a green result has to be capable of being red.
+
+    Driven over a **synthetic** body rather than the live one, and that is a
+    deliberate weakening with a stated reason: the live entry currently carries the
+    withdrawn clause as well, so a control built on it would trip the absence arm
+    first and prove that arm instead of this one. What exercises the checker
+    against the real document is
+    :func:`test_t24_records_where_the_promotion_path_out_of_review_evidence_stops`
+    itself, which is RED until the row is rewritten.
+
+    Per clause rather than over all three at once: a checker that had come to
+    require only the first would stay green against a row that had lost the other
+    two, and the third is the one carrying the accept gate.
+    """
+    whole = " ".join(clause for _label, clause in _PROMOTION_PATH_CLAUSES)
+
+    _assert_the_holds_row_records_where_the_path_stops(whole)
+
+    for _label, clause in _PROMOTION_PATH_CLAUSES:
+        reduced = whole.replace(clause, "")
+
+        assert reduced != whole, f"removing {clause!r} changed nothing"
+        with pytest.raises(AssertionError, match="no longer states"):
+            _assert_the_holds_row_records_where_the_path_stops(reduced)
+
+
+def test_the_promotion_path_pin_reports_the_withdrawn_unpinned_claim() -> None:
+    """The absence direction's control, over the same synthetic body.
+
+    An assertion that a sentence is *absent* passes against a document nobody is
+    reading, against a clause never spelled the way the checker spells it, and
+    against a checker that stopped looking -- all three most convincingly at the
+    moment they stop working. So the clause is planted into a body that otherwise
+    satisfies every presence arm, and the checker is asked about it.
+    """
+    whole = " ".join(clause for _label, clause in _PROMOTION_PATH_CLAUSES)
+
+    with pytest.raises(AssertionError, match="again"):
+        _assert_the_holds_row_records_where_the_path_stops(f"{whole} {_WITHDRAWN_UNPINNED_CLAIM}")
+
+
 def test_the_threat_summary_table_carries_t24_at_the_grade_the_entry_argues() -> None:
     """RED means the index a reader scans disagrees with the entry it points at.
 

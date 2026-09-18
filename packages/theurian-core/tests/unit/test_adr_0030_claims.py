@@ -9,11 +9,15 @@ reader takes as settled, in a document nothing was checking.
   cannot be inspected. :func:`test_every_test_the_compliance_section_names_resolves`
   resolves every ``path::test_name`` reference in that section against the live
   test tree.
-- **``KnowledgeCandidate`` is constructed nowhere in ``src/``.** ``README.md``
-  and ``docs/architecture/review-knowledge.md`` both state it, because it is the
-  sentence that says review *ingestion* is not review *promotion*: ADR-0013's
-  direction (an AI proposes, a human approves) rests on nothing in the shipped
-  package building a candidate at all.
+- **``KnowledgeCandidate`` has exactly one construction site in ``src/``.**
+  ``README.md`` and ``docs/architecture/review-knowledge.md`` both state it,
+  because it is the sentence that says review *ingestion* is not review
+  *promotion*: ADR-0013's direction (an AI proposes, a human approves) rests on
+  a candidate being built in one place, which routes it to a proposal a human
+  reviews. This pin expected *nothing* until ADR-0033's candidate generator
+  landed, and slice B5 moved it deliberately rather than deleting it -- a
+  deletion would have left the two documents, the threat model's T-24 holds row
+  and ADR-0033's own Compliance section resting on nothing.
 - **``.theurian/review/`` has one writer.** ``SECURITY.md``'s retention paragraph
   says an upstream deletion does not propagate *because* nothing else revisits a
   landed file, and that is a claim about the source tree rather than about a
@@ -47,9 +51,11 @@ construction reached through ``getattr``, a deletion spelled through
 literals rather than from ``ProjectPaths.review`` are all invisible. That is a
 floor on the review a change gets, not a proof that the shape cannot exist --
 the same bound ``test_network_call_sites.py`` and ``test_gate_call_sites.py``
-record for theirs. Each scan whose expected answer is *nothing* carries a
-positive control that plants the shape it claims to see, because a broken
-extractor and a clean tree are indistinguishable from the outside.
+record for theirs. Every scan here carries a positive control that plants the
+shapes it claims to see. Where the expected answer is *nothing*, that is because
+a broken extractor and a clean tree are indistinguishable from the outside;
+where it is a count -- as the candidate scan's is since ADR-0033 -- it is
+because the count means nothing until the spellings it ranges over are pinned.
 
 Pure: it parses the shipped ``.py`` files and four documents as text, and opens
 no database, no socket and no temporary directory.
@@ -83,6 +89,7 @@ ADR_0030: Final = REPO_ROOT / "docs" / "adr" / "0030-github-review-ingestion-spa
 README: Final = REPO_ROOT / "README.md"
 SECURITY_MD: Final = REPO_ROOT / "SECURITY.md"
 REVIEW_KNOWLEDGE: Final = REPO_ROOT / "docs" / "architecture" / "review-knowledge.md"
+ROADMAP: Final = REPO_ROOT / "docs" / "roadmap.md"
 
 #: Where the Compliance section's relative paths are rooted.
 #:
@@ -487,17 +494,46 @@ def test_the_round_record_pin_reports_a_missing_discharge() -> None:
 
 
 # ---------------------------------------------------------------------------
-# `KnowledgeCandidate` is constructed nowhere in `src/` (ADR-0013, FR-V2/V3).
+# `KnowledgeCandidate` has one construction site in `src/` (ADR-0013, ADR-0033,
+# FR-V2/V3).
 # ---------------------------------------------------------------------------
 
-#: The domain type whose absence from the shipped call graph is the claim.
+#: The domain type whose construction sites in the shipped call graph are the claim.
 CANDIDATE_TYPE: Final = "KnowledgeCandidate"
 
-#: The two documents that state it, and that must move when it stops being true.
+#: The documents that state it in prose this module pins, and that must move when
+#: it stops being true.
 #:
-#: Both are named in the failure message rather than only here, because whoever
-#: lands candidate generation reads the message and not this constant.
-CANDIDATE_DOCUMENTS: Final = ("README.md", "docs/architecture/review-knowledge.md")
+#: Each is named in the failure message rather than only here, because whoever
+#: moves candidate generation reads the message and not this constant. **Membership
+#: is "states the claim and has a row in** :data:`CLAIM_SURFACES`\\ **"**, which is
+#: why the threat model and ADR-0033 are named in the message beside these and are
+#: not members: those two cite this *test* by name rather than restating the claim,
+#: so what they owe on a rename is a reference, not a sentence.
+CANDIDATE_DOCUMENTS: Final = (
+    "README.md",
+    "docs/architecture/review-knowledge.md",
+    "docs/roadmap.md",
+)
+
+#: Every module that may build a candidate, how many times, and what it does with it.
+#:
+#: **Counted rather than listed**, for :data:`PUBLISH_NAMES`' reason one section
+#: down: a second construction inside the generator is a second place a candidate
+#: enters the world, and a table keyed on the module alone would carry it in
+#: silence. So the equality below fails in three directions -- a new module, a
+#: second call in the recorded one, and the recorded one disappearing.
+CANDIDATE_CONSTRUCTION_SITES: Final[tuple[tuple[str, int, str], ...]] = (
+    (
+        "application/candidate_generation.py",
+        1,
+        "`CandidateGenerator.generate` builds the candidate whose gate it has just "
+        "recomputed from the stored record, and hands it to the draft-only proposal "
+        "facade. `KnowledgeCandidate.__post_init__` refuses an unmet gate, so this "
+        "call is where ADR-0033 decision 3's verification becomes a refusal a caller "
+        "sees rather than a proposal.",
+    ),
+)
 
 
 def _construction_sites(source: str, module: str) -> Iterator[tuple[str, int]]:
@@ -520,60 +556,72 @@ def _construction_sites(source: str, module: str) -> Iterator[tuple[str, int]]:
             yield module, node.lineno
 
 
-def test_nothing_in_the_shipped_package_constructs_a_knowledge_candidate() -> None:
-    """ADR-0013: the shipped package proposes nothing, and this is the fact side.
+def test_the_only_construction_site_of_a_knowledge_candidate_is_the_candidate_generator() -> None:
+    """ADR-0033: one producer, named, and nothing else builds a candidate (FR-V2, FR-V3).
 
     ``README.md`` reaches its "AI proposes, humans approve" row through this
-    sentence: the fetch and landing halves of ADR-0030 write *review evidence*,
-    never approved knowledge, and the evidence for that is that no code in
-    ``src/`` builds a :class:`~theurian.domain.review.KnowledgeCandidate` at all.
-    ``docs/architecture/review-knowledge.md`` says the same in its own words --
-    "no code path generates a candidate".
+    sentence, and ``docs/architecture/review-knowledge.md`` says it in its own
+    words. Until slice B5 the sentence was that *nothing* in ``src/`` builds a
+    :class:`~theurian.domain.review.KnowledgeCandidate`; ADR-0033 ships the
+    producer, so the claim that carries the promise now is that the producer is
+    **one place** -- the candidate generator, which recomputes the gate from the
+    stored record, verifies the caller's ``fixCommit`` against the local
+    repository, and lands an ordinary proposal a human reviews.
 
-    That is a claim about a call graph, and it is precisely the claim ADR-0030
-    slice 2 puts under pressure: the ingestion path now runs, lands files, and
-    sits one import away from the domain type it must not build. The day
-    candidate generation arrives (FR-V2, FR-V3), both documents become false in
-    the same commit -- and the point of this test is that the commit cannot land
-    without meeting them.
+    A second construction site anywhere is what this catches, and it is the shape
+    that would make the documents false without changing a word of them: a
+    candidate built somewhere that skipped the recompute would be a promotion
+    signal nobody verified, which is exactly what ADR-0013's direction forbids.
+    The reverse direction matters just as much -- an empty result means the
+    producer was removed, and then four records describe a capability that no
+    longer exists.
 
     The type's *definition* and the docstrings naming it are not constructions and
     are deliberately not counted; what is counted is a call.
     """
-    sites = tuple(
-        site
+    found = collections.Counter(
+        module
         for path in sorted(SRC.rglob("*.py"))
-        for site in _construction_sites(
+        for module, _line in _construction_sites(
             path.read_text(encoding="utf-8"), path.relative_to(SRC).as_posix()
         )
     )
+    recorded = collections.Counter(
+        {module: count for module, count, _why in CANDIDATE_CONSTRUCTION_SITES}
+    )
 
-    assert sites == (), (
-        f"`{CANDIDATE_TYPE}` is constructed in the shipped package:\n"
-        + "\n".join(f"  {module}:{line}" for module, line in sites)
-        + "\n\nTwo documents say it is not, and each of them reaches a promise "
-        "through that sentence:\n"
+    assert found == recorded, (
+        f"`{CANDIDATE_TYPE}` is constructed as {dict(found)} in the shipped "
+        f"package, against:\n"
+        + "\n".join(
+            f"  {module} x{count} -- {why}" for module, count, why in CANDIDATE_CONSTRUCTION_SITES
+        )
+        + "\n\nA NEW module, or a SECOND call in the recorded one: that is another "
+        "place a candidate enters the world, and it has to establish the promotion "
+        "gate the same way or ADR-0033 decision 3's `no signal is satisfied by the "
+        "caller saying so` is false on the new path. Record it here with what it "
+        "does, in the change that adds it.\n\n"
+        "A MISSING module: candidate generation was removed or renamed, and five "
+        "records now describe a producer that is not there:\n"
         + "\n".join(f"  {document}" for document in CANDIDATE_DOCUMENTS)
-        + "\n\nREADME.md's `AI proposes, humans approve` row says the ingestion "
-        "path writes review evidence and never approved knowledge, quoting the "
-        "grep that answers nothing; review-knowledge.md says no code path "
-        "generates a candidate. If candidate generation has landed (FR-V2, "
-        "FR-V3), both move in this change -- and ADR-0013's direction needs "
-        "restating with whatever now stands between a generated candidate and "
-        "approved state."
+        + "\n  docs/security/threat-model.md (T-24's holds table cites this test by name)"
+        "\n  docs/adr/0033-knowledge-candidate-generation.md (Compliance)"
     )
 
 
 def test_the_construction_scan_sees_both_spellings_of_a_construction() -> None:
-    """The positive control for a pin whose expected answer is nothing.
+    """The positive control for a pin whose expected answer is a count.
 
-    A scan that resolved no calls at all would report the same empty tuple as a
-    package that builds no candidate, and the difference is the whole value of the
-    pin. Both call spellings are planted here, and the three shapes that are
-    *not* constructions -- the class statement, a docstring naming the type, and
-    an import of it -- are asserted invisible, because a scan that flagged those
-    would be red on a clean tree and the only way back to green would be to stop
-    naming the type in the documents that describe it.
+    The pin above expects one call in one module, so a scan that resolved nothing
+    at all now fails loudly rather than reading as compliance -- which is what
+    changed when ADR-0033 moved it off *nothing*. What stays silent is the half
+    this control holds: **which spellings the count ranges over**. A scan that had
+    stopped seeing the bare-name form would report the same ``1`` for a generator
+    that built one candidate by attribute and a second by name, and a scan that
+    counted the class statement or a docstring mention would be red on a clean
+    tree, with the only way back to green being to stop naming the type in the
+    documents that describe it. Both call spellings are planted here, and the
+    three shapes that are *not* constructions are asserted invisible.
     """
     seen = {
         module: tuple(line for _module, line in _construction_sites(source, module))
@@ -596,8 +644,8 @@ def test_the_construction_scan_sees_both_spellings_of_a_construction() -> None:
         f"the construction scan read the planted sources as {seen}. It is the "
         f"scanner that is broken, not the product: fix `_construction_sites` "
         f"before trusting a green result from "
-        f"`test_nothing_in_the_shipped_package_constructs_a_knowledge_candidate`, "
-        f"which would keep passing with a scanner that sees nothing."
+        f"`test_the_only_construction_site_of_a_knowledge_candidate_is_the_candidate_generator`, "
+        f"whose count means nothing while the spellings it ranges over are wrong."
     )
 
 
@@ -862,11 +910,15 @@ CLAIM_SURFACES: Final[tuple[tuple[str, pathlib.Path, tuple[str, ...]], ...]] = (
         "README.md (AI proposes, humans approve)",
         README,
         (
-            "`KnowledgeCandidate` is constructed nowhere in `src/`",
-            '(`git grep -n "KnowledgeCandidate(" -- packages/theurian-core/src` answers nothing)',
-            # The bound beside the claim: what the two shipped halves *do* write.
-            # Dropping it leaves "constructed nowhere" reading as "the ingestion
-            # path writes nothing", which is false since slice 2.
+            "the only construction site is the candidate generator",
+            (
+                '(`git grep -n "KnowledgeCandidate(" -- packages/theurian-core/src` '
+                "answers one line)"
+            ),
+            # The bound beside the claim: what the two *ingestion* halves write,
+            # which candidate generation does not change. Dropping it leaves the
+            # row reading as though landing a review record could itself promote
+            # one, which is the direction ADR-0013 says never reverses.
             (
                 "what they write is review evidence under `.theurian/review/`, never "
                 "approved knowledge"
@@ -874,9 +926,33 @@ CLAIM_SURFACES: Final[tuple[tuple[str, pathlib.Path, tuple[str, ...]], ...]] = (
         ),
     ),
     (
-        "docs/architecture/review-knowledge.md (nothing collects into it yet)",
+        "docs/architecture/review-knowledge.md (one producer, and it proposes)",
         REVIEW_KNOWLEDGE,
-        ("no code path generates a candidate",),
+        ("the only construction site is the candidate generator",),
+    ),
+    (
+        "docs/roadmap.md (Phase B: what candidate generation left absent)",
+        ROADMAP,
+        (
+            # The fifth surface resting on the construction-site scan, and the one
+            # the scan's failure message did not name until this row existed.
+            "the only construction site of a `KnowledgeCandidate` is",
+            # The **corrected** half, and the reason this row is not just the
+            # sentence above. The roadmap used to place everything after serving in
+            # the absent column, which review-knowledge.md said in its own words
+            # too ("no code path generates a candidate"). Candidate generation
+            # landing falsified the wide claim, and the honest replacement is
+            # narrow: classification (FR-V2) is what is still absent. A rewrite
+            # that widens it again describes a product missing a stage it has, and
+            # one that drops it leaves the Phase B row claiming the phase is done.
+            "What is still absent after serving is classification.",
+            # The bound beside it, droppable on its own: the service exists and the
+            # wire does not, so a reader who stops at the sentence above would take
+            # a registered tool for granted. ADR-0026's false-capability defect is
+            # the one this sentence is here to prevent, on the surface a user reads
+            # to find out what is callable.
+            "`review.generateKnowledgeCandidate` is not a registered MCP tool yet",
+        ),
     ),
     (
         "SECURITY.md (R-12 retention)",
@@ -926,8 +1002,8 @@ def test_each_document_still_states_the_claim_its_scan_holds(
         assert sentence in normalized, (
             f"{label} no longer states {sentence!r}.\n\n"
             "This sentence is what a reader takes the property from -- that the "
-            "shipped package builds no knowledge candidate, or that a landed "
-            "review record is revisited by nothing. The fact side is in this same "
+            "shipped package builds a knowledge candidate in one place, or that a "
+            "landed review record is revisited by nothing. The fact side is in this same "
             "module and is green, so nothing in the tree moved: restore the "
             "wording, or move it together with the scan it belongs to."
         )

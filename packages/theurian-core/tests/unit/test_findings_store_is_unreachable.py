@@ -342,6 +342,15 @@ _APPLICATION_NON_SERVING_MODULES: frozenset[str] = frozenset(
     {
         "__init__.py",
         "authorization.py",
+        # Candidate generation (ADR-0033). It resolves one review record through
+        # an injected by-key lookup over the *review search* store, reads the
+        # evidence file behind it, verifies a commit against the local git
+        # repository and hands a proposal to the draft-only facade. It names no
+        # store at all, and the findings one is a different arm entirely --
+        # `Review-Finding:` trailers out of local git history (ADR-0029), which
+        # this path never reads. Its write is a proposal directory, not the
+        # findings store, so it is not `WRITE_PATH_MODULES`' sense of a write.
+        "candidate_generation.py",
         # The draft-only facade onto ProposalService (ADR-0032 decision 8). It
         # narrows a service's surface to its two draft entries and reaches no
         # store: it holds no findings store and no other, and serves nothing.
@@ -440,6 +449,11 @@ _INFRASTRUCTURE_NON_SERVING_MODULES: frozenset[str] = frozenset(
         # (WRITE_PATH_MODULES, which stays application/cli) -- the migration write path
         # is a different arm.
         "git/committed_check.py",
+        # The candidate-generation fix-commit check (ADR-0033 decision 3). It runs
+        # `git rev-parse` and `git diff-tree` to decide whether the commit a caller
+        # named exists here and touched the file a stored review thread is anchored
+        # to; it names no store, and the findings one is a different arm again.
+        "git/fix_commit_check.py",
         # The `gh` review-ingestion adapter (ADR-0030). It reads GitHub and
         # returns `ReviewEvent`/`ReviewThread`/`ReviewSubmission` evidence; the
         # findings store is a different arm entirely -- `Review-Finding:` trailers

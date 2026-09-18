@@ -1844,13 +1844,31 @@ SECRET_SCAN_PROSE_SURFACES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             # trace of why the id half exists.
             "made *enabling* this setting publish the name it promised to remove",
             # The header caveat, which is what stops the whole document reading as
-            # shipped behaviour. It enumerates the three parts that *are*, so a
-            # fourth shipping without moving this sentence leaves a design
-            # document describing itself as design while a fourth arm runs.
+            # shipped behaviour. It enumerates the parts that *are*, so one more
+            # shipping without moving this sentence leaves a design document
+            # describing itself as design while another arm runs. **That is not
+            # hypothetical: it happened.** The fragment held "Three parts" until
+            # ADR-0033's candidate generator landed, and this pin is what refused
+            # the commit until the sentence was rewritten -- the pin working as
+            # designed, so the enumeration moved with the code rather than after
+            # it.
             (
-                "Three parts of it are the exception and are named as such where they "
+                "Four parts of it are the exception and are named as such where they "
                 "appear: the fetch half of the first stage, the landing half beside it, "
-                "and the ingestion-time privacy control the landing gate applies."
+                "the ingestion-time privacy control the landing gate applies, and "
+                "candidate generation."
+            ),
+            # The fourth exception's own bound, a separate fragment because it is
+            # droppable on its own and the document over-claims the moment it goes.
+            # *Failure isolation* below describes a generation stage that may call a
+            # model; the shipped generator calls none (ADR-0033 decision 1 puts the
+            # generalization in the calling agent). A rewrite that keeps "and
+            # candidate generation" in the enumeration and loses this clause tells a
+            # reader that the model-calling design is the shipped arm -- which is
+            # the exact over-claim this whole row exists to catch, one section over.
+            (
+                "The fourth carries a bound: *Failure isolation* below describes a design "
+                "in which generation may call a model, and the shipped generator calls none"
             ),
         ),
     ),

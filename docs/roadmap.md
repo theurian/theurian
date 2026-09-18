@@ -344,9 +344,14 @@ not; **absent** — effectively nothing.
   Slice 3 added the serving half: `theurian review build` projects those files
   into a SQLite store and the `review.search` MCP tool reads it back, which is
   what moved `reviewIngestion` to `true` beside
-  `reviewIngestionScope: "public-allowlisted"`. What is still absent is
-  everything after serving — classification and candidate generation, both out of
-  ADR-0030's scope.
+  `reviewIngestionScope: "public-allowlisted"`. Slice B5 added candidate
+  generation ([ADR-0033](adr/0033-knowledge-candidate-generation.md), out of
+  ADR-0030's scope): the only construction site of a `KnowledgeCandidate` is
+  that generator, which recomputes the promotion gate from the stored record,
+  verifies the caller's `fixCommit` against the local repository, and drafts an
+  ordinary proposal — the service half alone, since
+  `review.generateKnowledgeCandidate` is not a registered MCP tool yet. What is
+  still absent after serving is classification.
 - **Multi-vendor integration** — neutral wire, Claude-only bootstrap (§0).
 
 ### Absent
