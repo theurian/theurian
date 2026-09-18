@@ -282,6 +282,41 @@ one, and slice B5 records the choice
 with its reasoning rather than letting the `None` branch be settled by whichever
 line an implementer writes first.
 
+> **Amended in slice B5 (2026-09-18, before the implementation): the branch is
+> decided — a thread with no `file_path` refuses.** `fix_commit_present` cannot
+> be verified for such a thread in v1, and an unverifiable signal does not pass.
+>
+> **Rejected: pass on bare existence with the weaker basis recorded.** Existence
+> alone is the 285-answer choice set measured above, which is very nearly no
+> check — and it would arrive exactly on the thread class where verification is
+> weakest. The two mistakes are also not symmetrical: widening refuse into
+> accept later is additive, while narrowing accept into refuse is a breaking
+> behaviour change, so refusing first is what keeps the later decision free.
+>
+> **The refusal names the thread property plainly, and is *not* folded into the
+> single commit-verification refusal below.** *This thread carries no file
+> anchor, so the fix-commit signal cannot be verified* discloses nothing:
+> `filePath` is a published key on every `review.search` record
+> (`mcp/review_search.py`'s `AUTHOR_CONTROLLED_FIELDS` and `review_record`,
+> which emits every key including the `None` ones), so the property is already
+> caller-visible. Decision 5's bind governs withheld-versus-absent and
+> distinctions about repository contents; this is neither. The distinct message
+> is also the honest instruction — *this thread cannot generate a candidate in
+> v1* — instead of sending the caller to hunt for a better commit.
+>
+> **The excluded class, stated rather than left to be discovered:** a thread
+> stored with `file_path` `None` cannot generate a candidate in v1. The adapter
+> yields `None` for any node whose `path` is not a string
+> (`review_provider.py:665`); which GitHub thread kinds produce such a node is
+> not measured here, so the class is named by what Theurian stores and not by a
+> claim about the provider's schema.
+>
+> Consulted before recording, this being a judgment and not a Blocking Issue:
+> the orchestrator's recommendation, an independent Codex read (concurred, and
+> raised the refusal-shape question the paragraph above answers), and the
+> `watchdog` agent (concurred; not a Blocking Issue). The module gains its half
+> of this record when the verification lands.
+
 **The verification's own refusals are inside decision 5's bind.** A check that
 answers "that commit does not exist" differently from "that commit does not
 touch this thread's file" tells a caller something about the repository's
@@ -732,6 +767,11 @@ Still owed, with the milestone that will satisfy it:
   written into the ADR or into the module with its reasoning, plus a driving
   case for the branch either way. An implementation that falls into one arm
   without the decision being made is the defect this item exists to prevent.
+
+  > **Amended in slice B5 (2026-09-18): the choice half is recorded and the
+  > rest is still owed.** Decision 3 above now carries it — **refuse**, with the
+  > rejected alternative and the reasoning for both. Still owed at slice B5: the
+  > driving case for the branch, and the module's half of the record.
 - **Slice B5 — the two commit-verification refusals are indistinguishable
   (decisions 3 and 5).** *That commit does not exist* and *that commit does not
   touch this thread's file* must arrive as one refusal, in text and in duration,
