@@ -48,13 +48,23 @@ what it finds is filed under the `async-sweep` label. It sits in this step rathe
 than at §4 because a round takes wall clock and its findings can change what
 ships: met at the tag it is either skipped or it stalls a push already under way.
 Whoever dispatches the pass gathers the claims that the pull requests merged since
-the last `core-v*` tag deferred to it —
-`gh pr list --state merged --limit 100 --search "merged:>=$(git log -1 --format=%cs $(git describe --abbrev=0 --match 'core-v*'))"`
-— and hands them to `theurian-adversarial-review` in the dispatch brief as claims
-to attack. `--limit` is load-bearing (`gh pr list` returns 30 without it), and the
-day-granular `merged:>=` also returns what merged earlier on the tag day — the
-direction to err in, since a claim attacked twice costs a redundant check and a
-claim missed costs the pass its subject.
+the last `core-v*` tag deferred to it, recorded under each PR body's
+`## Deferred claims` heading:
+
+```sh
+tag=$(git describe --abbrev=0 --match 'core-v*')
+gh pr list --limit 500 --search "merged:>=$(git log -1 --format=%cI "$tag")"
+```
+
+The dispatch brief hands them to `theurian-adversarial-review` as claims to attack.
+`%cI` gives GitHub the tag commit's exact instant, offset included; a bare date is
+read as UTC midnight instead, which at four of this repository's first 25 `core-v*`
+cuts dropped 10 merged pull requests out of the window. `--limit` is load-bearing
+(`gh pr list` returns 30 without it) and truncates silently, so a result of exactly
+500 means the window was cut short — widen it and re-run. Quoting `"$tag"` is what
+makes a tagless checkout fail loudly: nested and unquoted, an empty `git describe`
+leaves the window at HEAD's own date and the gather still exits 0.
+
 What closes one of its findings, and why the anchor is the cut rather than a
 cadence, is in [orchestration.md](orchestration.md#the-async-red-team-sweep).
 

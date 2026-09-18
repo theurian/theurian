@@ -2,6 +2,12 @@
 
 <!-- What changed, and what problem it solves. The diff shows what; explain why. -->
 
+## Deferred claims
+
+<!-- Claims this PR defers to the release-cut adversarial pass, one per line.
+     Write None if nothing was deferred -- an explicit None is what tells the
+     release-cut gather "deferred nothing" rather than "forgot to record". -->
+
 ## Scope
 
 <!-- One topic per PR. If this touches two unrelated concerns, split it. -->
