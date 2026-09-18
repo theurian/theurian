@@ -101,15 +101,21 @@ main() {
     # Core's own `_unresolved_status` docstring records that a broken
     # migration's `reason` carries the YAML parser's own source snippet --
     # project file bytes, not something a session-start hook may echo.
-    # `remedy` is Core's own advisory sentence and holds no such risk by
-    # itself, but a SessionStart warning must stay a fixed literal (see
-    # `test_a_session_start_warning_cannot_execute_anything` and
-    # `test_a_session_start_warning_is_a_terminated_literal` in
-    # test_plugin_boundary.py) -- this hook prints only strings it wrote
-    # itself, never one built from a field that could carry a path with
-    # attacker-influenced components. /theurian:doctor is where Core's own
-    # remedy belongs; it reads `project status` directly and can print
-    # `remedy` in full.
+    # `remedy` is Core's own advisory sentence, and it is not the safe half of
+    # the pair: its unreadable-entry cure quotes the offending registry keys
+    # back verbatim and its whole-file cure names the registry path, so it
+    # carries hand-edited bytes too. What keeps this branch safe is therefore
+    # not a property of either field but that no field reaches a warning at
+    # all: every `theurian::warn` argument in this script is a double-quoted
+    # span holding no `$` expansion and no backtick, which is what
+    # `test_a_session_start_warning_cannot_execute_anything` in
+    # test_plugin_boundary.py asserts, with
+    # `test_a_session_start_warning_takes_only_quoted_arguments` and
+    # `test_a_session_start_warning_is_a_terminated_literal` making that span
+    # provably the whole argument list. Planting `theurian::warn "degraded:
+    # $status"` here turns the first of the three RED. /theurian:doctor is
+    # where Core's own remedy belongs; it reads `project status` directly and
+    # can print `remedy` in full.
     theurian::warn "this repository's knowledge context is degraded. Run /theurian:doctor to diagnose."
   elif printf '%s' "$status" | grep -q '"indexStale": *true'; then
     theurian::warn "the knowledge index is stale. Run /theurian:index when convenient."
