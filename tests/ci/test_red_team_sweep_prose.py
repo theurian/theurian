@@ -3,9 +3,10 @@
 `docs/contributing/orchestration.md`'s "The async red-team sweep" section states
 operational facts: when the nightly job runs, how many mutations it spends, what
 its two standing alarm threads are called, which label both its producers file
-under, what heading closes a filed body, what the census excludes, and which
-release-ritual step the second leg is anchored to. Every one of those is a value
-that lives somewhere else and can move without the sentence moving with it.
+under, what heading closes a filed body, where a deferred claim is recorded,
+what the census excludes, and which release-ritual step the second leg is
+anchored to. Every one of those is a value that lives somewhere else and can
+move without the sentence moving with it.
 
 **Why this file and not the invocation gate.** `test_red_team_sweep_invocation.py`
 answers "is the workflow still sweeping" -- its subject is one file, its failure
@@ -25,8 +26,10 @@ here is restated from the document; a rule that restated one would agree with
 the document and with nothing else. Two exceptions are deliberate and marked as
 such -- `RELEASE_CUT_ITEM` and `DEFERRED_CLAIMS_GATHER` are not values but
 sentences two documents have to share, and neither has a third source to be
-derived from. Both are named here so a third one has to be argued for rather
-than added quietly.
+derived from. Both are enumerated in `SHARED_SENTENCES`, which is what a third
+one would have to survive rather than a sentence it has to be mentioned in: a
+literal short of the text it arbitrates leaves the rules that grep for it green
+over the part it dropped.
 
 **What is not enforced.** That any night actually ran. Every rule here passes
 against a workflow whose schedule fires and a workflow whose schedule is
@@ -42,6 +45,7 @@ from __future__ import annotations
 import pathlib
 import re
 import sys
+from collections.abc import Callable
 from pathlib import PurePosixPath
 from types import ModuleType
 from typing import Any, cast
@@ -56,11 +60,15 @@ DOC = REPO_ROOT / "docs" / "contributing" / "orchestration.md"
 RELEASE_DOC = REPO_ROOT / "docs" / "contributing" / "release.md"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "red-team.yml"
 
+#: The template that puts the deferred-claims section in every pull request body
+#: -- the carrier the gather clause sends a dispatcher to read.
+PR_TEMPLATE = REPO_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md"
+
 #: The section this file answers for. A heading rather than a line number, so
 #: the anchor survives every edit above it.
 ANCHOR = "### The async red-team sweep"
 
-#: The one literal in this module, and a literal on purpose.
+#: The module's first literal, and a literal on purpose.
 #:
 #: Every other rule recomputes its expectation from a live source, because a
 #: rule that restated a value would agree with the document and with nothing
@@ -81,6 +89,10 @@ RELEASE_CUT_ITEM = (
 #: section, which is a different release on a different cadence.
 CORE_PREPARE = "### 1. Prepare"
 CORE_PREPARE_PARENT = "## Releasing Core"
+
+#: The bolded lead of the paragraph each document carries the gather clause in.
+RELEASE_GATHER_LEAD = "**The async red-team sweep's release-cut pass runs here too.**"
+ORCHESTRATION_GATHER_LEAD = "**The agent pass.**"
 
 #: The checklist the release-cut item is an item *of*. Its Core and plugin
 #: halves are bolded leads inside one `##` section rather than headings of their
@@ -167,6 +179,36 @@ def _section_of(path: pathlib.Path, anchor: str, *, under: str | None = None) ->
     return _flat("\n".join(_section_lines(path, anchor, under=under)))
 
 
+def _raw_block(lines: list[str], flat: str) -> list[str]:
+    """The document's own lines whose flattening is exactly ``flat``.
+
+    :func:`_section_of` is where every other rule stops, and it flattens -- so it
+    compares the sentence a reader is given and not the bytes a file carries.
+    This is the other half, the block as one document wraps it, which is what
+    makes two copies of a shared block comparable as bytes.
+
+    The first match from a given start is the shortest window that flattens to
+    ``flat``, so the blank lines around a block are excluded and the block is
+    unique. Accepting a padded window would make more than one window out of
+    every block, since a blank line flattens to nothing.
+    """
+    blocks: list[list[str]] = []
+    for start, line in enumerate(lines):
+        if not line.strip() or not flat.startswith(_flat(line)):
+            continue
+        for end in range(start + 1, len(lines) + 1):
+            joined = _flat("\n".join(lines[start:end]))
+            if joined == flat:
+                blocks.append(lines[start:end])
+                break
+            if not flat.startswith(joined):
+                break
+    assert len(blocks) == 1, (
+        f"expected one block of lines flattening to the shared clause, found {len(blocks)}"
+    )
+    return blocks[0]
+
+
 def _core_release_checklist_items() -> list[str]:
     """`release.md`'s Core checklist, one flattened string per `- [ ]` item.
 
@@ -211,6 +253,59 @@ def _paragraph(section: str, lead: str) -> str:
     rest = section[section.index(lead) + len(lead) :]
     following = re.search(r"\*\*[A-Z][^*]{0,80}\.\*\*", rest)
     return rest[: following.start()] if following else rest
+
+
+def _release_gather_paragraph() -> str:
+    """`release.md` §1's release-cut pass paragraph, one of the clause's two homes."""
+    return _paragraph(
+        _section_of(RELEASE_DOC, CORE_PREPARE, under=CORE_PREPARE_PARENT), RELEASE_GATHER_LEAD
+    )
+
+
+def _orchestration_gather_paragraph() -> str:
+    """`orchestration.md`'s agent-pass paragraph, the other one."""
+    return _paragraph(_section(), ORCHESTRATION_GATHER_LEAD)
+
+
+def _common_prefix(left: str, right: str) -> str:
+    end = 0
+    while end < min(len(left), len(right)) and left[end] == right[end]:
+        end += 1
+    return left[:end]
+
+
+def _common_edges(left: str, right: str, sentence: str) -> tuple[str, str]:
+    """What two copies of ``sentence`` still agree on immediately before and after it.
+
+    Each region is checked to carry exactly one copy first: `partition` takes the
+    first occurrence, so "the text after it" is ambiguous for a sentence that
+    appears twice and meaningless for the degenerate empty one, which appears
+    between every pair of characters.
+    """
+    for region in (left, right):
+        assert region.count(sentence) == 1, (
+            f"expected one copy of the shared sentence here, found {region.count(sentence)}"
+        )
+    before_left, _, after_left = left.partition(sentence)
+    before_right, _, after_right = right.partition(sentence)
+    return (
+        _common_prefix(before_left[::-1], before_right[::-1])[::-1],
+        _common_prefix(after_left, after_right),
+    )
+
+
+def _pr_template_headings() -> list[str]:
+    """Every heading line of the pull-request template.
+
+    Visible lines only, so a section commented out of the template counts as
+    gone. The instruction comment under a heading is not part of it: what a
+    document cites is the heading a contributor sees in their own pull request
+    body.
+    """
+    lines = _visible(PR_TEMPLATE.read_text(encoding="utf-8")).splitlines()
+    headings = [line.strip() for line in lines if re.match(r"^#{1,6}\s\S", line)]
+    assert headings, f"{PR_TEMPLATE.name} carries no headings at all"
+    return headings
 
 
 def _workflow() -> dict[str, Any]:
@@ -357,14 +452,13 @@ def test_both_documents_carry_the_release_cut_step_word_for_word() -> None:
 #:
 #: Not a value read back out of a live source: a *sentence two documents have to
 #: share*. `release.md`'s §1 and `orchestration.md`'s agent-pass paragraph each
-#: instruct whoever dispatches the release-cut pass, and a dispatcher reads one
-#: of them -- so a `--limit` raised in one copy, or a search key rewritten in
-#: one, hands two dispatchers two different gathers with both documents looking
-#: authoritative. There is no third source to derive the clause from, so this
-#: literal is the arbiter: rewording either copy is meant to require touching it.
+#: instruct whoever dispatches the release-cut pass, and there is no third source
+#: to derive the clause from -- so this literal is the arbiter, and rewording
+#: either copy is meant to require touching it.
 #:
-#: Written through :func:`_flat` at the documents' own wrap points, so what a
-#: reviewer compares against the pages is the block as the pages carry it.
+#: Written at the documents' own wrap points, their blank lines aside, which
+#: :func:`_flat` erases along with the rest -- so a reviewer reads this literal
+#: against either page line for line.
 DEFERRED_CLAIMS_GATHER = _flat("""
     Whoever dispatches the pass gathers the claims that the pull requests merged since
     the last `core-v*` tag deferred to it, recorded under each PR body's
@@ -393,18 +487,130 @@ def test_both_documents_carry_the_deferred_claims_gather_clause_word_for_word() 
     is the same failure with two dispatchers disagreeing about what they
     gathered ([#735](https://github.com/theurian/theurian/issues/735)).
 
-    Each side is scoped to where the instruction has to be read. `release.md` is
-    anchored under `## Releasing Core`, since the plugin release has its own
-    `### 1. Prepare` and a rule accepting either stays green with the Core copy
-    gone. `orchestration.md` is scoped to the agent-pass paragraph rather than
-    the sweep section: a section-wide rule would accept the clause anywhere in
-    it, including below the paragraph whoever dispatches the pass is reading.
+    Each side is scoped to the paragraph a dispatcher is reading rather than to
+    the section around it. Measured on the release side, where the rule used to
+    be section-wide: the block moved to the top of `### 1. Prepare`, above the
+    release-cut pass paragraph entirely, left it green. The release side is
+    additionally anchored under `## Releasing Core`, since the plugin release has
+    its own `### 1. Prepare` and a rule accepting either stays green with the
+    Core copy gone.
     """
-    prepare = _section_of(RELEASE_DOC, CORE_PREPARE, under=CORE_PREPARE_PARENT)
-    agent_pass = _paragraph(_section(), "**The agent pass.**")
+    prepare = _release_gather_paragraph()
+    agent_pass = _orchestration_gather_paragraph()
 
     assert DEFERRED_CLAIMS_GATHER in prepare
     assert DEFERRED_CLAIMS_GATHER in agent_pass
+
+
+def test_the_two_copies_of_the_gather_clause_are_the_same_bytes() -> None:
+    """Flattened agreement is not agreement, and a re-wrap is how drift starts.
+
+    `DEFERRED_CLAIMS_GATHER` is flattened, so the rule above passes on two copies
+    whose line breaks differ: measured, moving one line break in `release.md`'s
+    copy left every other rule in this module green with the two blocks no longer
+    the same bytes. That is the state the next edit lands in -- it hits one
+    document's wrap and not the other's, and the diff that would have shown the
+    two copies parting company shows a re-wrap instead.
+
+    Compared as each document's own lines, fence and blank lines included, with
+    the block located by the shared literal.
+    """
+    prepare = _raw_block(
+        _section_lines(RELEASE_DOC, CORE_PREPARE, under=CORE_PREPARE_PARENT),
+        DEFERRED_CLAIMS_GATHER,
+    )
+    agent_pass = _raw_block(_section_lines(DOC, ANCHOR), DEFERRED_CLAIMS_GATHER)
+
+    assert prepare == agent_pass
+
+
+def test_both_documents_cite_a_record_heading_the_template_really_carries() -> None:
+    """A gather is only as good as the carrier it names, and nothing read the carrier.
+
+    The clause sends a dispatcher to a heading in each PR body, and
+    `.github/PULL_REQUEST_TEMPLATE.md` is what puts that heading in a PR body at
+    all. Until this rule nothing in the repository read the template at all
+    (`git grep -l PULL_REQUEST_TEMPLATE` returned nothing), so renaming or
+    dropping the section left both documents sending dispatchers to a heading no
+    pull request carries. The failure is silent in the worst direction: the
+    gather still returns a full window of merged pull requests, and every one of
+    them has nothing recorded in it.
+
+    Derived rather than written down a third time: the heading is whichever of
+    the template's own headings both paragraphs cite. It goes red from either
+    end -- the template renaming the section, or a document's citation drifting
+    off it.
+    """
+    prepare = _release_gather_paragraph()
+    agent_pass = _orchestration_gather_paragraph()
+
+    cited = [h for h in _pr_template_headings() if f"`{h}`" in prepare and f"`{h}`" in agent_pass]
+
+    assert len(cited) == 1, (
+        f"the two gather paragraphs cite {len(cited)} of {PR_TEMPLATE.name}'s headings, and the "
+        "clause names exactly one as where a deferred claim is recorded; a citation no template "
+        "section answers to sends a dispatcher looking for a record nobody was asked to write"
+    )
+
+
+def _release_cut_item_copies() -> tuple[str, str]:
+    """`RELEASE_CUT_ITEM`'s two copies: the checklist item, and the section's quote of it."""
+    items = [item for item in _core_release_checklist_items() if RELEASE_CUT_ITEM in item]
+    assert len(items) == 1, (
+        f"expected one Core checklist item carrying the release-cut step, found {len(items)}"
+    )
+    return items[0], _section()
+
+
+def _deferred_claims_gather_copies() -> tuple[str, str]:
+    """`DEFERRED_CLAIMS_GATHER`'s two copies, each in the paragraph a dispatcher reads."""
+    return _release_gather_paragraph(), _orchestration_gather_paragraph()
+
+
+#: Every literal in this module, with the two regions each one arbitrates
+#: between. A third would join by being added here, which is the argument the
+#: module docstring asks for: the rule below is what it has to survive.
+SHARED_SENTENCES: tuple[tuple[str, str, Callable[[], tuple[str, str]]], ...] = (
+    ("RELEASE_CUT_ITEM", RELEASE_CUT_ITEM, _release_cut_item_copies),
+    ("DEFERRED_CLAIMS_GATHER", DEFERRED_CLAIMS_GATHER, _deferred_claims_gather_copies),
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "sentence", "copies"), SHARED_SENTENCES, ids=[name for name, _, _ in SHARED_SENTENCES]
+)
+def test_a_shared_sentence_covers_the_whole_of_what_its_two_copies_share(
+    name: str, sentence: str, copies: Callable[[], tuple[str, str]]
+) -> None:
+    """A literal short of the shared text arbitrates only the part it still covers.
+
+    The containment rules above pass on any document carrying the literal,
+    whatever else that document lost, so a shrunken literal keeps them green and
+    says nothing about the tail it dropped -- while still reading, in the diff,
+    as the pin it used to be.
+    Before this rule, `DEFERRED_CLAIMS_GATHER = ""`, a truncation of it to its
+    lead fragment, and `RELEASE_CUT_ITEM = ""` each left `tests/ci` green, the
+    middle one with the gather command pinned in neither document.
+
+    A length floor cannot do it, whatever the number: the lead fragment that
+    survived is longer than `RELEASE_CUT_ITEM` entire, so a floor high enough to
+    reject the one rejects the other outright. What is asserted instead is
+    maximality -- the two copies may agree on the punctuation and spacing
+    abutting the sentence, but on no word beyond it. A word either side that both
+    copies still share is shared text the arbiter has stopped covering, which is
+    what every truncation looks like from here; the empty literal fails the count
+    in :func:`_common_edges` before that.
+    """
+    assert sentence.strip(), f"{name} is empty, so every rule that greps for it passes on anything"
+
+    left, right = copies()
+    before, after = _common_edges(left, right, sentence)
+
+    assert not re.search(r"\w", before + after), (
+        f"{name}'s two copies still share {before!r} before it and {after!r} after it, so the "
+        "shared text runs past the literal: extend it to the whole of what both documents carry, "
+        "or the rules that grep for it stop arbitrating the part it dropped"
+    )
 
 
 def test_the_core_prepare_step_names_the_agent_that_runs_the_pass() -> None:
