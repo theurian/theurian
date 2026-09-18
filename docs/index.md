@@ -195,7 +195,8 @@ the [Architecture Decision Records](adr/README.md).
 
 ### I want to connect an AI coding agent
 
-See the [Claude Code integration](integrations/claude-code.md) and the
+See the [Claude Code integration](integrations/claude-code.md), the
+[Codex CLI integration](integrations/codex.md), and the
 [MCP tool protocol](protocol/mcp-tools.md).
 
 ### I want to understand how knowledge changes

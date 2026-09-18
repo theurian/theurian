@@ -659,21 +659,26 @@ the authority, and this file agrees with it.
 - [Threat model](docs/security/threat-model.md) · [Local MCP security](docs/security/local-mcp.md)
 - [Migration format](docs/protocol/migrations.md) · [Plugin/Core compatibility](docs/protocol/plugin-core-compatibility.md)
 - [Claude Code integration](docs/integrations/claude-code.md) · [Serena](docs/integrations/serena.md) — different questions, designed to be used together
+- [Codex CLI integration](docs/integrations/codex.md) — registering an already-running daemon with `codex mcp add`
 - [Development](docs/contributing/development.md) · [Release](docs/contributing/release.md)
 
 <details>
 <summary><b>Repository layout</b></summary>
 
 Core and the Claude Code plugin are independent artifacts with their own
-versions, changelogs, and release pipelines. The plugin never imports Core's
-Python — a CI job fails the build if it does — which is what keeps it movable to
-its own repository.
-([ADR-0001](docs/adr/0001-monorepo-with-independent-artifacts.md))
+versions, changelogs, and release pipelines. Neither plugin tree imports Core's
+Python — a CI job fails the build if one does — which is what keeps the Claude
+Code plugin movable to its own repository
+([ADR-0001](docs/adr/0001-monorepo-with-independent-artifacts.md)).
+`plugins/codex/` is not a second artifact: registering a running daemon with
+Codex is one command, so that integration is one document with nothing to
+version or release.
 
 ```text
 packages/theurian-core/   Python package: CLI, daemon, MCP server, domain, adapters
 plugins/claude-code/      Claude Code plugin — separately versioned and released
-schemas/                  Public JSON Schemas: the contract between the two
+plugins/codex/            Codex CLI integration — one registration command, no package
+schemas/                  Public JSON Schemas: the contract between Core and every client
 tests/                    Cross-artifact contract and E2E tests
 docs/                     Architecture, ADRs, protocol, security, integrations
 examples/                 A sample `.theurian/` to copy the shape from
