@@ -206,7 +206,7 @@ jobs:
     if: needs.changes.outputs.docs == 'true'
     steps:
       - uses: actions/checkout@v7
-      - name: Relative links resolve
+      - name: Documentation links resolve
         run: |
           python3 - <<'PY'
           import pathlib, re, sys
@@ -214,6 +214,15 @@ jobs:
 
           root = pathlib.Path(".")
           link = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+
+          # `mkdocs build --strict` warns on a relative link leaving `docs/`, so
+          # links out of `docs/` are written absolute in the form below. They
+          # name a path in this repository, so they resolve against the checkout
+          # with no network. Only `main`: `blob/<sha>` and `blob/<branch>` pin a
+          # historical state this checkout is not, so they stay skipped.
+          self_ref = re.compile(
+              r"https://github\.com/theurian/theurian/(?:blob|tree)/main/(.+)"
+          )
 
           # This repository dogfoods Theurian, so `.theurian/knowledge/` at the
           # top of the tree holds its own corpus: verbatim, byte-frozen
@@ -254,16 +263,21 @@ jobs:
               for target in link.findall(md.read_text(encoding="utf-8")):
                   target = target.split(" ")[0]
                   if urlparse(target).scheme or target.startswith("#"):
+                      match = self_ref.fullmatch(target)
+                      if match:
+                          path = match.group(1).split("#")[0].split("?")[0]
+                          if not (root / path).exists():
+                              broken.append(f"{md}: {target}")
                       continue
                   resolved = (md.parent / target.split("#")[0]).resolve()
                   if not resolved.exists():
                       broken.append(f"{md}: {target}")
           if broken:
-              print("::error::Broken relative links:")
+              print("::error::Broken documentation links:")
               for b in broken:
                   print(f"  {b}")
               sys.exit(1)
-          print("All relative links resolve.")
+          print("All documentation links resolve.")
           PY
 
   # The corpus under `.theurian/` is 27 verbatim snapshots of 26 documents
