@@ -47,6 +47,14 @@ Both fail outside the release workflow, so they are worth seeing before the tag.
 what it finds is filed under the `async-sweep` label. It sits in this step rather
 than at §4 because a round takes wall clock and its findings can change what
 ships: met at the tag it is either skipped or it stalls a push already under way.
+Whoever dispatches the pass gathers the claims that the pull requests merged since
+the last `core-v*` tag deferred to it —
+`gh pr list --state merged --limit 100 --search "merged:>=$(git log -1 --format=%cs $(git describe --abbrev=0 --match 'core-v*'))"`
+— and hands them to `theurian-adversarial-review` in the dispatch brief as claims
+to attack. `--limit` is load-bearing (`gh pr list` returns 30 without it), and the
+day-granular `merged:>=` also returns what merged earlier on the tag day — the
+direction to err in, since a claim attacked twice costs a redundant check and a
+claim missed costs the pass its subject.
 What closes one of its findings, and why the anchor is the cut rather than a
 cadence, is in [orchestration.md](orchestration.md#the-async-red-team-sweep).
 

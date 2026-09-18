@@ -194,7 +194,16 @@ until an instrument has been heard to speak, its zero is not evidence
 
 **The agent pass.** Before a release tag is cut, `theurian-adversarial-review`
 runs over `origin/main` at the candidate commit and files what it finds under the
-same label. The step is [release.md's §1 Prepare](release.md#1-prepare), and the
+same label.
+Whoever dispatches the pass gathers the claims that the pull requests merged since
+the last `core-v*` tag deferred to it —
+`gh pr list --state merged --limit 100 --search "merged:>=$(git log -1 --format=%cs $(git describe --abbrev=0 --match 'core-v*'))"`
+— and hands them to `theurian-adversarial-review` in the dispatch brief as claims
+to attack. `--limit` is load-bearing (`gh pr list` returns 30 without it), and the
+day-granular `merged:>=` also returns what merged earlier on the tag day — the
+direction to err in, since a claim attacked twice costs a redundant check and a
+claim missed costs the pass its subject.
+The step is [release.md's §1 Prepare](release.md#1-prepare), and the
 Release checklist carries it as a *(no check)* item — "The async red-team sweep's
 release-cut pass has run over `origin/main` at the candidate commit". The anchor
 is the ritual and not a frequency, deliberately: a cadence nobody performs stops
