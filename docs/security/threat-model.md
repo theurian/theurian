@@ -6498,8 +6498,9 @@ is yanked; the fix ships in 0.2.3.
 #### T-12 — An agent silently rewrites an approved decision (Tampering, High)
 
 **Controls:** no MCP tool reaches a write path for approved state — not behind a
-flag, not behind a permission. The two write-intent tools
-(`knowledge.proposeChange`, `knowledge.generateMigrationDraft`) emit proposal
+flag, not behind a permission. The three write-intent tools
+(`knowledge.proposeChange`, `knowledge.generateMigrationDraft`,
+`review.generateKnowledgeCandidate`) emit proposal
 files, and the control that holds "no tool reaches approved state" is a
 **structural** one: they are handed a draft-only facade
 (`application/draft_only_proposals.py`, ADR-0032 decision 8) whose reachable

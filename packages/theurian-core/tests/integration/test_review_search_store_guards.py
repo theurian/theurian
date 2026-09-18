@@ -78,9 +78,17 @@ indistinguishable from a covered one:
   ``replace_all``, which are the only two functions any key reads. Driven by
   ``test_review_search_store.py::
   test_a_dump_of_a_half_built_store_refuses_rather_than_answering_a_smaller_corpus``.
-* ``search``'s schema-and-format stamp comparison, outside the keys for the same
-  reason. Driven by ``test_review_search_store.py::
-  test_a_store_stamped_by_a_superseded_schema_is_refused``.
+* the schema-and-format stamp comparison, outside the keys for the same reason.
+  It sits in ``_refuse_unless_current`` rather than in ``search``, and is reached
+  from **two** reads now that ``relative_path_for`` exists -- so it is one guard
+  one hop below each of them rather than one guard per read. Still driven by
+  ``test_review_search_store.py::
+  test_a_store_stamped_by_a_superseded_schema_is_refused``, which goes through
+  ``search``: the hop is what makes one driving test cover the comparison itself,
+  and ``test_review_search_store_lookup.py::
+  test_the_by_key_read_refuses_a_superseded_store_the_way_the_query_read_does``
+  is what holds that the second read really takes that hop rather than answering
+  ``None`` for a stale store.
 * ``search``'s ``text_chars`` refusal, which is raised in the adapter's own method
   rather than in a domain ``__post_init__``, so :data:`LOAD_REFUSALS`' key does
   not reach it. Driven by ``test_review_search_store.py::
@@ -402,6 +410,7 @@ def test_every_inherited_guard_has_a_driving_test() -> None:
 _SUITE_DIRECTORY: Final = {
     "test_derived_state_value_envelope.py": "integration",
     "test_review_search_store.py": "integration",
+    "test_review_search_store_lookup.py": "integration",
     "test_review_search_builder.py": "integration",
     "test_review_search_rebuild.py": "integration",
 }
@@ -439,10 +448,12 @@ def test_every_test_this_module_s_prose_cites_exists() -> None:
     elsewhere = _CITED_ELSEWHERE.findall(flattened)
     here = _CITED_HERE.findall(flattened)
 
-    assert len(elsewhere) == 4, (
+    assert len(elsewhere) == 5, (
         f"this module's prose cites {len(elsewhere)} tests in other files, {elsewhere}; "
-        f"four of the ledger's five entries cite one, so a different number means an "
-        f"entry lost its citation or gained one this check has not read"
+        f"four of the ledger's five entries cite one and the stamp entry cites two -- "
+        f"the comparison itself, through `search`, and the second read that has to take "
+        f"the same hop -- so a different number means an entry lost its citation or "
+        f"gained one this check has not read"
     )
     assert len(here) == 2, (
         f"this module's prose cites {len(here)} tests in this module, {here}; the census "

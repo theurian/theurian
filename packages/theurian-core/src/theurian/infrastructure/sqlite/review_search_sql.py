@@ -76,6 +76,18 @@ SELECT_STAMP: Final = (
     "WHERE id = 1"
 )
 
+#: The by-key lookup: one record's path, found by the two columns that name it
+#: from outside the store.
+#:
+#: ``LIMIT 2`` is the whole of ``SqliteReviewSearchStore.relative_path_for``'s
+#: duplicate detection -- one row past the answer is enough to see that
+#: ``(repository, record_key)`` is not unique -- and it is also what bounds what
+#: a store carrying many rows under one key can make that read materialise.
+SELECT_RELATIVE_PATH: Final = (
+    "SELECT r.relative_path FROM review_records r "
+    "WHERE r.repository = ? AND r.record_key = ? LIMIT 2"
+)
+
 #: The dump's projection: every record column whole, qualified so it reads the
 #: same as the search's projection over the same aliased table.
 DUMP_COLUMNS: Final = ", ".join(f"r.{name}" for name in RECORD_COLUMN_NAMES)

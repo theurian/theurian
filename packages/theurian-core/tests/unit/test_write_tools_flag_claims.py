@@ -137,13 +137,18 @@ _FINDINGS_ADR: Final = REPO_ROOT / "docs/adr/0029-review-findings-are-governed-k
 #: The flag whose value this module couples to a registration.
 _FLAG: Final = "writeTools"
 
-#: The write-intent tools, named rather than derived. ADR-0032 registers exactly
-#: these two at slice B4; ``review.generateKnowledgeCandidate`` (ADR-0033) arrives
-#: additively at B5 with no flag change, because ``writeTools`` answers *whether
-#: any write-intent tool exists*, not *how many*. A third write-intent tool joins
-#: this set by a deliberate edit here, in the change that registers it.
+#: The write-intent tools, named rather than derived. ADR-0032 registered the
+#: first two at slice B4 and ``review.generateKnowledgeCandidate`` (ADR-0033)
+#: joined them at B5 -- **additively, with no flag change**, because ``writeTools``
+#: answers *whether any write-intent tool exists*, not *how many*. That is why the
+#: coupling arm below did not move when the third registered, and why this set had
+#: to: a fourth joins by a deliberate edit here, in the change that registers it.
 _WRITE_INTENT_TOOL_NAMES: Final = frozenset(
-    {"knowledge.proposeChange", "knowledge.generateMigrationDraft"}
+    {
+        "knowledge.proposeChange",
+        "knowledge.generateMigrationDraft",
+        "review.generateKnowledgeCandidate",
+    }
 )
 
 
@@ -403,7 +408,7 @@ _ERA_NARRATIONS: Final[tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]], 
             "`system.capabilities` reports `writeTools: true` — the write-intent *MCP* "
             "tools `knowledge.proposeChange` and `knowledge.generateMigrationDraft` exist "
             "(ADR-0032)",
-            "gets the same nine tools this daemon exposes",
+            "gets the same ten tools this daemon exposes",
             "Most read; the `knowledge.proposeChange` and "
             "`knowledge.generateMigrationDraft` write-intent tools emit a proposal a human "
             "reviews and merges, never approved knowledge",
@@ -420,11 +425,11 @@ _ERA_NARRATIONS: Final[tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]], 
         "docs/index.md",
         "docs-index",
         (
-            "The write-intent tools a client can call — `knowledge.proposeChange` and "
-            "`knowledge.generateMigrationDraft` — emit a proposal a human reviews and "
-            "merges, never approved state, and `system.capabilities` reports "
-            "`writeTools: true`",
-            "Over MCP, the two write-intent tools draft through the same `ProposalService` "
+            "The write-intent tools a client can call — `knowledge.proposeChange`, "
+            "`knowledge.generateMigrationDraft` and `review.generateKnowledgeCandidate` — "
+            "emit a proposal a human reviews and merges, never approved state, and "
+            "`system.capabilities` reports `writeTools: true`",
+            "Over MCP, the three write-intent tools draft through the same `ProposalService` "
             "and land the same proposal directory",
             "That no MCP tool writes approved knowledge is enforced structurally: the "
             "write-intent tools are handed a draft-only facade whose reachable surface is "
@@ -465,9 +470,9 @@ _ERA_NARRATIONS: Final[tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]], 
             "**The write-intent MCP tools left it second** — `knowledge.proposeChange` and "
             "`knowledge.generateMigrationDraft` register as of",
             "**`writeTools` moved after that reading, on the Phase B slice-B4 branch",
-            "**Every tool it exposes was read-only until ADR-0032**; the two write-intent "
+            "**Every tool it exposes was read-only until ADR-0032**; the three write-intent "
             "tools it now exposes write a proposal directory and nothing else",
-            "there are two write tools there, and the guarantee is that neither reaches an "
+            "there are three write tools there, and the guarantee is that none reaches an "
             "**approved-state** write",
             "**The agent write path** — no longer the `theurian propose` CLI only.",
             "The write-intent MCP tools (`writeTools: true` since ADR-0032) emit a proposal "
@@ -487,10 +492,10 @@ _ERA_NARRATIONS: Final[tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]], 
         "docs/security/threat-model.md (T-12)",
         "threat-model",
         (
-            "The two write-intent tools (`knowledge.proposeChange`, "
-            "`knowledge.generateMigrationDraft`) emit proposal files, and the control that "
-            'holds "no tool reaches approved state" is a **structural** one: they are '
-            "handed a draft-only facade",
+            "The three write-intent tools (`knowledge.proposeChange`, "
+            "`knowledge.generateMigrationDraft`, `review.generateKnowledgeCandidate`) emit "
+            'proposal files, and the control that holds "no tool reaches approved state" is '
+            "a **structural** one: they are handed a draft-only facade",
         ),
         (
             "Write-intent tools emit proposal files. A test enumerates every registered "

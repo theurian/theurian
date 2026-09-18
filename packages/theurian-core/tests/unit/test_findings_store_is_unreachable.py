@@ -1321,6 +1321,12 @@ KNOWN_TOOL_NAMES = frozenset(
         # ADR-0032's, not ADR-0029's.
         "knowledge.proposeChange",
         "knowledge.generateMigrationDraft",
+        # The third (ADR-0033), which drafts through the same facade off the review
+        # *evidence* store. A different store, a different schema, a different
+        # source: it serves no `Review-Finding:` trailer and reaches no symbol of
+        # the findings store, which the two arms below check rather than assume.
+        # Its disclosure round is ADR-0033 decision 5's.
+        "review.generateKnowledgeCandidate",
     }
 )
 

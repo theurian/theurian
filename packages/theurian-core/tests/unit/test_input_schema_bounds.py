@@ -79,6 +79,21 @@ BOUNDS: Final[dict[tuple[str, str], tuple[str, int, str]]] = {
         "bytes (#669). This field bounds code points, a sound over-approximation of that "
         "byte cap; the unit mismatch is recorded at #691, not re-litigated here",
     ),
+    ("review-generate-knowledge-candidate-input.schema.json", "properties/itemId"): (
+        "MAX_IDENTIFIER_LENGTH",
+        MAX_IDENTIFIER_LENGTH,
+        "domain/identifiers.py -- `ItemId` refuses a longer value; the candidate tool echoes "
+        "the id in the candidate id it builds, so it is bounded before the echo the same way "
+        "`knowledge.proposeChange`'s is",
+    ),
+    ("review-generate-knowledge-candidate-input.schema.json", "properties/body"): (
+        "MAX_REQUEST_BODY_BYTES",
+        MAX_REQUEST_BODY_BYTES,
+        "daemon/server.py -- the transport rejects a request body larger than this in "
+        "bytes (#669). The caller authors the generalisation as inline text (ADR-0033 "
+        "decision 1), so this is the same code-point over-approximation of the byte cap "
+        "`knowledge.proposeChange`'s `body` carries; the unit mismatch is #691",
+    ),
     ("knowledge-search-input.schema.json", "properties/query"): (
         "MAX_QUERY_CHARS",
         MAX_QUERY_CHARS,

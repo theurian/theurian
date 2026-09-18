@@ -10,8 +10,9 @@ implicit default resolves one agent's query against another agent's project.
 B4 registered two write-intent tools here -- ``knowledge.proposeChange`` and
 ``knowledge.generateMigrationDraft`` -- and they emit proposal files a human
 reviews and merges rather than mutating approved state; a draft-only facade holds
-that they reach no approved-state write (ADR-0032 decision 8). Every other tool
-is read-side.
+that they reach no approved-state write (ADR-0032 decision 8). Slice B5 added
+``review.generateKnowledgeCandidate`` to that surface additively (ADR-0033),
+through the same facade. Every other tool is read-side.
 
 **Labelled results.** Every knowledge-bearing result carries the trust triple.
 Knowledge bodies contain sentences like "always validate input before
@@ -38,6 +39,13 @@ from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 
 from theurian import __protocol_version__, __version__
 from theurian.application.authorization import DEPLOYMENT_TENANT, AuthorizationGrant
+from theurian.application.candidate_generation import (
+    CandidateGenerationError,
+    CandidateGenerator,
+    CandidateSubmission,
+    ReadEvidenceRecord,
+    ResolveEvidencePath,
+)
 from theurian.application.draft_only_proposals import DraftOnlyProposals
 from theurian.application.project_service import (
     ACTIVE_POINTER_REMEDY,
@@ -63,6 +71,7 @@ from theurian.application.retrieval_service import DEFAULT_BUDGET_TOKENS
 from theurian.domain.context import RequestContext
 from theurian.domain.enums import (
     KnowledgeKind,
+    ReviewCommentCategory,
     Sensitivity,
     TrustLevel,
     may_disclose,
@@ -83,6 +92,8 @@ from theurian.domain.proposal import Evidence
 from theurian.domain.state import ActiveState
 from theurian.domain.values import MediaType
 from theurian.infrastructure.determinism import SystemClock, UlidGenerator
+from theurian.infrastructure.git.fix_commit_check import FixCommitCheck
+from theurian.infrastructure.review_evidence import EvidenceReader, ReviewEvidenceError
 from theurian.infrastructure.sqlite.findings_store import (
     FindingsStoreError,
     SqliteReviewFindingStore,
@@ -1951,6 +1962,36 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         )
         return DraftOnlyProposals(service), paths
 
+    def _review_evidence_reads(
+        paths: ProjectPaths,
+    ) -> tuple[ResolveEvidencePath, ReadEvidenceRecord]:
+        """The two reads ``review.generateKnowledgeCandidate`` makes over one project.
+
+        The resolve is the built store's by-key lookup, which is where a withheld
+        record and an absent one become the same ``None``:
+        ``ReviewSearchBuilder`` drops a withheld key before a row exists, so there
+        is no flag a later read could consult (ADR-0033 decision 5). The record
+        read is the evidence package's own graded single-record read, so a stored
+        file is validated by the domain constructors and a damaged one is refused
+        in the words ``theurian review build`` uses for it -- there stays one way
+        this product reads a landed record.
+
+        **Provenance before presence**, the check ``review.search`` makes over the
+        same store and for the same reason (ADR-0004, SEC-7, T-19): the store is
+        derived and git-ignored, so a clone can force-add a fabricated one past
+        that ignore, and presence on disk is evidence of nothing. Refused with the
+        constant an absent store gets, so a planted store and a missing one are
+        indistinguishable.
+        """
+        if not provenance.has_review(paths.root, REVIEW_SEARCH_STORE_ID):
+            raise ToolError(REVIEW_SEARCH_UNAVAILABLE_REFUSAL)
+        try:
+            store = SqliteReviewSearchStore(paths.review_search_for(REVIEW_SEARCH_STORE_ID))
+            reader = EvidenceReader(paths.review)
+        except ProjectError as exc:
+            raise _with_remedy(exc) from exc
+        return store.relative_path_for, lambda relative: reader.record_at(relative).record.payload
+
     @_tool(
         server,
         name="knowledge.search",
@@ -3425,5 +3466,118 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
             # in the message itself, which `_forwarding` already preserves.
             raise _with_remedy(exc) from exc
         return _drafted_migration_payload(drafted, paths.root)
+
+    @_tool(
+        server,
+        name="review.generateKnowledgeCandidate",
+        description=(
+            "Generalise one ingested review thread into a reviewable knowledge "
+            "proposal (ADR-0033). Theurian does not author the generalization. "
+            "The caller supplies the title, the body, the kind and the category; "
+            "Theurian verifies the promotion gate and packages the result. It "
+            "recomputes the gate from the stored review record, verifies the "
+            "named fixCommit against the local git repository, and writes a "
+            "proposal a human reviews and merges; it does not write approved "
+            "knowledge."
+        ),
+    )
+    def review_generate_knowledge_candidate(  # noqa: PLR0913, PLR0917 - each is a published field
+        projectId: str,  # noqa: N803
+        repository: str,
+        recordKey: str,  # noqa: N803
+        fixCommit: str,  # noqa: N803
+        itemId: str,  # noqa: N803
+        title: str,
+        body: str,
+        kind: str,
+        category: str,
+        owner: str,
+        author: str,
+        description: str,
+        evidence: dict[str, Any],
+        sourceAnchors: list[dict[str, Any]],  # noqa: N803
+        labels: list[str] | None = None,
+        scopePaths: list[str] | None = None,  # noqa: N803
+        namespace: str | None = None,
+        expectedRevision: str | None = None,  # noqa: N803
+        agentId: str | None = None,  # noqa: N803
+        taskId: str | None = None,  # noqa: N803
+    ) -> dict[str, Any]:
+        """Turn one review thread's outcome into a proposal, if the gate is met.
+
+        Theurian runs no model (ADR-0033 decision 1): the caller authors the
+        generalisation and this tool verifies and packages it. No promotion-gate
+        signal is a field on this call -- five are recomputed from the stored
+        record, ``fix_commit_present`` is satisfied by verifying ``fixCommit``
+        against the local repository, and ``generalizable`` by the submission
+        itself -- because a gate the caller fills is a gate the caller decides.
+
+        Drafts through the same draft-only facade the other write-intent tools
+        hold, so it reaches no approved-state write (ADR-0032 decision 8), and
+        never ``--local``: a local proposal sits inside the managed ignore block,
+        where the human review FR-V4 relies on cannot reach it (ADR-0013 point 7).
+        """
+        facade, paths = _draft_only_proposals(projectId)
+        resolve_evidence_path, read_record = _review_evidence_reads(paths)
+        anchors = _wire_source_anchors(sourceAnchors)
+        try:
+            generated = CandidateGenerator(
+                resolve_evidence_path=resolve_evidence_path,
+                read_record=read_record,
+                # The repository asked is the registered project's own working
+                # tree, so the commits that can satisfy `fix_commit_present` are
+                # the ones this project holds (ADR-0033 decision 3).
+                verify_fix_commit=FixCommitCheck(paths.root).verify,
+                drafts=facade,
+                clock=SystemClock(),
+            ).generate(
+                CandidateSubmission(
+                    repository=repository,
+                    record_key=recordKey,
+                    fix_commit=fixCommit,
+                    item_id=ItemId(itemId),
+                    title=title,
+                    body=body,
+                    kind=_closed_value(KnowledgeKind, kind, "kind"),
+                    category=_closed_value(ReviewCommentCategory, category, "category"),
+                    owner=owner,
+                    author=author,
+                    description=description,
+                    evidence=_wire_evidence(evidence, agentId, taskId, anchors),
+                    labels=tuple(labels or ()),
+                    scope_paths=tuple(scopePaths or ()),
+                    namespace=namespace,
+                    expected_revision=(
+                        None if expectedRevision is None else RevisionId.parse(expectedRevision)
+                    ),
+                )
+            )
+        except (CandidateGenerationError, ProposalError) as exc:
+            # Every designed refusal on this path names its cure in `exc.remedy`,
+            # and the cure is the whole of what the caller can act on: which gate
+            # signal to obtain and how, or that this thread cannot generate a
+            # candidate in v1. Left to reach the `_forwarding` seam it would cross
+            # as `str(exc)` alone (#491's drop, met one tool over at ADR-0032
+            # decision 3), so it is folded in here. `ProposalError` joins it for
+            # the reason `knowledge.proposeChange` catches it: the
+            # optimistic-concurrency guard and the INV-8 and empty-field checks on
+            # `ProposalRequest` raise it with their own cures.
+            raise _with_remedy(exc) from exc
+        except ReviewSearchStoreError as exc:
+            # The same constant `review.search` answers with over the same store,
+            # and deliberately not `str(exc)`: the adapter's message names the file
+            # and the failure and varies with the store's state (SEC-13). The
+            # remedy is the same local rebuild whichever cause fired.
+            raise ToolError(REVIEW_SEARCH_UNAVAILABLE_REFUSAL) from exc
+        except ReviewEvidenceError as exc:
+            # A row resolved and the file it names is not a record this build can
+            # read. Not folded into the constant above, which would claim there is
+            # no store to serve from while there is one: the evidence file is the
+            # source and this refusal names it and the repository it claims, which
+            # is what `theurian review build` prints for the same file. A withheld
+            # record cannot reach here -- it has no row, so the resolve answers
+            # `None` and no file is opened.
+            raise _with_remedy(exc) from exc
+        return _drafted_proposal_payload(generated.proposal, paths.root)
 
     return server

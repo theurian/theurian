@@ -73,6 +73,7 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
+import review_candidate_fixtures as corpus
 from git_harness import commit_migrations
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
@@ -208,6 +209,26 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Project
     _run("project", "register")
     _run("migrate", "apply")
 
+    # `review.generateKnowledgeCandidate` verifies its `fixCommit` against this
+    # repository (ADR-0033 decision 3), so the drive below needs a commit here that
+    # touched the file the stored thread is anchored to. Staged alone, so the sha
+    # `_verifying_commit` reads back means *this commit touched that path* rather
+    # than *this commit touched everything*.
+    (root / corpus.FILE_PATH).parent.mkdir(parents=True, exist_ok=True)
+    (root / corpus.FILE_PATH).write_text("def retry():\n    pass\n")
+    subprocess.run(  # noqa: S603
+        ["git", "add", corpus.FILE_PATH],  # noqa: S607
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "add retry helper"],  # noqa: S607
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+
     yield ProjectRegistry.default(data_dir)
 
 
@@ -291,8 +312,15 @@ def _land_review_evidence(registry: ProjectRegistry) -> None:
         ),
     )
     evidence = ReviewEvidenceStore(paths.review)
+    # The corpus records join the one above rather than replacing it: that record
+    # is what `review.search`'s own `pullRequest=42` and `q="token"` drive shapes
+    # match, and a filter that matched nothing would still reach the body but would
+    # audit a read that returned no rows. The corpus adds the thread
+    # `review.generateKnowledgeCandidate` resolves, which has no other source --
+    # ingestion needs the network, and `.theurian/review/` is source rather than
+    # derived state, so writing the records here is the shape a clone delivers.
     evidence.write(
-        (record,),
+        (record, *corpus.evidence_records()),
         run=IngestionRun("01K1AAAAAA01234567890ABCDE", datetime(2026, 9, 7, 9, 0, tzinfo=UTC)),
     )
     store = SqliteReviewSearchStore(paths.review_search_for(REVIEW_SEARCH_STORE_ID))
@@ -427,6 +455,12 @@ def _findings_reads(reads: list[_Read]) -> list[_Read]:
 # -- The drive --------------------------------------------------------------
 
 
+#: Stands in for a value that does not exist until the fixture has run: the sha of
+#: the commit it makes over :data:`corpus.FILE_PATH`. A sentinel object rather than
+#: a string, so :func:`_resolved` substitutes it by identity and no caller-supplied
+#: argument that merely *looks* like a placeholder is rewritten.
+_FIX_COMMIT: Final = object()
+
 #: Every registered tool, with arguments that reach its body rather than bounce
 #: off its bounds. Keyed by tool name and checked against the built server's own
 #: list by :func:`test_the_drive_covers_every_registered_tool`, so a new tool is
@@ -499,15 +533,93 @@ _DRIVE: Final[dict[str, tuple[dict[str, Any], ...]]] = {
             },
         },
     ),
+    # The third write-intent tool (ADR-0033), driven to a *landed proposal* for the
+    # same reason as the other two: `call_tool` re-raises, so any refusal -- an
+    # unmet gate, an unverifiable commit, a record key the store does not answer
+    # for -- would crash the drive instead of executing the body this audit exists
+    # to watch. It reads the review *evidence* store, which is the second serving
+    # database under `.theurian/state/`; that it touches the findings file not at
+    # all is what the audit says, rather than this comment.
+    "review.generateKnowledgeCandidate": (
+        {
+            "projectId": "demo",
+            "repository": corpus.REPOSITORY,
+            "recordKey": corpus.THREAD_SATISFYING,
+            "fixCommit": _FIX_COMMIT,
+            "itemId": "reliability.retry-lock-order",
+            "title": "Acquire locks after reads in retry-eligible paths",
+            "body": "Acquire locks after reads, never before, in retry-eligible paths.\n",
+            "kind": "convention",
+            "category": "reliability-rule",
+            "owner": "platform-team",
+            "author": "engineer@example.com",
+            "description": "Generalise the resolved deadlock thread into a locking rule",
+            "evidence": {
+                "agentId": "claude-code",
+                "taskId": "task-431",
+                "model": "claude-opus-5",
+                "reasoning": "The thread settled the lock ordering; this generalises it.",
+            },
+            "sourceAnchors": [
+                {
+                    "provider": "github",
+                    "sourceUri": (
+                        f"https://github.com/{corpus.REPOSITORY}/pull/"
+                        f"{corpus.PULL_REQUEST_CI_PASSED}#discussion_r1"
+                    ),
+                    "repository": corpus.REPOSITORY,
+                    "filePath": corpus.FILE_PATH,
+                }
+            ],
+        },
+    ),
 }
+
+
+def _verifying_commit(registry: ProjectRegistry) -> str:
+    """A commit in the fixture repository that touched the stored thread's file.
+
+    Asked of git at drive time rather than carried out of the fixture, because
+    :data:`_DRIVE` is a module-level mapping and the sha does not exist until the
+    fixture has run. Asserted non-empty: an empty answer would reach the wire as a
+    ``fixCommit`` naming nothing, the tool would refuse, and ``call_tool`` would
+    re-raise -- a crash that reads as the audit failing rather than as the fixture
+    having stopped making the commit.
+    """
+    root = Path(registry.load()["demo"]["rootPath"])
+    found = subprocess.run(  # noqa: S603
+        ["git", "rev-list", "-1", "HEAD", "--", corpus.FILE_PATH],  # noqa: S607
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    assert found, (
+        f"no commit in {root} touched {corpus.FILE_PATH}, so the candidate drive below "
+        f"would be refused and this audit would never execute that tool's body"
+    )
+    return found
+
+
+def _resolved(arguments: dict[str, Any], fix_commit: str) -> dict[str, Any]:
+    """``arguments`` with :data:`_FIX_COMMIT` replaced by the sha git just named.
+
+    A new mapping rather than an edit in place: :data:`_DRIVE` is also the
+    population :func:`test_the_drive_covers_every_registered_tool` compares against
+    the built server, and a drive that rewrote it would leave that equality reading
+    arguments this function produced.
+    """
+    return {key: fix_commit if value is _FIX_COMMIT else value for key, value in arguments.items()}
 
 
 async def _drive_every_tool(registry: ProjectRegistry) -> None:
     """Call every registered tool, each with every argument shape recorded above."""
     server = build_server(registry)
+    fix_commit = _verifying_commit(registry)
     for name, calls in _DRIVE.items():
         for arguments in calls:
-            await server.call_tool(name, arguments)
+            await server.call_tool(name, _resolved(arguments, fix_commit))
 
 
 def test_the_drive_covers_every_registered_tool(

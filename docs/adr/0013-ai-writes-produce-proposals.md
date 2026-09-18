@@ -386,11 +386,15 @@ Landed in Phase B slice B4, by the write-intent MCP tool surface
   `::test_the_closure_walk_flags_a_tool_that_captures_a_canonical_writer` as the
   control that the walk has teeth (ADR-0032 decision 8).
 - `tests/e2e/test_daemon_single_instance.py::test_the_tool_set_is_read_only` is
-  the Milestone-3 entry that could not survive this slice and did not: it is now
-  `::test_the_tool_set_is_exactly_the_published_nine`, an equality over the nine
-  registered names, beside `::test_capabilities_report_write_tools` for the
-  `writeTools` value. Named here because the Milestone-3 list above still cites
-  the old name, and an accepted ADR records what was true when it was written.
+  the Milestone-3 entry that could not survive this slice and did not: it became
+  `::test_the_tool_set_is_exactly_the_published_nine`, and slice B5's registration
+  of `review.generateKnowledgeCandidate` renamed it again to
+  `::test_the_tool_set_is_exactly_the_published_ten` — an equality between what a
+  real client's `tools/list` returns and a literal list of the ten names, beside
+  `::test_capabilities_report_write_tools` for the `writeTools` value. The name
+  carries the count, so it moves on every registration. Named here because the
+  Milestone-3 list above still cites the oldest of the three, and an accepted ADR
+  records what was true when it was written.
 
 - **The session's coverage set is derived from the daemon, so a third
   write-intent tool joins it by registering.** This was recorded as owed to slice

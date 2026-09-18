@@ -95,6 +95,28 @@ _EXCLUDED_STATES: Final = frozenset({ReviewThreadState.OUTDATED, ReviewThreadSta
 #: (``provider:owner/name#number``), which is that record's own key.
 _PULL_REQUEST_NUMBER: Final = re.compile(r"#(\d+)\Z")
 
+#: What every record that does not arrive is refused with, and a **constant**: it
+#: interpolates nothing -- not the key, not the repository, nothing read from the
+#: store -- the shape ``mcp/tools.py``'s ``REVIEW_SEARCH_UNAVAILABLE_REFUSAL``
+#: takes for the same reason, down to saying so in the text.
+#:
+#: The counter-argument is real and loses on one clause: the bytes this used to
+#: echo were the caller's own request and carry zero bits about the store today,
+#: but decision 5 is the seam #575's withheld class arrives on, and a constant is
+#: the shape that cannot regress into an oracle when it does.
+UNRESOLVED_RECORD_REFUSAL: Final = (
+    "Theurian cannot generate a candidate for that record: the review evidence it needs "
+    "is not in this installation's built review store. This refusal message is a "
+    "constant: it carries nothing from your request or from any project's contents."
+)
+
+#: The cure that travels with it, constant for the same reason -- the repository is
+#: a placeholder rather than the caller's own string.
+UNRESOLVED_RECORD_CURE: Final = (
+    "Land the repository's review history and project it: `theurian review ingest "
+    "<owner>/<name>` followed by `theurian review build`."
+)
+
 
 class CandidateGenerationError(TheurianError):
     """No candidate was generated, with the cure for the reason it was not."""
@@ -204,40 +226,36 @@ class CandidateGenerator:
     def _thread(self, submission: CandidateSubmission) -> ReviewThread:
         record = self._record(submission, submission.record_key)
         if not isinstance(record, ReviewThread):
-            raise _unresolved(submission)
+            raise _unresolved()
         return record
 
     def _event(self, submission: CandidateSubmission, thread: ReviewThread) -> ReviewEvent:
         number = _PULL_REQUEST_NUMBER.search(thread.event_key)
         if number is None:
-            raise _unresolved(submission)
+            raise _unresolved()
         record = self._record(submission, number.group(1))
         if not isinstance(record, ReviewEvent):
-            raise _unresolved(submission)
+            raise _unresolved()
         return record
 
     def _record(self, submission: CandidateSubmission, record_key: str) -> ReviewRecordPayload:
         relative_path = self._resolve_evidence_path(submission.repository, record_key)
         if relative_path is None:
-            raise _unresolved(submission)
+            raise _unresolved()
         return self._read_record(relative_path)
 
 
-def _unresolved(submission: CandidateSubmission) -> CandidateGenerationError:
+def _unresolved() -> CandidateGenerationError:
     """The shared refusal for a record that does not arrive.
 
     Three shapes reach it: a key the resolve does not answer for, a stored record
     whose kind is not the one its key promised, and -- once #575 creates the class
     -- a withheld record, which the resolve answers for exactly as it answers for
     an absent one. They share a sentence because the difference between them is
-    material the caller was not granted (decision 5).
+    material the caller was not granted (decision 5). It takes no argument, which
+    is how the constants above stay the whole of what this path can publish.
     """
-    return CandidateGenerationError(
-        f"Theurian cannot generate a candidate for {bounded_quote(submission.record_key)} in "
-        f"{bounded_quote(submission.repository)}: the review evidence it needs is not in "
-        f"this installation's built review store.",
-        remedy=_refresh(submission),
-    )
+    return CandidateGenerationError(UNRESOLVED_RECORD_REFUSAL, remedy=UNRESOLVED_RECORD_CURE)
 
 
 def _no_file_anchor(submission: CandidateSubmission) -> CandidateGenerationError:
@@ -291,7 +309,11 @@ def _gate_refusal(
     commit_cure = (
         f"Name a fixCommit this repository has that touched {quoted_path}, the `filePath` "
         f"on this thread's review.search record; `git log --oneline -- <that path>` lists "
-        f"the commits that did."
+        f"the commits that did. If that is not the file this thread was anchored to, the "
+        f"stored record is the thing to correct rather than the commit -- a review "
+        f"evidence directory is source a clone can deliver (T-24), and `theurian review "
+        f"ingest <owner>/<name>` followed by `theurian review build` replaces it with the "
+        f"provider's own."
     )
     cures = dict.fromkeys(
         commit_cure if name == "fix_commit_present" else _refresh(submission)

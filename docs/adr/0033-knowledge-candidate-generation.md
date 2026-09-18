@@ -168,8 +168,23 @@ therefore written here rather than left to a reader's inference:
 | candidate construction, with `trustLevel: inferred` fixed by the type | whether the generalization is a *fair reading* of the thread — FR-V4's human does that |
 | the proposal directory, through `ProposalService.draft()` | any summarization, ranking or rewriting of the thread |
 
-The tool's own description, its input schema description and this table say the
-same thing, and slice B5 owes the property that they agree.
+The table is the reasoning; the sentence pair below is the quotable form of it,
+and the tool's own description and its published input schema's description carry
+the same bytes:
+
+> Theurian does not author the generalization. The caller supplies the title,
+> the body, the kind and the category; Theurian verifies the promotion gate and
+> packages the result.
+
+It is spelled with no dash, no backtick and no quote character, so that the
+identical bytes survive Markdown prose, a JSON string and a Python string
+literal — a paraphrase on any one surface is three claims a year later, not one.
+What a test can hold is that the three do not diverge from each other, and
+`tests/integration/test_candidate_name_honesty.py` holds exactly that: one arm
+per surface asserting this sentence pair is contained in it, with
+`::test_a_different_write_tool_does_not_carry_the_claim` as the control that the
+containment means something. Whether the wording is *faithful* is a reading, and
+no mechanical check reaches it.
 
 ### 3. No gate signal is a caller's assertion, and the seven split three ways by *how* each is established
 
@@ -800,6 +815,19 @@ Still owed, with the milestone that will satisfy it:
   > rest is still owed.** Decision 3 above now carries it — **refuse**, with the
   > rejected alternative and the reasoning for both. Still owed at slice B5: the
   > driving case for the branch, and the module's half of the record.
+
+  > **Amended in slice B5 (2026-09-19, the tool-registration commit of
+  > [PR #744](https://github.com/theurian/theurian/pull/744)): the rest is
+  > discharged.** The driving case is
+  > `tests/integration/test_candidate_generation_wire.py::test_a_thread_with_no_file_anchor_is_refused_in_its_own_words_over_the_wire`,
+  > which calls the tool over the transport for a stored thread whose `file_path`
+  > is `None`, passing the **verifying** commit so the refusal cannot be explained
+  > by the commit, and asserts three things: the published text differs from the
+  > commit-verification refusal, it mentions a file at all, and no proposal was
+  > written. The module's half of the record is
+  > `application/candidate_generation.py`'s module docstring, which states the
+  > refusal, the rejected alternative and why this refusal is not folded into the
+  > commit-verification one.
 - **Slice B5 — the two commit-verification refusals are indistinguishable
   (decisions 3 and 5).** *That commit does not exist* and *that commit does not
   touch this thread's file* must arrive as one refusal, in text and in duration,
@@ -808,6 +836,20 @@ Still owed, with the milestone that will satisfy it:
   identical, with the control that a **verifying** commit is accepted — without
   it, refusing both the same way is satisfied by a build that refuses
   everything.
+
+  > **Amended in slice B5 (2026-09-19, the tool-registration commit of
+  > [PR #744](https://github.com/theurian/theurian/pull/744)): the text half is
+  > discharged, the duration half is not.**
+  > `tests/integration/test_candidate_generation_wire.py::test_the_two_commit_verification_failures_are_one_refusal_on_the_wire`
+  > drives both failures against the same thread — an absent sha, and a commit
+  > this repository really holds that touched nothing the thread names — and
+  > asserts the two published texts equal, with no proposal written either time.
+  > The control this item asks for is
+  > `::test_a_thread_meeting_every_signal_lands_a_proposal_over_the_wire`, so
+  > "identical" is not satisfied by a build that refuses every call. **Still owed
+  > at slice B5:** the duration equality. It is not measured here, and it belongs
+  > with the two-corpora battery item below, which is the one that owes an
+  > instrument named on both sides.
 - **Slice B5 — at least one gate test is driven from a record the real adapter
   shape produces.** That is, a `ReviewResolution` built the way
   `review_provider.py` builds one, with `fix_commit` **absent**. What lets a
@@ -823,6 +865,21 @@ Still owed, with the milestone that will satisfy it:
   submission over a thread meeting the other six signals produces a candidate —
   the positive control the earlier draft's underivable branch would have made
   unreachable.
+
+  > **Amended in slice B5 (2026-09-19, the tool-registration commit of
+  > [PR #744](https://github.com/theurian/theurian/pull/744)): discharged, and
+  > the structural half is wider than this item asked for.**
+  > `tests/unit/test_candidate_input_schema.py::test_no_promotion_gate_signal_is_a_field_a_caller_may_set`
+  > builds its forbidden set from `dataclasses.fields(PromotionGate)` read live
+  > and camel-cased, and asserts it disjoint from every key declared under any
+  > `properties` object in the published schema — nested ones included. So
+  > `generalizable` is forbidden by being a gate field rather than by being
+  > listed, and a signal added to the gate is forbidden by existing. Both sides
+  > are asserted non-empty first, so the disjointness cannot hold over nothing.
+  > The driving case is
+  > `tests/integration/test_candidate_generation_wire.py::test_a_thread_meeting_every_signal_lands_a_proposal_over_the_wire`,
+  > which calls the tool over the transport and finds the proposal directory
+  > under `.theurian/proposals/`.
 - **Slice B5 — unknown CI is unmet and named, and its message differs from
   failed (decision 4).** Owed: a thread whose stored `ci_successful` is `None`
   refuses, and the refusal names `ci_successful` among the unmet signals; a
@@ -833,6 +890,25 @@ Still owed, with the milestone that will satisfy it:
   and `False` refusals must not be the same string, since `unmet()` returns the
   same name for both. Without it, an implementation that flattened `None` to
   `False` at the adapter — the alternative this ADR rejects — passes all three.
+
+  > **Amended in slice B5 (2026-09-19, the tool-registration commit of
+  > [PR #744](https://github.com/theurian/theurian/pull/744)): discharged over
+  > the wire.** All four assertions are in
+  > `tests/integration/test_candidate_generation_wire.py`, against a corpus
+  > carrying one pull request per `ci_successful` state. A stored `None` refuses
+  > and the published text contains `ci_successful`
+  > (`::test_an_unknown_ci_outcome_is_refused_naming_the_signal_over_the_wire`,
+  > which also asserts the cure survived the tool boundary). A stored `False`
+  > refuses — the `failed-ci` case of
+  > `::test_every_designed_refusal_is_error_classified_and_carries_a_cure`, which
+  > asserts `isError` and a `theurian` command in the text, not the signal name. A
+  > stored `True` over a thread meeting the other six signals lands a proposal
+  > (`::test_a_thread_meeting_every_signal_lands_a_proposal_over_the_wire`). And
+  > the `None` and `False` refusal texts are asserted **unequal**
+  > (`::test_the_unknown_ci_refusal_is_not_the_words_a_failed_ci_thread_gets`),
+  > which is the assertion an adapter-side flattening fails. This is the message
+  > half the `ci_successful` measurement above deferred to here; the `bool | None`
+  > half landed earlier on the same branch.
 - **Slice B5 — the refusal is not a withheld-versus-absent oracle
   (decision 5).** Owed: one battery of requests answered identically over a
   corpus that **held** withheld threads and one that **never did**, at the tool
@@ -857,6 +933,23 @@ Still owed, with the milestone that will satisfy it:
   not author the generalization. Whether the wording is *faithful* is a reading
   and no mechanical check reaches it; what a test can hold is that the surfaces
   do not diverge from each other.
+
+  > **Amended in slice B5 (2026-09-19, the tool-registration commit of
+  > [PR #744](https://github.com/theurian/theurian/pull/744)): discharged.**
+  > Decision 2 above now carries the sentence pair verbatim, and
+  > `tests/integration/test_candidate_name_honesty.py` holds one containment arm
+  > per surface: the description the built server publishes for the tool, the
+  > top-level `description` of
+  > `schemas/mcp/review-generate-knowledge-candidate-input.schema.json`, and this
+  > document's prose with block quoting stripped and soft wraps flattened.
+  > `::test_a_different_write_tool_does_not_carry_the_claim` is the control that
+  > `knowledge.proposeChange` does *not* carry the sentence, without which three
+  > `in` checks over long strings would discriminate nothing, and
+  > `::test_the_claim_survives_all_three_of_the_formats_it_is_written_in` holds
+  > that the sentence contains no character Markdown, JSON or Python transforms.
+  > The limit this item states is unchanged: the module holds divergence and
+  > nothing more, so a build whose three surfaces all carried a wrong shared
+  > sentence passes it.
 - **Slice B5 — the T-3 threat-model entry gains the candidate path.**
   `docs/roadmap.md`'s Phase B risks row names it as owed; it is a prose
   obligation with no test, recorded here rather than dressed as discharged.

@@ -29,6 +29,17 @@ committed-set shape this replaces.
 a build that registered no write-intent tool -- or a schema shape this reader
 stopped seeing -- reports itself rather than passing as "nothing to call". Every
 member is then called and asserted to have landed a distinct proposal.
+
+**The derivation collected a third tool at slice B5, and the fixture grew to feed
+it.** ``review.generateKnowledgeCandidate`` (ADR-0033) joined by registering with
+a required ``evidence`` -- nothing here named it -- and the arguments it needed
+were the work: it reads a *stored review record* and verifies its ``fixCommit``
+against the daemon's **own** git repository, neither of which the B4 fixture had.
+So the project now carries review evidence under ``.theurian/review/``, the store
+``theurian review build`` derives from it, and a commit that touched the file the
+stored thread is anchored to. That commit's sha cannot be written into
+:data:`WRITE_INTENT_CALLS`, which is what :data:`FIX_COMMIT` and :func:`_resolved`
+are for.
 """
 
 from __future__ import annotations
@@ -48,7 +59,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import review_candidate_fixtures as corpus
 from migration_fixtures import body_pin
+
+from theurian.application.project_service import ProjectPaths
+from theurian.infrastructure.review_evidence import ReviewEvidenceStore
 
 THEURIAN = shutil.which("theurian")
 
@@ -97,6 +112,18 @@ EVIDENCE = {
     "reasoning": "The write path is exercised end to end.",
 }
 
+#: Stands in for the one argument no module-level dict can hold: the sha of a
+#: commit this fixture makes at run time.
+#:
+#: ``review.generateKnowledgeCandidate`` verifies its ``fixCommit`` against the
+#: daemon's **own** repository (ADR-0033 decision 3), so the value is not a
+#: constant -- it is whatever ``git commit`` produced in this ``tmp_path``. The
+#: placeholder keeps :data:`WRITE_INTENT_CALLS` the population key the derivation
+#: below compares against, and :func:`_resolved` is what substitutes it. A
+#: placeholder that reached the wire unsubstituted would be refused as a commit
+#: this repository does not have, which is a failure rather than a silence.
+FIX_COMMIT = "<the commit this fixture made>"
+
 #: The arguments each write-intent tool is driven with. Every registered
 #: write-intent tool must have an entry here, or the session cannot claim to call
 #: "every" one -- and which tools those are is read off the daemon by
@@ -124,7 +151,52 @@ WRITE_INTENT_CALLS: dict[str, dict[str, Any]] = {
         },
         "evidence": EVIDENCE,
     },
+    # ADR-0033. The caller authors the generalization; what the daemon verifies is
+    # the promotion gate, recomputed from the stored review record, and the
+    # `fixCommit`, checked against its own repository. The record key and the
+    # repository name are the corpus fixture's, so this call resolves the same
+    # thread `tests/integration/test_candidate_generation_wire.py` drives -- the
+    # one that meets all seven signals.
+    "review.generateKnowledgeCandidate": {
+        "projectId": "demo",
+        "repository": corpus.REPOSITORY,
+        "recordKey": corpus.THREAD_SATISFYING,
+        "fixCommit": FIX_COMMIT,
+        "itemId": "reliability.retry-lock-order",
+        "title": "Acquire locks after reads in retry-eligible paths",
+        "body": "Acquire locks after reads, never before, in retry-eligible paths.\n",
+        "kind": "convention",
+        "category": "reliability-rule",
+        "owner": "platform-team",
+        "author": "platform-team@example.com",
+        "description": "Generalise the resolved deadlock thread into a locking rule",
+        "evidence": EVIDENCE,
+        "sourceAnchors": [
+            {
+                "provider": "github",
+                "sourceUri": (
+                    f"https://github.com/{corpus.REPOSITORY}/pull/"
+                    f"{corpus.PULL_REQUEST_CI_PASSED}#discussion_r1"
+                ),
+                "repository": corpus.REPOSITORY,
+                "filePath": corpus.FILE_PATH,
+            }
+        ],
+    },
 }
+
+
+def _resolved(arguments: dict[str, Any], daemon: Daemon) -> dict[str, Any]:
+    """``arguments`` with :data:`FIX_COMMIT` replaced by the sha the fixture made.
+
+    A new dict rather than an edit in place: :data:`WRITE_INTENT_CALLS` is the
+    population the derivation below is compared against, and a drive that mutated
+    it would leave the second run of this module asserting against arguments the
+    first one rewrote.
+    """
+    return {
+        key: daemon.fix_commit if value == FIX_COMMIT else value for key, value in arguments.items()
+    }
 
 
 def _free_port() -> int:
@@ -139,10 +211,29 @@ class Daemon:
     token: str
     root: Path
 
+    #: A commit in :attr:`root` that touched the stored review thread's
+    #: ``filePath``. Known only at run time, which is why :data:`FIX_COMMIT` exists.
+    fix_commit: str
+
 
 @pytest.fixture
 def running_daemon(tmp_path: Path) -> Iterator[Daemon]:
-    """A real daemon serving a project with one approved item."""
+    """A real daemon serving a project with one approved item and its review evidence.
+
+    The review half is what ``review.generateKnowledgeCandidate`` needs and no
+    other write-intent tool does: a record under ``.theurian/review/``, the
+    derived search store ``theurian review build`` projects out of it, and a
+    commit in this repository that touched the file the stored thread is anchored
+    to.
+
+    **The evidence is written in process, and that is the only offline route.**
+    ``theurian review ingest`` spawns ``gh`` and contacts GitHub, which an E2E must
+    not do; ``.theurian/review/`` is source rather than derived state, so a clone
+    lands records there by carrying them, and this fixture is that clone. The
+    store it derives is then built by the **real** command, so the provenance
+    record a serving surface demands (ADR-0004, SEC-7) is written the way an
+    operator writes it rather than forged here.
+    """
     assert THEURIAN is not None
     root = tmp_path / "demo"
     root.mkdir()
@@ -170,6 +261,37 @@ def running_daemon(tmp_path: Path) -> Iterator[Daemon]:
     subprocess.run(commit, cwd=root, check=True, capture_output=True)  # noqa: S603
     cli("migrate", "apply", "--json")
 
+    # Staged alone, and after the migration commit, so this sha means *this commit
+    # touched that path*. A sweeping `git add -A` would leave no commit here that
+    # is specific to the file the stored thread names, and the candidate tool's
+    # check is exactly that specificity.
+    (root / corpus.FILE_PATH).parent.mkdir(parents=True, exist_ok=True)
+    (root / corpus.FILE_PATH).write_text("def retry():\n    pass\n")
+    subprocess.run(  # noqa: S603
+        ["git", "add", corpus.FILE_PATH],  # noqa: S607
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "add retry helper"],  # noqa: S607
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    fix_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],  # noqa: S607
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    ReviewEvidenceStore(ProjectPaths.of(root).review).write(
+        corpus.evidence_records(), run=corpus.INGESTION_RUN
+    )
+    cli("review", "build", "--json")
+
     port = _free_port()
     log = tmp_path / "daemon.log"
     with log.open("wb") as sink:
@@ -193,7 +315,7 @@ def running_daemon(tmp_path: Path) -> Iterator[Daemon]:
             pytest.fail(f"daemon did not become healthy in time: {log.read_text()}")
 
         token = (data_dir / "auth" / "mcp-token").read_text().strip()
-        yield Daemon(port, token, root)
+        yield Daemon(port, token, root, fix_commit)
     finally:
         process.terminate()
         try:
@@ -346,10 +468,11 @@ def _tree_digest(*roots: Path) -> str:
 #: property of the generation path rather than of one constructor. No read tool
 #: asks for it, because a read records no provenance.
 #:
-#: It is the *registration* that answers this, which is the whole point: ADR-0033's
-#: `review.generateKnowledgeCandidate` builds its `proposal.Evidence` "from the
-#: tool's own ``evidence`` input, exactly as ADR-0032's tools take them", so it
-#: joins this set by registering rather than by somebody remembering to add it.
+#: It is the *registration* that answers this, and slice B5 is where that was
+#: collected rather than asserted: ADR-0033's `review.generateKnowledgeCandidate`
+#: builds its `proposal.Evidence` from the tool's own ``evidence`` input, exactly
+#: as ADR-0032's tools take them, so it **joined this set by registering** -- this
+#: key was not touched, and what had to be added was its arguments below.
 WRITE_INTENT_INPUT_KEY = "evidence"
 
 
@@ -426,7 +549,7 @@ def test_a_session_calling_every_write_intent_tool_leaves_approved_knowledge_unc
 
         landed: dict[str, str] = {}
         for tool in sorted(registered_write_intent):
-            result = client.call(tool, WRITE_INTENT_CALLS[tool])
+            result = client.call(tool, _resolved(WRITE_INTENT_CALLS[tool], running_daemon))
             assert result["isError"] is False, (tool, result)
             proposal_id = result["structuredContent"]["proposalId"]
             assert proposal_id, (tool, result)

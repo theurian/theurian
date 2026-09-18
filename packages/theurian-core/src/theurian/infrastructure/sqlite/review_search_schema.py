@@ -23,9 +23,10 @@ physical purge (T-17a), not a result-set filter*, because a ``fusedScore`` is
 priced over collection statistics computed at index-build time. This schema
 carries no external-content table, no tokenizer and no statistic over rows, so
 there is no quantity for a row to price and nothing a filter would have to clean.
-The v1 read is a filtered, ordered ``SELECT`` with a ``LIKE`` -- an exact
-substring test, not retrieval -- and a ranked surface is a later slice that owes
-that purge and its own round.
+The v1 reads are a filtered, ordered ``SELECT`` with a ``LIKE`` -- an exact
+substring test, not retrieval -- and an equality match on ``(repository,
+record_key)``; a ranked surface is a later slice that owes that purge and its own
+round.
 
 **Withholding is physical here too, and it is the builder's rather than this
 file's.** A record whose key a build withholds is never handed to the writer, so

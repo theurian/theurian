@@ -2595,7 +2595,19 @@ def test_every_registered_tool_goes_through_the_forwarding_seam(
 #: The write-intent tools, named rather than discovered, so this set is a claim a
 #: reviewer can check against the registration. A tool added to the surface joins
 #: these checks by being added here, deliberately.
-WRITE_INTENT_TOOLS = frozenset({"knowledge.proposeChange", "knowledge.generateMigrationDraft"})
+#:
+#: ``review.generateKnowledgeCandidate`` (ADR-0033) is the third and joins for the
+#: same reason the first two are here: it drafts a proposal, so the question *does
+#: it capture an object that moves approved state* is asked of it too. ADR-0033
+#: decision 1 routes it through ``ProposalService.draft()``, which is exactly the
+#: shape decision 8's facade exists to keep out of a tool's closure.
+WRITE_INTENT_TOOLS = frozenset(
+    {
+        "knowledge.proposeChange",
+        "knowledge.generateMigrationDraft",
+        "review.generateKnowledgeCandidate",
+    }
+)
 
 
 def _closure_collaborators(function: Any) -> list[Any]:
@@ -2734,6 +2746,10 @@ def test_the_object_a_write_intent_tool_is_handed_is_the_draft_only_facade(
     server = build_server(registry)
     tools = {tool.name: tool for tool in server._tool_manager.list_tools()}
 
+    assert WRITE_INTENT_TOOLS.issubset(tools), (
+        f"these write-intent tools are not registered, so this pins nothing about them: "
+        f"{sorted(WRITE_INTENT_TOOLS - set(tools))}. Registered: {sorted(tools)}"
+    )
     for name in sorted(WRITE_INTENT_TOOLS):
         body = getattr(tools[name].fn, "__wrapped__", tools[name].fn)
         freevars = body.__code__.co_freevars

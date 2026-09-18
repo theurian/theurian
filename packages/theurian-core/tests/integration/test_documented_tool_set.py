@@ -45,12 +45,26 @@ word bumped to "six" over five names is a count of nothing. The number word is
 translated from ``len(registered)`` through :data:`_NUMBER_WORDS`, so a seventh
 tool reddens with the word the record should now use rather than with a diff.
 
-**Reach, stated as narrowly as it is true.** This module reads exactly three
-named files — ``README.md``, ``docs/protocol/mcp-tools.md`` and
-``docs/roadmap.md`` — and walks no tree: it is not a repo-wide checker and has no
-corpus membership question. It holds *which tools exist*, *how many*, and how
-many names the protocol page carries; it does not hold what any tool does, what
-its arguments are, or that the surrounding prose describing it is accurate.
+**A fourth record is a *cite* rather than a list, and it is held differently.**
+Three documents point a reader at the E2E test that enumerates the tool set, by
+name — and that name spells the size of the set, so registering a tool renames
+the test and orphans every cite of it. Slice B5 did exactly that:
+``::test_the_tool_set_is_exactly_the_published_nine`` became ``…_ten``. What is
+pinned is that each record names a test **that exists**, and that the name the
+E2E file defines spells the count this build registers. What is deliberately
+**not** pinned is the absence of the old name: all three records keep it as
+history — *it was `…_nine`* — and a rule forbidding it would forbid the sentence
+that makes the rename legible.
+
+**Reach, stated as narrowly as it is true.** This module reads seven named
+files — ``README.md``, ``docs/protocol/mcp-tools.md``, ``docs/roadmap.md``, the
+E2E module, two ADRs and the Core ``CHANGELOG`` — and walks no tree: it is not a
+repo-wide checker and has no corpus membership question. It holds *which tools
+exist*, *how many*, how many names the protocol page carries, and that the cites
+above resolve; it does not hold what any tool does, what its arguments are, what
+the cited E2E test itself asserts, or that the surrounding prose describing any
+of it is accurate.
+
 ``docs/protocol/mcp-tools.md``'s per-tool sections are their own records with
 their own pins (the ``review.findings`` limit row is
 ``test_review_findings_tool.py``'s), and a document that listed the six names
@@ -82,6 +96,34 @@ REPO_ROOT: Final = Path(__file__).resolve().parents[4]
 README: Final = REPO_ROOT / "README.md"
 MCP_TOOLS: Final = REPO_ROOT / "docs" / "protocol" / "mcp-tools.md"
 ROADMAP: Final = REPO_ROOT / "docs" / "roadmap.md"
+
+#: The E2E module whose test *name* spells the size of the tool set, and is
+#: therefore renamed by every registration.
+E2E_TOOL_SET: Final = REPO_ROOT / "tests" / "e2e" / "test_daemon_single_instance.py"
+
+#: The records that send a reader to that test by name. Each cites it for its own
+#: reason -- ADR-0013 for the no-approved-write claim, ADR-0032 for which pins
+#: moved at registration time, the CHANGELOG for what a release changed -- and all
+#: three go stale the same way, which is why they are one population here.
+RENAMED_CITE_RECORDS: Final = (
+    (
+        "docs/adr/0013-ai-writes-produce-proposals.md",
+        REPO_ROOT / "docs/adr/0013-ai-writes-produce-proposals.md",
+    ),
+    (
+        "docs/adr/0032-the-write-intent-mcp-tool-surface.md",
+        REPO_ROOT / "docs/adr/0032-the-write-intent-mcp-tool-surface.md",
+    ),
+    ("packages/theurian-core/CHANGELOG.md", REPO_ROOT / "packages/theurian-core/CHANGELOG.md"),
+)
+
+#: The E2E tool-set test's *definition*, with the number word its name spells.
+#: Anchored on ``def `` at a line start, so the same name appearing in that
+#: module's own prose -- or in a second test that merely mentions it -- cannot be
+#: mistaken for the definition a cite resolves to.
+_E2E_TOOL_SET_DEFINITION: Final = re.compile(
+    r"^def (test_the_tool_set_is_exactly_the_published_([a-z]+))\(", re.MULTILINE
+)
 
 #: How each record spells the size of the tool set, one word per count. The count
 #: itself is recomputed from the built server; this only translates it, so a RED
@@ -452,6 +494,95 @@ def test_the_roadmap_row_counts_and_names_the_tools_the_built_server_registers(
     )
     assert int(count) == len(registered), (
         f"the roadmap says {count} tools are registered and this build registers {len(registered)}"
+    )
+
+
+def _e2e_tool_set_test() -> tuple[str, str]:
+    """The E2E tool-set test's name and the number word it spells.
+
+    Read out of the E2E source rather than written here, so the prose arm below
+    compares each record against the name that **exists** instead of against a
+    name this module hoped for. A pin that spelled the expected name itself would
+    go green on a rename nobody applied to the E2E file.
+    """
+    found: list[tuple[str, str]] = _E2E_TOOL_SET_DEFINITION.findall(
+        E2E_TOOL_SET.read_text(encoding="utf-8")
+    )
+
+    assert len(found) == 1, (
+        f"{E2E_TOOL_SET.name} defines {len(found)} tests named "
+        f"`test_the_tool_set_is_exactly_the_published_<word>`, expected 1: {found}. "
+        f"With none of them every cite below points at nothing and the arm that "
+        f"checks them would be comparing against an empty string"
+    )
+    return found[0]
+
+
+def test_the_e2e_tool_set_test_is_named_for_the_number_of_tools_this_build_registers(
+    empty_registry: ProjectRegistry,
+) -> None:
+    """RED means the E2E test's own name states a count this build does not have.
+
+    That test's name is a claim -- *the tool set is exactly the published ten* --
+    and it is the only one of this module's records whose claim lives in an
+    identifier rather than in prose. An identifier is the worst place for a stale
+    number: nothing renders it, three documents quote it verbatim, and the test
+    goes on passing while its name says something false, because the list it
+    asserts is inside the body and the count is outside it.
+
+    Derived on both sides. The word comes from the E2E file's own ``def``; the
+    count from the server ``build_server`` constructs, the same derivation the
+    three records above use.
+    """
+    registered = _registered(empty_registry)
+    _name, spelled = _e2e_tool_set_test()
+
+    assert registered, "the built server registers no tools; the comparison below is vacuous"
+    assert spelled in _COUNT_FOR_WORD, (
+        f"the E2E tool-set test spells its count `{spelled}`, which is not a number word "
+        f"this module can read; extend `_NUMBER_WORDS`"
+    )
+    assert _COUNT_FOR_WORD[spelled] == len(registered), (
+        f"the E2E tool-set test is named for {_COUNT_FOR_WORD[spelled]} tools and this "
+        f"build registers {len(registered)}; it should be "
+        f"`test_the_tool_set_is_exactly_the_published_{_NUMBER_WORDS[len(registered)]}` "
+        f"-- and the three records that cite it by name move in the same commit"
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "document"), RENAMED_CITE_RECORDS, ids=[label for label, _ in RENAMED_CITE_RECORDS]
+)
+def test_each_record_citing_the_e2e_tool_set_test_names_a_test_that_exists(
+    label: str, document: Path
+) -> None:
+    """RED means a document sends a reader to a test name nothing defines.
+
+    A cite is a promise that a reader who greps for that name finds the thing it
+    describes. Renaming the test breaks all three at once and breaks them
+    silently: the documents still read correctly, and the only way to notice is to
+    follow the link.
+
+    **What this holds, said narrowly.** That each record names the test that
+    exists, and (in the arm above) that the name spells the registered count. It
+    does **not** hold what that test asserts, nor that the sentence around the
+    cite describes it correctly -- those are the cited test's own business and a
+    reader's.
+
+    **The old name is deliberately not forbidden.** All three records keep it as
+    history -- *it was `…_nine`* -- which is what makes the rename legible to
+    somebody reading the record later, and exactly the shape
+    ``test_write_tools_flag_claims.py`` preserves for a dated reading. A rule that
+    asserted the dead name absent would delete that sentence to stay green.
+    """
+    live, _spelled = _e2e_tool_set_test()
+    text = document.read_text(encoding="utf-8")
+
+    assert live in text, (
+        f"{label} cites the E2E tool-set test and does not name `{live}`, which is the "
+        f"test {E2E_TOOL_SET.name} defines. A reader following this cite finds nothing. "
+        f"Keep whatever this record says about the name it used to have -- that is "
+        f"history and this pin does not touch it -- and add the live one."
     )
 
 

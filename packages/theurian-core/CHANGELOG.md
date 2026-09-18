@@ -318,10 +318,13 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   source and demands they agree, with
   `::test_the_coupling_checker_demands_the_other_state_when_either_side_moves` as
   the bidirectional control — so a flag flipped ahead of its feature and a tool
-  registered while the flag lags each redden. The nine names are pinned over a
-  real client by
-  `tests/e2e/test_daemon_single_instance.py::test_the_tool_set_is_exactly_the_published_nine`,
-  and the value by `::test_capabilities_report_write_tools`. **The records that
+  registered while the flag lags each redden. The nine names this release
+  published were pinned over a real client by
+  `tests/e2e/test_daemon_single_instance.py::test_the_tool_set_is_exactly_the_published_nine`;
+  that test's name carries its count and is
+  `::test_the_tool_set_is_exactly_the_published_ten` since Phase B slice B5
+  registered the tenth. The value is pinned by
+  `::test_capabilities_report_write_tools`. **The records that
   narrate the value are held to it too**, by
   `::test_each_record_narrates_the_flag_the_capability_dict_publishes` in the same
   module: the six documents that describe the MCP surface — `mcp/tools.py`'s

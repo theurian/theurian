@@ -736,8 +736,8 @@ def test_every_tool_is_registered_through_the_one_seam() -> None:
         f"these tools bypass `_forwarding`, so a refusal raised below the surface "
         f"is withheld from their callers under mcp >= 2.1: {bypassing}"
     )
-    assert len(through_the_seam) == 9, (
-        f"expected the nine registered tools to go through `_tool`; found "
+    assert len(through_the_seam) == 10, (
+        f"expected the ten registered tools to go through `_tool`; found "
         f"{len(through_the_seam)}. If a tool was added or removed, update this "
         f"count deliberately -- it is what makes the assertion above meaningful."
     )

@@ -673,10 +673,20 @@ EVIDENCE_PACKAGE: Final = "infrastructure/review_evidence"
 #:   never was a path. It is recorded rather than filtered because a filter would
 #:   need the semantics this scan refuses, and because a rule that hid it would
 #:   hide a future member for the same reason.
+#: * ``mcp/tools.py`` joined when ``review.generateKnowledgeCandidate``
+#:   registered (ADR-0033): ``_review_evidence_reads`` builds an
+#:   ``EvidenceReader`` over the directory so the tool can read the one record its
+#:   caller named. **A second reader, and not a second writer** -- which is the
+#:   distinction this scan cannot make and a human must. ``EvidenceReader`` has no
+#:   write surface; the removal scan below holds separately that the only names
+#:   which move a landed file are the evidence package's own two, and both are in
+#:   :data:`PUBLISH_NAMES`. So SECURITY.md's retention sentence is unchanged by
+#:   this member, and that is the claim the row is asserting.
 REVIEW_PATH_SITES: Final[tuple[tuple[str, str], ...]] = (
     ("application/project_service.py", "defines `ProjectPaths.review` and proves it contained"),
     ("cli/review_commands.py", "hands it to `ReviewEvidenceStore` and to nothing else"),
     ("domain/specification.py", "a `PolicyRequirement` field of the same name, not a path"),
+    ("mcp/tools.py", "reads one named record through `EvidenceReader`; writes nothing"),
 )
 
 #: The names a module would use to remove or move a landed file.
@@ -946,12 +956,18 @@ CLAIM_SURFACES: Final[tuple[tuple[str, pathlib.Path, tuple[str, ...]], ...]] = (
             # that widens it again describes a product missing a stage it has, and
             # one that drops it leaves the Phase B row claiming the phase is done.
             "What is still absent after serving is classification.",
-            # The bound beside it, droppable on its own: the service exists and the
-            # wire does not, so a reader who stops at the sentence above would take
-            # a registered tool for granted. ADR-0026's false-capability defect is
-            # the one this sentence is here to prevent, on the surface a user reads
-            # to find out what is callable.
-            "`review.generateKnowledgeCandidate` is not a registered MCP tool yet",
+            # The bound beside it, which C3 turned from a caveat into a capability:
+            # the service shipped without the wire, and this sentence said so until
+            # the tool registered. It is kept rather than deleted for the reason it
+            # was written -- a reader of the roadmap learns what is *callable* here,
+            # and ADR-0026's false-capability defect runs in both directions: a
+            # sentence that still said "not registered" would understate the surface
+            # a client may reach, exactly as the "yet" wording would have overstated
+            # it before C3.
+            (
+                "`review.generateKnowledgeCandidate` is a registered MCP tool since "
+                "that slice, so a client reaches it over the wire"
+            ),
         ),
     ),
     (

@@ -877,10 +877,13 @@ the property as it was written and states what actually holds it:
   forbids the opposite, where it used to demand *"No write-intent tool exists"*.
   **Of the two pins this entry expected to move at *registration* time, one did
   and one did not, and the difference is recorded rather than smoothed:** the
-  tool-set equality moved and is now
+  tool-set equality moved and became
   `::test_the_tool_set_is_exactly_the_published_nine` (it was
   `::test_the_tool_set_is_read_only`), an equality over the **nine** registered
-  names that still does not notice a flag value at all; the pinned
+  names that still does not notice a flag value at all — slice B5's registration
+  of `review.generateKnowledgeCandidate` renamed it once more, to
+  `::test_the_tool_set_is_exactly_the_published_ten`, which is the name to look
+  it up under; the pinned
   capability-**key** set in `test_mcp_tools.py` did **not** move, and could not
   have — registering a tool adds no capability *key*, and `writeTools` was
   already one of them.

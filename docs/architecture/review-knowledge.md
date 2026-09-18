@@ -42,9 +42,11 @@ a fetch stays an operator's act. Slice B5 added the producer
 stored review record, verifies the caller's `fixCommit` against the local
 repository, and hands the candidate to the draft-only proposal facade — so **the
 only construction site is the candidate generator**, and what it produces is a
-proposal a human reviews. It is the service half alone: the
-`review.generateKnowledgeCandidate` MCP tool is not registered, so no wire call
-reaches it yet. What is still missing is the rest of collection —
+proposal a human reviews. The same slice registered the
+`review.generateKnowledgeCandidate` MCP tool, so a wire call reaches it: it joins
+`knowledge.proposeChange` and `knowledge.generateMigrationDraft` behind the same
+`writeTools: true`, which answers whether a write-intent tool exists and not how
+many. What is still missing is the rest of collection —
 `theurian ingest` reads local files only. So the sections below that describe
 *collection* — the landing stages, classification, candidate generation,
 provider access and privacy handling — describe a **design**, not

@@ -74,6 +74,13 @@ KNOWN_TOOL_NAMES = frozenset(
         # findings store, which the equality below is what says.
         "knowledge.proposeChange",
         "knowledge.generateMigrationDraft",
+        # The third write-intent tool (ADR-0033), which joins that surface
+        # additively. It reads the *review evidence* store -- the same projection
+        # `review.search` serves -- and the local git repository, and reaches **no**
+        # symbol in :data:`STORE_SYMBOLS`: review evidence and review findings are
+        # two stores with two schemas built from two sources, and the equality below
+        # is what says so rather than this comment.
+        "review.generateKnowledgeCandidate",
     }
 )
 

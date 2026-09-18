@@ -262,6 +262,29 @@ ARGUMENT_VALUES: Final[dict[str, Any]] = {
         "description": "Deprecate the auth policy.",
         "operations": [{"op": "deprecateItem", "itemId": ITEM_ID}],
     },
+    # `review.generateKnowledgeCandidate`'s required fields (ADR-0033). This
+    # project has no review evidence and no built review store, so every call
+    # meets the unavailable-store refusal -- **and that is the refusal worth
+    # sweeping here**: it is raised after `_resolve` has run against the layout
+    # under test and after `paths.review_search_for` has resolved a leaf inside
+    # `.theurian/state/`, which is one of the plants below. A refusal that
+    # interpolated that resolved leaf is exactly the leak this sweep exists to
+    # catch, and `_response_text` sweeps it like any other.
+    #
+    # The values are shaped rather than arbitrary: `category` must be one of the
+    # eleven the published schema closes over and `sourceAnchors` must be a
+    # non-empty array, or SEC-12's middleware refuses ahead of the handler and the
+    # call reaches no project layout at all.
+    "repository": "acme/order-service",
+    "recordKey": "PRRT_kwDOaaaaaaaaaaaa",
+    "fixCommit": "a" * 40,
+    "category": "reliability-rule",
+    "sourceAnchors": [
+        {
+            "provider": "github",
+            "sourceUri": "https://github.com/acme/order-service/pull/431#discussion_r1",
+        }
+    ],
 }
 
 runner = CliRunner()

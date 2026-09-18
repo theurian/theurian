@@ -78,8 +78,9 @@ through migrations and serving it over MCP, with status, trust level, freshness,
 and source provenance alongside each result. When an approved item records the
 rationale, an agent can query it before revisiting a design. Most of the MCP
 tools it exposes read; the two write-intent ones emit a proposal for a human to
-review, and no tool writes approved knowledge — the *Works with* section below
-names the whole set.
+review, and no tool writes approved knowledge — those two are ADR-0032's, and
+ADR-0033 added `review.generateKnowledgeCandidate` as a third that does the same.
+The *Works with* section below names the whole set.
 
 Those are the jobs of your agent runtime, of Git, and of CI, and Theurian is
 built to leave them there. Approval is the act of merging a pull request — there
@@ -206,7 +207,7 @@ files or enforce how an agent follows either source.
 |  |  |
 | :-- | :-- |
 | **Engineering knowledge governance** | Knowledge has an owner, a trust level, a sensitivity, and a validity window, and its status reaches `approved` through a migration the workflow expects a human to author and merge — a convention the code does not check (T-15). What *is* enforced is that no MCP tool can write it. |
-| **AI proposes, humans approve** | Nothing an AI writes becomes approved knowledge. `system.capabilities` reports `writeTools: true` — the write-intent *MCP* tools `knowledge.proposeChange` and `knowledge.generateMigrationDraft` exist (ADR-0032) and emit the same proposal file a human reviews and merges that `theurian propose` writes at the CLI; neither reaches an approved-state write, because they hold a draft-only facade (ADR-0032 decision 8). **Candidate generation** turns a resolved review thread into a candidate, and it landed at [Phase B](docs/roadmap.md) slice B5 ([ADR-0033](docs/adr/0033-knowledge-candidate-generation.md)) — as the service half alone: the `review.generateKnowledgeCandidate` MCP tool is not registered, so no wire call reaches it yet. The caller authors the generalization, Theurian recomputes the promotion gate from the stored review record, verifies the caller's `fixCommit` against the local repository, and routes the result through the same draft-only facade — so what it emits is an ordinary proposal a human reviews, never approved state. The *fetch* and *landing* halves shipped earlier with [ADR-0030](docs/adr/0030-github-review-ingestion-spawns-gh.md), and what they write is review evidence under `.theurian/review/`, never approved knowledge. One producer, and it proposes: the only construction site is the candidate generator (`git grep -n "KnowledgeCandidate(" -- packages/theurian-core/src` answers one line). `system.capabilities` reports `reviewIngestion: true` beside `reviewIngestionScope: "public-allowlisted"`, which says an ingestion call surface exists that a client may call — `review.search`, a read over what `theurian review build` projected out of `.theurian/review/`, and not over "what an operator ingested": that directory is source rather than derived state and is not git-ignored, so a clone can deliver records this installation never fetched (threat model [T-24](docs/security/threat-model.md)) — and no *MCP* tool exposes either half: none spawns `gh`, none lands a file. The direction never reverses. ([ADR-0013](docs/adr/0013-ai-writes-produce-proposals.md)) |
+| **AI proposes, humans approve** | Nothing an AI writes becomes approved knowledge. `system.capabilities` reports `writeTools: true` — the write-intent *MCP* tools `knowledge.proposeChange` and `knowledge.generateMigrationDraft` exist (ADR-0032) and emit the same proposal file a human reviews and merges that `theurian propose` writes at the CLI; neither reaches an approved-state write, because they hold a draft-only facade (ADR-0032 decision 8). **Candidate generation** turns a resolved review thread into a candidate, and it landed at [Phase B](docs/roadmap.md) slice B5 ([ADR-0033](docs/adr/0033-knowledge-candidate-generation.md)): the `review.generateKnowledgeCandidate` MCP tool is registered, so a wire call reaches it. It is the third tool behind that same `writeTools: true`, which answers whether a write-intent tool exists and not how many, and it holds the same draft-only facade the two above hold. The caller authors the generalization, Theurian recomputes the promotion gate from the stored review record, verifies the caller's `fixCommit` against the local repository, and routes the result through the same draft-only facade — so what it emits is an ordinary proposal a human reviews, never approved state. The *fetch* and *landing* halves shipped earlier with [ADR-0030](docs/adr/0030-github-review-ingestion-spawns-gh.md), and what they write is review evidence under `.theurian/review/`, never approved knowledge. One producer, and it proposes: the only construction site is the candidate generator (`git grep -n "KnowledgeCandidate(" -- packages/theurian-core/src` answers one line). `system.capabilities` reports `reviewIngestion: true` beside `reviewIngestionScope: "public-allowlisted"`, which says an ingestion call surface exists that a client may call — `review.search`, a read over what `theurian review build` projected out of `.theurian/review/`, and not over "what an operator ingested": that directory is source rather than derived state and is not git-ignored, so a clone can deliver records this installation never fetched (threat model [T-24](docs/security/threat-model.md)) — and no *MCP* tool exposes either half: none spawns `gh`, none lands a file. The direction never reverses. ([ADR-0013](docs/adr/0013-ai-writes-produce-proposals.md)) |
 | **Evidence-backed retrieval** | Every result carries its revision's provenance: provider and URI, plus repository, commit, file and line range where the source pins them. A revision with no anchor at all has to declare that it originates in Theurian rather than in a repository; a revision satisfying neither cannot be stored (INV-8). |
 | **Reproducible knowledge state** | State is content-addressed and no revision is ever overwritten, so a citation to a revision id means the same thing forever. `knowledge.search` names the `snapshotId` that answered it, and `knowledge.status` publishes that same string as `stateHash`, so two answers can be compared. *Passing one back* to query that state is not implemented (FR-R7). ([ADR-0006](docs/adr/0006-immutable-revisions-and-optimistic-concurrency.md), [ADR-0016](docs/adr/0016-state-hash-covers-the-working-tree.md)) |
 
@@ -408,12 +409,15 @@ theurian project register --project-id team-two-api
 
 Theurian exposes no client-specific surface: anything that speaks **MCP over
 Streamable HTTP** to `http://127.0.0.1:7419/mcp` can use it, and gets the same
-nine tools this daemon exposes — `knowledge.generateMigrationDraft`,
+ten tools this daemon exposes — `knowledge.generateMigrationDraft`,
 `knowledge.get`, `knowledge.proposeChange`, `knowledge.search`,
-`knowledge.status`, `project.list`, `review.findings`, `review.search`,
-`system.capabilities`. Most read; the `knowledge.proposeChange` and
+`knowledge.status`, `project.list`, `review.findings`,
+`review.generateKnowledgeCandidate`, `review.search`, `system.capabilities`.
+Most read; the `knowledge.proposeChange` and
 `knowledge.generateMigrationDraft` write-intent tools emit a proposal a human
-reviews and merges, never approved knowledge (ADR-0013, ADR-0032). The daemon
+reviews and merges, never approved knowledge (ADR-0013, ADR-0032), and
+`review.generateKnowledgeCandidate` is a third on that same draft-only facade
+(ADR-0033). The daemon
 does put four conditions on the request — one of them authentication, the
 other three because a loopback port is reachable from any page your browser opens
 (SEC-2, T-2):

@@ -81,17 +81,18 @@ Theurian keeps an explicit boundary between AI output and approved engineering
 knowledge.
 
 **No MCP tool can directly create approved knowledge.** The write-intent tools a
-client can call — `knowledge.proposeChange` and `knowledge.generateMigrationDraft`
-— emit a proposal a human reviews and merges, never approved state, and
-`system.capabilities` reports `writeTools: true` beside a note that no MCP tool
-writes approved knowledge (ADR-0032).
+client can call — `knowledge.proposeChange`, `knowledge.generateMigrationDraft`
+and `review.generateKnowledgeCandidate` — emit a proposal a human reviews and
+merges, never approved state, and `system.capabilities` reports
+`writeTools: true` beside a note that no MCP tool writes approved knowledge
+(ADR-0032, ADR-0033).
 
 This is intentional.
 
 Proposing happens two ways, and they write the same thing. At the CLI,
 `theurian propose` writes a proposal file a human reviews and merges. Over MCP,
-the two write-intent tools draft through the same `ProposalService` and land the
-same proposal directory — a migration, any body, and `evidence.json` — so an
+the three write-intent tools draft through the same `ProposalService` and land
+the same proposal directory — a migration, any body, and `evidence.json` — so an
 agent from any vendor reaches the path that was a terminal before.
 
 **What is enforced, and what is convention.** That no MCP tool writes approved

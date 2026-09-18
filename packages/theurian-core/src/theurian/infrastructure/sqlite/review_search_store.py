@@ -65,6 +65,7 @@ from theurian.infrastructure.sqlite.review_search_sql import (
     INSERT_RECORD,
     INSERT_TEXT,
     SEARCH_ORDER,
+    SELECT_RELATIVE_PATH,
     SELECT_STAMP,
     excerpt_columns,
     fragment_pattern,
@@ -340,7 +341,8 @@ class SqliteReviewSearchStore:
     def search(self, query: ReviewSearchQuery, *, text_chars: int) -> tuple[ReviewSearchHit, ...]:
         """The records ``query`` selects, in a total order, at most ``limit``.
 
-        The one serving read. What it promises, and how each promise is kept:
+        The read a query reaches; :meth:`relative_path_for` is the other, keyed
+        rather than filtered. What this one promises, and how each promise is kept:
 
         **Bounded in rows, and in excerpt text.** ``LIMIT`` is bound from
         :class:`ReviewSearchQuery`'s already-positive value, and ``text_chars`` --
@@ -448,13 +450,9 @@ class SqliteReviewSearchStore:
         try:
             with self._read() as connection:
                 # **The staleness check lives here, inside the read that serves
-                # the rows, and there is no separate probe.** A store whose stamp
-                # is not the current (schema version, evidence format version)
-                # pair is stale: either this file's DDL has moved or the evidence
-                # documents it was projected from are written to a different
-                # shape, and in both cases its rows would be read differently
-                # now. Two opens would let a rebuild land between the check and
-                # the rows; one connection cannot be split that way.
+                # the rows, and there is no separate probe** -- see
+                # `_refuse_unless_current`, which is called on this connection
+                # rather than through one of its own.
                 #
                 # `_read` is also where the *shape* of the path is refused, and
                 # that refusal is a `ReviewSearchStoreError` rather than an
@@ -464,21 +462,7 @@ class SqliteReviewSearchStore:
                 # its own cause, and is never relabelled "reading <file>". The
                 # reach regression `findings_store` records having made once is
                 # what that costs when the class is wrong.
-                stamp_row = connection.execute(SELECT_STAMP).fetchone()
-                if stamp_row is None:
-                    raise ReviewSearchStoreError(
-                        f"{self._path.name} carries no stamp, so nothing can say which "
-                        "build produced its rows"
-                    )
-                if (
-                    int(stamp_row["review_search_schema_version"]) != REVIEW_SEARCH_SCHEMA_VERSION
-                    or int(stamp_row["evidence_format_version"]) != EVIDENCE_FORMAT_VERSION
-                ):
-                    raise ReviewSearchStoreError(
-                        f"{self._path.name} was built by a superseded schema or from a "
-                        "superseded evidence format, so its rows would be read "
-                        "differently now"
-                    )
+                self._refuse_unless_current(connection)
                 rows = connection.execute(
                     statement,
                     (text_chars, pattern, pattern, *parameters, query.limit),
@@ -491,8 +475,9 @@ class SqliteReviewSearchStore:
                 # raises `ReviewSearchStoreError`.
                 served = tuple(_hit_from(row) for row in rows)
         except ReviewSearchStoreError:
-            # The stamp refusals above are already this class and already worded
-            # for their cause; re-wrapping would bury them under "reading <file>".
+            # The stamp refusals `_refuse_unless_current` raises are already this
+            # class and already worded for their cause; re-wrapping would bury
+            # them under "reading <file>".
             raise
         except Exception as exc:
             # Deliberately every exception, for the reason `replace_all`'s arm
@@ -501,6 +486,75 @@ class SqliteReviewSearchStore:
             # itself becomes a channel (SEC-13).
             raise ReviewSearchStoreError(f"reading {self._path.name}: {exc}") from exc
         return served
+
+    def relative_path_for(self, repository: str, record_key: str) -> str | None:
+        """Where the record ``record_key`` names in ``repository`` sits, or ``None``.
+
+        The by-key read: exact match on both columns, both bound.
+
+        **No ``kind`` predicate.** The caller that drives this resolves a node id
+        and a pull-request number through one lookup, so naming a kind would be
+        that caller naming the record it expected rather than the one it asked
+        for. A key colliding across the two spaces falls to the duplicate arm.
+
+        **One answer for every miss**, and it is the artifact's property rather
+        than this method's: a key no row carries and a key a build withheld are
+        the same ``None``, because
+        :class:`~theurian.application.review_search_builder.ReviewSearchBuilder`
+        drops a withheld key before a row exists.
+
+        **More than one matching row is a miss too**, because ``relative_path`` is
+        the primary key and nothing makes ``(repository, record_key)`` unique
+        (T-24): answering with either would make what the caller does next depend
+        on which row SQLite handed back first.
+
+        Raises:
+            ReviewSearchStoreError: If the store is missing, unstamped, stale or
+                unreadable. **Every** failure of this read arrives as this class
+                whatever its Python type, for the reason :meth:`search` records.
+                None of them depends on the key, so a refusal separates a damaged
+                store from a working one and never one key from another.
+        """
+        try:
+            with self._read() as connection:
+                self._refuse_unless_current(connection)
+                rows = connection.execute(SELECT_RELATIVE_PATH, (repository, record_key)).fetchall()
+                found = None if len(rows) != 1 else str(rows[0]["relative_path"])
+        except ReviewSearchStoreError:
+            raise
+        except Exception as exc:
+            raise ReviewSearchStoreError(f"reading {self._path.name}: {exc}") from exc
+        return found
+
+    def _refuse_unless_current(self, connection: sqlite3.Connection) -> None:
+        """Refuse a store this build did not write, over the caller's connection.
+
+        Handed a connection rather than opening one: two opens would let a rebuild
+        land between the check and the rows, leaving the check answering for a
+        file the rows did not come from.
+
+        A store whose stamp is not the current (schema version, evidence format
+        version) pair is stale -- either this file's DDL has moved or the evidence
+        documents it was projected from are written to a different shape, and in
+        both cases its rows would be read differently now. A missing stamp row is
+        the half-built file :meth:`replace_all`'s DDL commit leaves behind, which
+        would otherwise read as a store holding nothing.
+        """
+        stamp_row = connection.execute(SELECT_STAMP).fetchone()
+        if stamp_row is None:
+            raise ReviewSearchStoreError(
+                f"{self._path.name} carries no stamp, so nothing can say which "
+                "build produced its rows"
+            )
+        if (
+            int(stamp_row["review_search_schema_version"]) != REVIEW_SEARCH_SCHEMA_VERSION
+            or int(stamp_row["evidence_format_version"]) != EVIDENCE_FORMAT_VERSION
+        ):
+            raise ReviewSearchStoreError(
+                f"{self._path.name} was built by a superseded schema or from a "
+                "superseded evidence format, so its rows would be read "
+                "differently now"
+            )
 
     @contextmanager
     def _read(self) -> Iterator[sqlite3.Connection]:

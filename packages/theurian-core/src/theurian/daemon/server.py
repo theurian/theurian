@@ -55,13 +55,16 @@ UNAUTHENTICATED_PATHS: Final = frozenset({"/health"})
 #:
 #: **Derived, not chosen.** The largest legitimate body this daemon is sized for
 #: is a write-intent one -- the seven read-side tools sit far below this, so the
-#: sizing is for the surface ADR-0032 designs and slice B4 registered
+#: sizing is for the surface ADR-0032 designs and slice B4 registered, which
+#: slice B5 joined additively
 #: (``git grep -c '^    @_tool($' -- packages/theurian-core/src`` answers
-#: ``mcp/tools.py:9``, 2026-09-15: seven read-side --
+#: ``mcp/tools.py:10``, 2026-09-19: seven read-side --
 #: ``knowledge.search``/``.get``/``.status``, ``project.list``,
 #: ``review.findings``/``.search``, ``system.capabilities`` -- plus the two
 #: write-intent tools B4 registered, ``knowledge.proposeChange`` and
-#: ``knowledge.generateMigrationDraft``. The pattern is anchored to the
+#: ``knowledge.generateMigrationDraft``, plus the one B5 added,
+#: ``review.generateKnowledgeCandidate`` (ADR-0033), whose ``body`` is the same
+#: inline text under the same cap. The pattern is anchored to the
 #: decorator's own indentation because an unanchored one counts this very
 #: sentence, which is how the first recording of it came to answer 8) -- and what
 #: bounds such a body is its *landed* form:

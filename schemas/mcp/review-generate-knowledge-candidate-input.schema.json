@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theurian.dev/schemas/mcp/review-generate-knowledge-candidate-input.schema.json",
+  "title": "Input to the `review.generateKnowledgeCandidate` MCP tool",
+  "x-theurian-tool": "review.generateKnowledgeCandidate",
+  "description": "What a caller may send to `review.generateKnowledgeCandidate`, the review write-intent tool (ADR-0033). SEC-12 validates every call against this file before it reaches application code, in the MCP server middleware (ADR-0031 decision 2). The tool reads the review evidence `theurian review build` projected out of `.theurian/review/`, verifies a promotion gate, and drafts a proposal a human reviews and merges; it reaches no approved-state write (ADR-0013).\n\n**Name honesty.** Theurian does not author the generalization. The caller supplies the title, the body, the kind and the category; Theurian verifies the promotion gate and packages the result. What Theurian computes is the gate recomputation from the stored record, the verification of `fixCommit` against the local repository, the candidate construction with `trustLevel: inferred`, and the proposal directory. Whether the generalization is a fair reading of the thread is the human reviewer's judgement (FR-V4), and no part of it is summarization, ranking or rewriting of the thread.\n\n**No promotion-gate signal is a field this input offers (ADR-0033 decision 3).** Five signals are recomputed from the stored record, `ci_successful` among them as a tri-state where unknown does not satisfy the gate (decision 4); `fix_commit_present` is satisfied by Theurian verifying the caller's `fixCommit` against the local git repository, never by the caller asserting it; and `generalizable` is satisfied by the submission itself. A gate a caller fills is a gate a caller decides, so none of the seven is spellable here.\n\n**Four values this tool fixes are not caller input either.** `trustLevel` is `inferred`, fixed by `KnowledgeCandidate`'s own declaration; `sensitivity` is inherited from the review's project default and never widened at generation; `contentType` is `text/markdown`, because a generalization is prose and there is no file whose suffix could say otherwise; and the proposal is never drafted `--local`, because a local proposal sits inside the managed ignore block where the human review FR-V4 relies on cannot reach it (ADR-0013 point 7).\n\n**Composition.** The context every project-scoped call carries — `projectId`, and the optional `snapshotId`, `agentId` and `taskId` — arrives by `$ref` to `tool-context.schema.json` rather than being restated here. The closure is `unevaluatedProperties: false` and not `additionalProperties: false`, which under a `$ref` composition rejects the very context fields it referenced (ADR-0031 decision 1). `projectId` is required by the referent and is not repeated in this file's `required`.\n\n**Evidence is authoritative, and requiredness is preserved over the wire (ADR-0032 decision 4).** `evidence.agentId` and `evidence.taskId` are required and are what reach the proposal's evidence record; the top-level tool-context `agentId`/`taskId` remain optional ambient provenance. When a top-level field is present and disagrees with its evidence counterpart, the call is refused in the handler. `author` is the human the migration schema's own `author` description requires, distinct from `evidence.agentId` and never filled from it.\n\n**Refusals say nothing about material the caller was not granted (ADR-0033 decision 5).** A record key this installation's built store does not answer for, a stored record of the wrong kind, and — once private-repository ingestion creates the class — a withheld record are one refusal. *That commit does not exist here* and *that commit touched nothing this thread names* are one refusal too, because what separates them is a fact about the repository's contents rather than about the request.\n\n**`body` carries a `maxLength` in code points; the transport cap is bytes.** The whole request body is rejected above `MAX_REQUEST_BODY_BYTES` at the transport (`daemon/server.py`, #669). This field-level `maxLength` counts code points while that cap counts bytes, and the unit is recorded rather than re-litigated at [#691](https://github.com/theurian/theurian/issues/691); it is a sound over-approximation of the byte cap that no admitted request can exceed.\n\n**What this file constrains, and what it leaves to the handler.** Shape, length and the closed `category` set — the eleven-member FR-V2 vocabulary, closed here because a classification refused at the wire names the key path that broke where a handler refusal would arrive after the record had been resolved and the gate recomputed (ADR-0033 decision 6, ADR-0031 decision 4). `kind` stays a handler refusal with a remedy that names the valid values, and the identifier grammar of `itemId` and `expectedRevision` stays a handler refusal too, for the reason `knowledge-search-input.schema.json` records.",
+  "type": "object",
+  "allOf": [{ "$ref": "https://theurian.dev/schemas/mcp/tool-context.schema.json" }],
+  "required": [
+    "repository",
+    "recordKey",
+    "fixCommit",
+    "itemId",
+    "title",
+    "body",
+    "kind",
+    "category",
+    "owner",
+    "author",
+    "description",
+    "evidence",
+    "sourceAnchors"
+  ],
+  "unevaluatedProperties": false,
+  "properties": {
+    "repository": {
+      "type": "string",
+      "description": "The repository the review record belongs to, e.g. acme/order-service. Compared byte for byte against the spelling the review store holds, which is the spelling a `review.search` record's own `repository` field carries — ingestion is case-insensitive about a repository name and the store is not, so read the spelling off a served record rather than assuming one."
+    },
+    "recordKey": {
+      "type": "string",
+      "description": "The review thread's own key inside that repository — the `recordKey` of a `review.search` record whose kind is `review-thread`. A key this installation's built store does not answer for is refused in the same words a stored record of the wrong kind gets (ADR-0033 decision 5)."
+    },
+    "fixCommit": {
+      "type": "string",
+      "description": "A commit in the project's local git repository that implemented this thread's outcome. Theurian verifies it: the commit must resolve here and must have touched the `filePath` the stored thread is anchored to, which is what makes `fix_commit_present` a signal the caller has to find something real to satisfy (ADR-0033 decision 3). It establishes that a commit exists that touched the same file, not that it is this thread's fix — narrowing that is the human reviewer's (FR-V4). A thread stored with no file anchor cannot be verified and is refused in its own words."
+    },
+    "itemId": {
+      "type": "string",
+      "maxLength": 200,
+      "description": "The knowledge id the generalization is proposed under, e.g. reliability.retry-lock-order. At most 200 characters, which is `MAX_IDENTIFIER_LENGTH` — the bound `ItemId` itself enforces."
+    },
+    "title": {
+      "type": "string",
+      "description": "The generalization's title, authored by the caller. Refused empty by the handler."
+    },
+    "body": {
+      "type": "string",
+      "maxLength": 26214400,
+      "description": "The generalization itself, as inline text authored by the caller — never a path, URI, or reference (ADR-0032 decision 2). Theurian does not write it and does not check whether it is a fair reading of the thread. At most `MAX_REQUEST_BODY_BYTES` code points; the transport rejects a larger request in bytes first (#669), and the code-point/byte unit is #691."
+    },
+    "kind": {
+      "type": "string",
+      "description": "What sort of knowledge the generalization is, e.g. convention, architecture, security. The closed set is `KnowledgeKind`; an unknown value is refused by the handler with a remedy naming the valid kinds, rather than answered here with `does not satisfy`."
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "specification-gap",
+        "architecture-rule",
+        "security-rule",
+        "performance-rule",
+        "reliability-rule",
+        "coding-convention",
+        "testing-rule",
+        "domain-rule",
+        "rejected-approach",
+        "known-exception",
+        "incident-prevention"
+      ],
+      "description": "How the review thread is classified (FR-V2). The caller chooses one of the eleven `ReviewCommentCategory` members, closed here rather than in the handler (ADR-0033 decision 6). Classification is a hint that routes a candidate to the right knowledge kind and namespace, not a truth claim: a misclassification costs a reviewer one correction, because a human reads the proposal before anything becomes approved knowledge."
+    },
+    "owner": {
+      "type": "string",
+      "description": "Team that will own this knowledge. Not on the candidate, so it is caller-supplied like the generalization itself. Refused empty by the handler."
+    },
+    "author": {
+      "type": "string",
+      "description": "The human who will own the change. Distinct from `evidence.agentId`, which records the agent: the migration schema defines `author` as the human who authored the change and records the agent separately in `evidence.json`, and the two are never filled from each other. Refused empty by the handler."
+    },
+    "description": {
+      "type": "string",
+      "description": "Why this thread is being generalized into knowledge. Not on the candidate — a candidate's category and source thread are provenance, not a description. Refused empty by the handler."
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agentId", "taskId", "model", "reasoning"],
+      "description": "Where the generalization came from and why (ADR-0013 point 5). Provenance only: Theurian does not authenticate agents. This object is authoritative for `agentId` and `taskId` (ADR-0032 decision 4), and its `model` is what the candidate records as the model that produced the generalization — Theurian runs none.",
+      "properties": {
+        "agentId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Which agent authored the generalization. Required, and what reaches the evidence record."
+        },
+        "taskId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The unit of work it came out of. Required."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The model identity that produced it. Required."
+        },
+        "reasoning": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Why the thread supports the generalization. Required — a proposal with no reasoning is rejected at generation."
+        }
+      }
+    },
+    "sourceAnchors": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Where this knowledge came from (FR-R5, INV-8) — for this tool, the review thread being generalized. One wire field fills both the reviewed evidence record and the migration's own `metadata.sourceAnchors` (ADR-0032 decision 1). Required and non-empty: a candidate refuses construction with no evidence, and there is no `authored-in-theurian` escape here, because a generalization of a review thread is by construction anchored to that thread.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["provider", "sourceUri"],
+        "properties": {
+          "provider": { "type": "string", "description": "Anchor provider, e.g. git or github." },
+          "sourceUri": { "type": "string", "description": "Where this knowledge came from." },
+          "repository": { "type": ["string", "null"], "description": "Repository the anchor names, if any." },
+          "commitSha": { "type": ["string", "null"], "description": "Commit the anchor pins, if any." },
+          "filePath": { "type": ["string", "null"], "description": "File the anchor names, if any." }
+        }
+      }
+    },
+    "labels": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string" },
+      "description": "Free-form labels to group this knowledge by. `uniqueItems` because the migration's `revisionMetadata.labels` is `uniqueItems`, so a duplicate is refused at the wire with a key path rather than as a validation failure over a document the caller cannot see (ADR-0032 decision 3)."
+    },
+    "scopePaths": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Globs this knowledge governs, e.g. src/**. The order is kept."
+    },
+    "namespace": {
+      "type": ["string", "null"],
+      "description": "Namespace to record. Absent defaults to the item id's own."
+    },
+    "expectedRevision": {
+      "type": ["string", "null"],
+      "description": "The current revision id of an existing item (ADR-0006 optimistic concurrency). Required for an update and refused on a first revision — the handler derives which from the caller's own view of the approved set (ADR-0032 decision 6)."
+    }
+  }
+}

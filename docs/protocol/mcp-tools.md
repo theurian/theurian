@@ -3,7 +3,7 @@
 Protocol version: `theurian/v1`. Transport: Streamable HTTP at
 `http://127.0.0.1:7419/mcp`.
 
-Today, Core registers nine callable MCP tools:
+Today, Core registers ten callable MCP tools:
 
 - `knowledge.search`
 - `knowledge.get`
@@ -12,6 +12,7 @@ Today, Core registers nine callable MCP tools:
 - `knowledge.generateMigrationDraft`
 - `project.list`
 - `review.findings`
+- `review.generateKnowledgeCandidate`
 - `review.search`
 - `system.capabilities`
 
@@ -20,7 +21,10 @@ reports `reviewFindings: true` and `reviewIngestion: true` — `review.findings`
 and `review.search` are both callable — and `writeTools: true`, because the
 write-intent tools `knowledge.proposeChange` and `knowledge.generateMigrationDraft`
 are registered (ADR-0032); they emit a proposal a human reviews and merges and
-reach no approved-state write, which is what the capabilities note says. Only
+reach no approved-state write, which is what the capabilities note says.
+`review.generateKnowledgeCandidate` joined that surface additively (ADR-0033) and
+moved no flag: `writeTools` answers *whether any write-intent tool exists*, not
+how many. Only
 `traceability: false` still marks a tool described below as designed protocol
 shape rather than a callable tool in the current server. `reviewIngestion: true`
 is a statement about *callable tools* and nothing
@@ -39,7 +43,8 @@ act through `theurian review ingest` (see below).
 
 `projectId` is **required** on every project-scoped tool that ships today:
 `knowledge.search`, `knowledge.get`, `knowledge.status`, `knowledge.proposeChange`,
-`knowledge.generateMigrationDraft`, `review.findings` and
+`knowledge.generateMigrationDraft`, `review.findings`,
+`review.generateKnowledgeCandidate` and
 `review.search`. Omitting it is a
 validation error, never a fallback to "the last one used". With ten subagents
 sharing one daemon, an implicit default resolves one agent's query against
@@ -82,10 +87,11 @@ is the only tier that still sees the keys a caller actually sent.
 | `knowledge.generateMigrationDraft` | [`knowledge-generate-migration-draft-input.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/knowledge-generate-migration-draft-input.schema.json) |
 | `project.list` | [`project-list-input.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/project-list-input.schema.json) |
 | `review.findings` | [`review-findings-input.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/review-findings-input.schema.json) |
+| `review.generateKnowledgeCandidate` | [`review-generate-knowledge-candidate-input.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/review-generate-knowledge-candidate-input.schema.json) |
 | `review.search` | [`review-search-input.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/review-search-input.schema.json) |
 | `system.capabilities` | [`system-capabilities-input.schema.json`](https://github.com/theurian/theurian/blob/main/schemas/mcp/system-capabilities-input.schema.json) |
 
-The five project-scoped tools reach `projectId` and the three optional context
+Every project-scoped tool reaches `projectId` and the three optional context
 fields through a `$ref` to `tool-context.schema.json` rather than restating them,
 so every tool agrees about `projectId` by construction. `project.list` and
 `system.capabilities` take no arguments, and their schemas say exactly that: an
@@ -147,7 +153,9 @@ stays below this surface as a backstop and is unreachable through this contract.
 
 ### Write-intent tools do not write approved state
 
-The two write-intent tools are registered (ADR-0032). They reach no approved-state
+The write-intent tools are registered — two on the knowledge surface (ADR-0032)
+and `review.generateKnowledgeCandidate` on the review one (ADR-0033). They reach
+no approved-state
 write: each holds a draft-only facade whose reachable surface is the two draft
 entries alone, so approval stays a human merging a pull request (ADR-0013). They
 produce proposal directories like this shape:
@@ -167,8 +175,8 @@ two draft entries alone, so neither `accept` nor `_commit` is reachable from a
 tool ([ADR-0032](../adr/0032-the-write-intent-mcp-tool-surface.md) decision 8); a
 second test enumerates every registered tool and asserts none reaches a canonical
 write ([ADR-0013](../adr/0013-ai-writes-produce-proposals.md)). Proposals can be
-drafted over MCP by `knowledge.proposeChange` and
-`knowledge.generateMigrationDraft`, or at the CLI: `theurian propose` drafts one,
+drafted over MCP by `knowledge.proposeChange`, `knowledge.generateMigrationDraft`
+and `review.generateKnowledgeCandidate`, or at the CLI: `theurian propose` drafts one,
 and `theurian propose accept` moves the files into place. The intended approval
 path is human review and merge in Git; Core does not verify that a migration was
 merged before `theurian migrate apply` reads it.
@@ -491,7 +499,7 @@ response tells the two apart (threat model
 | `review.getThread` | Planned | One thread with comments and resolution |
 | `review.findSimilar` | Planned | Threads resembling a described situation |
 | `review.getDecisions` | Planned | Decisions reached in review |
-| `review.generateKnowledgeCandidate` | Planned write-intent | Emit a proposal; no approved-state write |
+| `review.generateKnowledgeCandidate` | Shipped write-intent | Generalise one ingested review thread into a proposal, against a verified promotion gate; no approved-state write (ADR-0033) |
 | `review.listUnresolved` | Planned | Open threads |
 
 The designed `review.findSimilar` tool is the one expected to change outcomes:
@@ -836,6 +844,71 @@ are whatever the file names on one that arrived with the repository (threat mode
 [T-24](../security/threat-model.md), an accepted residual). Every row rides under
 the triple either way, which is what makes that residual acceptable rather than
 merely recorded.
+
+### `review.generateKnowledgeCandidate`
+
+The write-intent tool on this surface. It takes one **ingested review thread** —
+named by the `repository` and `recordKey` a `review.search` record publishes —
+plus a generalization the caller authored, and lands a proposal a human reviews
+and merges ([ADR-0033](../adr/0033-knowledge-candidate-generation.md)).
+
+**Theurian does not author the generalization.** The caller supplies the `title`,
+the `body`, the `kind` and the `category`; Theurian verifies the promotion gate
+and packages the result. What Theurian computes is the gate recomputation from
+the stored record, the verification of `fixCommit` against the local git
+repository, the candidate with its `trustLevel: inferred`, and the proposal
+directory. Whether the generalization is a fair reading of the thread is the
+human reviewer's (FR-V4), and nothing here summarizes, ranks or rewrites the
+thread. The name is kept because a tool name is a wire contract; this paragraph
+is what it is kept at the cost of.
+
+**No promotion-gate signal is a field on the call.** Five are recomputed from the
+stored record, `fixCommit` is a value Theurian verifies rather than one it
+believes, and `generalizable` is satisfied by offering a generalization at all. A
+gate the caller fills is a gate the caller decides, so none of the seven is
+spellable in the input. The same reason keeps `trustLevel`, `sensitivity`,
+`contentType` and `local` off it: the first two are the candidate's, the third is
+`text/markdown` because a generalization is prose, and a `--local` proposal would
+sit where the human review cannot reach it (ADR-0013 point 7).
+
+`category` is the eleven-member `ReviewCommentCategory` vocabulary, closed in the
+published input schema rather than in the handler, so a wrong value is refused at
+the wire with the key path that broke. `kind` stays a handler refusal whose
+message names the valid kinds.
+
+The result is the proposal payload `knowledge.proposeChange` returns — one shape
+for every surface that drafts a proposal:
+
+```json
+{
+  "proposalId": "01K2...",
+  "proposalDirectory": ".theurian/proposals/01K2...",
+  "migrationId": "01K2...",
+  "migrationFile": "01K2...-acquire-locks-after-reads.yaml",
+  "revisionId": "01K2...",
+  "expectedRevision": null,
+  "bodyFile": ".theurian/proposals/01K2.../knowledge/reliability/retry-lock-order.md",
+  "evidenceFile": ".theurian/proposals/01K2.../evidence.json",
+  "contentFile": "../knowledge/reliability/retry-lock-order.md",
+  "contentSha256": "sha256:...",
+  "bodyDestination": ".theurian/knowledge/reliability/retry-lock-order.md",
+  "nextSteps": ["..."]
+}
+```
+
+**Refusals.** A record key this installation's built review store does not answer
+for, a stored record whose kind is not the one its key promised, and — once
+private-repository ingestion creates the class — a withheld record are **one
+refusal**: what separates them is material the caller was not granted. *That
+commit does not exist here* and *that commit touched nothing this thread names*
+are one refusal too, for the same reason one step over: the difference is a fact
+about the repository's contents rather than about the request. An unmet gate
+names the signals that are unmet and why the stored record makes each one so, and
+an unknown CI outcome is told apart from a failed one — *go and get a CI result*
+and *this thread is not a candidate* are different instructions. A thread stored
+with no file anchor is refused in its own words: its fix-commit signal cannot be
+verified in v1, and `filePath` is already published on every `review.search`
+record, so naming the property discloses nothing.
 
 ## Specification
 

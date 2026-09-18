@@ -409,13 +409,13 @@ def test_an_unregistered_project_is_refused(running_daemon: Daemon) -> None:
 # -- Tool surface ----------------------------------------------------------
 
 
-def test_the_tool_set_is_exactly_the_published_nine(running_daemon: Daemon) -> None:
-    """ADR-0013, ADR-0032. The two write-intent tools are registered now, so this
-    is no longer a read-only surface -- but there is still no path from MCP to an
-    approved-state write. `knowledge.proposeChange` and
-    `knowledge.generateMigrationDraft` emit a proposal a human reviews and merges;
-    no tool creates, updates or applies approved knowledge, not behind a flag and
-    not behind a permission.
+def test_the_tool_set_is_exactly_the_published_ten(running_daemon: Daemon) -> None:
+    """ADR-0013, ADR-0032, ADR-0033. The three write-intent tools are registered
+    now, so this is no longer a read-only surface -- but there is still no path
+    from MCP to an approved-state write. `knowledge.proposeChange`,
+    `knowledge.generateMigrationDraft` and `review.generateKnowledgeCandidate`
+    emit a proposal a human reviews and merges; no tool creates, updates or
+    applies approved knowledge, not behind a flag and not behind a permission.
     """
     with _McpClient(running_daemon.port, running_daemon.token, "probe") as client:
         tools = client.tools()
@@ -428,6 +428,7 @@ def test_the_tool_set_is_exactly_the_published_nine(running_daemon: Daemon) -> N
         "knowledge.status",
         "project.list",
         "review.findings",
+        "review.generateKnowledgeCandidate",
         "review.search",
         "system.capabilities",
     ]

@@ -212,6 +212,29 @@ class EvidenceReader:
         """
         return tuple(self._read_one(relative) for relative in sorted(self.relative_paths()))
 
+    def record_at(self, relative: str) -> StoredRecord:
+        """One record, named by the relative path a derived store recorded for it.
+
+        The entry for a caller that already holds a path and must not pay for the
+        whole corpus to use it: ``review.generateKnowledgeCandidate`` resolves a
+        record key through the review search store and then reads that one file,
+        twice per call (ADR-0033 decision 1). Through :meth:`read_all` each of
+        those would parse every landed record, and one unreadable file elsewhere
+        in the corpus would refuse a call that never named it.
+
+        A second entry point and not a second way to read a record: the read, the
+        grading and the wording stay :meth:`_read_one`'s. It is delegated to
+        rather than renamed because that private name is the key
+        ``test_path_security_call_sites`` and ``test_review_evidence_exception_keys``
+        record their verdicts under.
+
+        Raises:
+            ReviewEvidenceError: Every way ``relative`` can fail to be a record
+                this build reads (see :meth:`read_all`), naming no file included.
+            PathEscapeError: If the path leaves the review directory.
+        """
+        return self._read_one(relative)
+
     def relative_paths(self) -> frozenset[str]:
         """Which ``.json`` leaves exist, without what :meth:`fingerprints` says about them.
 
