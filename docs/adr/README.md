@@ -40,7 +40,7 @@ alternatives that were rejected and why.
 | [0030](0030-github-review-ingestion-spawns-gh.md) | Review ingestion spawns `gh`, over public allowlisted repositories only | proposed |
 | [0031](0031-mcp-input-is-schema-validated-in-middleware.md) | MCP tool input is validated against its published schema, in middleware | accepted |
 | [0032](0032-the-write-intent-mcp-tool-surface.md) | The write-intent MCP tool surface, and when `writeTools` flips | proposed |
-| [0033](0033-knowledge-candidate-generation.md) | Candidate generation: the caller is the model; Theurian verifies the gate | proposed |
+| [0033](0033-knowledge-candidate-generation.md) | Candidate generation: the caller is the model; Theurian verifies the gate | accepted |
 | [0034](0034-migrate-apply-enforces-the-merge.md) | `migrate apply` enforces the merge | proposed |
 | [0035](0035-interactive-source-curation-is-agent-mediated.md) | Interactive curation of sources is agent-mediated and does not relax the approval gate | proposed |
 

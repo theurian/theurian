@@ -3772,6 +3772,53 @@ first abstractive adapter (#115).
 > reddens, not in a sentence — recorded as unpinned here, with the argument
 > resting on the symbols rather than the module in the meantime.
 
+**The candidate path is the second route into this entry, added in Phase B slice
+B5** ([ADR-0033](../adr/0033-knowledge-candidate-generation.md)). Review text is
+untrusted content — a pull-request comment can say "ignore previous
+instructions" as easily as a knowledge body can — and
+`review.generateKnowledgeCandidate` turns a resolved thread into a knowledge
+proposal, which is precisely the path by which an injected instruction could
+become a candidate. It is the risk `docs/roadmap.md`'s Phase B row named as owed
+here. **No new control is added for it**; what follows is where the existing
+ones stand on this path.
+
+*Nothing a thread says is rendered into the proposal.*
+`application/candidate_generation.py`'s `CandidateGenerator.generate` builds the
+`KnowledgeCandidate` from the **submission**: `title`, `body`, `kind`,
+`category` and the source anchors are the caller's, and `generator_model` is the
+caller's declared `evidence.model`. What the stored record contributes is the
+gate's booleans and three identifiers — `thread.project_id`, and
+`thread.external_id` as `source_thread_id` and as half of `candidate_id`. No
+comment body reaches the candidate, and `_request` maps the candidate's own
+fields onto the `ProposalRequest`, so an instruction planted in a review comment
+cannot ride into a proposal as content.
+
+*Where thread text does reach an agent, it reaches it under the triple.*
+`review.search` is the surface that serves review rows, and
+`mcp/review_search.py` splats the same imported `SAFETY` object every knowledge
+result carries. One narrower path is named rather than denied: a gate refusal
+quotes the stored `filePath` into its prose and its cure, because a caller told
+the fix-commit signal is unmet needs to know which path the verification used.
+That value is author-controlled stored data (T-24) and crosses through
+`bounded_quote`, which escapes control characters and bounds the rendering
+before interpolation; the commit-verification cure deliberately keeps it out of
+the command a reader may paste.
+
+*A candidate is never approved knowledge.* It lands as an ordinary draft
+proposal through the draft-only facade, so FR-V4's human merges it or does not
+(ADR-0013, ADR-0032 decision 8) — a stronger position than the retrieval route
+this entry is graded on, where no human stands between the planted text and the
+agent.
+
+**The residual is this entry's own, one actor later.** An agent that reads a
+planted instruction out of `review.search` and writes it into the `title` and
+`body` it submits has produced a candidate saying what the attacker wanted, and
+Theurian cannot tell that from a fair generalization: deciding whether a
+generalization is a fair reading of the thread is what ADR-0033 assigns to
+FR-V4's human. The grade does not move, because the harm is the one already
+stated — an agent influenced by content it should have read as data — and the
+route adds a human approval rather than removing a control.
+
 **Residual risk:** **Theurian labels; it does not enforce.** An agent that
 ignores the label will be influenced. This is a shared responsibility with the
 calling agent, and no MCP server can resolve it alone. It is stated in

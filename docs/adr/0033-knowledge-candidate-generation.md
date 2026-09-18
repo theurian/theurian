@@ -1,6 +1,6 @@
 # ADR-0033: `KnowledgeCandidate` generation — the caller is the model, Theurian verifies the gate and lands a proposal
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-09-12
 - Deciders: Theurian maintainers
 - Requirements: FR-V2, FR-V3, FR-V4, FR-V5, INV-7, INV-8, SEC-12, SEC-13,
@@ -19,7 +19,12 @@
 gate type changes, no candidate is constructed. The non-`docs/` changes it does
 carry are named in *Compliance* — a ledger row in `tools/audit/`, and nothing
 that runs at runtime. What slice B5 owes is named there too, including the
-**pins this change will deliberately move**.
+**pins this change will deliberately move**. [**2026-09-19:** true of this ADR's
+own commit, and kept as history. Slice B5 landed the behaviour on
+[PR #744](https://github.com/theurian/theurian/pull/744) — the tool registers,
+the gate type is widened, and a candidate is constructed in one place — and the
+*Compliance* amendments below name the test that discharges each owed item, or
+say what is still owed and why.]
 
 **Every repository fact below was measured on 2026-09-12 against `be977ea7`**,
 which is reachable from `origin/main`.
@@ -784,6 +789,39 @@ Still owed, with the milestone that will satisfy it:
   `tests/integration/test_review_ingest_is_model_free.py::test_no_callable_in_the_built_pipeline_reaches_a_model`,
   with its planted-model controls — **and with the same recorded bound**, that a
   provider resolved through a factory one level down is invisible to it.
+
+  > **Amended in slice B5 (2026-09-19,
+  > [PR #744](https://github.com/theurian/theurian/pull/744)): discharged.**
+  > `tests/integration/test_candidate_generation_is_model_free.py` is that walk,
+  > eight tests over `tests/model_free_walk.py` — the instrument shared with the
+  > ingest walk rather than copied, so an edge kind cannot be dropped from one
+  > and not the other. The graph is **captured, not reconstructed**: the
+  > candidate pipeline has no factory a test can call, so the fixture drives the
+  > real tool over the real transport and keeps the `CandidateGenerator` the
+  > composition root wired, with
+  > `::test_the_walk_reaches_the_candidate_pipeline_it_claims_to_inspect` as the
+  > premise. Two halves —
+  > `::test_no_callable_in_the_built_candidate_pipeline_reaches_a_model` over the
+  > captured graph's code objects and
+  > `::test_no_module_the_candidate_pipeline_is_built_from_names_a_model` over
+  > its import closure — with four planted-model controls: on the generator
+  > class, in an injected collaborator, behind a bound method, and on the commit
+  > verifier decision 3 added.
+  >
+  > **The one subtraction is measured, not asserted.**
+  > `::test_the_excluded_composition_root_is_what_the_exclusion_says_it_is` holds
+  > both directions of dropping `theurian.mcp.tools` from the name half's seed:
+  > the unpruned closure really does name a model, so the exclusion is not dead
+  > weight, and every name it hides arrives through modules composing
+  > `knowledge.search` rather than this tool, which is what makes it admissible.
+  > If that composition stops naming an embedder the test reddens and the
+  > exclusion goes.
+  >
+  > **The same recorded bound applies, and is not closed.** The walk reads the
+  > names a function spells, so a provider reached through `getattr`, a factory
+  > looked up in a table, or an import one frame deeper than the walk descends is
+  > invisible to it — the ingest walk's bound, carried here rather than argued
+  > away.
 - **Slice B5 — the five recomputed signals are never read off the request
   (decision 3).** Owed: a test that plants gate-shaped fields in the wire input
   and asserts they change no signal, with the control that a change to the
@@ -793,6 +831,23 @@ Still owed, with the milestone that will satisfy it:
   all. **The control must not use `has_evidence`**: decision 3 records that it
   is `True` over every thread that loads, so a record edit cannot move it and
   the control would pass on a generator that read nothing.
+
+  > **Amended in slice B5 (2026-09-19,
+  > [PR #744](https://github.com/theurian/theurian/pull/744)): discharged, in
+  > three parts.** The planted case is
+  > `tests/unit/test_candidate_generation.py::test_gate_shaped_text_in_the_submission_moves_no_signal`,
+  > which submits every spelling of an assertion a caller can reach — a `title`,
+  > a `body`, a `description` and `labels` all asserting the gate — over a record
+  > whose pull request is **not** merged, and asserts the refusal still names
+  > `pull_request_merged`. The control is
+  > `::test_the_gate_is_recomputed_from_the_stored_record`, which moves one field
+  > of the *stored* record — the pull request's `merged` — and requires that same
+  > name in the refusal; its docstring records why it is `pull_request_merged`
+  > and not `has_evidence`, on this item's own reasoning. The structural half is
+  > `::test_the_submission_type_declares_no_gate_signal`, a live intersection of
+  > `dataclasses.fields(PromotionGate)` with `dataclasses.fields(CandidateSubmission)`
+  > asserted empty, so an eighth signal added to the gate is forbidden on the
+  > wire by existing rather than by being listed.
 - **Slice B5 — `fixCommit` is verified, not trusted (decision 3).** Owed, in
   order of what each separates: a commit that does not exist in the repository
   refuses; a commit that exists but does not touch the thread's `file_path`
@@ -802,6 +857,35 @@ Still owed, with the milestone that will satisfy it:
   that the check reads the **local** repository and reaches no network — the
   shape `tests/unit/test_network_call_sites.py` already holds for spawn sites,
   since a verification step is a candidate for a sixth one.
+
+  > **Amended in slice B5 (2026-09-19,
+  > [PR #744](https://github.com/theurian/theurian/pull/744)): discharged, at
+  > both layers.** At the service,
+  > `tests/unit/test_candidate_generation.py` drives the three verdicts in the
+  > order this item asks for:
+  > `::test_a_fix_commit_that_names_no_commit_drafts_nothing` (asserted on the
+  > *facade*, so a proposal drafted before the gate refused it is caught, not
+  > only the exception),
+  > `::test_a_fix_commit_that_touches_no_file_here_is_refused_in_the_same_words`
+  > — the middle case, which also holds the two refusals byte-identical over
+  > detail *and* remedy — and
+  > `::test_a_fix_commit_that_touches_the_threads_file_is_accepted`, the arm that
+  > proceeds. Against real git,
+  > `tests/integration/test_fix_commit_check_adapter.py` runs the same three over
+  > real repositories and adds what the service's fake verdict cannot reach: a
+  > root commit verifies, a stored path spelling a pathspec expression verifies
+  > nothing, an option-shaped `fixCommit` starts nothing, and a tree id or a blob
+  > id names no commit.
+  >
+  > **The local-only control is the spawn-site equality, and the site is
+  > recorded rather than absent.**
+  > `tests/unit/test_network_call_sites.py`'s `PROCESS_SPAWN_SITES` carries
+  > `("infrastructure/git/fix_commit_check.py", "subprocess")` as a member, so
+  > the verification *is* the sixth spawn site this item anticipated and the
+  > equality reddens on a seventh as well as on its removal;
+  > `test_fix_commit_check_adapter.py::test_the_module_reaches_a_spawn_from_exactly_one_place`
+  > holds that the module has one. The adapter's own docstring records that
+  > `diff-tree` reads local object storage, names no remote and takes no URL.
 - **Slice B5 — the `file_path is None` branch is decided and recorded
   (decision 3).** The adapter yields `None` for any thread GitHub anchors to no
   string `path` (`review_provider.py:665`), and on that branch the check
@@ -850,6 +934,72 @@ Still owed, with the milestone that will satisfy it:
   > at slice B5:** the duration equality. It is not measured here, and it belongs
   > with the two-corpora battery item below, which is the one that owes an
   > instrument named on both sides.
+
+  > **Amended in slice B5 (2026-09-19, the branch commit `66026d36` of
+  > [PR #744](https://github.com/theurian/theurian/pull/744)): the duration half
+  > is discharged as a spawn-count property, and it leaves a measured residual
+  > that no test bounds.**
+  >
+  > **The property was false when the battery first measured it, and the battery
+  > is what found that.** The verification asked two questions in two git
+  > processes — `rev-parse` for *does this name resolve to a commit*, then
+  > `diff-tree` for *did it touch this path* — and the first could answer no on
+  > its own. So an absent object cost one process and a real commit cost two, and
+  > the refusal's wall clock answered *does this object exist here*: **+7.2 ms,
+  > P=1.000**, measured end to end at the wire. That is the fact this decision
+  > says the pair must not distinguish, arriving through duration while the text
+  > was already byte-identical — which is why the bind names both and why the
+  > text half alone was not the discharge.
+  >
+  > **The fix is a collapse, not a delay.** Both questions are now one
+  > `diff-tree` invocation and the verdict is read off its exit code and its
+  > output: non-zero is `NO_SUCH_COMMIT` (including every fail-closed reading),
+  > exit 0 with no output is `TOUCHES_NOTHING_HERE`, exit 0 with output is
+  > `VERIFIED`. Every foreclosure survives, and `^{commit}` changed *why* it is
+  > load-bearing rather than becoming decorative: under the two-call shape it was
+  > what refused a fabricated forty hex digits, and `diff-tree` refuses those on
+  > its own — what the suffix holds now is commit-only semantics, since a tree id
+  > and a blob id each exit 0 with empty output without it, which this adapter
+  > would read as *a commit was found*. The adapter's module docstring carries
+  > that re-measurement per token.
+  >
+  > **What is pinned is the spawn count and the argument vector, not a clock.**
+  > `tests/integration/test_fix_commit_check_adapter.py::test_both_failure_verdicts_spawn_one_process_with_the_same_vector_shape`
+  > drives the two verdicts against one repository, asserts each spends exactly
+  > one process, and asserts the two argv vectors are equal in length and differ
+  > at exactly one position — the revision token, the only thing the caller
+  > varied. Its sibling
+  > `::test_the_same_request_spawns_the_same_vector_whether_the_object_is_here_or_not`
+  > is the stronger form: the same sha and the same path against two repositories
+  > that differ only in whether they hold the object, one process each and the
+  > **whole** argv asserted equal, with the two verdicts asserted different first
+  > so a build answering `NO_SUCH_COMMIT` for everything cannot satisfy it. At
+  > the caller's own distance,
+  > `tests/integration/test_candidate_generation_absence_proof.py::test_each_commit_refusal_spends_exactly_one_git_process`
+  > holds the same count through the real store, the real reader, the real git
+  > adapter and the real transport, parametrised over both arms. A count is the
+  > instrument here on purpose: a committed wall-clock comparison is
+  > machine-dependent and becomes a flake on a busy runner, where the count is
+  > exact and reproduces everywhere.
+  >
+  > **The residual, recorded rather than absorbed.** Git still does different
+  > internal work for an object it has and one it does not, and the collapse does
+  > not touch that. Measured 2026-09-19 at the branch commit `66026d36` of that
+  > same pull request — `perf_counter_ns`, arm
+  > order rotated, n=300 with 30 discarded, Apple M1 Max, CPython 3.13.3, git
+  > 2.47.1 — the absent arm runs **+0.14 ms, P=1.000** at the adapter and
+  > **+0.22 ms, P=0.703** at the wire, where ~±0.3 ms of stack noise dominates.
+  > Its reach is one existence bit about a forty-hex sha the caller already
+  > holds, and the space is not enumerable, so it answers *is this one here* and
+  > not *what does this repository contain*.
+  >
+  > **No test pins that residual's bound, and this sentence is the record rather
+  > than a promise.** The pins above hold the spawn count and the argv — the
+  > channel that was demonstrated — and they would stay green if git-internal
+  > work grew. Closing it means constant-time verification against local object
+  > storage, which this ADR does not design; the honest statement is that the
+  > demonstrated channel is closed and pinned, and the measured one is bounded,
+  > recorded and unpinned.
 - **Slice B5 — at least one gate test is driven from a record the real adapter
   shape produces.** That is, a `ReviewResolution` built the way
   `review_provider.py` builds one, with `fix_commit` **absent**. What lets a
@@ -859,6 +1009,21 @@ Still owed, with the milestone that will satisfy it:
   fixture (`tests/unit/test_project_and_traceability.py:555-569`) sets every
   signal from a literal `True`, so no test relates a gate to a record at all. A
   suite that never joins the two cannot catch the next premise either.
+
+  > **Amended in slice B5 (2026-09-19,
+  > [PR #744](https://github.com/theurian/theurian/pull/744)): discharged, and
+  > not by one test.** `tests/unit/test_candidate_generation.py`'s `_thread`
+  > helper builds its `ReviewResolution` the way `review_provider.py` builds one
+  > — `state` and `resolved_by`, with `resolved_at` and `fix_commit` left `None`
+  > because GitHub's thread object carries neither — and **every** gate test in
+  > that module runs on it. So the join this item asks for is the module's
+  > default rather than one case in it: the gate is built inside
+  > `CandidateGenerator.generate` from a record of the adapter's shape, and a
+  > design premise about `fix_commit` being readable off the record now fails at
+  > the first test rather than surviving review. The literal-boolean fixture in
+  > `test_project_and_traceability.py` is untouched; it exercises the domain
+  > type, which is a different question from whether anything joins a gate to a
+  > record.
 - **Slice B5 — `generalizable` is satisfied by the submission and is not a wire
   field (decision 3).** Owed: the structural property that the published input
   schema declares no `generalizable`, and a driving case that a well-formed
@@ -919,6 +1084,65 @@ Still owed, with the milestone that will satisfy it:
   recompute plus a commit verification is strictly more work than a miss on an
   id that names nothing. Owed with its instrument named on both sides, so the
   measurement is not a wall-clock number nobody can reproduce.
+
+  > **Amended in slice B5 (2026-09-19,
+  > [PR #744](https://github.com/theurian/theurian/pull/744)): discharged.**
+  > `tests/integration/test_candidate_generation_absence_proof.py` is that
+  > round — 28 arms at the branch commit `66026d36` of that pull request
+  > (`uv run --frozen pytest -q --collect-only <file>` → `28 tests collected`).
+  > **Three** deployments, not two, and the third is what makes the first two
+  > mean anything: `withholding` (the whole corpus built while withholding the
+  > keys, their evidence files still on disk, no store row), `never_held` (the
+  > corpus minus those records, withholding nothing) and `control` (the whole
+  > corpus, withholding nothing). What is compared is the whole JSON-RPC
+  > message — `isError`, the structured content and every content block —
+  > serialised into one string, so a refusal folds into the same comparison as
+  > an answer and error distinguishability is part of the property rather than a
+  > separate claim.
+  >
+  > **The masking is measured, not assumed.** A successful call mints three
+  > fresh ULIDs, so two successes cannot be byte-compared for a reason that is
+  > not a leak; those three are replaced with fixed tokens and nothing else is,
+  > and `::test_a_success_response_varies_only_in_the_three_identifiers_it_mints`
+  > holds that two calls to the *same* deployment differ raw and agree once
+  > masked — which is what makes the substitution exactly sufficient rather than
+  > a mask over a real difference. The reach controls are
+  > `::test_the_battery_really_reaches_the_withheld_records`,
+  > `::test_the_battery_carries_both_shapes_a_caller_can_receive` and
+  > `::test_the_control_generates_a_candidate_from_the_withheld_thread_through_the_same_tool`.
+  >
+  > **The duration half is a count pinned at zero, and that is deliberate.**
+  > `_Spend` tallies the two costs below the resolve — evidence-file reads and
+  > git spawns — and
+  > `::test_a_key_the_store_does_not_resolve_costs_no_evidence_read_and_no_git_spawn`
+  > holds a miss at zero of each whether the key is withheld or was never
+  > landed, while `::test_the_same_key_unwithheld_pays_both_the_evidence_read_and_the_git_spawn`
+  > is the control that the instrument separates when there is work to separate.
+  > A cost never incurred cannot make a refusal's timing carry the record. A
+  > committed wall-clock comparison was rejected for T-26's reason: what it
+  > asserts is the machine.
+  >
+  > **The wall clock is an out-of-band corroboration, and both sides are
+  > named.** Measured 2026-09-19 against the production code at the
+  > branch commit `83245a71` of that same pull request, the one that registered
+  > the tool — Apple M1 Max, macOS 26.6.2,
+  > CPython 3.13.3, SQLite 3.47.1, `perf_counter_ns` around one `tools/call` on
+  > an open session, five resolve-miss arms rotated, n=400 after 40 discarded:
+  > the withheld key answered at median 3.8610 ms against `withholding` and
+  > 3.8651 ms against `never_held`, **P(withheld > median(never-held)) = 0.477**.
+  > The spread across all five miss medians was 0.052 ms, and two plainly absent
+  > keys differed by as much as the withheld/never-held pair did, so the residual
+  > tracks the key string rather than the corpus. The same key un-withheld is a
+  > hit at **+19.0 ms, P = 1.000**.
+  >
+  > **Why this holds by construction and not only by measurement:**
+  > `ReviewSearchBuilder` drops a withheld key before a load exists, so the built
+  > store holds no row, no flag and nothing a later read has to remember. There
+  > is no withheld-versus-absent branch in the serving path to get wrong.
+  > **What this battery does not reach**, stated rather than left to be
+  > discovered: generated requests (every example is hand-enumerated;
+  > `test_review_search_tool_absence_proof.py` carries the hypothesis arm) and
+  > the store's own artifact (`test_review_search_absence_proof.py`'s).
 - **Slice B5 — the candidate lands as an ordinary proposal, through the mapping
   decision 1 states.** Owed: a test that the proposal a generated candidate
   produces is one `theurian propose accept` accepts, driven through the shipped
@@ -927,6 +1151,38 @@ Still owed, with the milestone that will satisfy it:
   caller's human-attributable identity while `evidence.json`'s `agentId` is the
   agent's — the two never filled from each other, which is what the migration
   schema's own `author` description requires.
+
+  > **Amended in slice B5 (2026-09-19,
+  > [PR #744](https://github.com/theurian/theurian/pull/744)): discharged, all
+  > three parts.** `tests/integration/test_candidate_lands_as_a_proposal.py`
+  > drives the proposal a generated candidate produces through the shipped
+  > `theurian propose accept`:
+  > `::test_the_shipped_propose_accept_accepts_a_generated_candidate`, which is
+  > where *an ordinary proposal directory* is cashed rather than claimed — the
+  > acceptance runs the secret scan over everything it would land, resolves the
+  > `contentFile` through the containment check and replays the whole migration
+  > set against a throwaway store before a file moves (ADR-0027), and a proposal
+  > ordinary in shape that failed any of those is not one a reviewer can merge.
+  > `::test_the_accepted_candidates_trust_level_is_inferred_on_the_migration_and_in_the_state`
+  > follows `inferred` past both places it could quietly become `unverified` —
+  > the migration in the applied set, and the item `knowledge.get` serves once
+  > that set is applied, read back through the tool rather than off the
+  > database.
+  > `::test_the_accepted_migration_names_the_human_and_the_proposal_named_the_agent`
+  > reads `evidence.json` before the acceptance consumes it and the migration
+  > after, out of the applied set, and asserts the agent's id appears **nowhere**
+  > in the migration — which is what makes the pair mean something rather than
+  > two values that happen to differ.
+  >
+  > The file-level half landed one commit earlier and is separate:
+  > `tests/integration/test_candidate_generation_on_disk.py::test_the_written_migration_records_the_candidates_inferred_trust_level`
+  > reads `trustLevel` off the `upsertRevision` operation of the drafted
+  > migration, where ADR-0032 decision 1's *absent means not stated* would leave
+  > the key out and let the loader apply `unverified` — a quieter defect than a
+  > wrong value, since nothing refuses and the knowledge claims less trust than
+  > the candidate that produced it. Its sibling
+  > `::test_the_migration_names_the_human_and_the_evidence_names_the_agent`
+  > holds the same `author`/`agentId` split on the drafted files.
 - **Slice B5 — the name-honesty split is stated on every surface that
   describes the tool (decision 2).** Owed: the tool description, the published
   input schema's description and this ADR's table agreeing that Theurian does
@@ -953,6 +1209,21 @@ Still owed, with the milestone that will satisfy it:
 - **Slice B5 — the T-3 threat-model entry gains the candidate path.**
   `docs/roadmap.md`'s Phase B risks row names it as owed; it is a prose
   obligation with no test, recorded here rather than dressed as discharged.
+
+  > **Amended in slice B5 (2026-09-19,
+  > [PR #744](https://github.com/theurian/theurian/pull/744)): written.** T-3
+  > now names the candidate path as its second injection route and states where
+  > each existing control stands on it: the proposal's `title`, `body`, `kind`,
+  > `category` and anchors come from the submission, so no comment body reaches
+  > the candidate; thread text reaches an agent through `review.search` under
+  > the safety triple; a candidate is a draft proposal FR-V4's human merges or
+  > does not. One narrower path is named rather than denied — a gate refusal
+  > quotes the stored `filePath` through `bounded_quote` — and the residual is
+  > this entry's own one actor later: an agent that writes a planted instruction
+  > into its own submission produces a candidate Theurian cannot distinguish
+  > from a fair generalization. **The grade does not move**, and the reason is
+  > stated there rather than assumed. **Still a prose obligation with no test**,
+  > which this amendment does not change.
 - **Slice B5 — [#479](https://github.com/theurian/theurian/issues/479) is
   rescoped to Phase B and owned by this slice.** It is the design-first step
   ADR-0030 was recorded under, and the candidate half is the part of it that

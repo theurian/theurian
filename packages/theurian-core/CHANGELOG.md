@@ -12,6 +12,96 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Added
+
+- **`review.generateKnowledgeCandidate`, so an ingested review thread can become
+  a reviewable knowledge proposal over MCP**
+  ([ADR-0033](../../docs/adr/0033-knowledge-candidate-generation.md), FR-V2,
+  FR-V3, Phase B slice B5). **Theurian runs no model on this path**: the caller
+  supplies the `title`, the `body`, the `kind` and the `category`, and Theurian
+  verifies and packages them. It loads the thread from the store
+  `theurian review build` projected out of `.theurian/review/`, recomputes the
+  promotion gate from that stored record, verifies the caller's `fixCommit`
+  against the local git repository, and drafts an ordinary proposal through the
+  same draft-only facade the two ADR-0032 tools hold — so it reaches no
+  approved-state write, and a human merges the proposal or does not (FR-V4).
+  `writeTools` does not move: it was already `true` and answers whether a
+  write-intent tool exists, not how many.
+
+  **No promotion-gate signal is a field a caller may set.** Five are recomputed
+  from the stored record; `fix_commit_present` is satisfied by Theurian
+  verifying the named commit, never by the caller asserting it; `generalizable`
+  is satisfied by offering a generalization at all. A gate the caller fills is a
+  gate the caller decides, and the published input schema is where that is
+  structural rather than a handler's choice to ignore a key — the forbidden set
+  is read off `PromotionGate` itself, so a signal added to the gate is forbidden
+  by existing. `trustLevel`, `sensitivity`, `contentType` and `local` are off
+  the wire for the same reason.
+
+  **A thread stored with no `filePath` cannot generate a candidate in v1**, and
+  refuses in its own words. For such a thread the *touches that path* half of
+  the verification has nothing to check and what is left is bare existence,
+  which is very nearly no check and arrives exactly where verification is
+  weakest; widening refuse into accept later is additive, while narrowing accept
+  into refuse would be a breaking change. The property is already caller-visible
+  — `filePath` is a published key on every `review.search` record, the `None`
+  ones included — so naming it discloses nothing.
+
+  The call is validated against
+  `schemas/mcp/review-generate-knowledge-candidate-input.schema.json` before it
+  reaches application code (SEC-12, ADR-0031), with `category` closed to the
+  eleven-member FR-V2 vocabulary at the wire.
+
+### Changed
+
+- **BREAKING — `PromotionGate.ci_successful` is `bool | None`, and unknown does
+  not satisfy the gate** (ADR-0033 decision 4). Old shape: a required `bool`, so
+  "nobody has told Theurian whether this thread's fix passed" was
+  unrepresentable and any adapter filling the field had to pick a lie —
+  `True` promoting unverified work, `False` reporting a failure that did not
+  happen. New shape: the field is `bool | None`, `None` does not satisfy
+  `is_satisfied`, and `unmet()` names `ci_successful` for it. This widens a
+  domain type that `is_satisfied` and `unmet()` both read; any caller
+  constructing a `PromotionGate` with a positional or keyword `bool` is
+  unaffected, and one that pattern-matches the field's type is not.
+- **An unknown CI outcome and a failed one are refused in different sentences.**
+  `unmet()` returns the same name for both, because `None` and `False` are both
+  falsy, so the distinction comes from a second read of the stored tri-state:
+  *nobody has told Theurian whether this thread's fix passed* is an instruction
+  to go and get a CI result, and *this thread's fix did not pass* is an
+  instruction to stop. Flattening the two at the adapter is the alternative
+  ADR-0033 rejects, and it is what the differing sentences make detectable.
+
+### Security
+
+- **The candidate tool's responses and refusals do not distinguish a withheld
+  thread from one that does not exist** (ADR-0033 decision 5, ADR-0029 decision
+  6's uniform-refusal shape). A key the store does not answer for, a stored
+  record whose kind is not the one its key promised, and — once
+  private-repository ingestion creates the class
+  ([#575](https://github.com/theurian/theurian/issues/575)) — a withheld record
+  arrive as one constant refusal that carries nothing from the request or from
+  any project's contents. The equality is held over a corpus that **held**
+  withheld threads and one that **never did**, at the tool layer, over responses
+  and refusals, with controls proving the battery reaches the withheld rows.
+- **The commit-verification refusals cost the same work, not only the same
+  words.** *That commit does not exist here* and *that commit touched nothing
+  this thread names* differ by a fact about the repository rather than about the
+  request, so ADR-0033 decision 5 binds them in duration as well as in text. The
+  verification asked two questions in two git processes — `rev-parse`, then
+  `diff-tree` — and the first could answer on its own, so the refusal's wall
+  clock answered *does this object exist here*: measured end to end at
+  **+7.2 ms, P=1.000**. It is now one `diff-tree` invocation whose verdict is
+  read from the exit code and the output, with every foreclosure preserved
+  (`--literal-pathspecs`, `--root`, `^{commit}` for commit-only semantics,
+  `--end-of-options` and `--`), so both failure arms spend one process with
+  byte-identical argument vectors. A residual is recorded rather than absorbed:
+  git-internal work still differs, measured at **+0.14 ms (P=1.000)** at the
+  adapter and **+0.22 ms (P=0.703)** at the wire under ~±0.3 ms stack noise, and
+  it carries one existence bit about a forty-hex sha the caller already holds.
+  The full reach and the honest statement that no test pins that residual's
+  bound are in ADR-0033's decision-5 amendment.
+
 ## [0.3.0] - 2026-09-16
 
 ### Added

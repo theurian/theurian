@@ -192,7 +192,23 @@ granting it.
 
 ## Failure isolation
 
-Candidate generation may need a model. Raw ingestion must not (FR-V5).
+**This section is design context, and one of its premises did not survive
+implementation.** It was written for a generation stage that may need a model;
+the shipped generator calls none, because
+[ADR-0033](../adr/0033-knowledge-candidate-generation.md) decision 1 put the
+generalization in the calling agent's hands. The isolation argument below stands
+as the reason the two stages are separate, and what the branch isolates today is
+the *caller's* availability rather than a model's.
+
+Raw ingestion must not need a model either way (FR-V5), and both halves are now
+structural rather than argued:
+`tests/integration/test_review_ingest_is_model_free.py` walks the built ingest
+pipeline and
+`tests/integration/test_candidate_generation_is_model_free.py` walks the
+candidate one, through the shared instrument `tests/model_free_walk.py`, each
+with planted-model controls and each carrying the same recorded bound — a
+provider reached through `getattr`, a factory looked up in a table, or an import
+one frame deeper than the walk descends is invisible to it.
 
 ```mermaid
 flowchart LR
