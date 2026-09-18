@@ -20,7 +20,10 @@ for shapes the real builder cannot produce: >limit leaves under one node, a leaf
 reached by two summary nodes at once, a draft leaf under an approved node, and a
 draft-scope ancestor above an approved leaf. ``SummaryNode.__post_init__`` refuses
 the last two were they built through the domain layer -- which is exactly why the
-gates that stand behind that invariant have no fixture that reaches them.
+gates that stand behind that invariant have no fixture that reaches them. The
+one-sided-query node in section 6 is the exception: its shape is ordinary and the
+real builder could produce it, and it is written the same way only to keep the
+query under test on this file's one summary node.
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ import pytest
 
 from theurian.domain.chunking import Chunk, IndexableChunk
 from theurian.domain.enums import Sensitivity
+from theurian.infrastructure.sqlite.index_query import to_match_expression, to_trigram_expression
 from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
 
 pytestmark = pytest.mark.integration
@@ -58,6 +62,12 @@ _STRONG_SUMMARY = (ROUTING_TERM + " ") * 20
 #: The routing term once, buried in a long filler body -- a materially worse
 #: ``bm25`` than ``_STRONG_SUMMARY`` for the same query.
 _WEAK_SUMMARY = ROUTING_TERM + " " + "alpha beta gamma delta epsilon " * 40
+#: A two-character Japanese noun, spelled as its own whitespace-delimited token in
+#: the node text below so ``unicode61`` indexes it as one: an FTS term (the match
+#: floor is one character) and no trigram (that floor is three), which is the
+#: one-sided query `search_summaries` must still route.
+SHORT_CJK_TERM = "認証"
+
 #: Non-matching nodes, present only to move ``bm25``'s collection statistics off
 #: the two-document degenerate case: with just the strong and weak nodes in the
 #: table the inverse-document-frequency term is near zero and both scores collapse
@@ -560,4 +570,55 @@ def test_an_internal_leafs_raptor_path_excludes_a_confidential_ancestor(tmp_path
     joined = " ".join(segment.title for segment in segments).lower()
     assert secret not in joined, (
         "the confidential ancestor's summary text must not ride out on the path"
+    )
+
+
+# -- 6. A query that forms one match expression and not the other still routes -
+
+
+def test_a_query_with_no_trigram_expression_still_routes_through_the_forest(
+    tmp_path: Path,
+) -> None:
+    """FR-R3, ADR-0023. `search_summaries` gives up only when a query forms
+    *neither* an FTS term nor a trigram. A two-character Japanese noun forms one
+    and not the other -- ``to_match_expression``'s floor is one character,
+    ``to_trigram_expression``'s is three -- and it must still seed the ``matched``
+    CTE through the arm it does reach.
+
+    RED against ``if not fts or not trigram``, which answers every such query with
+    an empty exhausted page. That is the CJK blackout ADR-0023 is about, on the
+    forest retriever: 認証, 決済, 監査 and 契約 are two characters each, so the
+    one-sided query is the ordinary Japanese case rather than an edge one. Every
+    other fixture that drives this method directly queries ``forestroutingterm``,
+    which forms both expressions and so cannot tell the two operators apart.
+
+    Only this direction is constructible: ``to_trigram_expression`` selects from
+    the same terms as ``to_match_expression`` at a strictly higher floor, so a
+    non-empty trigram expression implies a non-empty match expression and the
+    mirror case cannot be reached through this entry point.
+    """
+    path = tmp_path / "theurian-index-onesided.sqlite"
+    store = _store(path)
+    store.add_chunks([_indexable("leaf-cjk", "an ordinary paragraph", revision="rev-cjk")])
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        with connection:
+            _node(connection, "domain#0", text=f"{SHORT_CJK_TERM} をめぐる設計判断の要約")
+            _edge_chunk(connection, "domain#0", chunk="leaf-cjk")
+
+    assert to_match_expression(SHORT_CJK_TERM), (
+        "precondition: the query must reach the nodes_fts arm of the matched CTE"
+    )
+    assert not to_trigram_expression(SHORT_CJK_TERM), (
+        "precondition: the query must form no trigram, or both arms are seeded and "
+        "the two operators are indistinguishable"
+    )
+
+    page = store.search_summaries(
+        SHORT_CJK_TERM, project_id=PROJECT, limit=50, visible_sensitivities=EVERY_SENSITIVITY
+    )
+
+    assert [row.chunk_id for row in page.rows] == ["leaf-cjk"], (
+        "the leaf under the matched summary must route out on the one expression "
+        "the query does form"
     )
