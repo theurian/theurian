@@ -246,7 +246,7 @@ def _no_file_anchor(submission: CandidateSubmission) -> CandidateGenerationError
         f"its fix-commit signal cannot be verified: this thread cannot generate a candidate "
         f"in v1.",
         remedy=(
-            "Propose the generalisation directly instead -- `theurian propose draft --item-id "
+            "Propose the generalisation directly instead -- `theurian propose --item-id "
             "<id> --title <title> --body-file <path>` -- or generate from a thread whose "
             "`filePath` the review.search record names."
         ),
