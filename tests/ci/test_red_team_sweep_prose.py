@@ -22,9 +22,11 @@ and rendered back into the doc's own "HH:MM UTC daily" form, the mutation budget
 is read out of the invocation and spelled as a word, and the titles, the label
 and the automation heading are taken from the constants themselves. No *value*
 here is restated from the document; a rule that restated one would agree with
-the document and with nothing else. The single exception is deliberate and
-marked as such -- `RELEASE_CUT_ITEM` is not a value but a sentence two
-documents have to share, and it has no third source to be derived from.
+the document and with nothing else. Two exceptions are deliberate and marked as
+such -- `RELEASE_CUT_ITEM` and `DEFERRED_CLAIMS_GATHER` are not values but
+sentences two documents have to share, and neither has a third source to be
+derived from. Both are named here so a third one has to be argued for rather
+than added quietly.
 
 **What is not enforced.** That any night actually ran. Every rule here passes
 against a workflow whose schedule fires and a workflow whose schedule is
@@ -349,6 +351,54 @@ def test_both_documents_carry_the_release_cut_step_word_for_word() -> None:
     """
     assert any(RELEASE_CUT_ITEM in item for item in _core_release_checklist_items())
     assert RELEASE_CUT_ITEM in _section()
+
+
+#: The module's second literal, and a literal for the same reason as the first.
+#:
+#: Not a value read back out of a live source: a *sentence two documents have to
+#: share*. `release.md`'s §1 and `orchestration.md`'s agent-pass paragraph each
+#: instruct whoever dispatches the release-cut pass, and a dispatcher reads one
+#: of them -- so a `--limit` raised in one copy, or a search key rewritten in
+#: one, hands two dispatchers two different gathers with both documents looking
+#: authoritative. There is no third source to derive the clause from, so this
+#: literal is the arbiter: rewording either copy is meant to require touching it.
+#:
+#: Written through :func:`_flat` at the documents' own wrap points, so what a
+#: reviewer compares against the pages is the block as the pages carry it.
+DEFERRED_CLAIMS_GATHER = _flat("""
+    Whoever dispatches the pass gathers the claims that the pull requests merged since
+    the last `core-v*` tag deferred to it — `gh pr list --state merged --limit 100
+    --search "merged:>=$(git log -1 --format=%cs
+    $(git describe --abbrev=0 --match 'core-v*'))"` — and hands them to
+    `theurian-adversarial-review` in the dispatch brief as claims to attack. `--limit`
+    is load-bearing (`gh pr list` returns 30 without it), and the day-granular
+    `merged:>=` also returns what merged earlier on the tag day — the direction to err
+    in, since a claim attacked twice costs a redundant check and a claim missed costs
+    the pass its subject.
+""")
+
+
+def test_both_documents_carry_the_deferred_claims_gather_clause_word_for_word() -> None:
+    """The clause is the dispatcher's only instruction for what the pass attacks.
+
+    Without it the pass attacks the tree rather than the claims deferred to it,
+    and nothing downstream notices: it still runs, still files, still reads as a
+    clean cut. One copy drifting -- a raised `--limit`, a rewritten search key --
+    is the same failure with two dispatchers disagreeing about what they
+    gathered ([#735](https://github.com/theurian/theurian/issues/735)).
+
+    Each side is scoped to where the instruction has to be read. `release.md` is
+    anchored under `## Releasing Core`, since the plugin release has its own
+    `### 1. Prepare` and a rule accepting either stays green with the Core copy
+    gone. `orchestration.md` is scoped to the agent-pass paragraph rather than
+    the sweep section: a section-wide rule would accept the clause anywhere in
+    it, including below the paragraph whoever dispatches the pass is reading.
+    """
+    prepare = _section_of(RELEASE_DOC, CORE_PREPARE, under=CORE_PREPARE_PARENT)
+    agent_pass = _paragraph(_section(), "**The agent pass.**")
+
+    assert DEFERRED_CLAIMS_GATHER in prepare
+    assert DEFERRED_CLAIMS_GATHER in agent_pass
 
 
 def test_the_core_prepare_step_names_the_agent_that_runs_the_pass() -> None:
