@@ -7,45 +7,71 @@ so a gate that read the signal off the stored record would refuse every ingested
 thread while a hand-authored evidence file passed it -- the inversion ADR-0033
 measured and rejected.
 
-**Two calls, because the second is what separates a verification from an
-existence check.** ``rev-parse`` answers whether the name resolves to a commit
-here; ``diff-tree`` answers whether that commit touched the thread's path. An
-implementation that stopped at the first would make the signal satisfiable by any
-commit in the repository -- 285 of them at ADR-0033's measurement.
+**One process, for every input, and that is a disclosure control rather than a
+saving.** This adapter asked two questions in two spawns until C4c -- *does this
+name resolve to a commit* (``rev-parse``), then *did that commit touch this path*
+(``diff-tree``) -- and the first could answer no on its own, so a refusal about an
+absent object cost one process and a refusal about a real commit cost two. The
+C4b battery measured the pair end to end at **+7.2 ms, P=1.000**: the refusal's
+*duration* answered "does this object exist here", which is a fact about the
+repository the caller was not granted. ADR-0033 decision 5 binds the two
+refusals in text **and in duration**, so both questions are now one ``diff-tree``
+call and the verdict is read off its exit code and its output:
 
-**Both arguments are untrusted, and they are untrusted in different ways.** The
-sha is caller-supplied wire input; the path is author-controlled stored data a
-clone can deliver (T-3, T-24). Three shapes are foreclosed on every invocation:
+===================  ==========================================================
+non-zero exit        ``NO_SUCH_COMMIT`` -- measured 128 for an absent object and
+                     for a name that is not a commit; also every fail-closed
+                     reading, where git could not be run at all
+exit 0, no output    ``TOUCHES_NOTHING_HERE``
+exit 0, output       ``VERIFIED``
+===================  ==========================================================
 
-* ``--end-of-options`` precedes the sha, so a value spelled ``--upload-pack=...``
-  is a revision git fails to resolve rather than an option it honours;
-* ``--`` precedes the path, so an option-shaped ``filePath`` is a pathspec;
-* ``--literal-pathspecs`` disarms pathspec *magic*, which the two above do not
-  reach. Measured with git 2.47.1 on 2026-09-18 in a throwaway repository: the
-  pathspec ``:(exclude)src/retrying.py`` against a commit that touched only
-  ``docs/notes.md`` prints ``docs/notes.md`` -- a non-empty answer, which is this
-  module's ``VERIFIED`` -- and prints nothing under ``--literal-pathspecs``.
-  ``:(glob)**/*.md`` behaves the same way. So a stored ``filePath`` carrying one
-  prefix would have verified a commit that touched anything *but* the file the
-  thread is anchored to.
+**Both arguments are untrusted, and they are untrusted differently.** The sha is
+caller wire input; the path is author-controlled stored data a clone can deliver
+(T-3, T-24). Four tokens hold that, and what each is worth was re-measured under
+this shape on git 2.47.1, 2026-09-19, because two of them had been justified by a
+``rev-parse`` behaviour that no longer runs:
 
-``diff-tree``'s revision argument is not the caller's string at all: it is the
-object id ``rev-parse`` printed, re-checked as hex here before it is spent, so
-the second call cannot be reached with an argument of any other shape.
+* ``--literal-pathspecs`` -- **load-bearing.** Against a commit touching only
+  ``docs/notes.md``, the stored paths ``:(exclude)src/retrying.py``,
+  ``:!src/retrying.py``, ``:(glob)**/*.md`` and ``:(top)`` each make ``diff-tree``
+  print ``docs/notes.md``: a non-empty answer, which is this module's
+  ``VERIFIED``. Each prints nothing under the flag.
+* ``--root`` -- **load-bearing.** A repository's first commit reports no files
+  without it (measured: empty output where the flag gives ``src/retrying.py``),
+  so a fix that *is* the root commit would read as touching nothing.
+* ``^{commit}`` on the revision -- **load-bearing, for a different reason than it
+  used to be.** Under the two-call shape it was what refused a fabricated forty
+  hex digits, because ``rev-parse --verify`` accepts a full-width hex string as an
+  object *name* without asking whether the object is present. ``diff-tree`` does
+  not: ``eeee…eeee`` exits 128 with the suffix and without it, so that
+  justification did not survive the collapse and is recorded here as history
+  rather than repeated. What the suffix holds now is **commit-only** semantics --
+  a tree id and a blob id each exit 0 with empty output without it, which this
+  module would read as ``TOUCHES_NOTHING_HERE``, i.e. as *a commit was found*,
+  and exit 128 with it.
+* ``--end-of-options`` before the sha -- **defence in depth, with no reachable
+  verdict difference**, said plainly rather than implying a behavioural pin. An
+  option-shaped sha exits 128 behind the flag and 129, git's usage error, without
+  it; both are non-zero, so both are ``NO_SUCH_COMMIT``, and no file was created
+  in either reading. ``--`` before the path is the same kind of token on the same
+  vector: it keeps an option-shaped ``filePath`` a pathspec.
+
+``tests/integration/test_fix_commit_check_adapter.py`` holds all four, and names
+which of them a behavioural case can reach and which only its captured-vector pin
+can.
 
 **The binary is resolved to an absolute path**, the ``gh`` precedent tier
 (ADR-0030 clause 5) its ``committed_check.py`` sibling takes, because this call
 decides a promotion signal and letting an inherited ``PATH`` choose the
 executable that answers it is the shape that clause refuses. It reaches no
-network -- ``rev-parse`` and ``diff-tree`` read local object storage, name no
-remote and take no URL -- and is on ``PROCESS_SPAWN_SITES`` only because it
-spawns a process.
+network -- ``diff-tree`` reads local object storage, names no remote and takes no
+URL -- and is on ``PROCESS_SPAWN_SITES`` only because it spawns a process.
 """
 
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -53,18 +79,12 @@ from typing import Final, final
 
 from theurian.domain.review import FixCommitVerdict
 
-#: Timeout on each ``git`` call this adapter spawns. Two local object reads are
-#: cheap, and an unbounded subprocess on a daemon-reachable path is a hang the
+#: Timeout on the one ``git`` call this adapter spawns. A single local object read
+#: is cheap, and an unbounded subprocess on a daemon-reachable path is a hang the
 #: caller cannot explain (SEC-19). The same five seconds ``committed_check.py``
 #: and the ``cli/context.py`` reads bound at; ``trailer_source.py``'s 30 is for a
 #: full-history ``git log``, not one commit.
 GIT_TIMEOUT_SECONDS: Final = 5.0
-
-#: A git object id as ``rev-parse --verify`` prints one, in either object format
-#: (40 hex for SHA-1, 64 for SHA-256). Applied to git's own output rather than to
-#: the caller's input: it is what lets the ``diff-tree`` call below state that its
-#: revision argument cannot be option-shaped.
-_OBJECT_ID: Final = re.compile(r"[0-9a-f]{40,64}")
 
 
 @final
@@ -84,44 +104,12 @@ class FixCommitCheck:
     def verify(self, commit: str, file_path: str) -> FixCommitVerdict:
         """Which of the three answers *commit* earns against *file_path*.
 
-        Fail-closed in both directions: a git that cannot be run, times out, or
-        answers in a shape this module does not recognise yields a refusing
-        verdict, never :attr:`~theurian.domain.review.FixCommitVerdict.VERIFIED`.
-        """
-        object_id = self._resolved_commit(commit)
-        if object_id is None:
-            return FixCommitVerdict.NO_SUCH_COMMIT
-        if not self._touches(object_id, file_path):
-            return FixCommitVerdict.TOUCHES_NOTHING_HERE
-        return FixCommitVerdict.VERIFIED
-
-    def _resolved_commit(self, commit: str) -> str | None:
-        """The object id *commit* names here, or ``None`` if it names no commit.
-
-        ``--verify --quiet`` prints the id alone and exits non-zero when the
-        argument resolves to nothing -- **except for a full-length hex id, where it
-        does not check existence at all**: measured on git 2.47.1, that form printed
-        ``"e" * 40`` and exited 0 in a repository holding no such object. So the
-        ``^{commit}`` dereference is not tag-or-tree normalisation but the whole of
-        what refuses a fabricated sha (ADR-0033 decision 3's first class); trimming
-        it reopens that class, and
-        ``tests/integration/test_fix_commit_check_adapter.py`` is what goes red.
-        """
-        completed = self._run(
-            ["rev-parse", "--verify", "--quiet", "--end-of-options", f"{commit}^{{commit}}"]
-        )
-        if completed is None or completed.returncode != 0:
-            return None
-        printed = completed.stdout.decode("ascii", "replace").strip()
-        return printed if _OBJECT_ID.fullmatch(printed) else None
-
-    def _touches(self, object_id: str, file_path: str) -> bool:
-        """Whether the commit *object_id* changed anything at *file_path*.
-
-        ``--root`` is load-bearing: without it a repository's first commit reports
-        no files at all, so a fix that *is* the first commit would read as
-        touching nothing. ``--literal-pathspecs`` and the ``--`` separator are the
-        module docstring's foreclosures.
+        One question, whatever the answer turns out to be: the branch that used to
+        skip the second spawn is what made an absent object cheaper to refuse than
+        a real one (module docstring). So the outcome is read off one call rather
+        than chosen between two, and the fail-closed readings -- git absent, a
+        spawn that raised, a timeout -- join the non-zero exits on the refusing
+        side rather than adding a path of their own.
         """
         completed = self._run(
             [
@@ -132,20 +120,26 @@ class FixCommitCheck:
                 "-r",
                 "--root",
                 "--end-of-options",
-                object_id,
+                f"{commit}^{{commit}}",
                 "--",
                 file_path,
             ]
         )
         if completed is None or completed.returncode != 0:
-            return False
-        return bool(completed.stdout.strip())
+            return FixCommitVerdict.NO_SUCH_COMMIT
+        if not completed.stdout.strip():
+            return FixCommitVerdict.TOUCHES_NOTHING_HERE
+        return FixCommitVerdict.VERIFIED
 
     def _run(self, git_args: list[str]) -> subprocess.CompletedProcess[bytes] | None:
-        """Spawn one ``git`` call, or ``None`` if the binary is absent or it fails.
+        """Spawn the ``git`` call, or ``None`` if the binary is absent or it fails.
 
-        The single spawn site in this module (``PROCESS_SPAWN_SITES`` records the
-        module, not the call count). Fixed vector, no shell.
+        The single spawn site in this module, and since C4c that is true in the
+        stronger sense as well: one site, reached once per verification, so the
+        count ``PROCESS_SPAWN_SITES`` deliberately does not record is one anyway.
+        ``test_the_module_reaches_a_spawn_from_exactly_one_place`` counts the
+        initiations that reach here; the runtime pins beside it count the spawns a
+        verification actually makes. Fixed vector, no shell.
         """
         if self._git is None:
             return None

@@ -916,10 +916,18 @@ def test_the_same_key_unwithheld_pays_both_the_evidence_read_and_the_git_spawn(
     evidence reads (the thread and its pull request, ADR-0033 decision 1's two
     resolves) and spawns git.
 
-    The counts are asserted as lower bounds rather than equalities: what the pin
-    above needs is that the instrument separates a miss from a hit, and fixing
-    the exact number here would turn an added ``rev-parse`` into a failure of the
-    wrong test.
+    **Two of the three counts are lower bounds and the third is an equality, and
+    the split is the point.** What the pin above needs from the reads and the
+    verification entries is only that the instrument separates a miss from a hit,
+    so fixing their exact numbers would turn an added evidence read into a failure
+    of the wrong test. The **git spawns** are different in kind: ADR-0033
+    decision 5 binds the refusal's duration, and a process is the largest thing
+    on this path, so *how many* is the property rather than an implementation
+    detail the control should be blind to. This assertion used to read ``>= 1``
+    and its reason used to be that an added ``rev-parse`` should not fail the
+    wrong test -- which is exactly backwards: that second spawn was the
+    +7.2 ms channel the C4b battery measured, and an equality here is what
+    refuses its return.
     """
     spend = _Spend(monkeypatch)
 
@@ -934,7 +942,63 @@ def test_the_same_key_unwithheld_pays_both_the_evidence_read_and_the_git_spawn(
         f"is not seeing the reads the miss path is pinned not to make"
     )
     assert spend.commit_verifications >= 1, "the hit path did not verify the commit at all"
-    assert spend.git_spawns >= 1, (
-        "the hit path spawned no git process, so the zero the miss path is pinned at is "
-        "a zero the instrument would report either way"
+    assert spend.git_spawns == 1, (
+        f"the hit path spawned {spend.git_spawns} git process(es). Zero means the pin "
+        f"above is a zero the instrument would report either way; more than one means "
+        f"the verification asks git a question it can sometimes skip, and a step that "
+        f"is sometimes skipped is a duration the caller can time (ADR-0033 decision 5)."
+    )
+
+
+@pytest.mark.parametrize(
+    "commit",
+    [_Commit.ABSENT, _Commit.UNRELATED],
+    ids=["no such commit", "touches nothing here"],
+)
+def test_each_commit_refusal_spends_exactly_one_git_process(
+    corpora: _Corpora, monkeypatch: pytest.MonkeyPatch, commit: _Commit
+) -> None:
+    """Decision 5's duration bind on the *reachable* pair, through the whole tool.
+
+    The two commit-verification refusals are one refusal in text, and
+    ``test_candidate_generation.py`` holds that the strings are byte-identical.
+    Identical strings are not enough: the caller cannot read the message it was
+    refused with, but it can time the call, and until this branch the two arms
+    cost a different number of processes -- an absent object was answered by
+    ``rev-parse`` alone, a real commit needed ``diff-tree`` too. The C4b battery
+    measured what that is worth from outside: **+7.2 ms, P=1.000**.
+
+    So the property is a count, not a clock. ``tests/integration/``'s absence
+    proof is where a wall-clock comparison would live, and it would be the weaker
+    instrument: a machine-dependent number that a busy runner turns into a flake,
+    where the count is exact and reproduces everywhere. The adapter's own half is
+    ``test_fix_commit_check_adapter.py``'s byte-identical-vector pair; this is the
+    same property where the caller stands, with the real store, the real reader,
+    the real git adapter and the real transport between them.
+
+    Both arms are refusals of the *same visible thread*, so nothing but the
+    caller's ``fixCommit`` differs between them -- the record, the gate and the
+    response shape are held constant by construction.
+    """
+    spend = _Spend(monkeypatch)
+
+    result = _message(
+        corpora.control,
+        _arguments(corpus.THREAD_SATISFYING, _fix_commit(corpora.control.project, commit)),
+    )["result"]
+
+    assert result["isError"] is True, (
+        f"the {commit.value} arm was not refused at all, so this says nothing about "
+        f"what a refusal costs: {result}"
+    )
+    assert spend.commit_verifications == 1, (
+        f"the {commit.value} arm entered the verification {spend.commit_verifications} "
+        f"time(s); it must be reached exactly once, or the spawn count below is about "
+        f"a path that was never taken"
+    )
+    assert spend.git_spawns == 1, (
+        f"the {commit.value} refusal spent {spend.git_spawns} git process(es). Both "
+        f"commit-verification refusals must cost the same work as well as carry the "
+        f"same words: the difference between them is a fact about the repository, and "
+        f"a caller that can count processes has been told it (ADR-0033 decision 5)."
     )
