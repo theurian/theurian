@@ -12,8 +12,9 @@ move without the sentence moving with it.
 answers "is the workflow still sweeping" -- its subject is one file, its failure
 means the job stopped doing its work, and the remedy is a workflow edit. This
 file answers "does the written record still match what runs" -- its subject is
-three files, its failure means a reader is being told something false, and the
-remedy is usually a prose edit by whoever moved the value. Different subject,
+every source one of those claims is made against, its failure means a reader is
+being told something false, and the remedy is usually a prose edit by whoever
+moved the value. Different subject,
 different reader, different fix, so a separate module rather than a second
 mandate bolted onto the first.
 
@@ -60,15 +61,26 @@ DOC = REPO_ROOT / "docs" / "contributing" / "orchestration.md"
 RELEASE_DOC = REPO_ROOT / "docs" / "contributing" / "release.md"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "red-team.yml"
 
-#: The template that puts the deferred-claims section in every pull request body
-#: -- the carrier the gather clause sends a dispatcher to read.
+#: The template that offers the deferred-claims section to whoever starts a pull
+#: request body from it -- the fact side every citation of that heading is
+#: checked against. It is not how the heading reaches most bodies; the two
+#: records below are.
 PR_TEMPLATE = REPO_ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md"
+
+#: The two places the duty to record a deferred claim is written down: the
+#: checklist the orchestrator runs a round from, and the blast-radius row for the
+#: weight whose adversarial claim is the deferred one. A dispatcher gathers what
+#: these two told an author to write, so a heading they name and the template
+#: does not is a gather reading a section nobody was asked to fill.
+CLAUDE_MD = REPO_ROOT / "CLAUDE.md"
+REVIEW_CHECKLIST = "## REVIEW — running a round"
+DEFERRING_ROW_LEAD = "Behaviour a trier runs, but no disclosure surface"
 
 #: The section this file answers for. A heading rather than a line number, so
 #: the anchor survives every edit above it.
 ANCHOR = "### The async red-team sweep"
 
-#: The module's first literal, and a literal on purpose.
+#: The module's first arbiter literal, and a literal on purpose.
 #:
 #: Every other rule recomputes its expectation from a live source, because a
 #: rule that restated a value would agree with the document and with nothing
@@ -308,6 +320,25 @@ def _pr_template_headings() -> list[str]:
     return headings
 
 
+def _deferring_row() -> str:
+    """CLAUDE.md's blast-radius row for the weight that defers its adversarial claim.
+
+    Found by its first cell rather than by position, so a reworded lead fails
+    loudly instead of the rule quietly answering for whichever row has come to
+    sit in the middle.
+    """
+    rows = [
+        line
+        for line in _visible(CLAUDE_MD.read_text(encoding="utf-8")).splitlines()
+        if line.startswith("|") and line.split("|")[1].strip() == DEFERRING_ROW_LEAD
+    ]
+    assert len(rows) == 1, (
+        f"expected one {CLAUDE_MD.name} table row led by {DEFERRING_ROW_LEAD!r}, found "
+        f"{len(rows)}; it is the row whose deferred claim the release-cut pass collects"
+    )
+    return _flat(rows[0])
+
+
 def _workflow() -> dict[str, Any]:
     return cast(dict[str, Any], yaml.safe_load(WORKFLOW.read_text(encoding="utf-8")))
 
@@ -448,7 +479,7 @@ def test_both_documents_carry_the_release_cut_step_word_for_word() -> None:
     assert RELEASE_CUT_ITEM in _section()
 
 
-#: The module's second literal, and a literal for the same reason as the first.
+#: The module's second arbiter literal, and one for the same reason as the first.
 #:
 #: Not a value read back out of a live source: a *sentence two documents have to
 #: share*. `release.md`'s §1 and `orchestration.md`'s agent-pass paragraph each
@@ -536,9 +567,14 @@ def test_the_two_copies_of_the_gather_clause_are_the_same_bytes() -> None:
 def test_both_documents_cite_a_record_heading_the_template_really_carries() -> None:
     """A gather is only as good as the carrier it names, and nothing read the carrier.
 
-    The clause sends a dispatcher to a heading in each PR body, and
-    `.github/PULL_REQUEST_TEMPLATE.md` is what puts that heading in a PR body at
-    all. Until this rule nothing in the repository read the template at all
+    The clause sends a dispatcher to a heading in each PR body. What puts it
+    there is the recorded duty -- CLAUDE.md's blast-radius row and
+    `orchestration.md`'s REVIEW checklist -- and not
+    `.github/PULL_REQUEST_TEMPLATE.md`, which only reaches whoever starts from
+    the template: measured in this PR's round, 0 of the last 60 merged bodies
+    carry the heading, because a body written free-form never sees the template
+    at all. The template is still the fact side every one of those citations is
+    checked against, and until this rule nothing in the repository read it
     (`git grep -l PULL_REQUEST_TEMPLATE` returned nothing), so renaming or
     dropping the section left both documents sending dispatchers to a heading no
     pull request carries. The failure is silent in the worst direction: the
@@ -562,6 +598,37 @@ def test_both_documents_cite_a_record_heading_the_template_really_carries() -> N
     )
 
 
+def test_both_duty_records_cite_the_heading_the_template_really_carries() -> None:
+    """The gather reads what the duty asked an author to write, and they can part.
+
+    The reading side of this pair is already pinned; the writing side is these
+    two records -- `orchestration.md`'s REVIEW checklist and CLAUDE.md's
+    blast-radius row -- and nothing read either. Measured before this rule: the
+    template's section renamed with the two gather paragraphs and the literal all
+    updated to match left the suite green with the REVIEW bullet still naming the
+    old heading. Authors are then told to record under one heading and the gather
+    reads another, which surfaces as a pass with nothing in its window rather
+    than as an error.
+
+    Derived from the same template headings as the carrier rule rather than a
+    third copy of the string: what is asserted is that one heading the template
+    really carries is named by both records.
+    """
+    review = _section_of(DOC, REVIEW_CHECKLIST)
+    row = _deferring_row()
+
+    headings = _pr_template_headings()
+    cited = [h for h in headings if f"`{h}`" in review and f"`{h}`" in row]
+
+    assert len(cited) == 1, (
+        f"{REVIEW_CHECKLIST!r} cites {[h for h in headings if f'`{h}`' in review]} and "
+        f"{CLAUDE_MD.name}'s blast-radius row cites "
+        f"{[h for h in headings if f'`{h}`' in row]} of {PR_TEMPLATE.name}'s headings; both "
+        "record the duty to write a deferred claim down, so a heading they name and the template "
+        "does not is a gather reading a section no author was asked to fill"
+    )
+
+
 def _release_cut_item_copies() -> tuple[str, str]:
     """`RELEASE_CUT_ITEM`'s two copies: the checklist item, and the section's quote of it."""
     items = [item for item in _core_release_checklist_items() if RELEASE_CUT_ITEM in item]
@@ -576,9 +643,10 @@ def _deferred_claims_gather_copies() -> tuple[str, str]:
     return _release_gather_paragraph(), _orchestration_gather_paragraph()
 
 
-#: Every literal in this module, with the two regions each one arbitrates
-#: between. A third would join by being added here, which is the argument the
-#: module docstring asks for: the rule below is what it has to survive.
+#: Every arbiter literal -- a sentence two records have to share -- with the two
+#: regions it arbitrates between. An anchor or a path constant is not one of
+#: these; this tuple grows only for a sentence that has no third source to be
+#: derived from, and the rule below is what such a third one has to survive.
 SHARED_SENTENCES: tuple[tuple[str, str, Callable[[], tuple[str, str]]], ...] = (
     ("RELEASE_CUT_ITEM", RELEASE_CUT_ITEM, _release_cut_item_copies),
     ("DEFERRED_CLAIMS_GATHER", DEFERRED_CLAIMS_GATHER, _deferred_claims_gather_copies),
@@ -609,6 +677,13 @@ def test_a_shared_sentence_covers_the_whole_of_what_its_two_copies_share(
     copies still share is shared text the arbiter has stopped covering, which is
     what every truncation looks like from here; the empty literal fails the count
     in :func:`_common_edges` before that.
+
+    That margin is one word wide, so red has two causes and two remedies: the
+    literal stopped short of text both copies carry, and is extended; or the two
+    copies came to share a word abutting it, which an ordinary rewording of
+    either document's next sentence does, and one copy's abutting prose is
+    rewritten. The message below carries both, because only the second is a
+    false alarm and the reader has to be able to tell.
     """
     assert sentence.strip(), f"{name} is empty, so every rule that greps for it passes on anything"
 
@@ -616,9 +691,11 @@ def test_a_shared_sentence_covers_the_whole_of_what_its_two_copies_share(
     before, after = _common_edges(left, right, sentence)
 
     assert not re.search(r"\w", before + after), (
-        f"{name}'s two copies still share {before!r} before it and {after!r} after it, so the "
-        "shared text runs past the literal: extend it to the whole of what both documents carry, "
-        "or the rules that grep for it stop arbitrating the part it dropped"
+        f"{name}'s two copies still share {before!r} before it and {after!r} after it. Either the "
+        "literal stopped short of text both copies carry, and has to be extended or it stops "
+        "arbitrating the part it dropped; or the two copies came to share a word abutting it by "
+        "coincidence, which a rewording of either document's next sentence is enough to do, and "
+        "then the remedy is to reword one copy's abutting prose rather than this literal"
     )
 
 
