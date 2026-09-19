@@ -1183,6 +1183,46 @@ Still owed, with the milestone that will satisfy it:
   > holds the `-z` argv above. `docs/security/threat-model.md`'s T-7 sixth-site
   > paragraph carries the same `-z` command and the same byte-membership closure, so
   > the two governed records agree.
+
+  > **Amended at the 0.4.0 release cut (2026-09-19, re-measured on frozen
+  > `6c64a6ba`): the residual's direction is reversed, and it is not a fixed
+  > bound — it scales with the present commit's diff. The security consequence is
+  > unchanged and no finding reopens. The round-2 block's "+0.14 ms, P=1.000,
+  > bounded" figures are left as the superseded record; this block corrects the
+  > sign and drops the bound.**
+  >
+  > **What the blocks above said.** The round-2 amendment measured the
+  > git-internal residual as the *absent* arm running **+0.14 ms slower,
+  > P=1.000** at the adapter, and called it "bounded, recorded and unpinned" — a
+  > single fixed figure the round-1 and round-3 blocks carried forward unchanged.
+  >
+  > **What re-measurement revealed.** An anchored release-cut pass re-ran the two
+  > failure arms at frozen `6c64a6ba` — its `e3`/`e5` scripts, n=1500 per arm,
+  > arm order rotated, permutation test, over eight independent runs across six
+  > repository shapes at two load levels. The recorded direction does not
+  > reproduce: the **absent** arm is **faster** every run, with
+  > P(absent > median(present)) in **0.37–0.43**. The mechanism is physical — the
+  > absent arm exits 128 without reading a tree, while the present arm walks and
+  > diffs one commit's tree — so the +0.14 ms *absent slower* the round-2 block
+  > recorded was an artefact of that single run, not the steady state.
+  >
+  > **It is not a bound; it scales with the present commit's diff.** The residual
+  > is a function of how much the verified commit touched, not a fixed ceiling:
+  > ~**0.67 ms** against a one-file commit and ~**1.58 ms** against a fifty-file
+  > commit, measured by the same pass. The round-2 "bounded" sentence records a
+  > fixed limit a larger repository exceeds, so it is superseded by this scaling
+  > statement rather than by a new number.
+  >
+  > **The security consequence is unchanged.** Whichever arm is faster, the
+  > residual carries the same one existence bit about a forty-hex sha the caller
+  > already holds, over a non-enumerable space — *is this one here*, not *what
+  > does this repository contain*. It stays real, measured and **unpinned**: the
+  > pins above hold the spawn count and the argv, the demonstrated channel, and
+  > would stay green as this residual scales. This corrects a governed timing
+  > record; it changes no behaviour and reopens no HIGH. The lesson the pass
+  > records for this ADR's own framing: state a timing residual as a scaling
+  > relationship measured under load with its instrument named, never as a
+  > single-run fixed bound.
 - **Slice B5 — at least one gate test is driven from a record the real adapter
   shape produces.** That is, a `ReviewResolution` built the way
   `review_provider.py` builds one, with `fix_commit` **absent**. What lets a
