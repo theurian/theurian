@@ -201,16 +201,19 @@ def test_a_sha_that_is_an_ancestor_of_head_is_intact() -> None:
     assert status == premise_check.INTACT
 
 
-def test_merge_bases_own_not_found_code_is_one_not_cat_files_128() -> None:
-    """The other half of the sha split: a commit that exists but is not an
-    ancestor of HEAD is `merge-base --is-ancestor`'s own "no" answer, exit 1 --
-    not the 128 the earlier cat-file step used for "no such commit at all".
+def test_a_resolvable_non_ancestor_sha_is_intact_not_dangling() -> None:
+    """`merge-base --is-ancestor`'s own "no" answer, exit 1, means the commit
+    exists but was not merged into `HEAD` by a fast-forward -- exactly what
+    this repository's squash-merge workflow does to every feature-branch SHA
+    an issue ever cited. That is expected and weak-as-evidence, not a broken
+    citation: only a SHA `cat-file` cannot find at all (128, above) is
+    DANGLING.
     """
     runner = _ScriptedRunner({_COMMIT_ARGV: _result(0), _ANCESTOR_ARGV: _result(1)})
 
     _command, _output, status = premise_check._verify_sha(_SHA, runner)
 
-    assert status == premise_check.DANGLING
+    assert status == premise_check.INTACT
 
 
 def test_merge_bases_unexpected_exit_code_is_error() -> None:

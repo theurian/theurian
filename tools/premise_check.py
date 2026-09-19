@@ -393,7 +393,11 @@ def _verify_sha(sha: str, runner: Runner) -> tuple[str, str, str]:
         return command, _captured(ancestor_result), ERROR
     if ancestor_result.returncode == 0:
         return command, "", INTACT
-    return command, f"{sha} exists but is not an ancestor of HEAD", DANGLING
+    return (
+        command,
+        f"{sha} exists but is not an ancestor of HEAD (expected under squash-merge)",
+        INTACT,
+    )
 
 
 def _verify_adr(token: str, runner: Runner) -> tuple[str, str, str]:
