@@ -3,12 +3,29 @@ name: Core
 # Runs only when Core, the shared schemas, or the toolchain change (§29).
 # Plugin-only pull requests should not pay for a Core matrix.
 #
-# `release-core.yml` is in the list because `tests/release/` extracts that
-# file's step bodies and runs them: the tests are the only automated check the
-# publication path has, and they execute exactly once per tag push otherwise --
-# in production, on a release nobody can un-publish. Without this line an edit
-# to the release workflow alone would change the subject without running its
-# tests, which is the same as having none.
+# `.github/workflows/*.yml` is in the list -- every workflow file, this one
+# included -- because two suites read workflow text rather than merely being
+# run by it, and this is the only workflow that runs either on a push or a
+# pull request. (`release-core.yml` runs the whole suite as well, but on a
+# `core-v*` tag: after the change has landed, which is too late to gate it.)
+#
+#   * `tests/release/` extracts `release-core.yml`'s step bodies and runs them.
+#     Those tests are the only automated check the publication path has, and it
+#     executes exactly once per tag push otherwise -- in production, on a
+#     release nobody can un-publish. Uncovered, an edit to the release workflow
+#     alone would change the subject without running its tests, which is the
+#     same as having none.
+#   * `tests/ci/` reads `security.yml` and `red-team.yml` by name, and
+#     `test_job_timeouts.py` globs the whole directory: its subject is the
+#     eighth workflow file as much as the seventh. Naming files one at a time
+#     is what #762 found -- an edit to `security.yml` alone, and a new workflow
+#     carrying no `timeout-minutes` at all, each landed green.
+#
+# GitHub's `*` does not cross a `/`, so the pattern is that directory and
+# nothing deeper. It does mean a `plugin.yml`- or `pages.yml`-only edit now
+# pays for a Core matrix: that is the price of `test_job_timeouts` covering
+# those files at all. `tests/ci/test_core_paths_filter_covers_reads.py` derives
+# the read set from those modules and fails when this filter stops covering it.
 on:
   push:
     branches: [main]
@@ -19,15 +36,21 @@ on:
       - "tools/**"
       - "pyproject.toml"
       - "uv.lock"
-      - ".github/workflows/core.yml"
+      # Every workflow file; see the rationale at the top of this file.
+      - ".github/workflows/*.yml"
+      # Redundant against the glob, and deliberate: `tests/release`'s
+      # `test_a_change_to_the_workflow_under_test_runs_this_file` asserts this
+      # exact string is here, not that the filter covers the file. Delete the
+      # line and that assertion together, never one alone.
       - ".github/workflows/release-core.yml"
-      # The three below are read BY `tests/ci/`, whose prose pins hold this
+      # The four below are read BY `tests/ci/`, whose prose pins hold this
       # repository's workflow text and its process documentation to each other.
       # An edit to one of them is exactly what breaks those pins, and without
       # these lines it is the one change that runs none of them.
-      - ".github/workflows/red-team.yml"
       - "docs/contributing/orchestration.md"
       - "docs/contributing/release.md"
+      - "CLAUDE.md"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
       # The corpus governance guard has to run when only the corpus changes:
       # an edited body with its `contentSha256` re-pinned to match is the
       # exact shape it exists to catch, and nothing else here would run.
@@ -42,15 +65,21 @@ on:
       - "tools/**"
       - "pyproject.toml"
       - "uv.lock"
-      - ".github/workflows/core.yml"
+      # Every workflow file; see the rationale at the top of this file.
+      - ".github/workflows/*.yml"
+      # Redundant against the glob, and deliberate: `tests/release`'s
+      # `test_a_change_to_the_workflow_under_test_runs_this_file` asserts this
+      # exact string is here, not that the filter covers the file. Delete the
+      # line and that assertion together, never one alone.
       - ".github/workflows/release-core.yml"
-      # The three below are read BY `tests/ci/`, whose prose pins hold this
+      # The four below are read BY `tests/ci/`, whose prose pins hold this
       # repository's workflow text and its process documentation to each other.
       # An edit to one of them is exactly what breaks those pins, and without
       # these lines it is the one change that runs none of them.
-      - ".github/workflows/red-team.yml"
       - "docs/contributing/orchestration.md"
       - "docs/contributing/release.md"
+      - "CLAUDE.md"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
       # The corpus governance guard has to run when only the corpus changes:
       # an edited body with its `contentSha256` re-pinned to match is the
       # exact shape it exists to catch, and nothing else here would run.
