@@ -11,8 +11,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- The compatibility declaration's Core ceiling is raised to `< 0.4.0`: Core
-  0.2.0 and 0.3.0 both shipped with `protocolVersion` unchanged
+- The compatibility declaration's Core ceiling is raised to `< 0.5.0`: Core
+  0.2.0, 0.3.0 and 0.4.0 all shipped with `protocolVersion` unchanged
   (`theurian/v1`), and this plugin is exercised against that Core by the
   repository's own suite (`compatibility.yaml` is the one file that changes
   when Core ships a compatible release — its own recorded design).
