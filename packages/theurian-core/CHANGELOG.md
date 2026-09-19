@@ -10589,7 +10589,7 @@ error is the one reading the release notes to decide whether to upgrade.
 - Migration `contentFile` paths are rejected at both schema and runtime level if
   they escape the project root.
 
-[Unreleased]: https://github.com/theurian/theurian/compare/core-v0.3.0...main
+[0.4.0]: https://github.com/theurian/theurian/compare/core-v0.3.0...core-v0.4.0
 [0.3.0]: https://github.com/theurian/theurian/compare/core-v0.2.3...core-v0.3.0
 [0.2.3]: https://github.com/theurian/theurian/compare/core-v0.2.2...core-v0.2.3
 [0.2.2]: https://github.com/theurian/theurian/compare/core-v0.2.1...core-v0.2.2
