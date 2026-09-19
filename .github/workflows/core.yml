@@ -6,10 +6,12 @@ name: Core
 # `.github/workflows/*.yml` is in the list -- every workflow file, this one
 # included -- because two suites read workflow text rather than merely being
 # run by it, and this is the only workflow that runs either suite on a push or
-# a pull request. (`shared.yml`, `plugin.yml` and `pages.yml` run then too; they
-# name individual test files and `-m contract`, and reach neither suite.
-# `release-core.yml` runs the whole suite, but on a `core-v*` tag: after the
-# change has landed, which is too late to gate it.)
+# a pull request. (`shared.yml` and `plugin.yml` run then too, but between them
+# they select only named files under `packages/` and `-m contract`, which no
+# test in either suite carries. `pages.yml` runs no tests at all and has no
+# `pull_request` trigger. `release-core.yml` does run the whole suite, but only
+# on a `core-v*` tag or a manual dispatch -- after the change has landed, which
+# is too late to gate it.)
 #
 #   * `tests/release/` extracts `release-core.yml`'s step bodies and runs them.
 #     Those tests are the only automated check the publication path has, and it
