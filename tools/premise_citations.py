@@ -53,13 +53,16 @@ Eight kinds, in the order :func:`extract_citations` checks them:
 Recall, not precision, is the goal: a citation this grammar misses is
 silently never checked, while one it over-extracts costs one wasted
 verification command, visible in the report, and never a false DANGLING --
-this module drops a ``test_name`` match already covered by a path citation
-and a path token truncated by a glob metacharacter before either reaches
-:mod:`premise_check`, which in turn downgrades any DANGLING outside its own
-allowed kinds (``path``, ``path_line``, ``adr``, ``test_name``) to UNKNOWN.
-Exotic forms -- a path inside a URL, a SHA split across a line wrap -- are
-the documented gap :mod:`premise_check`'s UNKNOWN status exists to escape
-into.
+a path-shaped token (one with a slash or a known extension) consumes its
+span the moment :func:`extract_citations` recognises it as such, whether or
+not it goes on to resolve into an emitted ``path`` citation, so a
+``test_name`` run embedded in a path the extractor rejected (an unrecognised
+prefix, an ambiguous basename) or truncated (a glob, a brace expansion) is
+dropped along with it before either reaches :mod:`premise_check`, which in
+turn downgrades any DANGLING outside its own allowed kinds (``path``,
+``path_line``, ``adr``, ``test_name``) to UNKNOWN. Exotic forms -- a path
+inside a URL, a SHA split across a line wrap -- are the documented gap
+:mod:`premise_check`'s UNKNOWN status exists to escape into.
 """
 
 from __future__ import annotations
@@ -151,18 +154,58 @@ def _has_known_extension(token: str) -> bool:
     return token.endswith(_PATH_EXTENSIONS)
 
 
+def _is_path_shaped(raw: str) -> bool:
+    """A slash or a known extension is what makes ``raw`` a path *candidate*
+    -- distinct from whether it goes on to resolve. A bare word like
+    ``test_zzz_case`` has neither, so it is never path-shaped: only a token
+    the extractor actually considered as a path consumes a span (round 2
+    HIGH-1) -- a blanket rule would swallow every bare ``test_`` mention in
+    ordinary prose along with it.
+    """
+    return "/" in raw or _has_known_extension(raw)
+
+
+#: `re.Match.end()` after a `{...}` group and any path-token tail following
+#: it (the `.py` closing `tools/{a,b}.py`) always matches, since `*` allows
+#: zero length -- there is no `None` case to handle.
+_PATH_CONTINUATION_RE: Final = re.compile(r"[A-Za-z0-9_./-]*")
+
+
+def _extend_past_brace_group(text: str, open_brace_pos: int) -> int:
+    """The index just past a ``{...}`` group and any path-token tail that
+    follows it, or the string's end if the brace never closes -- a malformed
+    glob is consumed whole, never partially, so its comma-separated interior
+    (``{test_a,test_b}``) cannot surface as a standalone ``test_name``.
+    """
+    close = text.find("}", open_brace_pos)
+    end = close + 1 if close != -1 else len(text)
+    tail = _PATH_CONTINUATION_RE.match(text, end)
+    return tail.end() if tail is not None else end
+
+
 def _iter_path_citations(
     text: str, tracked_basenames: Mapping[str, str]
-) -> Iterator[tuple[Citation, tuple[int, int]]]:
+) -> Iterator[tuple[Citation | None, tuple[int, int]]]:
     """Path and path_line citations, each paired with the span of text it
-    consumed -- :func:`extract_citations` uses the span to keep a `test_name`
-    match embedded in the same path from also being emitted on its own
-    (round 1 HIGH-1, face A).
+    consumed. A rejected or truncated path-shaped match yields ``None`` for
+    its citation but still yields its span: :func:`extract_citations` uses
+    every yielded span to keep a `test_name` match embedded in a path -- one
+    actually emitted (round 1 HIGH-1, face A) or one the extractor merely
+    considered (round 2 HIGH-1) -- from also surfacing on its own.
     """
     for match in _PATH_TOKEN_RE.finditer(text):
-        if match.end() < len(text) and text[match.end()] in _GLOB_METACHARACTERS:
-            continue  # a truncated glob, e.g. "tools/premise_*.py" -> "tools/premise_"
-        token = _strip_trailing_punctuation(match.group(0))
+        raw = match.group(0)
+        path_shaped = _is_path_shaped(raw)
+        end = match.end()
+        if end < len(text) and text[end] in _GLOB_METACHARACTERS:
+            # A truncated glob ("tools/premise_*.py" -> "tools/premise_") or
+            # a brace expansion ("tools/{a,b}.py"), whose comma-separated
+            # interior needs its own span extended past the closing brace.
+            span_end = _extend_past_brace_group(text, end) if text[end] == "{" else end
+            if path_shaped:
+                yield None, (match.start(), span_end)
+            continue
+        token = _strip_trailing_punctuation(raw)
         if not token:
             continue
         resolved: str | None = None
@@ -172,6 +215,8 @@ def _iter_path_citations(
         elif _has_known_extension(token):
             resolved = tracked_basenames.get(token)
         if resolved is None:
+            if path_shaped:
+                yield None, match.span()
             continue
         suffix = _LINE_SUFFIX_RE.match(text, match.end())
         if suffix is not None:
@@ -253,11 +298,13 @@ def extract_citations(
     found: set[Citation] = set()
     path_hits = list(_iter_path_citations(joined, tracked_basenames))
     consumed = [span for _citation, span in path_hits]
-    found.update(citation for citation, _span in path_hits)
+    found.update(citation for citation, _span in path_hits if citation is not None)
     found.update(
         Citation("test_name", match.group(0))
         for match in _TEST_NAME_RE.finditer(joined)
-        if not _span_overlaps(match.span(), consumed)
+        # A trailing "_" is only ever a truncation artefact (round 2 HIGH-1
+        # belt-and-braces): a real test function name never ends there.
+        if not match.group(0).endswith("_") and not _span_overlaps(match.span(), consumed)
     )
     found.update(_iter_constant_citations(joined))
     found.update(_iter_sha_citations(joined))
