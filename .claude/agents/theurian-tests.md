@@ -130,7 +130,7 @@ measured the recorded factor (the 2x multiplier survived until a review swept
 the whole space and found 3.0x), and a memory-model pin steered onto an
 escape-heavy body so a two-term model held while the jsonschema path it
 excluded measured 38x. Before writing any pin over a recorded bound or model:
-enumerate the path families or allocation terms *first*, pick the worst member
+enumerate the input families or allocation terms *first*, pick the worst member
 of each, and check the parts sum to the measured whole. A population or fixture
 chosen because it makes the assertion pass is the class the pin exists to
 prevent. Burned in after two recurrences (#685 rounds 1-3).
@@ -138,26 +138,35 @@ prevent. Burned in after two recurrences (#685 rounds 1-3).
 ## An ASCII path fixture tests the one shape that renders as itself
 
 Any test family over path or filename handling enumerates the path-shape family
-in its fixtures — each member defeats a different naive implementation: ASCII;
-CJK (the corpus's own `署名付きトークンを持つ`); a name git quotes under
-`core.quotePath` (`"`, backslash); an embedded newline (`.splitlines()` tears it
-in two); a control char (tab); whitespace-only (`.strip()` drops it); non-UTF-8
-stored as its `surrogateescape` str, the lone `\udcXX` a JSON escape yields,
-reachable only through hand-built git objects; and a multi-file commit. Two
-negatives are members too: a directory path (`.`, `docs`) and a foreign entry,
-neither of which may match or verify. The worked example is
-`test_fix_commit_check_adapter.py`'s `PATH_SHAPES` table *plus* its sibling
-tests — no single table holds the family.
+in its fixtures — each member defeats a different naive implementation, and each
+is driven against a commit that really touches it:
+
+- **ASCII** — the one shape that renders as itself, which is why it hides the rest.
+- **CJK** — the corpus's own `署名付きトークンを持つ`; git quotes it under
+  `core.quotePath`, as it does `"`, backslash and tab.
+- **An embedded newline** — `.splitlines()` tears one name into two.
+- **Whitespace-only** (`" "`) — `.strip()` drops it, refusing an honest fix.
+- **Non-UTF-8**, stored as its `surrogateescape` str (the lone `\udcXX` a JSON
+  escape yields) — the expected answer is the fail-closed refusing verdict
+  `NO_SUCH_COMMIT`, never `TOUCHES_NOTHING_HERE` and never `VERIFIED`; reachable
+  portably only through hand-built git objects (`mktree -z` + `commit-tree`).
+- **A multi-file commit** — membership is over the whole set, not the first entry.
+- **Three negatives that must match nothing** — a directory path (`.`, `docs`), a
+  stored path spelling a pathspec expression (`:(exclude)…`, `:(top)`), and a
+  foreign entry.
 
 **A shape the fixture's construction cannot produce is said, never
 substituted**, and the fixture is asserted to carry the shape before the
-behaviour over it is.
+behaviour over it is. The worked example is `test_fix_commit_check_adapter.py`'s
+`PATH_SHAPES` table *plus* its sibling tests — no single table holds the family.
 
-Burned in after three consecutive findings on `FixCommitCheck.verify` that
-ASCII-only path fixtures hid — a stored `.`/`docs` verifying a foreign commit
-(round-2 adversarial HIGH), the `core.quotePath` / embedded-newline / whitespace
-faces (fix-wave-3 HIGH), and the `.strip()` face caught pre-flip ([PR #744's
-round record](https://github.com/theurian/theurian/pull/744#issuecomment-5739349093))
-— then the encoding face the 0.4.0 anchored pass found (PR #766 HIGH-1): the
+Burned in after three consecutive findings on `FixCommitCheck.verify` sharing
+one root cause, reading git's human rendering of paths: round-1 read
+empty-vs-nonempty, round-2 read line membership and a literal directory reopened
+it (HIGH-2), round-3 read a rendering `core.quotePath` quotes and newlines split
+(HIGH). The whitespace `.strip()` face was caught pre-flip as the fourth
+([PR #744's round
+record](https://github.com/theurian/theurian/pull/744#issuecomment-5739349093)).
+Then the encoding face the 0.4.0 anchored pass found (PR #766 HIGH-1): the
 pinning fixture decoded with `errors="replace"`, holding an encodable U+FFFD, so
 it could not produce the surrogate shape its own name claimed.
