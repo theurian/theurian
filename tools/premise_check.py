@@ -97,10 +97,20 @@ TEST_ROOTS: Final = ("packages/theurian-core/tests", "tests")
 #: command's. Getting this wrong maps every dangling path onto ERROR.
 _CAT_FILE_NOT_FOUND: Final = 128
 
+#: A few KB is plenty for evidence; unbounded, one `git grep` census stored
+#: ~116 KB of JSON for a single synthetic issue (round 1 MEDIUM-1).
+_CAPTURED_OUTPUT_CAP: Final = 4096
+
 INTACT: Final = "INTACT"
 DANGLING: Final = "DANGLING"
 UNKNOWN: Final = "UNKNOWN"
 ERROR: Final = "ERROR"
+
+#: The only kinds whose "not found" is a reliable premise signal rather than
+#: an artifact of this checkout's own state (round 1 HIGH-1c, decision 2).
+#: `_verify` downgrades any DANGLING outside this set to UNKNOWN, so a kind
+#: added later without its own not-found recipe still fails closed.
+_DANGLING_ALLOWED_KINDS: Final = frozenset({"path", "path_line", "adr", "test_name"})
 
 DANGLING_CITATION: Final = "dangling-citation"
 UNKNOWN_CITATION: Final = "unknown-citation"
@@ -113,7 +123,7 @@ NEEDS_AGENT: Final = "NEEDS-AGENT"
 
 
 class PremiseError(RuntimeError):
-    """A leg could not run. The driver turns this into exit 1."""
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,10 +157,17 @@ class Snapshot:
 
 @dataclass(frozen=True, slots=True)
 class CitationResult:
+    """``command`` is the argv(s) run, one per line, each reproducing the
+    matching line of ``captured_output``; ``derivation`` is this tool's own
+    sentence and never raw output (round 1 HIGH-2: the old ``output`` field
+    mixed prose in, so a sha's exit-1 output could sit beside INTACT).
+    """
+
     kind: str
     token: str
     command: str
-    output: str
+    captured_output: str
+    derivation: str
     status: str
 
 
@@ -183,8 +200,40 @@ def _argv_str(argv: Sequence[str]) -> str:
     return " ".join(argv)
 
 
-def _captured(result: CommandResult) -> str:
-    return (result.stdout or result.stderr).strip()
+@dataclass(frozen=True, slots=True)
+class _Invocation:
+    argv: tuple[str, ...]
+    result: CommandResult
+
+
+def _output_text(result: CommandResult) -> str:
+    """Both streams, labelled, on failure: a diagnosis often needs stderr too (MEDIUM-2)."""
+    if result.returncode == 0:
+        return result.stdout.strip()
+    parts = [f"stdout: {result.stdout.strip()}"] if result.stdout.strip() else []
+    if result.stderr.strip():
+        parts.append(f"stderr: {result.stderr.strip()}")
+    return "\n".join(parts)
+
+
+def _truncate(text: str) -> str:
+    encoded = text.encode("utf-8")
+    if len(encoded) <= _CAPTURED_OUTPUT_CAP:
+        return text
+    kept = encoded[:_CAPTURED_OUTPUT_CAP].decode("utf-8", errors="ignore")
+    return f"{kept}\n…[truncated: kept {len(kept.encode('utf-8'))} of {len(encoded)} bytes]"
+
+
+def _evidence(
+    invocations: Sequence[_Invocation], derivation: str, status: str
+) -> tuple[str, str, str, str]:
+    """One step per line, never a shell-joined command beside another step's exit code (HIGH-2)."""
+    command = "\n".join(_argv_str(invocation.argv) for invocation in invocations)
+    captured = "\n".join(
+        f"exit {invocation.result.returncode}: {_output_text(invocation.result) or '<empty>'}"
+        for invocation in invocations
+    )
+    return command, _truncate(captured), derivation, status
 
 
 # --------------------------------------------------------------------------
@@ -331,82 +380,90 @@ def snapshot_from_json(document: str) -> Snapshot:
 # --------------------------------------------------------------------------
 
 
-def _verify_path(path: str, runner: Runner) -> tuple[str, str, str]:
+def _verify_path(path: str, runner: Runner) -> tuple[str, str, str, str]:
     argv = ("git", "cat-file", "-e", f"HEAD:{path}")
     result = runner(argv)
-    command = _argv_str(argv)
+    invocation = _Invocation(argv, result)
     if result.returncode == 0:
-        return command, "", INTACT
+        return _evidence([invocation], "", INTACT)
     if result.returncode == _CAT_FILE_NOT_FOUND:
-        return command, _captured(result), DANGLING
-    return command, _captured(result), ERROR
+        return _evidence([invocation], "", DANGLING)
+    return _evidence([invocation], "", ERROR)
 
 
-def _verify_path_line(token: str, runner: Runner) -> tuple[str, str, str]:
+def _verify_path_line(token: str, runner: Runner) -> tuple[str, str, str, str]:
     path, _, raw_line = token.rpartition(":")
     line_number = int(raw_line)
-    path_command, path_output, path_status = _verify_path(path, runner)
-    if path_status != INTACT:
-        return path_command, path_output, path_status
-    argv = ("git", "show", f"HEAD:{path}")
-    result = runner(argv)
-    command = _argv_str(argv)
-    if result.returncode != 0:
-        return command, _captured(result), ERROR
-    lines = result.stdout.splitlines()
+    path_argv = ("git", "cat-file", "-e", f"HEAD:{path}")
+    path_result = runner(path_argv)
+    path_invocation = _Invocation(path_argv, path_result)
+    if path_result.returncode != 0:
+        status = DANGLING if path_result.returncode == _CAT_FILE_NOT_FOUND else ERROR
+        return _evidence([path_invocation], "", status)
+    show_argv = ("git", "show", f"HEAD:{path}")
+    show_result = runner(show_argv)
+    invocations = [path_invocation, _Invocation(show_argv, show_result)]
+    if show_result.returncode != 0:
+        return _evidence(invocations, "", ERROR)
+    lines = show_result.stdout.splitlines()
     if 1 <= line_number <= len(lines):
-        return command, lines[line_number - 1], INTACT
-    return command, f"{path} has {len(lines)} line(s); line {line_number} does not exist", DANGLING
+        return _evidence(invocations, f"line {line_number}: {lines[line_number - 1]}", INTACT)
+    derivation = f"{path} has {len(lines)} line(s); line {line_number} does not exist"
+    return _evidence(invocations, derivation, DANGLING)
 
 
-def _from_grep(argv: Sequence[str], result: CommandResult) -> tuple[str, str, str]:
-    command = _argv_str(argv)
+def _from_grep(
+    argv: tuple[str, ...], result: CommandResult, *, not_found: str
+) -> tuple[str, str, str, str]:
+    invocation = _Invocation(argv, result)
     if result.returncode == 0:
-        return command, _captured(result), INTACT
+        return _evidence([invocation], "", INTACT)
     if result.returncode == 1:
-        return command, "no match", DANGLING
-    return command, _captured(result), ERROR
+        return _evidence([invocation], "no match", not_found)
+    return _evidence([invocation], "", ERROR)
 
 
-def _verify_test_name(name: str, runner: Runner) -> tuple[str, str, str]:
+def _verify_test_name(name: str, runner: Runner) -> tuple[str, str, str, str]:
     pattern = rf"(?:async )?def {re.escape(name)}\("
     argv = ("git", "grep", "-nP", pattern, "HEAD", "--", *TEST_ROOTS)
-    return _from_grep(argv, runner(argv))
+    return _from_grep(argv, runner(argv), not_found=DANGLING)
 
 
-def _verify_constant(name: str, runner: Runner) -> tuple[str, str, str]:
+def _verify_constant(name: str, runner: Runner) -> tuple[str, str, str, str]:
+    # A grep miss is UNKNOWN, not DANGLING (decision 2): unlike a `test_name`
+    # definition site, a constant can live in text this grep never reaches.
     argv = ("git", "grep", "-wnF", name, "HEAD")
-    return _from_grep(argv, runner(argv))
+    return _from_grep(argv, runner(argv), not_found=UNKNOWN)
 
 
-def _verify_sha(sha: str, runner: Runner) -> tuple[str, str, str]:
+def _verify_sha(sha: str, runner: Runner) -> tuple[str, str, str, str]:
     commit_argv = ("git", "cat-file", "-e", f"{sha}^{{commit}}")
     commit_result = runner(commit_argv)
+    commit_invocation = _Invocation(commit_argv, commit_result)
     if commit_result.returncode == _CAT_FILE_NOT_FOUND:
-        return _argv_str(commit_argv), _captured(commit_result), DANGLING
+        # UNKNOWN, not DANGLING (decision 2): under squash-merge plus GC, a
+        # sha absent from the local object store is machine-local, not broken.
+        return _evidence([commit_invocation], "", UNKNOWN)
     if commit_result.returncode != 0:
-        return _argv_str(commit_argv), _captured(commit_result), ERROR
+        return _evidence([commit_invocation], "", ERROR)
     ancestor_argv = ("git", "merge-base", "--is-ancestor", sha, "HEAD")
     ancestor_result = runner(ancestor_argv)
-    command = f"{_argv_str(commit_argv)} && {_argv_str(ancestor_argv)}"
+    invocations = [commit_invocation, _Invocation(ancestor_argv, ancestor_result)]
     if ancestor_result.returncode not in (0, 1):
-        return command, _captured(ancestor_result), ERROR
+        return _evidence(invocations, "", ERROR)
     if ancestor_result.returncode == 0:
-        return command, "", INTACT
-    return (
-        command,
-        f"{sha} exists but is not an ancestor of HEAD (expected under squash-merge)",
-        INTACT,
-    )
+        return _evidence(invocations, "", INTACT)
+    derivation = f"{sha} exists but is not an ancestor of HEAD (expected under squash-merge)"
+    return _evidence(invocations, derivation, INTACT)
 
 
-def _verify_adr(token: str, runner: Runner) -> tuple[str, str, str]:
+def _verify_adr(token: str, runner: Runner) -> tuple[str, str, str, str]:
     number = token.removeprefix("ADR-")
     argv = ("git", "ls-tree", "-r", "--name-only", "HEAD", "--", "docs/adr")
     result = runner(argv)
-    command = _argv_str(argv)
+    invocation = _Invocation(argv, result)
     if result.returncode != 0:
-        return command, _captured(result), ERROR
+        return _evidence([invocation], "", ERROR)
     pattern = f"{number}-*.md"
     matches = [
         line
@@ -414,47 +471,40 @@ def _verify_adr(token: str, runner: Runner) -> tuple[str, str, str]:
         if fnmatch.fnmatch(PurePosixPath(line).name, pattern)
     ]
     if matches:
-        return command, matches[0], INTACT
-    return command, f"no docs/adr/{pattern} in the tree", DANGLING
+        return _evidence([invocation], f"matched {matches[0]}", INTACT)
+    return _evidence([invocation], f"no docs/adr/{pattern} in the tree", DANGLING)
 
 
-def _verify_issue_ref(token: str, snapshot_numbers: frozenset[int]) -> tuple[str, str, str]:
+def _verify_issue_ref(token: str, snapshot_numbers: frozenset[int]) -> tuple[str, str, str, str]:
+    # No git call: command/captured_output stay empty; derivation carries this (LOW-1).
     number = int(token.removeprefix("#"))
-    command = "(snapshot lookup; the check leg makes no network call)"
     if number in snapshot_numbers:
-        return command, f"#{number} is open in the snapshot", INTACT
-    return (
-        command,
-        f"#{number} is not an open issue in the snapshot (closed, or does not exist)",
-        UNKNOWN,
-    )
+        return "", "", f"#{number} is open in the snapshot", INTACT
+    derivation = f"#{number} is not an open issue in the snapshot (closed, or does not exist)"
+    return "", "", derivation, UNKNOWN
 
 
-def _verify_symbol(token: str, runner: Runner) -> tuple[str, str, str]:
+def _verify_symbol(token: str, runner: Runner) -> tuple[str, str, str, str]:
     name = token.removesuffix("()")
     last_segment = name.rsplit(".", 1)[-1]
     keyword = "class" if last_segment[:1].isupper() else "def"
     argv = ("git", "grep", "-n", f"{keyword} {last_segment}", "HEAD")
     result = runner(argv)
-    command = _argv_str(argv)
+    invocation = _Invocation(argv, result)
     if result.returncode == 0:
-        return command, _captured(result), INTACT
+        return _evidence([invocation], "", INTACT)
     if result.returncode == 1:
         # Never DANGLING: the pattern is a heuristic guess at a definition
         # site, and a miss says as much about the guess as about the symbol.
         # A false DANGLING here would poison the agent pass's triage with a
         # citation that never had a reliable check to begin with.
-        return command, "no match (best-effort)", UNKNOWN
-    return command, _captured(result), ERROR
+        return _evidence([invocation], "no match (best-effort)", UNKNOWN)
+    return _evidence([invocation], "", ERROR)
 
 
 def _verify(
     citation_kind: str, token: str, runner: Runner, snapshot_numbers: frozenset[int]
-) -> tuple[str, str, str]:
-    # One assignment per branch rather than one return: the eight-way dispatch
-    # already says everything the shape of the function could, and it is
-    # exactly this shape that PLR0911 -- one return per verification recipe --
-    # would otherwise flag as too many exits from one function.
+) -> tuple[str, str, str, str]:
     match citation_kind:
         case "path":
             result = _verify_path(token, runner)
@@ -472,7 +522,10 @@ def _verify(
             result = _verify_issue_ref(token, snapshot_numbers)
         case _:
             result = _verify_symbol(token, runner)
-    return result
+    command, captured_output, derivation, status = result
+    if status == DANGLING and citation_kind not in _DANGLING_ALLOWED_KINDS:
+        status = UNKNOWN
+    return command, captured_output, derivation, status
 
 
 def _underlying_path(kind: str, token: str) -> str:
@@ -528,9 +581,16 @@ def _reasons(
 def _citation_result(
     candidate: Citation, runner: Runner, snapshot_numbers: frozenset[int]
 ) -> CitationResult:
-    command, output, status = _verify(candidate.kind, candidate.token, runner, snapshot_numbers)
+    command, captured_output, derivation, status = _verify(
+        candidate.kind, candidate.token, runner, snapshot_numbers
+    )
     return CitationResult(
-        kind=candidate.kind, token=candidate.token, command=command, output=output, status=status
+        kind=candidate.kind,
+        token=candidate.token,
+        command=command,
+        captured_output=captured_output,
+        derivation=derivation,
+        status=status,
     )
 
 
@@ -610,7 +670,8 @@ def report_to_json(report: Report) -> dict[str, object]:
                         "kind": citation.kind,
                         "token": citation.token,
                         "command": citation.command,
-                        "output": citation.output,
+                        "capturedOutput": citation.captured_output,
+                        "derivation": citation.derivation,
                         "status": citation.status,
                     }
                     for citation in issue.citations

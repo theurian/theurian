@@ -25,7 +25,7 @@ pytestmark = pytest.mark.unit
 def _citation(
     status: str, kind: str = "path", value: str = "tools/x.py"
 ) -> premise_check.CitationResult:
-    return premise_check.CitationResult(kind, value, "git ...", "", status)
+    return premise_check.CitationResult(kind, value, "git ...", "", "", status)
 
 
 def _commit(sha: str = "abc1234") -> premise_check.TouchingCommit:

@@ -3,8 +3,8 @@
 Split out of ``premise_check.py`` to keep that module under this repository's
 line cap, and because rendering has a property verification does not: it is
 an **injection surface**. Every string here that came off the tracker --
-title, and anything a citation's ``token``, ``command`` or ``output`` carries
--- was typed by whoever opened or commented on the issue, and this report is
+title, and anything a citation's ``token`` or ``command`` carries -- was
+typed by whoever opened or commented on the issue, and this report is
 read by a later agent pass. A title that closes a code fence early, or that
 looks like a heading, must not be able to redirect what that pass reads as
 the report's own structure rather than as quoted issue text.
@@ -68,6 +68,15 @@ def _inline(text: str) -> str:
     return f"{fence}{padding}{text}{padding}{fence}"
 
 
+def _inline_multiline(text: str) -> str:
+    """``_inline``, one code span per line joined by ``<br>``: a literal
+    newline inside a table cell breaks GFM's one-row-per-line table syntax,
+    and both ``command`` and ``captured_output`` can now carry more than one
+    line (round 1 HIGH-2's multi-step evidence).
+    """
+    return "<br>".join(_inline(line) for line in text.splitlines() or [text])
+
+
 def _excerpt(text: str) -> str:
     stripped = text.strip()
     if len(stripped) <= _EXCERPT_CHARS:
@@ -95,7 +104,7 @@ def _summary_table(issues: Sequence[IssueReport]) -> str:
 def _citation_row(citation: CitationResult) -> str:
     return (
         f"| {citation.kind} | {_inline(citation.token)} | {citation.status} | "
-        f"{_inline(citation.command)} |"
+        f"{_inline_multiline(citation.command)} | {_inline_multiline(citation.captured_output)} |"
     )
 
 
@@ -139,8 +148,8 @@ def _issue_lines(issue: IssueReport) -> list[str]:
     lines = [
         _issue_block(issue),
         "",
-        "| Kind | Token | Status | Command |",
-        "| --- | --- | --- | --- |",
+        "| Kind | Token | Status | Command | Captured output |",
+        "| --- | --- | --- | --- | --- |",
     ]
     for citation in issue.citations:
         lines.append(_citation_row(citation))

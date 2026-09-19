@@ -73,7 +73,11 @@ def _report_with(title: str, token: str, command: str) -> premise_check.Report:
                 title,
                 "2026-01-01T00:00:00Z",
                 (),
-                (premise_check.CitationResult("symbol", token, command, "", premise_check.INTACT),),
+                (
+                    premise_check.CitationResult(
+                        "symbol", token, command, "", "", premise_check.INTACT
+                    ),
+                ),
                 (),
                 premise_check.HOLDS,
                 (),
@@ -115,8 +119,9 @@ def test_a_citation_row_carries_its_token_and_command_through_inline_not_raw() -
 
     row = next(line for line in rendered.splitlines() if line.startswith("| symbol"))
     expected_value = premise_report._inline(value)
-    expected_command = premise_report._inline(command)
-    assert row == f"| symbol | {expected_value} | INTACT | {expected_command} |"
+    expected_command = premise_report._inline_multiline(command)
+    expected_output = premise_report._inline_multiline("")
+    assert row == f"| symbol | {expected_value} | INTACT | {expected_command} | {expected_output} |"
 
 
 # --------------------------------------------------------------------------
