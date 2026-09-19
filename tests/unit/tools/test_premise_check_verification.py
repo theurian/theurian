@@ -459,3 +459,59 @@ def test_a_test_name_committed_nowhere_is_dangling_via_the_real_seam() -> None:
     )
 
     assert status == premise_check.DANGLING
+
+
+# --------------------------------------------------------------------------
+# `_verify`'s own dispatch and downgrade (round 1 HIGH-1c decision 2): every
+# test above calls a `_verify_<kind>` recipe directly, so none of them would
+# notice a swapped `case` in `_verify`'s `match` statement -- the only entry
+# `_citation_result` actually calls in production.
+# --------------------------------------------------------------------------
+
+
+def test_sha_dispatches_through_verify_to_its_own_recipe_not_a_neighbours_argv() -> None:
+    runner = _ScriptedRunner({_COMMIT_ARGV: _result(128)})
+
+    _command, _output, _derivation, status = premise_check._verify("sha", _SHA, runner, frozenset())
+
+    assert status == premise_check.UNKNOWN
+    assert runner.calls == [_COMMIT_ARGV]
+
+
+def test_constant_dispatches_through_verify_to_its_own_recipe_not_a_neighbours_argv() -> None:
+    argv = ("git", "grep", "-wnF", "FETCH_LIMIT", "HEAD")
+    runner = _ScriptedRunner({argv: _result(1)})
+
+    _command, _output, _derivation, status = premise_check._verify(
+        "constant", "FETCH_LIMIT", runner, frozenset()
+    )
+
+    assert status == premise_check.UNKNOWN
+    assert runner.calls == [argv]
+
+
+def test_a_kind_outside_the_dangling_allowed_set_is_downgraded_from_dangling_to_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_DANGLING_ALLOWED_KINDS` is `{path, path_line, adr, test_name}`; no
+    shipped recipe for a kind outside that set actually returns `DANGLING`
+    today (decision 2 moved `sha`/`constant`/`symbol` off it), so this drives
+    `_verify`'s own downgrade line directly by forcing `_verify_symbol` -- a
+    kind outside the set -- to return one anyway. A future citation kind
+    added without its own not-found recipe fails closed the same way.
+    """
+    assert "symbol" not in premise_check._DANGLING_ALLOWED_KINDS
+
+    def fake_verify_symbol(token: str, runner: premise_check.Runner) -> tuple[str, str, str, str]:
+        return "git grep -n whatever HEAD", "exit 1: no match", "", premise_check.DANGLING
+
+    monkeypatch.setattr(premise_check, "_verify_symbol", fake_verify_symbol)
+
+    def unreachable_runner(argv: Sequence[str]) -> premise_check.CommandResult:
+        raise AssertionError("the patched recipe should short-circuit before any git call")
+
+    _command, _output, _derivation, status = premise_check._verify(
+        "symbol", "whatever", unreachable_runner, frozenset()
+    )
+
+    assert status == premise_check.UNKNOWN
