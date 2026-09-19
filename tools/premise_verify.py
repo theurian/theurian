@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import fnmatch
 import re
+import shlex
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -83,7 +84,13 @@ class VerifyResult:
 
 
 def _argv_str(argv: Sequence[str]) -> str:
-    return " ".join(argv)
+    """Quoted so a pasted line re-splits to the exact argv, never a bare-space join
+    (round 3 HIGH-1): an element carrying a space or shell metacharacter --
+    `git grep -n def screen_landing_candidates HEAD`'s pattern is one such
+    argument -- used to re-split into more words on paste than the argv it
+    reproduced, so the shown `exit 0` line turned into `git`'s own exit 128.
+    """
+    return shlex.join(argv)
 
 
 @dataclass(frozen=True, slots=True)

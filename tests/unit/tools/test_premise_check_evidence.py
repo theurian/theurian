@@ -15,6 +15,7 @@ its stdout was non-empty.
 
 from __future__ import annotations
 
+import shlex
 from collections.abc import Sequence
 
 import premise_verify
@@ -66,7 +67,7 @@ def test_a_shas_non_ancestor_evidence_is_runnable_and_the_prose_lives_only_in_de
     result = premise_verify._verify_sha(_SHA, runner)
 
     assert result.status == premise_verify.INTACT
-    assert result.command == f"{' '.join(_COMMIT_ARGV)}\n{' '.join(_ANCESTOR_ARGV)}"
+    assert result.command == f"{shlex.join(_COMMIT_ARGV)}\n{shlex.join(_ANCESTOR_ARGV)}"
     lines = result.captured_output.splitlines()
     assert lines[0].startswith("exit 0:")
     assert lines[1].startswith("exit 1:")
@@ -130,3 +131,60 @@ def test_a_failing_commands_output_text_keeps_both_streams_labelled() -> None:
 
     assert "stdout: from stdout" in text
     assert "stderr: from stderr" in text
+
+
+# --------------------------------------------------------------------------
+# Paste-safe evidence (round 3 HIGH-1): `_argv_str` used to bare-space-join
+# argv, so a `symbol` pattern like `def screen_landing_candidates` -- one
+# argv element carrying an embedded space -- re-split on paste into an extra
+# word `git grep` reads as a second pathspec, turning the shown `exit 0`
+# into `git`'s own "no such path" exit 128.
+# --------------------------------------------------------------------------
+
+
+def test_a_symbols_command_round_trips_through_shlex_split_to_the_exact_argv() -> None:
+    argv = ("git", "grep", "-n", "def screen_landing_candidates", "HEAD")
+    runner = _ScriptedRunner(
+        {
+            argv: _result(
+                0, stdout="packages/theurian-core/src/x.py:338:def screen_landing_candidates("
+            )
+        }
+    )
+
+    result = premise_verify._verify_symbol("screen_landing_candidates", runner)
+
+    assert result.status == premise_verify.INTACT
+    (line,) = result.command.splitlines()
+    assert tuple(shlex.split(line)) == argv
+
+
+def test_a_test_names_command_round_trips_through_shlex_split_to_the_exact_argv() -> None:
+    pattern = r"(?:async )?def test_thing\("
+    argv = ("git", "grep", "-nP", pattern, "HEAD", "--", *premise_verify.TEST_ROOTS)
+    runner = _ScriptedRunner({argv: _result(0, stdout="tests/x.py:1:def test_thing():")})
+
+    result = premise_verify._verify_test_name("test_thing", runner)
+
+    assert result.status == premise_verify.INTACT
+    (line,) = result.command.splitlines()
+    assert tuple(shlex.split(line)) == argv
+
+
+def test_a_path_lines_two_command_lines_each_round_trip_through_shlex_split() -> None:
+    """A multi-invocation citation (`path_line`) carries one line per step
+    (round 1 HIGH-2) -- the round-trip must hold for every line, not just
+    the first.
+    """
+    cat_argv = ("git", "cat-file", "-e", "HEAD:tools/premise check.py")
+    show_argv = ("git", "show", "HEAD:tools/premise check.py")
+    runner = _ScriptedRunner(
+        {cat_argv: _result(0), show_argv: _result(0, stdout="line one\nline two\n")}
+    )
+
+    result = premise_verify._verify_path_line("tools/premise check.py:2", runner)
+
+    assert result.status == premise_verify.INTACT
+    first, second = result.command.splitlines()
+    assert tuple(shlex.split(first)) == cat_argv
+    assert tuple(shlex.split(second)) == show_argv
