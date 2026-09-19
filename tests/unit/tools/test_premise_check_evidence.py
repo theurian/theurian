@@ -1,0 +1,137 @@
+"""The evidence a `CitationResult` carries: `command` is what actually ran,
+`captured_output` is what it actually printed with its exit code, and
+`derivation` is this tool's own sentence and nothing else (round 1 HIGH-2,
+MEDIUM-1, MEDIUM-2).
+
+Before the fix, three of eight verification kinds stored a `command` that did
+not produce the `output` beside it -- worst face: a `sha`'s own exit-1
+ancestor check sat beside an `INTACT` verdict with no exit code visible to a
+reader re-running the pasted command. This file pins that a reader can
+re-run any line of `command` and get exactly the matching line of
+`captured_output`, that the evidence is bounded and says so honestly when
+truncated, and that a failing command's stderr is never dropped just because
+its stdout was non-empty.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+
+import premise_check
+import pytest
+
+pytestmark = pytest.mark.unit
+
+
+class _ScriptedRunner:
+    """Maps an exact argv tuple to a canned `CommandResult`; anything unscripted fails loudly."""
+
+    def __init__(self, script: dict[tuple[str, ...], premise_check.CommandResult]) -> None:
+        self._script = script
+
+    def __call__(self, argv: Sequence[str]) -> premise_check.CommandResult:
+        key = tuple(argv)
+        if key not in self._script:
+            raise AssertionError(f"unscripted git invocation: {' '.join(key)}")
+        return self._script[key]
+
+
+def _result(returncode: int, stdout: str = "", stderr: str = "") -> premise_check.CommandResult:
+    return premise_check.CommandResult(returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+# --------------------------------------------------------------------------
+# Evidence honesty (HIGH-2): the worst face was a sha's own exit-1 ancestor
+# check reading INTACT with no exit code beside it, and prose sat in the
+# command column.
+# --------------------------------------------------------------------------
+
+_SHA = "9f2c1ab4d5e6f70819a2b3c4d5e6f7089a1b2c3d"
+_COMMIT_ARGV = ("git", "cat-file", "-e", f"{_SHA}^{{commit}}")
+_ANCESTOR_ARGV = ("git", "merge-base", "--is-ancestor", _SHA, "HEAD")
+
+
+def test_a_shas_non_ancestor_evidence_is_runnable_and_the_prose_lives_only_in_derivation() -> None:
+    """The non-ancestor case is exactly the HIGH-2 face: `merge-base
+    --is-ancestor`'s own "no" answer is exit 1, and the verdict it produces
+    is `INTACT`. `command` must carry both argvs so a reader can re-run
+    either step; `captured_output` must carry each step's own exit code,
+    including the 1; and the "expected under squash-merge" sentence must
+    live only in `derivation`, never in the two fields a reader re-runs.
+    """
+    runner = _ScriptedRunner(
+        {_COMMIT_ARGV: _result(0, stdout="commit\n"), _ANCESTOR_ARGV: _result(1)}
+    )
+
+    command, captured_output, derivation, status = premise_check._verify_sha(_SHA, runner)
+
+    assert status == premise_check.INTACT
+    assert (
+        command
+        == f"{premise_check._argv_str(_COMMIT_ARGV)}\n{premise_check._argv_str(_ANCESTOR_ARGV)}"
+    )
+    lines = captured_output.splitlines()
+    assert lines[0].startswith("exit 0:")
+    assert lines[1].startswith("exit 1:")
+    assert "not an ancestor of HEAD" in derivation
+    assert "not an ancestor of HEAD" not in command
+    assert "not an ancestor of HEAD" not in captured_output
+
+
+def test_verify_issue_ref_carries_no_command_or_captured_output_only_derivation() -> None:
+    """No git call backs an `issue_ref` lookup -- it is answered from the
+    snapshot's own set of open issue numbers -- so `command` and
+    `captured_output` stay empty; the whole explanation belongs in
+    `derivation` alone (round 1 LOW-1: it used to sit in the command column).
+    """
+    command, captured_output, derivation, status = premise_check._verify_issue_ref(
+        "#42", frozenset({1, 2, 3})
+    )
+
+    assert command == ""
+    assert captured_output == ""
+    assert "not an open issue" in derivation
+    assert status == premise_check.UNKNOWN
+
+
+# --------------------------------------------------------------------------
+# Evidence bound (MEDIUM-1): unbounded, one `git grep` census stored ~116 KB
+# of JSON for a single synthetic issue.
+# --------------------------------------------------------------------------
+
+
+def test_truncate_leaves_text_under_the_cap_untouched() -> None:
+    text = "x" * (premise_check._CAPTURED_OUTPUT_CAP - 1)
+
+    assert premise_check._truncate(text) == text
+
+
+def test_truncate_marks_truncation_at_the_named_cap_with_the_true_original_size() -> None:
+    """`N` is the cap itself, and `M` is the true original byte count -- ASCII
+    content keeps the encode/decode round trip exact, so both numbers are
+    checked against the real inputs rather than restated as literals.
+    """
+    cap = premise_check._CAPTURED_OUTPUT_CAP
+    original_size = cap + 500
+    text = "a" * original_size
+
+    truncated = premise_check._truncate(text)
+
+    kept, marker = truncated.rsplit("\n", 1)
+    assert len(kept.encode("utf-8")) == cap
+    assert marker == f"…[truncated: kept {cap} of {original_size} bytes]"
+
+
+# --------------------------------------------------------------------------
+# stderr kept (MEDIUM-2): `_captured` used to drop stderr whenever stdout was
+# non-empty, on exactly the failing paths that need the diagnosis.
+# --------------------------------------------------------------------------
+
+
+def test_a_failing_commands_output_text_keeps_both_streams_labelled() -> None:
+    result = premise_check.CommandResult(returncode=1, stdout="from stdout", stderr="from stderr")
+
+    text = premise_check._output_text(result)
+
+    assert "stdout: from stdout" in text
+    assert "stderr: from stderr" in text
