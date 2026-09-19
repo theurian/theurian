@@ -52,8 +52,10 @@ permissions:
 
 # Never cancel a sweep in flight. A run is two hours of mutation walks whose
 # only durable output is an issue filed at the end, so a cancellation at 95%
-# throws away the whole night and leaves no record that it happened -- and the
-# next night would inherit nothing, because the target is chosen by date.
+# throws away the whole run and leaves no record that it happened. The next
+# scheduled run is a week away and starts from the next index; recovering the
+# lost one means a dispatch before the next Sunday, which draws the same target
+# again -- the index is the run number, not the day (`sweep_census.rotation`).
 concurrency:
   group: red-team
   cancel-in-progress: false
