@@ -15,6 +15,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import premise_check
+import premise_verify
 import pytest
 
 pytestmark = pytest.mark.unit
@@ -46,22 +47,22 @@ def _snapshot() -> premise_check.Snapshot:
 class _PureRunner:
     """A pure function of argv: the same script answers both calls identically."""
 
-    def __init__(self, script: dict[tuple[str, ...], premise_check.CommandResult]) -> None:
+    def __init__(self, script: dict[tuple[str, ...], premise_verify.CommandResult]) -> None:
         self._script = script
 
-    def __call__(self, argv: Sequence[str]) -> premise_check.CommandResult:
+    def __call__(self, argv: Sequence[str]) -> premise_verify.CommandResult:
         return self._script[tuple(argv)]
 
 
-def _script() -> dict[tuple[str, ...], premise_check.CommandResult]:
-    ok = premise_check.CommandResult(0, "", "")
+def _script() -> dict[tuple[str, ...], premise_verify.CommandResult]:
+    ok = premise_verify.CommandResult(0, "", "")
     return {
-        ("git", "rev-parse", "HEAD"): premise_check.CommandResult(0, "cafebabe1234\n", ""),
-        ("git", "ls-tree", "-r", "--name-only", "HEAD"): premise_check.CommandResult(
+        ("git", "rev-parse", "HEAD"): premise_verify.CommandResult(0, "cafebabe1234\n", ""),
+        ("git", "ls-tree", "-r", "--name-only", "HEAD"): premise_verify.CommandResult(
             0, "tools/premise_check.py\n", ""
         ),
         ("git", "cat-file", "-e", "HEAD:tools/premise_check.py"): ok,
-        ("git", "grep", "-wnF", "FETCH_LIMIT", "HEAD"): premise_check.CommandResult(
+        ("git", "grep", "-wnF", "FETCH_LIMIT", "HEAD"): premise_verify.CommandResult(
             0, "tools/premise_check.py:85:FETCH_LIMIT", ""
         ),
         (
@@ -72,7 +73,7 @@ def _script() -> dict[tuple[str, ...], premise_check.CommandResult]:
             "HEAD",
             "--",
             "docs/adr",
-        ): premise_check.CommandResult(0, "docs/adr/0033-x.md\n", ""),
+        ): premise_verify.CommandResult(0, "docs/adr/0033-x.md\n", ""),
         (
             "git",
             "log",
@@ -81,8 +82,10 @@ def _script() -> dict[tuple[str, ...], premise_check.CommandResult]:
             "HEAD",
             "--",
             "tools/premise_check.py",
-        ): premise_check.CommandResult(0, "", ""),
-        ("git", "grep", "-n", "def _verify_symbol", "HEAD"): premise_check.CommandResult(1, "", ""),
+        ): premise_verify.CommandResult(0, "", ""),
+        ("git", "grep", "-n", "def _verify_symbol", "HEAD"): premise_verify.CommandResult(
+            1, "", ""
+        ),
     }
 
 

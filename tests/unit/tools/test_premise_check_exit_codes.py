@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import premise_check
+import premise_verify
 import pytest
 
 pytestmark = pytest.mark.unit
@@ -41,10 +42,10 @@ def test_check_exits_zero_once_the_report_is_written_even_if_every_issue_needs_a
         encoding="utf-8",
     )
 
-    def fake_run_command(argv: Sequence[str]) -> premise_check.CommandResult:
+    def fake_run_command(argv: Sequence[str]) -> premise_verify.CommandResult:
         if tuple(argv)[:2] == ("git", "rev-parse"):
-            return premise_check.CommandResult(0, "cafebabe1234\n", "")
-        return premise_check.CommandResult(0, "", "")
+            return premise_verify.CommandResult(0, "cafebabe1234\n", "")
+        return premise_verify.CommandResult(0, "", "")
 
     monkeypatch.setattr(premise_check, "run_command", fake_run_command)
 

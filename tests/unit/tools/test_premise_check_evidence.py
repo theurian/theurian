@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-import premise_check
+import premise_verify
 import pytest
 
 pytestmark = pytest.mark.unit
@@ -26,18 +26,18 @@ pytestmark = pytest.mark.unit
 class _ScriptedRunner:
     """Maps an exact argv tuple to a canned `CommandResult`; anything unscripted fails loudly."""
 
-    def __init__(self, script: dict[tuple[str, ...], premise_check.CommandResult]) -> None:
+    def __init__(self, script: dict[tuple[str, ...], premise_verify.CommandResult]) -> None:
         self._script = script
 
-    def __call__(self, argv: Sequence[str]) -> premise_check.CommandResult:
+    def __call__(self, argv: Sequence[str]) -> premise_verify.CommandResult:
         key = tuple(argv)
         if key not in self._script:
             raise AssertionError(f"unscripted git invocation: {' '.join(key)}")
         return self._script[key]
 
 
-def _result(returncode: int, stdout: str = "", stderr: str = "") -> premise_check.CommandResult:
-    return premise_check.CommandResult(returncode=returncode, stdout=stdout, stderr=stderr)
+def _result(returncode: int, stdout: str = "", stderr: str = "") -> premise_verify.CommandResult:
+    return premise_verify.CommandResult(returncode=returncode, stdout=stdout, stderr=stderr)
 
 
 # --------------------------------------------------------------------------
@@ -63,19 +63,16 @@ def test_a_shas_non_ancestor_evidence_is_runnable_and_the_prose_lives_only_in_de
         {_COMMIT_ARGV: _result(0, stdout="commit\n"), _ANCESTOR_ARGV: _result(1)}
     )
 
-    command, captured_output, derivation, status = premise_check._verify_sha(_SHA, runner)
+    result = premise_verify._verify_sha(_SHA, runner)
 
-    assert status == premise_check.INTACT
-    assert (
-        command
-        == f"{premise_check._argv_str(_COMMIT_ARGV)}\n{premise_check._argv_str(_ANCESTOR_ARGV)}"
-    )
-    lines = captured_output.splitlines()
+    assert result.status == premise_verify.INTACT
+    assert result.command == f"{' '.join(_COMMIT_ARGV)}\n{' '.join(_ANCESTOR_ARGV)}"
+    lines = result.captured_output.splitlines()
     assert lines[0].startswith("exit 0:")
     assert lines[1].startswith("exit 1:")
-    assert "not an ancestor of HEAD" in derivation
-    assert "not an ancestor of HEAD" not in command
-    assert "not an ancestor of HEAD" not in captured_output
+    assert "not an ancestor of HEAD" in result.derivation
+    assert "not an ancestor of HEAD" not in result.command
+    assert "not an ancestor of HEAD" not in result.captured_output
 
 
 def test_verify_issue_ref_carries_no_command_or_captured_output_only_derivation() -> None:
@@ -84,14 +81,12 @@ def test_verify_issue_ref_carries_no_command_or_captured_output_only_derivation(
     `captured_output` stay empty; the whole explanation belongs in
     `derivation` alone (round 1 LOW-1: it used to sit in the command column).
     """
-    command, captured_output, derivation, status = premise_check._verify_issue_ref(
-        "#42", frozenset({1, 2, 3})
-    )
+    result = premise_verify._verify_issue_ref("#42", frozenset({1, 2, 3}), {})
 
-    assert command == ""
-    assert captured_output == ""
-    assert "not an open issue" in derivation
-    assert status == premise_check.UNKNOWN
+    assert result.command == ""
+    assert result.captured_output == ""
+    assert "not an open issue" in result.derivation
+    assert result.status == premise_verify.UNKNOWN
 
 
 # --------------------------------------------------------------------------
@@ -101,9 +96,9 @@ def test_verify_issue_ref_carries_no_command_or_captured_output_only_derivation(
 
 
 def test_truncate_leaves_text_under_the_cap_untouched() -> None:
-    text = "x" * (premise_check._CAPTURED_OUTPUT_CAP - 1)
+    text = "x" * (premise_verify._CAPTURED_OUTPUT_CAP - 1)
 
-    assert premise_check._truncate(text) == text
+    assert premise_verify._truncate(text) == text
 
 
 def test_truncate_marks_truncation_at_the_named_cap_with_the_true_original_size() -> None:
@@ -111,11 +106,11 @@ def test_truncate_marks_truncation_at_the_named_cap_with_the_true_original_size(
     content keeps the encode/decode round trip exact, so both numbers are
     checked against the real inputs rather than restated as literals.
     """
-    cap = premise_check._CAPTURED_OUTPUT_CAP
+    cap = premise_verify._CAPTURED_OUTPUT_CAP
     original_size = cap + 500
     text = "a" * original_size
 
-    truncated = premise_check._truncate(text)
+    truncated = premise_verify._truncate(text)
 
     kept, marker = truncated.rsplit("\n", 1)
     assert len(kept.encode("utf-8")) == cap
@@ -129,9 +124,9 @@ def test_truncate_marks_truncation_at_the_named_cap_with_the_true_original_size(
 
 
 def test_a_failing_commands_output_text_keeps_both_streams_labelled() -> None:
-    result = premise_check.CommandResult(returncode=1, stdout="from stdout", stderr="from stderr")
+    result = premise_verify.CommandResult(returncode=1, stdout="from stdout", stderr="from stderr")
 
-    text = premise_check._output_text(result)
+    text = premise_verify._output_text(result)
 
     assert "stdout: from stdout" in text
     assert "stderr: from stderr" in text

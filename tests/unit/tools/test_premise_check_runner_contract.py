@@ -15,6 +15,7 @@ import inspect
 from collections.abc import Sequence
 
 import premise_check
+import premise_verify
 import pytest
 
 pytestmark = pytest.mark.unit
@@ -33,14 +34,14 @@ class _FalsyRunner:
     would treat as "no runner given".
     """
 
-    def __init__(self, script: dict[tuple[str, ...], premise_check.CommandResult]) -> None:
+    def __init__(self, script: dict[tuple[str, ...], premise_verify.CommandResult]) -> None:
         self._script = script
         self.calls: list[tuple[str, ...]] = []
 
     def __bool__(self) -> bool:
         return False
 
-    def __call__(self, argv: Sequence[str]) -> premise_check.CommandResult:
+    def __call__(self, argv: Sequence[str]) -> premise_verify.CommandResult:
         key = tuple(argv)
         self.calls.append(key)
         return self._script[key]
@@ -56,8 +57,10 @@ def test_a_falsy_but_callable_runner_is_the_one_check_actually_uses() -> None:
     """
     runner = _FalsyRunner(
         {
-            ("git", "rev-parse", "HEAD"): premise_check.CommandResult(0, "deadbeefcafe\n", ""),
-            ("git", "ls-tree", "-r", "--name-only", "HEAD"): premise_check.CommandResult(0, "", ""),
+            ("git", "rev-parse", "HEAD"): premise_verify.CommandResult(0, "deadbeefcafe\n", ""),
+            ("git", "ls-tree", "-r", "--name-only", "HEAD"): premise_verify.CommandResult(
+                0, "", ""
+            ),
         }
     )
 
@@ -71,7 +74,7 @@ def test_a_falsy_but_callable_runner_is_the_one_check_actually_uses() -> None:
 
 
 def test_a_falsy_but_callable_runner_is_the_one_fetch_actually_uses() -> None:
-    argv = (
+    issue_argv = (
         "gh",
         "issue",
         "list",
@@ -82,9 +85,26 @@ def test_a_falsy_but_callable_runner_is_the_one_fetch_actually_uses() -> None:
         "--json",
         "number,title,createdAt,labels,body,comments",
     )
-    runner = _FalsyRunner({argv: premise_check.CommandResult(0, "[]", "")})
+    pr_argv = (
+        "gh",
+        "pr",
+        "list",
+        "--state",
+        "all",
+        "--limit",
+        str(premise_check.PR_FETCH_LIMIT),
+        "--json",
+        "number,state",
+    )
+    runner = _FalsyRunner(
+        {
+            issue_argv: premise_verify.CommandResult(0, "[]", ""),
+            pr_argv: premise_verify.CommandResult(0, "[]", ""),
+        }
+    )
 
     snapshot = premise_check.fetch(runner, "gh")
 
-    assert runner.calls == [argv]
+    assert runner.calls == [issue_argv, pr_argv]
     assert snapshot.issues == ()
+    assert snapshot.pr_states == ()

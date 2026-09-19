@@ -19,6 +19,7 @@ from pathlib import Path
 import premise_check
 import premise_citations
 import premise_report
+import premise_verify
 import pytest
 
 pytestmark = pytest.mark.unit
@@ -29,25 +30,29 @@ _WRITE_VERBS = frozenset(
 
 
 class _RecordingRunner:
-    def __init__(self, result: premise_check.CommandResult) -> None:
+    def __init__(self, result: premise_verify.CommandResult) -> None:
         self._result = result
         self.calls: list[tuple[str, ...]] = []
 
-    def __call__(self, argv: Sequence[str]) -> premise_check.CommandResult:
+    def __call__(self, argv: Sequence[str]) -> premise_verify.CommandResult:
         self.calls.append(tuple(argv))
         return self._result
 
 
-def test_fetch_issues_exactly_one_gh_issue_list_call_and_nothing_else() -> None:
-    runner = _RecordingRunner(premise_check.CommandResult(0, "[]", ""))
+def test_fetch_issues_exactly_two_read_only_gh_calls_and_nothing_else() -> None:
+    """Round 2 HIGH-3 added the PR-state map: `fetch` now makes exactly two
+    `gh` calls, one `issue list` and one `pr list`, both read-only.
+    """
+    runner = _RecordingRunner(premise_verify.CommandResult(0, "[]", ""))
 
     premise_check.fetch(runner, "gh", repo="theurian/theurian")
 
-    assert len(runner.calls) == 1
-    argv = runner.calls[0]
-    assert argv[0] == "gh"
-    assert argv[1:3] == ("issue", "list")
-    assert not any(verb in argv for verb in _WRITE_VERBS)
+    assert len(runner.calls) == 2
+    for argv in runner.calls:
+        assert argv[0] == "gh"
+        assert not any(verb in argv for verb in _WRITE_VERBS)
+    assert runner.calls[0][1:3] == ("issue", "list")
+    assert runner.calls[1][1:3] == ("pr", "list")
 
 
 def test_check_makes_no_gh_call_at_all() -> None:
@@ -55,7 +60,7 @@ def test_check_makes_no_gh_call_at_all() -> None:
     call of any kind"). A `gh` call reaching the runner here would mean the
     grading leg quietly started talking to the network.
     """
-    runner = _RecordingRunner(premise_check.CommandResult(0, "", ""))
+    runner = _RecordingRunner(premise_verify.CommandResult(0, "", ""))
     snapshot = premise_check.Snapshot(issues=())
 
     premise_check.check(snapshot, runner, "snap.json")
@@ -86,7 +91,12 @@ def test_no_premise_module_source_ever_builds_an_issue_argv_carrying_a_write_ver
     of whatever non-literal pieces (a variable, a `str(...)` call) sit
     alongside them in the same collection.
     """
-    modules = (premise_check.__file__, premise_citations.__file__, premise_report.__file__)
+    modules = (
+        premise_check.__file__,
+        premise_citations.__file__,
+        premise_report.__file__,
+        premise_verify.__file__,
+    )
 
     for path in modules:
         tree = ast.parse(Path(path).read_text(encoding="utf-8"), filename=path)

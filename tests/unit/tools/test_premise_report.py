@@ -15,6 +15,7 @@ from collections.abc import Sequence
 
 import premise_check
 import premise_report
+import premise_verify
 import pytest
 
 pytestmark = pytest.mark.unit
@@ -75,7 +76,7 @@ def _report_with(title: str, token: str, command: str) -> premise_check.Report:
                 (),
                 (
                     premise_check.CitationResult(
-                        "symbol", token, command, "", "", premise_check.INTACT
+                        "symbol", token, command, "", "", premise_verify.INTACT
                     ),
                 ),
                 (),

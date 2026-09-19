@@ -17,6 +17,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import premise_check
+import premise_verify
 import pytest
 
 pytestmark = pytest.mark.unit
@@ -39,15 +40,15 @@ def test_no_citations_at_all_reads_no_citations() -> None:
 
 
 def test_a_single_intact_citation_and_no_touching_commit_has_no_reason_to_flag() -> None:
-    reasons = premise_check._reasons((_citation(premise_check.INTACT),), (), log_failed=False)
+    reasons = premise_check._reasons((_citation(premise_verify.INTACT),), (), log_failed=False)
 
     assert reasons == ()
 
 
 def test_a_dangling_citation_among_others_reads_dangling_citation() -> None:
     citations = (
-        _citation(premise_check.INTACT, value="a.py"),
-        _citation(premise_check.DANGLING, value="b.py"),
+        _citation(premise_verify.INTACT, value="a.py"),
+        _citation(premise_verify.DANGLING, value="b.py"),
     )
 
     reasons = premise_check._reasons(citations, (), log_failed=False)
@@ -56,21 +57,21 @@ def test_a_dangling_citation_among_others_reads_dangling_citation() -> None:
 
 
 def test_an_unknown_citation_reads_unknown_citation() -> None:
-    reasons = premise_check._reasons((_citation(premise_check.UNKNOWN),), (), log_failed=False)
+    reasons = premise_check._reasons((_citation(premise_verify.UNKNOWN),), (), log_failed=False)
 
     assert reasons == (premise_check.UNKNOWN_CITATION,)
 
 
 def test_a_touched_path_reads_surface_touched_even_with_every_citation_intact() -> None:
     reasons = premise_check._reasons(
-        (_citation(premise_check.INTACT),), (_commit(),), log_failed=False
+        (_citation(premise_verify.INTACT),), (_commit(),), log_failed=False
     )
 
     assert reasons == (premise_check.SURFACE_TOUCHED,)
 
 
 def test_a_citation_level_error_reads_check_error() -> None:
-    reasons = premise_check._reasons((_citation(premise_check.ERROR),), (), log_failed=False)
+    reasons = premise_check._reasons((_citation(premise_verify.ERROR),), (), log_failed=False)
 
     assert reasons == (premise_check.CHECK_ERROR,)
 
@@ -91,7 +92,7 @@ def test_an_unknown_issue_ref_citation_reads_reference_not_open() -> None:
     only `unknown-citation` and sank into the same no-agent-spend tail as
     every other unresolved guess.
     """
-    citations = (_citation(premise_check.UNKNOWN, kind="issue_ref", value="#42"),)
+    citations = (_citation(premise_verify.UNKNOWN, kind="issue_ref", value="#42"),)
 
     reasons = premise_check._reasons(citations, (), log_failed=False)
 
@@ -103,7 +104,7 @@ def test_an_unknown_non_issue_ref_citation_never_reads_reference_not_open() -> N
     or `symbol` miss is `unknown-citation` only, and must not be mistaken for
     a not-open cross-reference it never was.
     """
-    citations = (_citation(premise_check.UNKNOWN, kind="constant", value="X"),)
+    citations = (_citation(premise_verify.UNKNOWN, kind="constant", value="X"),)
 
     reasons = premise_check._reasons(citations, (), log_failed=False)
 
@@ -111,7 +112,10 @@ def test_an_unknown_non_issue_ref_citation_never_reads_reference_not_open() -> N
 
 
 def test_multiple_reasons_can_fire_at_once_and_each_appears_once() -> None:
-    citations = (_citation(premise_check.DANGLING), _citation(premise_check.UNKNOWN, value="y.py"))
+    citations = (
+        _citation(premise_verify.DANGLING),
+        _citation(premise_verify.UNKNOWN, value="y.py"),
+    )
 
     reasons = premise_check._reasons(citations, (_commit(),), log_failed=False)
 
@@ -136,8 +140,8 @@ def test_premise_holds_only_when_every_condition_is_met_at_once() -> None:
         body="See tools/premise_check.py.",
         comments=(),
     )
-    script: dict[tuple[str, ...], premise_check.CommandResult] = {
-        ("git", "cat-file", "-e", "HEAD:tools/premise_check.py"): premise_check.CommandResult(
+    script: dict[tuple[str, ...], premise_verify.CommandResult] = {
+        ("git", "cat-file", "-e", "HEAD:tools/premise_check.py"): premise_verify.CommandResult(
             0, "", ""
         ),
         (
@@ -148,13 +152,13 @@ def test_premise_holds_only_when_every_condition_is_met_at_once() -> None:
             "HEAD",
             "--",
             "tools/premise_check.py",
-        ): premise_check.CommandResult(0, "", ""),
+        ): premise_verify.CommandResult(0, "", ""),
     }
 
-    def runner(argv: Sequence[str]) -> premise_check.CommandResult:
+    def runner(argv: Sequence[str]) -> premise_verify.CommandResult:
         return script[tuple(argv)]
 
-    report_issue = premise_check._check_issue(issue, runner, frozenset(), {})
+    report_issue = premise_check._check_issue(issue, runner, frozenset(), {}, {})
 
     assert report_issue.machine_verdict == premise_check.HOLDS
     assert report_issue.needs_agent_reasons == ()
@@ -165,10 +169,10 @@ def test_check_issue_reports_needs_agent_through_the_real_ternary_not_a_reimplem
         number=1, title="t", created_at="2026-01-01T00:00:00Z", labels=(), body="", comments=()
     )
 
-    def runner(argv: Sequence[str]) -> premise_check.CommandResult:
+    def runner(argv: Sequence[str]) -> premise_verify.CommandResult:
         raise AssertionError(f"no citation should reach the runner: {argv!r}")
 
-    report_issue = premise_check._check_issue(issue, runner, frozenset(), {})
+    report_issue = premise_check._check_issue(issue, runner, frozenset(), {}, {})
 
     assert report_issue.machine_verdict == premise_check.NEEDS_AGENT
     assert report_issue.needs_agent_reasons == (premise_check.NO_CITATIONS,)
