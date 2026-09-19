@@ -88,19 +88,39 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   words.** *That commit does not exist here* and *that commit touched nothing
   this thread names* differ by a fact about the repository rather than about the
   request, so ADR-0033 decision 5 binds them in duration as well as in text. The
-  verification asked two questions in two git processes — `rev-parse`, then
-  `diff-tree` — and the first could answer on its own, so the refusal's wall
-  clock answered *does this object exist here*: measured end to end at
-  **+7.2 ms, P=1.000**. It is now one `diff-tree` invocation whose verdict is
-  read from the exit code and the output, with every foreclosure preserved
-  (`--literal-pathspecs`, `--root`, `^{commit}` for commit-only semantics,
-  `--end-of-options` and `--`), so both failure arms spend one process with
-  byte-identical argument vectors. A residual is recorded rather than absorbed:
-  git-internal work still differs, measured at **+0.14 ms (P=1.000)** at the
-  adapter and **+0.22 ms (P=0.703)** at the wire under ~±0.3 ms stack noise, and
-  it carries one existence bit about a forty-hex sha the caller already holds.
-  The full reach and the honest statement that no test pins that residual's
-  bound are in ADR-0033's decision-5 amendment.
+  adapter asked two questions in two git processes until B5 — a rev-parse call,
+  then a diff-tree call — and the first could answer on its own, so the refusal's
+  wall clock answered *does this object exist here*: the B5 round-1 battery
+  measured the pair end to end at **+7.2 ms, P=1.000**. It is now one `git log`
+  invocation whose verdict is read from the exit code and the emitted paths, so
+  both failure arms spend one process with byte-identical argument vectors. The
+  shipped vector is the git-2.30 form
+  `git --literal-pathspecs log --no-walk --first-parent -m --name-only --format= -z --root --end-of-options <sha>^{commit} -- <file_path>`.
+
+  **The `log` form holds the documented git-2.30 floor** (round-2 HIGH-1). Round
+  1 reached merge commits with a diff-tree call carrying a
+  --diff-merges=first-parent option, a git 2.31 feature; on the git 2.30 floor
+  (`docs/contributing/development.md`) that option errors and every valid
+  `fixCommit` refuses. `log --no-walk --first-parent -m` reaches the same merge
+  commits on 2.30 with byte-identical verdicts, so the diff-tree attempt is
+  recorded as history, not shipped.
+
+  **`-z` byte-membership ends the output-parsing family** (round-3 HIGH, the
+  user-visible fix). `-z` makes git emit each touched path as raw NUL-delimited
+  bytes; `verify` answers `VERIFIED` only when the stored path's UTF-8 bytes are
+  one of those entries. Reading git's *human* rendering instead was the root
+  cause of three findings — a stored directory pathspec matching a foreign
+  commit's files, and a name git quotes, line-splits or whitespace-strips — and
+  the byte comparison closes all of them at once. `--literal-pathspecs` is now
+  defence in depth over the pathspec-magic half, not the control that closes the
+  directory class; round 1's claim that it "closed" that class is superseded.
+
+  **The remaining tokens are graded, not decorative.** `--root` lets a
+  repository's first commit be a fix, and `--end-of-options` and `--` keep an
+  option-shaped sha or stored `filePath` from being read as an option. A timing
+  residual remains: git-internal work still differs between the two arms,
+  carrying one existence bit about a forty-hex sha the caller already holds. It
+  is measured and unpinned; ADR-0033's decision-5 amendments carry its reach.
 
 ## [0.3.0] - 2026-09-16
 
