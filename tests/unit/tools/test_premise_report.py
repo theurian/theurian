@@ -125,10 +125,19 @@ def test_a_citation_row_carries_its_token_and_command_through_inline_not_raw() -
 
 
 # --------------------------------------------------------------------------
-# Section grouping (High-signal / Unknown-only tail / PREMISE-HOLDS): a human
-# triager reads these top to bottom and stops early, so a mis-grouped issue
-# silently sends it to the wrong triage weight rather than raising an error.
+# Section grouping (Dangling / Surface-touched / Reference-not-open /
+# Unknown-only tail / PREMISE-HOLDS): a human triager reads these top to
+# bottom and stops early, so a mis-grouped issue silently sends it to the
+# wrong triage weight rather than raising an error.
 # --------------------------------------------------------------------------
+
+_ALL_SECTIONS = (
+    "Dangling",
+    "Surface-touched",
+    "Reference-not-open",
+    "Unknown-only tail",
+    "PREMISE-HOLDS",
+)
 
 
 def _issue(number: int, verdict: str, reasons: tuple[str, ...] = ()) -> premise_check.IssueReport:
@@ -162,36 +171,80 @@ def _issue_numbers(section_lines: Sequence[str]) -> list[int]:
     ]
 
 
-@pytest.mark.parametrize(
-    "reason",
-    [premise_check.DANGLING_CITATION, premise_check.SURFACE_TOUCHED, premise_check.CHECK_ERROR],
-)
-def test_a_high_signal_reason_places_the_issue_in_high_signal_alone(reason: str) -> None:
-    """Each of `_HIGH_SIGNAL_REASONS` on its own is what keeps a citation worth
-    an agent's time out of the no-agent-spend tail; landing it there or in
-    PREMISE-HOLDS instead would silently drop it from the section a human
+def _sections_containing(rendered: str, number: int) -> list[str]:
+    """Which of `_ALL_SECTIONS` list `number` in their `<summary>` tags."""
+    return [
+        heading
+        for heading in _ALL_SECTIONS
+        if number in _issue_numbers(_section_body(rendered, heading))
+    ]
+
+
+def test_a_dangling_reason_places_the_issue_in_dangling_alone() -> None:
+    """`dangling-citation` is the strongest premise-changed evidence, so it
+    wins the section regardless of what else the reasons tuple carries --
+    landing it anywhere else would silently drop it from the section a human
     triager reads first.
     """
+    issue = _issue(1, premise_check.NEEDS_AGENT, (premise_check.DANGLING_CITATION,))
+    rendered = premise_report.render(_report(issue))
+
+    assert _sections_containing(rendered, 1) == ["Dangling"]
+
+
+@pytest.mark.parametrize("reason", [premise_check.SURFACE_TOUCHED, premise_check.CHECK_ERROR])
+def test_a_surface_reason_places_the_issue_in_surface_touched_alone(reason: str) -> None:
     issue = _issue(1, premise_check.NEEDS_AGENT, (reason,))
     rendered = premise_report.render(_report(issue))
 
-    assert _issue_numbers(_section_body(rendered, "High-signal")) == [1]
-    assert _issue_numbers(_section_body(rendered, "Unknown-only tail")) == []
-    assert _issue_numbers(_section_body(rendered, "PREMISE-HOLDS")) == []
+    assert _sections_containing(rendered, 1) == ["Surface-touched"]
+
+
+def test_a_reference_not_open_reason_places_the_issue_in_its_own_section_alone() -> None:
+    issue = _issue(1, premise_check.NEEDS_AGENT, (premise_check.REFERENCE_NOT_OPEN,))
+    rendered = premise_report.render(_report(issue))
+
+    assert _sections_containing(rendered, 1) == ["Reference-not-open"]
+
+
+def test_dangling_outranks_every_other_reason_on_the_same_issue() -> None:
+    issue = _issue(
+        1,
+        premise_check.NEEDS_AGENT,
+        (
+            premise_check.DANGLING_CITATION,
+            premise_check.SURFACE_TOUCHED,
+            premise_check.CHECK_ERROR,
+            premise_check.REFERENCE_NOT_OPEN,
+        ),
+    )
+    rendered = premise_report.render(_report(issue))
+
+    assert _sections_containing(rendered, 1) == ["Dangling"]
+
+
+def test_surface_touched_outranks_reference_not_open_on_the_same_issue() -> None:
+    issue = _issue(
+        1,
+        premise_check.NEEDS_AGENT,
+        (premise_check.SURFACE_TOUCHED, premise_check.REFERENCE_NOT_OPEN),
+    )
+    rendered = premise_report.render(_report(issue))
+
+    assert _sections_containing(rendered, 1) == ["Surface-touched"]
 
 
 @pytest.mark.parametrize("reason", [premise_check.UNKNOWN_CITATION, premise_check.NO_CITATIONS])
 def test_an_unknown_only_reason_places_the_issue_in_the_tail_alone(reason: str) -> None:
-    """Neither `unknown-citation` nor `no-citations` alone is worth an agent's
-    time; either one landing in High-signal would spend agent triage on the
-    set the grouping exists to exclude from it.
+    """Neither `unknown-citation` nor `no-citations` alone earns dangling,
+    surface-touched or reference-not-open's own section; either one landing
+    there instead would spend agent triage on the set the tail exists to
+    exclude from it.
     """
     issue = _issue(1, premise_check.NEEDS_AGENT, (reason,))
     rendered = premise_report.render(_report(issue))
 
-    assert _issue_numbers(_section_body(rendered, "Unknown-only tail")) == [1]
-    assert _issue_numbers(_section_body(rendered, "High-signal")) == []
-    assert _issue_numbers(_section_body(rendered, "PREMISE-HOLDS")) == []
+    assert _sections_containing(rendered, 1) == ["Unknown-only tail"]
 
 
 def test_the_unknown_only_tail_carries_its_no_agent_spend_prose_line() -> None:
@@ -206,31 +259,51 @@ def test_the_unknown_only_tail_carries_its_no_agent_spend_prose_line() -> None:
     assert any("no agent spend by decision" in line for line in tail)
 
 
+def test_the_reference_not_open_section_carries_its_reading_judgment_prose_line() -> None:
+    """The check can only tell closed from open, not a mooted blocker from a
+    reference kept for provenance -- this sentence hands that distinction to
+    the agent pass instead of asserting one the machine cannot make.
+    """
+    issue = _issue(1, premise_check.NEEDS_AGENT, (premise_check.REFERENCE_NOT_OPEN,))
+    rendered = premise_report.render(_report(issue))
+
+    section = _section_body(rendered, "Reference-not-open")
+    assert any("reading judgment for the agent pass" in line for line in section)
+
+
 def test_a_premise_holds_issue_lands_in_the_holds_section_only() -> None:
     issue = _issue(1, premise_check.HOLDS)
     rendered = premise_report.render(_report(issue))
 
-    assert _issue_numbers(_section_body(rendered, "PREMISE-HOLDS")) == [1]
-    assert _issue_numbers(_section_body(rendered, "High-signal")) == []
-    assert _issue_numbers(_section_body(rendered, "Unknown-only tail")) == []
+    assert _sections_containing(rendered, 1) == ["PREMISE-HOLDS"]
 
 
-def test_sections_render_high_signal_then_unknown_only_then_holds_with_matching_counts() -> None:
+def test_sections_render_in_priority_order_with_matching_counts() -> None:
     """The order is the split's whole point (`render`'s own docstring: "so a
-    human triager reads the high-signal subset first and can stop there"),
-    and the `- High-signal` summary line above the table is what tells a
-    triager the subset's size without counting `<summary>` tags by hand.
+    human triager reads the strongest sections first and can stop early"),
+    and the `- Sections:` summary line above the table is what tells a
+    triager each section's size without counting `<summary>` tags by hand.
     """
-    high_a = _issue(1, premise_check.NEEDS_AGENT, (premise_check.SURFACE_TOUCHED,))
-    high_b = _issue(2, premise_check.NEEDS_AGENT, (premise_check.CHECK_ERROR,))
-    tail = _issue(3, premise_check.NEEDS_AGENT, (premise_check.NO_CITATIONS,))
-    holds = _issue(4, premise_check.HOLDS)
-    rendered = premise_report.render(_report(high_a, high_b, tail, holds))
+    dangling = _issue(1, premise_check.NEEDS_AGENT, (premise_check.DANGLING_CITATION,))
+    surface = _issue(2, premise_check.NEEDS_AGENT, (premise_check.CHECK_ERROR,))
+    reference = _issue(3, premise_check.NEEDS_AGENT, (premise_check.REFERENCE_NOT_OPEN,))
+    tail = _issue(4, premise_check.NEEDS_AGENT, (premise_check.NO_CITATIONS,))
+    holds = _issue(5, premise_check.HOLDS)
+    rendered = premise_report.render(_report(dangling, surface, reference, tail, holds))
 
     headings = [line for line in rendered.splitlines() if line.startswith("## ")]
 
-    assert headings == ["## High-signal (2)", "## Unknown-only tail (1)", "## PREMISE-HOLDS (1)"]
-    assert "- High-signal: 2" in rendered.splitlines()
+    assert headings == [
+        "## Dangling (1)",
+        "## Surface-touched (1)",
+        "## Reference-not-open (1)",
+        "## Unknown-only tail (1)",
+        "## PREMISE-HOLDS (1)",
+    ]
+    assert (
+        "- Sections: Dangling 1, Surface-touched 1, Reference-not-open 1, "
+        "Unknown-only tail 1, PREMISE-HOLDS 1" in rendered.splitlines()
+    )
 
 
 def test_issue_number_ordering_is_preserved_within_each_section() -> None:
@@ -244,9 +317,13 @@ def test_issue_number_ordering_is_preserved_within_each_section() -> None:
         _issue(3, premise_check.NEEDS_AGENT, (premise_check.DANGLING_CITATION,)),
         _issue(4, premise_check.HOLDS),
         _issue(5, premise_check.NEEDS_AGENT, (premise_check.UNKNOWN_CITATION,)),
+        _issue(6, premise_check.NEEDS_AGENT, (premise_check.REFERENCE_NOT_OPEN,)),
+        _issue(7, premise_check.NEEDS_AGENT, (premise_check.DANGLING_CITATION,)),
     ]
     rendered = premise_report.render(_report(*issues))
 
-    assert _issue_numbers(_section_body(rendered, "High-signal")) == [1, 3]
+    assert _issue_numbers(_section_body(rendered, "Dangling")) == [3, 7]
+    assert _issue_numbers(_section_body(rendered, "Surface-touched")) == [1]
+    assert _issue_numbers(_section_body(rendered, "Reference-not-open")) == [6]
     assert _issue_numbers(_section_body(rendered, "Unknown-only tail")) == [2, 5]
     assert _issue_numbers(_section_body(rendered, "PREMISE-HOLDS")) == [4]

@@ -31,14 +31,22 @@ if TYPE_CHECKING:
 #: would make the two modules mutually dependent at load time.
 _HOLDS: Final = "PREMISE-HOLDS"
 
-#: Mirrors ``premise_check.DANGLING_CITATION``, ``SURFACE_TOUCHED``,
-#: ``CHECK_ERROR`` and ``REFERENCE_NOT_OPEN`` -- the reasons worth an
-#: agent's attention. An issue whose only reasons are ``unknown-citation``
-#: or ``no-citations`` goes in the unknown-only tail instead: see
-#: :func:`_is_high_signal`.
-_HIGH_SIGNAL_REASONS: Final = frozenset(
-    {"dangling-citation", "surface-touched", "check-error", "reference-not-open"}
-)
+#: Mirrors ``premise_check.DANGLING_CITATION``: the strongest evidence a
+#: citation's premise moved -- the thing it names is gone at HEAD.
+_DANGLING_CITATION: Final = "dangling-citation"
+
+#: Mirrors ``premise_check.SURFACE_TOUCHED`` and ``premise_check.CHECK_ERROR``:
+#: a commit landed on the cited surface since the issue opened, or the check
+#: itself could not run. Both read as "look here", so one bucket holds both.
+_SURFACE_REASONS: Final = frozenset({"surface-touched", "check-error"})
+
+#: Mirrors ``premise_check.REFERENCE_NOT_OPEN``. The check can only tell a
+#: closed reference from an open one -- not a mooted blocker from a
+#: reference kept for provenance -- so a closed reference gets its own
+#: section instead of flooding the read-first sections above it or being
+#: buried in the no-spend tail below (measured against the 2026-09-19
+#: snapshot: 109 of 130 issues carry a not-open reference).
+_REFERENCE_NOT_OPEN: Final = "reference-not-open"
 
 #: How much of an issue title to show. Long enough for a triager to recognise
 #: the issue, short enough that one absurdly long title does not dominate.
@@ -115,25 +123,36 @@ def _citation_row(citation: CitationResult) -> str:
     )
 
 
-def _is_high_signal(issue: IssueReport) -> bool:
-    return any(reason in _HIGH_SIGNAL_REASONS for reason in issue.needs_agent_reasons)
-
-
 def _sections(
     issues: Sequence[IssueReport],
-) -> tuple[list[IssueReport], list[IssueReport], list[IssueReport]]:
-    """Partition, preserving issue-number ordering: high-signal, unknown-only, holds."""
-    high_signal: list[IssueReport] = []
+) -> tuple[
+    list[IssueReport], list[IssueReport], list[IssueReport], list[IssueReport], list[IssueReport]
+]:
+    """Partition into five priority buckets, preserving issue-number ordering.
+
+    Each issue lands in the first bucket whose rule matches, checked in this
+    order: PREMISE-HOLDS, a dangling citation, a surface-touched or
+    check-error reason, a not-open issue reference, then the unknown-only
+    tail for what remains.
+    """
+    dangling: list[IssueReport] = []
+    surface_touched: list[IssueReport] = []
+    reference_not_open: list[IssueReport] = []
     unknown_only: list[IssueReport] = []
     holds: list[IssueReport] = []
     for issue in issues:
+        reasons = issue.needs_agent_reasons
         if issue.machine_verdict == _HOLDS:
             holds.append(issue)
-        elif _is_high_signal(issue):
-            high_signal.append(issue)
+        elif _DANGLING_CITATION in reasons:
+            dangling.append(issue)
+        elif any(reason in _SURFACE_REASONS for reason in reasons):
+            surface_touched.append(issue)
+        elif _REFERENCE_NOT_OPEN in reasons:
+            reference_not_open.append(issue)
         else:
             unknown_only.append(issue)
-    return high_signal, unknown_only, holds
+    return dangling, surface_touched, reference_not_open, unknown_only, holds
 
 
 def _issue_block(issue: IssueReport) -> str:
@@ -182,30 +201,47 @@ def _section(heading: str, issues: Sequence[IssueReport], *prose: str) -> list[s
 def render(report: Report) -> str:
     """The full Markdown triage report for one ``check`` run, sectioned by triage weight.
 
-    High-signal first (worth an agent's time), then the unknown-only tail
-    (no agent spend by decision), then the holds -- so a human triager reads
-    the high-signal subset first and can stop there.
+    Dangling first (strongest evidence a premise moved), then
+    surface-touched/check-error, then a not-open issue reference, then the
+    unknown-only tail (no agent spend by decision), then the holds -- so a
+    human triager reads the strongest sections first and can stop early.
     """
-    high_signal, unknown_only, holds = _sections(report.issues)
+    dangling, surface_touched, reference_not_open, unknown_only, holds = _sections(report.issues)
     lines = [
         "# Issue premise sweep",
         "",
         f"- Head commit: {_inline(report.head_commit)}",
         f"- Snapshot: {_inline(report.snapshot_path)}",
         f"- Issues checked: {len(report.issues)}",
-        f"- High-signal: {len(high_signal)}",
+        f"- Sections: Dangling {len(dangling)}, Surface-touched {len(surface_touched)}, "
+        f"Reference-not-open {len(reference_not_open)}, "
+        f"Unknown-only tail {len(unknown_only)}, PREMISE-HOLDS {len(holds)}",
         "",
         _summary_table(report.issues),
         "",
     ]
-    lines.extend(_section("High-signal", high_signal))
+    lines.extend(_section("Dangling", dangling))
+    lines.extend(_section("Surface-touched", surface_touched))
+    lines.extend(
+        _section(
+            "Reference-not-open",
+            reference_not_open,
+            "A closed or merged reference may be a mooted blocker or mere "
+            "provenance for the issue that cites it -- telling those apart is "
+            "a reading judgment for the agent pass, not something this check "
+            "can resolve.",
+            "",
+        )
+    )
     lines.extend(
         _section(
             "Unknown-only tail",
             unknown_only,
-            "Only unknown-citation and no-citations land here (a not-open issue "
-            "reference is high-signal instead) -- this set gets no agent spend by "
-            "decision, and its size is a grammar-recall measure, not a defect count.",
+            "Only unknown-citation and no-citations land here (dangling, "
+            "surface-touched/check-error and reference-not-open citations are "
+            "triaged in the sections above instead) -- this set gets no agent "
+            "spend by decision, and its size is a grammar-recall measure, not "
+            "a defect count.",
             "",
         )
     )
