@@ -80,14 +80,14 @@ def test_a_command_that_cannot_be_run_at_all_is_a_failed_sweep() -> None:
 def test_the_harness_child_cannot_see_the_tracker_token(
     monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
 ) -> None:
-    """Seven full suite walks a night must not run with an issues:write token.
+    """Seven full suite walks must not run with an issues:write token.
 
     The harness executes this repository's entire dependency tree under mutation
-    for roughly two hours, nightly, and ``mutate_run._child_env`` builds its own
-    environment from ``dict(os.environ)`` -- so whatever the driver was given is
-    what every one of those processes gets. In CI that is ``GH_TOKEN`` with
-    ``issues:write``, and the red-team workflow is the only one pairing suite
-    execution with a write token.
+    for roughly two hours on every scheduled run, and ``mutate_run._child_env``
+    builds its own environment from ``dict(os.environ)`` -- so whatever the
+    driver was given is what every one of those processes gets. In CI that is
+    ``GH_TOKEN`` with ``issues:write``, and the red-team workflow is the only
+    one pairing suite execution with a write token.
 
     The driver still needs the token itself: it files through ``gh`` afterwards,
     in a process this does not touch. Only the harness loses it.

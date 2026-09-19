@@ -1,4 +1,4 @@
-"""The nightly sweep has to actually sweep, and nothing else checks that (#378).
+"""The scheduled sweep has to actually sweep, and nothing else checks that (#378).
 
 `tools/sweep.py` is built so that a night which cannot answer says so loudly:
 an untrusted harness files, a missing record fails the run, a substituted

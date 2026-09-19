@@ -2,7 +2,7 @@
 
 Deliberately small. Three operator families -- comparison boundaries, boolean
 literals, and ``and``/``or`` -- and no more. A generator that emits every mutation
-it can think of produces a nightly job nobody reads; these three are the ones
+it can think of produces a scheduled job nobody reads; these three are the ones
 whose survival says something specific about the suite, because each of them
 names a *branch* that some test was supposed to distinguish.
 

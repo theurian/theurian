@@ -1,4 +1,4 @@
-"""What a night that did not come back clean puts on the tracker.
+"""What a run that did not come back clean puts on the tracker.
 
 Two rules shape everything here, and they are about the same thing from two
 sides: **the strings in this payload are data, and the sweep read them off the
@@ -105,8 +105,9 @@ UNTRUSTED_MARKER: Final = "<!-- async-sweep-untrusted -->"
 UNTRUSTED_TITLE: Final = "async sweep: the harness could not produce a verdict"
 
 #: How many open issues under the label to look through for an existing thread.
-#: A sweep that files nightly cannot plausibly need more, and an unbounded page
-#: walk would turn a rate-limited listing into a long silent retry.
+#: A sweep that files at most one issue per run cannot plausibly need more, and
+#: an unbounded page walk would turn a rate-limited listing into a long silent
+#: retry.
 _LIST_LIMIT: Final = "100"
 
 
@@ -318,7 +319,7 @@ def build_payload(night: Night) -> Payload:
     header = [
         marker,
         "",
-        "The nightly red-team sweep over `main` (#378) did not come back clean.",
+        "The scheduled red-team sweep over `main` (#378) did not come back clean.",
         "",
         f"- **Night:** {night.on}",
         f"- **Target:** {_inline(night.target)}",

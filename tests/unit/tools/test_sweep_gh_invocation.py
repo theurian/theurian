@@ -1,6 +1,6 @@
 """How the sweep talks to ``gh``: argv only, body on stdin, never a shell (#378).
 
-The nightly job runs on a runner holding a token with issue-write scope, and
+The scheduled job runs on a runner holding a token with issue-write scope, and
 everything it puts in an issue it read out of the repository -- a path from a
 directory walk, two slices of somebody's source. If any of that were assembled
 into a shell string, a file named ``$(...)`` would be a command.
@@ -118,7 +118,7 @@ def test_the_label_is_the_one_the_tracker_already_has() -> None:
     """``async-sweep`` exists; the sweep does not create labels.
 
     ``gh issue create --label`` fails outright on an unknown label, so a typo
-    here is a nightly job that never files anything -- the silent-stop shape,
+    here is a scheduled job that never files anything -- the silent-stop shape,
     arriving through a string constant.
     """
     gh = _RecordingGh()

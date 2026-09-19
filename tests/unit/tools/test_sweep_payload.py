@@ -1,4 +1,4 @@
-"""What the nightly sweep files, and why none of it can be a command (#378).
+"""What the sweep files, and why none of it can be a command (#378).
 
 The payload is built from strings the sweep read off the repository: a file
 path, a mutation label, and two slices of somebody's source. None of them is

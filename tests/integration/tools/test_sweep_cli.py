@@ -1,4 +1,4 @@
-"""The nightly driver end to end, with the suite and the tracker stood in for (#378).
+"""The sweep driver end to end, with the suite and the tracker stood in for (#378).
 
 Everything between the two boundaries is real here: the census walk over the
 production tree, the rotation, the generator, the spec file that is written to

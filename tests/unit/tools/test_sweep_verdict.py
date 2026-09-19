@@ -1,8 +1,9 @@
 """A sweep that did not really run must never read clean (#378).
 
-This is the whole reason the nightly job is worth having. A red-team sweep whose
-failure mode is "quietly reports nothing" is worse than no sweep: it converts an
-absence of evidence into evidence of absence, nightly, in a place nobody looks.
+This is the whole reason the scheduled job is worth having. A red-team sweep
+whose failure mode is "quietly reports nothing" is worse than no sweep: it
+converts an absence of evidence into evidence of absence, run after run, in a
+place nobody looks.
 
 So "clean" is defined positively and narrowly, and everything else files. A night
 is clean only when the harness exited 0, its unmutated control came back GREEN,
@@ -92,7 +93,7 @@ def test_a_mutation_the_suite_does_not_hold_is_a_finding(verdict: str, exit_code
 
     A suite that never finishes under a mutation cannot go RED for it, so it
     holds exactly as little as a suite that finished green. Reading HUNG as
-    "inconclusive, try again" is how a real gap survives a nightly job for
+    "inconclusive, try again" is how a real gap survives a scheduled job for
     months.
     """
     outcomes = sweep_verdict.read_results(

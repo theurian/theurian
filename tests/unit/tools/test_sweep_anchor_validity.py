@@ -182,8 +182,8 @@ def test_a_unique_expression_anchors_on_the_expression_alone() -> None:
 def test_a_boolean_literal_and_a_boolean_operator_are_both_reachable() -> None:
     """All three operator families fire, not just the comparison one.
 
-    The generator's whole value is that a nightly sweep asks questions nobody
-    wrote by hand. A family that never fires asks nothing, and a
+    The generator's whole value is that an unattended sweep asks questions
+    nobody wrote by hand. A family that never fires asks nothing, and a
     comparison-only generator passes every assertion above.
     """
     generated = _generated()
@@ -385,7 +385,7 @@ def test_a_target_that_does_not_parse_stops_the_sweep_instead_of_reading_barren(
     """An unparseable production file is not "nothing to mutate".
 
     Treating it as barren would advance to the next file and file nothing, so a
-    repository that cannot even be imported would produce a clean nightly run.
+    repository that cannot even be imported would produce a clean sweep run.
     The driver turns this into exit 1.
     """
     with pytest.raises(sweep_census.SweepError):

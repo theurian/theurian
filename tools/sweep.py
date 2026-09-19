@@ -1,9 +1,9 @@
-"""The nightly red-team sweep: one file, a handful of mutations, a filed finding.
+"""The scheduled red-team sweep: one file, a handful of mutations, a filed finding.
 
-CLAUDE.md's blast-radius table promises "a standing red-team sweep over ``main``,
-nightly single-file mutation runs included", whose findings enter filing-time
-triage like any other. This is the driver for it (issue #378); a separate
-workflow schedules it.
+CLAUDE.md's blast-radius table routes open-ended adversarial depth to a standing
+async red-team sweep over ``main``, whose findings enter filing-time triage like
+any other. This is the driver for that sweep's single-file mutation leg (issue
+#378); a separate workflow holds the cadence and schedules it.
 
 Usage
 -----
@@ -33,8 +33,8 @@ Budget
 ------
 A verdict costs a full suite walk. Six mutations plus the harness's own control
 is seven walks across :data:`WORKERS` workers, which is what sets the default of
-six against a nightly budget of about two hours. Neither number is a knob the
-workflow is expected to tune: the budget is the whole reason a night attacks one
+six against a per-run budget of about two hours. Neither number is a knob the
+workflow is expected to tune: the budget is the whole reason a run attacks one
 file, and a worker count raised to buy wall clock buys less than it looks (see
 :data:`WORKERS`).
 """
@@ -72,7 +72,7 @@ from sweep_census import REPO_ROOT, SweepError, census, rotation
 #: take real ports by binding port 0 and closing the socket, which concurrent
 #: suites can be handed twice.
 #:
-#: Not exposed as a flag. The nightly budget arithmetic in this module's
+#: Not exposed as a flag. The per-run budget arithmetic in this module's
 #: docstring depends on it, and the harness's hang timeout scales with it, so
 #: raising it at 3 a.m. changes two things at once.
 WORKERS: Final = 2
@@ -89,8 +89,8 @@ WORKERS: Final = 2
 #: skipping. Measured 2026-09-16 in a default prepared tree at ``f0e58408``:
 #: ``tests/integration/audit/test_census_audits_run.py`` comes back **11
 #: failed**, which is the same count issue #527 recorded and which turns the
-#: harness's unmutated control RED. A nightly without this flag would therefore
-#: exit 2 and file a ``run-untrusted`` issue every single night and never a real
+#: harness's unmutated control RED. A run without this flag would therefore
+#: exit 2 and file a ``run-untrusted`` issue every single time and never a real
 #: verdict. #527 is closed as a recorded quirk, not as a fix -- neither of its
 #: two options was taken, so the flag is the whole remedy.
 #:
@@ -196,7 +196,7 @@ def _source_of(path: str) -> str:
 #: Names the harness's children must not inherit.
 #:
 #: The harness runs this repository's whole dependency tree under mutation --
-#: seven full suite walks, roughly two hours, unattended, nightly -- and
+#: seven full suite walks, roughly two hours, unattended, on a schedule -- and
 #: ``mutate_run._child_env`` builds each suite's environment from
 #: ``dict(os.environ)``. Whatever this driver holds is therefore what every one
 #: of those processes holds, and in CI that is a token with ``issues:write``.

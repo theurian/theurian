@@ -1,9 +1,10 @@
-"""Which production file tonight's sweep attacks, decided by the date alone.
+"""Which production file the run attacks, decided by the date alone.
 
-CLAUDE.md promises "a standing red-team sweep over ``main``, nightly single-file
-mutation runs included". One night can afford one file: a verdict costs a full
-suite walk, and the nightly budget is about two hours (issue #378). So the sweep
-needs a rule for *which* file, and the rule has to hold two properties at once.
+CLAUDE.md promises a standing async red-team sweep over ``main``, of which
+single-file mutation runs are one leg. One run can afford one file: a verdict
+costs a full suite walk, and the per-run budget is about two hours (issue #378).
+So the sweep needs a rule for *which* file, and the rule has to hold two
+properties at once.
 
 **Reproducible.** The issue the sweep files names a date and a mutation, and
 whoever picks it up has to be able to regenerate that exact mutation from those
@@ -15,7 +16,7 @@ repeating any of it, which a hash of the date does not -- and the difference is
 invisible on any single night, so it is worth choosing deliberately.
 
 That guarantee does not survive contact with this repository, and saying it did
-was a claim nothing here can keep. The census is recomputed nightly, so its
+was a claim nothing here can keep. The census is recomputed on every run, so its
 length moves, and the index moves with it: measured across one week of growth,
 0 of 30 dates resolved to the same file, and a replay across real nights drew
 repeats well before the census had been walked (measured in PR #730's review
@@ -23,12 +24,12 @@ round). **What holds is determinism, not coverage.** Given
 a census and a date the target is fixed and reproducible; the interval before
 every file has been attacked is unbounded while the census churns, which is why
 a filed finding carries the commit it ran against and why the section in
-``docs/contributing/orchestration.md`` describes the nightly leg as sampling
-rather than as coverage.
+``docs/contributing/orchestration.md`` -- where this is the workflow leg, one of
+three -- calls it "census-limited mutation sampling, not coverage".
 
 The census deliberately drops ``__init__.py``: in this codebase those are
 re-export surfaces, and the three operators in :mod:`sweep_mutations` have
-nothing to reach in one. A barren target costs a whole night, so the rotation
+nothing to reach in one. A barren target costs a whole run, so the rotation
 also lets the driver advance -- see :func:`rotation`, which hands back the full
 census in walk order rather than a single name.
 """
