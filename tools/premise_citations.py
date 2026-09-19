@@ -52,9 +52,14 @@ Eight kinds, in the order :func:`extract_citations` checks them:
 
 Recall, not precision, is the goal: a citation this grammar misses is
 silently never checked, while one it over-extracts costs one wasted
-verification command and is visible in the report. Exotic forms -- a path
-inside a URL, a SHA split across a line wrap -- are the documented gap
-:mod:`premise_check`'s UNKNOWN status exists to escape into.
+verification command, visible in the report, and never a false DANGLING --
+this module drops a ``test_name`` match already covered by a path citation
+and a path token truncated by a glob metacharacter before either reaches
+:mod:`premise_check`, which in turn downgrades any DANGLING outside its own
+allowed kinds (``path``, ``path_line``, ``adr``, ``test_name``) to UNKNOWN.
+Exotic forms -- a path inside a URL, a SHA split across a line wrap -- are
+the documented gap :mod:`premise_check`'s UNKNOWN status exists to escape
+into.
 """
 
 from __future__ import annotations
@@ -72,8 +77,6 @@ CitationKind = Literal[
 
 @dataclass(frozen=True, slots=True)
 class Citation:
-    """One extracted candidate. Verification and grading happen elsewhere."""
-
     kind: CitationKind
     token: str
 
@@ -96,6 +99,12 @@ _PATH_EXTENSIONS: Final = (".py", ".md", ".yml", ".yaml", ".toml", ".sh", ".json
 #: colon, closing paren, quote) is already outside that class, so the token
 #: regex never includes it in the first place.
 _TRAILING_PUNCTUATION: Final = "./"
+
+#: A character immediately following a matched path token that means the
+#: token is a truncated glob (``tools/premise_*.py`` -> ``tools/premise_``),
+#: not a real path -- none of these are in the path token's own character
+#: class, so the match already stops right before one.
+_GLOB_METACHARACTERS: Final = frozenset("*?[]{}")
 
 _PATH_TOKEN_RE: Final = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./-]*")
 _LINE_SUFFIX_RE: Final = re.compile(r":(\d+)\b")
@@ -142,8 +151,17 @@ def _has_known_extension(token: str) -> bool:
     return token.endswith(_PATH_EXTENSIONS)
 
 
-def _iter_path_citations(text: str, tracked_basenames: Mapping[str, str]) -> Iterator[Citation]:
+def _iter_path_citations(
+    text: str, tracked_basenames: Mapping[str, str]
+) -> Iterator[tuple[Citation, tuple[int, int]]]:
+    """Path and path_line citations, each paired with the span of text it
+    consumed -- :func:`extract_citations` uses the span to keep a `test_name`
+    match embedded in the same path from also being emitted on its own
+    (round 1 HIGH-1, face A).
+    """
     for match in _PATH_TOKEN_RE.finditer(text):
+        if match.end() < len(text) and text[match.end()] in _GLOB_METACHARACTERS:
+            continue  # a truncated glob, e.g. "tools/premise_*.py" -> "tools/premise_"
         token = _strip_trailing_punctuation(match.group(0))
         if not token:
             continue
@@ -157,9 +175,15 @@ def _iter_path_citations(text: str, tracked_basenames: Mapping[str, str]) -> Ite
             continue
         suffix = _LINE_SUFFIX_RE.match(text, match.end())
         if suffix is not None:
-            yield Citation("path_line", f"{resolved}:{suffix.group(1)}")
+            citation = Citation("path_line", f"{resolved}:{suffix.group(1)}")
+            yield citation, (match.start(), suffix.end())
         else:
-            yield Citation("path", resolved)
+            yield Citation("path", resolved), (match.start(), match.end())
+
+
+def _span_overlaps(span: tuple[int, int], consumed: Iterable[tuple[int, int]]) -> bool:
+    start, end = span
+    return any(start < other_end and other_start < end for other_start, other_end in consumed)
 
 
 def _looks_like_sha(token: str) -> bool:
@@ -227,8 +251,14 @@ def extract_citations(
     """
     joined = "\n\n".join((body, *comments))
     found: set[Citation] = set()
-    found.update(_iter_path_citations(joined, tracked_basenames))
-    found.update(Citation("test_name", token) for token in _TEST_NAME_RE.findall(joined))
+    path_hits = list(_iter_path_citations(joined, tracked_basenames))
+    consumed = [span for _citation, span in path_hits]
+    found.update(citation for citation, _span in path_hits)
+    found.update(
+        Citation("test_name", match.group(0))
+        for match in _TEST_NAME_RE.finditer(joined)
+        if not _span_overlaps(match.span(), consumed)
+    )
     found.update(_iter_constant_citations(joined))
     found.update(_iter_sha_citations(joined))
     found.update(Citation("adr", token) for token in _ADR_RE.findall(joined))
