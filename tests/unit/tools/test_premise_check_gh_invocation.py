@@ -13,6 +13,7 @@ plain substring search would mistake for evidence of a real write call.
 from __future__ import annotations
 
 import ast
+import json
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -53,6 +54,30 @@ def test_fetch_issues_exactly_two_read_only_gh_calls_and_nothing_else() -> None:
         assert not any(verb in argv for verb in _WRITE_VERBS)
     assert runner.calls[0][1:3] == ("issue", "list")
     assert runner.calls[1][1:3] == ("pr", "list")
+
+
+def test_fetch_cli_summary_reports_both_issue_and_pr_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Round 3 LOW: the summary line used to name only the issue count,
+    hiding that the second, PR-state read (round 2 HIGH-3) had happened at
+    all.
+    """
+
+    def fake_run_command(argv: Sequence[str]) -> premise_verify.CommandResult:
+        if tuple(argv)[1:3] == ("issue", "list"):
+            return premise_verify.CommandResult(0, "[]", "")
+        return premise_verify.CommandResult(0, json.dumps([{"number": 1, "state": "MERGED"}]), "")
+
+    monkeypatch.setattr(premise_check, "run_command", fake_run_command)
+    snapshot_path = tmp_path / "snap.json"
+
+    exit_code = premise_check.main(["fetch", "--json", str(snapshot_path)])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "0 open issue(s)" in out
+    assert "1 pr state(s)" in out
 
 
 def test_check_makes_no_gh_call_at_all() -> None:

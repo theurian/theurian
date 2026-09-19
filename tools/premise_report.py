@@ -44,8 +44,8 @@ _SURFACE_REASONS: Final = frozenset({"surface-touched", "check-error"})
 #: closed reference from an open one -- not a mooted blocker from a
 #: reference kept for provenance -- so a closed reference gets its own
 #: section instead of flooding the read-first sections above it or being
-#: buried in the no-spend tail below (measured against the 2026-09-19
-#: snapshot: 109 of 130 issues carry a not-open reference).
+#: buried in the no-spend tail below (measured at 88b346c3 against the
+#: 2026-09-20 snapshot: 58 of 129 issues carry a not-open reference).
 _REFERENCE_NOT_OPEN: Final = "reference-not-open"
 
 #: How much of an issue title to show. Long enough for a triager to recognise
@@ -139,7 +139,10 @@ def _sections(
 ) -> tuple[
     list[IssueReport], list[IssueReport], list[IssueReport], list[IssueReport], list[IssueReport]
 ]:
-    """Partition into five priority buckets, preserving issue-number ordering."""
+    """Partition into five priority buckets, preserving issue-number ordering:
+    each issue lands in the first match, checked holds, dangling,
+    surface-touched, reference-not-open, unknown-only.
+    """
     dangling: list[IssueReport] = []
     surface_touched: list[IssueReport] = []
     reference_not_open: list[IssueReport] = []

@@ -604,7 +604,10 @@ def _run_fetch(args: argparse.Namespace) -> int:
     gh = shutil.which("gh") or "gh"
     snapshot = fetch(run_command, gh, repo=args.repo)
     _write_json(args.snapshot_path, snapshot_to_json(snapshot))
-    print(f"fetched {len(snapshot.issues)} open issue(s) into {args.snapshot_path}")
+    print(
+        f"fetched {len(snapshot.issues)} open issue(s) and {len(snapshot.pr_states)} pr state(s) "
+        f"into {args.snapshot_path}"
+    )
     return 0
 
 

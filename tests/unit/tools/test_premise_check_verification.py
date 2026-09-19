@@ -338,6 +338,20 @@ def test_a_symbols_unexpected_exit_code_is_error() -> None:
     assert result.status == premise_verify.ERROR
 
 
+def test_a_symbol_ending_in_a_dot_is_unknown_without_a_git_call() -> None:
+    """`"tools.".rsplit(".", 1)[-1]` is `""`, and an empty pattern's `def `/
+    `class ` grep matches nearly any line -- round 3 LOW-3's false `INTACT`.
+    Not a resolvable symbol, so no git call is even made.
+    """
+
+    def unreachable_runner(argv: Sequence[str]) -> premise_verify.CommandResult:
+        raise AssertionError("an empty last segment names no symbol to grep for")
+
+    result = premise_verify._verify_symbol("tools.", unreachable_runner)
+
+    assert result.status == premise_verify.UNKNOWN
+
+
 def test_a_dotted_symbols_keyword_is_chosen_from_its_last_segment() -> None:
     """`Citation.token` is an attribute on a class, not a class named `token`.
     Choosing the keyword from the first segment instead would search for

@@ -256,6 +256,11 @@ def _verify_issue_ref(
 def _verify_symbol(token: str, runner: Runner) -> VerifyResult:
     name = token.removesuffix("()")
     last_segment = name.rsplit(".", 1)[-1]
+    if not last_segment:
+        # A token ending in "." (e.g. "foo.") rsplits to an empty last
+        # segment, and an empty pattern's "def "/"class " grep matches
+        # nearly every file -- a false INTACT, not a resolvable symbol.
+        return VerifyResult("", "", f"{token!r} has no resolvable symbol segment", UNKNOWN)
     keyword = "class" if last_segment[:1].isupper() else "def"
     argv = ("git", "grep", "-n", f"{keyword} {last_segment}", "HEAD")
     result = runner(argv)
