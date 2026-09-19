@@ -1,0 +1,98 @@
+"""How the issue-premise sweep talks to `gh`: read-only, and only during `fetch` (AC4).
+
+`tools/premise_check.py`'s own module docstring states the fence as a claim
+about code, not only as prose: "there is no code path here that constructs
+`gh issue close`, `gh issue edit`, `gh issue comment`, or any other write."
+This file checks it two ways -- the one call `fetch` actually makes, over an
+injected runner, and a structural sweep over every `premise_*.py` module's
+own literal argv tuples. The structural check walks the AST rather than
+searching the text, because the docstring quoted above names the very verbs a
+plain substring search would mistake for evidence of a real write call.
+"""
+
+from __future__ import annotations
+
+import ast
+from collections.abc import Sequence
+from pathlib import Path
+
+import premise_check
+import premise_citations
+import premise_report
+import pytest
+
+pytestmark = pytest.mark.unit
+
+_WRITE_VERBS = frozenset(
+    {"close", "reopen", "edit", "comment", "delete", "transfer", "lock", "unlock", "pin", "unpin"}
+)
+
+
+class _RecordingRunner:
+    def __init__(self, result: premise_check.CommandResult) -> None:
+        self._result = result
+        self.calls: list[tuple[str, ...]] = []
+
+    def __call__(self, argv: Sequence[str]) -> premise_check.CommandResult:
+        self.calls.append(tuple(argv))
+        return self._result
+
+
+def test_fetch_issues_exactly_one_gh_issue_list_call_and_nothing_else() -> None:
+    runner = _RecordingRunner(premise_check.CommandResult(0, "[]", ""))
+
+    premise_check.fetch(runner, "gh", repo="theurian/theurian")
+
+    assert len(runner.calls) == 1
+    argv = runner.calls[0]
+    assert argv[0] == "gh"
+    assert argv[1:3] == ("issue", "list")
+    assert not any(verb in argv for verb in _WRITE_VERBS)
+
+
+def test_check_makes_no_gh_call_at_all() -> None:
+    """The offline leg: `check` reads only `git` (module docstring, "no network
+    call of any kind"). A `gh` call reaching the runner here would mean the
+    grading leg quietly started talking to the network.
+    """
+    runner = _RecordingRunner(premise_check.CommandResult(0, "", ""))
+    snapshot = premise_check.Snapshot(issues=())
+
+    premise_check.check(snapshot, runner, "snap.json")
+
+    assert runner.calls  # the head-commit and tracked-paths reads still happen
+    assert all(argv and argv[0] == "git" for argv in runner.calls)
+
+
+def _string_constants(node: ast.AST) -> list[str]:
+    if not isinstance(node, (ast.Tuple, ast.List)):
+        return []
+    return [
+        element.value
+        for element in node.elts
+        if isinstance(element, ast.Constant) and isinstance(element.value, str)
+    ]
+
+
+def test_no_premise_module_source_ever_builds_an_issue_argv_carrying_a_write_verb() -> None:
+    """A structural sweep, not a substring search.
+
+    The module docstring itself quotes `gh issue close`, `gh issue edit` and
+    `gh issue comment` by name, as the calls that must not exist -- so a
+    plain `"close" not in source` check would trip over its own
+    documentation. Walking the AST for a literal tuple or list that carries
+    both `"issue"` and a write verb as direct elements sidesteps prose
+    entirely: only a real argv-shaped literal can make this fail, regardless
+    of whatever non-literal pieces (a variable, a `str(...)` call) sit
+    alongside them in the same collection.
+    """
+    modules = (premise_check.__file__, premise_citations.__file__, premise_report.__file__)
+
+    for path in modules:
+        tree = ast.parse(Path(path).read_text(encoding="utf-8"), filename=path)
+        for node in ast.walk(tree):
+            elements = _string_constants(node)
+            if "issue" not in elements:
+                continue
+            offending = _WRITE_VERBS.intersection(elements)
+            assert not offending, f"{path}: {elements} carries {offending}"
