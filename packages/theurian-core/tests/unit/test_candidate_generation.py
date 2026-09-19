@@ -38,6 +38,7 @@ from fakes.clock import FrozenClock
 from fakes.ids import SeededIdGenerator
 
 from theurian.application.candidate_generation import (
+    _PULL_REQUEST_NUMBER,
     UNRESOLVED_RECORD_REFUSAL,
     CandidateGenerationError,
     CandidateGenerator,
@@ -679,6 +680,37 @@ def test_a_successful_ci_outcome_satisfies_the_gate() -> None:
 # ---------------------------------------------------------------------------
 # No recomputed signal is read off the request (decision 3).
 # ---------------------------------------------------------------------------
+
+
+def test_the_pull_request_number_is_matched_ascii_only() -> None:
+    """LOW-4: the ``event_key`` number is parsed with ``\\d`` under ``re.ASCII`` (T-24).
+
+    ``_PULL_REQUEST_NUMBER`` parses the pull request number out of a stored
+    thread's ``event_key`` (``provider:owner/name#<number>``), and that key is
+    author-controlled data a clone can deliver. ``review_search_builder`` already
+    compiles its own ``#(\\d+)`` with ``re.ASCII`` and calls the flag load-bearing;
+    without it here ``\\d`` matches every Unicode decimal digit, so a key ending in
+    fullwidth ``#431`` (U+FF14 U+FF13 U+FF11) parses to a record key no store holds
+    -- inert today, but a silent divergence from the sibling a review file can reach.
+
+    RED until the flag lands: without ``re.ASCII`` the fullwidth key matches. A
+    plain-ASCII number is the control -- it must keep parsing under the flag, or the
+    pin would be satisfied by a pattern that matched nothing.
+    """
+    # `#431` written with fullwidth digits (U+FF11/U+FF13/U+FF14) as escapes so the
+    # data is unambiguous to a reader and to RUF001; `\d` without `re.ASCII` matches them.
+    fullwidth = f"github:{REPOSITORY}#\uff14\uff13\uff11"
+
+    assert _PULL_REQUEST_NUMBER.search(fullwidth) is None, (
+        f"the pull-request-number pattern matched fullwidth digits in {fullwidth!r}. "
+        f"`review_search_builder` compiles the sibling pattern with `re.ASCII`; without "
+        f"it `\\d` ranges over every Unicode decimal, so a clone-delivered `event_key` "
+        f"parses to a key this store never held rather than to nothing."
+    )
+    assert _PULL_REQUEST_NUMBER.search(f"github:{REPOSITORY}#431").group(1) == "431", (  # type: ignore[union-attr]
+        "an ordinary ASCII pull request number no longer parses, so the pin above would "
+        "hold over a pattern that matched nothing rather than one narrowed to ASCII"
+    )
 
 
 def test_the_submission_type_declares_no_gate_signal() -> None:

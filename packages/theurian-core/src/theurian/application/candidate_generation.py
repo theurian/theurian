@@ -71,6 +71,7 @@ from theurian.domain.review import (
     ReviewThread,
 )
 from theurian.domain.review_ingest import bounded_quote
+from theurian.domain.review_search import untransportable_reason
 from theurian.domain.values import MARKDOWN
 
 #: ``(repository, record_key) -> relative evidence path``, or ``None`` when the
@@ -92,8 +93,12 @@ VerifyFixCommit = Callable[[str, str], FixCommitVerdict]
 _EXCLUDED_STATES: Final = frozenset({ReviewThreadState.OUTDATED, ReviewThreadState.DISMISSED})
 
 #: The pull request's number at the end of a thread's ``event_key``
-#: (``provider:owner/name#number``), which is that record's own key.
-_PULL_REQUEST_NUMBER: Final = re.compile(r"#(\d+)\Z")
+#: (``provider:owner/name#number``), which is that record's own key. ``re.ASCII``
+#: for ``review_search_builder``'s load-bearing reason: ``event_key`` is
+#: author-controlled data a clone can deliver (T-24), and without the flag ``\d``
+#: ranges over every Unicode decimal, so a key ending in a fullwidth-digit number
+#: (U+FF10..U+FF19) parses to a record key no store holds rather than to nothing.
+_PULL_REQUEST_NUMBER: Final = re.compile(r"#(\d+)\Z", re.ASCII)
 
 #: What every record that does not arrive is refused with, and a **constant**: it
 #: interpolates nothing -- not the key, not the repository, nothing read from the
@@ -188,6 +193,17 @@ class CandidateGenerator:
         thread = self._thread(submission)
         if thread.file_path is None:
             raise _no_file_anchor(submission)
+        # The stored `file_path` is author-controlled data a clone can deliver
+        # (T-24), and `verify` hands it to git and UTF-8-encodes it for the
+        # membership check. A value git cannot receive -- a lone surrogate a
+        # `\udcXX` escape in a landed evidence file decodes to -- is refused here,
+        # before the verification, so the untransportable path never reaches the
+        # encode that would raise `UnicodeEncodeError` outside the adapter's
+        # fail-closed `except`. The builder refuses the same shape where it
+        # projects a record; this is its symmetric check on the re-read path.
+        reason = untransportable_reason(thread.file_path)
+        if reason is not None:
+            raise _untransportable_file_path(reason)
         event = self._event(submission, thread)
         gate = PromotionGate(
             pull_request_merged=event.merged,
@@ -256,6 +272,26 @@ def _unresolved() -> CandidateGenerationError:
     is how the constants above stay the whole of what this path can publish.
     """
     return CandidateGenerationError(UNRESOLVED_RECORD_REFUSAL, remedy=UNRESOLVED_RECORD_CURE)
+
+
+def _untransportable_file_path(reason: str) -> CandidateGenerationError:
+    """A stored ``file_path`` git cannot be handed refuses before the verification (T-24).
+
+    ``reason`` is ``untransportable_reason``'s own phrase -- the single source of
+    truth ``review_search_builder._refuse_untransportable`` folds in too -- so both
+    consumers of a stored path name the same defect. The untransportable value is
+    not echoed: it has no clean rendering by construction (that is the defect), and
+    the reason phrase is a constant that says what is wrong without carrying it.
+    """
+    return CandidateGenerationError(
+        f"The stored thread's file anchor cannot be verified: {reason}.",
+        remedy=(
+            "The stored review record carries a file anchor Theurian cannot check. "
+            "Re-ingest and rebuild the review evidence so the record matches the "
+            "provider's own: `theurian review ingest <owner>/<name>` followed by "
+            "`theurian review build`."
+        ),
+    )
 
 
 def _no_file_anchor(submission: CandidateSubmission) -> CandidateGenerationError:

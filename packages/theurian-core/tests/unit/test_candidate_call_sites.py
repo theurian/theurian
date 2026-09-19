@@ -70,6 +70,12 @@ READ: Final = "_read_record"
 #: The commit verification: the largest single cost, because it spawns ``git``.
 VERIFY: Final = "_verify_fix_commit"
 
+#: The domain guard a consumer must run over a stored ``file_path`` before it
+#: reaches ``verify``'s ``file_path.encode("utf-8")`` or a subprocess argv. Named
+#: by its reference so a new ``_verify_fix_commit`` caller that forgets it reddens
+#: :func:`test_every_verify_consumer_checks_the_stored_path_is_transportable_first`.
+TRANSPORTABLE_GUARD: Final = "untransportable_reason"
+
 #: Where each seam may be called, as ``ClassName.method``. A list rather than a
 #: set, so a *second* call to the same seam inside one function reddens too --
 #: which is the shape a hoisted verification takes.
@@ -134,6 +140,14 @@ def _function(name: tuple[str, ...]) -> ast.FunctionDef:
         f"reader resolves a function by name and cannot choose between copies"
     )
     return found[0]
+
+
+def _function_named(tree: ast.AST, name: str) -> ast.FunctionDef | None:
+    """The one ``FunctionDef`` of ``name`` in ``tree``, or ``None`` if not exactly one."""
+    found = [
+        node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == name
+    ]
+    return found[0] if len(found) == 1 else None
 
 
 def test_the_scanner_looks_for_seams_the_generator_actually_has() -> None:
@@ -268,3 +282,59 @@ def test_the_commit_verification_runs_only_after_both_records_have_resolved() ->
             f"withheld key costs a process an absent key does not -- ADR-0033 "
             f"decision 5's duration half, defeated by an ordering."
         )
+
+
+def test_every_verify_consumer_checks_the_stored_path_is_transportable_first() -> None:
+    """A stored ``file_path`` is inspected before it reaches ``verify``'s encode (T-24, HIGH-1).
+
+    ``FixCommitCheck.verify`` UTF-8-encodes the stored ``file_path`` to compare it
+    against git's raw path bytes, and a landed evidence file can carry a value with
+    no UTF-8 encoding: ``json.loads`` decodes a ``\\udcff`` escape into a lone
+    surrogate, and that ``.encode("utf-8")`` raises outside the adapter's fail-closed
+    ``except``. The builder already refuses such a value where it projects a record
+    (``review_search_builder._refuse_untransportable``, over
+    ``review_search.texts_of``); the candidate path re-reads the evidence file after
+    the build and reaches ``verify`` with no equivalent check.
+
+    So every function that reaches ``self._verify_fix_commit(...)`` -- the git-argv
+    sink -- must first run the domain's transportability guard,
+    ``untransportable_reason``, over the stored path. The consumer set is **derived**
+    by scanning the whole shipped tree rather than hardcoded, so a second
+    ``_verify_fix_commit`` caller that forgets the guard joins this check by being
+    written; the ordering (guard before the verify call) is asserted too, because a
+    guard that ran *after* the encode would not stop the crash it exists to prevent.
+
+    RED until HIGH-1's fix lands: today ``CandidateGenerator.generate`` reaches the
+    verification with no reference to ``untransportable_reason``. **What this cannot
+    see** is the same blind spot ``test_each_seam...`` records: it reads names, so a
+    guard reached through a helper under another name, or a dispatch table, would
+    read as an offender -- the check is expected inline in the function that verifies,
+    beside the ``file_path is None`` refusal it is symmetric with.
+    """
+    offenders: list[str] = []
+    for path in sorted(SRC.rglob("*.py")):
+        tree = _tree(path)
+        for scope, call in _self_calls(tree, VERIFY):
+            enclosing = _function_named(tree, scope[-1]) if scope else None
+            if enclosing is None:
+                offenders.append(
+                    f"{'.'.join(scope) or '<module>'} ({path.name}:{call.lineno}) [unresolved]"
+                )
+                continue
+            guards = [
+                node.lineno
+                for node in ast.walk(enclosing)
+                if isinstance(node, ast.Name) and node.id == TRANSPORTABLE_GUARD
+            ]
+            if not guards or min(guards) > call.lineno:
+                offenders.append(f"{'.'.join(scope)} ({path.name}:{call.lineno})")
+
+    assert not offenders, (
+        f"a consumer reaches `self.{VERIFY}(...)` without first running "
+        f"`{TRANSPORTABLE_GUARD}` over the stored path:\n"
+        + "\n".join(f"  {offender}" for offender in offenders)
+        + "\n\n`verify` UTF-8-encodes the stored `file_path`, which raises for a lone "
+        "surrogate a landed evidence file can carry (T-24). The builder already refuses "
+        "such a value; a consumer reaching `verify` must too, before the encode, or the "
+        "crash the guard prevents reaches the caller as `Error executing tool`."
+    )

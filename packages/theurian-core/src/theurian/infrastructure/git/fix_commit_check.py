@@ -66,13 +66,23 @@ in depth rather than a closure (below); the round-1/round-2 claims that
 
 **One face stays inside this closure, and one class stays outside it.** Inside:
 the stored path is a ``str`` and git emits *bytes*, so the comparison
-UTF-8-encodes the anchor -- a non-UTF-8 disk path can never equal it and is
-refused ``TOUCHES_NOTHING_HERE``, fail-closed, pinned as a property rather than
-left to accident. Outside, and named so the closure is not overclaimed: pathname
-byte-*equality* under Unicode normalization (an NFC-stored anchor versus an NFD
-tree path) is a different root cause -- ``-z`` does not touch it, the two byte
-strings simply differ and the honest fix reads ``TOUCHES_NOTHING_HERE`` -- and it
-is filed as [#758], not folded in here.
+UTF-8-encodes the anchor. A ``str`` that has no UTF-8 encoding -- a lone surrogate
+a ``\\udcXX`` escape in a landed evidence file decodes to, or the
+``surrogateescape`` ``str`` a record stores for a non-UTF-8 disk byte (T-24) --
+would make that encode raise ``UnicodeEncodeError`` outside ``_run``'s fail-closed
+``except``. The candidate path refuses such a path *before* ``verify`` with a
+designed ``CandidateGenerationError`` (``candidate_generation`` folds
+``untransportable_reason`` in, the guard ``_refuse_untransportable`` runs at build
+time); ``verify`` itself is total independently -- a top-of-call transportability
+check returns ``NO_SUCH_COMMIT`` for any untransportable path that reaches it, the
+fail-closed verdict every reading that cannot reach a git answer takes, never a
+crash and never the misleading ``TOUCHES_NOTHING_HERE`` (which would assert a
+commit was found and touched nothing, a claim the verification never made for a
+path git cannot receive). Outside, and named so the closure is not overclaimed:
+pathname byte-*equality* under Unicode normalization (an NFC-stored anchor versus
+an NFD tree path) is a different root cause -- ``-z`` does not touch it, the two
+byte strings simply differ and the honest fix reads ``TOUCHES_NOTHING_HERE`` --
+and it is filed as [#758], not folded in here.
 
 **The command is the git-2.30 ``log`` form, chosen so the documented floor holds
 (round-2 HIGH-1).** The floor is git 2.30+ (``development.md``). The round-1 fix
@@ -159,6 +169,7 @@ from pathlib import Path
 from typing import Final, final
 
 from theurian.domain.review import FixCommitVerdict
+from theurian.domain.review_search import untransportable_reason
 
 #: Timeout on the one ``git`` call this adapter spawns. A single local object read
 #: is cheap, and an unbounded subprocess on a daemon-reachable path is a hang the
@@ -192,13 +203,19 @@ class FixCommitCheck:
     def verify(self, commit: str, file_path: str) -> FixCommitVerdict:
         """Which of the three answers *commit* earns against *file_path*.
 
-        The grammar funnel runs first: a *commit* that is not a full-length
-        lower-case object name is ``NO_SUCH_COMMIT`` before any process exists, so
-        no revision expression is ever spent as one (module docstring). *file_path*
-        is not funnelled -- it is author-controlled stored data (T-24) -- so a NUL
-        byte it can carry is caught by ``_run``'s fail-closed ``except`` instead.
+        Two guards run before any process exists. The grammar funnel refuses a
+        *commit* that is not a full-length lower-case object name, so no revision
+        expression is ever spent as one (module docstring). The transportability
+        guard refuses a *file_path* git cannot receive -- a NUL, or a lone
+        surrogate a ``\\udcXX`` escape in a landed evidence file decodes to (T-24)
+        -- with ``NO_SUCH_COMMIT``: this keeps ``verify`` total, since the
+        membership check's ``file_path.encode("utf-8")`` would otherwise raise
+        ``UnicodeEncodeError`` on a lone surrogate outside ``_run``'s ``except``.
+        The candidate path refuses such a value earlier with a named
+        ``CandidateGenerationError``; this guard is what makes the adapter total on
+        its own, so no consumer can crash it with a stored path.
 
-        Past the funnel it is one question, whatever the answer turns out to be:
+        Past the guards it is one question, whatever the answer turns out to be:
         the branch that used to skip the second spawn is what made an absent object
         cheaper to refuse than a real one. So the outcome is read off one call
         rather than chosen between two, and the fail-closed readings -- git absent,
@@ -213,12 +230,13 @@ class FixCommitCheck:
         human rendering: no ``core.quotePath`` quoting to undo, no line-splitting a
         newline-bearing name would break, no whitespace-stripping a name of one
         space would lose (module docstring, round-3). The comparison is
-        ``file_path.encode("utf-8")`` against those raw byte entries; a non-UTF-8
-        disk path cannot equal a UTF-8-encoded anchor, so it is refused
-        ``TOUCHES_NOTHING_HERE`` -- fail-closed, and pinned as a property rather
-        than left to accident.
+        ``file_path.encode("utf-8")`` against those raw byte entries; the
+        transportability guard above has already refused any path that encode
+        could not make, so it runs only over paths that have a UTF-8 encoding.
         """
         if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit) is None:
+            return FixCommitVerdict.NO_SUCH_COMMIT
+        if untransportable_reason(file_path) is not None:
             return FixCommitVerdict.NO_SUCH_COMMIT
         completed = self._run(
             [
@@ -256,10 +274,12 @@ class FixCommitCheck:
         initiations that reach here; the runtime pins beside it count the spawns a
         verification actually makes. Fixed vector, no shell.
 
-        The ``except`` names ``ValueError`` because a NUL byte in the stored
-        ``file_path`` (T-24) raises it out of ``subprocess`` -- neither ``OSError``
-        nor ``TimeoutExpired`` -- and a stored value must earn a verdict, never a
-        traceback across the tool seam.
+        The ``except`` names ``ValueError`` as defence in depth: a NUL byte in the
+        stored ``file_path`` (T-24) raises it out of ``subprocess`` -- neither
+        ``OSError`` nor ``TimeoutExpired`` -- and though ``verify``'s
+        transportability guard now refuses a NUL before any spawn, a stored value
+        that reached here must still earn a verdict rather than a traceback across
+        the tool seam.
         """
         if self._git is None:
             return None

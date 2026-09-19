@@ -176,6 +176,7 @@ import pytest
 from fix_commit_grammar import ADMITTED, REFUSED, RefusedFixCommit
 
 from theurian.domain.review import FixCommitVerdict
+from theurian.domain.review_search import untransportable_reason
 from theurian.infrastructure.git import fix_commit_check
 from theurian.infrastructure.git.fix_commit_check import GIT_TIMEOUT_SECONDS, FixCommitCheck
 
@@ -615,38 +616,35 @@ def _non_utf8_path_commit(repo: Path) -> tuple[str, bytes]:
     return child, b"docs/" + leaf
 
 
-def test_a_non_utf8_disk_path_never_verifies_a_utf8_anchor(tmp_path: Path) -> None:
-    """The encoding face: a non-UTF-8 disk path is fail-closed against a str anchor.
+def test_a_non_utf8_disk_path_stored_as_a_surrogate_anchor_fails_closed(tmp_path: Path) -> None:
+    """The encoding face: a non-UTF-8 disk path, stored as its ``str``, is a verdict not a crash.
 
-    With ``-z`` git emits raw path **bytes**; the stored ``file_path`` is a
-    ``str``. A path git records as ``docs/\\xff\\xfe.md`` -- non-UTF-8, because
-    ``0xff`` can never begin a UTF-8 sequence -- can never be named by any
-    ``str``, so an honest fix for it is refused ``TOUCHES_NOTHING_HERE``. That is
-    acceptable and fail-closed, and this pin holds the **property**, verified by a
-    fixture rather than asserted from reasoning.
+    ``verify`` UTF-8-encodes the stored ``file_path`` to compare it against git's
+    raw ``-z`` path bytes. The ``str`` a record stores for a non-UTF-8 disk path is
+    its ``surrogateescape`` decoding -- git records ``docs/\\xff\\xfe.md`` and the
+    faithful ``str`` is ``docs/\\udcff\\udcfe.md``, the same lone-surrogate shape
+    ``json.loads`` produces from a ``\\udcff`` escape (T-24). That ``str`` has no
+    UTF-8 encoding, so ``file_path.encode("utf-8")`` raises ``UnicodeEncodeError`` --
+    **outside** ``_run``'s fail-closed ``except``, which only wraps the spawn.
 
-    **What enforces it is git's byte-based pathspec filter, not the comparison
-    form -- said plainly, because the first draft claimed the wrong mechanism.**
-    ``verify`` passes the stored ``file_path`` as ``-- <path>``, and a UTF-8 ``str``
-    pathspec is byte-matched by git against the tree's raw path bytes; it never
-    matches ``docs/\\xff\\xfe.md``, so git emits **empty output before any
-    comparison runs** (measured: ``b""`` for the anchor pathspec against this
-    commit, git 2.47.1). So byte-membership and a ``decode("utf-8",
-    "surrogateescape")`` membership are **provably equivalent on every reachable
-    input** -- both read the empty output as ``TOUCHES_NOTHING_HERE`` -- and this
-    pin is therefore **not** a discriminator between comparison forms: a decode
-    port survives it. The comparison's real teeth are elsewhere -- the ``.strip()``
-    face (:func:`test_an_honest_whitespace_only_anchor_verifies`) and the
-    rendering-shape family (:func:`test_an_honest_anchor_of_any_path_shape_verifies`).
-    The encoding face is closed on the git side and this records that it stays
-    fail-closed.
+    The earlier fixture decoded the raw bytes with ``errors="replace"``, yielding a
+    proper-UTF-8 ``str`` (U+FFFD) that encodes fine, so it exercised git's pathspec
+    filter but never the encode this face is about -- a decode port survived it. The
+    ``surrogateescape`` decoding is the value a record actually stores, and it makes
+    the encode the thing under test.
+
+    The designed answer is the fail-closed refusing verdict ``NO_SUCH_COMMIT`` -- the
+    one every reading that cannot reach a git answer already takes (an absent object,
+    a spawn that raised, a NUL byte), never the misleading ``TOUCHES_NOTHING_HERE``
+    (which asserts the commit exists and touched nothing, a claim the verification
+    never actually made for a path git cannot receive). RED until HIGH-1's fix lands:
+    today ``verify`` raises here rather than returning.
 
     The fixture is verified real before the property is asserted: git is asked for
     the commit's ``-z`` entries **without a pathspec** and the raw non-UTF-8 bytes
-    must be among them -- otherwise the commit did not actually carry the path and
-    the assertion below would pass over nothing (the caveat the #527-era build
-    avoids). This is the **encoding** face and is in scope; normalization (NFC vs
-    NFD) is #758 and is not tested here.
+    must be among them -- otherwise the commit did not carry the path and the
+    assertion below would pass over nothing (the #527-era empty-output caveat). This
+    is the **encoding** face; normalization (NFC vs NFD) is #758, out of scope.
     """
     repo = _seeded_repo(tmp_path)
     child, raw_name = _non_utf8_path_commit(repo)
@@ -675,16 +673,17 @@ def test_a_non_utf8_disk_path_never_verifies_a_utf8_anchor(tmp_path: Path) -> No
         f"exercises nothing (the empty-output caveat)."
     )
 
-    anchor = raw_name.decode("utf-8", "replace")  # a proper-UTF-8 str a record could store
-    assert anchor.encode("utf-8") not in emitted, (
-        f"the UTF-8-encoded anchor {anchor.encode('utf-8')!r} equalled a raw non-UTF-8 "
-        f"entry, which cannot happen -- the premise of the fail-closed property is wrong"
+    anchor = raw_name.decode("utf-8", "surrogateescape")  # the str a record stores for it (T-24)
+    assert untransportable_reason(anchor) is not None, (
+        f"the anchor {anchor!r} is transportable, so this test no longer exercises the "
+        f"encode face it names -- the surrogateescape decoding must carry a lone surrogate"
     )
-    assert FixCommitCheck(repo).verify(child, anchor) is FixCommitVerdict.TOUCHES_NOTHING_HERE, (
-        "a non-UTF-8 disk path verified against a UTF-8-encoded str anchor. The comparison "
-        "encodes the anchor to UTF-8 and compares to raw entries, so a non-UTF-8 path is "
-        "fail-closed (TOUCHES_NOTHING_HERE) -- a recorded property (the encoding face; "
-        "NFC/NFD normalization is #758, out of scope)."
+    assert FixCommitCheck(repo).verify(child, anchor) is FixCommitVerdict.NO_SUCH_COMMIT, (
+        "a non-UTF-8 disk path stored as its surrogateescape str is not fail-closed. The "
+        "membership check UTF-8-encodes the anchor, which raises for a lone surrogate; the "
+        "designed answer is the refusing verdict NO_SUCH_COMMIT (every reading that cannot "
+        "reach a git answer takes it), never a crash and never the misleading "
+        "TOUCHES_NOTHING_HERE."
     )
 
 
@@ -1156,45 +1155,68 @@ def test_a_merges_first_parent_is_still_verified_on_its_own(tmp_path: Path) -> N
 
 
 # ---------------------------------------------------------------------------
-# A NUL byte reaches `subprocess`, which raises rather than returning.
+# A ValueError-family stored path is a verdict, not a crash (T-24).
 # ---------------------------------------------------------------------------
 
 
-def test_a_stored_path_carrying_a_nul_byte_is_a_verdict_and_not_a_crash(
-    repository: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("label", "untransportable_path"),
+    [
+        ("embedded-nul", f"{FILE_PATH}\x00trailing"),
+        # `chr(0xDCFF)`, not a string literal: mypy crashes serialising a
+        # surrogate-bearing literal to its cache (the `.encode("utf-8")` this test
+        # is about), so the value is built at runtime instead.
+        ("lone-surrogate", "src/retrying" + chr(0xDCFF) + ".py"),
+    ],
+    ids=["embedded-nul", "lone-surrogate"],
+)
+def test_a_value_error_family_stored_path_is_a_verdict_and_not_a_crash(
+    repository: Path, label: str, untransportable_path: str
 ) -> None:
-    """The fail-closed reading has to cover the exception ``subprocess`` actually raises.
+    """The fail-closed reading covers the *class* of exception a stored path provokes.
 
-    ``file_path`` is author-controlled stored data a clone can deliver (T-24),
-    and a NUL byte cannot cross ``subprocess``: it raises ``ValueError: embedded
-    null byte`` from inside the spawn, which is neither ``OSError`` nor
-    ``TimeoutExpired``. So the one exception a *stored* value can provoke was the
-    one the fail-closed ``except`` did not name, and it left the adapter raising
-    through ``verify`` into a caller that may only catch ``TheurianError``.
+    ``file_path`` is author-controlled stored data a clone can deliver (T-24), and
+    two shapes it can carry are both ``ValueError``-family and fail at different
+    points. A **NUL** cannot cross ``subprocess``: it raises ``ValueError: embedded
+    null byte`` from inside the spawn, caught by ``_run``'s ``except``. A **lone
+    surrogate** in U+DC80..U+DCFF -- the value ``json.loads`` gives a ``\\udcff``
+    escape -- *does* cross ``subprocess`` (``surrogateescape`` encodes it to a raw
+    byte and git runs), and raises ``UnicodeEncodeError`` at
+    ``file_path.encode("utf-8")``, **outside** that ``except``. So the surrogate
+    escapes ``verify`` into a caller that may only catch ``TheurianError``; the NUL
+    is a regression guard here, and the surrogate is RED until HIGH-1's fix lands.
 
-    The caller-side twin of this is dead since the entry funnel: a ``fixCommit``
-    carrying a NUL is not a full object name, so it never reaches the spawn --
-    the corpus's ``embedded-nul`` member is where that half is held.
+    Both must reach the fail-closed refusing verdict ``NO_SUCH_COMMIT`` -- the one
+    every reading that cannot reach a git answer already takes -- rather than a
+    crash, and rather than the misleading ``TOUCHES_NOTHING_HERE`` (which for the
+    surrogate would assert the commit exists and touched nothing, a claim the
+    verification never made for a path git cannot receive).
 
-    **The sha is taken from the admitted grammar, and the spawn is asserted to
-    have been attempted.** Both are the same guard: with any other sha the funnel
-    answers first, no spawn happens, the verdict is ``NO_SUCH_COMMIT`` anyway,
-    and this arm goes green having never reached the ``except`` it is about.
+    **Two guards keep the parametrisation honest.** A real HEAD that verifies its
+    own anchored file is the positive control: it proves the sha resolves, so the
+    refusal below is the stored path's doing and not the funnel or an absent object.
+    And ``untransportable_reason`` confirms each input is genuinely the class the
+    test names, so neither parametrisation goes green over a transportable value.
     """
-    calls = _recorded_spawns(monkeypatch)
+    check = FixCommitCheck(repository)
+    head = _git(repository, "rev-parse", "HEAD").stdout.strip()
 
-    verdict = FixCommitCheck(repository).verify(ADMITTED[0], "a\x00b")
-
-    assert len(calls) == 1, (
-        f"the verification made {len(calls)} spawn attempt(s), so the stored path never "
-        f"reached `subprocess` and the refusal below came from somewhere else -- the "
-        f"sha has to be a value the grammar admits for this arm to be about the path"
+    assert check.verify(head, FILE_PATH) is FixCommitVerdict.VERIFIED, (
+        "the fixture's HEAD does not verify its own anchored file, so a NO_SUCH_COMMIT "
+        "below could come from the sha rather than from the untransportable stored path"
     )
+    assert untransportable_reason(untransportable_path) is not None, (
+        f"{untransportable_path!r} is transportable, so the {label} parametrisation does "
+        f"not exercise the fail-closed reading it names"
+    )
+
+    verdict = check.verify(head, untransportable_path)
+
     assert verdict is FixCommitVerdict.NO_SUCH_COMMIT, (
-        f"a stored path carrying a NUL byte answered {verdict!r} rather than the "
-        f"fail-closed refusal. Every reading that cannot reach git joins the refusing "
-        f"side; a `ValueError` out of `verify` crosses the tool seam as a traceback "
-        f"about a domain the caller has never heard of."
+        f"a stored path carrying a {label} answered {verdict!r} rather than the fail-closed "
+        f"refusing verdict. A `ValueError` -- or its `UnicodeEncodeError` subclass -- out "
+        f"of `verify` crosses the tool seam as a traceback about a domain the caller has "
+        f"never heard of, and `TOUCHES_NOTHING_HERE` would instead claim a commit was found."
     )
 
 
