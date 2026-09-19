@@ -8,13 +8,27 @@ but on a `core-v*` tag -- after the change has landed, and on the release path
 rather than as a gate on the commit. `shared.yml` names individual files and
 `-m contract`, and reaches nothing here.) So a commit that touches a file one of
 these modules *reads* -- and nothing else -- runs none of the pins holding that
-file until a release. Measured at 3d8fe8ba, four of the seven
-read paths sat outside the filter: `CLAUDE.md`,
-`.github/PULL_REQUEST_TEMPLATE.md`, `.github/workflows/security.yml`, and the
-rest of the `.github/workflows/*.yml` population `test_job_timeouts` globs. Both
-demonstrations recorded in #762 land green on a repository whose pins say they
-cannot: an edit to `security.yml` alone, and a new workflow file carrying no
-`timeout-minutes` at all.
+file until a release.
+
+**The population, keyed before it is counted.** The key is a *distinct derived
+read pattern* -- one entry per pattern, not per reading module and not per probe
+-- and the count is over the four sibling modules as they stood at 3d8fe8ba,
+before this one existed. Recompute either number by importing this module and
+printing ``sorted({pattern for pattern, _, _ in REQUIREMENTS})``, dropping this
+file from :func:`_corpus` for the sibling-only figure. Measured that way:
+**eight** sibling patterns, of which **four** sat outside the filter --
+`CLAUDE.md`, `.github/PULL_REQUEST_TEMPLATE.md`,
+`.github/workflows/security.yml`, and the rest of the `.github/workflows/*.yml`
+population `test_job_timeouts` globs. The other four were already covered:
+`.github/workflows/red-team.yml`, `docs/contributing/orchestration.md`,
+`docs/contributing/release.md`, and `tools/**` -- which is the one an earlier
+draft of this docstring dropped, reporting seven where its own derivation said
+eight. Including this module the figure is ten; its two additions
+(`.github/workflows/core.yml`, `tests/ci/*.py`) were covered already.
+
+Both demonstrations recorded in #762 land green on a repository whose pins say
+they cannot: an edit to `security.yml` alone, and a new workflow file carrying
+no `timeout-minutes` at all.
 
 The corpus this rule walks
 --------------------------
@@ -40,12 +54,21 @@ corpus so that proving the scan works does not freeze what it finds.
 
 What each read demands of the filter
 ------------------------------------
-A concrete probe path -- every file matching the read today, plus one synthetic
-name matching it that no current file does -- has to be matched by `push.paths`
-*and* `pull_request.paths`. The synthetic probe is what separates "the filter
-lists today's workflows" from "the filter covers the directory": the eighth
-workflow file is the case #762 was filed for. A read that resolves to a
-directory with no glob on it is an import root, and demands recursive coverage.
+A concrete probe path -- every committable file matching the read today, plus
+synthetic names matching it that no current file does -- has to be matched by
+`push.paths` *and* `pull_request.paths`. The synthetic probes are what separate
+"the filter lists today's workflows" from "the filter covers the directory": the
+eighth workflow file is the case #762 was filed for. A `**` read gets two of
+them, nested and zero-depth, because `tools/*/**` matches a nested probe while
+leaving `tools/mutate.py` uncovered.
+
+"Committable" is `git ls-files --cached --others --exclude-standard`: the files
+a push can actually carry, which is the domain GitHub evaluates a paths filter
+against. A plain filesystem walk of `tools/**` also returns
+`tools/__pycache__/*.pyc` -- five of thirty entries here, none of them in a
+fresh clone -- so the parametrized case list would differ between a developer
+machine and the runner. A read that resolves to a directory with no glob on it
+is an import root, and demands recursive coverage.
 """
 
 from __future__ import annotations
@@ -53,6 +76,8 @@ from __future__ import annotations
 import ast
 import pathlib
 import re
+import shutil
+import subprocess
 from typing import Any, cast
 
 import pytest
@@ -72,14 +97,33 @@ Segments = tuple[str, ...]
 
 
 # --------------------------------------------------------------------------
-# GitHub's own path-filter matching, minimally
+# GitHub path-filter matching over a restricted alphabet
 # --------------------------------------------------------------------------
-# `*` matches any run of characters *within one segment*; `**` matches any run
-# including `/`; `?` matches one character other than `/`. Everything else is
-# literal -- a `[` is escaped rather than opened as a character class, which can
-# only under-match and so can only produce a false red, never a false green.
-# Negation (`!`) is not implemented, and `test_the_filter_carries_no_negated_entry`
-# is what keeps that honest.
+# Implemented: `*` matches any run of characters *within one segment*, `**`
+# matches any run including `/`, and every other character is literal.
+#
+# NOT implemented, and foreclosed rather than approximated:
+# `test_the_filter_uses_only_the_alphabet_the_matcher_implements` rejects any
+# entry carrying `?`, `+`, `[` or `]`, and `test_the_filter_carries_no_negated_entry`
+# rejects a leading `!`. GitHub's filter-pattern cheat sheet defines `?` as
+# "zero or one of the *preceding* character" and `+` as "one or more of the
+# preceding character" -- quantifiers, not wildcards:
+# https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions#filter-pattern-cheat-sheet
+# Reading `?` as "one character" (as this file did until the round-1 review)
+# made `_matches("a?b", "axb")` true where GitHub says false, which is the
+# false-green direction: an entry would have read as covering a path the real
+# filter skips. Restricting the alphabet closes that mechanically, where
+# widening the matcher would add semantics nothing in this repository uses and
+# a fresh way to be wrong about each of them.
+#
+# Read patterns are a *different* dialect and keep their own `?`: they come from
+# `pathlib.Path.glob` calls in the sibling modules, where `?` is one character.
+# `_probes` is where that one is handled, and the two must not be conflated.
+
+#: Filter-entry characters this matcher does not implement. `!` is the sibling
+#: rule's, because negation changes what a whole list *means* rather than what
+#: one entry matches.
+UNIMPLEMENTED_METACHARACTERS = "?+[]"
 
 
 def _regex(pattern: str) -> str:
@@ -91,9 +135,6 @@ def _regex(pattern: str) -> str:
             index += 2
         elif pattern[index] == "*":
             out.append("[^/]*")
-            index += 1
-        elif pattern[index] == "?":
-            out.append("[^/]")
             index += 1
         else:
             out.append(re.escape(pattern[index]))
@@ -275,28 +316,61 @@ def _patterns(module: pathlib.Path) -> set[str]:
     return patterns
 
 
+def _committable() -> frozenset[str]:
+    """Repo-relative paths a push can carry: tracked, plus untracked and not ignored.
+
+    The domain GitHub evaluates a paths filter against, and the reason the probe
+    set is the same here and on the runner: a filesystem walk of `tools/**` also
+    yields `tools/__pycache__/*.pyc`, which no commit contains and a fresh clone
+    does not have. `--others` rather than `--cached` alone so a sibling written
+    but not yet `git add`ed is still in the population -- an index-keyed walk
+    would drop exactly the new file whose reads this module exists to notice.
+    """
+    git = shutil.which("git")
+    assert git is not None, "git is required to enumerate the committable file set"
+    listed = subprocess.run(  # noqa: S603
+        [git, "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return frozenset(entry for entry in listed.split("\0") if entry)
+
+
+COMMITTABLE = _committable()
+
+
 def _probes(pattern: str) -> list[str]:
     """Concrete paths the filter must match for `pattern` to be covered.
 
-    Today's files, so the rule fails on something a reader can open, plus one
-    synthetic name matching the same pattern and no current file, so a filter
-    that enumerates today's population instead of covering it goes red -- which
-    is #762 itself.
+    Today's committable files, so the rule fails on something a reader can open,
+    plus the synthetic names below, so a filter that enumerates today's
+    population instead of covering it goes red -- which is #762 itself.
+
+    A `**` read gets two synthetics. The nested one alone is satisfied by
+    `tools/*/**`, which would leave every top-level `tools/*.py` -- the modules
+    `test_red_team_sweep_prose` actually imports -- outside the filter.
     """
     if not any(wildcard in pattern for wildcard in "*?"):
         return [pattern]
 
-    synthetic = pattern.replace("**", f"{PROBE}/{PROBE}").replace("*", PROBE).replace("?", "x")
-    assert not (REPO_ROOT / synthetic).exists(), (
-        f"the synthetic probe {synthetic!r} names a file that exists, so it says nothing about a "
-        "filter covering paths that do not exist yet; rename PROBE"
-    )
-    concrete = (
-        []
-        if "**" in pattern
-        else [p.relative_to(REPO_ROOT).as_posix() for p in REPO_ROOT.glob(pattern)]
-    )
-    return sorted({synthetic, *concrete})
+    # `?` here is `pathlib`'s "one character", not GitHub's quantifier: these
+    # patterns come from the siblings' own `.glob()` calls.
+    def _fill(star_star: str) -> str:
+        return pattern.replace("**", star_star).replace("*", PROBE).replace("?", "x")
+
+    synthetic = {_fill(f"{PROBE}/{PROBE}")}
+    if "**" in pattern:
+        synthetic.add(_fill(PROBE))
+    for name in synthetic:
+        assert not (REPO_ROOT / name).exists(), (
+            f"the synthetic probe {name!r} names a file that exists, so it says nothing about a "
+            "filter covering paths that do not exist yet; rename PROBE"
+        )
+
+    concrete = {p.relative_to(REPO_ROOT).as_posix() for p in REPO_ROOT.glob(pattern)} & COMMITTABLE
+    return sorted(synthetic | concrete)
 
 
 def _requirements() -> list[tuple[str, str, str]]:
@@ -386,6 +460,39 @@ def test_the_filter_carries_no_negated_entry() -> None:
     assert negated == []
 
 
+@pytest.mark.parametrize("event", ["push", "pull_request"])
+def test_the_filter_uses_only_the_alphabet_the_matcher_implements(event: str) -> None:
+    """`_matches` reads `?`, `+`, `[` and `]` as literal characters, and GitHub does not.
+
+    On GitHub's filter-pattern cheat sheet `?` is "zero or one of the *preceding*
+    character" and `+` is "one or more of the preceding character" -- quantifiers
+    over the character before them, not wildcards. Measured on this module's own
+    matcher before this rule existed: `_matches("a?b", "axb")` returned True
+    where GitHub matches nothing of the sort, and returned False for `"ab"`,
+    which GitHub does match. The first of those is the false-green direction --
+    an entry reading as covering a path the real filter skips -- and it is
+    exactly what the comment above `_regex` used to deny was possible.
+
+    Foreclosing the alphabet is the fix rather than implementing the quantifiers:
+    no entry in this repository has ever needed one, and four more branches in
+    `_regex` would be four more chances to be wrong about a character whose only
+    job is to make this rule pass. Wanting one of them here is a signal to
+    implement it in `_regex` *first*, with its own cases in
+    :func:`test_the_matcher_agrees_with_github_over_that_alphabet`.
+    """
+    offenders = {
+        entry: sorted(set(entry) & set(UNIMPLEMENTED_METACHARACTERS))
+        for entry in _paths_filter(event)
+        if set(entry) & set(UNIMPLEMENTED_METACHARACTERS)
+    }
+
+    assert offenders == {}, (
+        f"{CORE_WORKFLOW.name}'s `{event}.paths` carries {offenders}, and `_matches` reads those "
+        "characters literally while GitHub reads them as quantifiers or a character class. Every "
+        "coverage answer in this file about such an entry is unreliable, in both directions."
+    )
+
+
 @pytest.mark.parametrize(
     ("pattern", "path", "expected"),
     [
@@ -397,16 +504,21 @@ def test_the_filter_carries_no_negated_entry() -> None:
         ("tools/**", "tools/sweep.py", True),
         ("tools/**", "tools/nested/deep/script.py", True),
         ("tools/*", "tools/nested/deep/script.py", False),
+        ("tools/*/**", "tools/sweep.py", False),
         ("tests/**", "tests/ci/test_job_timeouts.py", True),
         ("CLAUDE.md", "CLAUDE.md", True),
         ("CLAUDE.md", "docs/CLAUDE.md", False),
     ],
 )
-def test_the_matcher_implements_githubs_wildcard_semantics(
+def test_the_matcher_agrees_with_github_over_that_alphabet(
     pattern: str, path: str, expected: bool
 ) -> None:
-    """`*` stops at a `/` and `**` does not -- the whole reason `.github/workflows/*.yml`
-    covers the workflow directory without also covering everything under `.github/`.
+    """Literals, `*` and `**` -- the whole alphabet, and nothing about `?` or `+`.
+
+    `*` stops at a `/` and `**` does not, which is the reason
+    `.github/workflows/*.yml` covers the workflow directory without also covering
+    everything under `.github/`. The `tools/*/**` case is the one MEDIUM-2 turned
+    on: it is a plausible rewrite of `tools/**` that covers no top-level file.
     """
     assert _matches(pattern, path) is expected
 
@@ -428,13 +540,42 @@ def test_every_derived_read_resolves_in_the_tree() -> None:
     assert missing == []
 
 
-def test_the_derivation_produced_requirements_at_all() -> None:
-    """The rule below is parametrized from the scan; an empty scan collects nothing.
+#: The four patterns #762 was filed over, held as a floor under the derivation.
+#:
+#: Not a restatement of the population -- it is deliberately a *subset*, so a
+#: new sibling read still has to be discovered rather than listed, and a module
+#: that reads nothing does not make this rule red. What it forecloses is the
+#: derivation quietly shrinking: `REQUIREMENTS` is non-empty from this module's
+#: own two reads alone, so a sibling whose anchor shape drifts out of
+#: `_reads_of`'s reach -- a `parents` chain through an intermediate name, an
+#: f-string, a binding this scan does not follow -- would drop every one of its
+#: coverage requirements and leave the suite green. That is #762's failure shape
+#: rebuilt one level up, in the instrument instead of the filter.
+DERIVATION_FLOOR = frozenset(
+    {
+        "CLAUDE.md",
+        ".github/PULL_REQUEST_TEMPLATE.md",
+        ".github/workflows/security.yml",
+        ".github/workflows/*.yml",
+    }
+)
 
-    pytest reports zero collected cases as a pass, so without this the whole
-    file could go quiet in exactly the way #762 describes.
+
+def test_the_derivation_still_finds_the_reads_that_762_was_filed_over() -> None:
+    """The rule below is parametrized from the scan; a shrunken scan collects less.
+
+    pytest reports zero collected cases as a pass, and a *partial* collapse is
+    worse than a total one because the file goes on reporting coverage for
+    whatever it still finds.
     """
-    assert REQUIREMENTS
+    derived = {pattern for pattern, _, _ in REQUIREMENTS}
+
+    assert derived >= DERIVATION_FLOOR, (
+        f"the derivation no longer reaches {sorted(DERIVATION_FLOOR - derived)}. These are the "
+        "reads #762 was filed over, so either a sibling stopped reading one -- in which case drop "
+        "it from DERIVATION_FLOOR deliberately -- or the scan stopped understanding how that "
+        "sibling names it, and every other read in the same shape has silently gone with it."
+    )
 
 
 @pytest.mark.parametrize(

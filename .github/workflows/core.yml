@@ -5,9 +5,11 @@ name: Core
 #
 # `.github/workflows/*.yml` is in the list -- every workflow file, this one
 # included -- because two suites read workflow text rather than merely being
-# run by it, and this is the only workflow that runs either on a push or a
-# pull request. (`release-core.yml` runs the whole suite as well, but on a
-# `core-v*` tag: after the change has landed, which is too late to gate it.)
+# run by it, and this is the only workflow that runs either suite on a push or
+# a pull request. (`shared.yml`, `plugin.yml` and `pages.yml` run then too; they
+# name individual test files and `-m contract`, and reach neither suite.
+# `release-core.yml` runs the whole suite, but on a `core-v*` tag: after the
+# change has landed, which is too late to gate it.)
 #
 #   * `tests/release/` extracts `release-core.yml`'s step bodies and runs them.
 #     Those tests are the only automated check the publication path has, and it
@@ -21,11 +23,19 @@ name: Core
 #     is what #762 found -- an edit to `security.yml` alone, and a new workflow
 #     carrying no `timeout-minutes` at all, each landed green.
 #
+# `release-core.yml` is *also* listed by name, redundantly against that glob and
+# on purpose: `tests/release`'s
+# `test_a_change_to_the_workflow_under_test_runs_this_file` asserts that exact
+# string is present, not that the filter covers the file. Delete the entry and
+# that assertion together, never one alone.
+#
 # GitHub's `*` does not cross a `/`, so the pattern is that directory and
 # nothing deeper. It does mean a `plugin.yml`- or `pages.yml`-only edit now
 # pays for a Core matrix: that is the price of `test_job_timeouts` covering
 # those files at all. `tests/ci/test_core_paths_filter_covers_reads.py` derives
 # the read set from those modules and fails when this filter stops covering it.
+# It also rejects a filter entry containing `?`, `+`, `[` or `]`: GitHub reads
+# those as quantifiers and a character class, and that checker does not.
 on:
   push:
     branches: [main]
@@ -36,12 +46,9 @@ on:
       - "tools/**"
       - "pyproject.toml"
       - "uv.lock"
-      # Every workflow file; see the rationale at the top of this file.
+      # Every workflow file, and `release-core.yml` again by name; the top of
+      # this file says why both lines are here.
       - ".github/workflows/*.yml"
-      # Redundant against the glob, and deliberate: `tests/release`'s
-      # `test_a_change_to_the_workflow_under_test_runs_this_file` asserts this
-      # exact string is here, not that the filter covers the file. Delete the
-      # line and that assertion together, never one alone.
       - ".github/workflows/release-core.yml"
       # The four below are read BY `tests/ci/`, whose prose pins hold this
       # repository's workflow text and its process documentation to each other.
@@ -65,12 +72,9 @@ on:
       - "tools/**"
       - "pyproject.toml"
       - "uv.lock"
-      # Every workflow file; see the rationale at the top of this file.
+      # Every workflow file, and `release-core.yml` again by name; the top of
+      # this file says why both lines are here.
       - ".github/workflows/*.yml"
-      # Redundant against the glob, and deliberate: `tests/release`'s
-      # `test_a_change_to_the_workflow_under_test_runs_this_file` asserts this
-      # exact string is here, not that the filter covers the file. Delete the
-      # line and that assertion together, never one alone.
       - ".github/workflows/release-core.yml"
       # The four below are read BY `tests/ci/`, whose prose pins hold this
       # repository's workflow text and its process documentation to each other.
