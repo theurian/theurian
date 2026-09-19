@@ -160,3 +160,55 @@ def test_a_token_cannot_be_assembled_across_the_body_comment_boundary() -> None:
     )
 
     assert found == ()
+
+
+# --------------------------------------------------------------------------
+# Round 1 HIGH-1: a test_name (or path) match already covered by a path
+# citation is dropped rather than emitted as its own -- refuting either would
+# reintroduce a citation the issue never made, graded DANGLING against
+# premise_check's own allowed-kinds rule.
+# --------------------------------------------------------------------------
+
+
+def test_a_prefixed_test_file_path_yields_only_the_path_never_its_embedded_test_name() -> None:
+    """`tests/.../test_premise_report.py` is one path citation; the
+    `test_premise_report` substring it contains is not the issue citing a
+    test function, and emitting it too would grade a citation the issue never
+    made (round 1 HIGH-1, face A).
+    """
+    found = premise_citations.extract_citations(
+        "Failing case lives in tests/unit/tools/test_premise_report.py forever.",
+        (),
+        tracked_basenames={},
+    )
+
+    assert found == (Citation("path", "tests/unit/tools/test_premise_report.py"),)
+
+
+def test_a_bare_test_file_name_yields_only_the_resolved_path_never_its_embedded_test_name() -> None:
+    """The bare-filename form of the same face: once `unique_basenames`
+    resolves it to a tracked path, the embedded `test_premise_report` must
+    still be dropped -- the resolution path (`elif _has_known_extension`) is
+    different code from the slash-prefixed case above, so face A needs its
+    own pin on this branch too.
+    """
+    basenames = premise_citations.unique_basenames(("tests/unit/tools/test_premise_report.py",))
+
+    found = premise_citations.extract_citations(
+        "Failing case lives in test_premise_report.py forever.", (), tracked_basenames=basenames
+    )
+
+    assert found == (Citation("path", "tests/unit/tools/test_premise_report.py"),)
+
+
+def test_a_path_token_truncated_by_a_glob_metacharacter_yields_no_path_citation() -> None:
+    """`tools/premise_*.py` is a glob a comment used to describe a family of
+    files, not a citation of the file `tools/premise_`; resolving the
+    truncated token would grade DANGLING against a path the issue never
+    named (round 1 HIGH-1, face B).
+    """
+    found = premise_citations.extract_citations(
+        "See tools/premise_*.py for all of them.", (), tracked_basenames={}
+    )
+
+    assert found == ()
