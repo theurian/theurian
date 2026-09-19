@@ -31,11 +31,14 @@ if TYPE_CHECKING:
 #: would make the two modules mutually dependent at load time.
 _HOLDS: Final = "PREMISE-HOLDS"
 
-#: Mirrors ``premise_check.DANGLING_CITATION``, ``SURFACE_TOUCHED`` and
-#: ``CHECK_ERROR`` -- the reasons worth an agent's attention. An issue whose
-#: only reasons are ``unknown-citation`` or ``no-citations`` goes in the
-#: unknown-only tail instead: see :func:`_is_high_signal`.
-_HIGH_SIGNAL_REASONS: Final = frozenset({"dangling-citation", "surface-touched", "check-error"})
+#: Mirrors ``premise_check.DANGLING_CITATION``, ``SURFACE_TOUCHED``,
+#: ``CHECK_ERROR`` and ``REFERENCE_NOT_OPEN`` -- the reasons worth an
+#: agent's attention. An issue whose only reasons are ``unknown-citation``
+#: or ``no-citations`` goes in the unknown-only tail instead: see
+#: :func:`_is_high_signal`.
+_HIGH_SIGNAL_REASONS: Final = frozenset(
+    {"dangling-citation", "surface-touched", "check-error", "reference-not-open"}
+)
 
 #: How much of an issue title to show. Long enough for a triager to recognise
 #: the issue, short enough that one absurdly long title does not dominate.
@@ -196,8 +199,9 @@ def render(report: Report) -> str:
         _section(
             "Unknown-only tail",
             unknown_only,
-            "This set gets no agent spend by decision -- its size is a grammar-recall "
-            "measure, not a defect count.",
+            "Only unknown-citation and no-citations land here (a not-open issue "
+            "reference is high-signal instead) -- this set gets no agent spend by "
+            "decision, and its size is a grammar-recall measure, not a defect count.",
             "",
         )
     )

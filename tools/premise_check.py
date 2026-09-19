@@ -36,9 +36,9 @@ Machine verdict
 citation is INTACT, and no commit has touched a cited path since the issue
 was opened. Everything else is ``NEEDS-AGENT``, carrying which of
 ``dangling-citation``, ``unknown-citation``, ``surface-touched``,
-``no-citations`` or ``check-error`` applied. This module never emits MOOT or
-CHANGED: naming the commit that mooted an issue requires reading a diff,
-which is judgement, not verification.
+``no-citations``, ``check-error`` or ``reference-not-open`` applied. This
+module never emits MOOT or CHANGED: naming the commit that mooted an issue
+requires reading a diff, which is judgement, not verification.
 
 Determinism
 -----------
@@ -117,6 +117,7 @@ UNKNOWN_CITATION: Final = "unknown-citation"
 SURFACE_TOUCHED: Final = "surface-touched"
 NO_CITATIONS: Final = "no-citations"
 CHECK_ERROR: Final = "check-error"
+REFERENCE_NOT_OPEN: Final = "reference-not-open"
 
 HOLDS: Final = "PREMISE-HOLDS"
 NEEDS_AGENT: Final = "NEEDS-AGENT"
@@ -571,6 +572,8 @@ def _reasons(
         reasons.append(DANGLING_CITATION)
     if any(citation.status == UNKNOWN for citation in citations):
         reasons.append(UNKNOWN_CITATION)
+    if any(citation.kind == "issue_ref" and citation.status == UNKNOWN for citation in citations):
+        reasons.append(REFERENCE_NOT_OPEN)
     if log_failed or any(citation.status == ERROR for citation in citations):
         reasons.append(CHECK_ERROR)
     if touching:
