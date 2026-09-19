@@ -4,12 +4,13 @@
 
 ## Deferred claims
 
-<!-- Claims this PR defers to the release-cut adversarial pass, one per line. If
-     nothing is deferred, replace this comment with the single word None. The
-     release-cut gather reads this section with HTML comments stripped, so a
-     comment left in place leaves the section empty, and an empty section comes
-     back to you as a recording failure rather than reading as nothing
-     deferred. -->
+<!-- Claims this PR defers to the release-cut adversarial pass, one per line,
+     each naming the command that re-checks it: the pass re-runs that command
+     rather than re-deriving your argument. If nothing is deferred, replace this
+     comment with the single word None. The release-cut gather reads this
+     section with HTML comments stripped, so a comment left in place leaves the
+     section empty, and an empty section comes back to you as a recording
+     failure rather than reading as nothing deferred. -->
 
 ## Scope
 
