@@ -66,17 +66,28 @@ def _labelled_block(label: str, text: str) -> str:
 
 
 def _inline(text: str) -> str:
-    """One code span holding arbitrary text, by CommonMark's own two rules.
+    """One code span holding arbitrary text.
 
-    The delimiter is longer than any backtick run inside, and a value that
-    begins or ends with a backtick is padded with one space at each end,
-    which CommonMark strips again on render. Without both, a token or
-    command containing a backtick closes its own span and spills the rest
-    of a table row into prose.
+    Two rules are CommonMark's own: the delimiter is longer than any
+    backtick run inside, and a value that begins or ends with a backtick is
+    padded with one space at each end, which CommonMark strips again on
+    render. Without both, a token or command containing a backtick closes
+    its own span and spills the rest of a table row into prose. A third
+    rule is GFM's, not CommonMark's: a table row splits on any unescaped
+    ``|``, even inside a code span, so a literal pipe is backslash-escaped
+    before the fence goes on (round 2 HIGH-2: 21 pipes in one captured
+    `git grep` census turned a 5-column row into 26 cells).
+
+    Empty text gets a single space rather than an empty pair of backticks
+    (round 2 LOW-1): two bare backticks with nothing between them are one
+    ambiguous 2-backtick run, not a closed empty span.
     """
-    fence = _fence(text, minimum=1)
-    padding = " " if text.startswith("`") or text.endswith("`") else ""
-    return f"{fence}{padding}{text}{padding}{fence}"
+    if not text:
+        return "` `"
+    escaped = text.replace("|", "\\|")
+    fence = _fence(escaped, minimum=1)
+    padding = " " if escaped.startswith("`") or escaped.endswith("`") else ""
+    return f"{fence}{padding}{escaped}{padding}{fence}"
 
 
 def _inline_multiline(text: str) -> str:
@@ -128,13 +139,7 @@ def _sections(
 ) -> tuple[
     list[IssueReport], list[IssueReport], list[IssueReport], list[IssueReport], list[IssueReport]
 ]:
-    """Partition into five priority buckets, preserving issue-number ordering.
-
-    Each issue lands in the first bucket whose rule matches, checked in this
-    order: PREMISE-HOLDS, a dangling citation, a surface-touched or
-    check-error reason, a not-open issue reference, then the unknown-only
-    tail for what remains.
-    """
+    """Partition into five priority buckets, preserving issue-number ordering."""
     dangling: list[IssueReport] = []
     surface_touched: list[IssueReport] = []
     reference_not_open: list[IssueReport] = []
