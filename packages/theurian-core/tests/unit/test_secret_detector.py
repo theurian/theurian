@@ -101,7 +101,7 @@ def _secrets_in(tree: pathlib.Path) -> list[str]:
     ``main``, when this section still lived in ``test_plugin_boundary.py``,
     replacing its body with ``assert True`` and making it skip every file both left
     that file green, because no file in the plugin tree holds a candidate that
-    reaches the detector's positive path. The eleven it does hold are
+    reaches the detector's positive path. The twelve it does hold are
     :data:`_TREE_CANDIDATES`, and not one carries an upper-case letter.
     """
     violations: list[str] = []
@@ -282,26 +282,27 @@ _AT_THE_FLOOR: Final = (string.ascii_uppercase[:6] + string.ascii_lowercase[:6] 
 _UNDER_THE_FLOOR: Final = (string.ascii_uppercase[:6] + string.ascii_lowercase[:6] + "012") * 2
 
 #: Every candidate the scan actually meets in the plugin tree -- measured rather
-#: than remembered, and re-measured at ``c03803cc``, a commit on #380's branch and
-#: not on ``main``. There are eleven, and an earlier version of this file claimed
-#: two, one of which the scan never sees at all. Four are ADR filenames quoted in
-#: documents (``0002-`` and ``0012-`` in ``README.md``, ``0013-`` in ``README.md``,
-#: ``CHANGELOG.md`` and ``commands/propose.md``, and ``0030-`` in
-#: ``CHANGELOG.md``); two are the names of tests in ``test_plugin_boundary.py``,
-#: quoted by ``/theurian:upgrade``'s document; three are the names of tests in
-#: ``test_config_key_call_sites.py``, quoted by the plugin ``CHANGELOG.md``'s
-#: mutation record; and two more are the names of tests in
-#: ``test_plugin_boundary.py``, quoted by the SessionStart hook's own comment.
+#: than remembered, and re-measured at ``202d92ba``, a commit on the
+#: backlog-harvest branch and not on ``main``. There are twelve, and an earlier
+#: version of this file claimed two, one of which the scan never sees at all. Four
+#: are ADR filenames quoted in documents (``0002-`` and ``0012-`` in ``README.md``,
+#: ``0013-`` in ``README.md``, ``CHANGELOG.md`` and ``commands/propose.md``, and
+#: ``0030-`` in ``CHANGELOG.md``); two are the names of tests in
+#: ``test_plugin_boundary.py``, quoted by ``/theurian:upgrade``'s document; three
+#: are the names of tests in ``test_config_key_call_sites.py``, quoted by the
+#: plugin ``CHANGELOG.md``'s mutation record; and three more are the names of tests
+#: in ``test_plugin_boundary.py``, quoted by the SessionStart hook's own comment.
 #: The count was five until that record named its three tests, eight until the
-#: same file's ``[Unreleased]`` correction linked ADR-0030, and nine until #380's
-#: SessionStart hook quoted two more test names -- which is how a measurement moves
-#: without anything being wrong.
+#: same file's ``[Unreleased]`` correction linked ADR-0030, nine until #380's
+#: SessionStart hook quoted two more test names, and eleven until #627's rewrite of
+#: that comment cited a third -- which is how a measurement moves without anything
+#: being wrong.
 #:
 #: Not one carries an upper-case letter, so the detector's positive path never
 #: executes against the real tree. That is why the scan needs
 #: :func:`test_the_scan_reports_a_token_planted_in_any_text_file` to be able to fail
-#: at all, and why these eleven are held here as the negative population rather than
-#: standing in for one.
+#: at all, and why these twelve are held here as the negative population rather
+#: than standing in for one.
 #:
 #: :func:`test_this_file_still_knows_what_the_scan_meets` fails if the tree and this
 #: tuple disagree, so the count above stays a measurement rather than a memory.
@@ -317,6 +318,7 @@ _TREE_CANDIDATES: Final = (
     "test_the_secret_scan_description_is_exactly_what_this_file_records",
     "test_a_session_start_warning_cannot_execute_anything",
     "test_a_session_start_warning_is_a_terminated_literal",
+    "test_a_session_start_warning_takes_only_quoted_arguments",
 )
 
 #: One planted token per suffix the plugin tree actually carries -- measured at
@@ -432,22 +434,22 @@ def test_the_entropy_floor_is_where_the_detector_says_it_is() -> None:
 def test_the_secret_detector_ignores_the_identifiers_it_actually_meets(candidate: str) -> None:
     """A false positive costs the same as a false negative, in trust.
 
-    These eleven are what the scan really passes to the detector on every run:
+    These twelve are what the scan really passes to the detector on every run:
     four ADR filenames quoted in documents, two test names quoted by
     ``/theurian:upgrade``'s document, three more quoted by the plugin
-    changelog, which names the tests that hold its measured claims, and two
+    changelog, which names the tests that hold its measured claims, and three
     named in the SessionStart hook's own comment. Any one of
     them reported as a secret makes the whole scan noise, and a noisy scan gets
     switched off.
 
     They are also the reason the detector's requirements are not interchangeable.
-    Two of the eleven clear the entropy floor -- 4.0389 and 4.0643 bits -- and are
-    refused only because they carry no upper-case letter. The two newest are
-    refused twice over -- 3.6516 and 3.4718 bits, and no upper-case
-    letter either -- so they exercise neither gate on its own. Across these
-    eleven, every snake_case test name sits below the floor while two of the four
-    kebab-case filenames clear it; that is a measurement of the eleven rather than
-    a rule about the two shapes.
+    Two of the twelve clear the entropy floor -- 4.0389 and 4.0643 bits -- and are
+    refused only because they carry no upper-case letter. The three the hook's
+    comment names are refused twice over -- 3.6516, 3.4718 and 3.7780 bits, and no
+    upper-case letter either -- so they exercise neither gate on its own. Across
+    these twelve, every snake_case test name sits below the floor while two of the
+    four kebab-case filenames clear it; that is a measurement of the twelve rather
+    than a rule about the two shapes.
     """
     detected = _looks_like_a_secret(candidate)
 
@@ -460,10 +462,10 @@ def test_this_file_still_knows_what_the_scan_meets() -> None:
     The population above decides what the test before it proves; if an ADR is
     renamed or a document quotes a new long identifier, the negative cases silently
     stop describing the tree. Compared as a set rather than as a count, because
-    "eleven" is the part a reader can check and the part that rots first -- it was
+    "twelve" is the part a reader can check and the part that rots first -- it was
     "five" until the plugin changelog quoted three more test names, "eight" until
-    the same file linked ADR-0030, and "nine" until the SessionStart hook's
-    comment named two more.
+    the same file linked ADR-0030, "nine" until the SessionStart hook's comment
+    named two more, and "eleven" until a rewrite of that comment cited a third.
 
     This walk is deliberately its own rather than :func:`_secrets_in`'s. A shared
     walker would be a shared blind spot, and the one piece of state the two did
@@ -471,7 +473,7 @@ def test_this_file_still_knows_what_the_scan_meets() -> None:
     once: adding ``.yaml`` to it hid a token in the real ``compatibility.yaml`` from
     the scan *and* from this test together. So this reads every file in the tree
     with no skip list at all, which is measured to change nothing today: ``LICENSE``
-    and the skipped suffixes contribute no candidates, and the set is the same eleven
+    and the skipped suffixes contribute no candidates, and the set is the same twelve
     either way. What the two walks do share is :func:`_readable_text`, which is a
     rule about how one file is decoded rather than about which files exist.
     """
@@ -527,7 +529,7 @@ def test_the_scan_reports_a_token_planted_in_any_text_file(
     A guard no input reaches survives its own deletion, and this one did: measured
     on ``486bb99``, a commit on #244's branch and not on ``main``, replacing the
     scan's body with ``assert True`` and making it skip every file both left the
-    suite green, because the eleven candidates the tree holds all stop at the
+    suite green, because the twelve candidates the tree holds all stop at the
     detector's class gate. This is the only test that makes
     the scan execute the branch it exists for.
 
