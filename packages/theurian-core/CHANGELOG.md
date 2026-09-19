@@ -10,7 +10,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
-## [Unreleased]
+## [0.4.0] - 2026-09-19
 
 ### Added
 
