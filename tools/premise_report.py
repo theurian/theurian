@@ -101,6 +101,10 @@ def _summary_table(issues: Sequence[IssueReport]) -> str:
     ]
     for reason in sorted(reason_counts):
         lines.append(f"| &nbsp;&nbsp;reason: {reason} | {reason_counts[reason]} |")
+    lines.append("")
+    lines.append(
+        "_An issue can carry more than one reason; the reason rows do not sum to NEEDS-AGENT._"
+    )
     return "\n".join(lines)
 
 

@@ -119,7 +119,7 @@ def test_premise_holds_only_when_every_condition_is_met_at_once() -> None:
             "git",
             "log",
             "--format=%H%x09%s",
-            f"--since={issue.created_at}",
+            f"--since-as-filter={issue.created_at}",
             "HEAD",
             "--",
             "tools/premise_check.py",

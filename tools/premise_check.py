@@ -550,7 +550,17 @@ def _touching_commits(
     """
     if not paths:
         return (), False
-    argv = ("git", "log", "--format=%H%x09%s", f"--since={since}", "HEAD", "--", *sorted(paths))
+    # `--since-as-filter`, not `--since`, which is a traversal cutoff a rebased
+    # or cherry-picked commit can hide later commits behind (round 1 MEDIUM-3).
+    argv = (
+        "git",
+        "log",
+        "--format=%H%x09%s",
+        f"--since-as-filter={since}",
+        "HEAD",
+        "--",
+        *sorted(paths),
+    )
     result = runner(argv)
     if result.returncode != 0:
         return (), True
@@ -773,7 +783,7 @@ def _run_check(args: argparse.Namespace) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = _build_parser().parse_args(sys.argv[1:] if argv is None else argv)
+    args = _build_parser().parse_args(argv)
     try:
         if args.command == "fetch":
             return _run_fetch(args)

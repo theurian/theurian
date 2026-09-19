@@ -77,7 +77,7 @@ def _script() -> dict[tuple[str, ...], premise_check.CommandResult]:
             "git",
             "log",
             "--format=%H%x09%s",
-            "--since=2026-01-01T00:00:00Z",
+            "--since-as-filter=2026-01-01T00:00:00Z",
             "HEAD",
             "--",
             "tools/premise_check.py",
