@@ -34,10 +34,10 @@ flowchart TB
 
 The plugin contains no Python at all. Its scripts shell out to `theurian
 <verb> --json`. Two steps in `plugin.yml` hold that over the whole `plugins/`
-tree — a grep for `import theurian` and a `find` for `*.py` — and they are CI
-steps rather than tests, so they still fail when the Python suite is broken.
-`test_plugin_boundary.py` asserts the same two properties, but only for
-`plugins/claude-code/`.
+tree — a grep for `import theurian` and a `find` for `*.py` outside a `tests/`
+path — and they are CI steps rather than tests, so they still fail when the
+Python suite is broken. `test_plugin_boundary.py` asserts the same two
+properties, but only for `plugins/claude-code/`.
 
 That constraint is what keeps the plugin movable to its own repository, and it is
 also why the plugin can never quietly acquire logic that belongs in Core.

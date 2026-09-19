@@ -27,9 +27,11 @@ Present a compact summary:
   `reason`/`remedy`, where those are absent) carries a cure that deletes every
   registration on the machine. Non-empty: the file parsed and the ids it lists
   did not — name them; where the payload also carries a project id,
-  `reason`/`remedy` is their per-entry `theurian project unregister` cure, and
-  where it does not, nothing in the payload explains them. Plus the project id
-  and current state hash when present
+  `reason`/`remedy` is their per-entry `theurian project unregister` cure. Where
+  it does not, that pair may still carry a per-entry cure of its own — a
+  rootless entry makes resolution itself refuse with one — or may describe an
+  unrelated failure, leaving the ids unexplained. Plus the project id and
+  current state hash when present
 - index: active build, whether it is stale, whether a build is in progress
 - migrations: applied count, pending count, any checksum mismatch
 
