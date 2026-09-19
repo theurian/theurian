@@ -134,3 +134,30 @@ enumerate the path families or allocation terms *first*, pick the worst member
 of each, and check the parts sum to the measured whole. A population or fixture
 chosen because it makes the assertion pass is the class the pin exists to
 prevent. Burned in after two recurrences (#685 rounds 1-3).
+
+## An ASCII path fixture tests the one shape that renders as itself
+
+Any test family over path or filename handling enumerates the path-shape family
+in its fixtures — each member defeats a different naive implementation: ASCII;
+CJK (the corpus's own `署名付きトークンを持つ`); a name git quotes under
+`core.quotePath` (`"`, backslash); an embedded newline (`.splitlines()` tears it
+in two); a control char (tab); whitespace-only (`.strip()` drops it); non-UTF-8
+stored as its `surrogateescape` str, the lone `\udcXX` a JSON escape yields,
+reachable only through hand-built git objects; and a multi-file commit. Two
+negatives are members too: a directory path (`.`, `docs`) and a foreign entry,
+neither of which may match or verify. The worked example is
+`test_fix_commit_check_adapter.py`'s `PATH_SHAPES` table *plus* its sibling
+tests — no single table holds the family.
+
+**A shape the fixture's construction cannot produce is said, never
+substituted**, and the fixture is asserted to carry the shape before the
+behaviour over it is.
+
+Burned in after three consecutive findings on `FixCommitCheck.verify` that
+ASCII-only path fixtures hid — a stored `.`/`docs` verifying a foreign commit
+(round-2 adversarial HIGH), the `core.quotePath` / embedded-newline / whitespace
+faces (fix-wave-3 HIGH), and the `.strip()` face caught pre-flip ([PR #744's
+round record](https://github.com/theurian/theurian/pull/744#issuecomment-5739349093))
+— then the encoding face the 0.4.0 anchored pass found (PR #766 HIGH-1): the
+pinning fixture decoded with `errors="replace"`, holding an encodable U+FFFD, so
+it could not produce the surrogate shape its own name claimed.
