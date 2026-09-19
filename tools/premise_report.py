@@ -31,6 +31,12 @@ if TYPE_CHECKING:
 #: would make the two modules mutually dependent at load time.
 _HOLDS: Final = "PREMISE-HOLDS"
 
+#: Mirrors ``premise_check.DANGLING_CITATION``, ``SURFACE_TOUCHED`` and
+#: ``CHECK_ERROR`` -- the reasons worth an agent's attention. An issue whose
+#: only reasons are ``unknown-citation`` or ``no-citations`` goes in the
+#: unknown-only tail instead: see :func:`_is_high_signal`.
+_HIGH_SIGNAL_REASONS: Final = frozenset({"dangling-citation", "surface-touched", "check-error"})
+
 #: How much of an issue title to show. Long enough for a triager to recognise
 #: the issue, short enough that one absurdly long title does not dominate.
 _EXCERPT_CHARS: Final = 400
@@ -93,6 +99,27 @@ def _citation_row(citation: CitationResult) -> str:
     )
 
 
+def _is_high_signal(issue: IssueReport) -> bool:
+    return any(reason in _HIGH_SIGNAL_REASONS for reason in issue.needs_agent_reasons)
+
+
+def _sections(
+    issues: Sequence[IssueReport],
+) -> tuple[list[IssueReport], list[IssueReport], list[IssueReport]]:
+    """Partition, preserving issue-number ordering: high-signal, unknown-only, holds."""
+    high_signal: list[IssueReport] = []
+    unknown_only: list[IssueReport] = []
+    holds: list[IssueReport] = []
+    for issue in issues:
+        if issue.machine_verdict == _HOLDS:
+            holds.append(issue)
+        elif _is_high_signal(issue):
+            high_signal.append(issue)
+        else:
+            unknown_only.append(issue)
+    return high_signal, unknown_only, holds
+
+
 def _issue_block(issue: IssueReport) -> str:
     return "\n".join(
         [
@@ -108,31 +135,62 @@ def _issue_block(issue: IssueReport) -> str:
     )
 
 
+def _issue_lines(issue: IssueReport) -> list[str]:
+    lines = [
+        _issue_block(issue),
+        "",
+        "| Kind | Token | Status | Command |",
+        "| --- | --- | --- | --- |",
+    ]
+    for citation in issue.citations:
+        lines.append(_citation_row(citation))
+    if issue.touching_commits:
+        lines.append("")
+        lines.append("Touching commits since creation:")
+        for commit in issue.touching_commits:
+            lines.append(f"- {_inline(commit.sha)} {_inline(commit.subject)}")
+    lines.append("")
+    lines.append("</details>")
+    lines.append("")
+    return lines
+
+
+def _section(heading: str, issues: Sequence[IssueReport], *prose: str) -> list[str]:
+    lines = [f"## {heading} ({len(issues)})", ""]
+    lines.extend(prose)
+    for issue in issues:
+        lines.extend(_issue_lines(issue))
+    return lines
+
+
 def render(report: Report) -> str:
-    """The full Markdown triage report for one ``check`` run."""
+    """The full Markdown triage report for one ``check`` run, sectioned by triage weight.
+
+    High-signal first (worth an agent's time), then the unknown-only tail
+    (no agent spend by decision), then the holds -- so a human triager reads
+    the high-signal subset first and can stop there.
+    """
+    high_signal, unknown_only, holds = _sections(report.issues)
     lines = [
         "# Issue premise sweep",
         "",
         f"- Head commit: {_inline(report.head_commit)}",
         f"- Snapshot: {_inline(report.snapshot_path)}",
         f"- Issues checked: {len(report.issues)}",
+        f"- High-signal: {len(high_signal)}",
         "",
         _summary_table(report.issues),
         "",
     ]
-    for issue in report.issues:
-        lines.append(_issue_block(issue))
-        lines.append("")
-        lines.append("| Kind | Token | Status | Command |")
-        lines.append("| --- | --- | --- | --- |")
-        for citation in issue.citations:
-            lines.append(_citation_row(citation))
-        if issue.touching_commits:
-            lines.append("")
-            lines.append("Touching commits since creation:")
-            for commit in issue.touching_commits:
-                lines.append(f"- {_inline(commit.sha)} {_inline(commit.subject)}")
-        lines.append("")
-        lines.append("</details>")
-        lines.append("")
+    lines.extend(_section("High-signal", high_signal))
+    lines.extend(
+        _section(
+            "Unknown-only tail",
+            unknown_only,
+            "This set gets no agent spend by decision -- its size is a grammar-recall "
+            "measure, not a defect count.",
+            "",
+        )
+    )
+    lines.extend(_section("PREMISE-HOLDS", holds))
     return "\n".join(lines)
