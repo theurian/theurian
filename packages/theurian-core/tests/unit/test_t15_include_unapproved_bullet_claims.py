@@ -223,23 +223,28 @@ _RETIRED_SENTENCE: Final = (
 
 
 def test_the_flag_reachable_key_still_reads_the_pre_657_sentence() -> None:
-    """The premise under the first arm: it can still see the sentence it guards.
+    """The key is held against the wording it exists to refuse, not only today's.
 
-    An equality arm is green against a key that has stopped matching -- a reworded
-    clause, a normalisation that stopped folding the wrap -- and it is green most
-    convincingly at exactly that moment. So #657's false sentence is held here
-    verbatim and driven through the same extractor: it must still be read, and
-    what it enumerates must not be what the live gate says. That pairing is the
-    reversion arm -- the bullet drifting back to "`draft` or `rejected`" fails
-    the first test rather than slipping past a key that no longer fires.
+    Not a liveness premise: :func:`_statuses_named` refuses a key matching zero
+    times, so a key gone dead reddens the arm above by itself -- measured, both
+    fail together on ``assert 0 == 1``. What that leaves uncovered is a key
+    *narrowed* to the shipped spelling, which still reads the current bullet and
+    no longer reads #657's sentence: keyed to ``draft or proposed``, every other
+    arm here stays green and this one fails alone.
+
+    It is also the diagnosis. Both RED means the clause was reworded past the
+    key; this one green beside a RED arm above means the enumeration itself
+    moved, which is the reversion. The second assertion keeps that reading
+    honest -- were ``rejected`` to join the live set, #657's sentence would be
+    true again and this module's subject a different claim.
     """
     named = _statuses_named(_REACHED_WITH_THE_FLAG_CLAUSE, _RETIRED_SENTENCE)
 
     assert named == {"draft", "rejected"}, (
         f"the flag-reachable key reads {sorted(named)} out of the pre-#657 sentence, "
-        f"not {{draft, rejected}}. It has stopped matching the sentence it was written "
-        f"for, so the arm over the shipped bullet is green whatever the bullet says:"
-        f"\n\n{_RETIRED_SENTENCE}"
+        f"not {{draft, rejected}}. It no longer reads the wording it exists to refuse, "
+        f"so a bullet reverted to that wording would be reported as a clause the key "
+        f"cannot read rather than as the status set it names:\n\n{_RETIRED_SENTENCE}"
     )
     assert named != _REACHED_WITH_THE_FLAG, (
         "`rejected` is now in SURFACEABLE_STATUSES minus `approved`, which makes the "

@@ -22,7 +22,7 @@ path, so there is one text and it is the source's.
 That makes this module's job three things:
 
 - the source text of every help string reaches its own ``--help`` intact --
-  measured here for all 27 commands, and in the other mode by
+  measured here for every command the walk reaches, and in the other mode by
   ``tests/integration/test_cli_help_without_rich.py``;
 - markup being off is *load-bearing*, so it is pinned on the app and
   demonstrated on a throwaway app that turns it back on and loses the strings;
@@ -45,7 +45,8 @@ markup off, bracket escaped      the sweep is green here, because the
                                  integration module's installer check
                                  is what fails, on the ground that the
                                  faithful text is not a runnable command
-markup turned back on later      the markup-off pin, on all 27
+markup turned back on later      the markup-off pin, on every command
+                                 in the tree
 ===============================  ====================================
 
 Row three is the reason two modules exist. A sweep asking "does the source
