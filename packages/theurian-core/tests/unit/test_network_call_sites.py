@@ -283,7 +283,7 @@ NETWORK_CLIENT_SITES = {
 #:   call gates a write. Timeout ``GIT_TIMEOUT_SECONDS`` (5s) on each.
 #: - ``infrastructure/git/fix_commit_check.py`` runs one command,
 #:   ``git --literal-pathspecs log --no-walk --first-parent -m --name-only
-#:   --format= --root --end-of-options <sha>^{commit} -- <file_path>``,
+#:   --format= -z --root --end-of-options <sha>^{commit} -- <file_path>``,
 #:   to answer whether the ``fixCommit`` a caller named is a commit here that
 #:   touched the file the stored review thread is anchored to (ADR-0033 decision
 #:   3's verification, which is what makes ``fix_commit_present`` a signal the
@@ -299,16 +299,19 @@ NETWORK_CLIENT_SITES = {
 #:   attempt that reached merges through diff tree with a diff merges option
 #:   needed git 2.31, above the documented floor of 2.30, so on a floor install
 #:   it errored and every valid fixCommit refused (round 2 HIGH 1); the log form
-#:   is verdict identical and 2.30 compatible. A verdict is verified only when the
-#:   exact stored path is one of the named output lines, an output membership
-#:   check: this is what refuses a stored directory such as a bare dot, which the
-#:   pathspec literal flag does not neutralise (round 2 HIGH 2), since a name only
-#:   line is a file path and never a directory. The remaining fences are graded
-#:   rather than listed. The pathspec literal flag refuses a stored pathspec
-#:   expression; the options terminator guards the token position the funnel
-#:   emptied; the path separator keeps an option shaped stored ``filePath`` a
-#:   pathspec; the root flag lets a first commit be a fix; and the first parent
-#:   and merge diff flags let a conflict resolving merge be one. The binary is
+#:   is verdict identical and 2.30 compatible. The z flag makes git emit NUL
+#:   delimited raw path bytes rather than its human rendering, and a verdict is
+#:   verified only when the exact stored path, encoded to UTF 8, is one of those
+#:   byte entries after empty entries are dropped: no quoting, no line splitting,
+#:   no whitespace stripping, no pathspec breadth. Reading the human rendering
+#:   instead was the root cause of three findings, closed by this byte comparison
+#:   (round 3); it also refuses a stored directory such as a bare dot, since a raw
+#:   entry is one full path and never a directory (round 2 HIGH 2). The remaining
+#:   fences are graded rather than listed. The pathspec literal flag refuses a
+#:   stored pathspec expression; the options terminator guards the token position
+#:   the funnel emptied; the path separator keeps an option shaped stored
+#:   ``filePath`` a pathspec; the root flag lets a first commit be a fix; and the
+#:   first parent and merge diff flags let a conflict resolving merge be one. The binary is
 #:   resolved to an absolute path -- ADR-0030 clause 5's tier, as its
 #:   ``committed_check.py`` sibling is, because this call gates a promotion
 #:   signal. Timeout ``GIT_TIMEOUT_SECONDS`` (5s).

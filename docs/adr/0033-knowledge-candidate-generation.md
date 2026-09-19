@@ -1130,6 +1130,59 @@ Still owed, with the milestone that will satisfy it:
   > `docs/security/threat-model.md`'s T-7 sixth-site paragraph is rewritten to the
   > same `log` command and the same output-membership control, so the two governed
   > records agree.
+
+  > **Amended in slice B5 round 3
+  > ([PR #744](https://github.com/theurian/theurian/pull/744), before the
+  > fix-wave-3 commit): the round-2 output-membership check compared git's
+  > *rendered* lines and falsely refused honest fixes whose filename git does not
+  > render verbatim; the command moved to the `-z` byte-membership form. The round-2
+  > block is left intact and this block supersedes it in place.**
+  >
+  > **Line membership refused honest fixes (round-3 HIGH).** Round 2 read
+  > `--name-only` output as text — `.splitlines()`, then the stored `file_path`
+  > among the lines. git renders paths for humans: under `core.quotePath` it
+  > **quotes** a non-ASCII, double-quoted, backslashed or control-character name, so
+  > the rendered line never equalled the raw stored path; `.splitlines()` **split** a
+  > name carrying an embedded newline into two lines matching neither; and the line
+  > filter's `.strip()` **emptied** a file literally named with a single space. Each
+  > answered `TOUCHES_NOTHING_HERE` for a commit that genuinely touched the file — a
+  > true fix, correctly named, refused.
+  >
+  > **The closure is byte membership over NUL-delimited entries.** `-z` makes git
+  > emit its machine format: each touched path as raw bytes, NUL-delimited, with no
+  > quoting and no line structure. `verify` splits git's raw stdout on the NUL byte,
+  > drops empty entries only (`!= b""`, never `.strip()` — a `b" "` entry is a real
+  > one-space filename), and answers `VERIFIED` iff `file_path.encode("utf-8")` is
+  > one of those byte entries. This closes quoting, line-splitting,
+  > whitespace-stripping and the round-2 directory-and-pathspec breadth in one move,
+  > because none of them survives the machine format. The claim is exactly that —
+  > membership of the anchor's UTF-8 bytes in git's raw entry set, **not** a claim
+  > about arbitrary path bytes; `--literal-pathspecs` stays as defence in depth over
+  > the `:(…)` magic half.
+  >
+  > **The encoding face is closed on the git side, and is in scope.** With `-z` the
+  > entries are raw **bytes** and the anchor is a `str`. git's `-- <file_path>`
+  > pathspec is itself byte-based, so a UTF-8-encoded anchor cannot match a non-UTF-8
+  > tree path, and the byte comparison would refuse such a path in any case — a
+  > non-UTF-8 sequence cannot equal any `str.encode("utf-8")`. A byte-compare and a
+  > decode-and-compare therefore agree on every input reachable here, so the byte
+  > form narrows nothing; the fail-closed verdict is the recorded property. Pathname
+  > **normalization** — a byte-unequal NFC-versus-NFD anchor — is a *separate*
+  > equality class, filed [#758](https://github.com/theurian/theurian/issues/758),
+  > and is deliberately not part of this closure.
+  >
+  > **What pins it.**
+  > `test_fix_commit_check_adapter.py::test_an_honest_anchor_of_any_path_shape_verifies`
+  > drives an ASCII, a CJK, a double-quoted, a backslashed, an embedded-newline and
+  > a tab filename, asserting each verifies its own commit and refuses a foreign one;
+  > `::test_an_honest_whitespace_only_anchor_verifies` is the single-space face the
+  > `.strip()` would drop; `::test_a_non_utf8_disk_path_never_verifies_a_utf8_anchor`
+  > pins the fail-closed encoding verdict against a change to the comparison; and the
+  > captured-vector arm
+  > `::test_the_git_vector_is_one_process_fixed_and_forecloses_an_option_a_path_and_magic`
+  > holds the `-z` argv above. `docs/security/threat-model.md`'s T-7 sixth-site
+  > paragraph carries the same `-z` command and the same byte-membership closure, so
+  > the two governed records agree.
 - **Slice B5 — at least one gate test is driven from a record the real adapter
   shape produces.** That is, a `ReviewResolution` built the way
   `review_provider.py` builds one, with `fix_commit` **absent**. What lets a

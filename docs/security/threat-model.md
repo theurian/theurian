@@ -2127,7 +2127,7 @@ other's blind spots.
   **The sixth is the only one handed an argument a document supplies.** Since
   ADR-0033's candidate generation landed, `infrastructure/git/fix_commit_check.py`
   runs one command,
-  `git --literal-pathspecs log --no-walk --first-parent -m --name-only --format= --root --end-of-options <sha>^{commit} -- <file_path>`,
+  `git --literal-pathspecs log --no-walk --first-parent -m --name-only --format= -z --root --end-of-options <sha>^{commit} -- <file_path>`,
   to answer whether a caller's `fixCommit` is a commit here that touched the
   stored thread's `file_path`. Its two inputs are untrusted differently: the sha
   is caller wire input, and the path is author-controlled stored data a clone can
@@ -2142,7 +2142,7 @@ other's blind spots.
   commit's message by sending a revision expression such as `HEAD^{/<text>}` in
   place of a sha, making `fix_commit_present` answer to a description rather than a
   commit id (the adapter's docstring records the exact forms). It is unchanged by
-  the round-2 fix and stays the first thing `verify` does.
+  the later fixes and stays the first thing `verify` does.
   **It is the `log` form because of the git-version floor.** Round 1 reached merge
   commits with a single diff-tree call carrying a --diff-merges=first-parent
   option, which is a git 2.31 feature; the documented floor is git 2.30
@@ -2150,19 +2150,30 @@ other's blind spots.
   `fixCommit` was refused (round-2 HIGH-1). `log --no-walk --first-parent -m`
   reaches the same merge commits on 2.30 and gives byte-identical verdicts, so the
   diff-tree attempt is recorded here as history rather than as a live control.
-  **The verdict is an output-membership check, and that is what closes the
-  stored-path class — not `--literal-pathspecs`.** A verdict is `VERIFIED` only
-  when the *exact* stored `file_path` is one of the `--name-only` output lines;
-  exit zero without it is `TOUCHES_NOTHING_HERE` and a non-zero exit is
-  `NO_SUCH_COMMIT`. Round 1 credited `--literal-pathspecs` with closing the
-  stored-path class, but that flag only disables `:(…)` *magic*: a literal
-  directory pathspec — a stored `file_path` of `docs` or `.` — is not magic, and
-  under the flag it still matches every file beneath it, so it would verify a
-  foreign commit that touched anything under that directory (round-2 HIGH-2). A
-  `--name-only` line is always a single file path, never a directory and never a
-  `:(…)` expression, so requiring the stored path to *be* one of those lines
-  refuses both sub-classes; `--literal-pathspecs` stays as defence in depth over
-  the magic half. The remaining tokens are graded rather than listed: `--root`
+  **The verdict is a byte-membership check over NUL-delimited entries, and `-z` is
+  what ends the output-parsing family.** `-z` makes git emit its *machine* format:
+  each touched path as raw bytes, NUL-delimited, without quoting, line structure or
+  trailing decoration. `verify` splits git's raw stdout on the NUL byte, drops
+  empty entries only — never `.strip()` — and answers `VERIFIED` iff
+  `file_path.encode("utf-8")` is one of those byte entries, `TOUCHES_NOTHING_HERE`
+  otherwise, and a non-zero exit `NO_SUCH_COMMIT`. Every earlier stored-path face
+  was git's *human* rendering of a path read as text: round 1 credited
+  `--literal-pathspecs` with closing the class, but that flag only disables `:(…)`
+  *magic* and a literal directory pathspec (`docs`, `.`) still matched every file
+  beneath it (round-2 HIGH-2); round 2 then compared the stored path against
+  `--name-only` *lines*, which git quotes under `core.quotePath` for a non-ASCII,
+  quoted or control-character name, splits on an embedded newline, and which a
+  `.strip()` empties for a file named with a single space — each falsely refusing
+  an honest fix (round-3 HIGH). Reading the `-z` bytes as an exact set of raw path
+  entries and comparing them byte-identically closes quoting, line-splitting,
+  whitespace-stripping and pathspec breadth at once, because none of those survives
+  the machine format; `--literal-pathspecs` stays as defence in depth over the
+  magic half. The **encoding** face is in scope and fail-closed: a non-UTF-8 disk
+  path cannot equal a UTF-8-encoded anchor, so it is refused `TOUCHES_NOTHING_HERE`.
+  Pathname **normalization** — a byte-unequal NFC-versus-NFD anchor — is a
+  *separate* equality class, filed
+  [#758](https://github.com/theurian/theurian/issues/758), and is deliberately out
+  of this closure. The remaining tokens are graded rather than listed: `--root`
   lets a repository's first commit be a fix; `--first-parent -m` make a merge
   commit diffable against the branch it landed on, so a fix that landed as a
   conflict resolution is not refused as touching nothing; `--end-of-options` guards
@@ -2175,7 +2186,10 @@ other's blind spots.
   and asserts the whole argv above, that the retired --diff-merges=first-parent
   option is absent, the single spawn, the absolute binary, the per-call timeout,
   and no shell; its behavioural arms drive the three verdicts, a first commit, a
-  first-parent merge, and a stored directory that verifies nothing.
+  first-parent merge, a stored directory that verifies nothing, an honest fix whose
+  filename is CJK, quoted, backslashed, newline-bearing, tab-bearing or a single
+  space — each verifying under `-z` where the human rendering refused — and a
+  non-UTF-8 disk path fail-closed against a UTF-8 anchor.
 
   This entry said "two sites" and named the first two until 2026-09-02,
   "three" until ADR-0030's adapter landed, "four" until ADR-0034's committed

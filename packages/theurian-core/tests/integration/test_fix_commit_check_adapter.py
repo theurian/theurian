@@ -45,23 +45,47 @@ is a git 2.31 feature while the documented floor is 2.30
 (``development.md``), so on a floor install it errors, the non-zero exit folds to
 ``NO_SUCH_COMMIT``, and every valid ``fixCommit`` refuses (HIGH-1). The command is
 now ``git --literal-pathspecs log --no-walk --first-parent -m --name-only
---format= --root --end-of-options <sha>^{commit} -- <path>``, whose verdicts are
-byte-identical (measured, git 2.47.1, 2026-09-19) and whose newest token is
-``--end-of-options`` (2.24), at or below the floor.
+--format= -z --root --end-of-options <sha>^{commit} -- <path>``, whose verdicts
+are byte-identical (measured, git 2.47.1, 2026-09-19) and whose newest token is
+``--end-of-options`` (2.24), at or below the floor -- ``-z`` predates it.
 :func:`test_the_verify_command_uses_only_git_features_at_or_below_the_documented_floor`
 holds the whole command to the floor as a class, not the one retired flag.
 
-**A verdict is ``VERIFIED`` only when the exact stored ``file_path`` is one of the
-named output lines.** Round-2 adversarial review refuted the round-1 closure that
-``--literal-pathspecs`` neutralised the stored-path class: it neutralises ``:(…)``
-*magic* but not a literal **directory**, so a stored ``file_path`` of ``.`` or
-``docs`` matched every file under it and verified a *foreign* commit (HIGH-2). A
-``--name-only`` line is a file path, never a directory and never a ``:(…)``
-expression, so the output-membership check refuses both sub-classes and is the
-real closure; ``--literal-pathspecs`` stays as defence in depth. This supersedes
-the round-1 "closed here rather than recorded" claim below.
+**``verify`` interprets git's ``--name-only`` output only as an exact set of
+NUL-delimited raw path entries, empty-filtered, compared byte-identically -- no
+quoting, no line-splitting, no whitespace-stripping, no pathspec breadth.** That
+sentence is the round-3 closure, and it is exact: three consecutive findings were
+one root cause -- ``verify`` was reading git's *human* rendering of paths.
+Round-1 read empty-vs-nonempty; round-2 read line membership (reopened by a
+literal directory, HIGH-2); round-3 read a rendering that ``core.quotePath``
+quotes and newlines split (HIGH), so an honest fix for a CJK, quoted,
+control-char or embedded-newline filename was falsely refused. ``-z`` emits the
+machine format -- each entry is one full raw path, NUL-delimited -- and the
+adapter splits on ``b"\\0"``, drops **empty entries only** (``!= b""``, never
+``.strip()``: a file literally named ``" "`` emits ``b" "`` and ``.strip()``
+would drop it, refusing an honest fix even under ``-z`` -- the fourth face), and
+answers ``VERIFIED`` iff ``file_path.encode("utf-8")`` is one of those entries.
+The comparison encoding is stated because it must be: git emits raw path *bytes*
+and the stored ``file_path`` is a ``str``, so a non-UTF-8 disk path never verifies
+a UTF-8 anchor -- a recorded fail-closed property
+(:func:`test_a_non_utf8_disk_path_never_verifies_a_utf8_anchor`). What enforces it
+is git's byte-based pathspec filter, which emits empty output for a UTF-8 pathspec
+that does not match the raw bytes *before* the comparison runs; byte-membership
+and a decode-membership are therefore provably equivalent on every reachable
+input, so the property is closed on the git side, not by the comparison form.
+Pathname byte-equality across Unicode normal forms (NFC vs NFD) is a *different*
+root cause -- an equality residual, not an output-parsing one -- filed as
+[#758](https://github.com/theurian/theurian/issues/758) and deliberately outside
+this closure; ``-z`` does not touch it.
+
+The directory sub-class round-2 closed stays closed under ``-z``: a raw entry is
+one full path, never a directory and never a ``:(…)`` expression, so byte
+membership refuses ``.`` and ``docs`` exactly as line membership did (measured).
+This supersedes the round-1 "closed here rather than recorded" claim below --
+``--literal-pathspecs`` stays as defence in depth.
 :func:`test_a_stored_path_spelling_a_pathspec_expression_verifies_nothing` drives
-both sub-classes.
+the directory sub-class and
+:func:`test_an_honest_anchor_of_any_path_shape_verifies` the rendering family.
 
 **The funnel's own zero-spawn refusal does not reopen that channel, and the
 reason is which fact the split is on.** Whether a value is forty lower-case hex
@@ -124,6 +148,16 @@ justified by a ``rev-parse`` behaviour that no longer runs:
   diff's *some parent did*. This replaces round-1's
   ``diff-tree --diff-merges=first-parent``, whose option needs git 2.31, above the
   2.30 floor (HIGH-1).
+* ``-z`` after ``--format=`` -- **load-bearing, and the only token that changes a
+  verdict for an honest input with an unusual filename**. Without it git renders
+  paths for humans: a CJK, quoted, backslash, control-char or embedded-newline
+  name is quoted under ``core.quotePath`` and the output is newline-split, so the
+  rendered line never equals the raw ``file_path`` and an honest fix is refused
+  (round-3 HIGH). With it each entry is one raw path, NUL-delimited, compared
+  byte-identically. Measured git 2.47.1, 2026-09-19 over the shape family
+  :func:`test_an_honest_anchor_of_any_path_shape_verifies` drives, and the
+  whitespace-only face :func:`test_an_honest_whitespace_only_anchor_verifies`
+  holds separately because it also rules out ``.strip()``.
 
 Nothing here touches the developer's machine: every ``git`` call names a
 ``tmp_path`` repository with ``cwd``, and the identity and signing settings are
@@ -399,6 +433,258 @@ def test_a_stored_path_spelling_a_pathspec_expression_verifies_nothing(
         f"must be `VERIFIED` only when the exact stored path is a named output line; a "
         f"directory or a `:(…)` pathspec is never one, so a review evidence file cannot "
         f"make `fix_commit_present` true for a commit with nothing to do with the thread."
+    )
+
+
+# ---------------------------------------------------------------------------
+# The path-shape family: an honest anchor of any filename verifies (round-3 HIGH).
+# ---------------------------------------------------------------------------
+
+#: The filename shapes a stored ``file_path`` can take, one per way git's *human*
+#: rendering of ``--name-only`` diverges from the raw path. This enumeration is
+#: what was missing and hid three findings: every earlier fixture used an ASCII
+#: path, which renders as itself. Each shape is driven against a commit that
+#: really touches it (honest anchor → ``VERIFIED``) and a foreign commit
+#: (→ ``TOUCHES_NOTHING_HERE``).
+#:
+#: ``cjk`` is the corpus's own measured input, the CJK phrase ADR-0023, the
+#: CHANGELOG and the fixtures carry to demonstrate CJK tokenization -- git quotes
+#: it under ``core.quotePath``. The quote/backslash/tab shapes are quoted too; the
+#: embedded-newline shape is the one ``.splitlines()`` tore in two. The
+#: whitespace-only shape and the non-UTF-8 path are their own tests below, because
+#: each rules out a *different* naive port (``.strip()`` and a ``str`` compare).
+#:
+#: Pathname byte-equality across Unicode normal forms (NFC vs NFD) is a *separate*
+#: class -- an equality residual, not an output-parsing one -- filed
+#: [#758](https://github.com/theurian/theurian/issues/758) and out of this
+#: closure; it is deliberately not a member here.
+PATH_SHAPES: tuple[tuple[str, str], ...] = (
+    ("ascii", "docs/ascii.md"),
+    ("cjk", "docs/署名付きトークンを持つ.md"),
+    ("double-quote", 'docs/a"b.md'),
+    ("backslash", "docs/a\\b.md"),
+    ("embedded-newline", "docs/a\nb.md"),
+    ("tab", "docs/a\tb.md"),
+)
+
+
+def _seeded_repo(tmp_path: Path, name: str = "work") -> Path:
+    """A fresh repository with one ordinary seed commit, for a per-shape fixture."""
+    repo = tmp_path / name
+    repo.mkdir()
+    _git(repo, "-c", "init.defaultBranch=main", "init", "-q")
+    _commit(repo, "seed.md", "seed\n", "seed")
+    return repo
+
+
+@pytest.mark.parametrize(("shape", "anchor"), PATH_SHAPES, ids=[shape for shape, _ in PATH_SHAPES])
+def test_an_honest_anchor_of_any_path_shape_verifies(
+    tmp_path: Path, shape: str, anchor: str
+) -> None:
+    """RED means an honest fix for a non-ASCII / quoted / newline filename is refused.
+
+    The round-3 HIGH: ``verify`` read git's ``--name-only`` output as human-rendered
+    text, so a filename git quotes under ``core.quotePath`` (CJK, a ``"`` , a
+    backslash, a control char) rendered to a *quoted* line that never equalled the
+    raw ``file_path``, and an embedded newline was split into two lines by
+    ``.splitlines()`` -- each falsely answering ``TOUCHES_NOTHING_HERE`` for a
+    commit that genuinely touched the file. The ``-z`` byte comparison reads each
+    entry as one raw NUL-delimited path and matches it against
+    ``file_path.encode("utf-8")``.
+
+    Both arms, and the foreign arm is the negative control: without it a build that
+    verified *everything* would pass the honest arm. The honest anchor verifies
+    (RED now for every shape but ``ascii``); the same anchor over a foreign commit
+    does not (green throughout -- it is the fail-closed side).
+    """
+    repo = _seeded_repo(tmp_path)
+    touching = _commit(repo, anchor, "body\n", f"touch the {shape} file")
+    foreign = _commit(repo, OTHER_PATH, "notes\n", "foreign: notes")
+    check = FixCommitCheck(repo)
+
+    assert check.verify(touching, anchor) is FixCommitVerdict.VERIFIED, (
+        f"the {shape} anchor {anchor!r} did not verify a commit that touched it. git "
+        f"renders this path for humans -- quoting it under `core.quotePath`, or splitting "
+        f"it on an embedded newline -- so the rendered output never equals the raw path. "
+        f"`-z` emits raw NUL-delimited bytes; the fix compares `file_path.encode('utf-8')` "
+        f"to those (round-3 HIGH)."
+    )
+    assert check.verify(foreign, anchor) is FixCommitVerdict.TOUCHES_NOTHING_HERE, (
+        f"the {shape} anchor {anchor!r} verified a foreign commit that never touched it; "
+        f"byte membership must stay exact, not match everything"
+    )
+
+
+def test_an_honest_whitespace_only_anchor_verifies(tmp_path: Path) -> None:
+    """RED means a fix for a file literally named ``" "`` is refused (the fourth face).
+
+    A whitespace-only filename is a valid git path, and its ``-z`` entry is
+    ``b" "`` -- non-empty, but ``.strip()`` would reduce it to ``b""`` and drop it.
+    So this is RED under **two** implementations: the current ``.splitlines()`` code
+    (which filters ``if ln.strip()``), and any naive ``-z`` port that keeps
+    ``.strip()``. Only filtering *empty entries only* (``!= b""``) keeps ``b" "``
+    and verifies the honest fix. This is why the fix must never ``.strip()``.
+
+    The foreign arm is the control: the same anchor over a commit that did not touch
+    it stays ``TOUCHES_NOTHING_HERE``.
+    """
+    repo = _seeded_repo(tmp_path)
+    touching = _commit(repo, " ", "body\n", "touch the space-named file")
+    foreign = _commit(repo, OTHER_PATH, "notes\n", "foreign: notes")
+    check = FixCommitCheck(repo)
+
+    assert check.verify(touching, " ") is FixCommitVerdict.VERIFIED, (
+        "a file literally named ' ' did not verify a commit that touched it. Its `-z` "
+        "entry is `b' '`, which `.strip()` drops to `b''` -- so an empty-*content* filter "
+        "(`!= b''`) is required; `.strip()` refuses this honest fix even under `-z`."
+    )
+    assert check.verify(foreign, " ") is FixCommitVerdict.TOUCHES_NOTHING_HERE, (
+        "the ' ' anchor verified a foreign commit; byte membership must stay exact"
+    )
+
+
+def test_a_multi_file_commit_verifies_each_of_its_files(tmp_path: Path) -> None:
+    """Membership is over the whole set of touched paths, not the first entry.
+
+    A commit that touches several files must verify for *each* of them and for
+    none it did not touch. A parser that read only the first ``-z`` entry (or the
+    first line) would verify one file and refuse the rest of the same commit. Green
+    now (these are ASCII paths) and after the fix -- it holds the set semantics the
+    byte comparison must keep.
+    """
+    repo = _seeded_repo(tmp_path)
+    (repo / "docs").mkdir()
+    (repo / "docs" / "one.md").write_text("1\n", encoding="utf-8")
+    (repo / "docs" / "two.md").write_text("2\n", encoding="utf-8")
+    _git(repo, "add", "docs/one.md", "docs/two.md")
+    _git(repo, "commit", "-q", "-m", "touch two files")
+    multi = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    check = FixCommitCheck(repo)
+
+    assert check.verify(multi, "docs/one.md") is FixCommitVerdict.VERIFIED
+    assert check.verify(multi, "docs/two.md") is FixCommitVerdict.VERIFIED, (
+        "the second file of a multi-file commit did not verify: membership must be over "
+        "the whole set of touched paths, not the first entry"
+    )
+    assert check.verify(multi, "docs/three.md") is FixCommitVerdict.TOUCHES_NOTHING_HERE, (
+        "a file the multi-file commit did not touch verified anyway"
+    )
+
+
+def _git_raw(repo: Path, *args: str, stdin: bytes | None = None) -> bytes:
+    """Run ``git`` in ``repo`` and return raw stdout **bytes** (for non-UTF-8 paths)."""
+    return subprocess.run(  # noqa: S603
+        ["git", *_GIT_IDENTITY, *args],  # noqa: S607
+        cwd=repo,
+        capture_output=True,
+        input=stdin,
+        check=True,
+    ).stdout
+
+
+def _non_utf8_path_commit(repo: Path) -> tuple[str, bytes]:
+    """A commit adding a file whose path is **non-UTF-8 bytes**, and that raw path.
+
+    Built with ``hash-object`` + ``mktree -z`` + ``commit-tree`` (the #527-era
+    technique) rather than ``git add``, because the shell/filesystem cannot carry
+    an arbitrary byte path portably. ``mktree -z`` takes NUL-delimited records, so
+    the raw ``0xff 0xfe`` bytes survive into the tree; the child commit has the
+    seed as its parent, so the non-UTF-8 file is *added* and git emits its raw
+    bytes in the ``-z`` diff (a parentless attempt diffs against nothing and emits
+    an empty output -- the caveat this fixture is built to avoid).
+    """
+    base = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    seed_blob = _git(repo, "rev-parse", "HEAD:seed.md").stdout.strip()
+    blob = _git_raw(repo, "hash-object", "-w", "--stdin", stdin=b"nonutf\n").decode().strip()
+    leaf = b"\xff\xfe.md"  # not valid UTF-8: 0xff can never begin a UTF-8 sequence
+    inner = (
+        _git_raw(repo, "mktree", "-z", stdin=b"100644 blob " + blob.encode() + b"\t" + leaf + b"\0")
+        .decode()
+        .strip()
+    )
+    outer_spec = (
+        b"100644 blob " + seed_blob.encode() + b"\tseed.md\0"
+        b"040000 tree " + inner.encode() + b"\tdocs\0"
+    )
+    outer = _git_raw(repo, "mktree", "-z", stdin=outer_spec).decode().strip()
+    child = (
+        _git_raw(repo, "commit-tree", outer, "-p", base, "-m", "add a non-utf-8 path under docs")
+        .decode()
+        .strip()
+    )
+    return child, b"docs/" + leaf
+
+
+def test_a_non_utf8_disk_path_never_verifies_a_utf8_anchor(tmp_path: Path) -> None:
+    """The encoding face: a non-UTF-8 disk path is fail-closed against a str anchor.
+
+    With ``-z`` git emits raw path **bytes**; the stored ``file_path`` is a
+    ``str``. A path git records as ``docs/\\xff\\xfe.md`` -- non-UTF-8, because
+    ``0xff`` can never begin a UTF-8 sequence -- can never be named by any
+    ``str``, so an honest fix for it is refused ``TOUCHES_NOTHING_HERE``. That is
+    acceptable and fail-closed, and this pin holds the **property**, verified by a
+    fixture rather than asserted from reasoning.
+
+    **What enforces it is git's byte-based pathspec filter, not the comparison
+    form -- said plainly, because the first draft claimed the wrong mechanism.**
+    ``verify`` passes the stored ``file_path`` as ``-- <path>``, and a UTF-8 ``str``
+    pathspec is byte-matched by git against the tree's raw path bytes; it never
+    matches ``docs/\\xff\\xfe.md``, so git emits **empty output before any
+    comparison runs** (measured: ``b""`` for the anchor pathspec against this
+    commit, git 2.47.1). So byte-membership and a ``decode("utf-8",
+    "surrogateescape")`` membership are **provably equivalent on every reachable
+    input** -- both read the empty output as ``TOUCHES_NOTHING_HERE`` -- and this
+    pin is therefore **not** a discriminator between comparison forms: a decode
+    port survives it. The comparison's real teeth are elsewhere -- the ``.strip()``
+    face (:func:`test_an_honest_whitespace_only_anchor_verifies`) and the
+    rendering-shape family (:func:`test_an_honest_anchor_of_any_path_shape_verifies`).
+    The encoding face is closed on the git side and this records that it stays
+    fail-closed.
+
+    The fixture is verified real before the property is asserted: git is asked for
+    the commit's ``-z`` entries **without a pathspec** and the raw non-UTF-8 bytes
+    must be among them -- otherwise the commit did not actually carry the path and
+    the assertion below would pass over nothing (the caveat the #527-era build
+    avoids). This is the **encoding** face and is in scope; normalization (NFC vs
+    NFD) is #758 and is not tested here.
+    """
+    repo = _seeded_repo(tmp_path)
+    child, raw_name = _non_utf8_path_commit(repo)
+
+    emitted = [
+        entry
+        for entry in _git_raw(
+            repo,
+            "--literal-pathspecs",
+            "log",
+            "--no-walk",
+            "--first-parent",
+            "-m",
+            "--name-only",
+            "--format=",
+            "-z",
+            "--root",
+            "--end-of-options",
+            f"{child}^{{commit}}",
+        ).split(b"\0")
+        if entry
+    ]
+    assert raw_name in emitted, (
+        f"the fixture did not make git emit the raw non-UTF-8 path: emitted {emitted!r}, "
+        f"expected {raw_name!r} among them. Without git emitting the raw bytes this test "
+        f"exercises nothing (the empty-output caveat)."
+    )
+
+    anchor = raw_name.decode("utf-8", "replace")  # a proper-UTF-8 str a record could store
+    assert anchor.encode("utf-8") not in emitted, (
+        f"the UTF-8-encoded anchor {anchor.encode('utf-8')!r} equalled a raw non-UTF-8 "
+        f"entry, which cannot happen -- the premise of the fail-closed property is wrong"
+    )
+    assert FixCommitCheck(repo).verify(child, anchor) is FixCommitVerdict.TOUCHES_NOTHING_HERE, (
+        "a non-UTF-8 disk path verified against a UTF-8-encoded str anchor. The comparison "
+        "encodes the anchor to UTF-8 and compares to raw entries, so a non-UTF-8 path is "
+        "fail-closed (TOUCHES_NOTHING_HERE) -- a recorded property (the encoding face; "
+        "NFC/NFD normalization is #758, out of scope)."
     )
 
 
@@ -986,6 +1272,7 @@ def test_the_git_vector_is_one_process_fixed_and_forecloses_an_option_a_path_and
         "-m",
         "--name-only",
         "--format=",
+        "-z",
         "--root",
         "--end-of-options",
         f"{caller_sha}^{{commit}}",
@@ -996,6 +1283,13 @@ def test_the_git_vector_is_one_process_fixed_and_forecloses_an_option_a_path_and
         "`--literal-pathspecs` is a root-level option and must precede the `log` "
         "subcommand; after it git does not accept it at all, and the stored path is a "
         "pathspec expression again"
+    )
+    assert "-z" in vector, (
+        "`-z` must stay in the vector: it makes `git` emit NUL-delimited *raw path "
+        "bytes* rather than its human rendering, and the round-3 fix reads those bytes "
+        "directly. Without it git quotes a CJK, quoted, control-char or newline path "
+        "under `core.quotePath` and splits on newlines, so an honest fix for such a file "
+        "is falsely refused (round-3 HIGH)"
     )
     assert "--root" in vector, (
         "`--root` must stay in the vector as defence in depth: it is redundant on the "
@@ -1058,6 +1352,7 @@ GIT_TOKEN_FLOOR: dict[str, tuple[int, int]] = {
     "-m": (1, 5),
     "--name-only": (1, 0),
     "--format=": (1, 6),
+    "-z": (1, 5),
     "--root": (1, 5),
     "--literal-pathspecs": (1, 9),
     "--end-of-options": (2, 24),

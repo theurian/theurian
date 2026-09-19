@@ -31,31 +31,48 @@ C4b battery measured the pair end to end at **+7.2 ms, P=1.000**: the refusal's
 *duration* answered "does this object exist here", which is a fact about the
 repository the caller was not granted. ADR-0033 decision 5 binds the two
 refusals in text **and in duration**, so both questions are now one ``git log``
-call and the verdict is read off its exit code and whether the exact stored path
-is among its ``--name-only`` lines:
+call and the verdict is read off its exit code and whether the stored path's UTF-8
+bytes are among the raw path entries ``-z`` emits:
 
 ============================  =================================================
 non-zero exit                 ``NO_SUCH_COMMIT`` -- measured 128 for an absent
                               object and for a name that is not a commit; also
                               every fail-closed reading, where git could not be
                               run at all
-exit 0, path is a named line  ``VERIFIED``
-exit 0, path is not a line    ``TOUCHES_NOTHING_HERE``
+exit 0, path is an entry      ``VERIFIED``
+exit 0, path is not an entry  ``TOUCHES_NOTHING_HERE``
 ============================  =================================================
 
-**The verdict is output-*membership*, not "any output at all", and that is what
-closes the directory-pathspec class (round-2 HIGH-2).** ``--`` stops an
-option-shaped path being read as a flag but not being parsed as a pathspec after
-it, and a *literal directory* is a pathspec that matches every file beneath it:
-a stored ``file_path`` of ``.``, ``./``, ``docs`` or ``docs/`` printed a foreign
-commit's files and, under the old "non-empty output → ``VERIFIED``" rule, verified
-a commit with nothing to do with the thread. ``--literal-pathspecs`` never closed
-this -- it only ever disarmed ``:(…)`` magic, and the round-1 comment claiming the
-magic class was "closed here" by that flag is superseded. What closes both
-sub-classes is requiring the *exact* stored path to be one of the ``--name-only``
-lines: a name-only line is a file path, never a directory and never a ``:(…)``
-expression, so neither can ever be a line (measured git 2.47.1/2.54.0,
-2026-09-19; ``high2_repro.py``).
+**The verdict is byte-membership over git's machine output -- no rendering is
+interpreted -- and that is the round-3 closure of the whole output-parsing
+class.** Three faces of one root cause each read git's *human* rendering of a
+path: round-1 tested empty-vs-non-empty output; round-2 (HIGH-2) tested exact
+line membership, which a stored directory pathspec (``.``, ``docs``) defeated by
+matching a foreign commit's files; round-3 (HIGH) found that even exact line
+membership read a *rendered* line -- git quotes a CJK, ``"``-bearing, backslash
+or control-char name under ``core.quotePath``, and ``.splitlines()`` breaks a name
+with a newline in two -- so an honest fix for such a file was refused. The
+closure reads the machine format instead: with ``-z`` git emits each touched path
+as raw NUL-delimited bytes, and ``verify`` interprets that output *only* as an
+exact set of NUL-delimited raw entries, empty-filtered (``!= b""``, never
+``.strip()`` -- a file named ``" "`` is a valid path whose ``b" "`` entry
+``.strip()`` would drop), compared byte-identically to
+``file_path.encode("utf-8")``. No quoting, no line-splitting, no
+whitespace-stripping, no pathspec breadth. ``--literal-pathspecs`` is now defence
+in depth rather than a closure (below); the round-1/round-2 claims that
+``--literal-pathspecs`` or line-membership "closed" the class are superseded
+(measured git 2.47.1/2.54.0, 2026-09-19; ``high2_repro.py``,
+``quotepath_repro.py``, ``nul_byte_compare.py``).
+
+**One face stays inside this closure, and one class stays outside it.** Inside:
+the stored path is a ``str`` and git emits *bytes*, so the comparison
+UTF-8-encodes the anchor -- a non-UTF-8 disk path can never equal it and is
+refused ``TOUCHES_NOTHING_HERE``, fail-closed, pinned as a property rather than
+left to accident. Outside, and named so the closure is not overclaimed: pathname
+byte-*equality* under Unicode normalization (an NFC-stored anchor versus an NFD
+tree path) is a different root cause -- ``-z`` does not touch it, the two byte
+strings simply differ and the honest fix reads ``TOUCHES_NOTHING_HERE`` -- and it
+is filed as [#758], not folded in here.
 
 **The command is the git-2.30 ``log`` form, chosen so the documented floor holds
 (round-2 HIGH-1).** The floor is git 2.30+ (``development.md``). The round-1 fix
@@ -74,16 +91,25 @@ caller wire input; the path is author-controlled stored data a clone can deliver
 (T-3, T-24). What each token is worth was measured under this shape on git 2.47.1
 and 2.54.0, 2026-09-19:
 
+* ``-z`` -- **load-bearing (round-3).** It makes git emit each touched path as
+  raw NUL-delimited bytes rather than a newline-separated human rendering, which
+  is what lets the byte-membership check above see the true path of a CJK,
+  quoted, control-char or newline-bearing file. Without it git quotes such a name
+  under ``core.quotePath`` and separates entries by newline, so ``.splitlines()``
+  over the rendering never equals the raw ``file_path`` and an honest fix is
+  refused. Predates the 2.30 floor (git 1.5).
 * ``--literal-pathspecs`` -- **defence in depth, subsumed by membership.** Against
   a commit touching only ``docs/notes.md``, the stored paths
   ``:(exclude)src/retrying.py``, ``:!src/retrying.py``, ``:(glob)**/*.md`` and
-  ``:(top)`` each make ``log`` print ``docs/notes.md`` without the flag and nothing
+  ``:(top)`` each make ``log`` emit ``docs/notes.md`` without the flag and nothing
   with it. The membership check refuses all four either way -- ``docs/notes.md`` is
   not the stored path -- so the flag no longer closes anything on its own; it stays
   because a name it disarms is one less name to reason about.
-* ``--root`` -- **load-bearing.** A repository's first commit reports no files
-  without it (measured: empty output where the flag gives ``src/retrying.py``),
-  so a fix that *is* the root commit would read as touching nothing.
+* ``--root`` -- **defence in depth on this form.** ``log`` shows a root commit's
+  diff by default, so the flag changes no ``log``-form verdict; it is load-bearing
+  on a ``diff-tree`` form (a first commit reports no files without it), so it
+  guards a move back to one. Held by the captured-vector pin, since no ``log``
+  behavioural case can tell.
 * ``--first-parent -m`` on ``log`` -- **load-bearing, and the only tokens here
   that change a verdict for an honest input.** ``log`` shows nothing for a merge
   commit without ``-m``, so a conflict-resolving merge that introduced the fix read
@@ -180,11 +206,17 @@ class FixCommitCheck:
         side rather than adding a path of their own.
 
         The three branches are explicit: a non-zero exit is ``NO_SUCH_COMMIT``;
-        exit zero with the *exact* stored ``file_path`` among the ``--name-only``
-        lines is ``VERIFIED``; exit zero without it is ``TOUCHES_NOTHING_HERE``.
-        Comparing the stored path to the emitted lines -- not merely testing for
-        any output -- is what refuses a stored directory or ``:(…)`` pathspec that
-        would otherwise match a foreign commit (module docstring, HIGH-2).
+        exit zero with the stored ``file_path``'s UTF-8 bytes among the emitted raw
+        path entries is ``VERIFIED``; exit zero without them is
+        ``TOUCHES_NOTHING_HERE``. ``-z`` makes git emit its *machine* format -- each
+        touched path as raw NUL-delimited bytes -- so nothing here interprets git's
+        human rendering: no ``core.quotePath`` quoting to undo, no line-splitting a
+        newline-bearing name would break, no whitespace-stripping a name of one
+        space would lose (module docstring, round-3). The comparison is
+        ``file_path.encode("utf-8")`` against those raw byte entries; a non-UTF-8
+        disk path cannot equal a UTF-8-encoded anchor, so it is refused
+        ``TOUCHES_NOTHING_HERE`` -- fail-closed, and pinned as a property rather
+        than left to accident.
         """
         if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit) is None:
             return FixCommitVerdict.NO_SUCH_COMMIT
@@ -197,6 +229,7 @@ class FixCommitCheck:
                 "-m",
                 "--name-only",
                 "--format=",
+                "-z",
                 "--root",
                 "--end-of-options",
                 f"{commit}^{{commit}}",
@@ -206,8 +239,10 @@ class FixCommitCheck:
         )
         if completed is None or completed.returncode != 0:
             return FixCommitVerdict.NO_SUCH_COMMIT
-        touched = completed.stdout.decode("utf-8", "surrogateescape").splitlines()
-        if file_path in (line for line in touched if line.strip()):
+        # Filter EMPTY entries only, never `.strip()`: a file named " " emits a
+        # `b" "` entry that `.strip()` would drop, falsely refusing an honest fix.
+        touched = {entry for entry in completed.stdout.split(b"\0") if entry}
+        if file_path.encode("utf-8") in touched:
             return FixCommitVerdict.VERIFIED
         return FixCommitVerdict.TOUCHES_NOTHING_HERE
 
