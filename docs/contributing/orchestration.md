@@ -192,12 +192,12 @@ here rather than into that PR's round. Three things run under that promise.
 `tools/sweep.py` at 01:17 UTC on Sunday against one production file: the census
 rotated by the date, advanced past any file with nothing to mutate, at most six
 mutations, one full suite walk each and one more for the unmutated control —
-seven walks on a full run. A run that does not come back clean files what it
-saw **with the commit it ran against** — the target is
-`ordinal % census-size`, so a date alone stops reproducing the run as soon as
-`main` moves (`tools/sweep_filing.py` records the measurement: 0 of 30 dates
-resolved to the same file across one week of this repository's growth). Its
-`workflow_dispatch` `date` input is the lever that makes a clean run mean
+seven walks on a full run. A run that does not come back clean files what it saw
+**with the commit it ran against** — the target is the census indexed by the
+run, `(ordinal // 7) % census-size`, so a date alone stops reproducing the run
+as soon as `main` moves (`tools/sweep_filing.py` records the measurement: 0 of
+30 dates resolved to the same file across one week of this repository's growth).
+Its `workflow_dispatch` `date` input is the lever that makes a clean run mean
 something: it aims the rotation at a file whose verdict is already known, and
 until an instrument has been heard to speak, its zero is not evidence
 (INSTRUMENT's first rule).
@@ -251,10 +251,23 @@ when it lands predates the ritual rather than skipping it.
 sampling, not coverage. Measured in the round on
 [#730](https://github.com/theurian/theurian/pull/730), against a 139-module
 census: 24 of those modules are barren and never become a target; the median wait
-before a productive module is first attacked is 59 runs — 59 nights while the
-cron was nightly, 59 weeks now; a module that is drawn gets at most six of as
-many as 63 candidates; and the tree it is attacked against is that run's, not a
-later reader's. The census is the production tree alone, so `tools/`, `tests/`
+before a productive module is first attacked is 59 runs, measured at a stride of
+one; a module that is drawn gets at most six of as many as 63 candidates; and the
+tree it is attacked against is that run's, not a later reader's. **Weekly is not
+nightly slowed down.** The start was `ordinal % census-size`, which a weekly run
+steps by 7: measured against the live census of 140, 140 weekly runs attacked 20
+modules and never the other 120, where 140 nightly runs reached 116. So the
+rotation indexes the run rather than the day — `(ordinal // 7) % census-size` —
+and consecutive scheduled runs advance the index by one whatever the census
+length; the same measurement over it reaches 116, the 24 barren modules aside.
+The residual is the cycle: a full pass is census-many runs, 140 weeks at today's
+census, and compressing that is window 3's bounded-cycle work. The `date` lever
+now aims by week — every date from a Sunday through the following Saturday
+resolves to one index, which is not the ISO week and parts from it at the Sunday
+— so a Sunday the job does not run is that index's file waiting a whole cycle,
+the mutation-leg sibling of
+[#747](https://github.com/theurian/theurian/issues/747). The census is the
+production tree alone, so `tools/`, `tests/`
 and `docs/` sit outside it entirely — 38 of 60 sampled merged pull requests
 touch no census file at all, among them the two that built this sweep and wrote
 this section. **No leg is triggered by a diff.** The

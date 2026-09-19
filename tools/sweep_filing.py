@@ -91,10 +91,11 @@ _MARKER_PREFIX: Final = "<!-- async-sweep-target: "
 #: Why a date does not fix a batch, said once and used by both reproduce shapes.
 #:
 #: The first clause is the one that is easy to miss: the index is
-#: ``ordinal % len(census)``, so the census *size* re-points every date at once
-#: rather than only the dates near a change.
+#: ``(ordinal // 7) % len(census)``, so the census *size* re-points every date at
+#: once rather than only the dates near a change. Re-measured under the run index
+#: in PR #759's round -- still 0 of 30 dates, 140 modules to 139.
 _DRIFT_MECHANISM: Final = (
-    "The target is the census indexed by the date -- `ordinal % census-size` -- so a "
+    "The target is the census indexed by the run -- `(ordinal // 7) % census-size` -- so a "
     "module added or removed **anywhere** in the tree re-points every date at once, and "
     "a file's own edits change which of its candidates can still be anchored. Measured "
     "over one week of this repository's growth, 130 modules to 139: 0 of 30 dates "
@@ -144,8 +145,8 @@ class Night:
     #: The commit the sweep ran against, when the caller knew it.
     #:
     #: Without it the reproduction instruction is false. The target is
-    #: ``ordinal % len(census)``, so the census *size* re-points every date at
-    #: once whenever a module is added or removed anywhere in the tree -- 0 of 30
+    #: ``(ordinal // 7) % len(census)``, so the census *size* re-points every date
+    #: at once whenever a module is added or removed anywhere in the tree -- 0 of 30
     #: dates resolved to the same file across one week of growth, 130 modules to
     #: 139 -- and which of that file's candidates are anchorable depends on its
     #: own contents. `main` moves daily, so a command pasted a week later sweeps
@@ -168,7 +169,7 @@ def target_marker(path: str) -> str:
     A digest rather than the path itself. The path is repository text, and a
     path containing ``-->`` would close the HTML comment early -- leaving a
     marker that matches nothing and a body whose first line is half a comment, so
-    every night on that file would open a new issue instead of joining a thread.
+    every run on that file would open a new issue instead of joining a thread.
     The human-readable path is in the body a few lines below, where it cannot
     break anything.
     """
@@ -273,8 +274,8 @@ def _reproduce_section(night: Night) -> list[str]:
 
     The date does **not** fix the batch on its own, and saying so was this
     section's defect. Two mechanisms move it, and the first is the one that is
-    easy to miss: the target is ``ordinal % len(census)``, so the census *size*
-    is an input -- a module added or removed anywhere in the tree re-points every
+    easy to miss: the target is ``(ordinal // 7) % len(census)``, so the census
+    *size* is an input -- a module added or removed anywhere re-points every
     date at once, not just the dates near it. Measured over one week of this
     repository's growth, 130 modules to 139, 0 of 30 dates resolved to the same
     file. The second is the file's own contents, which decide how many of its
@@ -390,7 +391,7 @@ def existing_issue(listing: str, marker: str) -> int | None:
 
     An unreadable listing raises rather than reading as empty. Empty means "open
     a new issue", so a rate-limited or malformed response would open a duplicate
-    every night for as long as it lasted.
+    per run for as long as it lasted.
     """
     try:
         loaded = json.loads(listing)

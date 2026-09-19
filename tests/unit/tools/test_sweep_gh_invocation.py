@@ -100,8 +100,8 @@ def test_the_issue_body_travels_on_stdin_and_never_through_argv() -> None:
 def test_an_existing_thread_is_commented_on_rather_than_duplicated() -> None:
     """The dedup branch, checked through the call and not only through the lookup.
 
-    A target that survives a mutation every night would otherwise open an issue
-    every night, and the third one would be triaged as a new finding.
+    A target that survives a mutation on every run would otherwise open an issue
+    on every run, and the third one would be triaged as a new finding.
     """
     target = "packages/theurian-core/src/theurian/x.py"
     listing = json.dumps([{"number": 812, "body": sweep_filing.target_marker(target)}])
@@ -196,10 +196,10 @@ def test_the_night_a_body_describes_is_the_night_that_was_run() -> None:
     two places (the CLI argument and the generated labels), and a builder handed
     the wrong one files an issue nobody can reproduce.
 
-    Asserted on the body alone. This night is untrusted, and every untrusted
-    night shares one standing title with no date in it -- so the body is the only
-    place the date can be, and the only place it needs to be: the thread collects
-    nights, and each comment has to say which one it is.
+    Asserted on the body alone. This night is untrusted, and every untrusted run
+    shares one standing title with no date in it -- so the body is the only place
+    the date can be, and the only place it needs to be: the thread collects runs,
+    and each comment has to say which one it is.
     """
     payload = sweep_filing.build_payload(
         sweep_filing.Night(

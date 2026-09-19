@@ -295,7 +295,7 @@ def test_a_label_numbers_every_operator_the_file_offers_not_only_the_usable_ones
     The fixture's first two comparisons are dropped as unanchorable, so a label
     numbered by *emitted* order would call the third candidate ``-00-``; adding a
     test that makes the first one unique would then renumber every label in the
-    file, and two nights' issues about one defect would not be recognisable as
+    file, and two runs' issues about one defect would not be recognisable as
     the same defect. Numbering by the operator token's position in the file is
     what keeps the name stable.
     """
@@ -401,8 +401,8 @@ def test_the_picked_subset_spans_the_whole_candidate_list(total: int, limit: int
 
     ``candidates[:limit]`` satisfies "deterministic" and "N of them" and is the
     implementation this asserts against: it never reaches past the first few
-    statements of a 300-line module, so the sweep would attack the imports every
-    night. The tail assertion is the one it fails.
+    statements of a 300-line module, so the sweep would attack the imports on
+    every run. The tail assertion is the one it fails.
     """
     items = tuple(range(total))
 

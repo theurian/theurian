@@ -7,8 +7,12 @@ name: Red-team sweep
 # date alone, mutate it, run the suite against each mutation, file what
 # survives. This file is the three things the driver cannot supply itself: the
 # clock, a token that may write to the tracker, and an alarm for the runs the
-# driver never got to start. The cadence is stated once, in the `schedule:`
-# block below, and nowhere else here.
+# driver never got to start.
+#
+# The cadence -- how often -- is stated once, in the `schedule:` block below.
+# `night` survives elsewhere here as the legacy noun for one run, kept in step
+# with the driver's own `Night` type; it asserts no frequency. Retiring it is a
+# recorded residual.
 on:
   schedule:
     # Sunday 01:17 UTC: off the hour, because every top-of-hour cron on GitHub
@@ -32,7 +36,7 @@ on:
     inputs:
       date:
         description: >-
-          The night to sweep, as YYYY-MM-DD; empty means today. The target file
+          The date to sweep, as YYYY-MM-DD; empty means today. The target file
           is a pure function of this date, so a chosen date is this job's
           positive control: it steers the deterministic rotation onto a file
           whose verdict is already known, which is the only way to tell a
@@ -59,7 +63,7 @@ env:
 
 jobs:
   sweep:
-    name: One night against one file
+    name: One run against one file
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -256,16 +260,16 @@ jobs:
           # the place to read what actually broke.
           body="$(printf '%s\n' \
             "The scheduled red-team sweep did not finish. \`tools/sweep.py\` files its own" \
-            "findings and its own untrusted runs; this record is for the nights it never" \
+            "findings and its own untrusted runs; this record is for the runs it never" \
             "reached that point." \
             "" \
-            "- night: \`${SWEEP_DATE:-not resolved before the failure}\`" \
+            "- date: \`${SWEEP_DATE:-not resolved before the failure}\`" \
             "- run: ${RUN_URL}" \
             "- event: \`${EVENT_NAME}\`" \
             "- commit: \`${COMMIT_SHA}\`" \
             "" \
             "The failing step and its output are in the run above. This issue stays open" \
-            "until a night completes; a comment per failed night is the outage's duration.")"
+            "until a run completes; a comment per failed run is the outage's duration.")"
 
           if [ -n "$number" ]; then
             gh issue comment "$number" --body "$body"

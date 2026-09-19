@@ -373,10 +373,13 @@ def first_productive(
     """The first file in the rotation with something to mutate.
 
     A barren target is not an error and not a clean night -- it is a file of
-    constants, dataclasses and SQL text, of which this codebase has many. The
-    2026-09-16 rotation lands on one: ``review_search_sql.py`` holds no
-    comparison, no boolean literal and no ``and``, and stopping there would have
-    filed nothing while proving nothing.
+    constants, dataclasses and SQL text, of which this codebase has many.
+    ``review_search_sql.py`` is one: no comparison, no boolean literal and no
+    ``and``, so a rotation stopping there would file nothing while proving
+    nothing. No date is named on purpose. This example used to cite one, and the
+    date-to-file map moves with the census size -- it was already stale at 130
+    modules to 140 before the index became the run number and moved it again
+    (both measured in PR #759's round).
 
     Deterministic because the sequence is: the same date walks the same files in
     the same order, so the advance is as reproducible as the first choice was.

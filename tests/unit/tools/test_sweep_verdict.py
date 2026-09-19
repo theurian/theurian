@@ -45,7 +45,7 @@ def test_the_control_label_is_the_one_the_harness_actually_writes() -> None:
     The sweep tells the control apart from the mutations by label. If
     ``tools/mutate.py`` renamed its control, every outcome would read as a
     mutation, the "exactly one control-green" rule would never be satisfied, and
-    every night would file a run-untrusted issue -- a failure that is at least
+    every run would file a run-untrusted issue -- a failure that is at least
     loud. The reverse drift is the dangerous one: a sweep looking for a label
     nothing writes can never see a control-red.
     """

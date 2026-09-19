@@ -11,16 +11,29 @@ whoever picks it up has to be able to regenerate that exact mutation from those
 two facts. Nothing here may depend on the machine, the clock beyond the date, or
 the order a directory walk returned.
 
-**Spread.** Against a *fixed* census, ``ordinal % len`` walks every file before
-repeating any of it, which a hash of the date does not -- and the difference is
-invisible on any single night, so it is worth choosing deliberately.
+**Spread.** Against a *fixed* census, indexing by the *run* number --
+``ordinal // 7 % len`` -- walks every file before repeating any of it, which a
+hash of the date does not. Consecutive runs advance the index by exactly 1
+whatever the census size, for any cadence that lands on one weekday: there is no
+gcd condition left to satisfy.
 
-That guarantee does not survive contact with this repository, and saying it did
-was a claim nothing here can keep. The census is recomputed on every run, so its
-length moves, and the index moves with it: measured across one week of growth,
-0 of 30 dates resolved to the same file, and a replay across real nights drew
-repeats well before the census had been walked (measured in PR #730's review
-round). **What holds is determinism, not coverage.** Given
+Indexing by the *day* number, as this did, held that only while the sweep ran
+daily. Two things break it and the original argument named one.
+
+*The one it named:* the census is recomputed on every run, so its length moves
+and the index moves with it -- measured across one week of growth, 0 of 30 dates
+resolved to the same file, and a replay across real runs drew repeats well before
+the census had been walked (PR #730's review round). That one is not fixable
+here.
+
+*The one it missed:* the stride. Consecutive runs advance a day index by the gap
+between them, so a weekly cron strides 7, and against a 140-module census the
+walk closes over the gcd(7, 140) = 7 coset -- 20 indices reached, the other 120
+never (measured in PR #759's round, over 104 consecutive Sundays: 20 distinct
+targets under the day index, 87 under the run index). The cadence flip is what
+exposed it; the run index above is what removes it.
+
+**What holds is determinism, not coverage.** Given
 a census and a date the target is fixed and reproducible; the interval before
 every file has been attacked is unbounded while the census churns, which is why
 a filed finding carries the commit it ran against and why the section in
@@ -81,7 +94,7 @@ def census(repo_root: Path = REPO_ROOT) -> tuple[str, ...]:
 
 
 def rotation(files: Sequence[str], on: date) -> tuple[str, ...]:
-    """The census re-ordered to start at tonight's target.
+    """The census re-ordered to start at this run's target.
 
     The whole census rather than a single name, because a target can be barren --
     a module of constants and dataclasses holds no comparison, no boolean literal
@@ -89,13 +102,21 @@ def rotation(files: Sequence[str], on: date) -> tuple[str, ...]:
     candidates, and because the sequence is a rotation rather than a slice, that
     walk both terminates and can reach every file *in this call*.
 
-    That reach is per-call and says nothing across nights: a file this rotation
-    could have reached may be at a different index tomorrow, because the census
+    The index is the *run* number, ``ordinal // 7``, not the day number, so
+    consecutive scheduled runs advance it by exactly 1 -- see the module
+    docstring for the stride this replaces and what it cost. The bucket is a
+    fixed 7-day grid, which happens to run Sunday through Saturday (ordinal 7 is
+    a Sunday) and is therefore not the ISO week. Dates inside one bucket are
+    equivalent, so a ``workflow_dispatch`` aims the rotation a week at a time
+    rather than a day at a time.
+
+    That reach is per-call and says nothing across runs: a file this rotation
+    could have reached may be at a different index next run, because the census
     it indexes into is recomputed each time. See the module docstring -- what
     this scheme guarantees is determinism given a census and a date, not that
     every file is eventually attacked.
     """
     if not files:
         raise SweepError("an empty census cannot be rotated; there is no file to attack")
-    start = on.toordinal() % len(files)
+    start = (on.toordinal() // 7) % len(files)
     return (*files[start:], *files[:start])

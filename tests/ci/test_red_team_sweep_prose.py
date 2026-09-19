@@ -782,6 +782,38 @@ def _weekday_phrase(field: str) -> str | None:
     return None
 
 
+@pytest.mark.parametrize(
+    ("field", "phrase"),
+    (
+        ("*", "daily"),
+        ("0", "on Sunday"),
+        ("7", "on Sunday"),
+        ("SUN", "on Sunday"),
+        ("sun", "on Sunday"),
+        ("3", "on Wednesday"),
+        ("wed", "on Wednesday"),
+        ("0,3", None),
+        ("1-5", None),
+        ("*/2", None),
+    ),
+)
+def test_a_weekday_field_renders_only_the_shapes_the_section_has_a_sentence_for(
+    field: str, phrase: str | None
+) -> None:
+    """The rule below exercises one shape -- whichever the live cron holds.
+
+    Every other branch of `_weekday_phrase` is therefore unmeasured until someone
+    moves the schedule, and the branch that matters most is the one that returns
+    nothing: `0,3` *contains* the Sunday spelling, so a matcher loosened to a
+    prefix or a substring renders "on Sunday" for a job that also runs on
+    Wednesdays -- green, and wrong in the direction that understates how often
+    the job runs. The equivalent spellings are the other side: cron reads `0`,
+    `7` and `SUN` as one day, so re-spelling the field must not read here as a
+    schedule change and send somebody rewriting a sentence that was already true.
+    """
+    assert _weekday_phrase(field) == phrase
+
+
 def test_the_section_states_the_hour_and_day_the_workflow_is_actually_scheduled_for() -> None:
     """A schedule that moves silently is the section's own failure mode, one level up.
 
