@@ -85,6 +85,31 @@ def test_a_failed_touching_commit_log_reads_check_error_even_with_no_citations_a
     assert premise_check.CHECK_ERROR in reasons
 
 
+def test_an_unknown_issue_ref_citation_reads_reference_not_open() -> None:
+    """A not-open cross-referenced issue is the most direct PREMISE-MOOT
+    signal available offline (round 1, 16538d17); before that fix it graded
+    only `unknown-citation` and sank into the same no-agent-spend tail as
+    every other unresolved guess.
+    """
+    citations = (_citation(premise_check.UNKNOWN, kind="issue_ref", value="#42"),)
+
+    reasons = premise_check._reasons(citations, (), log_failed=False)
+
+    assert premise_check.REFERENCE_NOT_OPEN in reasons
+
+
+def test_an_unknown_non_issue_ref_citation_never_reads_reference_not_open() -> None:
+    """The reason is specific to `issue_ref`'s own UNKNOWN status; a `constant`
+    or `symbol` miss is `unknown-citation` only, and must not be mistaken for
+    a not-open cross-reference it never was.
+    """
+    citations = (_citation(premise_check.UNKNOWN, kind="constant", value="X"),)
+
+    reasons = premise_check._reasons(citations, (), log_failed=False)
+
+    assert premise_check.REFERENCE_NOT_OPEN not in reasons
+
+
 def test_multiple_reasons_can_fire_at_once_and_each_appears_once() -> None:
     citations = (_citation(premise_check.DANGLING), _citation(premise_check.UNKNOWN, value="y.py"))
 
