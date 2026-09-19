@@ -1,7 +1,8 @@
 """The sweep section's prose, pinned against the sources it describes (#378).
 
 `docs/contributing/orchestration.md`'s "The async red-team sweep" section states
-operational facts: when the scheduled job runs, how many mutations it spends,
+operational facts: when the scheduled job runs, how many mutations it spends and
+how many suite walks those cost,
 what its two standing alarm threads are called, which label its filings land
 under, what heading closes a filed body, where a deferred claim is recorded,
 what the census excludes, and which release-ritual step the release-cut leg is
@@ -402,6 +403,21 @@ def _sweep_census() -> ModuleType:
     import sweep_census
 
     return sweep_census
+
+
+def _sweep_driver() -> ModuleType:
+    """`tools/sweep.py`, for the one figure the section states that is arithmetic.
+
+    The walk budget is not a constant anywhere: `sweep.walk_budget` computes it
+    from the block size and the per-file mutation count, which is what keeps the
+    workflow's `timeout-minutes` comment, this section and the code from drifting
+    apart. Deriving it here rather than spelling it means the sentence is checked
+    against the arithmetic and not against a number somebody typed twice.
+    """
+    _tools_on_path()
+    import sweep
+
+    return sweep
 
 
 def _alarm_labels() -> list[str]:
@@ -865,12 +881,22 @@ def test_the_section_states_the_hour_and_day_the_workflow_is_actually_scheduled_
 
 
 def test_the_section_states_the_mutation_budget_the_workflow_actually_passes() -> None:
-    """The invocation gate pins that `--max-mutations` is present, not what it says.
+    """The invocation gate pins that `--block-size` is present, not what it says.
 
-    The number is the sweep's whole cost model -- six mutations plus the control
-    is the seven full suite walks the section counts, and the job's
-    `timeout-minutes` is set against that arithmetic. Raising the budget without
-    touching the prose leaves a documented bound that bounds nothing.
+    The number is the sweep's whole cost model, and the block form moved what it
+    counts: `--block-size 6` at one mutation per module is six mutations across
+    six modules, plus the one shared control, which is the seven full suite walks
+    the section counts and the arithmetic the job's `timeout-minutes` is set
+    against. Raising the block size without touching the prose leaves a
+    documented bound that bounds nothing.
+
+    **Both halves are derived, and the second one is arithmetic.** The mutation
+    count comes out of the invocation; the walk count comes out of
+    `sweep.walk_budget`, which computes it from the block size and
+    `sweep_mutations.MUTATIONS_PER_FILE` rather than storing it. A section that
+    restated either would agree with itself and with nothing else -- and the
+    walk figure is the one a reader converts into an expectation about how long
+    the job may run.
 
     The ceiling is referred to and not quoted. This docstring used to quote a
     figure the workflow had already moved past -- the failure the module exists
@@ -879,12 +905,15 @@ def test_the_section_states_the_mutation_budget_the_workflow_actually_passes() -
     """
     run = _sweep_step_run()
 
-    found = re.search(r"--max-mutations\s+(\d+)", run)
-    assert found is not None, f"the driver is invoked without --max-mutations:\n{run}"
-    budget = int(found.group(1))
-    assert budget in _SPELLED, f"a budget of {budget} needs the section reworded, not re-derived"
+    found = re.search(r"--block-size\s+(\d+)", run)
+    assert found is not None, f"the driver is invoked without --block-size:\n{run}"
+    block_size = int(found.group(1))
+    assert block_size in _SPELLED, f"a block of {block_size} needs the section reworded"
+    walks = _sweep_driver().walk_budget(block_size)
+    assert walks in _SPELLED, f"a budget of {walks} walks needs the section reworded"
 
-    assert f"at most {_SPELLED[budget]} mutations" in _section()
+    assert f"at most {_SPELLED[block_size]} mutations" in _section()
+    assert f"{_SPELLED[walks]} walks" in _section()
 
 
 def test_the_section_names_the_heading_every_filed_body_ends_with() -> None:

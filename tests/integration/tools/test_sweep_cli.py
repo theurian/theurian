@@ -1,15 +1,15 @@
 """The sweep driver end to end, with the suite and the tracker stood in for (#378).
 
 Everything between the two boundaries is real here: the census walk over the
-production tree, the rotation, the generator, the spec file that is written to
-disk, the argv handed to the harness, the results document that is read back,
-and the payload that is printed or filed. Only the two expensive edges are
-injected -- ``tools/mutate.py`` (a full suite walk per mutation, tens of minutes)
-and ``gh`` (the network, and a token with issue-write scope).
+production tree, the block the date selects, the generator, the spec file that is
+written to disk, the argv handed to the harness, the results document that is
+read back, and the payload that is printed or filed. Only the two expensive edges
+are injected -- ``tools/mutate.py`` (a full suite walk per mutation, tens of
+minutes) and ``gh`` (the network, and a token with issue-write scope).
 
 The contract this pins is the one the workflow consumes:
 
-    tools/sweep.py --date YYYY-MM-DD --max-mutations N --json PATH [--dry-run]
+    tools/sweep.py --date YYYY-MM-DD --block-size N --json PATH [--dry-run]
                    [--repo owner/repo]
 
 with **exit 0 when the sweep completed and any filing succeeded** -- findings are
@@ -84,12 +84,12 @@ class _FakeGh:
         return sweep_filing.CommandResult(self.returncode, listing, "gh said no")
 
 
-def _argv(results: Path, *extra: str, mutations: int = 2) -> list[str]:
+def _argv(results: Path, *extra: str, block_size: int = 2) -> list[str]:
     return [
         "--date",
         _NIGHT,
-        "--max-mutations",
-        str(mutations),
+        "--block-size",
+        str(block_size),
         "--json",
         str(results),
         *extra,
@@ -238,12 +238,19 @@ def test_the_spec_handed_to_the_harness_anchors_in_the_real_target_file(
     uniqueness rule is unit-tested against the generator's output; this is the
     only check that the string which actually reaches the spec file still
     satisfies it against the file on disk.
+
+    The count is bounded rather than pinned: which two modules a block of two
+    draws is a function of the census, and a module added anywhere re-points it.
+    What is invariant is the budget -- at most one mutation per block member, so
+    never more entries than slots, one file each -- and that the spec is not
+    empty, which is what keeps the loop below from passing over nothing.
     """
     mutate, gh = _FakeMutate(), _FakeGh()
 
     sweep.main(_argv(tmp_path / "r.json"), mutate_runner=mutate, gh_runner=gh)
 
-    assert len(mutate.spec) == 2
+    assert 1 <= len(mutate.spec) <= 2
+    assert len({entry["file"] for entry in mutate.spec}) == len(mutate.spec)
     for entry in mutate.spec:
         source = (sweep_census.REPO_ROOT / entry["file"]).read_text(encoding="utf-8")
         assert source.count(entry["old"]) == 1, entry["label"]
@@ -296,7 +303,7 @@ def test_a_relative_results_path_is_resolved_before_the_harness_sees_it(
     mutate, gh = _FakeMutate(), _FakeGh()
 
     sweep.main(
-        ["--date", _NIGHT, "--max-mutations", "2", "--json", "run.json"],
+        ["--date", _NIGHT, "--block-size", "2", "--json", "run.json"],
         mutate_runner=mutate,
         gh_runner=gh,
     )
@@ -453,18 +460,20 @@ def test_the_default_harness_is_the_real_one_and_lends_it_a_git(tmp_path: Path) 
     assert "--with-git" in mutate.argv
 
 
-def test_a_night_asked_for_no_mutations_fails_rather_than_reporting_a_clean_run(
+def test_a_run_asked_for_an_empty_block_fails_rather_than_reporting_a_clean_run(
     tmp_path: Path,
 ) -> None:
-    """``--max-mutations 0`` asks nothing, so it cannot answer anything.
+    """``--block-size 0`` consumes no census slot, so it cannot answer anything.
 
     The harness is never started. Exiting 0 here would be the purest silent stop
     available: a workflow with a typo in one numeric argument would report a
-    clean sweep on every run for as long as nobody read the log.
+    clean sweep on every run for as long as nobody read the log -- and an empty
+    spec comes back from the real harness with a green control and no mutation,
+    which is what that clean line would be built from.
     """
     mutate, gh = _FakeMutate(), _FakeGh()
 
-    code = sweep.main(_argv(tmp_path / "r.json", mutations=0), mutate_runner=mutate, gh_runner=gh)
+    code = sweep.main(_argv(tmp_path / "r.json", block_size=0), mutate_runner=mutate, gh_runner=gh)
 
     assert code == 1
     assert mutate.argv == ()
@@ -574,10 +583,61 @@ def test_a_date_that_is_not_a_date_fails_the_sweep(tmp_path: Path) -> None:
     mutate, gh = _FakeMutate(), _FakeGh()
 
     code = sweep.main(
-        ["--date", "last-tuesday", "--max-mutations", "2", "--json", str(tmp_path / "r.json")],
+        ["--date", "last-tuesday", "--block-size", "2", "--json", str(tmp_path / "r.json")],
         mutate_runner=mutate,
         gh_runner=gh,
     )
 
     assert code == 1
     assert mutate.argv == ()
+
+
+def test_the_run_reports_the_walks_it_will_spend_against_the_budget_it_has(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The cost model is the reason for the block size, and it is printed once.
+
+    A run buys seven full suite walks: one shared control plus one per mutation.
+    That arithmetic is what sets the workflow's ``timeout-minutes``, and it is
+    computed from the two constants rather than written down -- so a block of two
+    must report three, not the seven the shipped default would spend. A line that
+    printed the ceiling regardless of what the run actually asked would make an
+    over-budget batch look in-budget in the only place anyone reads it.
+    """
+    mutate, gh = _FakeMutate(), _FakeGh()
+
+    sweep.main(_argv(tmp_path / "r.json"), mutate_runner=mutate, gh_runner=gh)
+
+    printed = capsys.readouterr().out
+    assert f"budget    {1 + len(mutate.spec)} walk(s) of at most 3" in printed
+    assert sweep.walk_budget(2) == 3
+
+
+def test_a_barren_block_member_is_announced_and_costs_the_run_no_walk(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The slot the single-target form could only express by advancing past it.
+
+    Driven with the whole census as one block, because that is the only way to
+    reach a barren member without pinning which modules a small block happens to
+    draw -- the census is recomputed every run, so any smaller fixture is one
+    added module away from drawing six productive files. 24 of the 142 modules
+    are barren, measured 2026-09-19 at ``92581f77``; a census with none at all
+    would fail this rather than silently passing over the branch, which is the
+    honest failure.
+
+    The two assertions are the two halves: the run *says* the slot was barren,
+    and the slot buys no walk -- the spec is one entry per productive member and
+    the freed walk is not handed to another file's second question.
+    """
+    census = sweep_census.census()
+    mutate, gh = _FakeMutate(), _FakeGh()
+
+    sweep.main(
+        _argv(tmp_path / "r.json", block_size=len(census)), mutate_runner=mutate, gh_runner=gh
+    )
+
+    printed = capsys.readouterr().out
+    assert "barren" in printed
+    assert len(mutate.spec) < len(census)
+    assert f"budget    {1 + len(mutate.spec)} walk(s) of at most {1 + len(census)}" in printed

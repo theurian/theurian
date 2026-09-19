@@ -1,22 +1,23 @@
-"""The scheduled red-team sweep: one file, a handful of mutations, a filed finding.
+"""The scheduled red-team sweep: a block of files, one mutation each, one issue.
 
 CLAUDE.md's blast-radius table routes open-ended adversarial depth to a standing
 async red-team sweep over ``main``, whose findings enter filing-time triage like
-any other. This is the driver for that sweep's single-file mutation leg (issue
-#378); a separate workflow holds the cadence and schedules it.
+any other. This is the driver for that sweep's mutation leg (issue #378); a
+separate workflow holds the cadence and schedules it.
 
 Usage
 -----
 ::
 
     uv run --frozen python tools/sweep.py \\
-        --date 2026-09-16 --max-mutations 6 --json /tmp/sweep.json [--dry-run]
+        --date 2026-09-20 --block-size 6 --json /tmp/sweep.json [--dry-run]
 
-What one night does, in order: pick a production file from the census by the
-date alone (:mod:`sweep_census`), generate at most ``--max-mutations`` anchorable
-mutations for it (:mod:`sweep_mutations`), run ``tools/mutate.py`` over them,
-read what came back (:mod:`sweep_verdict`), and either say nothing or file an
-issue under the ``async-sweep`` label (:mod:`sweep_filing`).
+What one run does, in order: take the ``--block-size`` census slots the date
+selects (:func:`sweep_census.block`), generate one anchorable mutation for each
+by its visit number (:func:`sweep_mutations.for_block`), hand the whole block to
+``tools/mutate.py`` as a single spec, read what came back
+(:mod:`sweep_verdict`), and either say nothing or file one issue under the
+``async-sweep`` label (:mod:`sweep_filing`).
 
 Exit codes, which the workflow's alarm depends on
 -------------------------------------------------
@@ -31,12 +32,22 @@ Exit codes, which the workflow's alarm depends on
 
 Budget
 ------
-A verdict costs a full suite walk. Six mutations plus the harness's own control
-is seven walks across :data:`WORKERS` workers, which is what sets the default of
-six against a per-run budget of about two hours. Neither number is a knob the
-workflow is expected to tune: the budget is the whole reason a run attacks one
-file, and a worker count raised to buy wall clock buys less than it looks (see
-:data:`WORKERS`).
+A verdict costs a full suite walk, and the harness spends **one** control walk
+per spec however many mutations the spec carries. So a run costs
+
+    1 + BLOCK_SIZE * MUTATIONS_PER_FILE  =  1 + 6 * 1  =  7 walks
+
+across :data:`WORKERS` workers -- the same seven the single-file form spent on
+six mutations of one module, against the same ceiling. What the block form buys
+for that price is reach: six modules a run, and a census cover in
+``ceil(len / BLOCK_SIZE)`` runs where six mutations of one module needed one run
+per module -- 24 against 142 at the census of 2026-09-19.
+
+Seven is the worst case, not the expectation: a barren slot yields no mutation
+and therefore no walk, and its walk is *not* handed to another file (see
+:func:`sweep_mutations.for_block`). Neither factor is a knob the workflow is
+expected to tune, and a worker count raised to buy wall clock buys less than it
+looks (see :data:`WORKERS`).
 """
 
 from __future__ import annotations
@@ -58,7 +69,20 @@ from typing import Final
 import sweep_filing
 import sweep_mutations
 import sweep_verdict
-from sweep_census import REPO_ROOT, SweepError, census, rotation
+from sweep_census import BLOCK_SIZE, REPO_ROOT, SweepError, block, census, run_index
+from sweep_mutations import MUTATIONS_PER_FILE
+
+
+def walk_budget(block_size: int = BLOCK_SIZE) -> int:
+    """The most suite walks one run can cost.
+
+    The shared control plus one mutation per block member. Computed from the two
+    constants rather than written down, so the module docstring's arithmetic, the
+    workflow's ceiling and the code cannot drift apart -- the failure the
+    red-team workflow's own schedule comment already paid for once.
+    """
+    return 1 + block_size * MUTATIONS_PER_FILE
+
 
 #: Isolated full suites running at once on one four-core runner.
 #:
@@ -121,11 +145,17 @@ MutateRunner = Callable[[Sequence[str]], int]
 def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="tools/sweep.py",
-        description="Run one night of the async red-team sweep and file what it finds.",
+        description="Run one block of the async red-team sweep and file what it finds.",
     )
-    parser.add_argument("--date", required=True, help="the night, as YYYY-MM-DD; picks the target")
+    parser.add_argument("--date", required=True, help="the run, as YYYY-MM-DD; picks the block")
     parser.add_argument(
-        "--max-mutations", type=int, default=6, help="mutations to run; each costs a full suite"
+        "--block-size",
+        type=int,
+        default=BLOCK_SIZE,
+        help=(
+            "census slots this run consumes, one mutation each. The run costs one "
+            "shared control walk plus one walk per non-barren slot"
+        ),
     )
     parser.add_argument("--json", dest="results", required=True, help="where the harness writes")
     parser.add_argument(
@@ -261,12 +291,23 @@ def _outcomes_of(results: Path, mutate_exit: int) -> tuple[sweep_verdict.Outcome
     return sweep_verdict.read_results(results.read_text(encoding="utf-8"))
 
 
-def _describe(generated: sweep_mutations.Generated, picked: int) -> None:
-    print(f"target    {generated.path}")
-    print(
-        f"mutations {picked} of {len(generated.candidates)} candidate(s); "
-        f"{len(generated.skipped)} dropped for a non-unique anchor"
-    )
+def _describe(attempts: Sequence[sweep_mutations.Attempt], block_size: int) -> None:
+    for attempt in attempts:
+        offered = len(attempt.generated.candidates)
+        dropped = len(attempt.generated.skipped)
+        if attempt.candidate is None:
+            print(f"slot {attempt.slot.index:>4}  barren    {attempt.path} ({dropped} dropped)")
+            continue
+        print(
+            f"slot {attempt.slot.index:>4}  lap {attempt.slot.lap:<6} {attempt.path} "
+            f"-> candidate {1 + attempt.slot.lap % offered} of {offered} ({dropped} dropped)"
+        )
+    walks = 1 + sum(1 for attempt in attempts if attempt.candidate is not None)
+    # The ceiling comes from the *configured* block size, never from the block
+    # that was realised: `walk_budget(len(attempts))` re-derives the bound from
+    # the same number it is supposed to bound, so a run that built a short block
+    # would print its own shortfall as the budget and read as compliant.
+    print(f"budget    {walks} walk(s) of at most {walk_budget(block_size)}")
 
 
 def _print_payload(payload: sweep_filing.Payload) -> None:
@@ -286,14 +327,10 @@ def _sweep(
         print(f"WARNING   --mutate-cmd substituted the mutation harness with {' '.join(harness)};")
         print("          these verdicts are not this repository's own suite")
 
-    generated = sweep_mutations.first_productive(rotation(census(), night), _source_of, on=night)
-    picked = generated.picked(args.max_mutations)
-    _describe(generated, len(picked))
-    if not picked:
-        raise SweepError(
-            f"--max-mutations {args.max_mutations} left nothing to run against {generated.path}; "
-            "a night that asks nothing cannot report a clean sweep"
-        )
+    slots = block(census(), night, size=args.block_size)
+    attempts = sweep_mutations.for_block(slots, _source_of, on=night)
+    _describe(attempts, args.block_size)
+    picked = tuple(attempt.candidate for attempt in attempts if attempt.candidate is not None)
 
     results = Path(args.results).resolve()
     # Removed before the harness starts, never after. The workflow writes the
@@ -324,14 +361,13 @@ def _sweep(
     payload = sweep_filing.build_payload(
         sweep_filing.Night(
             on=night,
-            target=generated.path,
+            run=run_index(night),
+            attempts=attempts,
             harness=harness,
             command=_reproduction(args, night),
             mutate_exit=mutate_exit,
-            picked=picked,
             outcomes=outcomes,
             reading=reading,
-            skipped=len(generated.skipped),
             commit=commit,
         )
     )
@@ -363,8 +399,8 @@ def _reproduction(args: argparse.Namespace, night: date) -> tuple[str, ...]:
         "tools/sweep.py",
         "--date",
         str(night),
-        "--max-mutations",
-        str(args.max_mutations),
+        "--block-size",
+        str(args.block_size),
         "--json",
         f"sweep-{night}.json",
         "--dry-run",

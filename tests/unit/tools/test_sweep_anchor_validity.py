@@ -23,9 +23,9 @@ from __future__ import annotations
 
 import ast
 import io
-import itertools
 import textwrap
 import tokenize
+from collections.abc import Sequence
 from datetime import date
 
 import pytest
@@ -107,6 +107,10 @@ def _token_strings(source: str) -> list[str]:
 
 def _generated() -> sweep_mutations.Generated:
     return sweep_mutations.candidates(_PATH, _FIXTURE, on=_NIGHT)
+
+
+def _source_of(target: str) -> str:
+    return (sweep_census.REPO_ROOT / target).read_text(encoding="utf-8")
 
 
 def test_every_emitted_anchor_occurs_exactly_once_in_the_target() -> None:
@@ -224,42 +228,94 @@ def test_applying_a_candidate_changes_exactly_the_operator_it_names() -> None:
         assert after[differing[0]] == candidate.swapped_to, candidate.label
 
 
+def _applies_cleanly_and_once(
+    candidate: sweep_mutations.Candidate, source: str, before: Sequence[str]
+) -> None:
+    """The two rules of the module docstring, against one real file.
+
+    Checked on the token stream rather than on the text: the anchor may be a
+    whole line, so a textual diff cannot say whether the line's other tokens
+    survived. A mutant that does not parse comes back KILLED by a collection
+    error, which is a false KILLED and reads exactly like a property the suite
+    holds -- so the parse is asserted too.
+
+    ``before`` is passed in rather than recomputed: the unmutated token stream is
+    the same for every candidate of one file, and tokenizing it per candidate
+    doubled the whole-census case's 6 s.
+    """
+    assert source.count(candidate.old) == 1, f"{candidate.path}: {candidate.label}"
+    mutated = source.replace(candidate.old, candidate.new, 1)
+    after = _token_strings(mutated)
+    differing = [
+        index for index, (was, now) in enumerate(zip(before, after, strict=True)) if was != now
+    ]
+
+    ast.parse(mutated)
+    assert len(differing) == 1, candidate.label
+    assert before[differing[0]] == candidate.swapped_from, candidate.label
+    assert after[differing[0]] == candidate.swapped_to, candidate.label
+
+
 def test_every_mutation_the_real_tree_would_run_applies_cleanly_and_once() -> None:
-    """The same two rules, against the population a night would actually emit.
+    """The same two rules, against the population a run actually hands over.
 
     The fixture above proves the widening ladder reaches all three rungs. It
-    cannot prove the ladder holds against 139 files of f-strings, walrus
+    cannot prove the ladder holds against 142 files of f-strings, walrus
     operators, match statements, nested comprehensions, CJK string literals and
     multi-line boolean expressions -- and the byte-versus-character column
     arithmetic ``ast`` forces on this module is exactly the kind of bug that is
     invisible on a short ASCII fixture and wrong on a real file.
 
-    The population is every candidate ``picked(6)`` would hand to
-    ``tools/mutate.py`` for every file in the census -- 558 mutations measured
-    2026-09-16 at ``e46fab2a``, at about 2.3 s for the case -- rather than a file
-    chosen because it was convenient. Steering this at one comfortable module is the
-    defect the check exists to prevent.
+    The population is built the way the driver builds it -- ``block`` then
+    ``for_block``, over a **full cover** of consecutive runs -- so every census
+    file is drawn at least once through the code path that picks it, rather than
+    through a loop this test wrote itself. Measured 2026-09-19 at ``92581f77``:
+    24 runs, 144 slots, 120 mutations handed over and 24 barren slots. A run's
+    own block is six files, so a check written against one run would say nothing
+    about the other 136.
     """
+    census = sweep_census.census()
+    cover = -(-len(census) // sweep_census.BLOCK_SIZE)
+    sources = {target: _source_of(target) for target in census}
+    tokens = {target: _token_strings(source) for target, source in sources.items()}
     checked = 0
-    for target in sweep_census.census():
-        source = (sweep_census.REPO_ROOT / target).read_text(encoding="utf-8")
-        generated = sweep_mutations.candidates(target, source, on=_NIGHT)
-        before = _token_strings(source)
-        for candidate in generated.picked(6):
-            assert source.count(candidate.old) == 1, f"{target}: {candidate.label}"
-            mutated = source.replace(candidate.old, candidate.new, 1)
-            after = _token_strings(mutated)
-            differing = [
-                index
-                for index, (was, now) in enumerate(zip(before, after, strict=True))
-                if was != now
-            ]
-            ast.parse(mutated)
-            assert len(differing) == 1, candidate.label
-            assert after[differing[0]] == candidate.swapped_to, candidate.label
+
+    for offset in range(cover):
+        when = date.fromordinal(_NIGHT.toordinal() + offset * 7)
+        for attempt in sweep_mutations.for_block(
+            sweep_census.block(census, when), sources.__getitem__, on=when
+        ):
+            if attempt.candidate is None:
+                continue
+            _applies_cleanly_and_once(
+                attempt.candidate, sources[attempt.path], tokens[attempt.path]
+            )
             checked += 1
 
-    assert checked >= 400
+    assert checked >= len(census) // 2
+
+
+def test_every_candidate_the_whole_census_offers_applies_cleanly_and_once() -> None:
+    """The cover above draws one candidate per file; a file's others run later.
+
+    :meth:`sweep_mutations.Generated.at_lap` hands a file's next candidate over
+    on its next visit, so the population a run can eventually hand to
+    ``tools/mutate.py`` is every candidate of every census file -- 1159 of them
+    measured 2026-09-19 at ``92581f77``, against 506 dropped for a non-unique
+    anchor. A check that stopped at the ones this week's cover happens to draw
+    would leave the rest to be discovered by an unattended job at 01:17 UTC,
+    which is where a mis-anchored mutation becomes a fabricated SURVIVED.
+    """
+    checked = 0
+
+    for target in sweep_census.census():
+        source = _source_of(target)
+        before = _token_strings(source)
+        for candidate in sweep_mutations.candidates(target, source, on=_NIGHT).candidates:
+            _applies_cleanly_and_once(candidate, source, before)
+            checked += 1
+
+    assert checked >= 1000
 
 
 def test_an_operator_behind_non_ascii_text_still_anchors_where_it_actually_is() -> None:
@@ -304,7 +360,7 @@ def test_a_label_numbers_every_operator_the_file_offers_not_only_the_usable_ones
 
     widened = next(item for item in generated.candidates if item.line == wanted)
 
-    assert widened.label == f"sweep-2026-09-16-02-lt-to-le-l{wanted}"
+    assert widened.label == f"sweep-2026-09-16-a1e446-02-lt-to-le-l{wanted}"
 
 
 #: A form feed used as a page separator -- the conventional one in Python source,
@@ -366,12 +422,13 @@ def test_a_windows_line_ending_keeps_its_offsets() -> None:
 
 
 def test_a_file_with_nothing_to_mutate_yields_no_candidates_rather_than_raising() -> None:
-    """A barren target is an ordinary night, not an error.
+    """A barren block member is an ordinary run, not an error.
 
-    Constants-and-dataclasses modules are common in this codebase and hold
-    nothing any of the three operators can reach. The driver answers this by
-    advancing to the next file in the rotation, which it can only do if the
-    generator returns empty instead of raising.
+    Constants-and-dataclasses modules are common in this codebase -- 24 of the
+    142 in the census, measured 2026-09-19 at ``92581f77`` -- and hold nothing
+    any of the three operators can reach. ``for_block`` reports such a slot as a
+    member that bought no walk, which it can only do if the generator returns
+    empty instead of raising.
     """
     barren = "VALUE = 3\n\n\ndef identity(item):\n    return item\n"
 
@@ -384,44 +441,107 @@ def test_a_file_with_nothing_to_mutate_yields_no_candidates_rather_than_raising(
 def test_a_target_that_does_not_parse_stops_the_sweep_instead_of_reading_barren() -> None:
     """An unparseable production file is not "nothing to mutate".
 
-    Treating it as barren would advance to the next file and file nothing, so a
-    repository that cannot even be imported would produce a clean sweep run.
-    The driver turns this into exit 1.
+    Treating it as barren would report the slot as a module with nothing to
+    offer and carry on with the rest of the block, so a repository that cannot
+    even be imported would produce a run that files nothing about it. The driver
+    turns this into exit 1.
     """
     with pytest.raises(sweep_census.SweepError):
         sweep_mutations.candidates(_PATH, "def broken(:\n", on=_NIGHT)
 
 
-@pytest.mark.parametrize(
-    ("total", "limit"),
-    [(1, 6), (6, 6), (7, 6), (100, 6), (100, 1), (2, 1)],
+#: A file offering four candidates, one per operator family plus a second
+#: comparison, so "the next visit asks the next question" has somewhere to go
+#: and a cycle short enough to walk twice by hand.
+_FOUR_CANDIDATE_FIXTURE = textwrap.dedent(
+    """\
+    def gate(a, b, flag):
+        if a < b:
+            return True
+        if a > b:
+            return flag
+        return False
+    """
 )
-def test_the_picked_subset_spans_the_whole_candidate_list(total: int, limit: int) -> None:
-    """ "Evenly spaced" has to mean spaced, including into the tail of the file.
 
-    ``candidates[:limit]`` satisfies "deterministic" and "N of them" and is the
-    implementation this asserts against: it never reaches past the first few
-    statements of a 300-line module, so the sweep would attack the imports on
-    every run. The tail assertion is the one it fails.
+
+def test_consecutive_visits_to_one_file_draw_consecutive_candidates() -> None:
+    """One mutation per file per run only buys depth if the question moves.
+
+    A run hands the harness one mutation per block member, so a selector that
+    answered a file's first candidate every time would ask that file the same
+    question for ever -- ``candidates[0]``, which is what a budget of one made of
+    the old evenly-spaced pick, and a defect measured rather than reasoned about.
+    Measured 2026-09-19 at ``92581f77`` over 60 runs of the live census: every one
+    of the 112 revisited files offering more than one candidate drew a different
+    one on its next visit under the lap index, and none did under the old one.
+
+    Asserted as a whole cycle rather than as "two visits differ": a selector that
+    alternated between two of four candidates satisfies the weaker claim and
+    still never asks the other two. The tail assertion is the wrap -- the cycle
+    returns to the first candidate only after all of them have run.
     """
-    items = tuple(range(total))
+    generated = sweep_mutations.candidates(_PATH, _FOUR_CANDIDATE_FIXTURE, on=_NIGHT)
+    span = len(generated.candidates)
 
-    picked = sweep_mutations.evenly_spaced(items, limit)
+    drawn = [generated.at_lap(lap) for lap in range(span)]
 
-    window = -(-total // limit)
-    gaps = [later - earlier for earlier, later in itertools.pairwise(picked)]
-    assert len(picked) == min(total, limit)
-    assert len(set(picked)) == len(picked)
-    assert list(picked) == sorted(picked)
-    assert picked[-1] >= total - window
-    assert all(gap <= window for gap in gaps)
+    assert span == 4
+    assert drawn == list(generated.candidates)
+    assert generated.at_lap(span) == generated.candidates[0]
 
 
-def test_no_candidate_is_picked_when_the_limit_is_zero() -> None:
-    """``--max-mutations 0`` asks for nothing and must not quietly run six.
+def test_the_advance_holds_at_the_lap_numbers_a_real_run_carries() -> None:
+    """A lap is an absolute visit count, not an offset from the first run.
 
-    The driver reads this as "no candidates", advances through the rotation and
-    finally exits 1, which is the honest answer to a sweep configured to ask
-    nothing.
+    ``sweep_census.block`` computes it as ``position // len(census)``, which is
+    around 90,000 for any date this decade -- so a selector correct only for
+    small laps, or one keyed on the run number rather than the visit, is wrong
+    everywhere it actually runs. The two laps below are consecutive *visits*,
+    which is what the block hands over.
     """
-    assert sweep_mutations.evenly_spaced((1, 2, 3), 0) == ()
+    generated = sweep_mutations.candidates(_PATH, _FOUR_CANDIDATE_FIXTURE, on=_NIGHT)
+    lap = sweep_census.block(sweep_census.census(), _NIGHT)[0].lap
+
+    here, next_visit = generated.at_lap(lap), generated.at_lap(lap + 1)
+
+    assert lap > 1000
+    assert here is not None and next_visit is not None
+    span = len(generated.candidates)
+    assert generated.candidates.index(next_visit) == (generated.candidates.index(here) + 1) % span
+
+
+def test_a_file_offering_one_candidate_asks_the_same_question_on_every_visit() -> None:
+    """The exception the claim above is written around, and it is a real population.
+
+    Six of the 142 census modules offer exactly one anchorable mutation, of the
+    118 that offer any (measured 2026-09-19 at ``92581f77``). A file with one
+    candidate cannot ask a different question on
+    its next visit, so "a later visit asks a different question" would be false
+    as a universal -- what holds is that the *index* advances, which for a single
+    candidate returns the same one. Pinned so that a future selector cannot
+    quietly start skipping such a file to make the stronger sentence true.
+    """
+    generated = sweep_mutations.candidates(
+        _PATH, "def fits(size):\n    return size < 3\n", on=_NIGHT
+    )
+
+    drawn = {generated.at_lap(lap) for lap in range(5)}
+
+    assert len(generated.candidates) == 1
+    assert drawn == {generated.candidates[0]}
+
+
+def test_a_barren_file_offers_nothing_at_any_lap() -> None:
+    """The block reports a barren slot; it must not raise or fabricate a pick.
+
+    ``for_block`` turns this ``None`` into an attempt that buys no walk and a
+    ``## Modules`` section saying the module offered nothing. An index error or a
+    stray first candidate here would either kill the run or file a verdict about
+    a mutation that was never generated.
+    """
+    generated = sweep_mutations.candidates(_PATH, "VALUE = 3\n", on=_NIGHT)
+
+    assert generated.candidates == ()
+    assert generated.at_lap(0) is None
+    assert generated.at_lap(7919) is None

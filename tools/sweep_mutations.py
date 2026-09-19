@@ -31,6 +31,7 @@ non-ASCII text, so :func:`_offset` converts rather than assuming.
 from __future__ import annotations
 
 import ast
+import hashlib
 import io
 import tokenize
 from collections.abc import Callable, Iterator, Sequence
@@ -38,7 +39,22 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Final
 
-from sweep_census import SweepError
+from sweep_census import Slot, SweepError
+
+#: Mutations one run asks of one file.
+#:
+#: One, and the reason is the run's budget rather than the file's depth. The
+#: harness spends one walk on its unmutated control and one per mutation, so the
+#: seven walks a run can afford buy six mutations; spending them one each across
+#: :data:`sweep_census.BLOCK_SIZE` files covers the census in ``ceil(len / 6)``
+#: runs instead of ``len`` -- 24 instead of 142 at the census of 2026-09-19. Six
+#: on one file bought depth in one module and left every other module in the
+#: census untouched for that run.
+#:
+#: Depth is not lost, it is spread over time: :meth:`Generated.at_lap` indexes a
+#: file's candidates by the visit number, so the second visit to a file asks its
+#: second question.
+MUTATIONS_PER_FILE: Final = 1
 
 #: Comparison boundaries: the off-by-one a test either distinguishes or does not.
 _COMPARISON_FLIP: Final = {"<": "<=", "<=": "<", ">": ">=", ">=": ">", "==": "!=", "!=": "=="}
@@ -131,24 +147,46 @@ class Generated:
     candidates: tuple[Candidate, ...]
     skipped: tuple[Skip, ...]
 
-    def picked(self, limit: int) -> tuple[Candidate, ...]:
-        """Tonight's subset, spread across the file rather than taken from its top."""
-        return evenly_spaced(self.candidates, limit)
+    def at_lap(self, lap: int) -> Candidate | None:
+        """This visit's mutation, or ``None`` when the file is barren.
+
+        Indexed by the visit and not by the date, for the reason
+        :data:`sweep_census.Slot.lap` records: consecutive visits to one index
+        differ by exactly one lap, so ``lap % len`` walks a file's candidates one
+        per visit and returns to the first only after all of them have run. A
+        date-indexed pick has no such property -- the gap between two visits to
+        one file is the cover length, and any selector keyed on the run number
+        strides by that gap and can close over a subgroup, which is the defect
+        PR #759 removed from the rotation and this would have reintroduced one
+        level down.
+
+        ``items[0]`` was the previous behaviour at a budget of one, and it made
+        every visit to a file ask the same question for ever. Measured
+        2026-09-19 through :func:`sweep_census.block` against the census of
+        that day, over 60 runs: of the 118 revisited files that offer a candidate, all 112
+        that offer **more than one** drew a different one on the next visit, and
+        the remaining 6 offer exactly one and cannot. That exception is the
+        reason the claim is written this way rather than as "a later visit asks
+        a different question".
+        """
+        if not self.candidates:
+            return None
+        return self.candidates[lap % len(self.candidates)]
 
 
-def evenly_spaced[Item](items: Sequence[Item], limit: int) -> tuple[Item, ...]:
-    """At most ``limit`` items, spaced across the whole sequence.
+@dataclass(frozen=True)
+class Attempt:
+    """What one block slot yielded: the file, what it offers, and this visit's pick."""
 
-    ``items[:limit]`` would be deterministic too, and would attack the first few
-    statements of every module for ever -- in this codebase, the imports and the
-    module-level constants. The spacing is what makes a six-mutation budget reach
-    the bottom of a 300-line file.
-    """
-    if limit <= 0:
-        return ()
-    if len(items) <= limit:
-        return tuple(items)
-    return tuple(items[index * len(items) // limit] for index in range(limit))
+    slot: Slot
+    generated: Generated
+    #: ``None`` when the file is barren. A barren slot buys no walk, so it costs
+    #: the run nothing but its place in the block.
+    candidate: Candidate | None
+
+    @property
+    def path(self) -> str:
+        return self.slot.path
 
 
 def _line_index(source: str) -> tuple[tuple[str, ...], tuple[int, ...]]:
@@ -312,12 +350,28 @@ def _hits(tree: ast.Module, tokens: Sequence[_Token], span: _Span) -> list[_Hit]
     return found
 
 
+def _file_slug(path: str) -> str:
+    """Six hex characters standing for one census path, inside a label.
+
+    A block hands the harness one mutation from each of several files at once,
+    and a label is the only key joining a harness verdict back to its mutation.
+    Without a file discriminator two files collide on the first one that offers
+    the same operator on the same line at the same candidate index -- which is
+    ordinary, not exotic, because the index counts each file's own hits from
+    zero. A digest rather than the path: a label reaches shell-free argv, a JSON
+    spec and an issue body, and is restricted to ``[a-z0-9-]`` by construction
+    rather than escaped at each destination.
+    """
+    return hashlib.sha256(path.encode("utf-8")).hexdigest()[:6]
+
+
 def candidates(path: str, source: str, *, on: date) -> Generated:
     """Every mutation this file can carry, in source order, plus what was dropped.
 
     Source order rather than ``ast.walk``'s breadth-first order: both are
-    deterministic, and only one of them makes :func:`evenly_spaced` mean "spread
-    across the file" rather than "spread across tree depth".
+    deterministic, and only one of them makes a candidate index mean "position
+    in the file" rather than "position in the tree walk" -- which is what
+    :meth:`Generated.at_lap` indexes into.
 
     The index inside a label counts *every* operator token the file offers, not
     only the anchorable ones, so a label keeps naming the same source position
@@ -352,7 +406,7 @@ def candidates(path: str, source: str, *, on: date) -> Generated:
         emitted.append(
             Candidate(
                 label=(
-                    f"sweep-{on:%Y-%m-%d}-{index:02d}-"
+                    f"sweep-{on:%Y-%m-%d}-{_file_slug(path)}-{index:02d}-"
                     f"{_SLUG[token.text]}-to-{_SLUG[replacement]}-l{line}"
                 ),
                 path=path,
@@ -367,31 +421,39 @@ def candidates(path: str, source: str, *, on: date) -> Generated:
     return Generated(path=path, candidates=tuple(emitted), skipped=tuple(skipped))
 
 
-def first_productive(
-    paths: Sequence[str], source_of: Callable[[str], str], *, on: date
-) -> Generated:
-    """The first file in the rotation with something to mutate.
+def for_block(
+    slots: Sequence[Slot], source_of: Callable[[str], str], *, on: date
+) -> tuple[Attempt, ...]:
+    """What each slot in this run's block offers, and which mutation it hands over.
 
-    A barren target is not an error and not a clean night -- it is a file of
-    constants, dataclasses and SQL text, of which this codebase has many.
-    ``review_search_sql.py`` is one: no comparison, no boolean literal and no
-    ``and``, so a rotation stopping there would file nothing while proving
-    nothing. No date is named on purpose. This example used to cite one, and the
-    date-to-file map moves with the census size -- it was already stale at 130
-    modules to 140 before the index became the run number and moved it again
-    (both measured in PR #759's round).
+    Every slot is read, including the barren ones: a block member with nothing to
+    mutate is a fact about the block worth filing, and the previous single-file
+    form could only express it by advancing past it. A file of constants,
+    dataclasses and SQL text is ordinary here -- ``review_search_sql.py`` is one,
+    holding no comparison, no boolean literal and no ``and``.
 
-    Deterministic because the sequence is: the same date walks the same files in
-    the same order, so the advance is as reproducible as the first choice was.
+    A barren slot buys no walk, so the run's cost falls with it rather than being
+    spent elsewhere: the freed walk is **not** reassigned to another file's second
+    candidate. One mutation per file per run is what makes a verdict's meaning
+    independent of which neighbours the block happened to draw, and what keeps the
+    reproduction instruction a function of the date alone.
+
+    Raising when the *whole* block is barren, rather than reporting it clean: a
+    run that asked nothing has measured nothing, and "0 survived" out of it reads
+    exactly like a run that asked six questions and got six answers.
     """
-    for path in paths:
-        generated = candidates(path, source_of(path), on=on)
-        if generated.candidates:
-            return generated
-    raise SweepError(
-        f"no file in a census of {len(paths)} yielded a single anchorable mutation; "
-        "the sweep has nothing to run and must not report a clean night"
-    )
+    attempts: list[Attempt] = []
+    for slot in slots:
+        generated = candidates(slot.path, source_of(slot.path), on=on)
+        attempts.append(
+            Attempt(slot=slot, generated=generated, candidate=generated.at_lap(slot.lap))
+        )
+    if not any(attempt.candidate is not None for attempt in attempts):
+        raise SweepError(
+            f"no file in a block of {len(slots)} yielded a single anchorable mutation; "
+            "the sweep has nothing to run and must not report a clean run"
+        )
+    return tuple(attempts)
 
 
 def spec_entries(picked: Sequence[Candidate]) -> list[dict[str, str]]:

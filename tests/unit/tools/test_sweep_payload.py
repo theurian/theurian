@@ -15,9 +15,11 @@ Two separate channels have to hold, and they fail differently:
   the block the sweep put it in, or the rest of the issue renders as prose and
   the reader loses the diff.
 
-The rest is AC4: the issue has to say which file, which night, what each
+The rest is AC4: the issue has to say which modules, which run, what each
 mutation did and what each verdict was, and it has to end with the ratchet stub
-that PR-2's process rule anchors on.
+that PR-2's process rule anchors on. One run files one issue, so "which modules"
+is a section per block member rather than a single target line, and a member
+with nothing to mutate is reported rather than skipped over.
 """
 
 from __future__ import annotations
@@ -35,6 +37,13 @@ pytestmark = pytest.mark.unit
 
 _NIGHT = date(2026, 9, 16)
 
+#: The run 2026-09-16 falls in, computed rather than written down: the marker,
+#: the header line and the dedup key all carry it, and a fixture that invented a
+#: number would pin the body against a run no date resolves to.
+_RUN = sweep_census.run_index(_NIGHT)
+
+_TARGET = "packages/theurian-core/src/theurian/x.py"
+
 #: Every metacharacter that would matter if any of this reached a shell, plus a
 #: code fence for the markdown channel. Paths like this do not exist in the
 #: census today; the payload builder is not allowed to depend on that.
@@ -42,9 +51,7 @@ _HOSTILE_PATH = 'packages/theurian-core/src/theurian/$(id)/`whoami`/"it\'s".py'
 _HOSTILE_OLD = "value < 3  # ``` still inside the fence"
 
 
-def _candidate(
-    label: str, path: str = "packages/theurian-core/src/theurian/x.py"
-) -> sweep_mutations.Candidate:
+def _candidate(label: str, path: str = _TARGET) -> sweep_mutations.Candidate:
     return sweep_mutations.Candidate(
         label=label,
         path=path,
@@ -57,54 +64,89 @@ def _candidate(
     )
 
 
+def _attempt(
+    path: str,
+    *,
+    candidate: sweep_mutations.Candidate | None = None,
+    index: int = 0,
+    lap: int = 4,
+    dropped: int = 0,
+) -> sweep_mutations.Attempt:
+    """One block slot, in the shape :func:`sweep_mutations.for_block` hands over.
+
+    ``candidate`` of ``None`` is a barren member -- a slot the run kept and
+    bought no walk with -- which is a state the single-target record could not
+    represent at all and which the body now has a section for.
+    """
+    return sweep_mutations.Attempt(
+        slot=sweep_census.Slot(path=path, index=index, lap=lap),
+        generated=sweep_mutations.Generated(
+            path=path,
+            candidates=() if candidate is None else (candidate,),
+            skipped=tuple(
+                sweep_mutations.Skip(line=line, swapped_from="<", reason="anchor-not-unique")
+                for line in range(dropped)
+            ),
+        ),
+        candidate=candidate,
+    )
+
+
 def _night(  # noqa: PLR0913 - a builder for a ten-field record; every field is varied by a test
     *,
-    target: str = "packages/theurian-core/src/theurian/x.py",
-    candidates: tuple[sweep_mutations.Candidate, ...] = (),
+    target: str = _TARGET,
+    candidate: sweep_mutations.Candidate | None = None,
+    attempts: tuple[sweep_mutations.Attempt, ...] = (),
     outcomes: tuple[sweep_verdict.Outcome, ...] = (),
     reading: sweep_verdict.Reading | None = None,
     mutate_exit: int = 1,
     commit: str | None = "9f2c1ab4d5e6f70819a2b3c4d5e6f7089a1b2c3d",
 ) -> sweep_filing.Night:
-    picked = candidates or (_candidate("sweep-2026-09-16-00-le-to-lt-l42"),)
+    block = attempts or (
+        _attempt(
+            target,
+            candidate=candidate or _candidate("sweep-2026-09-16-a1e446-00-le-to-lt-l42", target),
+            dropped=3,
+        ),
+    )
+    picked = tuple(item.candidate for item in block if item.candidate is not None)
     reported = outcomes or (
         sweep_verdict.Outcome("__control__", "control-green", 903.2, "1 passed"),
-        sweep_verdict.Outcome(picked[0].label, "SURVIVED", 512.5, "5571 passed"),
+        *(sweep_verdict.Outcome(item.label, "SURVIVED", 512.5, "5571 passed") for item in picked),
     )
     return sweep_filing.Night(
         on=_NIGHT,
-        target=target,
+        run=_RUN,
+        attempts=block,
         harness=("uv", "run", "--frozen", "python", "tools/mutate.py"),
         command=("uv", "run", "--frozen", "python", "tools/sweep.py", "--date", "2026-09-16"),
         mutate_exit=mutate_exit,
-        picked=picked,
         outcomes=reported,
         reading=reading
         or sweep_verdict.Reading(
             reason=sweep_verdict.SURVIVORS,
-            detail="1 of 1 mutation(s) the suite does not hold",
-            unheld=(picked[0].label,),
+            detail=f"{len(picked)} of {len(picked)} mutation(s) the suite does not hold",
+            unheld=tuple(item.label for item in picked),
         ),
-        skipped=3,
         commit=commit,
     )
 
 
-def test_the_body_names_the_target_the_night_and_every_verdict() -> None:
+def test_the_body_names_every_module_the_run_and_every_verdict() -> None:
     """AC4, item by item, because each one is what makes the issue actionable.
 
-    Without the target and the night, the finding cannot be reproduced -- those
-    two are the whole input to the sweep. Without every verdict, a reader cannot
-    tell a batch where one of six mutations survived from a batch where five
-    did, and the control's verdict is what says whether any of it counts.
+    Without the modules and the run, the finding cannot be reproduced -- the date
+    and the tree are the whole input to the sweep. Without every verdict, a
+    reader cannot tell a block where one of six mutations survived from one where
+    five did, and the control's verdict is what says whether any of it counts.
     """
     payload = sweep_filing.build_payload(_night())
 
-    assert "packages/theurian-core/src/theurian/x.py" in payload.body
-    assert "2026-09-16" in payload.body
+    assert sweep_filing.module_heading(_TARGET) in payload.body
+    assert f"- **Run:** 2026-09-16 (run {_RUN})" in payload.body
     assert "SURVIVED" in payload.body
     assert "control-green" in payload.body
-    assert "sweep-2026-09-16-00-le-to-lt-l42" in payload.body
+    assert "sweep-2026-09-16-a1e446-00-le-to-lt-l42" in payload.body
 
 
 def test_the_body_carries_the_diff_of_every_mutation_that_was_run() -> None:
@@ -181,11 +223,11 @@ def test_every_untrusted_run_joins_one_standing_thread() -> None:
     """A broken harness is a statement about the harness, not about a file.
 
     Keyed per target, one persistent failure -- a test broken on `main` for a
-    week, a control that keeps timing out -- opens a *new* issue on every run,
-    because the rotation names a different file each run. The code review
-    measured 28 distinct targets over 30 consecutive draws: 28 issues for one
-    cause, which also fills the hundred-issue dedup window in about as many runs
-    and silently breaks the survivors dedup that shares it.
+    week, a control that keeps timing out -- opened a *new* issue on every run,
+    because every run draws a different block. The code review measured 28
+    distinct targets over 30 consecutive draws: 28 issues for one cause, which
+    also fills the hundred-issue dedup window in about as many runs and silently
+    breaks the dedup the survivors filing shares with it.
 
     So the untrusted reading gets a constant key and a constant title, and the
     runs accumulate as comments on one thread. Which file each run happened to
@@ -202,21 +244,34 @@ def test_every_untrusted_run_joins_one_standing_thread() -> None:
     assert "two.py" in second.body
 
 
-def test_a_surviving_mutation_is_still_a_finding_about_its_own_file() -> None:
-    """The other half: survivors must not collapse onto one thread.
+def test_one_run_files_one_issue_that_names_every_module_it_found_a_gap_in() -> None:
+    """The unit of a finding is the run, and the modules are inside it.
 
-    A mutation the suite does not hold is a statement about *that file's* tests,
-    and two files' gaps are two findings. Collapsing them would bury the second
-    one in the first one's comments -- which is the mirror of the defect above,
-    and a fix aimed only at the untrusted branch is what would cause it.
+    Keyed per *target*, a block of six unheld modules would open six issues for
+    one night's work, each one a sixth of the evidence and none of them carrying
+    the control that says whether any of it counts. Keyed per run, they are one
+    issue: one marker, one title saying how many modules, and a ``## Modules``
+    section naming each. The title still names the module when there is exactly
+    one, because that is the case a triager can act on from the title alone.
+
+    What must not collapse is the *content*: a mutation the suite does not hold
+    is a statement about that file's tests, so both paths are asserted present in
+    the body even though neither is in the title.
     """
-    first = sweep_filing.build_payload(_night(target="packages/theurian-core/src/theurian/one.py"))
-    second = sweep_filing.build_payload(_night(target="packages/theurian-core/src/theurian/two.py"))
+    one = "packages/theurian-core/src/theurian/one.py"
+    two = "packages/theurian-core/src/theurian/two.py"
+    left, right = _candidate("sweep-one", one), _candidate("sweep-two", two)
 
-    assert first.marker != second.marker
-    assert first.marker != sweep_filing.UNTRUSTED_MARKER
-    assert first.title != second.title
-    assert "one.py" in first.title
+    payload = sweep_filing.build_payload(
+        _night(attempts=(_attempt(one, candidate=left), _attempt(two, candidate=right, index=1)))
+    )
+    alone = sweep_filing.build_payload(_night(target=one, candidate=left))
+
+    assert payload.marker == sweep_filing.run_marker(_RUN)
+    assert payload.marker != sweep_filing.UNTRUSTED_MARKER
+    assert "2 mutation(s) not held in 2 modules" in payload.title
+    assert one in payload.body and two in payload.body
+    assert one in alone.title
 
 
 def test_the_standing_untrusted_thread_still_dates_and_names_each_run() -> None:
@@ -228,8 +283,8 @@ def test_the_standing_untrusted_thread_still_dates_and_names_each_run() -> None:
     """
     payload = _untrusted("packages/theurian-core/src/theurian/one.py")
 
-    assert "- **Night:** 2026-09-16" in payload.body
-    assert "- **Target:** `packages/theurian-core/src/theurian/one.py`" in payload.body
+    assert f"- **Run:** 2026-09-16 (run {_RUN})" in payload.body
+    assert sweep_filing.module_heading("packages/theurian-core/src/theurian/one.py") in payload.body
 
 
 def test_two_runs_of_one_night_produce_the_same_body() -> None:
@@ -261,7 +316,7 @@ def test_shell_metacharacters_in_a_path_survive_into_the_payload_as_text() -> No
     if they came back escaped, the issue would name a file that does not exist.
     """
     payload = sweep_filing.build_payload(
-        _night(target=_HOSTILE_PATH, candidates=(_candidate("sweep-x", path=_HOSTILE_PATH),))
+        _night(target=_HOSTILE_PATH, candidate=_candidate("sweep-x", path=_HOSTILE_PATH))
     )
 
     assert _HOSTILE_PATH in payload.title
@@ -290,7 +345,7 @@ def test_a_code_fence_inside_a_mutated_line_cannot_close_the_block_around_it() -
         anchor="line",
     )
 
-    payload = sweep_filing.build_payload(_night(candidates=(mutated,)))
+    payload = sweep_filing.build_payload(_night(candidate=mutated))
 
     assert f"-{_HOSTILE_OLD}" in payload.body
     assert "````diff" in payload.body
@@ -374,7 +429,9 @@ def test_no_payload_claims_the_date_alone_fixes_which_mutations_run(commit: str 
     # what re-points every date at once, and a reader who is not told that reads
     # "the tree moved" as "someone edited my file".
     assert "census-size" in body
-    assert "0 of 30 dates" in body
+    # Counted in runs: 30 consecutive dates are 5 runs under the run index, so
+    # the date-counted form of this figure claimed six times its own sample.
+    assert "0 of 30 runs" in body
 
 
 #: Three markdown constructs GitHub's renderer honours in an issue body, and one
@@ -455,41 +512,50 @@ def test_the_allow_list_covers_every_verdict_the_sweep_itself_branches_on() -> N
     assert {"KILLED", "control-green", "control-red"} <= sweep_filing.KNOWN_VERDICTS
 
 
-def test_the_dedup_marker_is_a_digest_no_path_can_forge() -> None:
+def test_the_dedup_marker_is_the_run_number_and_carries_no_repository_text() -> None:
     """The key the comment-instead-of-open decision turns on.
 
-    Embedding the raw path would put repository text inside an HTML comment, and
-    a path carrying ``-->`` would close it early -- leaving a marker that matches
-    nothing and a body whose first line is half a comment. Two runs on one file
-    would then open two issues instead of one thread.
-    """
-    marker = sweep_filing.target_marker("packages/theurian-core/src/theurian/x.py")
-    hostile = sweep_filing.target_marker("packages/-->/x.py")
+    The digest this replaced existed to keep a path out of an HTML comment: a
+    path carrying ``-->`` closes it early, leaving a marker that matches nothing
+    and a body whose first line is half a comment. Keyed on the run there is no
+    path left to protect -- an integer cannot carry a delimiter -- and the check
+    that matters becomes the one below: the marker is a function of the run and
+    of nothing else, so a rerun inside the same week joins its own thread and the
+    next week opens a new one.
 
-    assert marker != hostile
-    assert "-->" not in hostile[: -len(" -->")]
-    assert marker == sweep_filing.target_marker("packages/theurian-core/src/theurian/x.py")
+    Pinned as the exact string rather than as "it contains the number". The
+    reader that finds an open thread matches this prefix on the body's first
+    line, and a marker that gained a space or lost its comment syntax would file
+    a duplicate every run while every other assertion here stayed green.
+    """
+    marker = sweep_filing.run_marker(_RUN)
+
+    assert marker == f"<!-- async-sweep-run: {_RUN} -->"
+    assert marker == sweep_filing.run_marker(_RUN)
+    assert marker != sweep_filing.run_marker(_RUN + 1)
+    assert "-->" not in marker[: -len(" -->")]
     assert sweep_filing.build_payload(_night()).body.startswith(marker)
 
 
-def test_an_open_issue_for_the_same_target_is_found_by_its_marker() -> None:
-    """Dedup, so a file that survives a mutation on every run grows one thread.
+def test_an_open_issue_for_the_same_run_is_found_by_its_marker() -> None:
+    """Dedup, so a rerun inside one week comments rather than opening a second issue.
 
     Matched on the marker rather than on the title: a title carries a count and a
-    date, so the same target files a differently titled issue on every run, and
-    title matching would open a new issue each time.
+    date, so a rerun that drew one more survivor files a differently titled issue
+    for work already recorded, and title matching would open a new issue each
+    time.
 
     The listing is newest-first, which is the order ``gh issue list`` returns,
     and the expected answer is the *oldest* match. Taking whichever match came
-    first would split one file's history across every issue ever opened for it,
+    first would split one run's history across every issue ever opened for it,
     and a fixture in ascending order would not tell the two apart.
     """
-    marker = sweep_filing.target_marker("packages/theurian-core/src/theurian/x.py")
+    marker = sweep_filing.run_marker(_RUN)
     listing = json.dumps(
         [
             {"number": 900, "body": "an unrelated async-sweep issue"},
-            {"number": 877, "body": f"{marker}\n\nlast night, on this file"},
-            {"number": 812, "body": f"{marker}\n\nthe first night on this file"},
+            {"number": 877, "body": f"{marker}\n\na later rerun of this run"},
+            {"number": 812, "body": f"{marker}\n\nthe first filing for this run"},
         ]
     )
 
@@ -497,21 +563,22 @@ def test_an_open_issue_for_the_same_target_is_found_by_its_marker() -> None:
 
 
 def test_a_marker_quoted_inside_another_issue_body_does_not_claim_the_thread() -> None:
-    """Matching anywhere in a body lets one file's issue capture another's findings.
+    """Matching anywhere in a body lets one issue capture another run's findings.
 
-    Reproduced by the security review: a trailing comment on an anchorable source
-    line puts the *victim* file's marker inside the diff that the *carrier*
-    file's issue quotes. Because the lookup then matched anywhere and
-    ``min(matches)`` prefers the oldest number, every later run on the victim
-    file would comment on the carrier's thread -- its findings filed under
-    another file's title, where nobody triaging that file would look.
+    Reproduced by the security review against the per-target key: a trailing
+    comment on an anchorable source line put one marker inside the diff that
+    another issue quotes, the lookup matched anywhere, and ``min(matches)``
+    preferred the older number -- so a run's findings were filed under a thread
+    that was not its own, where nobody looking for them would read.
 
-    The builder writes the marker as the body's first line, so that is where the
-    lookup reads it. The carrier body below is the shape the review produced: a
-    legitimate marker of its own, and the victim's marker quoted in a diff.
+    The key is the run now, which narrows what a source line can forge but does
+    not change the rule: **every** body quotes repository text inside its diffs,
+    and a marker is only this thread's key at the position the builder writes it.
+    The carrier body below is the shape the review produced, with the marker of a
+    different run quoted in its diff.
     """
-    victim = sweep_filing.target_marker("packages/theurian-core/src/theurian/victim.py")
-    carrier = sweep_filing.target_marker("packages/theurian-core/src/theurian/carrier.py")
+    victim = sweep_filing.run_marker(_RUN)
+    carrier = sweep_filing.run_marker(_RUN - 1)
     listing = json.dumps(
         [
             {
@@ -536,7 +603,7 @@ def test_a_marker_below_the_first_line_is_not_the_thread_it_names() -> None:
     writes it to counts, and leading whitespace is tolerated because a body
     round-tripped through the API can acquire it.
     """
-    marker = sweep_filing.target_marker("packages/theurian-core/src/theurian/x.py")
+    marker = sweep_filing.run_marker(_RUN)
     mentioned = json.dumps([{"number": 800, "body": f"see also {marker} for context"}])
     written = json.dumps([{"number": 800, "body": f"\r\n  {marker}\n\nthe body"}])
 
@@ -544,10 +611,10 @@ def test_a_marker_below_the_first_line_is_not_the_thread_it_names() -> None:
     assert sweep_filing.existing_issue(written, marker) == 800
 
 
-def test_no_open_issue_for_this_target_means_a_new_one() -> None:
+def test_no_open_issue_for_this_run_means_a_new_one() -> None:
     """The other branch: a marker nothing carries opens a thread rather than joining one."""
-    marker = sweep_filing.target_marker("packages/theurian-core/src/theurian/x.py")
-    listing = json.dumps([{"number": 900, "body": "about another file entirely"}])
+    marker = sweep_filing.run_marker(_RUN)
+    listing = json.dumps([{"number": 900, "body": "about another run entirely"}])
 
     assert sweep_filing.existing_issue(listing, marker) is None
 
@@ -561,3 +628,119 @@ def test_a_listing_that_cannot_be_read_stops_the_sweep_rather_than_opening_a_dup
     """
     with pytest.raises(sweep_census.SweepError):
         sweep_filing.existing_issue("<html>rate limited</html>", "<!-- marker -->")
+
+
+def test_a_barren_block_member_is_reported_rather_than_left_out_of_the_body() -> None:
+    """A slot with nothing to mutate is a fact about the run's reach.
+
+    The single-target form could only express a barren draw by advancing past it,
+    so the issue never mentioned it and the census index the date actually named
+    went unswept and unrecorded. Leaving it out of the body now would read as a
+    five-module block rather than a six-module block with one member that offered
+    nothing -- and the difference is exactly the module a reader might otherwise
+    believe was tested.
+    """
+    barren = "packages/theurian-core/src/theurian/constants.py"
+    payload = sweep_filing.build_payload(
+        _night(
+            attempts=(
+                _attempt(_TARGET, candidate=_candidate("sweep-one")),
+                _attempt(barren, index=1),
+            )
+        )
+    )
+
+    section = payload.body.split(sweep_filing.module_heading(barren), 1)[1]
+
+    assert "- **Block:** 2 module(s), 1 mutated, 1 barren" in payload.body
+    assert section.startswith("\n\nCensus index 1, visit 4, 0 candidate(s),")
+    assert "bought no walk" in section
+
+
+def test_a_verdict_nobody_can_attribute_is_reported_outside_every_module_section() -> None:
+    """An outcome whose label matches no mutation is a statement about the harness.
+
+    It is the shape of a harness that ran something else -- a stale spec, a
+    substituted command -- and dropping it would hide the one signal that says
+    so. Crediting it to a module would be worse: ``tools/audit/sweep_kill_rates``
+    reads a verdict as belonging to the heading above it, so an orphan left
+    inside the last module's section becomes that module's kill or miss.
+
+    Asserted by position, because "the body contains it" is true of both the
+    correct rendering and the defect.
+    """
+    payload = sweep_filing.build_payload(
+        _night(
+            outcomes=(
+                sweep_verdict.Outcome("__control__", "control-green", 903.2, ""),
+                sweep_verdict.Outcome("sweep-2026-09-16-a1e446-00-le-to-lt-l42", "KILLED", 1.0, ""),
+                sweep_verdict.Outcome("sweep-from-another-spec", "SURVIVED", 2.0, ""),
+            )
+        )
+    )
+
+    body = payload.body
+
+    assert sweep_filing.UNATTRIBUTED_HEADING in body
+    assert body.index("sweep-from-another-spec") < body.index(sweep_filing.MODULES_HEADING)
+    assert body.index(sweep_filing.UNATTRIBUTED_HEADING) < body.index(sweep_filing.MODULES_HEADING)
+
+
+def test_the_control_walk_is_the_runs_own_and_not_any_modules() -> None:
+    """The control says whether the run counts; it is not evidence about a file.
+
+    Rendered under ``## Control`` and above ``## Modules`` on purpose: the reader
+    that folds a per-module kill rate stops at any other ``##`` heading, so a
+    control left inside a module's section would credit whichever module sorted
+    first with a kill it did not earn.
+    """
+    body = sweep_filing.build_payload(_night()).body
+
+    assert body.index("## Control") < body.index(sweep_filing.MODULES_HEADING)
+    assert body.index("control-green") < body.index(sweep_filing.MODULES_HEADING)
+
+
+def test_a_module_whose_verdict_never_came_back_says_so_in_its_own_section() -> None:
+    """Silence per module, rather than one summary line for the whole run.
+
+    A block where five of six verdicts came back is not a five-mutation run: the
+    sixth was asked and went unanswered, which is what the untrusted reading
+    exists to surface. The sentence lives in the module's own section because
+    that is where a triager looking at that module will be.
+    """
+    payload = sweep_filing.build_payload(
+        _night(
+            outcomes=(sweep_verdict.Outcome("__control__", "control-green", 903.2, ""),),
+            reading=sweep_verdict.Reading(
+                reason=sweep_verdict.UNTRUSTED, detail="1 of 1 mutation(s) reported no verdict"
+            ),
+        )
+    )
+
+    section = payload.body.split(sweep_filing.module_heading(_TARGET), 1)[1]
+
+    assert "No verdict came back for" in section
+    assert "cannot be read as a result" in section
+
+
+def test_the_header_totals_the_candidates_dropped_across_the_whole_block() -> None:
+    """A drop is invisible in the body otherwise, and it bounds what the run asked.
+
+    The generator drops a candidate whose anchor is not unique -- 506 of them
+    across the census, measured 2026-09-19 at ``92581f77`` -- and a reader who is
+    not told how many cannot tell a module the sweep asked one question of from
+    one it could only ask one question of. The number is a sum over the block
+    now, not a field the driver passes: a per-attempt total that silently
+    reported only the first member's drops would read as a cleaner census than
+    this one is.
+    """
+    payload = sweep_filing.build_payload(
+        _night(
+            attempts=(
+                _attempt(_TARGET, candidate=_candidate("sweep-one"), dropped=3),
+                _attempt("packages/theurian-core/src/theurian/two.py", index=1, dropped=4),
+            )
+        )
+    )
+
+    assert "- **Candidates dropped for a non-unique anchor:** 7" in payload.body

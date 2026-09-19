@@ -50,11 +50,16 @@ class _RecordingGh:
         return sweep_filing.CommandResult(returncode=failed, stdout=listing, stderr="gh said no")
 
 
+#: The run every payload below belongs to. One run files one issue, so the
+#: marker is keyed on this and not on the module the title happens to name.
+_RUN = sweep_census.run_index(date(2026, 9, 16))
+
+
 def _payload(target: str = "packages/theurian-core/src/theurian/x.py") -> sweep_filing.Payload:
     return sweep_filing.Payload(
-        title=f"async sweep: 1 mutation not held in {target} (2026-09-16)",
-        body=f"{sweep_filing.target_marker(target)}\n\nbody text\n",
-        marker=sweep_filing.target_marker(target),
+        title=f"async sweep: 1 mutation(s) not held in {target} (2026-09-16)",
+        body=f"{sweep_filing.run_marker(_RUN)}\n\nbody text\n",
+        marker=sweep_filing.run_marker(_RUN),
     )
 
 
@@ -100,11 +105,11 @@ def test_the_issue_body_travels_on_stdin_and_never_through_argv() -> None:
 def test_an_existing_thread_is_commented_on_rather_than_duplicated() -> None:
     """The dedup branch, checked through the call and not only through the lookup.
 
-    A target that survives a mutation on every run would otherwise open an issue
-    on every run, and the third one would be triaged as a new finding.
+    A rerun inside one Sunday-to-Saturday bucket draws the same block and reaches
+    the same finding, so without this branch it would open a second issue for
+    work already recorded and the second one would be triaged as new.
     """
-    target = "packages/theurian-core/src/theurian/x.py"
-    listing = json.dumps([{"number": 812, "body": sweep_filing.target_marker(target)}])
+    listing = json.dumps([{"number": 812, "body": sweep_filing.run_marker(_RUN)}])
     gh = _RecordingGh(listing=listing)
 
     sweep_filing.file_finding(_payload(), repo="theurian/theurian", runner=gh, gh="/usr/bin/gh")
@@ -164,8 +169,7 @@ def test_a_failing_gh_call_is_a_failed_sweep_and_not_a_filed_finding(failing: st
     unchecked, which is the same fixture-steering defect the sweep exists to
     find in other people's tests.
     """
-    target = "packages/theurian-core/src/theurian/x.py"
-    thread = json.dumps([{"number": 812, "body": sweep_filing.target_marker(target)}])
+    thread = json.dumps([{"number": 812, "body": sweep_filing.run_marker(_RUN)}])
     gh = _RecordingGh(listing=thread if failing == "comment" else "[]", fails=failing)
 
     with pytest.raises(sweep_census.SweepError):
@@ -189,33 +193,38 @@ def test_no_module_in_the_sweep_ever_asks_for_a_shell() -> None:
         assert "shell=True" not in module.read_text(encoding="utf-8"), module.name
 
 
-def test_the_night_a_body_describes_is_the_night_that_was_run() -> None:
-    """A guard against the payload being built from a different night's record.
+def test_the_run_a_body_describes_is_the_run_that_was_made() -> None:
+    """A guard against the payload being built from a different run's record.
 
     Cheap, and it is the shape a refactor produces: the driver holds the date in
-    two places (the CLI argument and the generated labels), and a builder handed
-    the wrong one files an issue nobody can reproduce.
+    three places now (the CLI argument, the run index it derives, and the
+    generated labels), and a builder handed the wrong one files an issue nobody
+    can reproduce.
 
-    Asserted on the body alone. This night is untrusted, and every untrusted run
+    Asserted on the body alone. This run is untrusted, and every untrusted run
     shares one standing title with no date in it -- so the body is the only place
     the date can be, and the only place it needs to be: the thread collects runs,
-    and each comment has to say which one it is.
+    and each comment has to say which one it is. The run number is asserted
+    beside the date because it is the number the reproduction and the dedup both
+    turn on, and a date rendered from one field beside a run index derived from
+    another is exactly the drift this guards.
     """
+    when = date(2026, 9, 16)
+
     payload = sweep_filing.build_payload(
         sweep_filing.Night(
-            on=date(2026, 9, 16),
-            target="packages/theurian-core/src/theurian/x.py",
+            on=when,
+            run=sweep_census.run_index(when),
+            attempts=(),
             harness=("uv", "run", "python", "tools/mutate.py"),
             command=("uv", "run", "python", "tools/sweep.py"),
             mutate_exit=2,
-            picked=(),
             outcomes=(),
             reading=sweep_verdict.Reading(
                 reason="run-untrusted", detail="the harness exited 2 before any suite ran"
             ),
-            skipped=0,
         )
     )
 
     assert payload.title == sweep_filing.UNTRUSTED_TITLE
-    assert "2026-09-16" in payload.body
+    assert f"- **Run:** 2026-09-16 (run {_RUN})" in payload.body

@@ -80,6 +80,13 @@ jobs:
     # 8400 s = 140 min for the Sweep step alone, before a depth-0 checkout, two
     # tree copies and three `uv sync` runs (this job's, and one per tree).
     #
+    # The block form did not move this. `--block-size 6` at one mutation per
+    # module is the same six mutations against the same one shared control --
+    # what changed is that they come from six modules instead of one, which
+    # `sweep.walk_budget` computes from the two constants rather than restating.
+    # Six is now the worst case rather than the expectation: a barren block
+    # member yields no mutation and buys no walk.
+    #
     # 150 therefore sat BELOW the harness's own worst case, which is the wrong
     # side of a ceiling whose breach is a CANCELLATION: `failure()` does not
     # fire on one, so the ceiling firing would have killed the job with the
@@ -208,7 +215,7 @@ jobs:
           uv run --frozen python tools/sweep.py \
             --date "$SWEEP_DATE" \
             --commit "$SWEEP_COMMIT" \
-            --max-mutations 6 \
+            --block-size 6 \
             --json sweep-results.json
 
       - uses: actions/upload-artifact@v7

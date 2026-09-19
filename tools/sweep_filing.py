@@ -37,7 +37,6 @@ is where a sweep finding acquires that obligation.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import subprocess
@@ -47,7 +46,7 @@ from datetime import date
 from typing import Final
 
 from sweep_census import SweepError
-from sweep_mutations import Candidate
+from sweep_mutations import Attempt, Candidate
 from sweep_verdict import UNTRUSTED, Outcome, Reading
 
 #: The tracker label the sweep files under. It already exists; nothing here
@@ -73,35 +72,117 @@ KNOWN_VERDICTS: Final = frozenset(
     {"SURVIVED", "KILLED", "HUNG", "ERROR", "control-green", "control-red"}
 )
 
-_MARKER_PREFIX: Final = "<!-- async-sweep-target: "
+_MARKER_PREFIX: Final = "<!-- async-sweep-run: "
 
-#: The key and the title every untrusted night shares.
+#: The two lines the filed body and its reader both depend on.
 #:
-#: A run the harness could not stand behind is a statement about the *harness*,
-#: not about the file the rotation happened to draw -- and keying it per target
-#: made one persistent cause open one issue a night. The code review measured 28
-#: distinct targets over 30 nights: 28 issues for one broken test, which also
-#: fills the hundred-issue dedup window in about three and a half months and then
-#: silently breaks the per-target dedup that shares it.
+#: ``tools/audit/sweep_kill_rates.py`` derives a per-module kill rate by reading
+#: issues this module wrote, which makes the body's shape a contract with two
+#: ends rather than a rendering detail. Both ends read these, and the writers
+#: below (:func:`module_heading`, :func:`verdict_line`) emit them, so a shape
+#: change is one edit here and the round-trip pin in the suite catches a reader
+#: that stopped parsing what the filer files.
 #:
-#: Constant, so the nights accumulate as comments on one standing thread -- the
-#: shape an alarm already has. Which file each night drew, and when, stays in the
-#: body, where it is a detail of the night rather than the identity of the
-#: finding.
-#: Why a date does not fix a batch, said once and used by both reproduce shapes.
-#:
-#: The first clause is the one that is easy to miss: the index is
-#: ``(ordinal // 7) % len(census)``, so the census *size* re-points every date at
-#: once rather than only the dates near a change. Re-measured under the run index
-#: in PR #759's round -- still 0 of 30 dates, 140 modules to 139.
-_DRIFT_MECHANISM: Final = (
-    "The target is the census indexed by the run -- `(ordinal // 7) % census-size` -- so a "
-    "module added or removed **anywhere** in the tree re-points every date at once, and "
-    "a file's own edits change which of its candidates can still be anchored. Measured "
-    "over one week of this repository's growth, 130 modules to 139: 0 of 30 dates "
-    "resolved to the same file before and after."
+#: Tolerant of :func:`_inline`'s two devices, because that is what writes the
+#: values: a delimiter longer than any backtick run inside, and a space of
+#: padding when the value itself starts or ends with a backtick.
+MODULE_HEADING_PATTERN: Final = re.compile(r"^### (?P<fence>`+) ?(?P<path>.+?) ?(?P=fence)$")
+
+_VERDICT_LINE_PATTERN: Final = re.compile(
+    r"^- \*\*(?P<verdict>.+?)\*\* (?P<fence>`+) ?(?P<label>.+?) ?(?P=fence)(?: \(|$)"
 )
 
+_INLINED_VALUE_PATTERN: Final = re.compile(r"(?P<fence>`+) ?(?P<value>.+?) ?(?P=fence)")
+
+
+def parse_verdict_line(line: str) -> tuple[str, str] | None:
+    """``(verdict, label)`` from a line :func:`verdict_line` wrote, or ``None``.
+
+    The reading half of the contract, kept beside the writing half so the
+    round-trip is one file's business: ``parse_verdict_line(verdict_line(v, l,
+    s)) == (v, l)`` is what the suite pins.
+
+    **The emphasis shape alone does not identify a verdict**, and assuming it did
+    is the defect this function exists to have fixed. The body's own header
+    carries ``- **Target:** `path` ``, ``- **Harness:** `argv` `` and
+    ``- **Commit:** `sha` ``, which are that shape exactly: read loosely, three
+    header lines counted as three mutations, and a kill rate computed over them
+    is wrong in the direction that looks like evidence.
+
+    So the verdict field is admitted on the writer's own rule and nothing
+    weaker -- plain emphasis only for a verdict in :data:`KNOWN_VERDICTS`, and
+    otherwise a code span, because that is exactly what :func:`verdict_line`
+    emits for a value it does not recognise. A header label is plain and not
+    known, so it is refused; a future harness's unknown verdict is inlined, so
+    it still reads.
+    """
+    found = _VERDICT_LINE_PATTERN.match(line)
+    if found is None:
+        return None
+    field = found.group("verdict")
+    if field in KNOWN_VERDICTS:
+        return field, found.group("label")
+    inlined = _INLINED_VALUE_PATTERN.fullmatch(field)
+    if inlined is None:
+        return None
+    return inlined.group("value"), found.group("label")
+
+
+#: The heading the per-module sections sit under, and the one the reader finds
+#: them by. A run's control walk is *not* under it: the control is a statement
+#: about the run, and counting it as a module's verdict would credit whichever
+#: module happened to sort first with a kill it did not earn.
+MODULES_HEADING: Final = "## Modules"
+
+#: Verdicts whose label matched no mutation this run handed over. Never dropped:
+#: an outcome nobody can attribute is the shape of a harness that ran something
+#: else, which is exactly what the untrusted reading exists to surface.
+UNATTRIBUTED_HEADING: Final = "## Unattributed verdicts"
+
+#: Why a date does not fix a batch, said once and used by both reproduce shapes.
+#:
+#: The first clause is the one that is easy to miss: the block opens at
+#: ``(run · block-size) % len(census)``, so the census *size* re-points every date
+#: at once rather than only the dates near a change.
+#:
+#: **Counted in runs, and that is the correction rather than a detail.** This
+#: measurement used to be stated over 30 consecutive *dates*, which under the run
+#: index is 5 buckets and therefore 5 independent draws -- the sentence claimed
+#: six times the evidence it had, in a paragraph whose whole subject is what a
+#: date does and does not fix. Re-measured 2026-09-19 at 142 modules over 30
+#: consecutive runs: 0 of 30.
+_DRIFT_MECHANISM: Final = (
+    "The block is the census indexed by the run -- it opens at "
+    "`(run * block-size) % census-size` and takes the next `block-size` entries, "
+    "wrapping -- so a module added or removed **anywhere** in the tree re-points every "
+    "date at once, and a file's own edits change which of its candidates can still be "
+    "anchored. Which candidate a file offers is indexed by its visit number, so a "
+    "file offering more than one answers a different question on a later lap. "
+    "Measured 2026-09-19 over 30 consecutive runs, one module removed from a "
+    "142-module census: 0 of 30 runs drew the same block, and none so much as "
+    "opened on the same file."
+)
+
+#: The key and the title every untrusted run shares.
+#:
+#: A run the harness could not stand behind is a statement about the *harness*,
+#: not about the block the rotation happened to draw, so this key is **constant**
+#: where :func:`run_marker` is per-run: the runs accumulate as comments on one
+#: standing thread, which is the shape an alarm already has. Which block each run
+#: drew, and when, stays in the body, where it is a detail of the run rather than
+#: the identity of the finding.
+#:
+#: A key that varied would open one issue per affected run for as long as one
+#: cause persisted, and :data:`_LIST_LIMIT` of them fill the dedup window every
+#: thread under this label shares. Counted in runs deliberately: this paragraph
+#: used to give the same bound as "about three and a half months", which was
+#: seven times wrong the day the cadence went weekly, while the arithmetic it
+#: came from had not moved at all.
+#:
+#: The measurement behind the decision predates both the block form and the
+#: weekly cadence: the code review counted 28 distinct targets over 30
+#: consecutive daily runs of the single-file rotation, so one broken test would
+#: have opened 28 issues under the per-target key this replaced.
 UNTRUSTED_MARKER: Final = "<!-- async-sweep-untrusted -->"
 UNTRUSTED_TITLE: Final = "async sweep: the harness could not produce a verdict"
 
@@ -128,30 +209,46 @@ Runner = Callable[[Sequence[str], str], CommandResult]
 
 @dataclass(frozen=True)
 class Night:
-    """Everything the filed issue has to be able to say about one sweep."""
+    """Everything the filed issue has to be able to say about one sweep run."""
 
     on: date
-    target: str
+    #: ``sweep_census.run_index(on)``. The dedup key, and the one number that
+    #: distinguishes two runs a reader might otherwise read as one.
+    run: int
+    #: Every slot of the block, barren ones included -- a block member with
+    #: nothing to mutate is a fact about the run's reach, and the old single-file
+    #: form could only express it by advancing past it.
+    attempts: tuple[Attempt, ...]
     #: The harness argv, so a reader can tell a substituted one from the real one.
     harness: tuple[str, ...]
-    #: The sweep invocation itself, so the night can be reproduced from the issue.
+    #: The sweep invocation itself, so the run can be reproduced from the issue.
     command: tuple[str, ...]
     mutate_exit: int
-    picked: tuple[Candidate, ...]
     outcomes: tuple[Outcome, ...]
     reading: Reading
-    #: Candidates the generator dropped for want of a unique anchor.
-    skipped: int
     #: The commit the sweep ran against, when the caller knew it.
     #:
-    #: Without it the reproduction instruction is false. The target is
-    #: ``(ordinal // 7) % len(census)``, so the census *size* re-points every date
-    #: at once whenever a module is added or removed anywhere in the tree -- 0 of 30
-    #: dates resolved to the same file across one week of growth, 130 modules to
-    #: 139 -- and which of that file's candidates are anchorable depends on its
-    #: own contents. `main` moves daily, so a command pasted a week later sweeps
-    #: a different file, comes back clean, and closes a finding that is live.
+    #: Without it the reproduction instruction is false. The block opens at
+    #: ``(run · block-size) % len(census)``, so the census *size* re-points every
+    #: date at once whenever a module is added or removed anywhere in the tree --
+    #: 0 of 30 consecutive runs drew the same block when one module was removed
+    #: from a 142-module census, measured 2026-09-19 -- and which of a file's
+    #: candidates are anchorable depends on its own contents. `main` moves daily,
+    #: so a command pasted a week later sweeps a different block, comes back
+    #: clean, and closes a finding that is live.
     commit: str | None = None
+
+    @property
+    def picked(self) -> tuple[Candidate, ...]:
+        """The mutations this run actually handed the harness, in block order."""
+        return tuple(
+            attempt.candidate for attempt in self.attempts if attempt.candidate is not None
+        )
+
+    @property
+    def skipped(self) -> int:
+        """Candidates the generator dropped across the whole block."""
+        return sum(len(attempt.generated.skipped) for attempt in self.attempts)
 
 
 @dataclass(frozen=True)
@@ -163,18 +260,42 @@ class Payload:
     marker: str
 
 
-def target_marker(path: str) -> str:
-    """The hidden key that says which file an open issue is about.
+def run_marker(run: int) -> str:
+    """The hidden key that says which run an open issue is about.
 
-    A digest rather than the path itself. The path is repository text, and a
-    path containing ``-->`` would close the HTML comment early -- leaving a
-    marker that matches nothing and a body whose first line is half a comment, so
-    every run on that file would open a new issue instead of joining a thread.
-    The human-readable path is in the body a few lines below, where it cannot
-    break anything.
+    Keyed on the run and no longer on the target, because the unit changed: one
+    run now attacks a whole block and files one issue, so there is no single
+    target to key on. The run number is the honest key, and it makes the one case
+    that *should* join a thread join it -- a rerun inside the same Sunday-to-
+    Saturday bucket has the same run index, draws the same block, and comments
+    rather than opening a second issue for work already recorded.
+
+    Two runs are two findings and open two issues. That is the intended reading:
+    each run is its own batch of questions, and a week's answers do not amend the
+    previous week's.
+
+    The value is the run number rather than a digest of it because an integer
+    cannot contain ``-->`` and close the comment early. The path digest this
+    replaced existed for that reason and no longer has a path to protect.
     """
-    digest = hashlib.sha256(path.encode("utf-8")).hexdigest()[:16]
-    return f"{_MARKER_PREFIX}{digest} -->"
+    return f"{_MARKER_PREFIX}{run} -->"
+
+
+def module_heading(path: str) -> str:
+    """One module's section heading. Parsed back by :data:`MODULE_HEADING_PATTERN`."""
+    return f"### {_inline(path)}"
+
+
+def verdict_line(verdict: str, label: str, seconds: float, summary: str = "") -> str:
+    """One verdict, as the body renders it. Parsed back by :func:`parse_verdict_line`.
+
+    A known verdict renders as plain emphasis because the ordinary line is read
+    dozens of times per issue and ``**SURVIVED**`` scans better than code;
+    anything else is repository text and goes through :func:`_inline`.
+    """
+    rendered = verdict if verdict in KNOWN_VERDICTS else _inline(verdict)
+    tail = f" -- {_inline(summary)}" if summary else ""
+    return f"- **{rendered}** {_inline(label)} ({seconds:.1f}s){tail}"
 
 
 def _fence(text: str, minimum: int = 1) -> str:
@@ -218,37 +339,73 @@ def _diff(candidate: Candidate) -> str:
     return _block(f"{removed}\n{added}", "diff")
 
 
-def _mutation_section(night: Night) -> list[str]:
-    lines = ["## Mutations"]
-    if not night.picked:
-        lines.append("None: the harness was handed no mutation at all.")
-        return lines
-    for candidate in night.picked:
-        lines.append("")
+def _module_section(night: Night) -> list[str]:
+    """One section per block member: what it was asked, and what came back.
+
+    Per module rather than one flat verdict list, because the run's unit changed
+    and a triager acts per module: the section is what lets one file's finding be
+    reproduced, and what ``tools/audit/sweep_kill_rates.py`` counts a kill rate
+    from. Barren members keep their section -- "this module offered nothing to
+    mutate" is a fact about the sweep's reach that a reader cannot otherwise
+    recover from the issue.
+    """
+    by_label = {outcome.label: outcome for outcome in night.outcomes if not outcome.is_control}
+    lines = [MODULES_HEADING]
+    for attempt in night.attempts:
+        lines.extend(("", module_heading(attempt.path), ""))
         lines.append(
-            f"### {_inline(candidate.label)}\n\n"
-            f"Line {candidate.line}, {_inline(candidate.swapped_from)} to "
-            f"{_inline(candidate.swapped_to)}, anchored on the {candidate.anchor}."
+            f"Census index {attempt.slot.index}, visit {attempt.slot.lap}, "
+            f"{len(attempt.generated.candidates)} candidate(s), "
+            f"{len(attempt.generated.skipped)} dropped for a non-unique anchor."
         )
+        candidate = attempt.candidate
+        if candidate is None:
+            lines.extend(("", "Barren: nothing here to mutate, so this slot bought no walk."))
+            continue
+        outcome = by_label.get(candidate.label)
         lines.append("")
-        lines.append(_diff(candidate))
+        if outcome is None:
+            lines.append(
+                f"No verdict came back for {_inline(candidate.label)}, which is why this "
+                "run cannot be read as a result."
+            )
+        else:
+            lines.append(
+                verdict_line(outcome.verdict, outcome.label, outcome.seconds, outcome.summary)
+            )
+        lines.extend(
+            (
+                "",
+                f"Line {candidate.line}, {_inline(candidate.swapped_from)} to "
+                f"{_inline(candidate.swapped_to)}, anchored on the {candidate.anchor}.",
+                "",
+                _diff(candidate),
+            )
+        )
     return lines
 
 
-def _verdict_section(night: Night) -> list[str]:
-    lines = ["## Verdicts"]
-    if not night.outcomes:
-        lines.append("")
-        lines.append("None: the harness recorded no outcome before it stopped.")
-        return lines
-    lines.append("")
-    # Sorted, control first. The harness appends each outcome as its future
-    # completes, so its own order is whatever the workers happened to do; a body
-    # built in that order would differ between two runs of one night.
-    for outcome in sorted(night.outcomes, key=lambda item: (not item.is_control, item.label)):
-        summary = f" -- {_inline(outcome.summary)}" if outcome.summary else ""
-        verdict = outcome.verdict if outcome.verdict in KNOWN_VERDICTS else _inline(outcome.verdict)
-        lines.append(f"- **{verdict}** {_inline(outcome.label)} ({outcome.seconds:.1f}s){summary}")
+def _control_section(night: Night) -> list[str]:
+    """The run's own control walk, and anything nobody could attribute.
+
+    Sorted, because the harness appends each outcome as its future completes: its
+    own order is whatever the workers happened to do, and a body built in that
+    order would differ between two runs of one date.
+    """
+    handed = {candidate.label for candidate in night.picked}
+    controls = [item for item in night.outcomes if item.is_control]
+    orphans = [item for item in night.outcomes if not item.is_control and item.label not in handed]
+    lines = ["## Control", ""]
+    if not controls:
+        lines.append("None: the harness recorded no control run, so nothing here is a result.")
+    for outcome in sorted(controls, key=lambda item: item.label):
+        lines.append(verdict_line(outcome.verdict, outcome.label, outcome.seconds, outcome.summary))
+    if orphans:
+        lines.extend(("", UNATTRIBUTED_HEADING, ""))
+        for outcome in sorted(orphans, key=lambda item: item.label):
+            lines.append(
+                verdict_line(outcome.verdict, outcome.label, outcome.seconds, outcome.summary)
+            )
     return lines
 
 
@@ -256,17 +413,41 @@ def _is_untrusted(night: Night) -> bool:
     return night.reading.reason == UNTRUSTED
 
 
+def unheld_modules(night: Night) -> tuple[str, ...]:
+    """The block members whose mutation the suite did not hold, in block order.
+
+    De-duplicated by path though it cannot repeat today: one mutation per file
+    per run means one label per module, and the ``dict.fromkeys`` is what keeps
+    that an implementation detail rather than an assumption a later budget change
+    silently breaks.
+    """
+    unheld = set(night.reading.unheld)
+    return tuple(
+        dict.fromkeys(
+            attempt.path
+            for attempt in night.attempts
+            if attempt.candidate is not None and attempt.candidate.label in unheld
+        )
+    )
+
+
 def _headline(night: Night) -> str:
     """The issue title, which is also half of what a reader dedups by eye.
 
-    A survivors night names its file, because a mutation the suite does not hold
-    is a statement about that file's tests and two files' gaps are two findings.
-    An untrusted night does not, because it is the same finding every time.
+    A survivors run still names its module when there is exactly one, because a
+    mutation the suite does not hold is a statement about that module's tests and
+    the five issues filed before the block form all read that way. A run that
+    found gaps in several says how many instead: six paths do not fit a title,
+    and the ``## Modules`` sections below name them all.
+
+    An untrusted run names nothing, because it is the same finding every time.
     """
     if _is_untrusted(night):
         return UNTRUSTED_TITLE
     count = len(night.reading.unheld)
-    return f"async sweep: {count} mutation(s) not held in {night.target} ({night.on})"
+    modules = unheld_modules(night)
+    where = modules[0] if len(modules) == 1 else f"{len(modules)} modules"
+    return f"async sweep: {count} mutation(s) not held in {where} ({night.on})"
 
 
 def _reproduce_section(night: Night) -> list[str]:
@@ -274,13 +455,15 @@ def _reproduce_section(night: Night) -> list[str]:
 
     The date does **not** fix the batch on its own, and saying so was this
     section's defect. Two mechanisms move it, and the first is the one that is
-    easy to miss: the target is ``(ordinal // 7) % len(census)``, so the census
-    *size* is an input -- a module added or removed anywhere re-points every
-    date at once, not just the dates near it. Measured over one week of this
-    repository's growth, 130 modules to 139, 0 of 30 dates resolved to the same
-    file. The second is the file's own contents, which decide how many of its
+    easy to miss: the block opens at ``(run * block-size) % len(census)``, so the
+    census *size* is an input -- a module added or removed anywhere re-points
+    every date at once, not just the dates near it. Measured 2026-09-19 over 30
+    consecutive runs, one module removed from a 142-module census: 0 of 30 drew
+    the same block. Counted in runs because under the run index 30 consecutive
+    dates are only 5 of them, which is what the date-counted form of this figure
+    got wrong. The second is the file's own contents, which decide how many of its
     candidates can be anchored. A triager reproducing against a later ``main``
-    therefore sweeps a different file, gets a clean run, and closes a live
+    therefore sweeps a different block, gets a clean run, and closes a live
     finding on the strength of it.
 
     So a known commit leads the block as a `git checkout`, and an unknown one is
@@ -298,12 +481,12 @@ def _reproduce_section(night: Night) -> list[str]:
         lines.append(
             "This run recorded no commit, and the date alone does not fix the batch. "
             f"{_DRIFT_MECHANISM} Run this against the **same commit** the night ran on, "
-            "or it will sweep a different file and come back clean."
+            "or it will sweep a different block and come back clean."
         )
         script = " ".join(night.command)
     lines.append(
         "It also re-runs the batch: `--dry-run` suppresses the filing, not the harness, "
-        "so expect one full suite walk per mutation plus one for the control."
+        "so expect one full suite walk per mutated module plus one shared control."
     )
     lines.extend(("", _block(script, "sh"), ""))
     return lines
@@ -316,14 +499,16 @@ def build_payload(night: Night) -> Payload:
     which night, what each mutation changed, what each verdict was, and the exact
     command that reproduces the batch.
     """
-    marker = UNTRUSTED_MARKER if _is_untrusted(night) else target_marker(night.target)
+    marker = UNTRUSTED_MARKER if _is_untrusted(night) else run_marker(night.run)
+    barren = sum(1 for attempt in night.attempts if attempt.candidate is None)
     header = [
         marker,
         "",
         "The scheduled red-team sweep over `main` (#378) did not come back clean.",
         "",
-        f"- **Night:** {night.on}",
-        f"- **Target:** {_inline(night.target)}",
+        f"- **Run:** {night.on} (run {night.run})",
+        f"- **Block:** {len(night.attempts)} module(s), {len(night.picked)} mutated, "
+        f"{barren} barren",
         f"- **Reading:** {night.reading.detail}",
         f"- **Harness exit:** {night.mutate_exit}",
         f"- **Harness:** {_inline(' '.join(night.harness))}",
@@ -332,16 +517,15 @@ def build_payload(night: Night) -> Payload:
     if night.commit is not None:
         header.append(f"- **Commit:** {_inline(night.commit)}")
     header.append("")
-    reproduce = _reproduce_section(night)
     automation = [AUTOMATION_HEADING, "", AUTOMATION_INSTRUCTION]
     body = "\n".join(
         [
             *header,
-            *_verdict_section(night),
+            *_control_section(night),
             "",
-            *_mutation_section(night),
+            *_module_section(night),
             "",
-            *reproduce,
+            *_reproduce_section(night),
             *automation,
         ]
     )
