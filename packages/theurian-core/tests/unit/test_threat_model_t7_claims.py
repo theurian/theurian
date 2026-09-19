@@ -26,21 +26,22 @@ entry still says *three*, and prose reworded back to understating the set.
 
 **And (3), for one site, what the records say its vector *is*.** Naming a path
 is not saying anything true about it, and the one site T-7 describes as handed
-an argument a document supplies is the one where that gap cost something: the
-entry described the retired two-call ``rev-parse``-then-``diff-tree`` shape,
-credited ``rev-parse --verify`` with refusing a fabricated sha, and told the
-reader that ``diff-tree`` received the id ``rev-parse`` printed rather than the
-caller's string -- three claims about a module that had spawned one
-``diff-tree`` since C4c.
+an argument a document supplies is the one where that gap cost something. The
+shipped command is now the git-2.30 ``log … -z`` form, and it got there through
+two retired shapes the records once described as live: the two-call
+``rev-parse``-then-``diff-tree`` pair (credited with refusing a fabricated sha),
+and round-2's single ``diff-tree`` carrying ``--diff-merges=first-parent`` (a git
+2.31 option above the floor). Both are history now; the records must describe the
+``log`` vector the adapter actually spawns.
 
-**Two records carry that description, and both drifted, so both are held by the
-same arms** -- the entry, and ``PROCESS_SPAWN_SITES``' own note, which is where
-a reader of the *suite* meets the same claim. They are one claim written twice
-and they were written when the adapter asked two questions; a class closed at
-one of its two surfaces is a class that comes back through the other. Each is
-held against the adapter's own argument vector, read off its syntax tree, in
-both directions: every constant token the adapter spawns is named, and no token
-the adapter does not spawn is.
+**Three records carry that description, and they drift the same way, so all are
+held by the same arms** -- T-7's entry, ``PROCESS_SPAWN_SITES``' own note (where a
+reader of the *suite* meets the claim), and the core changelog's newest-release
+``### Security`` note (where a release reader meets it; PR #766 corrected it to
+the ``log … -z`` vector). One claim written three times, and a class closed at
+one surface comes back through another. Each is held against the adapter's own
+argument vector, read off its syntax tree, in both directions: every constant
+token the adapter spawns is named, and no token the adapter does not spawn is.
 
 **What it still does not hold.** Whether the *sentences* around those tokens are
 true -- a record can name the right flags and describe them wrongly, and that is
@@ -51,7 +52,8 @@ coincide today, and the failure message reports both: a module that reached two
 watched names would take this RED with the prose innocent, and the answer then
 is to say in the entry which of the two figures it states, not to delete the pin.
 
-Pure in the sense the other claim pins are: three files read as text, no
+Pure in the sense the other claim pins are: four files read as text -- the threat
+model, the spawn-site module, the adapter source, and the core changelog -- no
 database, socket or temporary directory.
 """
 
@@ -367,12 +369,104 @@ def _one_block(blocks: list[str], where: str) -> str:
     return _folded(blocks[0])
 
 
-#: The two records that describe this adapter's ``git`` vector, each keyed by the
-#: module path it names. Both are held by the same two arms, because they are one
-#: claim written twice and they drifted together.
+#: The core package's changelog, whose current release ``### Security`` note names
+#: the shipped fix-commit vector. HIGH-2's user-visible fix (PR #766, 580ade8e)
+#: corrected that note to the git-2.30 ``log … -z`` command; this surface is the
+#: ratchet that stops the changelog and T-7 diverging from the adapter again.
+CHANGELOG_FILE: Final = REPO_ROOT / "packages/theurian-core/CHANGELOG.md"
+
+#: A release section opens with ``## [<version>]`` and runs to the next such
+#: heading; ``### Security`` opens a subsection that runs to the next ``### `` or
+#: to the section's end. Column-anchored so a mention inside prose is not a
+#: heading.
+_RELEASE_HEADING: Final = re.compile(r"(?m)^## \[")
+_SECURITY_HEADING: Final = re.compile(r"(?m)^### Security\b")
+_SUBSECTION_HEADING: Final = re.compile(r"(?m)^### ")
+
+
+def _security_subsection(section: str) -> str | None:
+    """The ``### Security`` subsection of one release *section*, or ``None``.
+
+    Sliced from the heading to the next ``### `` subsection or the section's end;
+    the search starts *after* the ``### Security`` heading so it does not stop on
+    itself.
+    """
+    opening = _SECURITY_HEADING.search(section)
+    if opening is None:
+        return None
+    rest = section[opening.end() :]
+    following = _SUBSECTION_HEADING.search(rest)
+    return rest[: following.start()] if following else rest
+
+
+def _changelog_paragraph() -> str:
+    """The **newest** release's ``### Security`` bullet describing the fix-commit vector.
+
+    The changelog's third binding of the vector, and the one a release reader
+    meets. It is held by the same completeness and honesty arms as the threat
+    model and the ``PROCESS_SPAWN_SITES`` note, so the shipped ``log … -z`` command
+    and its three published descriptions cannot drift apart again -- the class
+    HIGH-2's fix (PR #766) closed on the changelog side.
+
+    **This binds the newest release section, not ``[0.4.0]`` forever, and that is
+    the deliberate frozen-semantics choice.** Keeping a fixed ``## [0.4.0]`` anchor
+    would tie a *frozen, dated* release note to the *live* adapter argv: the day a
+    future release changes the vector, the pin would demand that ``[0.4.0]``'s
+    Security bullet describe the new command -- forcing a rewrite of published
+    history, which a changelog must never do, or a false RED that cannot be cleared
+    without one. Instead this walks the release sections newest-first (Keep a
+    Changelog orders them so) and binds the first whose ``### Security`` names
+    ``fixCommit``. The contract that makes that safe, and the reading a future RED
+    carries: **the vector's current description lives in exactly one place -- the
+    newest release Security bullet naming ``fixCommit`` -- and a vector change adds
+    a new such bullet to the current release (``[Unreleased]`` or the next
+    version), which moves this binding forward and leaves every earlier release
+    section frozen as history.** A RED here after a vector change therefore means
+    "document the change in the current release's Security note", never "rewrite
+    ``[0.4.0]``".
+
+    Exactly one bullet in the chosen section's Security subsection may name
+    ``fixCommit`` -- the vector-describing bullet, the ``_spawn_bullet_raw`` shape
+    -- so the arms read the record this module chose and not a second one.
+    """
+    text = CHANGELOG_FILE.read_text(encoding="utf-8")
+    starts = [match.start() for match in _RELEASE_HEADING.finditer(text)]
+
+    assert starts, (
+        f"{CHANGELOG_FILE.name} carries no `## [<version>]` release section, so this "
+        f"surface reads nothing and the arms below would pass over an empty record"
+    )
+
+    for start, end in zip(starts, [*starts[1:], len(text)], strict=True):
+        security = _security_subsection(text[start:end])
+        if security is None:
+            continue
+        bullets = [bullet for bullet in _BULLET_START.split(security)[1:] if "fixCommit" in bullet]
+        if not bullets:
+            continue
+        heading = text[start : text.index("\n", start)].strip()
+        assert len(bullets) == 1, (
+            f"{heading}'s `### Security` names `fixCommit` in {len(bullets)} bullets, "
+            f"expected 1. The vector-describing bullet must be the single one, or the arms "
+            f"read a record this module never chose"
+        )
+        return _folded(bullets[0])
+
+    raise AssertionError(
+        f"no release section in {CHANGELOG_FILE.name} has a `### Security` bullet naming "
+        f"`fixCommit`. The fix-commit verification command's current description lives in "
+        f"the newest such bullet; a vector change adds one to the current release rather "
+        f"than rewriting a frozen historical section (see this function's docstring)."
+    )
+
+
+#: The three records that describe this adapter's ``git`` vector, each keyed by the
+#: surface it lives on. All are held by the same completeness and honesty arms,
+#: because they are one claim written three times and drift the same way.
 _RECORD_SURFACES: Final[dict[str, Callable[[], str]]] = {
     "threat-model T-7": _threat_model_paragraph,
     f"{SPAWN_SITES_CONSTANT}'s note": _pinned_set_note,
+    "CHANGELOG release Security": _changelog_paragraph,
 }
 
 
@@ -465,14 +559,15 @@ def test_a_record_of_the_fix_commit_site_names_every_token_the_adapter_spawns(
 
     These are where a reader deciding whether to trust the *one* spawn site
     handed a caller's bytes finds out what that site runs. A token a record
-    omits is a token nobody reviewed: ``--diff-merges=first-parent`` decides
-    whether a merge commit can satisfy the promotion gate at all and ``--root``
-    whether a repository's first commit can, and each arrived in a change whose
-    whole argument was about something else.
+    omits is a token nobody reviewed: ``-z`` decides whether a name git would
+    quote, line-split or whitespace-strip is matched by its raw bytes,
+    ``--first-parent`` and ``-m`` whether a merge commit can satisfy the gate, and
+    ``--root`` whether a repository's first commit can -- and each arrived in a
+    change whose whole argument was about something else.
 
     The expected set is read off the adapter's own syntax tree every run, so a
     token added to the vector is RED here at the moment it lands -- which is the
-    moment both records have to move -- rather than at the next audit.
+    moment all three records have to move -- rather than at the next audit.
 
     The premise comes first: a vector that read empty would make the comparison
     pass over nothing, which is what a derivation that stopped finding the spawn
@@ -484,10 +579,9 @@ def test_a_record_of_the_fix_commit_site_names_every_token_the_adapter_spawns(
     }
 
     assert len(vector) >= 5, (
-        f"the adapter's spawn vector read as {list(vector)}; it carried eight constant "
-        f"tokens at 410d4437 and nine once `--diff-merges=first-parent` joined it, so a "
-        f"set this small means the derivation stopped reading the call rather than that "
-        f"the vector shrank"
+        f"the adapter's spawn vector read as {list(vector)}; the shipped `log … -z` form "
+        f"carries eleven constant tokens, so a set this small means the derivation stopped "
+        f"reading the call rather than that the vector shrank"
     )
     missing = [token for token in vector if token not in named]
 
@@ -497,7 +591,8 @@ def test_a_record_of_the_fix_commit_site_names_every_token_the_adapter_spawns(
         f"The whole vector is {list(vector)}. A reader takes that record as the "
         f"description of what this site runs, so an unnamed token is one nobody "
         f"reviewed -- and each of them decides a verdict: `--root` whether a root "
-        f"commit can be a fix, `--diff-merges=first-parent` whether a merge can, "
+        f"commit can be a fix, `--first-parent -m` whether a merge can, `-z` whether a "
+        f"quoted or newline-bearing name is matched by its raw bytes, and "
         f"`--literal-pathspecs` whether a stored pathspec can verify a foreign commit."
     )
 
@@ -520,8 +615,8 @@ def test_a_record_of_the_fix_commit_site_names_no_token_the_adapter_does_not_spa
     The completeness arm above cannot catch it -- fewer tokens in the vector is
     simply fewer things to find -- so the honesty direction is its own assertion.
     A word inside a token the vector really carries is allowed, because
-    ``first-parent`` is how a sentence refers to ``--diff-merges=first-parent``
-    and refusing that would be pinning the prose rather than the claim.
+    ``first-parent`` is how a sentence refers to ``--first-parent`` and refusing
+    that would be pinning the prose rather than the claim.
     """
     vector = _spawned_vector()
     named = _named_tokens(_RECORD_SURFACES[record]())
@@ -540,12 +635,13 @@ def test_a_record_of_the_fix_commit_site_names_no_token_the_adapter_does_not_spa
     assert not stray, (
         f"{record} names {stray}, and {FIX_COMMIT_SITE} hands `git` {list(vector)}.\n\n"
         f"A token in that record reads as something the adapter runs or forecloses. "
-        f"`rev-parse` and `--verify` are the retired two-call shape: the questions "
-        f"collapsed into one `diff-tree` (ADR-0033 decision 5), so any control the "
+        f"`rev-parse`, `--verify` and `diff-tree` are retired shapes: the two-call "
+        f"rev-parse-then-diff-tree pair and round-2's `diff-tree --diff-merges=first-parent` "
+        f"both gave way to one `git log … -z` call (ADR-0033 decision 5), so any control the "
         f"record credits to `rev-parse` -- refusing a fabricated sha, re-matching the "
         f"printed id as hex before spending it -- is a control this product does not "
         f"have. Rewrite the sentence around the vector above, and record what refuses a "
-        f"value now: the entry funnel (`fix_commit_grammar`), then `diff-tree`'s own "
+        f"value now: the entry funnel (`fix_commit_grammar`), then `git log`'s own "
         f"non-zero exit."
     )
 
