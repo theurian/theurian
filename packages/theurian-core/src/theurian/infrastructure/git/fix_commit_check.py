@@ -30,50 +30,76 @@ real commit cost two. The
 C4b battery measured the pair end to end at **+7.2 ms, P=1.000**: the refusal's
 *duration* answered "does this object exist here", which is a fact about the
 repository the caller was not granted. ADR-0033 decision 5 binds the two
-refusals in text **and in duration**, so both questions are now one ``diff-tree``
-call and the verdict is read off its exit code and its output:
+refusals in text **and in duration**, so both questions are now one ``git log``
+call and the verdict is read off its exit code and whether the exact stored path
+is among its ``--name-only`` lines:
 
-===================  ==========================================================
-non-zero exit        ``NO_SUCH_COMMIT`` -- measured 128 for an absent object and
-                     for a name that is not a commit; also every fail-closed
-                     reading, where git could not be run at all
-exit 0, no output    ``TOUCHES_NOTHING_HERE``
-exit 0, output       ``VERIFIED``
-===================  ==========================================================
+============================  =================================================
+non-zero exit                 ``NO_SUCH_COMMIT`` -- measured 128 for an absent
+                              object and for a name that is not a commit; also
+                              every fail-closed reading, where git could not be
+                              run at all
+exit 0, path is a named line  ``VERIFIED``
+exit 0, path is not a line    ``TOUCHES_NOTHING_HERE``
+============================  =================================================
+
+**The verdict is output-*membership*, not "any output at all", and that is what
+closes the directory-pathspec class (round-2 HIGH-2).** ``--`` stops an
+option-shaped path being read as a flag but not being parsed as a pathspec after
+it, and a *literal directory* is a pathspec that matches every file beneath it:
+a stored ``file_path`` of ``.``, ``./``, ``docs`` or ``docs/`` printed a foreign
+commit's files and, under the old "non-empty output → ``VERIFIED``" rule, verified
+a commit with nothing to do with the thread. ``--literal-pathspecs`` never closed
+this -- it only ever disarmed ``:(…)`` magic, and the round-1 comment claiming the
+magic class was "closed here" by that flag is superseded. What closes both
+sub-classes is requiring the *exact* stored path to be one of the ``--name-only``
+lines: a name-only line is a file path, never a directory and never a ``:(…)``
+expression, so neither can ever be a line (measured git 2.47.1/2.54.0,
+2026-09-19; ``high2_repro.py``).
+
+**The command is the git-2.30 ``log`` form, chosen so the documented floor holds
+(round-2 HIGH-1).** The floor is git 2.30+ (``development.md``). The round-1 fix
+reached merge commits with ``diff-tree --diff-merges=first-parent``, but
+``--diff-merges=first-parent`` is a git 2.31 feature: on a 2.30 install the option
+errors, the non-zero exit folds to ``NO_SUCH_COMMIT``, and *every* valid
+``fixCommit`` refuses. That attempt is recorded here as history, not repeated. The
+shipped form is ``git --literal-pathspecs log --no-walk --first-parent -m
+--name-only --format= --root --end-of-options <sha>^{commit} -- <path>``, whose
+verdicts are byte-identical to the diff-tree form across present+touches,
+not-touching, absent, conflict-merge+touches, root+touches and non-commit, one
+spawn each (``log_form_probe.py``).
 
 **Both arguments are untrusted, and they are untrusted differently.** The sha is
 caller wire input; the path is author-controlled stored data a clone can deliver
-(T-3, T-24). Five tokens shape the single ``diff-tree`` call, and what each is
-worth was re-measured under this shape on git 2.47.1, 2026-09-19 -- two because a
-``rev-parse`` behaviour that once justified them no longer runs, and
-``--diff-merges=first-parent`` because it is new:
+(T-3, T-24). What each token is worth was measured under this shape on git 2.47.1
+and 2.54.0, 2026-09-19:
 
-* ``--literal-pathspecs`` -- **load-bearing.** Against a commit touching only
-  ``docs/notes.md``, the stored paths ``:(exclude)src/retrying.py``,
-  ``:!src/retrying.py``, ``:(glob)**/*.md`` and ``:(top)`` each make ``diff-tree``
-  print ``docs/notes.md``: a non-empty answer, which is this module's
-  ``VERIFIED``. Each prints nothing under the flag.
+* ``--literal-pathspecs`` -- **defence in depth, subsumed by membership.** Against
+  a commit touching only ``docs/notes.md``, the stored paths
+  ``:(exclude)src/retrying.py``, ``:!src/retrying.py``, ``:(glob)**/*.md`` and
+  ``:(top)`` each make ``log`` print ``docs/notes.md`` without the flag and nothing
+  with it. The membership check refuses all four either way -- ``docs/notes.md`` is
+  not the stored path -- so the flag no longer closes anything on its own; it stays
+  because a name it disarms is one less name to reason about.
 * ``--root`` -- **load-bearing.** A repository's first commit reports no files
   without it (measured: empty output where the flag gives ``src/retrying.py``),
   so a fix that *is* the root commit would read as touching nothing.
-* ``--diff-merges=first-parent`` -- **load-bearing, and the only token here that
-  changes a verdict for an honest input.** ``diff-tree`` prints nothing for a
-  merge commit by default, so a conflict-resolving merge that introduced the fix
-  read ``TOUCHES_NOTHING_HERE`` -- a true fix, correctly named, refused. The mode
-  is *this merge changed the file relative to the branch it landed on*, which
-  names the merge rather than some parent; the integration battery enumerates the
-  three merge shapes that rule out ``separate`` and ``combined``, and plain-commit
-  verdicts are unchanged.
+* ``--first-parent -m`` on ``log`` -- **load-bearing, and the only tokens here
+  that change a verdict for an honest input.** ``log`` shows nothing for a merge
+  commit without ``-m``, so a conflict-resolving merge that introduced the fix read
+  ``TOUCHES_NOTHING_HERE`` -- a true fix, correctly named, refused. ``--first-parent``
+  makes the shown diff *this merge against the branch it landed on* rather than
+  against every parent; the integration battery enumerates the merge shapes that
+  rule out dropping either, and plain-commit verdicts are unchanged.
 * ``^{commit}`` on the revision -- **load-bearing, for a different reason than it
   used to be.** Under the two-call shape it was what refused a fabricated forty
   hex digits, because ``rev-parse --verify`` accepts a full-width hex string as an
-  object *name* without asking whether the object is present. ``diff-tree`` does
-  not: ``eeee…eeee`` exits 128 with the suffix and without it, so that
-  justification did not survive the collapse and is recorded here as history
-  rather than repeated. What the suffix holds now is **commit-only** semantics --
-  a tree id and a blob id each exit 0 with empty output without it, which this
-  module would read as ``TOUCHES_NOTHING_HERE``, i.e. as *a commit was found*,
-  and exit 128 with it.
+  object *name* without asking whether the object is present. This form does not:
+  ``eeee…eeee`` exits 128 with the suffix and without it, so that justification did
+  not survive the collapse and is recorded here as history rather than repeated.
+  What the suffix holds now is **commit-only** semantics -- a tree id and a blob id
+  each exit 0 with empty output without it, which this module would read as
+  ``TOUCHES_NOTHING_HERE``, i.e. as *a commit was found*, and exit 128 with it.
 * ``--end-of-options`` before the sha -- **defence in depth over a value the
   funnel has already refused.** An option-shaped sha exits 128 behind the flag and
   129, git's usage error, without it; both are non-zero, so both were the same
@@ -84,15 +110,16 @@ worth was re-measured under this shape on git 2.47.1, 2026-09-19 -- two because 
   a live input: the path is not funnelled, so an option-shaped ``filePath`` out of
   an evidence file stays a pathspec.
 
-``tests/integration/test_fix_commit_check_adapter.py`` holds all five, and names
-which of them a behavioural case can reach and which only its captured-vector pin
-can.
+``tests/integration/test_fix_commit_check_adapter.py`` holds all of these, and
+names which a behavioural case can reach and which only its captured-vector pin
+can; ``test_the_verify_command_uses_only_git_features_at_or_below_the_documented_floor``
+holds the 2.30 floor as an allowlist rather than as a single flag's absence.
 
 **The binary is resolved to an absolute path**, the ``gh`` precedent tier
 (ADR-0030 clause 5) its ``committed_check.py`` sibling takes, because this call
 decides a promotion signal and letting an inherited ``PATH`` choose the
 executable that answers it is the shape that clause refuses. It reaches no
-network -- ``diff-tree`` reads local object storage, names no remote and takes no
+network -- ``log`` reads local object storage, names no remote and takes no
 URL -- and is on ``PROCESS_SPAWN_SITES`` only because it spawns a process.
 """
 
@@ -151,18 +178,26 @@ class FixCommitCheck:
         rather than chosen between two, and the fail-closed readings -- git absent,
         a spawn that raised, a timeout -- join the non-zero exits on the refusing
         side rather than adding a path of their own.
+
+        The three branches are explicit: a non-zero exit is ``NO_SUCH_COMMIT``;
+        exit zero with the *exact* stored ``file_path`` among the ``--name-only``
+        lines is ``VERIFIED``; exit zero without it is ``TOUCHES_NOTHING_HERE``.
+        Comparing the stored path to the emitted lines -- not merely testing for
+        any output -- is what refuses a stored directory or ``:(…)`` pathspec that
+        would otherwise match a foreign commit (module docstring, HIGH-2).
         """
         if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit) is None:
             return FixCommitVerdict.NO_SUCH_COMMIT
         completed = self._run(
             [
                 "--literal-pathspecs",
-                "diff-tree",
-                "--no-commit-id",
+                "log",
+                "--no-walk",
+                "--first-parent",
+                "-m",
                 "--name-only",
-                "-r",
+                "--format=",
                 "--root",
-                "--diff-merges=first-parent",
                 "--end-of-options",
                 f"{commit}^{{commit}}",
                 "--",
@@ -171,9 +206,10 @@ class FixCommitCheck:
         )
         if completed is None or completed.returncode != 0:
             return FixCommitVerdict.NO_SUCH_COMMIT
-        if not completed.stdout.strip():
-            return FixCommitVerdict.TOUCHES_NOTHING_HERE
-        return FixCommitVerdict.VERIFIED
+        touched = completed.stdout.decode("utf-8", "surrogateescape").splitlines()
+        if file_path in (line for line in touched if line.strip()):
+            return FixCommitVerdict.VERIFIED
+        return FixCommitVerdict.TOUCHES_NOTHING_HERE
 
     def _run(self, git_args: list[str]) -> subprocess.CompletedProcess[bytes] | None:
         """Spawn the ``git`` call, or ``None`` if the binary is absent or it fails.

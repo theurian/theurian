@@ -1064,6 +1064,72 @@ Still owed, with the milestone that will satisfy it:
   > `PROCESS_SPAWN_SITES`' note are held to the one-`diff-tree` vector by
   > `test_threat_model_t7_claims.py`. The git-internal duration residual is
   > measured, bounded and **unpinned**, as the amendment above records.
+
+  > **Amended in slice B5 round 2
+  > ([PR #744](https://github.com/theurian/theurian/pull/744), before the
+  > fix-wave-2 commit): the round-1 command did not run on the documented git
+  > floor, and the stored-path funnel member the closure argument above relied on
+  > was forgeable. Both are replaced; the round-1 block's `diff-tree` and
+  > "one-`diff-tree` vector" wording is left intact as the round-1 record, and this
+  > block supersedes it in place.**
+  >
+  > **The command moved to the `log` form (round-2 HIGH-1, code review).** Round 1
+  > reached merge commits with a single `diff-tree` call carrying
+  > `--diff-merges=first-parent`, which is a git 2.31 feature; the documented floor
+  > is git 2.30 (`docs/contributing/development.md`). On a floor install that option
+  > errors, the non-zero exit folds to `NO_SUCH_COMMIT`, and **every valid
+  > `fixCommit` refuses**. The command is now
+  > `git --literal-pathspecs log --no-walk --first-parent -m --name-only --format= --root --end-of-options <sha>^{commit} -- <file_path>`,
+  > which reaches the same merge commits on git 2.30 and gives byte-identical
+  > verdicts. The finding's pin is class-level rather than a "`--diff-merges` is
+  > gone" spot-check:
+  > `test_fix_commit_check_adapter.py::test_the_verify_command_uses_only_git_features_at_or_below_the_documented_floor`
+  > reads the spawned argv off a captured call and asserts every token is on a floor
+  > allowlist introduced at or below the floor, with a planted git-2.31
+  > `--diff-merges=first-parent` as the positive control — so a future above-floor
+  > token is kept out by construction.
+  >
+  > **The stored-`file_path` funnel member was forgeable (round-2 HIGH-2,
+  > adversarial).** The closure argument above rested on the stored `file_path`
+  > being fence-funnelled by `--` and `--literal-pathspecs`. That flag disables
+  > `:(…)` *magic* but not a literal **directory**: a stored `file_path` of `.`,
+  > `./`, `docs` or `docs/` is a plain path, and a directory pathspec matches every
+  > file beneath it — so it **verified a foreign commit** that touched anything
+  > under that directory, defeating the check. The verdict is now an
+  > **output-membership** check: `VERIFIED` only when the *exact* stored `file_path`
+  > is one of the `--name-only` output lines, `TOUCHES_NOTHING_HERE` otherwise. A
+  > `--name-only` line is always a single file path — never a directory, never a
+  > `:(…)` expression — so membership refuses the whole directory-and-tree-pathspec
+  > class, superseding round 1's "`--literal-pathspecs` closes the stored-path
+  > class"; the flag stays as defence in depth over the magic half.
+  > `test_fix_commit_check_adapter.py::test_a_stored_path_spelling_a_pathspec_expression_verifies_nothing`
+  > drives all eight stored-path spellings — the `:(…)` magic forms and the literal
+  > directories `.`, `./`, `docs`, `docs/` — against a commit that touched only a
+  > foreign file and asserts each answers `TOUCHES_NOTHING_HERE`, with
+  > `::test_a_commit_that_touches_the_threads_file_is_verified` and
+  > `::test_a_commit_that_touches_another_file_is_not_verified` the positive and
+  > negative controls that membership still says yes for the real anchor and refuses
+  > a foreign commit for the same reason rather than everything refusing.
+  >
+  > **The funnel's exact two lengths are pinned across the interior (round-2
+  > MEDIUM).** The CRITICAL grammar funnel is unchanged — full-hex, pre-spawn — and
+  > its shared corpus `tests/fix_commit_grammar.py` now carries a fifty-two-hex
+  > `interior-length` member, strictly between the two object-name widths, driven
+  > `REFUSED` at both seams by the corpus-parametrized arms
+  > `test_candidate_input_schema.py::test_the_published_schema_refuses_a_fix_commit_that_is_a_revision_expression`
+  > (the published `pattern`) and
+  > `test_fix_commit_check_adapter.py::test_a_fix_commit_that_is_not_a_full_object_name_is_refused_without_spawning`
+  > (the adapter, zero spawns). A widening to a single length bound rather than the
+  > alternation of exactly forty and sixty-four reddens both.
+  >
+  > **What the T-7 records now pin, superseding the sentence above.** The round-1
+  > block says T-7's spawn bullet and `PROCESS_SPAWN_SITES`' note are held to the
+  > "one-`diff-tree` vector" by `test_threat_model_t7_claims.py`; after this round
+  > both are held to the **`log`** argv above, because those arms read the vector
+  > off the adapter's own syntax tree every run rather than off a fixed list.
+  > `docs/security/threat-model.md`'s T-7 sixth-site paragraph is rewritten to the
+  > same `log` command and the same output-membership control, so the two governed
+  > records agree.
 - **Slice B5 — at least one gate test is driven from a record the real adapter
   shape produces.** That is, a `ReviewResolution` built the way
   `review_provider.py` builds one, with `fix_commit` **absent**. What lets a

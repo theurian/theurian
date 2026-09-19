@@ -28,16 +28,40 @@ wire.
 **One process, for every input the grammar admits, and that is a disclosure
 control rather than a saving.** The adapter used to ask two questions in two
 spawns -- *does this object resolve to a commit* (``rev-parse``), then *did it
-touch this path* (``diff-tree``) -- and the first could answer no on its own. So
-a refusal about an absent object cost one process and a refusal about a real
-commit cost two, and the C4b battery measured the difference end to end at
-**+7.2 ms, P=1.000**: the refusal's *duration* answered "does this object exist
-here", which is a fact about the repository the caller was not granted. ADR-0033
-decision 5 binds the pair in text **and in duration**, so the two questions
-collapse into one ``diff-tree`` call whose outcome is read off the exit code and
-the output.
+touch this path* -- and the first could answer no on its own. So a refusal about
+an absent object cost one process and a refusal about a real commit cost two, and
+the C4b battery measured the difference end to end at **+7.2 ms, P=1.000**: the
+refusal's *duration* answered "does this object exist here", which is a fact
+about the repository the caller was not granted. ADR-0033 decision 5 binds the
+pair in text **and in duration**, so the two questions collapse into one call
+whose outcome is read off the exit code and the output.
 :func:`test_the_same_request_spawns_the_same_vector_whether_the_object_is_here_or_not`
 is the pin, and it is the one that was RED when this shape was chosen.
+
+**The one call is the git-2.30 ``log`` form, verdict-identical to the ``diff-tree``
+form it replaced.** Round-1 reached merge commits with
+``diff-tree --diff-merges=first-parent``; round-2 code review found that option
+is a git 2.31 feature while the documented floor is 2.30
+(``development.md``), so on a floor install it errors, the non-zero exit folds to
+``NO_SUCH_COMMIT``, and every valid ``fixCommit`` refuses (HIGH-1). The command is
+now ``git --literal-pathspecs log --no-walk --first-parent -m --name-only
+--format= --root --end-of-options <sha>^{commit} -- <path>``, whose verdicts are
+byte-identical (measured, git 2.47.1, 2026-09-19) and whose newest token is
+``--end-of-options`` (2.24), at or below the floor.
+:func:`test_the_verify_command_uses_only_git_features_at_or_below_the_documented_floor`
+holds the whole command to the floor as a class, not the one retired flag.
+
+**A verdict is ``VERIFIED`` only when the exact stored ``file_path`` is one of the
+named output lines.** Round-2 adversarial review refuted the round-1 closure that
+``--literal-pathspecs`` neutralised the stored-path class: it neutralises ``:(…)``
+*magic* but not a literal **directory**, so a stored ``file_path`` of ``.`` or
+``docs`` matched every file under it and verified a *foreign* commit (HIGH-2). A
+``--name-only`` line is a file path, never a directory and never a ``:(…)``
+expression, so the output-membership check refuses both sub-classes and is the
+real closure; ``--literal-pathspecs`` stays as defence in depth. This supersedes
+the round-1 "closed here rather than recorded" claim below.
+:func:`test_a_stored_path_spelling_a_pathspec_expression_verifies_nothing` drives
+both sub-classes.
 
 **The funnel's own zero-spawn refusal does not reopen that channel, and the
 reason is which fact the split is on.** Whether a value is forty lower-case hex
@@ -51,18 +75,24 @@ carrying the same vector, whatever the repository turns out to hold.
 four re-measured under the single-call shape, because two of them had been
 justified by a ``rev-parse`` behaviour that no longer runs:
 
-* ``--literal-pathspecs`` -- **load-bearing**. Against a commit touching only
-  ``docs/notes.md``, the stored paths ``:(exclude)src/retrying.py``,
-  ``:!src/retrying.py``, ``:(glob)**/*.md`` and ``:(top)`` each make ``diff-tree``
-  print ``docs/notes.md``: a non-empty answer, which is this adapter's
-  ``VERIFIED``. Under the flag each prints nothing.
-* ``--root`` -- **load-bearing**. The repository's first commit reports no files
-  without it (measured: empty output where the flag gives ``src/retrying.py``), so
-  a fix that *is* the root commit would read as touching nothing.
+* ``--literal-pathspecs`` -- **defence in depth over the ``:(…)`` magic
+  sub-class**. Against a commit touching only ``docs/notes.md``, the stored paths
+  ``:(exclude)src/retrying.py``, ``:!src/retrying.py``, ``:(glob)**/*.md`` and
+  ``:(top)`` each make git print ``docs/notes.md`` without the flag, and print
+  nothing under it. Round-1 recorded this as the closure; round-2 found it never
+  closed a literal **directory** (``docs``, ``.``), and that the output-membership
+  check above closes both -- so the flag is now belt to that check's braces.
+* ``--root`` -- **defence in depth on the ``log`` form; it was load-bearing on
+  ``diff-tree``**. ``diff-tree`` reported no files for a root commit without it,
+  but ``git log`` shows a root commit's own diff by default -- measured git
+  2.47.1, ``src/retrying.py`` with *and without* the flag on the log form -- so it
+  changes no verdict here and stays only against a future move back to a diff
+  form that needs it. Its teeth are the captured-vector pin, not a behavioural
+  case.
 * ``^{commit}`` on the revision -- **load-bearing, and for a different reason
   than it used to be**. Under the two-call shape it was what refused a fabricated
   forty hex digits, because ``rev-parse --verify`` accepts a full-width hex string
-  as an object *name* without asking whether the object is present. ``diff-tree``
+  as an object *name* without asking whether the object is present. The one call
   does not: ``eeee…eeee`` exits 128 with or without the suffix, so that
   justification did not survive the collapse and is recorded here as history
   rather than repeated as a live claim. What the suffix holds *now* is the
@@ -82,14 +112,18 @@ justified by a ``rev-parse`` behaviour that no longer runs:
   :func:`test_the_git_vector_is_one_process_fixed_and_forecloses_an_option_a_path_and_magic`,
   which is now captured at an *admitted* sha because a refused one spawns
   nothing to capture.
-* ``--diff-merges=first-parent`` -- **load-bearing, and the only token here that
-  changes a verdict for an honest input**. ``diff-tree`` prints nothing at all
-  for a merge commit by default, so a conflict-resolving merge that introduced
-  the thread's fix answered ``TOUCHES_NOTHING_HERE`` -- a true fix, correctly
-  named, refused. Measured on git 2.47.1, 2026-09-19 over the three merge shapes
+* ``--first-parent -m`` on ``log`` -- **load-bearing, and the only tokens here
+  that change a verdict for an honest input**. ``log`` shows nothing for a merge
+  commit without ``-m``, so a conflict-resolving merge that introduced the
+  thread's fix would answer ``TOUCHES_NOTHING_HERE`` -- a true fix, correctly
+  named, refused. ``--first-parent`` is what makes that diff the branch it landed
+  on rather than every parent. Measured on git 2.47.1, 2026-09-19 over the three
+  merge shapes
   :func:`test_a_merge_is_verified_when_it_changed_the_threads_file_against_its_first_parent`
-  drives: the mode is what separates *this merge changed the file* from
-  ``--diff-merges=separate``'s *some parent did*.
+  drives: the pair separates *this merge changed the file* from an all-parents
+  diff's *some parent did*. This replaces round-1's
+  ``diff-tree --diff-merges=first-parent``, whose option needs git 2.31, above the
+  2.30 floor (HIGH-1).
 
 Nothing here touches the developer's machine: every ``git`` call names a
 ``tmp_path`` repository with ``cwd``, and the identity and signing settings are
@@ -113,6 +147,10 @@ from theurian.infrastructure.git.fix_commit_check import GIT_TIMEOUT_SECONDS, Fi
 
 pytestmark = pytest.mark.integration
 
+#: The repository root, for reading the documented git floor out of
+#: ``development.md`` (``test_the_floor_constant_matches_the_documented_git_requirement``).
+REPO_ROOT = Path(__file__).resolve().parents[4]
+
 #: The file a stored thread is anchored to, and the one the verification asks about.
 FILE_PATH = "src/retrying.py"
 
@@ -132,19 +170,38 @@ _GIT_IDENTITY = (
     "commit.gpgsign=false",
 )
 
-#: Stored ``filePath`` values that are pathspec *expressions* rather than paths.
+#: Stored ``filePath`` values that make a **foreign** commit's diff non-empty, in
+#: two sub-classes, so none of them may verify one.
 #:
 #: Author-controlled and reachable through a clone (T-24). Each was measured to
-#: verify a commit that touched only :data:`OTHER_PATH` when ``--literal-pathspecs``
-#: is absent. ``:(top)`` is the worst member and is why the set is not just the two
-#: exclusion spellings: it names **no path at all**, so under pathspec magic every
-#: commit in the repository verifies every thread, and the ``fix_commit_present``
-#: signal stops being about this thread's file in any sense.
+#: report :data:`OTHER_PATH` for a commit that touched only :data:`OTHER_PATH`:
+#:
+#: * **pathspec magic** -- ``:(exclude)``/``:!``/``:(glob)``/``:(top)``. Neutralised
+#:   by ``--literal-pathspecs``, which makes git read them as literal paths that
+#:   match nothing. ``:(top)`` is the worst of these: it names **no path at all**,
+#:   so without the flag every commit verifies every thread.
+#: * **literal directories** -- ``.``, ``./``, ``docs``, ``docs/``. This is the
+#:   round-2 (HIGH-2) class ``--literal-pathspecs`` does **not** close: a directory
+#:   is a literal path, and a directory pathspec matches every file *under* it, so
+#:   a foreign commit that touched ``docs/notes.md`` makes ``docs`` (or ``.``)
+#:   non-empty. ``docs`` is deliberately :data:`OTHER_PATH`'s own parent.
+#:
+#: What closes **both** is the output-membership check the round-2 fix adds: a
+#: verdict is ``VERIFIED`` only when the *exact* stored ``file_path`` is one of the
+#: named output lines. A ``--name-only`` line is a file path, never a directory and
+#: never a ``:(…)`` expression, so neither sub-class can ever be a line -- which is
+#: why membership subsumes what ``--literal-pathspecs`` did for magic and adds the
+#: directory class ``--literal-pathspecs`` alone left open (measured, git 2.47.1,
+#: 2026-09-19; ``high2_repro.py``).
 MAGIC_STORED_PATHS: tuple[str, ...] = (
     f":(exclude){FILE_PATH}",
     f":!{FILE_PATH}",
     ":(glob)**/*.md",
     ":(top)",
+    ".",
+    "./",
+    "docs",
+    "docs/",
 )
 
 
@@ -197,15 +254,16 @@ def test_a_commit_this_repository_does_not_have_is_not_verified(repository: Path
     another repository, the fabricated ``"e" * 40`` the suite's own fixtures
     use".
 
-    **What refuses it is the single ``diff-tree`` call itself**, which exits 128
-    on an object the repository does not have (measured, git 2.47.1). That is a
-    change of mechanism worth recording rather than quietly inheriting: under the
-    two-call shape the refusal came from the ``^{commit}`` dereference, because
-    ``rev-parse --verify`` accepted a full-width hex string as a well-formed
-    object *name* without asking whether the object existed and printed it back
-    at exit 0. ``diff-tree`` asks. The suffix still earns its place on this
-    vector, and :func:`test_an_object_that_is_not_a_commit_names_no_commit` is
-    now where that is held.
+    **What refuses it is the single ``git`` call itself**, which exits 128 on an
+    object the repository does not have (measured, git 2.47.1, on both the retired
+    ``diff-tree`` form and the shipped ``log`` form). That is a change of mechanism
+    worth recording rather than quietly inheriting: under the two-call shape the
+    refusal came from the ``^{commit}`` dereference, because ``rev-parse --verify``
+    accepted a full-width hex string as a well-formed object *name* without asking
+    whether the object existed and printed it back at exit 0. The one call asks.
+    The suffix still earns its place on this vector, and
+    :func:`test_an_object_that_is_not_a_commit_names_no_commit` is now where that
+    is held.
     """
     verdict = FixCommitCheck(repository).verify("e" * 40, FILE_PATH)
 
@@ -226,9 +284,11 @@ def test_a_commit_that_touches_another_file_is_not_verified(repository: Path) ->
 
     It is also the negative control for
     :func:`test_a_stored_path_spelling_a_pathspec_expression_verifies_nothing`: an
-    ordinary path over this same commit answers nothing **with or without**
-    ``--literal-pathspecs`` (measured), so that test's refusals are the flag's
-    doing and not the flag breaking every lookup.
+    ordinary anchored path over a foreign commit answers ``TOUCHES_NOTHING_HERE``
+    because its exact name is not among the touched lines (the output-membership
+    check), not because the lookup is broken -- so that test's refusals are the
+    check working, and this arm is what shows the honest anchor still refuses a
+    foreign commit rather than everything refusing.
     """
     unrelated = _commit(repository, OTHER_PATH, "notes\n", "add notes")
 
@@ -259,19 +319,23 @@ def test_a_commit_that_touches_the_threads_file_is_verified(repository: Path) ->
 
 
 def test_a_repositorys_first_commit_can_be_the_fix_it_verifies(repository: Path) -> None:
-    """``--root``: a commit with no parent still has the files it introduced.
+    """A commit with no parent still verifies for a file it introduced.
 
-    ``diff-tree`` diffs a commit against its parents, and a root commit has none
-    -- so without ``--root`` it reports no files at all and the adapter answers
-    ``TOUCHES_NOTHING_HERE`` for a commit that plainly created the anchored file.
-    Measured on git 2.47.1: empty output without the flag, ``src/retrying.py``
-    with it.
+    This is the honest behaviour a root-commit fix must have: a thread anchored to
+    a file the first commit of a repository created is ordinary in a young
+    project, and refusing it is the worst failure a verification has -- a true
+    fix, correctly named, told to *go and find the right commit* it cannot.
 
-    Not a corner case worth skipping. A thread anchored to a file introduced by
-    the first commit of a repository is ordinary in a young project, and the
-    failure it produces is the worst kind -- a true fix, correctly named, refused
-    with the message that says *go and find the right commit*, which there is no
-    way for the caller to satisfy.
+    **``--root`` is what this looked like it pinned, and on the ``log`` form it no
+    longer does -- said plainly rather than implied.** ``git log`` shows a root
+    commit's own diff by default (measured, git 2.47.1: ``src/retrying.py`` with
+    *and without* ``--root`` on the log form), so the flag is redundant here,
+    unlike the retired ``diff-tree`` form where it was load-bearing (a root commit
+    reported no files without it). This arm therefore verifies the *verdict*, not
+    the flag; what holds ``--root`` in the vector is the captured-vector pin
+    :func:`test_the_git_vector_is_one_process_fixed_and_forecloses_an_option_a_path_and_magic`,
+    where it stays as defence in depth against a future move back to a diff form
+    that needs it.
     """
     root = _git(repository, "rev-list", "--max-parents=0", "HEAD").stdout.strip()
 
@@ -279,8 +343,8 @@ def test_a_repositorys_first_commit_can_be_the_fix_it_verifies(repository: Path)
 
     assert verdict is FixCommitVerdict.VERIFIED, (
         f"the repository's root commit answered {verdict!r} for {FILE_PATH}, which it "
-        f"introduced. `--root` has been dropped from the diff-tree vector, and every "
-        f"thread anchored to a file the first commit created is now unverifiable."
+        f"introduced. A file a first commit created must verify, or every thread anchored "
+        f"to one is unverifiable."
     )
 
 
@@ -293,29 +357,37 @@ def test_a_repositorys_first_commit_can_be_the_fix_it_verifies(repository: Path)
 def test_a_stored_path_spelling_a_pathspec_expression_verifies_nothing(
     repository: Path, stored_path: str
 ) -> None:
-    """A ``filePath`` that is a pathspec expression must not verify a foreign commit.
+    """A stored ``filePath`` that matches a **foreign** commit must not verify it.
 
     ``--`` stops an option-shaped path being read as a flag; it does **not** stop
-    a path being read as a pathspec *expression*, and that is a separate language
-    git parses after the separator. So a stored ``filePath`` of
-    ``:(exclude)src/retrying.py`` asks git for "everything the commit touched
-    except the file this thread is about", which for a commit touching anything
-    else is a non-empty answer -- and a non-empty answer is this adapter's
-    ``VERIFIED``. Measured open on git 2.47.1 before ``--literal-pathspecs``
-    landed: all four spellings printed ``docs/notes.md`` for a commit that touched
-    only ``docs/notes.md``.
+    git parsing the path as a pathspec after the separator, and a pathspec matches
+    more than the one file a thread is anchored to. Two sub-classes reach a
+    non-empty answer for a commit that touched only :data:`OTHER_PATH`, and a
+    non-empty answer used to be this adapter's ``VERIFIED``:
+
+    * a **pathspec-magic** expression -- ``:(exclude)src/retrying.py`` asks for
+      "everything the commit touched except the thread's file". ``--literal-pathspecs``
+      neutralises this: git reads it as a literal path that matches nothing.
+    * a **literal directory** -- ``docs`` or ``.``. ``--literal-pathspecs`` does
+      **not** neutralise this (the round-2 HIGH-2 finding), because a directory is
+      a literal path and a directory pathspec matches every file under it; ``docs``
+      is :data:`OTHER_PATH`'s own parent, so it prints ``docs/notes.md``.
+
+    **The closure is output-membership, not ``--literal-pathspecs``.** The round-2
+    fix reads ``VERIFIED`` only when the *exact* stored ``file_path`` is one of the
+    named output lines. A ``--name-only`` line is a file path -- never a directory,
+    never a ``:(…)`` expression -- so neither sub-class can be one, and both refuse.
+    This supersedes the round-1 claim that the magic class was "closed here rather
+    than recorded" by ``--literal-pathspecs`` alone: that flag only ever closed
+    ``:(…)`` magic, and the directory class was open until membership. The flag
+    stays as defence in depth (``high2_repro.py`` verifies membership closes the
+    magic class even with the flag removed).
 
     The reach is the whole point. ``file_path`` is not caller input on this call
     -- it is read out of the stored evidence record, and ``.theurian/review/`` is
     source rather than derived state, so a clone can deliver a record this
-    installation never fetched (T-24). The residual ADR-0033 records for that
-    directory is a *fabricated* ``fix_commit``; a fabricated ``filePath`` that
-    turns the verification into "did this commit touch anything at all" is a
-    second and wider one, and it is closed here rather than recorded.
-
-    ``:(top)`` is the worst member and is why this ranges over four spellings: it
-    names no path, so under pathspec magic **every** commit in the repository
-    verifies **every** thread.
+    installation never fetched (T-24). A fabricated ``filePath`` that turns the
+    verification into "did this commit touch anything at all" is what this closes.
     """
     unrelated = _commit(repository, OTHER_PATH, "notes\n", "add notes")
 
@@ -323,9 +395,10 @@ def test_a_stored_path_spelling_a_pathspec_expression_verifies_nothing(
 
     assert verdict is FixCommitVerdict.TOUCHES_NOTHING_HERE, (
         f"the stored path {stored_path!r} verified a commit that touched only "
-        f"{OTHER_PATH}. `--literal-pathspecs` has been dropped from the diff-tree "
-        f"vector, and a review evidence file can now name a pathspec that makes "
-        f"`fix_commit_present` true for a commit with nothing to do with the thread."
+        f"{OTHER_PATH}, which is not the file the thread is anchored to. The verdict "
+        f"must be `VERIFIED` only when the exact stored path is a named output line; a "
+        f"directory or a `:(…)` pathspec is never one, so a review evidence file cannot "
+        f"make `fix_commit_present` true for a commit with nothing to do with the thread."
     )
 
 
@@ -367,15 +440,16 @@ def test_an_object_that_is_not_a_commit_names_no_commit(repository: Path, kind: 
     """``^{commit}``'s job on this vector: an object that is not a commit is not one.
 
     A tree id and a blob id are real objects this repository has, and neither is
-    a commit. Without the suffix ``diff-tree`` takes them and exits **0 with no
+    a commit. Without the suffix the command takes them and exits **0 with no
     output**, which this adapter reads as ``TOUCHES_NOTHING_HERE`` -- *the commit
     is here, it just did not touch your file*. That is the wrong answer about the
     wrong thing, and it is the only place the suffix now changes one: measured on
-    git 2.47.1, both exit 128 with it and 0 without.
+    git 2.47.1 on the shipped ``log`` form (and the retired ``diff-tree`` form),
+    both exit 128 with the suffix and 0 without.
 
     This case exists because the suffix's old justification did not survive the
     collapse to one call. It used to be held by the fabricated-sha case, where
-    ``rev-parse`` accepted any full-width hex string; ``diff-tree`` rejects an
+    ``rev-parse`` accepted any full-width hex string; the one call rejects an
     absent object itself, so that case would now stay green with the suffix gone.
     Deleting the suffix has to be RED somewhere or it is decoration, and this is
     where.
@@ -621,7 +695,7 @@ def test_a_value_the_grammar_admits_still_reaches_exactly_one_git_call(
 
     The verdict is deliberately **not** asserted: neither fabricated sha is an
     object this fixture holds, so the honest claim here is about the work rather
-    than the answer -- exactly one ``diff-tree``, which is what
+    than the answer -- exactly one git call, which is what
     :func:`test_the_same_request_spawns_the_same_vector_whether_the_object_is_here_or_not`
     then holds byte-identical across repositories.
     """
@@ -684,19 +758,23 @@ def _merge_repository(tmp_path: Path, name: str, *, side_touches: bool, main_tou
 
 #: The three merge shapes, with the verdict first-parent semantics give each.
 #:
-#: Each one rules out a different ``--diff-merges`` mode, which is why three and
-#: not one -- measured on git 2.47.1, 2026-09-19, where the shipped vector
-#: without the token answered ``TOUCHES_NOTHING_HERE`` for all three:
+#: The semantics are the same whichever command carries them, and the round-2
+#: HIGH-1 fix moved from ``diff-tree --diff-merges=first-parent`` (a git 2.31
+#: feature, above the 2.30 floor) to ``log --first-parent -m``, which is
+#: verdict-identical and 2.30-compatible. Three shapes rather than one, because
+#: each rules out a reading of a merge diff that is *not* first-parent (measured,
+#: git 2.47.1, 2026-09-19, where both the default ``diff-tree`` and a ``log``
+#: without ``--first-parent -m`` answered ``TOUCHES_NOTHING_HERE`` for all three):
 #:
 #: * **conflict-resolved** is the reported finding: both sides changed the file,
 #:   the merge resolved it, and the resolution is in no parent;
-#: * **side-branch-only** is what ``--diff-merges=combined`` gets wrong -- a
-#:   combined diff suppresses a hunk that came verbatim from one parent, so it
-#:   answers ``TOUCHES_NOTHING_HERE`` for a merge that plainly changed the file
-#:   relative to the branch it landed on;
-#: * **mainline-only** is what ``--diff-merges=separate`` gets wrong -- it
-#:   reports the file for *any* parent that differs, so a merge that changed
-#:   nothing on the first-parent line verifies because the side branch was behind.
+#: * **side-branch-only** is what a *combined* diff of the merge gets wrong -- it
+#:   suppresses a hunk that came verbatim from one parent, so it answers
+#:   ``TOUCHES_NOTHING_HERE`` for a merge that plainly changed the file relative
+#:   to the branch it landed on;
+#: * **mainline-only** is what an *all-parents* diff gets wrong -- it reports the
+#:   file for *any* parent that differs, so a merge that changed nothing on the
+#:   first-parent line verifies because the side branch was behind.
 _MERGE_SHAPES: tuple[tuple[str, bool, bool, FixCommitVerdict], ...] = (
     ("conflict-resolved", True, True, FixCommitVerdict.VERIFIED),
     ("side-branch-only", True, False, FixCommitVerdict.VERIFIED),
@@ -712,38 +790,40 @@ _MERGE_SHAPES: tuple[tuple[str, bool, bool, FixCommitVerdict], ...] = (
 def test_a_merge_is_verified_when_it_changed_the_threads_file_against_its_first_parent(
     tmp_path: Path, name: str, side_touches: bool, main_touches: bool, expected: FixCommitVerdict
 ) -> None:
-    """``diff-tree`` prints nothing for a merge unless it is told which diff to take.
+    """A merge is diffable only against a chosen parent, and it must be the first.
 
     The failure this closes is the worst kind a verification has: a true fix,
     correctly named, refused with a message that says *go and find the right
     commit*. A conflict-resolving merge is often the only commit that carries the
-    fix -- the resolution text is in neither parent -- and under the shipped
-    vector every merge commit answered ``TOUCHES_NOTHING_HERE``, because
-    ``diff-tree`` omits merges by default.
+    fix -- the resolution text is in neither parent -- and a command that omits
+    merges answers ``TOUCHES_NOTHING_HERE`` for every one of them.
 
-    ``--diff-merges=first-parent`` is the mode, and the three shapes above are
-    what make it *that* mode rather than any mode: the recorded semantics are
-    **this merge changed the file relative to the branch it landed on**, so a
-    merge that only brought the mainline's own earlier change along is not the
-    commit that introduced it -- the mainline commit is, and the caller can name
-    that one.
+    The round-2 fix reaches merges with ``log --first-parent -m`` (git 2.30
+    compatible), having retired ``diff-tree --diff-merges=first-parent`` because
+    that option is a git 2.31 feature above the documented floor (HIGH-1). The
+    semantics the three shapes pin are the same either way: **this merge changed
+    the file relative to the branch it landed on**, so a merge that only brought
+    the mainline's own earlier change along is not the commit that introduced it
+    -- the mainline commit is, and the caller can name that one.
 
-    **The mode's whole value space was enumerated before these three were
-    chosen**, measured on git 2.47.1, 2026-09-19, so the expected column matches
-    one mode and not a family of them:
+    **The reading was enumerated before these three were chosen**, measured on git
+    2.47.1, 2026-09-19, so the expected column matches first-parent and not a
+    family of readings:
 
-    ===============  =======  ============  ========  ========  ==============  ============
-    shape            off      first-parent  separate  combined  dense-combined  remerge-diff
-    ===============  =======  ============  ========  ========  ==============  ============
-    conflict         nothing  **verified**  verified  verified  verified        exit ≠ 0
-    side-branch      nothing  **verified**  verified  nothing   nothing         exit ≠ 0
-    mainline         nothing  **nothing**   verified  nothing   nothing         exit ≠ 0
-    ===============  =======  ============  ========  ========  ==============  ============
+    ===============  ==========  =============  =============  ==============
+    shape            merges off  first-parent   all-parents    combined
+    ===============  ==========  =============  =============  ==============
+    conflict         nothing     **verified**   verified       verified
+    side-branch      nothing     **verified**   verified       nothing
+    mainline         nothing     **nothing**    verified       nothing
+    ===============  ==========  =============  =============  ==============
 
-    ``off`` is the default and is what shipped; ``separate`` survives the first
-    two arms and dies on the third; ``combined`` and ``dense-combined`` survive
-    the first and die on the second; ``remerge-diff`` is not a mode ``diff-tree``
-    accepts at all. No proper subset of these three shapes picks one column.
+    *merges off* is what a plain diff of a merge shows (nothing); *all-parents*
+    (``diff-tree``'s ``--diff-merges=separate``, or ``log -m`` without
+    ``--first-parent``) verifies ``mainline-only`` because some parent differs;
+    *combined* refuses ``side-branch-only`` because it hides a hunk that came
+    verbatim from one parent. No proper subset of these three shapes picks the
+    first-parent column.
     """
     repo = _merge_repository(tmp_path, name, side_touches=side_touches, main_touches=main_touches)
     parents = _git(repo, "rev-list", "--parents", "-n", "1", "HEAD").stdout.split()
@@ -757,21 +837,22 @@ def test_a_merge_is_verified_when_it_changed_the_threads_file_against_its_first_
     )
     assert verdict is expected, (
         f"the {name} merge answered {verdict!r}, expected {expected!r}.\n\n"
-        f"`--diff-merges=first-parent` is what makes a merge commit diffable at all, and "
-        f"which mode it is decides this arm: `separate` verifies `mainline-only` and "
-        f"`combined` refuses `side-branch-only`. A merge the vector cannot see is a true "
-        f"fix refused, and the caller is told to go and find a commit that does not exist."
+        f"`--first-parent -m` is what makes a merge commit diffable against the branch it "
+        f"landed on: dropping `-m` shows nothing, dropping `--first-parent` verifies "
+        f"`mainline-only` (all parents), and a combined diff refuses `side-branch-only`. A "
+        f"merge the command cannot see is a true fix refused, and the caller is told to go "
+        f"and find a commit that does not exist."
     )
 
 
 def test_a_merges_first_parent_is_still_verified_on_its_own(tmp_path: Path) -> None:
     """The control for the arm above: first-parent semantics change no plain commit.
 
-    Without it, ``--diff-merges=first-parent`` could be doing something to every
-    verdict rather than to the merges it was added for. The ``mainline-only``
-    fixture is the one that separates the two readings: its merge answers
+    Without it, ``--first-parent -m`` could be doing something to every verdict
+    rather than to the merges it was added for. The ``mainline-only`` fixture is
+    the one that separates the two readings: its merge answers
     ``TOUCHES_NOTHING_HERE`` while the mainline commit *inside* it touched the
-    file, so a mode that had broken ordinary commits would show here as the
+    file, so a change that had broken ordinary commits would show here as the
     parent going quiet too.
     """
     repo = _merge_repository(
@@ -783,8 +864,8 @@ def test_a_merges_first_parent_is_still_verified_on_its_own(tmp_path: Path) -> N
 
     assert verdict is FixCommitVerdict.VERIFIED, (
         f"the merge's first parent answered {verdict!r} for the file it changed. The "
-        f"diff-merges mode governs merge commits; an ordinary commit's verdict must not "
-        f"move with it."
+        f"`--first-parent -m` pair governs merge commits; an ordinary commit's verdict "
+        f"must not move with it."
     )
 
 
@@ -856,11 +937,22 @@ def test_the_git_vector_is_one_process_fixed_and_forecloses_an_option_a_path_and
     module docstring records that measurement rather than leaving this pin to
     imply a coverage it has.
 
+    **The command is the git-2.30 ``log`` form, not ``diff-tree``.** The round-1
+    fix reached merges with ``--diff-merges=first-parent``, which is a git 2.31
+    feature, while the documented floor is 2.30 (``development.md``); on 2.30 that
+    option errors, ``verify`` folds the non-zero exit to ``NO_SUCH_COMMIT``, and
+    every valid ``fixCommit`` refuses (round-2 HIGH-1). The log form
+    ``git ... log --no-walk --first-parent -m --name-only --format= --root ...``
+    is verdict-identical and 2.30-compatible; the floor-allowlist pin
+    :func:`test_the_verify_command_uses_only_git_features_at_or_below_the_documented_floor`
+    holds it to the floor.
+
     RED if the call count moves off one, if a timeout is dropped, if the call
     reaches a shell, if the binary stops being an absolute path, if
     ``--end-of-options`` / ``--`` / ``--literal-pathspecs`` / ``--root`` /
-    ``--diff-merges=first-parent`` leaves the vector, or if the ``^{commit}``
-    suffix leaves the revision.
+    ``--first-parent`` / ``-m`` / ``--no-walk`` leaves the vector, if
+    ``--diff-merges=first-parent`` returns, or if the ``^{commit}`` suffix leaves
+    the revision.
     """
     caller_sha = max(ADMITTED, key=len)
     stored_path = f":(exclude){FILE_PATH}"
@@ -888,30 +980,38 @@ def test_the_git_vector_is_one_process_fixed_and_forecloses_an_option_a_path_and
     vector = call["args"]
     assert vector[1:] == [
         "--literal-pathspecs",
-        "diff-tree",
-        "--no-commit-id",
+        "log",
+        "--no-walk",
+        "--first-parent",
+        "-m",
         "--name-only",
-        "-r",
+        "--format=",
         "--root",
-        "--diff-merges=first-parent",
         "--end-of-options",
         f"{caller_sha}^{{commit}}",
         "--",
         stored_path,
     ], vector
     assert vector[1] == "--literal-pathspecs", (
-        "`--literal-pathspecs` is a root-level option and must precede the `diff-tree` "
+        "`--literal-pathspecs` is a root-level option and must precede the `log` "
         "subcommand; after it git does not accept it at all, and the stored path is a "
         "pathspec expression again"
     )
     assert "--root" in vector, (
-        "`--root` must stay in the vector, or a fix that is the repository's first "
-        "commit reports no files and a true fix is refused"
+        "`--root` must stay in the vector as defence in depth: it is redundant on the "
+        "`log` form (log shows a root commit's diff by default) but load-bearing on a "
+        "`diff-tree` form, so it guards a move back to one -- and this captured-vector "
+        "pin is where it is held, since no `log`-form behavioural case can tell"
     )
-    assert "--diff-merges=first-parent" in vector, (
-        "`--diff-merges=first-parent` must stay in the vector, or `diff-tree` prints "
-        "nothing for a merge commit and every fix that landed as a conflict resolution "
-        "is refused as touching nothing"
+    assert {"--first-parent", "-m"} <= set(vector), (
+        "`--first-parent` and `-m` must stay in the vector, or `log` shows a merge "
+        "commit against no parent (nothing) or against all of them, and every fix that "
+        "landed as a conflict resolution is misjudged"
+    )
+    assert "--diff-merges=first-parent" not in vector, (
+        "`--diff-merges=first-parent` is a git 2.31 feature and the documented floor is "
+        "2.30 (round-2 HIGH-1); the log form reaches merges without it, so its return "
+        "breaks the floor"
     )
     assert vector[-4] == "--end-of-options" and vector[-3].endswith("^{commit}"), (
         "the caller's sha must be the token immediately after `--end-of-options` and "
@@ -921,6 +1021,138 @@ def test_the_git_vector_is_one_process_fixed_and_forecloses_an_option_a_path_and
     assert vector[-2:] == ["--", stored_path], (
         "the stored path must be the last token and must sit behind `--`, so an "
         "option-shaped `filePath` out of an evidence file is a pathspec rather than a flag"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The command uses only git features at or below the documented floor (HIGH-1).
+# ---------------------------------------------------------------------------
+
+#: The git version the project documents as its floor, read off the requirements
+#: table in ``development.md``. A capability the fix relies on that is newer than
+#: this errors on a supported install and folds to ``NO_SUCH_COMMIT`` -- refusing
+#: every valid ``fixCommit``, which is round-2 HIGH-1 (the round-1
+#: ``--diff-merges=first-parent`` was a git 2.31 feature above this floor).
+GIT_FLOOR: tuple[int, int] = (2, 30)
+
+#: Every option, subcommand and separator ``verify`` may hand ``git``, each with
+#: the git version that introduced it. The load-bearing entries are the newest
+#: genuine token and the one the finding retired:
+#:
+#: * ``--end-of-options`` is 2.24.0 -- the newest token the command actually
+#:   carries, and it is at or below the 2.30 floor;
+#: * ``--diff-merges=first-parent`` is 2.31.0 and is **not** here, which is why the
+#:   captured-vector pin refuses it and the positive control below reddens when it
+#:   is added to a floor comparison.
+#:
+#: The older entries are recorded at the version that introduced each; small
+#: inaccuracies among the pre-2.0 flags cannot change the verdict, because the
+#: check is "every token at or below (2, 30)" and they are all far below it. What
+#: the pin actually closes is the *class* "a future token newer than the floor",
+#: whatever flag it is -- a second HIGH-1. It is not a real 2.30 run: CI runs
+#: modern git, so the allowlist recorded here is the check.
+GIT_TOKEN_FLOOR: dict[str, tuple[int, int]] = {
+    "log": (1, 0),
+    "--no-walk": (1, 5),
+    "--first-parent": (1, 5),
+    "-m": (1, 5),
+    "--name-only": (1, 0),
+    "--format=": (1, 6),
+    "--root": (1, 5),
+    "--literal-pathspecs": (1, 9),
+    "--end-of-options": (2, 24),
+    "--": (1, 0),
+}
+
+
+def _above_floor(
+    tokens: list[str], allowlist: dict[str, tuple[int, int]], floor: tuple[int, int]
+) -> list[str]:
+    """The tokens whose recorded introducing version is newer than *floor*.
+
+    Split out so the positive control drives the same code the pin does: a token
+    with a version above the floor is exactly what a second HIGH-1 looks like,
+    whatever the flag.
+    """
+    return [token for token in tokens if allowlist[token] > floor]
+
+
+def test_the_floor_constant_matches_the_documented_git_requirement() -> None:
+    """The premise: :data:`GIT_FLOOR` is the version ``development.md`` publishes.
+
+    A floor bump moves the constant and the doc together, or the pin below holds
+    the command to a floor the project no longer promises. Read off the doc rather
+    than trusted, because if the project ever raised its floor to 2.31 then
+    ``--diff-merges=first-parent`` would be admissible and HIGH-1 would not be a
+    finding -- so this constant may not drift from the requirements table.
+    """
+    requirements = (REPO_ROOT / "docs" / "contributing" / "development.md").read_text(
+        encoding="utf-8"
+    )
+    major, minor = GIT_FLOOR
+
+    assert f"| Git | {major}.{minor}+ |" in requirements, (
+        f"`development.md` no longer states the git floor as {major}.{minor}+, so "
+        f"`GIT_FLOOR` has drifted from the documented requirement. Move both together -- "
+        f"and if the floor really rose, the `--diff-merges`-class tokens this pin excludes "
+        f"may now be admissible."
+    )
+
+
+def test_the_verify_command_uses_only_git_features_at_or_below_the_documented_floor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RED means ``verify`` spawns a git feature newer than the documented floor.
+
+    The class-level pin round-2 HIGH-1 asks for: not "``--diff-merges`` is gone"
+    but "the ``verify`` command uses only features available at the documented git
+    floor". Its two halves both have teeth:
+
+    * **subset** -- every option, subcommand and separator ``verify`` hands ``git``
+      is a recorded token. A flag the allowlist does not name -- including
+      ``--diff-merges=first-parent`` re-added -- fails here, because its version is
+      unknown;
+    * **floor** -- every recorded token was introduced at or below :data:`GIT_FLOOR`.
+
+    Read off a captured call rather than the source, so it is the argv the process
+    actually spawns. The two runtime values (the ``^{commit}`` revision and the
+    stored path) are not tokens and are excluded by identity.
+
+    The positive control is :func:`_above_floor` driven over a synthetic allowlist
+    carrying a known-2.31 token, so a floor comparison that stopped catching a
+    newer feature is caught here rather than shipping.
+    """
+    caller_sha = max(ADMITTED, key=len)
+    path = FILE_PATH
+    calls = _recorded_spawns(monkeypatch)
+
+    FixCommitCheck(tmp_path).verify(caller_sha, path)
+
+    assert len(calls) == 1, f"expected one spawn to read the command off; got {len(calls)}"
+    runtime_values = {f"{caller_sha}^{{commit}}", path}
+    tokens = [token for token in calls[0]["args"][1:] if token not in runtime_values]
+
+    unlisted = [token for token in tokens if token not in GIT_TOKEN_FLOOR]
+    assert not unlisted, (
+        f"`verify` hands git {unlisted}, which the floor allowlist does not name. A token "
+        f"with no recorded introducing version cannot be shown to predate the {GIT_FLOOR} "
+        f"floor -- record its version in `GIT_TOKEN_FLOOR` if it is at or below the floor, "
+        f"or drop it if it is a `--diff-merges`-class feature newer than the floor (HIGH-1)."
+    )
+    above = _above_floor(tokens, GIT_TOKEN_FLOOR, GIT_FLOOR)
+    assert not above, (
+        f"`verify` uses {[(t, GIT_TOKEN_FLOOR[t]) for t in above]}, newer than the "
+        f"documented git floor {GIT_FLOOR}. On a floor install the option errors, the "
+        f"non-zero exit folds to `NO_SUCH_COMMIT`, and every valid `fixCommit` refuses "
+        f"(round-2 HIGH-1)."
+    )
+
+    planted = {**GIT_TOKEN_FLOOR, "--diff-merges=first-parent": (2, 31)}
+    assert _above_floor(["--diff-merges=first-parent"], planted, GIT_FLOOR) == [
+        "--diff-merges=first-parent"
+    ], (
+        "the floor comparison stopped catching a token newer than the floor; a second "
+        "HIGH-1 would ship green"
     )
 
 

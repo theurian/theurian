@@ -142,6 +142,14 @@ REFUSED: Final[tuple[RefusedFixCommit, ...]] = (
     RefusedFixCommit("one-short", "a" * 39, "thirty-nine hex digits are not an object name"),
     RefusedFixCommit("one-long", "a" * 65, "sixty-five hex digits are not one either"),
     RefusedFixCommit(
+        "interior-length",
+        "a" * 52,
+        "fifty-two hex digits are neither of the two object-name widths, and this is the "
+        "member that pins the grammar as exactly {40, 64} rather than a range: a regression "
+        "to `[0-9a-f]{40,64}` admits everything from 40 to 64 and would ship green without a "
+        "value strictly between the two lengths to refuse. Adapter and schema at once.",
+    ),
+    RefusedFixCommit(
         "trailing-space",
         "a" * 40 + " ",
         "a sha with whitespace glued to it is what a copy-paste produces, and a "

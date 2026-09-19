@@ -2127,7 +2127,7 @@ other's blind spots.
   **The sixth is the only one handed an argument a document supplies.** Since
   ADR-0033's candidate generation landed, `infrastructure/git/fix_commit_check.py`
   runs one command,
-  `git --literal-pathspecs diff-tree --no-commit-id --name-only -r --root --diff-merges=first-parent --end-of-options <sha>^{commit} -- <file_path>`,
+  `git --literal-pathspecs log --no-walk --first-parent -m --name-only --format= --root --end-of-options <sha>^{commit} -- <file_path>`,
   to answer whether a caller's `fixCommit` is a commit here that touched the
   stored thread's `file_path`. Its two inputs are untrusted differently: the sha
   is caller wire input, and the path is author-controlled stored data a clone can
@@ -2136,37 +2136,46 @@ other's blind spots.
   a `fixCommit` that is not a full-length lower-case object name — forty hex
   digits or sixty-four — with `re.fullmatch` of `[0-9a-f]{40}|[0-9a-f]{64}` at its
   entry, and the published input schema carries the same pattern and a `maxLength`
-  on `fixCommit`; `tests/fix_commit_grammar.py` is the corpus both are asked. B5
-  round 1 found why that funnel is the control and not a nicety. Until it landed,
-  this entry described a retired two-call shape: it credited a git rev-parse
-  --verify pass with refusing a fabricated forty-hex sha, and told the reader
-  diff-tree received the id rev-parse printed rather than the caller's string,
-  re-matched as hex before it was spent. Neither was true once the two calls
-  collapsed into the single `diff-tree` above, and with that re-match gone the
-  caller's `fixCommit` reached git's revision language directly: two reviewers
-  independently recovered a commit's message by sending a revision expression such
-  as `HEAD^{/<text>}` in place of a sha, making `fix_commit_present` answer to a
-  description rather than to a commit id (the adapter's own docstring records the
-  exact forms). The grammar funnel closes that channel — a revision expression is
-  not full-length hex, so it is refused before the spawn and no revision language
-  is ever spent. Three fences still sit on the one vector, graded by the module's
-  own measurement (git 2.47.1, 2026-09-19) rather than listed as equals.
-  `--literal-pathspecs` is load-bearing: without it a stored `:(exclude)` or
-  `:(glob)` pathspec verifies a commit that touched anything *but* the thread's
-  file. `--` before the path keeps an option-shaped stored `filePath` a pathspec.
-  `--end-of-options` before the sha now guards only the token position the funnel
-  has already emptied, since no option-shaped value survives the grammar. `--root`
-  lets a repository's first commit be a fix and `--diff-merges=first-parent` lets
-  a conflict-resolving merge be one; the `^{commit}` suffix now holds commit-only
-  semantics rather than refusing a fabricated sha, because `diff-tree` exits
-  non-zero on an absent object with or without it. The call reaches no network and
-  names no remote (`diff-tree` reads local object storage), resolves `git` to an
-  absolute path, and bounds the spawn with `GIT_TIMEOUT_SECONDS`.
+  on `fixCommit`; `tests/fix_commit_grammar.py` is the corpus both are asked. That
+  funnel is the CRITICAL control B5 round 1 added: without it `fixCommit` reached
+  git's revision language directly, and two reviewers independently recovered a
+  commit's message by sending a revision expression such as `HEAD^{/<text>}` in
+  place of a sha, making `fix_commit_present` answer to a description rather than a
+  commit id (the adapter's docstring records the exact forms). It is unchanged by
+  the round-2 fix and stays the first thing `verify` does.
+  **It is the `log` form because of the git-version floor.** Round 1 reached merge
+  commits with a single diff-tree call carrying a --diff-merges=first-parent
+  option, which is a git 2.31 feature; the documented floor is git 2.30
+  (`docs/contributing/development.md`), where that option errors and every valid
+  `fixCommit` was refused (round-2 HIGH-1). `log --no-walk --first-parent -m`
+  reaches the same merge commits on 2.30 and gives byte-identical verdicts, so the
+  diff-tree attempt is recorded here as history rather than as a live control.
+  **The verdict is an output-membership check, and that is what closes the
+  stored-path class — not `--literal-pathspecs`.** A verdict is `VERIFIED` only
+  when the *exact* stored `file_path` is one of the `--name-only` output lines;
+  exit zero without it is `TOUCHES_NOTHING_HERE` and a non-zero exit is
+  `NO_SUCH_COMMIT`. Round 1 credited `--literal-pathspecs` with closing the
+  stored-path class, but that flag only disables `:(…)` *magic*: a literal
+  directory pathspec — a stored `file_path` of `docs` or `.` — is not magic, and
+  under the flag it still matches every file beneath it, so it would verify a
+  foreign commit that touched anything under that directory (round-2 HIGH-2). A
+  `--name-only` line is always a single file path, never a directory and never a
+  `:(…)` expression, so requiring the stored path to *be* one of those lines
+  refuses both sub-classes; `--literal-pathspecs` stays as defence in depth over
+  the magic half. The remaining tokens are graded rather than listed: `--root`
+  lets a repository's first commit be a fix; `--first-parent -m` make a merge
+  commit diffable against the branch it landed on, so a fix that landed as a
+  conflict resolution is not refused as touching nothing; `--end-of-options` guards
+  the token position the funnel has already emptied; and `--` keeps an
+  option-shaped stored `filePath` a pathspec. The call reaches no network and names
+  no remote (`log` reads local object storage), resolves `git` to an absolute path,
+  and bounds the spawn with `GIT_TIMEOUT_SECONDS`.
   `tests/integration/test_fix_commit_check_adapter.py` captures the one vector at
   the widest object name the grammar admits and a pathspec-expression stored path
-  and asserts the fences, `--root`, `--diff-merges=first-parent`, the `^{commit}`
-  suffix, the single spawn, the absolute binary, the per-call timeout, and that it
-  is given no shell.
+  and asserts the whole argv above, that the retired --diff-merges=first-parent
+  option is absent, the single spawn, the absolute binary, the per-call timeout,
+  and no shell; its behavioural arms drive the three verdicts, a first commit, a
+  first-parent merge, and a stored directory that verifies nothing.
 
   This entry said "two sites" and named the first two until 2026-09-02,
   "three" until ADR-0030's adapter landed, "four" until ADR-0034's committed
