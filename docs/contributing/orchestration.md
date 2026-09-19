@@ -100,9 +100,14 @@ excluded from the published documentation site for that reason.
   state, security claims and the wire contract take the full sync round;
   behaviour with no disclosure surface takes code review sync; prose, process
   guidance and CI plumbing take one light pass.
+- Give every sync reviewer a ten-minute wall-clock budget, and the claims to
+  spend it on: each invariant the implementation says it holds, with the command
+  that re-checks it. The review object is those claims, not the diff as a
+  snapshot, and a reviewer out of budget reports what it has rather than running
+  on. Open-ended depth is the weekly pass's, not this round's.
 - Record a claim deferred to the release-cut pass under the PR body's
-  `## Deferred claims` heading, which is the only place the release-cut gather
-  looks.
+  `## Deferred claims` heading, each entry naming the command that re-checks it.
+  That heading is the only place the release-cut gather looks.
 - Route by what would settle the claim, not by file type. When the two tables
   disagree, the claims table wins: a prose file asserting a measured property is
   a disclosure-class claim in a light-class file.
@@ -153,7 +158,9 @@ excluded from the published documentation site for that reason.
 - Close a finding by verifying it the way it was found. If a reviewer
   reproduced it with a script, run that script.
 - Close a class with a closure argument written by someone other than whoever
-  wrote the fix.
+  wrote the fix, carrying the commit it was measured against and the command
+  that re-checks it. The release-cut pass re-runs those commands rather than
+  re-deriving the arguments.
 - Record a round-one finding on a family the brief enumerated as an
   implementation-stage failure, in the PR's round comment. The same specialist
   caught on the same family twice writes that family into the **implementing**
@@ -178,29 +185,36 @@ excluded from the published documentation site for that reason.
 ### The async red-team sweep
 
 CLAUDE.md's blast-radius table sends a middle-row change's adversarial review
-here rather than into that PR's round. Two things run under that promise.
+here rather than into that PR's round. Three things run under that promise.
 
-**The nightly workflow.** `Red-team sweep`
+**The weekly workflow.** `Red-team sweep`
 ([`.github/workflows/red-team.yml`](../../.github/workflows/red-team.yml)) runs
-`tools/sweep.py` at 01:17 UTC daily against one production file: the census
+`tools/sweep.py` at 01:17 UTC on Sunday against one production file: the census
 rotated by the date, advanced past any file with nothing to mutate, at most six
 mutations, one full suite walk each and one more for the unmutated control —
-seven walks on a full night. A night that does not come back clean files
-what it saw **with the commit it ran against** — the target is
-`ordinal % census-size`, so a date alone stops reproducing the night as soon as
-`main` moves (`tools/sweep_filing.py` records the measurement: 0 of 30 dates
-resolved to the same file across one week of this repository's growth). Its
-`workflow_dispatch` `date` input is the lever that makes a clean night mean
+seven walks on a full run. A run that does not come back clean files what it saw
+**with the commit it ran against** — the target is the census indexed by the
+run, `(ordinal // 7) % census-size`, so a date alone stops reproducing the run
+as soon as `main` moves (`tools/sweep_filing.py` records the measurement: 0 of
+30 dates resolved to the same file across one week of this repository's growth).
+Its `workflow_dispatch` `date` input is the lever that makes a clean run mean
 something: it aims the rotation at a file whose verdict is already known, and
 until an instrument has been heard to speak, its zero is not evidence
 (INSTRUMENT's first rule).
 
-**The agent pass.** Before a release tag is cut, `theurian-adversarial-review`
-runs over `origin/main` at the candidate commit and files what it finds under the
-same label.
+**The weekly heavy pass.** The open-ended half of the same slot, and the
+`watchdog` agent's standing weekly duty: `theurian-adversarial-review` over
+`main`, dispatched beside the workflow run rather than on a calendar of its own,
+so the week has one sweep slot and not two. This is where the depth CLAUDE.md's
+ten-minute sync round no longer spends per pull request is spent instead, and
+its findings file under the same label.
+
+**The release-cut pass.** Before a release tag is cut,
+`theurian-adversarial-review` runs over `origin/main` at the candidate commit and
+files what it finds under the same label.
 Whoever dispatches the pass gathers the claims that the pull requests merged since
 the last `core-v*` tag deferred to it, recorded under each PR body's
-`## Deferred claims` heading:
+`## Deferred claims` heading with the command that re-checks each one:
 
 ```sh
 set -eu
@@ -233,20 +247,34 @@ silently, and no runs produce no issues, which reads as a clean tracker. It bind
 from the first tag cut after this rule lands on `main`: a release already tagged
 when it lands predates the ritual rather than skipping it.
 
-**What the two legs reach.** The nightly one is census-limited mutation
+**What the three legs reach.** The workflow is census-limited mutation
 sampling, not coverage. Measured in the round on
 [#730](https://github.com/theurian/theurian/pull/730), against a 139-module
 census: 24 of those modules are barren and never become a target; the median wait
-before a productive module is first attacked is 59 nights; a module that is drawn
-gets at most six of as many as 63 candidates; and the tree it is attacked against
-is that night's, not a later reader's. The census is the production tree alone,
-so `tools/`, `tests/` and `docs/` sit outside it entirely — 38 of 60 sampled
-merged pull requests touch no census file at all, among them the two that built
-this sweep and wrote this section. **Neither leg is triggered by a diff.** The
-nightly one samples the tree; the release-cut pass is the half that attacks what
-has accumulated since the last cut.
+before a productive module is first attacked is 59 runs, measured at a stride of
+one; a module that is drawn gets at most six of as many as 63 candidates; and the
+tree it is attacked against is that run's, not a later reader's. **Weekly is not
+nightly slowed down.** The start was `ordinal % census-size`, which a weekly run
+steps by 7: measured against the live census of 140, 140 weekly runs attacked 20
+modules and never the other 120, where 140 nightly runs reached 116. So the
+rotation indexes the run rather than the day — `(ordinal // 7) % census-size` —
+and consecutive scheduled runs advance the index by one whatever the census
+length; the same measurement over it reaches 116, the 24 barren modules aside.
+The residual is the cycle: a full pass is census-many runs, 140 weeks at today's
+census, and compressing that is window 3's bounded-cycle work. The `date` lever
+now aims by week — every date from a Sunday through the following Saturday
+resolves to one index, which is not the ISO week and parts from it at the Sunday
+— so a Sunday the job does not run is that index's file waiting a whole cycle,
+the mutation-leg sibling of
+[#747](https://github.com/theurian/theurian/issues/747). The census is the
+production tree alone, so `tools/`, `tests/`
+and `docs/` sit outside it entirely — 38 of 60 sampled merged pull requests
+touch no census file at all, among them the two that built this sweep and wrote
+this section. **No leg is triggered by a diff.** The
+workflow samples the tree, the weekly pass reads `main` as it stands, and the
+release-cut pass attacks what has accumulated since the last cut.
 
-**Where it lands.** Both file under the `async-sweep` label and enter
+**Where it lands.** All three file under the `async-sweep` label and enter
 [the filing filter](#the-filing-filter)'s triage like any other filing. A machine
 filing arrives carrying that label and nothing else: Priority, Type and the two
 dates are the orchestrator's to set when it picks the issue up.
@@ -257,12 +285,13 @@ issue. Every filed body ends with a "Proposed automation" heading, which is wher
 that obligation is written down.
 
 **Two standing alarm threads.** `async sweep: the harness could not produce a
-verdict` collects the nights the driver ran and could not stand behind the
-result; `async-sweep: the nightly job itself failed` collects the nights the job
-died before the driver could file. Healthy is a quiet tracker **beside green
-nightly runs**; a quiet tracker with no runs at all is the same silence, and the
-gap that still allows it — a timeout cancellation, which `failure()` does not
-fire on — is [#724](https://github.com/theurian/theurian/issues/724).
+verdict` collects the runs the driver made and could not stand behind the
+result; `async-sweep: the scheduled job itself failed` collects the runs the job
+died before the driver could file — cadence-neutral on purpose, so the next
+schedule change does not split a thread. Healthy is a quiet tracker **beside
+green weekly runs**; a quiet tracker with no runs at all is the same silence,
+and the gap that still allows it — a timeout cancellation, which `failure()`
+does not fire on — is [#724](https://github.com/theurian/theurian/issues/724).
 
 ## MERGE — landing a branch
 

@@ -1,4 +1,4 @@
-"""The nightly sweep must attack the same file twice given the same date (#378).
+"""The sweep must attack the same file twice given the same date (#378).
 
 A sweep that picks its target by anything but the date cannot be reproduced. The
 finding it files names a mutation; whoever reads that issue has to be able to
@@ -11,6 +11,13 @@ stay claims about the scheme rather than about whatever
 ``packages/theurian-core/src`` holds today; the real census is then checked
 separately for the properties the scheme assumes of it (non-empty, sorted, no
 ``__init__.py``).
+
+Every walk below steps in *run* space: one step is seven days, the gap between
+two scheduled runs, because the target is the run index ``ordinal // 7`` and six
+dates in seven resolve to the run they fall in. These pins stepped the ordinal by
+1 while the cron was nightly, which the harvest round recorded as a gap between
+the iteration and a real stride of 7; run-indexing closes it. What moved is the
+step -- the properties asserted were right in either space.
 """
 
 from __future__ import annotations
@@ -45,25 +52,57 @@ _SYNTHETIC_SOURCES = {
 #: only as the date in the label, so the synthetic cases take it too.
 _NIGHT = date(2026, 9, 16)
 
-#: The first night of every pinned window below; the ordinals derive from it.
-_FIRST_NIGHT = date(2026, 9, 11)
+#: How far apart two consecutive scheduled runs are, and so the step every walk
+#: below takes. It is the rotation's own bucket width: a one-day step is not a
+#: step at all for six days out of seven.
+_RUN_STRIDE = 7
+
+#: The first run of every pinned window below, and a Sunday because that is
+#: where a bucket starts (ordinal 7 is a Sunday). Its own index is not 0 -- the
+#: run number counts buckets since ordinal zero, not since this date -- so
+#: :func:`_run_drawing` is what finds the run a given position belongs to.
+_FIRST_RUN = date(2026, 9, 13)
 
 
-def test_the_target_is_the_ordinal_of_the_date_modulo_the_census() -> None:
+def _run(offset: int) -> date:
+    """The date of the run ``offset`` scheduled runs after :data:`_FIRST_RUN`."""
+    return date.fromordinal(_FIRST_RUN.toordinal() + offset * _RUN_STRIDE)
+
+
+def _run_drawing(index: int) -> date:
+    """The run in the first cycle whose target is ``_SYNTHETIC[index]``.
+
+    Selection, not expectation: it decides *which* run an assertion is made
+    about, and the assertion then pins a file name the implementation has to
+    produce. One cycle always holds every position, because consecutive runs
+    advance the index by exactly one.
+    """
+    for offset in range(len(_SYNTHETIC)):
+        when = _run(offset)
+        if (when.toordinal() // _RUN_STRIDE) % len(_SYNTHETIC) == index:
+            return when
+    raise AssertionError(f"no run in one cycle draws index {index}")
+
+
+def _census_of(size: int) -> tuple[str, ...]:
+    """A synthetic census of ``size`` modules, named so sorted order is index order."""
+    return tuple(f"m{index:02d}.py" for index in range(size))
+
+
+def test_the_target_is_the_run_index_of_the_date_modulo_the_census() -> None:
     """The recorded key, pinned at three worst-case positions, not one.
 
     A single favourable example would pass for any date-keyed scheme, including
-    one that is off by one at the wrap. The three dates below were chosen by
-    their *remainder*: one lands on index 0 (the wrap boundary), one on the last
-    index (the other wrap boundary), and one in the middle. An implementation
-    that rotated by ``ordinal % len - 1``, or that sorted the census differently,
-    fails at least one of them.
+    one that is off by one at the wrap. The three runs below were chosen by their
+    *index*: one lands on position 0 (the wrap boundary), one on the last
+    position (the other wrap boundary), and one in the middle. An implementation
+    that rotated by ``(ordinal // 7) % len - 1``, that indexed the day rather
+    than the run, or that sorted the census differently, fails at least one of
+    them.
     """
-    first = _FIRST_NIGHT.toordinal()
-    remainders = {date.fromordinal(first + offset): (first + offset) % 5 for offset in range(5)}
-    at_zero = next(day for day, index in remainders.items() if index == 0)
-    at_last = next(day for day, index in remainders.items() if index == 4)
-    in_between = next(day for day, index in remainders.items() if index == 2)
+    at_zero = _run_drawing(0)
+    at_last = _run_drawing(4)
+    in_between = _run_drawing(2)
 
     assert sweep_census.rotation(_SYNTHETIC, at_zero)[0] == "a.py"
     assert sweep_census.rotation(_SYNTHETIC, at_last)[0] == "e.py"
@@ -76,11 +115,11 @@ def test_the_rotation_offers_every_file_exactly_once() -> None:
     The driver walks this sequence when the keyed file yields no mutation
     candidates. A sequence that repeated a file would re-parse it for nothing;
     one that dropped a file would make part of the census permanently
-    unreachable on a night when its predecessor was barren. Starting at the last
-    index is the case that distinguishes a wrapping rotation from a truncating
-    slice, so it is the one asserted.
+    unreachable on a run whose target was barren. Starting at the last position
+    is the case that distinguishes a wrapping rotation from a truncating slice,
+    so it is the one asserted.
     """
-    at_last = date.fromordinal(_FIRST_NIGHT.toordinal() + 4)
+    at_last = _run_drawing(4)
 
     walked = sweep_census.rotation(_SYNTHETIC, at_last)
 
@@ -88,32 +127,65 @@ def test_the_rotation_offers_every_file_exactly_once() -> None:
     assert sorted(walked) == sorted(_SYNTHETIC)
 
 
-def test_consecutive_nights_walk_the_whole_census_before_repeating() -> None:
+@pytest.mark.parametrize("size", (5, 7, 14), ids=lambda size: f"census-of-{size}")
+def test_consecutive_runs_walk_the_whole_census_before_repeating(size: int) -> None:
     """Rotation, not sampling: no file waits longer than the census is long.
 
-    ``ordinal % len`` is what buys this, and nothing weaker does -- a date hashed
-    into the range would revisit some files twice in a cycle and skip others
-    entirely, which is invisible on any single night. Asserted over a full cycle
-    because that is the only window in which the difference shows.
+    ``(ordinal // 7) % len`` is what buys this, and nothing weaker does. Indexing
+    the *run* advances the start by exactly one between consecutive scheduled
+    runs, whatever the census length; a date hashed into the range would revisit
+    some files twice in a cycle and skip others entirely, and the day index this
+    replaces advanced by the *gap* between runs instead. Asserted over a full
+    cycle because that is the only window in which the difference shows.
+
+    **A census divisible by seven is the member that measures the repair.** A day
+    index striding seven closes over its gcd(7, len) coset, which is the whole
+    census whenever seven does not divide the length -- so a census of five is
+    walked by either arithmetic, and pinning that one size would have stayed
+    green over the starvation that was measured: of the live 140 modules, 20
+    reached and the other 120 never (PR #759's round). Under the day index a
+    census of seven reaches 1 of its 7 and one of fourteen 2 of its 14, so both
+    are parametrized here; the size is a parameter rather than a frozen length
+    for the same reason the census is synthetic -- the claim is about the scheme,
+    not about one population.
 
     **The frozen synthetic census is the condition, not a convenience.** This
     property holds only while the census does not change, and the real one is
-    recomputed nightly: measured across one week of this repository's growth, 0
-    of 30 dates resolved to the same file, and a replay across real nights drew
-    repeats well before the census had been walked (measured in PR #730's review
-    round). So this pins the *scheme* -- given a fixed population, the index
-    walks it before repeating -- and deliberately not a claim about the sweep's
-    coverage of the production tree, which :mod:`sweep_census`'s own docstring
-    now declines to make.
+    recomputed on every run: measured across one week of this repository's
+    growth, 0 of 30 dates resolved to the same file, and a replay across real
+    runs drew repeats well before the census had been walked (measured in
+    PR #730's review round). So this pins the *scheme* -- given a fixed
+    population, the index walks it before repeating -- and deliberately not a
+    claim about the sweep's coverage of the production tree, which
+    :mod:`sweep_census`'s own docstring declines to make.
     """
-    start = _FIRST_NIGHT
+    census = _census_of(size)
 
-    first_of_each = [
-        sweep_census.rotation(_SYNTHETIC, date.fromordinal(start.toordinal() + night))[0]
-        for night in range(len(_SYNTHETIC))
-    ]
+    drawn = [sweep_census.rotation(census, _run(offset))[0] for offset in range(size)]
 
-    assert sorted(first_of_each) == sorted(_SYNTHETIC)
+    assert sorted(drawn) == sorted(census)
+
+
+def test_every_date_in_one_run_bucket_aims_the_rotation_at_the_same_file() -> None:
+    """``workflow_dispatch``'s ``date`` input steers by the week, not by the day.
+
+    :func:`sweep_census.rotation` states it and an operator acts on it: a rerun
+    typed with a Wednesday has to draw the file that week's Sunday run drew, or
+    the workflow's ``date`` input stops being the positive control it is offered
+    as -- it would aim at a file whose verdict nobody knows. The following run is
+    asserted as well, because a rotation that ignored the date entirely would
+    satisfy the first half; together the two pin where the boundary falls, which
+    is the Sunday that opens the bucket and not the Monday that opens the ISO
+    week.
+    """
+    bucket = [date.fromordinal(_FIRST_RUN.toordinal() + day) for day in range(_RUN_STRIDE)]
+
+    drawn = {sweep_census.rotation(_SYNTHETIC, day)[0] for day in bucket}
+    following = sweep_census.rotation(_SYNTHETIC, _run(1))[0]
+
+    assert _FIRST_RUN.weekday() == 6
+    assert drawn == {"b.py"}
+    assert following == "c.py"
 
 
 def test_a_census_the_sweep_cannot_rotate_is_refused_rather_than_guessed() -> None:
@@ -124,17 +196,17 @@ def test_a_census_the_sweep_cannot_rotate_is_refused_rather_than_guessed() -> No
     otherwise report success.
     """
     with pytest.raises(sweep_census.SweepError):
-        sweep_census.rotation((), _FIRST_NIGHT)
+        sweep_census.rotation((), _FIRST_RUN)
 
 
 def test_the_real_census_is_the_sorted_production_tree_without_package_markers() -> None:
     """The population the rotation indexes into, checked against the repository.
 
     Three claims, because the index is meaningless without all three: the census
-    is non-empty (an empty one makes every night exit 1), it is sorted (an
+    is non-empty (an empty one makes every run exit 1), it is sorted (an
     unsorted one makes the index depend on the order a directory walk happened to
     return), and it excludes ``__init__.py`` (re-exports carry no branch a
-    mutation operator can reach, so an included one costs a whole night).
+    mutation operator can reach, so an included one costs a whole run).
     """
     files = sweep_census.census()
 
@@ -169,16 +241,16 @@ def _pinned_night(night: date = _NIGHT) -> sweep_mutations.Generated:
 def _landings(census: tuple[str, ...]) -> tuple[str, ...]:
     """The file each possible draw ends up sweeping, in census order.
 
-    Every draw, not a chosen one: consecutive ordinals cover every remainder
-    modulo the census length, so the ``len(census)`` nights from ``_FIRST_NIGHT``
-    are the whole population of starting positions.
+    Every draw, not a chosen one: consecutive runs advance the index by exactly
+    one, so the ``len(census)`` runs from :data:`_FIRST_RUN` are the whole
+    population of starting positions.
     """
     by_draw = {}
     for offset in range(len(census)):
-        night = date.fromordinal(_FIRST_NIGHT.toordinal() + offset)
-        walk = sweep_census.rotation(census, night)
+        when = _run(offset)
+        walk = sweep_census.rotation(census, when)
         by_draw[walk[0]] = sweep_mutations.first_productive(
-            walk, lambda path: _SYNTHETIC_SOURCES[path], on=night
+            walk, lambda path: _SYNTHETIC_SOURCES[path], on=when
         ).path
 
     assert set(by_draw) == set(census)
@@ -239,7 +311,7 @@ def test_generating_the_same_night_twice_writes_byte_identical_specs() -> None:
 
 
 def test_a_candidate_keeps_its_label_when_the_night_asks_for_fewer_mutations() -> None:
-    """A label names a candidate in the file, not a slot in tonight's batch.
+    """A label names a candidate in the file, not a slot in this run's batch.
 
     The filed issue is the durable artefact, and it names labels. If the same
     source position were called ``-00-`` under ``--max-mutations 6`` and ``-01-``
@@ -260,7 +332,7 @@ def test_a_candidate_keeps_its_label_when_the_night_asks_for_fewer_mutations() -
 def test_a_label_carries_the_date_the_night_ran() -> None:
     """Reproduction starts from the issue title, which carries only a date.
 
-    A label without the date makes two nights' findings on one file collide in
+    A label without the date makes two runs' findings on one file collide in
     search, and makes "re-run the sweep for that night" guesswork.
     """
     generated = _pinned_night().picked(2)

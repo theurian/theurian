@@ -182,8 +182,8 @@ def test_a_unique_expression_anchors_on_the_expression_alone() -> None:
 def test_a_boolean_literal_and_a_boolean_operator_are_both_reachable() -> None:
     """All three operator families fire, not just the comparison one.
 
-    The generator's whole value is that a nightly sweep asks questions nobody
-    wrote by hand. A family that never fires asks nothing, and a
+    The generator's whole value is that an unattended sweep asks questions
+    nobody wrote by hand. A family that never fires asks nothing, and a
     comparison-only generator passes every assertion above.
     """
     generated = _generated()
@@ -295,7 +295,7 @@ def test_a_label_numbers_every_operator_the_file_offers_not_only_the_usable_ones
     The fixture's first two comparisons are dropped as unanchorable, so a label
     numbered by *emitted* order would call the third candidate ``-00-``; adding a
     test that makes the first one unique would then renumber every label in the
-    file, and two nights' issues about one defect would not be recognisable as
+    file, and two runs' issues about one defect would not be recognisable as
     the same defect. Numbering by the operator token's position in the file is
     what keeps the name stable.
     """
@@ -385,7 +385,7 @@ def test_a_target_that_does_not_parse_stops_the_sweep_instead_of_reading_barren(
     """An unparseable production file is not "nothing to mutate".
 
     Treating it as barren would advance to the next file and file nothing, so a
-    repository that cannot even be imported would produce a clean nightly run.
+    repository that cannot even be imported would produce a clean sweep run.
     The driver turns this into exit 1.
     """
     with pytest.raises(sweep_census.SweepError):
@@ -401,8 +401,8 @@ def test_the_picked_subset_spans_the_whole_candidate_list(total: int, limit: int
 
     ``candidates[:limit]`` satisfies "deterministic" and "N of them" and is the
     implementation this asserts against: it never reaches past the first few
-    statements of a 300-line module, so the sweep would attack the imports every
-    night. The tail assertion is the one it fails.
+    statements of a 300-line module, so the sweep would attack the imports on
+    every run. The tail assertion is the one it fails.
     """
     items = tuple(range(total))
 

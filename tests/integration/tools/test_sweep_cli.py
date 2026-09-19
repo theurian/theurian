@@ -1,4 +1,4 @@
-"""The nightly driver end to end, with the suite and the tracker stood in for (#378).
+"""The sweep driver end to end, with the suite and the tracker stood in for (#378).
 
 Everything between the two boundaries is real here: the census walk over the
 production tree, the rotation, the generator, the spec file that is written to
@@ -101,10 +101,11 @@ def test_a_night_where_every_mutation_died_over_a_green_control_files_nothing(
 ) -> None:
     """AC3. The one outcome that is allowed to be quiet, and it has to be quiet.
 
-    A sweep that filed on a clean night would put an issue on the tracker every
-    single night, and the label would be worthless inside a week. ``gh`` is
-    asserted never to have been called at all, rather than merely that nothing
-    was created: a listing call on a clean night is a token spent for nothing.
+    A sweep that filed on a clean night would put an issue on the tracker on
+    every single run, and the label would be worthless inside a handful of them.
+    ``gh`` is asserted never to have been called at all, rather than merely that
+    nothing was created: a listing call on a clean night is a token spent for
+    nothing.
     """
     mutate, gh = _FakeMutate(), _FakeGh()
 
@@ -295,14 +296,14 @@ def test_a_relative_results_path_is_resolved_before_the_harness_sees_it(
     mutate, gh = _FakeMutate(), _FakeGh()
 
     sweep.main(
-        ["--date", _NIGHT, "--max-mutations", "2", "--json", "nightly.json"],
+        ["--date", _NIGHT, "--max-mutations", "2", "--json", "run.json"],
         mutate_runner=mutate,
         gh_runner=gh,
     )
 
     handed = Path(mutate.argv[mutate.argv.index("--json") + 1])
     assert handed.is_absolute()
-    assert handed == tmp_path / "nightly.json"
+    assert handed == tmp_path / "run.json"
 
 
 def test_the_reproduction_command_cannot_file_on_its_reader_s_behalf(
@@ -327,17 +328,17 @@ def test_the_reproduction_command_cannot_file_on_its_reader_s_behalf(
     assert "tools/sweep.py" in block
 
 
-def test_last_night_s_results_are_not_read_as_tonight_s(
+def test_a_previous_run_s_results_are_not_read_as_this_run_s(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A harness that exits without writing must not inherit the previous record.
 
     The workflow writes the record to a fixed name, so a rerun on a runner with
-    a cached workspace -- or any local rerun -- finds yesterday's file already
-    there. A harness that then exits 2 before writing anything leaves the driver
-    reading a complete, well-formed document belonging to another night, and the
-    filed issue reports its verdicts as tonight's. Fabricated evidence, in the
-    one artifact the whole job exists to produce.
+    a cached workspace -- or any local rerun -- finds the previous run's file
+    already there. A harness that then exits 2 before writing anything leaves the
+    driver reading a complete, well-formed document belonging to another run, and
+    the filed issue reports its verdicts as this run's. Fabricated evidence, in
+    the one artifact the whole job exists to produce.
 
     Asserted on the label, because that is the part a reader would act on.
     """
@@ -425,7 +426,7 @@ def test_a_substituted_harness_is_named_even_on_a_night_that_files_nothing(
 def test_the_default_harness_is_the_real_one_and_lends_it_a_git(tmp_path: Path) -> None:
     """The unattended night runs ``tools/mutate.py``, and runs it so it can answer.
 
-    A default pointing anywhere else would make every unattended night a
+    A default pointing anywhere else would make every unattended run a
     rehearsal, and nothing in the output of a rehearsal says which repository's
     suite it measured.
 
@@ -435,7 +436,7 @@ def test_the_default_harness_is_the_real_one_and_lends_it_a_git(tmp_path: Path) 
     there instead of skipping: measured 2026-09-16 in a default prepared tree,
     ``tests/integration/audit/test_census_audits_run.py`` comes back 11 failed --
     the count issue #527 recorded -- which turns the control RED and makes the
-    harness exit 2. Every night would then file ``run-untrusted`` and none would
+    harness exit 2. Every run would then file ``run-untrusted`` and none would
     carry a verdict.
 
     The flag is asserted as a literal rather than through
@@ -459,7 +460,7 @@ def test_a_night_asked_for_no_mutations_fails_rather_than_reporting_a_clean_run(
 
     The harness is never started. Exiting 0 here would be the purest silent stop
     available: a workflow with a typo in one numeric argument would report a
-    clean sweep every night for as long as nobody read the log.
+    clean sweep on every run for as long as nobody read the log.
     """
     mutate, gh = _FakeMutate(), _FakeGh()
 

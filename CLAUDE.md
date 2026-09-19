@@ -202,42 +202,45 @@ clean checks list is the merge signal; do not wait for an approval.
 ### Review weight is set by blast radius, and the default is light
 
 The full three-authority round — code, security and adversarial in one message —
-is the instrument for changes whose failure discloses withheld content, corrupts
-governed state, or falsifies a security claim: the write path, the gates, the
-daemon surface, the threat model. It runs **synchronously**, before the flip to
-Ready, and there it earns its hour — every one of this project's four CRITICAL
-disclosures and its one fabricated "tests GREEN" report was caught in a sync
-round. **Everywhere else that hour is overhead** — spending it everywhere tripled
-hours-per-unit-of-work while output stayed flat — so outside the top row
-**adversarial review runs async, after merge**: a standing red-team sweep over
-`main`, nightly single-file mutation runs included, whose findings enter the
-filing-time triage like any other. That sweep runs nightly, and an agent pass
-runs at each release cut; both file under `async-sweep`, and the operational
-detail is in
+is the instrument for the top row below: the write path, the gates, the daemon,
+the threat model. It runs **synchronously**, before the flip, and caught all
+four of this project's CRITICAL disclosures and its one fabricated "tests GREEN"
+report. **Ten minutes of wall clock per reviewer is what a sync round is** —
+refute the handed closure argument, run the named batteries, read the diff,
+report at the bell. Spending it everywhere tripled hours-per-unit-of-work at
+flat output, so open-ended depth runs async, in two passes: a **weekly** heavy
+pass — an open-ended agent pass over `main`, the mutation sweep in the same slot
+— and the anchored pass at each release cut; the operational detail is in
 [orchestration.md](docs/contributing/orchestration.md#the-async-red-team-sweep).
-Async adversarial on a *disclosure* surface is the one trade that never pays —
-it swaps a sync hour for an embargo week, six GHSAs at days each.
-
 So weigh the review before dispatching it, not after:
 
 | Blast radius of a wrong change | Review weight |
 | :-- | :-- |
 | Disclosure, governed state, security claims, wire contract | Full **sync** round — all three, before the flip |
-| Behaviour a trier runs, but no disclosure surface | Code review sync; adversarial deferred, when the claims table calls it — nothing attacks this PR's own diff, so the claim waits for the release-cut pass, and the PR records which claims it deferred under its `## Deferred claims` heading |
+| Behaviour a trier runs, but no disclosure surface | Code review sync; adversarial deferred, when the claims table calls it — nothing attacks this PR's own diff, so the claim waits for the release-cut pass, and the PR records which claims it deferred under its `## Deferred claims` heading, each naming the command that re-checks it |
 | Prose, process guidance, CI plumbing, mechanical moves — wrong means "misleading, revertible" | One light pass (code review alone), same day, no round |
 
-**Static gates stay sync and strengthen — the ratchet:** every adversarial or
-security finding proposes its own automation (a test, a lint rule, or a CI gate)
-before it closes, so the synchronous surface shrinks monotonically. Light-class
-issues are harvested 5–10 per PR under one light pass — a sweep is one topic, not
-a carve-out — merging in ~84 minutes where a full round takes a day.
+**Static gates stay sync and strengthen — the ratchet:** a finding that does not
+land as a machine check — a test, a lint rule, a CI gate — is converted into one
+or dropped: prose depth decays, automated depth compounds, and the ten minutes
+sharpen monotonically. **The floor is not tradable:** no `core-v*` tag cuts
+until the release-cut anchored pass is clean, and an `async-sweep` finding closes
+only on its battery landing or a recorded decline. Light-class issues are
+harvested 5–10 per PR under one light pass — one topic, not a carve-out —
+merging in ~84 minutes where a full round takes a day.
 
-The routing table below decides who reviews a *claim*; this table decides how
-much apparatus a *change* gets. When the two disagree, the claims table wins —
-a prose file asserting a measured property is a disclosure-class claim in a
-light-class file. The failure mode this section exists to stop is uniform
-weight: pushing a wording fix through the same machinery as a gate change
-spends the reviewers' credibility on work that cannot pay for it.
+**Amended 2026-09-19.** "Async adversarial on a *disclosure* surface is the one
+trade that never pays — it swaps a sync hour for an embargo week, six GHSAs at
+days each" was measured when async meant nobody, before #378 built the two
+passes above. It is now bounded by the floor: users receive code only at a tag,
+no tag cuts until the anchored pass is clean, and the cost is a latent defect on
+`main` between merge and cut — contributors exposed, users not.
+
+The routing table below decides who reviews a *claim*; this one decides how much
+apparatus a *change* gets, and when they disagree the claims table wins — a
+prose file asserting a measured property is a disclosure-class claim. The
+failure mode it stops is uniform weight: a wording fix pushed through a gate
+change's machinery spends credibility on work that cannot pay for it.
 
 Before flipping any PR out of Draft, when the change takes the full round,
 launch all three **in a single message** so they run concurrently:
@@ -249,14 +252,13 @@ launch all three **in a single message** so they run concurrently:
 | `theurian-adversarial-review` | Can I break it, and can its tests actually fail? |
 
 **A prose-only change still gets the adversarial reviewer when it asserts
-something behavioural.** This project's documentation states measured
-properties. Six of Milestone 5's prose-only commits corrected a claim that
-measurement had falsified: a cost comparison that ran the other way, an ADR
-saying two things that were never true, a comment offering a count of nine that
-printed thirteen, a docstring claiming a guard its own file does not enforce, a
-test file stating three where its own test knew four. None changed behaviour —
-the four that touch `.py` files are AST-identical once docstrings are stripped —
-and each made a recorded decision wrong.
+something behavioural.** Six of Milestone 5's prose-only commits corrected a
+claim measurement had falsified: a cost comparison that ran the other way, an ADR
+saying two things that were never true, a comment offering nine where thirteen
+printed, a docstring claiming a guard its own file does not enforce, a test file
+stating three where its own test knew four. None changed behaviour — the four
+touching `.py` are AST-identical once docstrings are stripped — and each made a
+recorded decision wrong.
 
 Route by what would settle the claim, not by file type:
 
@@ -269,39 +271,37 @@ Route by what would settle the claim, not by file type:
 **A false closure argument is the case that does not surface later.** It is
 consumed as a settled premise rather than re-examined: the BM25 residual's
 acceptance was approved, written into the threat model in the orchestrator's own
-words, and carried for two rounds before anyone measured it.
+words, and carried for two rounds before anyone measured it. So it carries the
+commit it was measured against and its re-check command, and the anchored pass
+re-runs those checks rather than re-deriving them.
 
 Each brief must carry, explicitly:
 
 - the diff scope (`git diff main...HEAD`) and the files that matter
 - the requirement IDs and ADRs the change touches
 - what is *known* to be unfinished, so the reviewer spends its time elsewhere
-- the observable families the implementation brief enumerated — the claims the
-  implementation says it already covers, handed over to be attacked
+- the claims the implementation says it covers — each family it enumerated, with
+  its re-check command. Those invariants are the review object, not the diff
 - the **perspective block**, per reviewer: its standing mandate as one of its
   perspectives, the lenses specific to this change, and the claims to attack —
   the families above. Frozen at dispatch, for the PR's whole review lifecycle;
   a later round adds only the fixes, what each now asserts, and what is settled.
 
 **The family list binds the implementer, not the adversarial reviewer.** The
-block is not that list alone: the mandate is inside it, so in round one the
-mandate lens runs off-list, on the family nobody enumerated — handing the
-checklist over as the reviewer's scope would delete that value. From round two
-onward the subject narrows: the scope is what the fixes newly claim, attacked
-through that same block. A finding outside it is tagged **out-of-perspective**
-and filed with a disposition rather than graded into the round, so it does not
-hold the flip to Ready; a reproducible CRITICAL reports immediately regardless.
+block is not that list alone: the mandate is inside it, so round one's mandate
+lens runs off-list, on the family nobody enumerated — handing the checklist over
+as its scope would delete that value. From round two the scope is what the fixes
+newly claim, through that same block. A finding outside it is tagged
+**out-of-perspective** and filed with a disposition rather than graded, so it
+does not hold the flip; a reproducible CRITICAL reports immediately regardless.
 
 **An enumerated family is the implementer's to hold, and recurrence burns in.**
 A round-one finding on a family the brief enumerated is an implementation-stage
-failure, not a review success — record it as one in the PR's round comment. When
-the same specialist is caught on the same family twice, that family is written
-into the **implementing** specialist's agent definition
-(`.claude/agents/theurian-{python,tests,docs,mcp,ci}.md` — never a reviewer's),
-so every future instance is born knowing it: recurrence is a defect of the
-definition, not of the instance. The loop this closes: a reviewer discovers a
-new family → the standing table; the brief selects the applicable ones per
-change; a repeat against the same specialist → that specialist's own definition.
+failure, not a review success — record it as one in the PR's round comment. A
+specialist caught on the same family twice has that family written into its own
+definition (`.claude/agents/theurian-{python,tests,docs,mcp,ci}.md` — never a
+reviewer's), so every future instance is born knowing it: recurrence is a defect
+of the definition, not of the instance.
 
 Do not write these review briefs from memory each time — the agent definitions
 hold the standing context; the brief names it and adds what this change needs.

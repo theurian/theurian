@@ -1,10 +1,10 @@
 """The sweep section's prose, pinned against the sources it describes (#378).
 
 `docs/contributing/orchestration.md`'s "The async red-team sweep" section states
-operational facts: when the nightly job runs, how many mutations it spends, what
-its two standing alarm threads are called, which label both its producers file
+operational facts: when the scheduled job runs, how many mutations it spends,
+what its two standing alarm threads are called, which label its filings land
 under, what heading closes a filed body, where a deferred claim is recorded,
-what the census excludes, and which release-ritual step the second leg is
+what the census excludes, and which release-ritual step the release-cut leg is
 anchored to. Every one of those is a value that lives somewhere else and can
 move without the sentence moving with it.
 
@@ -20,7 +20,7 @@ mandate bolted onto the first.
 
 **What is enforced, exactly.** Each rule recomputes the expected phrasing from
 the live source and looks for it in the section: the cron expression is parsed
-and rendered back into the doc's own "HH:MM UTC daily" form, the mutation budget
+and rendered back into the doc's own hour-and-day sentence, the mutation budget
 is read out of the invocation and spelled as a word, and the titles, the label
 and the automation heading are taken from the constants themselves. No *value*
 here is restated from the document; a rule that restated one would agree with
@@ -32,7 +32,7 @@ one would have to survive rather than a sentence it has to be mentioned in: a
 literal short of the text it arbitrates leaves the rules that grep for it green
 over the part it dropped.
 
-**What is not enforced.** That any night actually ran. Every rule here passes
+**What is not enforced.** That any run actually happened. Every rule here passes
 against a workflow whose schedule fires and a workflow whose schedule is
 disabled at the repository level, and passes on a tracker with no issues in it
 because there were no runs. The section says as much in its own last paragraph,
@@ -104,7 +104,7 @@ CORE_PREPARE_PARENT = "## Releasing Core"
 
 #: The bolded lead of the paragraph each document carries the gather clause in.
 RELEASE_GATHER_LEAD = "**The async red-team sweep's release-cut pass runs here too.**"
-ORCHESTRATION_GATHER_LEAD = "**The agent pass.**"
+ORCHESTRATION_GATHER_LEAD = "**The release-cut pass.**"
 
 #: The checklist the release-cut item is an item *of*. Its Core and plugin
 #: halves are bolded leads inside one `##` section rather than headings of their
@@ -275,7 +275,7 @@ def _release_gather_paragraph() -> str:
 
 
 def _orchestration_gather_paragraph() -> str:
-    """`orchestration.md`'s agent-pass paragraph, the other one."""
+    """`orchestration.md`'s release-cut pass paragraph, the other one."""
     return _paragraph(_section(), ORCHESTRATION_GATHER_LEAD)
 
 
@@ -482,8 +482,8 @@ def test_both_documents_carry_the_release_cut_step_word_for_word() -> None:
 #: The module's second arbiter literal, and one for the same reason as the first.
 #:
 #: Not a value read back out of a live source: a *sentence two documents have to
-#: share*. `release.md`'s §1 and `orchestration.md`'s agent-pass paragraph each
-#: instruct whoever dispatches the release-cut pass, and there is no third source
+#: share*. `release.md`'s §1 and `orchestration.md`'s release-cut pass paragraph
+#: each instruct whoever dispatches that pass, and there is no third source
 #: to derive the clause from -- so this literal is the arbiter, and rewording
 #: either copy is meant to require touching it.
 #:
@@ -493,7 +493,7 @@ def test_both_documents_carry_the_release_cut_step_word_for_word() -> None:
 DEFERRED_CLAIMS_GATHER = _flat("""
     Whoever dispatches the pass gathers the claims that the pull requests merged since
     the last `core-v*` tag deferred to it, recorded under each PR body's
-    `## Deferred claims` heading:
+    `## Deferred claims` heading with the command that re-checks each one:
     ```sh
     set -eu
     tag=$(git describe --abbrev=0 --match 'core-v*')
@@ -536,10 +536,10 @@ def test_both_documents_carry_the_deferred_claims_gather_clause_word_for_word() 
     Core copy gone.
     """
     prepare = _release_gather_paragraph()
-    agent_pass = _orchestration_gather_paragraph()
+    release_cut = _orchestration_gather_paragraph()
 
     assert DEFERRED_CLAIMS_GATHER in prepare
-    assert DEFERRED_CLAIMS_GATHER in agent_pass
+    assert DEFERRED_CLAIMS_GATHER in release_cut
 
 
 def test_the_two_copies_of_the_gather_clause_are_the_same_bytes() -> None:
@@ -559,9 +559,9 @@ def test_the_two_copies_of_the_gather_clause_are_the_same_bytes() -> None:
         _section_lines(RELEASE_DOC, CORE_PREPARE, under=CORE_PREPARE_PARENT),
         DEFERRED_CLAIMS_GATHER,
     )
-    agent_pass = _raw_block(_section_lines(DOC, ANCHOR), DEFERRED_CLAIMS_GATHER)
+    release_cut = _raw_block(_section_lines(DOC, ANCHOR), DEFERRED_CLAIMS_GATHER)
 
-    assert prepare == agent_pass
+    assert prepare == release_cut
 
 
 def test_both_documents_cite_a_record_heading_the_template_really_carries() -> None:
@@ -587,9 +587,9 @@ def test_both_documents_cite_a_record_heading_the_template_really_carries() -> N
     off it.
     """
     prepare = _release_gather_paragraph()
-    agent_pass = _orchestration_gather_paragraph()
+    release_cut = _orchestration_gather_paragraph()
 
-    cited = [h for h in _pr_template_headings() if f"`{h}`" in prepare and f"`{h}`" in agent_pass]
+    cited = [h for h in _pr_template_headings() if f"`{h}`" in prepare and f"`{h}`" in release_cut]
 
     assert len(cited) == 1, (
         f"the two gather paragraphs cite {len(cited)} of {PR_TEMPLATE.name}'s headings, and the "
@@ -724,11 +724,11 @@ def test_the_section_names_directories_the_census_really_does_exclude() -> None:
     """The scope claim is the one sentence in the section that bounds the sweep.
 
     "`tools/`, `tests/` and `docs/` sit outside it entirely" is what tells a
-    reader that a green nightly says nothing about the tooling, the suite or the
+    reader that a green run says nothing about the tooling, the suite or the
     documentation -- and it is true only because the census root is a path inside
     `packages/`. Widen that root and the sentence quietly inverts: the sweep
     would start sampling files the section promised it never touches, and the
-    reader's model of what a clean night covers would be wrong in the direction
+    reader's model of what a clean run covers would be wrong in the direction
     that grants false comfort.
 
     Checked by asking the live root whether each directory is under it, not by
@@ -755,34 +755,113 @@ def test_the_section_names_directories_the_census_really_does_exclude() -> None:
         assert f"`{name}/`" in section
 
 
-def test_the_section_states_the_hour_the_workflow_is_actually_scheduled_for() -> None:
+#: Cron's own weekday order, index 0 being Sunday.
+_DAY_NAMES = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
+
+
+def _weekday_phrase(field: str) -> str | None:
+    """How the section words a cron weekday field, or `None` if it has no wording.
+
+    Matched whole, never by prefix or containment. A field of `0,3` contains
+    the Sunday spelling and fires twice a week, so anything looser renders "on
+    Sunday" for a schedule that also runs on Wednesdays -- green, and wrong in
+    the direction that overstates how little the job runs.
+
+    `0`, `7` and `SUN` are one day in cron's own vocabulary, so rewriting the
+    field from one spelling into another must not read here as a schedule
+    change. A list, a range or a step is a schedule the section has no sentence
+    for at all, and the caller turns the `None` into a demand that the sentence
+    be rewritten rather than re-rendered.
+    """
+    if field == "*":
+        return "daily"
+    for index, day in enumerate(_DAY_NAMES):
+        spellings = {str(index), day[:3].upper()} | ({"7"} if index == 0 else set())
+        if field.upper() in spellings:
+            return f"on {day}"
+    return None
+
+
+@pytest.mark.parametrize(
+    ("field", "phrase"),
+    (
+        ("*", "daily"),
+        ("0", "on Sunday"),
+        ("7", "on Sunday"),
+        ("SUN", "on Sunday"),
+        ("sun", "on Sunday"),
+        ("3", "on Wednesday"),
+        ("wed", "on Wednesday"),
+        ("0,3", None),
+        ("1-5", None),
+        ("*/2", None),
+    ),
+)
+def test_a_weekday_field_renders_only_the_shapes_the_section_has_a_sentence_for(
+    field: str, phrase: str | None
+) -> None:
+    """The rule below exercises one shape -- whichever the live cron holds.
+
+    Every other branch of `_weekday_phrase` is therefore unmeasured until someone
+    moves the schedule, and the branch that matters most is the one that returns
+    nothing: `0,3` *contains* the Sunday spelling, so a matcher loosened to a
+    prefix or a substring renders "on Sunday" for a job that also runs on
+    Wednesdays -- green, and wrong in the direction that understates how often
+    the job runs. The equivalent spellings are the other side: cron reads `0`,
+    `7` and `SUN` as one day, so re-spelling the field must not read here as a
+    schedule change and send somebody rewriting a sentence that was already true.
+    """
+    assert _weekday_phrase(field) == phrase
+
+
+def test_the_section_states_the_hour_and_day_the_workflow_is_actually_scheduled_for() -> None:
     """A schedule that moves silently is the section's own failure mode, one level up.
 
     Deleting the `schedule:` block entirely leaves every other test in this
     repository green: the workflow still parses, the invocation gate still finds
-    its step, and nothing runs at night. The sentence "runs `tools/sweep.py` at
-    01:17 UTC daily" then describes a job that never starts, which is exactly the
-    reading the section warns about -- a quiet tracker that means no runs rather
-    than no findings.
+    its step, and nothing ever runs. The section's sentence then describes a job
+    that never starts, which is exactly the reading it warns about -- a quiet
+    tracker that means no runs rather than no findings.
 
-    The expected phrase is rendered back out of the cron expression rather than
-    written down, so moving the cron moves what this looks for.
+    Hour and day are both rendered back out of the cron rather than written
+    down, so moving either moves what this looks for. The day was a fixed
+    `* * *` shape assertion until the cadence moved to Sunday; re-rendering it
+    rather than re-freezing the new shape keeps the rule failing in both
+    directions, where relaxing it to the hour alone would leave every later day
+    change invisible.
+
+    What is compared is the section's whole statement, not a rendering looked
+    for inside it, so prose that states the time twice -- one sentence updated
+    and one not -- goes red rather than green on the half that still agrees.
     """
     schedule = _triggers(_workflow()).get("schedule")
 
-    assert schedule, f"{WORKFLOW} has no `schedule:`; the section says the sweep runs nightly"
+    assert schedule, f"{WORKFLOW} has no `schedule:` at all; the section states when it runs"
     assert len(schedule) == 1, (
-        f"{WORKFLOW} carries {len(schedule)} cron entries; the section describes one nightly "
-        "run, and its budget arithmetic and its clearance of security.yml are both written "
-        "against one. Rewrite the section rather than re-deriving from the first entry"
+        f"{WORKFLOW} carries {len(schedule)} cron entries; the section describes one scheduled "
+        "run, and its seven-walks-per-run arithmetic is written against one. Rewrite the section "
+        "rather than re-deriving from the first entry"
     )
     minute, hour, day, month, weekday = str(schedule[0]["cron"]).split()
-    assert (day, month, weekday) == ("*", "*", "*"), (
-        f"the cron {schedule[0]['cron']!r} is not daily, so the section's wording needs "
-        "rewriting rather than re-deriving"
+    assert (day, month) == ("*", "*") and hour.isdigit() and minute.isdigit(), (
+        f"the cron {schedule[0]['cron']!r} fires at more than one time of day, or only in some "
+        "months, and the section has wording for neither: rewrite the sentence, do not re-derive"
+    )
+    phrase = _weekday_phrase(weekday)
+    assert phrase is not None, (
+        f"the cron weekday field {weekday!r} is neither `*` nor a single day, so the section's "
+        "sentence needs rewriting rather than re-rendering"
     )
 
-    assert f"at {int(hour):02d}:{int(minute):02d} UTC daily" in _section()
+    expected = f"at {int(hour):02d}:{int(minute):02d} UTC {phrase}"
+    stated = re.findall(r"at \d{1,2}:\d{2} UTC (?:daily|on \w+)", _section())
+
+    assert stated == [expected], (
+        f"the section states {stated} as when the sweep runs, and the cron "
+        f"{schedule[0]['cron']!r} renders as {expected!r}: either the schedule moved without the "
+        "sentence, or the sentence moved without the schedule, or the section now states it in "
+        "more than one place and every copy has to be kept in step with the one cron"
+    )
 
 
 def test_the_section_states_the_mutation_budget_the_workflow_actually_passes() -> None:
@@ -839,16 +918,21 @@ def test_the_section_quotes_the_standing_thread_title_the_driver_files_under() -
 def test_the_section_quotes_the_title_the_workflows_own_alarm_files_under() -> None:
     """The other thread, owned by the workflow rather than by the driver.
 
-    These two are deliberately different threads: one collects nights the driver
-    ran and could not stand behind, the other collects nights the job died before
-    the driver could file. A reader who is given the wrong name for either cannot
-    tell those apart, and they have opposite remedies.
+    These two are deliberately different threads: one collects the runs the
+    driver made and could not stand behind, the other the runs the job died
+    before the driver could file. A reader who is given the wrong name for
+    either cannot tell those apart, and they have opposite remedies.
     """
     assert _alarm_title() in _section()
 
 
-def test_the_section_names_the_label_both_producers_file_under() -> None:
-    """The label is what makes the two producers one queue for triage.
+def test_the_landing_paragraph_names_the_label_the_driver_really_files_under() -> None:
+    """The label is what makes the section's legs one queue for triage.
+
+    The reach is one leg and one paragraph: the driver's `LABEL` constant,
+    quoted where the section makes the landing claim. The workflow alarm's own
+    label is the rule below; the two agent passes file by hand, and no rule here
+    can reach a label a human types.
 
     Anchored inside the "Where it lands" paragraph rather than the section as a
     whole. The section mentions the label twice, so a rule scoped to the whole
@@ -866,13 +950,13 @@ def test_the_section_names_the_label_both_producers_file_under() -> None:
 
 
 def test_the_workflows_own_alarm_files_under_the_same_label() -> None:
-    """ "Both file under the `async-sweep` label" is a claim about two producers.
+    """The landing claim covers every leg; this rule reaches the second machine one.
 
-    Only one of them was checked. The driver's label is a constant this module
-    reads; the alarm step's is shell text in the workflow, and changing it left
-    every pin green -- the section would go on promising one queue while the
-    nights the job died landed in another, invisible to a triager filtering on
-    the label and to a reader of this file.
+    The rule above reads the driver's label out of `sweep_filing.py`. The alarm
+    step's is shell text in the workflow, and changing it left every pin green
+    -- the section would go on promising one queue while the runs the job died
+    landed in another, invisible to a triager filtering on the label and to a
+    reader of this file.
 
     Both of the alarm's `gh` calls are checked, because the list call and the
     create call can drift apart: one finds no thread, the other opens one, and

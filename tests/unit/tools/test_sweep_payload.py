@@ -1,4 +1,4 @@
-"""What the nightly sweep files, and why none of it can be a command (#378).
+"""What the sweep files, and why none of it can be a command (#378).
 
 The payload is built from strings the sweep read off the repository: a file
 path, a mutation label, and two slices of somebody's source. None of them is
@@ -147,7 +147,7 @@ def test_an_untrusted_run_says_so_in_its_title() -> None:
     looking for a missing test that nothing measured.
 
     The untrusted title is the standing one and carries no file and no date --
-    every untrusted night comments on one thread -- so what distinguishes the two
+    every untrusted run comments on one thread -- so what distinguishes the two
     is asserted as the title itself, and as the absence of the survivors phrasing
     that would send the reader looking for a test.
     """
@@ -177,20 +177,20 @@ def _untrusted(target: str) -> sweep_filing.Payload:
     )
 
 
-def test_every_untrusted_night_joins_one_standing_thread() -> None:
+def test_every_untrusted_run_joins_one_standing_thread() -> None:
     """A broken harness is a statement about the harness, not about a file.
 
     Keyed per target, one persistent failure -- a test broken on `main` for a
-    week, a control that keeps timing out -- opens a *new* issue every night,
-    because the rotation names a different file each night. The code review
-    measured 28 distinct targets over 30 nights: 28 issues for one cause, which
-    also fills the hundred-issue dedup window in about three and a half months
+    week, a control that keeps timing out -- opens a *new* issue on every run,
+    because the rotation names a different file each run. The code review
+    measured 28 distinct targets over 30 consecutive draws: 28 issues for one
+    cause, which also fills the hundred-issue dedup window in about as many runs
     and silently breaks the survivors dedup that shares it.
 
     So the untrusted reading gets a constant key and a constant title, and the
-    nights accumulate as comments on one thread. Which file each night happened
-    to draw is still in the body, where it belongs: it is a detail of the night,
-    not the identity of the finding.
+    runs accumulate as comments on one thread. Which file each run happened to
+    draw is still in the body, where it belongs: it is a detail of the run, not
+    the identity of the finding.
     """
     first = _untrusted("packages/theurian-core/src/theurian/one.py")
     second = _untrusted("packages/theurian-core/src/theurian/two.py")
@@ -219,10 +219,10 @@ def test_a_surviving_mutation_is_still_a_finding_about_its_own_file() -> None:
     assert "one.py" in first.title
 
 
-def test_the_standing_untrusted_thread_still_dates_and_names_each_night() -> None:
+def test_the_standing_untrusted_thread_still_dates_and_names_each_run() -> None:
     """One thread must not mean one indistinguishable pile of comments.
 
-    Whoever picks up the standing issue needs to know which nights are in it and
+    Whoever picks up the standing issue needs to know which runs are in it and
     what each of them was attacking -- otherwise the constant key trades a
     triage flood for an unreadable log.
     """
@@ -326,7 +326,7 @@ def test_the_reproduce_block_checks_out_the_commit_the_night_ran_against() -> No
     The target is not a function of the date alone. It is a function of the date,
     the census *contents* and the file contents: the census is every production
     module, so adding or removing one anywhere in the tree re-resolves which file
-    a given ordinal names, and editing a file changes which of its candidates are
+    a given date names, and editing a file changes which of its candidates are
     anchorable. `main` moves daily. A triager who pastes the command a week later
     therefore sweeps a different file, sees it come back clean, and closes an
     issue whose finding is still live -- which is worse than no reproduction
@@ -460,7 +460,7 @@ def test_the_dedup_marker_is_a_digest_no_path_can_forge() -> None:
 
     Embedding the raw path would put repository text inside an HTML comment, and
     a path carrying ``-->`` would close it early -- leaving a marker that matches
-    nothing and a body whose first line is half a comment. Two nights on one file
+    nothing and a body whose first line is half a comment. Two runs on one file
     would then open two issues instead of one thread.
     """
     marker = sweep_filing.target_marker("packages/theurian-core/src/theurian/x.py")
@@ -473,10 +473,10 @@ def test_the_dedup_marker_is_a_digest_no_path_can_forge() -> None:
 
 
 def test_an_open_issue_for_the_same_target_is_found_by_its_marker() -> None:
-    """Dedup, so a file that survives a mutation every night grows one thread.
+    """Dedup, so a file that survives a mutation on every run grows one thread.
 
     Matched on the marker rather than on the title: a title carries a count and a
-    date, so the same target files a differently titled issue every night, and
+    date, so the same target files a differently titled issue on every run, and
     title matching would open a new issue each time.
 
     The listing is newest-first, which is the order ``gh issue list`` returns,
@@ -502,7 +502,7 @@ def test_a_marker_quoted_inside_another_issue_body_does_not_claim_the_thread() -
     Reproduced by the security review: a trailing comment on an anchorable source
     line puts the *victim* file's marker inside the diff that the *carrier*
     file's issue quotes. Because the lookup then matched anywhere and
-    ``min(matches)`` prefers the oldest number, every later night on the victim
+    ``min(matches)`` prefers the oldest number, every later run on the victim
     file would comment on the carrier's thread -- its findings filed under
     another file's title, where nobody triaging that file would look.
 
@@ -556,7 +556,7 @@ def test_a_listing_that_cannot_be_read_stops_the_sweep_rather_than_opening_a_dup
     """An unreadable listing is not an empty one.
 
     Reading it as empty would open a second issue for a target that already has
-    an open thread, every night, for as long as ``gh`` kept returning something
+    an open thread, on every run, for as long as ``gh`` kept returning something
     unexpected. Exit 1 is the honest answer.
     """
     with pytest.raises(sweep_census.SweepError):

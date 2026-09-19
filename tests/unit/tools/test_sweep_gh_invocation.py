@@ -1,6 +1,6 @@
 """How the sweep talks to ``gh``: argv only, body on stdin, never a shell (#378).
 
-The nightly job runs on a runner holding a token with issue-write scope, and
+The scheduled job runs on a runner holding a token with issue-write scope, and
 everything it puts in an issue it read out of the repository -- a path from a
 directory walk, two slices of somebody's source. If any of that were assembled
 into a shell string, a file named ``$(...)`` would be a command.
@@ -100,8 +100,8 @@ def test_the_issue_body_travels_on_stdin_and_never_through_argv() -> None:
 def test_an_existing_thread_is_commented_on_rather_than_duplicated() -> None:
     """The dedup branch, checked through the call and not only through the lookup.
 
-    A target that survives a mutation every night would otherwise open an issue
-    every night, and the third one would be triaged as a new finding.
+    A target that survives a mutation on every run would otherwise open an issue
+    on every run, and the third one would be triaged as a new finding.
     """
     target = "packages/theurian-core/src/theurian/x.py"
     listing = json.dumps([{"number": 812, "body": sweep_filing.target_marker(target)}])
@@ -118,7 +118,7 @@ def test_the_label_is_the_one_the_tracker_already_has() -> None:
     """``async-sweep`` exists; the sweep does not create labels.
 
     ``gh issue create --label`` fails outright on an unknown label, so a typo
-    here is a nightly job that never files anything -- the silent-stop shape,
+    here is a scheduled job that never files anything -- the silent-stop shape,
     arriving through a string constant.
     """
     gh = _RecordingGh()
@@ -196,10 +196,10 @@ def test_the_night_a_body_describes_is_the_night_that_was_run() -> None:
     two places (the CLI argument and the generated labels), and a builder handed
     the wrong one files an issue nobody can reproduce.
 
-    Asserted on the body alone. This night is untrusted, and every untrusted
-    night shares one standing title with no date in it -- so the body is the only
-    place the date can be, and the only place it needs to be: the thread collects
-    nights, and each comment has to say which one it is.
+    Asserted on the body alone. This night is untrusted, and every untrusted run
+    shares one standing title with no date in it -- so the body is the only place
+    the date can be, and the only place it needs to be: the thread collects runs,
+    and each comment has to say which one it is.
     """
     payload = sweep_filing.build_payload(
         sweep_filing.Night(

@@ -1,29 +1,42 @@
 name: Red-team sweep
 
-# CLAUDE.md's blast-radius table promises "a standing red-team sweep over
-# `main`, nightly single-file mutation runs included", whose findings enter
-# filing-time triage like any other (#378). `tools/sweep.py` is the night --
-# pick one production file from the census by the date alone, mutate it, run
-# the suite against each mutation, file what survives. This file is the three
-# things the driver cannot supply itself: the clock, a token that may write to
-# the tracker, and an alarm for the nights the driver never got to run.
+# CLAUDE.md's blast-radius table routes open-ended adversarial depth to a
+# standing async red-team sweep over `main`, and this is that sweep's mutation
+# leg (#378); its findings enter filing-time triage like any other.
+# `tools/sweep.py` is one run -- pick one production file from the census by the
+# date alone, mutate it, run the suite against each mutation, file what
+# survives. This file is the three things the driver cannot supply itself: the
+# clock, a token that may write to the tracker, and an alarm for the runs the
+# driver never got to start.
+#
+# The cadence -- how often -- is stated once, in the `schedule:` block below.
+# `night` survives elsewhere here as the legacy noun for one run, kept in step
+# with the driver's own `Night` type; it asserts no frequency. Retiring it is a
+# recorded residual.
 on:
   schedule:
-    # 01:17 UTC daily: off the hour, because every top-of-hour cron on GitHub
-    # queues together and is delayed as a block, and early enough that this
-    # job's whole 165-minute ceiling (01:17-04:02 UTC) clears security.yml's
-    # weekly `23 5 * * 1` by 81 minutes, even on a Monday that starts late.
+    # Sunday 01:17 UTC: off the hour, because every top-of-hour cron on GitHub
+    # queues together and is delayed as a block; on Sunday because the week has
+    # one sweep slot and the heavy agent pass is dispatched beside this run
+    # rather than on a calendar of its own (orchestration.md, "The async
+    # red-team sweep").
     #
-    # That figure is `timeout-minutes` below, not a second budget: the two moved
-    # apart once already, this comment claiming 150 minutes and 03:47 while the
-    # job carried 165. Move both, or the margin stated here is not the one the
-    # job actually leaves.
-    - cron: "17 1 * * *"
+    # The 165-minute ceiling below makes the window 01:17-04:02 UTC Sunday.
+    # security.yml's `23 5 * * 1` is the only other scheduled workflow here and
+    # starts 25 h 21 min after that window closes, so nothing outside this job
+    # constrains the ceiling any more: the 81 minutes this comment used to
+    # defend were a same-day margin against that Monday run, and moving off
+    # Monday dissolved the constraint rather than widening it. The window is
+    # still derived, though -- 04:02 is `timeout-minutes` below, not a second
+    # budget, and the two drifted apart once already, this comment claiming 150
+    # minutes and 03:47 while the job carried 165. Move both, or the window
+    # stated here is not the one the job takes.
+    - cron: "17 1 * * 0"
   workflow_dispatch:
     inputs:
       date:
         description: >-
-          The night to sweep, as YYYY-MM-DD; empty means today. The target file
+          The date to sweep, as YYYY-MM-DD; empty means today. The target file
           is a pure function of this date, so a chosen date is this job's
           positive control: it steers the deterministic rotation onto a file
           whose verdict is already known, which is the only way to tell a
@@ -39,8 +52,10 @@ permissions:
 
 # Never cancel a sweep in flight. A run is two hours of mutation walks whose
 # only durable output is an issue filed at the end, so a cancellation at 95%
-# throws away the whole night and leaves no record that it happened -- and the
-# next night would inherit nothing, because the target is chosen by date.
+# throws away the whole run and leaves no record that it happened. The next
+# scheduled run is a week away and starts from the next index; recovering the
+# lost one means a dispatch before the next Sunday, which draws the same target
+# again -- the index is the run number, not the day (`sweep_census.rotation`).
 concurrency:
   group: red-team
   cancel-in-progress: false
@@ -50,7 +65,7 @@ env:
 
 jobs:
   sweep:
-    name: One night against one file
+    name: One run against one file
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -88,7 +103,7 @@ jobs:
           # so those rules take their own git-shaped skip guard rather than
           # failing: a mutation whose only killer is one of them then comes back
           # SURVIVED, and an unattended job files that as a finding no human can
-          # reproduce. Cost is core.yml's ~4 MiB, paid once a night.
+          # reproduce. Cost is core.yml's ~4 MiB, paid once per run.
           fetch-depth: 0
           # This is the only workflow here that runs suite code under mutation
           # while holding a token that can write to the tracker, and by default
@@ -223,16 +238,18 @@ jobs:
           # Not inferred from the checkout's remote: this step has to work on the
           # runs where checkout itself is what failed.
           GH_REPO: ${{ github.repository }}
-          ALARM_TITLE: "async-sweep: the nightly job itself failed"
+          # Cadence-neutral on purpose: a schedule change that renamed this
+          # thread would split one standing outage record in two.
+          ALARM_TITLE: "async-sweep: the scheduled job itself failed"
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           EVENT_NAME: ${{ github.event_name }}
           COMMIT_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          # One standing thread, commented on rather than re-opened nightly. The
-          # match is made here, on an exact title, and not by handing the title to
-          # GitHub's search: search tokenizes, and a near-match read as a miss
-          # opens a duplicate every night for as long as the outage lasts. Both
+          # One standing thread, commented on rather than re-opened per failed
+          # run. The match is made here, on an exact title, and not by handing the
+          # title to GitHub's search: search tokenizes, and a near-match read as a
+          # miss opens a duplicate per run for as long as the outage lasts. Both
           # commands below are unguarded on purpose -- `set -e` aborts the step
           # rather than falling through to `issue create` with an empty answer.
           listing="$(gh issue list --label async-sweep --state open --limit 100 \
@@ -245,16 +262,16 @@ jobs:
           # the place to read what actually broke.
           body="$(printf '%s\n' \
             "The scheduled red-team sweep did not finish. \`tools/sweep.py\` files its own" \
-            "findings and its own untrusted runs; this record is for the nights it never" \
+            "findings and its own untrusted runs; this record is for the runs it never" \
             "reached that point." \
             "" \
-            "- night: \`${SWEEP_DATE:-not resolved before the failure}\`" \
+            "- date: \`${SWEEP_DATE:-not resolved before the failure}\`" \
             "- run: ${RUN_URL}" \
             "- event: \`${EVENT_NAME}\`" \
             "- commit: \`${COMMIT_SHA}\`" \
             "" \
             "The failing step and its output are in the run above. This issue stays open" \
-            "until a night completes; a comment per failed night is the outage's duration.")"
+            "until a run completes; a comment per failed run is the outage's duration.")"
 
           if [ -n "$number" ]; then
             gh issue comment "$number" --body "$body"

@@ -49,7 +49,7 @@ than at §4 because a round takes wall clock and its findings can change what
 ships: met at the tag it is either skipped or it stalls a push already under way.
 Whoever dispatches the pass gathers the claims that the pull requests merged since
 the last `core-v*` tag deferred to it, recorded under each PR body's
-`## Deferred claims` heading:
+`## Deferred claims` heading with the command that re-checks each one:
 
 ```sh
 set -eu
@@ -73,6 +73,13 @@ status is discarded by the assignment, `git log` fails the same way inside the
 next one, and the search key degenerates to `merged:>=` — which prints `[]` and
 exits 0, byte-identical to a window in which nothing merged. Quoting `"$tag"` is
 what makes that window empty rather than HEAD's own date.
+
+When the last weekly pass is recent, this one may scope to the delta since it
+plus the claims gathered above — permitted scoping, not a second cadence, and
+the tag still gates on this pass coming back clean. Each closure argument the
+pass is handed carries the commit it was measured against and a command; the
+pass re-runs those commands rather than re-deriving the arguments, and an
+argument whose command no longer runs is a finding, not a formality.
 
 What closes one of its findings, and why the anchor is the cut rather than a
 cadence, is in [orchestration.md](orchestration.md#the-async-red-team-sweep).

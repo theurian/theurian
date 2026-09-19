@@ -1,8 +1,8 @@
 """What the night concluded, read out of ``tools/mutate.py``'s own record.
 
 One rule, and everything here is an expression of it: **a sweep that did not
-really run must not read clean.** A nightly red-team job whose failure mode is
-silence converts an absence of evidence into evidence of absence, once a night,
+really run must not read clean.** A scheduled red-team job whose failure mode is
+silence converts an absence of evidence into evidence of absence, run after run,
 in a place nobody is watching.
 
 So "clean" is defined positively rather than as the absence of bad news. The
