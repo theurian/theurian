@@ -11,6 +11,8 @@ cannot spill out of its table cell.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import premise_check
 import premise_report
 import pytest
@@ -115,3 +117,131 @@ def test_a_citation_row_carries_its_token_and_command_through_inline_not_raw() -
     expected_value = premise_report._inline(value)
     expected_command = premise_report._inline(command)
     assert row == f"| symbol | {expected_value} | INTACT | {expected_command} |"
+
+
+# --------------------------------------------------------------------------
+# Section grouping (High-signal / Unknown-only tail / PREMISE-HOLDS): a human
+# triager reads these top to bottom and stops early, so a mis-grouped issue
+# silently sends it to the wrong triage weight rather than raising an error.
+# --------------------------------------------------------------------------
+
+
+def _issue(number: int, verdict: str, reasons: tuple[str, ...] = ()) -> premise_check.IssueReport:
+    """A minimal `IssueReport`: `_sections` reads only `machine_verdict` and
+    `needs_agent_reasons`, so every other field is fixed filler.
+    """
+    return premise_check.IssueReport(
+        number, f"issue {number}", "2026-01-01T00:00:00Z", (), (), (), verdict, reasons
+    )
+
+
+def _report(*issues: premise_check.IssueReport) -> premise_check.Report:
+    return premise_check.Report(
+        head_commit="cafebabe1234", snapshot_path="snap.json", issues=issues
+    )
+
+
+def _section_body(rendered: str, heading: str) -> list[str]:
+    """The lines of one `## heading (...)` block, heading line included."""
+    lines = rendered.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith(f"## {heading} ("))
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+    return lines[start:end]
+
+
+def _issue_numbers(section_lines: Sequence[str]) -> list[int]:
+    return [
+        int(line.removeprefix("<summary>#").split(" ", 1)[0])
+        for line in section_lines
+        if line.startswith("<summary>#")
+    ]
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [premise_check.DANGLING_CITATION, premise_check.SURFACE_TOUCHED, premise_check.CHECK_ERROR],
+)
+def test_a_high_signal_reason_places_the_issue_in_high_signal_alone(reason: str) -> None:
+    """Each of `_HIGH_SIGNAL_REASONS` on its own is what keeps a citation worth
+    an agent's time out of the no-agent-spend tail; landing it there or in
+    PREMISE-HOLDS instead would silently drop it from the section a human
+    triager reads first.
+    """
+    issue = _issue(1, premise_check.NEEDS_AGENT, (reason,))
+    rendered = premise_report.render(_report(issue))
+
+    assert _issue_numbers(_section_body(rendered, "High-signal")) == [1]
+    assert _issue_numbers(_section_body(rendered, "Unknown-only tail")) == []
+    assert _issue_numbers(_section_body(rendered, "PREMISE-HOLDS")) == []
+
+
+@pytest.mark.parametrize("reason", [premise_check.UNKNOWN_CITATION, premise_check.NO_CITATIONS])
+def test_an_unknown_only_reason_places_the_issue_in_the_tail_alone(reason: str) -> None:
+    """Neither `unknown-citation` nor `no-citations` alone is worth an agent's
+    time; either one landing in High-signal would spend agent triage on the
+    set the grouping exists to exclude from it.
+    """
+    issue = _issue(1, premise_check.NEEDS_AGENT, (reason,))
+    rendered = premise_report.render(_report(issue))
+
+    assert _issue_numbers(_section_body(rendered, "Unknown-only tail")) == [1]
+    assert _issue_numbers(_section_body(rendered, "High-signal")) == []
+    assert _issue_numbers(_section_body(rendered, "PREMISE-HOLDS")) == []
+
+
+def test_the_unknown_only_tail_carries_its_no_agent_spend_prose_line() -> None:
+    """This sentence is what tells a human triager the tail is small by
+    decision rather than by a broken sweep; losing it collapses that
+    distinction back into an unexplained count.
+    """
+    issue = _issue(1, premise_check.NEEDS_AGENT, (premise_check.NO_CITATIONS,))
+    rendered = premise_report.render(_report(issue))
+
+    tail = _section_body(rendered, "Unknown-only tail")
+    assert any("no agent spend by decision" in line for line in tail)
+
+
+def test_a_premise_holds_issue_lands_in_the_holds_section_only() -> None:
+    issue = _issue(1, premise_check.HOLDS)
+    rendered = premise_report.render(_report(issue))
+
+    assert _issue_numbers(_section_body(rendered, "PREMISE-HOLDS")) == [1]
+    assert _issue_numbers(_section_body(rendered, "High-signal")) == []
+    assert _issue_numbers(_section_body(rendered, "Unknown-only tail")) == []
+
+
+def test_sections_render_high_signal_then_unknown_only_then_holds_with_matching_counts() -> None:
+    """The order is the split's whole point (`render`'s own docstring: "so a
+    human triager reads the high-signal subset first and can stop there"),
+    and the `- High-signal` summary line above the table is what tells a
+    triager the subset's size without counting `<summary>` tags by hand.
+    """
+    high_a = _issue(1, premise_check.NEEDS_AGENT, (premise_check.SURFACE_TOUCHED,))
+    high_b = _issue(2, premise_check.NEEDS_AGENT, (premise_check.CHECK_ERROR,))
+    tail = _issue(3, premise_check.NEEDS_AGENT, (premise_check.NO_CITATIONS,))
+    holds = _issue(4, premise_check.HOLDS)
+    rendered = premise_report.render(_report(high_a, high_b, tail, holds))
+
+    headings = [line for line in rendered.splitlines() if line.startswith("## ")]
+
+    assert headings == ["## High-signal (2)", "## Unknown-only tail (1)", "## PREMISE-HOLDS (1)"]
+    assert "- High-signal: 2" in rendered.splitlines()
+
+
+def test_issue_number_ordering_is_preserved_within_each_section() -> None:
+    """`_sections` partitions in one pass over `report.issues` (its own
+    docstring: "preserving issue-number ordering"); a section that resorts or
+    reverses would desynchronise the rendered order from `check`'s own.
+    """
+    issues = [
+        _issue(1, premise_check.NEEDS_AGENT, (premise_check.SURFACE_TOUCHED,)),
+        _issue(2, premise_check.NEEDS_AGENT, (premise_check.NO_CITATIONS,)),
+        _issue(3, premise_check.NEEDS_AGENT, (premise_check.DANGLING_CITATION,)),
+        _issue(4, premise_check.HOLDS),
+        _issue(5, premise_check.NEEDS_AGENT, (premise_check.UNKNOWN_CITATION,)),
+    ]
+    rendered = premise_report.render(_report(*issues))
+
+    assert _issue_numbers(_section_body(rendered, "High-signal")) == [1, 3]
+    assert _issue_numbers(_section_body(rendered, "Unknown-only tail")) == [2, 5]
+    assert _issue_numbers(_section_body(rendered, "PREMISE-HOLDS")) == [4]
