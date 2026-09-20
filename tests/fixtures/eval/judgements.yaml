@@ -1,0 +1,182 @@
+# Golden judgements for the `adr-corpus-v1` fixture corpus.
+#
+# One author's reading of what each query ought to return (ADR-0036's own
+# Negative consequence: there is no inter-annotator agreement to report). They
+# are a committed regression fixture and never an input to ranking.
+#
+# No withheld-plane item appears in any `relevant` list. Two of them appear in
+# `forbidden`, which is the only way a judgement may name one.
+judgements:
+
+# -- exact-decision ----------------------------------------------------------
+
+- queryId: q-optimistic-concurrency
+  relevant:
+  - itemId: architecture.immutable-revisions-and-optimistic-concurrency
+  evidence:
+  - sourceUri: https://github.com/theurian/theurian.git
+    filePath: docs/adr/0006-immutable-revisions-and-optimistic-concurrency.md
+
+- queryId: q-sqlite-derived
+  relevant:
+  - itemId: architecture.sqlite-is-a-derived-artifact
+  evidence:
+  - sourceUri: https://github.com/theurian/theurian.git
+    filePath: docs/adr/0004-sqlite-is-a-derived-artifact.md
+
+- queryId: q-rank-fusion-why
+  relevant:
+  - itemId: architecture.rank-fusion-over-score-normalisation
+  evidence:
+  - sourceUri: https://github.com/theurian/theurian.git
+    filePath: docs/adr/0021-rank-fusion-over-score-normalisation.md
+
+- queryId: q-purge-on-withdrawal
+  relevant:
+  - itemId: architecture.a-purge-is-a-build
+  evidence:
+  - sourceUri: https://github.com/theurian/theurian.git
+    filePath: docs/adr/0024-a-purge-is-a-build.md
+
+- queryId: q-cjk-mixed-length
+  relevant:
+  - itemId: security.jwt-verification-guide
+
+- queryId: q-cjk-unspaced
+  relevant:
+  - itemId: security.jwt-verification-guide
+
+# -- rejected-alternative ----------------------------------------------------
+
+- queryId: q-rejected-score-normalisation
+  relevant:
+  - itemId: architecture.rank-fusion-over-score-normalisation
+  - itemId: domain.rejected-approach-score-normalisation
+  evidence:
+  - sourceUri: https://github.com/theurian/theurian.git
+    filePath: docs/adr/0021-rank-fusion-over-score-normalisation.md
+
+- queryId: q-rejected-ltr
+  relevant:
+  - itemId: architecture.rank-fusion-over-score-normalisation
+  evidence:
+  - sourceUri: https://github.com/theurian/theurian.git
+    filePath: docs/adr/0021-rank-fusion-over-score-normalisation.md
+
+- queryId: q-rejected-vendor-sdk
+  relevant:
+  - itemId: architecture.no-llm-vendor-lock-in
+  evidence:
+  - sourceUri: https://github.com/theurian/theurian.git
+    filePath: docs/adr/0009-no-llm-vendor-lock-in.md
+
+# -- cross-adr ---------------------------------------------------------------
+
+- queryId: q-state-hash-family
+  relevant:
+  - itemId: architecture.state-hash-partitioned-databases
+  - itemId: architecture.sqlite-schema-versioning
+  evidence:
+  - sourceUri: https://github.com/theurian/theurian.git
+    filePath: docs/adr/0007-state-hash-partitioned-databases.md
+  - sourceUri: https://github.com/theurian/theurian.git
+    filePath: docs/adr/0017-sqlite-schema-versioning.md
+
+- queryId: q-index-publication
+  relevant:
+  - itemId: architecture.index-lives-in-its-own-database
+  - itemId: architecture.a-purge-is-a-build
+  evidence:
+  - sourceUri: https://github.com/theurian/theurian.git
+    filePath: docs/adr/0022-index-lives-in-its-own-database.md
+  - sourceUri: https://github.com/theurian/theurian.git
+    filePath: docs/adr/0024-a-purge-is-a-build.md
+
+- queryId: q-proposal-path
+  relevant:
+  - itemId: architecture.ai-writes-produce-proposals
+
+# -- broad-architectural -----------------------------------------------------
+
+- queryId: q-db-design-principles
+  relevant:
+  - itemId: architecture.sqlite-is-a-derived-artifact
+  - itemId: architecture.state-hash-partitioned-databases
+  - itemId: architecture.sqlite-schema-versioning
+  - itemId: architecture.index-lives-in-its-own-database
+
+- queryId: q-retrieval-architecture
+  relevant:
+  - itemId: architecture.raptor-forest
+  - itemId: architecture.rank-fusion-over-score-normalisation
+  - itemId: architecture.trigram-index-beside-the-word-index
+
+- queryId: q-disclosure-enforcement
+  relevant:
+  - itemId: architecture.a-purge-is-a-build
+  - itemId: security.secret-scan-policy
+
+# -- conflicting -------------------------------------------------------------
+#
+# Both documents are relevant to both phrasings. A retriever that returns one
+# and not the other has hidden the disagreement rather than surfaced it, which
+# is the failure this class exists to count.
+
+- queryId: q-restart-after-schema-change
+  relevant:
+  - itemId: operations.daemon-runbook
+  - itemId: architecture.schema-change-restart-policy
+
+- queryId: q-schema-change-procedure
+  relevant:
+  - itemId: operations.daemon-runbook
+  - itemId: architecture.schema-change-restart-policy
+
+# -- superseded --------------------------------------------------------------
+
+- queryId: q-session-token-ttl
+  relevant:
+  - itemId: domain.session-token-ttl
+  forbidden:
+  - itemId: domain.session-token-ttl-v1
+  - itemId: domain.session-token-ttl-v2
+
+- queryId: q-current-ttl-policy
+  relevant:
+  - itemId: domain.session-token-ttl
+  forbidden:
+  - itemId: domain.session-token-ttl-v1
+  - itemId: domain.session-token-ttl-v2
+
+- queryId: q-token-lifetime
+  relevant:
+  - itemId: domain.session-token-ttl
+  forbidden:
+  - itemId: domain.session-token-ttl-v1
+  - itemId: domain.session-token-ttl-v2
+
+# -- unknown -----------------------------------------------------------------
+
+- queryId: q-absent-kubernetes
+  expectAbstention: true
+
+- queryId: q-absent-payment-flow
+  expectAbstention: true
+
+- queryId: q-withheld-credential-cache
+  expectAbstention: true
+  forbidden:
+  - itemId: domain.rejected-credential-cache
+
+- queryId: q-withheld-token-rotation
+  expectAbstention: true
+  forbidden:
+  - itemId: security.confidential-token-rotation
+
+# -- historical (Phase D; the query is disabled and the harness skips it) -----
+
+- queryId: q-hist-ttl-evolution
+  relevant:
+  - itemId: domain.session-token-ttl
+  - itemId: domain.session-token-ttl-v2
+  - itemId: domain.session-token-ttl-v1

@@ -1,0 +1,172 @@
+# Golden queries for the `adr-corpus-v1` fixture corpus.
+#
+# Every enabled query runs against both corpora. That is the disclosure-equality
+# form ADR-0036 decision 6 fixes: a query that ran against `full` alone could
+# never show that the withheld plane moved nothing.
+queries:
+
+# -- exact-decision ----------------------------------------------------------
+
+- id: q-optimistic-concurrency
+  class: exact-decision
+  query: How is optimistic concurrency enforced when a knowledge revision is written?
+  corpora: [full, clean]
+
+- id: q-sqlite-derived
+  class: exact-decision
+  query: Why is the SQLite database treated as a derived artifact rather than a tracked one?
+  corpora: [full, clean]
+
+- id: q-rank-fusion-why
+  class: exact-decision
+  query: Why does retrieval fuse results by rank instead of by normalised score?
+  corpora: [full, clean]
+
+- id: q-purge-on-withdrawal
+  class: exact-decision
+  query: What happens to the published index when knowledge is withdrawn?
+  corpora: [full, clean]
+
+# The two CJK probes. Both are aimed at security.jwt-verification-guide;
+# operations.daemon-unyou-guide is the rank distractor, sharing one of the two
+# terms and not the other, and is deliberately neither relevant nor forbidden.
+# The query text is data, not prose: romanising or translating either one
+# deletes the defect being measured (docs/roadmap.md, issue #284).
+- id: q-cjk-mixed-length
+  class: exact-decision
+  query: 認証 トークン
+  corpora: [full, clean]
+
+- id: q-cjk-unspaced
+  class: exact-decision
+  query: 認証トークンの扱い
+  corpora: [full, clean]
+
+# -- rejected-alternative ----------------------------------------------------
+
+- id: q-rejected-score-normalisation
+  class: rejected-alternative
+  query: Was min-max score normalisation across retrievers considered and rejected?
+  corpora: [full, clean]
+
+- id: q-rejected-ltr
+  class: rejected-alternative
+  query: Why was learning to rank rejected as a ranking mechanism?
+  corpora: [full, clean]
+
+- id: q-rejected-vendor-sdk
+  class: rejected-alternative
+  query: Why was depending on a single LLM vendor SDK rejected?
+  corpora: [full, clean]
+
+# -- cross-adr ---------------------------------------------------------------
+
+- id: q-state-hash-family
+  class: cross-adr
+  query: How does the state hash relate to database partitioning and to the schema version?
+  corpora: [full, clean]
+
+- id: q-index-publication
+  class: cross-adr
+  query: How is a new retrieval index published, and what happens to the build it replaces?
+  corpora: [full, clean]
+
+- id: q-proposal-path
+  class: cross-adr
+  query: What happens when an AI agent writes knowledge instead of a human?
+  corpora: [full, clean]
+
+# -- broad-architectural -----------------------------------------------------
+
+- id: q-db-design-principles
+  class: broad-architectural
+  query: What are the database design principles covering storage, partitioning, schema versioning and the index?
+  corpora: [full, clean]
+
+- id: q-retrieval-architecture
+  class: broad-architectural
+  query: How is retrieval put together across the word index, the trigram index and the summary forest?
+  corpora: [full, clean]
+
+- id: q-disclosure-enforcement
+  class: broad-architectural
+  query: How are withheld content and secrets kept out of what a search returns?
+  corpora: [full, clean]
+
+# -- conflicting -------------------------------------------------------------
+#
+# Two phrasings of one question the corpus answers two ways: the daemon runbook
+# says a schema change needs no restart, the restart policy says it does. Both
+# are approved, and both are relevant to both phrasings.
+
+- id: q-restart-after-schema-change
+  class: conflicting
+  query: Do I need to restart the daemon after a schema version change?
+  corpora: [full, clean]
+
+- id: q-schema-change-procedure
+  class: conflicting
+  query: What is the procedure to follow after a SQLite schema version change?
+  corpora: [full, clean]
+
+# -- superseded --------------------------------------------------------------
+#
+# Three phrasings of the same question over a three-link chain. The two earlier
+# policies are forbidden rather than merely unranked: returning the 24-hour or
+# 12-hour answer as current is the superseded-knowledge error this class counts.
+
+- id: q-session-token-ttl
+  class: superseded
+  query: What is the session token TTL policy?
+  corpora: [full, clean]
+
+- id: q-current-ttl-policy
+  class: superseded
+  query: What is the current TTL for a session token?
+  corpora: [full, clean]
+
+- id: q-token-lifetime
+  class: superseded
+  query: How long does a session token stay valid after it is minted?
+  corpora: [full, clean]
+
+# -- unknown -----------------------------------------------------------------
+#
+# The two absent-topic queries carry content words only. The word retriever
+# joins a query's terms with OR (`index_query.py`), so one ordinary function
+# word would match most of the corpus and make abstention unreachable by
+# construction — a query that cannot be answered correctly measures the fixture,
+# not the retriever. Every token below was checked absent from every body and
+# every title in this corpus. `kubernetes` is not among them: ADR-0023 uses it
+# as a tokenizer example, so the Kubernetes probe names the topic's other terms.
+
+- id: q-absent-kubernetes
+  class: unknown
+  query: kubelet pod ingress autoscaling
+  corpora: [full, clean]
+
+- id: q-absent-payment-flow
+  class: unknown
+  query: payment chargeback refund merchant settlement
+  corpora: [full, clean]
+
+# The two withheld-topic probes are the opposite case: they are phrased to reach
+# a document that exists in `full` and is gated, so a correct answer is no
+# answer in both corpora.
+- id: q-withheld-credential-cache
+  class: unknown
+  query: in-process credential cache with least-recently-used eviction
+  corpora: [full, clean]
+
+- id: q-withheld-token-rotation
+  class: unknown
+  query: トークンのローテーション手順
+  corpora: [full, clean]
+
+# -- historical (Phase D; the harness skips it) ------------------------------
+
+- id: q-hist-ttl-evolution
+  class: historical
+  query: How has the session token TTL policy changed over time?
+  enabled: false
+  corpora: [full, clean]

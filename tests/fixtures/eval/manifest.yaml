@@ -1,0 +1,116 @@
+contractVersion: 1
+corpusId: adr-corpus-v1
+description: >-
+  The Phase A frozen retrieval-evaluation corpus (ADR-0036 decision 6). Twenty-six visible-plane
+  items build the `clean` index: twelve verbatim ADR snapshots taken at
+  111ab5732dd71efb35f5ecbcd155d75f65ee7de0 and fourteen original documents covering a superseded
+  chain, a conflicting pair, three Japanese bodies and four runbook-shaped documents. Seven
+  withheld-plane items build only the `full` index and exist to be not returned. Item counts
+  below are fixed from the migration documents. Chunk counts measured via the real apply+index
+  path at authoring; they freeze at the S2 joint build.
+kValues:
+- 1
+- 5
+- 10
+migrations:
+- file: 01M9EV0000000000000000M001-adr-0004-sqlite-is-a-derived-artifact.yaml
+  plane: visible
+- file: 01M9EV0000000000000000M002-adr-0006-immutable-revisions-and-optimistic-concurrency.yaml
+  plane: visible
+- file: 01M9EV0000000000000000M003-adr-0007-state-hash-partitioned-databases.yaml
+  plane: visible
+- file: 01M9EV0000000000000000M004-adr-0008-raptor-forest.yaml
+  plane: visible
+- file: 01M9EV0000000000000000M005-adr-0009-no-llm-vendor-lock-in.yaml
+  plane: visible
+- file: 01M9EV0000000000000000M006-adr-0011-local-mcp-authentication.yaml
+  plane: visible
+- file: 01M9EV0000000000000000M007-adr-0013-ai-writes-produce-proposals.yaml
+  plane: visible
+- file: 01M9EV0000000000000000M008-adr-0017-sqlite-schema-versioning.yaml
+  plane: visible
+- file: 01M9EV0000000000000000M009-adr-0021-rank-fusion-over-score-normalisation.yaml
+  plane: visible
+- file: 01M9EV0000000000000000M010-adr-0022-index-lives-in-its-own-database.yaml
+  plane: visible
+- file: 01M9EV0000000000000000M011-adr-0023-trigram-index-beside-the-word-index.yaml
+  plane: visible
+- file: 01M9EV0000000000000000M012-adr-0024-a-purge-is-a-build.yaml
+  plane: visible
+- file: 01M9EV0000000000000000M013-domain-lifecycle-statuses.yaml
+  plane: visible
+- file: 01M9EV0000000000000000M014-operations-daemon-runbook.yaml
+  plane: visible
+- file: 01M9EV0000000000000000M015-operations-index-rebuild-runbook.yaml
+  plane: visible
+- file: 01M9EV0000000000000000M016-security-secret-scan-policy.yaml
+  plane: visible
+- file: 01M9EV0000000000000000M017-testing-mutation-discipline.yaml
+  plane: visible
+- file: 01M9EV0000000000000000M018-security-jwt-verification-guide.yaml
+  plane: visible
+- file: 01M9EV0000000000000000M019-operations-daemon-unyou-guide.yaml
+  plane: visible
+- file: 01M9EV0000000000000000M020-architecture-kensaku-to-sakuin.yaml
+  plane: visible
+- file: 01M9EV0000000000000000M021-domain-session-token-ttl-v1.yaml
+  plane: visible
+- file: 01M9EV0000000000000000M022-domain-session-token-ttl-v2.yaml
+  plane: visible
+- file: 01M9EV0000000000000000M023-domain-session-token-ttl.yaml
+  plane: visible
+- file: 01M9EV0000000000000000M024-architecture-schema-change-restart-policy.yaml
+  plane: visible
+- file: 01M9EV0000000000000000M025-domain-rejected-approach-score-normalisation.yaml
+  plane: visible
+- file: 01M9EV0000000000000000M026-domain-data-retention-policy.yaml
+  plane: visible
+- file: 01M9EV0000000000000000M027-supersede-session-token-ttl-v1.yaml
+  plane: visible
+- file: 01M9EV0000000000000000M028-supersede-session-token-ttl-v2.yaml
+  plane: visible
+- file: 01M9EV0000000000000000M029-withheld-security-draft-scan-hardening.yaml
+  plane: withheld
+- file: 01M9EV0000000000000000M030-withheld-architecture-proposed-storage-redesign.yaml
+  plane: withheld
+- file: 01M9EV0000000000000000M031-withheld-domain-rejected-credential-cache.yaml
+  plane: withheld
+- file: 01M9EV0000000000000000M032-withheld-operations-superseded-daemon-procedure.yaml
+  plane: withheld
+- file: 01M9EV0000000000000000M033-withheld-testing-deprecated-flaky-quarantine.yaml
+  plane: withheld
+- file: 01M9EV0000000000000000M034-withheld-security-confidential-token-rotation.yaml
+  plane: withheld
+- file: 01M9EV0000000000000000M035-withheld-domain-restricted-retention-exceptions.yaml
+  plane: withheld
+- file: 01M9EV0000000000000000M036-withheld-supersede-daemon-procedure.yaml
+  plane: withheld
+- file: 01M9EV0000000000000000M037-withheld-deprecate-flaky-quarantine.yaml
+  plane: withheld
+- file: 01M9EV0000000000000000M038-withheld-reclassify-retention-exceptions.yaml
+  plane: withheld
+census:
+  full:
+    items: 33
+    byStatus:
+      approved: 26
+      superseded: 3
+      draft: 1
+      proposed: 1
+      rejected: 1
+      deprecated: 1
+    bySensitivity:
+      public: 12
+      internal: 19
+      confidential: 1
+      restricted: 1
+    chunks: 0
+  clean:
+    items: 26
+    byStatus:
+      approved: 24
+      superseded: 2
+    bySensitivity:
+      public: 12
+      internal: 14
+    chunks: 0
