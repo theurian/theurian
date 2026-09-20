@@ -43,6 +43,7 @@ alternatives that were rejected and why.
 | [0033](0033-knowledge-candidate-generation.md) | Candidate generation: the caller is the model; Theurian verifies the gate | accepted |
 | [0034](0034-migrate-apply-enforces-the-merge.md) | `migrate apply` enforces the merge | proposed |
 | [0035](0035-interactive-source-curation-is-agent-mediated.md) | Interactive curation of sources is agent-mediated and does not relax the approval gate | proposed |
+| [0036](0036-golden-judgements-are-committed-regression-fixtures.md) | Golden judgements are committed regression fixtures, never a ranking input | accepted |
 
 ## Writing a new ADR
 
