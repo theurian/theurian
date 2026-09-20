@@ -15,12 +15,28 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import yaml
 from jsonschema import Draft202012Validator
 
+from theurian.application.authorization import DEFAULT_CEILING, ServingProfile
+from theurian.domain.enums import Sensitivity
+from theurian.domain.migration import DEFAULT_SENSITIVITY
+
 SCHEMAS_DIR = Path(__file__).resolve().parent / "schemas"
+
+#: The sensitivity ceiling every harness build serves under (build.py never
+#: writes a serving-profile file, so `index build` always falls back to this
+#: default) -- the axis ADR-0036's gate-vs-census derivation rule tests a
+#: withheld item's sensitivity against.
+BUILD_CEILING: Final = DEFAULT_CEILING
+BUILD_CEILING_SENSITIVITIES: Final = ServingProfile(ceiling=BUILD_CEILING).visible_sensitivities
+
+#: Statuses `index build --include-unapproved` admits to the index that a
+#: default-flags query (`includeUnapproved=false`) still refuses to surface --
+#: the query-time gate T-17a exists to test.
+GATE_TESTED_STATUSES: Final = frozenset({"draft", "proposed"})
 
 
 class CorpusError(Exception):
@@ -89,14 +105,39 @@ class JudgementEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class WithheldItemCoverage:
+    """One withheld-plane item's classification (ADR-0036, the gate-vs-census
+    derivation rule).
+
+    ``is_gate_tested``: the item's final status is draft or proposed AND its
+    final sensitivity sits within :data:`BUILD_CEILING_SENSITIVITIES` -- so it
+    is admitted to the index by ``--include-unapproved`` and a default-flags
+    query must not leak it through (the T-17a mechanism this harness measures).
+    Otherwise the item is census-tested: it never reaches the index under
+    either build flavor (a retired final status, or a sensitivity above the
+    ceiling), so its absence from a response is a build-time property rather
+    than evidence about the query-time gate.
+    """
+
+    item_id: str
+    final_status: str
+    final_sensitivity: str
+    is_gate_tested: bool
+
+
+@dataclass(frozen=True, slots=True)
 class Corpus:
     root: Path
     manifest: Manifest
     queries: tuple[QueryEntry, ...]
     judgements: tuple[JudgementEntry, ...]
+    withheld_coverage: tuple[WithheldItemCoverage, ...]
 
     def judgement_for(self, query_id: str) -> JudgementEntry | None:
         return next((j for j in self.judgements if j.query_id == query_id), None)
+
+    def coverage_for(self, item_id: str) -> WithheldItemCoverage | None:
+        return next((c for c in self.withheld_coverage if c.item_id == item_id), None)
 
 
 def load_corpus(root: Path) -> Corpus:
@@ -116,9 +157,12 @@ def load_corpus(root: Path) -> Corpus:
     manifest = _parse_manifest(manifest_raw)
     queries = _parse_queries(queries_raw)
     judgements = _parse_judgements(judgements_raw)
+    documents = {
+        entry.file: _load_yaml(root / "migrations" / entry.file) for entry in manifest.migrations
+    }
 
     _check_migration_order(manifest)
-    _check_no_visible_depends_on_withheld(root, manifest)
+    _check_no_visible_depends_on_withheld(manifest, documents)
     _check_unique_query_ids(queries)
     _check_unique_judgement_query_ids(judgements)
     _check_judgements_name_declared_queries(queries, judgements)
@@ -127,7 +171,14 @@ def load_corpus(root: Path) -> Corpus:
     _check_judgement_not_empty(judgements)
     _check_no_evidence_subsumption(judgements)
 
-    return Corpus(root=root, manifest=manifest, queries=queries, judgements=judgements)
+    withheld_coverage = _withheld_item_coverage(manifest, documents)
+    return Corpus(
+        root=root,
+        manifest=manifest,
+        queries=queries,
+        judgements=judgements,
+        withheld_coverage=withheld_coverage,
+    )
 
 
 def _schema(name: str) -> dict[str, Any]:
@@ -221,15 +272,12 @@ def _check_migration_order(manifest: Manifest) -> None:
         )
 
 
-def _check_no_visible_depends_on_withheld(root: Path, manifest: Manifest) -> None:
+def _check_no_visible_depends_on_withheld(manifest: Manifest, documents: dict[str, Any]) -> None:
     """No ``visible``-plane migration's ``dependsOn`` names a ``withheld`` one.
 
     A visible migration applied on its own -- the ``clean`` build never applies
     a withheld one -- would otherwise depend on a migration that is not there.
     """
-    documents = {
-        entry.file: _load_yaml(root / "migrations" / entry.file) for entry in manifest.migrations
-    }
     plane_by_id = {documents[entry.file]["id"]: entry.plane for entry in manifest.migrations}
     for entry in manifest.migrations:
         if entry.plane != "visible":
@@ -335,3 +383,57 @@ def _check_no_evidence_subsumption(judgements: tuple[JudgementEntry, ...]) -> No
                 f"judgement for {judgement.query_id!r} lists {sorted(overlap)} both with and "
                 f"without filePath, so a hit citing one file would satisfy both entries",
             )
+
+
+def _withheld_item_coverage(
+    manifest: Manifest, documents: dict[str, Any]
+) -> tuple[WithheldItemCoverage, ...]:
+    """Classify every withheld-plane item (ADR-0036, the gate-vs-census derivation rule).
+
+    Final status is the last ``upsertRevision.metadata.status`` in migration
+    order, overridden by a later ``deprecateItem`` -> ``deprecated``. Final
+    sensitivity is the last ``upsertRevision.metadata.sensitivity`` (default
+    ``internal``, ADR-0027 decision 1's own default when a revision omits it),
+    overridden by a later ``changeSensitivity``. An item id is "withheld" if
+    any operation of a withheld-plane migration names it.
+    """
+    withheld_files = [entry.file for entry in manifest.migrations if entry.plane == "withheld"]
+    withheld_item_ids: set[str] = set()
+    for filename in withheld_files:
+        for op in documents[filename].get("operations", []):
+            item_id = op.get("itemId")
+            if item_id is not None:
+                withheld_item_ids.add(item_id)
+
+    status_by_item: dict[str, str] = {}
+    sensitivity_by_item: dict[str, str] = {}
+    for entry in manifest.migrations:
+        for op in documents[entry.file].get("operations", []):
+            item_id = op.get("itemId")
+            if item_id not in withheld_item_ids:
+                continue
+            if op["op"] == "upsertRevision":
+                metadata = op["metadata"]
+                status_by_item[item_id] = metadata["status"]
+                sensitivity_by_item[item_id] = metadata.get(
+                    "sensitivity", DEFAULT_SENSITIVITY.value
+                )
+            elif op["op"] == "deprecateItem":
+                status_by_item[item_id] = "deprecated"
+            elif op["op"] == "changeSensitivity":
+                sensitivity_by_item[item_id] = op["sensitivity"]
+
+    coverage = []
+    for item_id in sorted(withheld_item_ids):
+        status = status_by_item.get(item_id, "draft")
+        sensitivity = sensitivity_by_item.get(item_id, DEFAULT_SENSITIVITY.value)
+        within_ceiling = Sensitivity(sensitivity) in BUILD_CEILING_SENSITIVITIES
+        coverage.append(
+            WithheldItemCoverage(
+                item_id=item_id,
+                final_status=status,
+                final_sensitivity=sensitivity,
+                is_gate_tested=status in GATE_TESTED_STATUSES and within_ceiling,
+            )
+        )
+    return tuple(coverage)

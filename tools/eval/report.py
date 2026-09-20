@@ -34,6 +34,29 @@ from metrics import (
 #: whole set the manifest schema's `corpora` enum admits.
 _EQUALITY_CORPORA_COUNT: Final = 2
 
+#: What the equality battery actually measures (ADR-0036, the gate-vs-census
+#: derivation rule): with plain builds a status-withheld row never enters the
+#: index, making the comparison vacuous for the mechanism it exists to catch.
+#: Both builds index with `--include-unapproved`; every query here still runs
+#: at default flags, so what is compared is the query-time gate over the
+#: draft/proposed rows the index now holds, never the build-time exclusion.
+EQUALITY_SCOPE: Final = (
+    "Query-time gate over draft/proposed rows admitted to the index by "
+    "--include-unapproved on both builds; every query in this section runs "
+    "at default flags (includeUnapproved=false)."
+)
+
+#: A judgement's forbidden-trap contribution reads zero whenever every
+#: forbidden item is census-tested, i.e. excluded from the index under either
+#: build flavor -- a build-time property this harness's corpora already
+#: guarantee, not a ranking signal. Annotated rather than silently trusted, so
+#: a zero this cause does not honestly explain is left unannotated instead.
+_FORBIDDEN_ZERO_BY_CONSTRUCTION: Final = (
+    "zero-by-construction: every forbidden item is census-tested -- excluded "
+    "from the index under either build flavor, so its absence is a "
+    "build-time property, not evidence about ranking"
+)
+
 
 @dataclass(frozen=True, slots=True)
 class HarnessConstants:
@@ -50,6 +73,7 @@ class HarnessConstants:
     include_unapproved: bool
     use_dense: bool
     equality_limit: int
+    build_ceiling: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,9 +100,7 @@ def build_report(
         judgement = loaded.judgement_for(query.id)
         if judgement is None:
             continue
-        queries_section[query.id] = _query_entry(
-            query, judgement, constants, runs, loaded.manifest.k_values
-        )
+        queries_section[query.id] = _query_entry(query, judgement, constants, runs, loaded)
 
     return {
         "corpusId": loaded.manifest.corpus_id,
@@ -89,10 +111,14 @@ def build_report(
             "includeUnapproved": constants.include_unapproved,
             "useDense": constants.use_dense,
             "equalityLimit": constants.equality_limit,
+            "buildCeiling": constants.build_ceiling,
         },
         "census": {name: _census_dict(value) for name, value in census.items()},
         "queries": queries_section,
-        "equality": _equality_section(loaded, constants, runs),
+        "equality": {
+            "scope": EQUALITY_SCOPE,
+            "queries": _equality_section(loaded, constants, runs),
+        },
         "aggregated": _aggregate(queries_section, loaded.manifest.k_values),
     }
 
@@ -102,35 +128,58 @@ def _query_entry(
     judgement: JudgementEntry,
     constants: HarnessConstants,
     runs: Sequence[QueryRun],
-    k_values: Sequence[int],
+    loaded: Corpus,
 ) -> dict[str, Any]:
+    k_values = loaded.manifest.k_values
     corpora_section: dict[str, Any] = {}
     is_equality = len(set(query.corpora)) > 1
     for corpus_name in sorted(set(query.corpora)):
         base = _find_run(runs, query.id, corpus_name, constants.limit)
-        entry = _query_metrics(base.response, judgement, k_values)
+        entry = _query_metrics(base.response, judgement, k_values, loaded)
         if is_equality:
             widened = _find_run(runs, query.id, corpus_name, constants.equality_limit)
-            entry["atEqualityLimit"] = _query_metrics(widened.response, judgement, k_values)
+            entry["atEqualityLimit"] = _query_metrics(widened.response, judgement, k_values, loaded)
         corpora_section[corpus_name] = entry
     return {"class": query.query_class, "corpora": corpora_section}
 
 
 def _query_metrics(
-    response: dict[str, Any], judgement: JudgementEntry, k_values: Sequence[int]
+    response: dict[str, Any], judgement: JudgementEntry, k_values: Sequence[int], loaded: Corpus
 ) -> dict[str, Any]:
     recall = {
         str(k): value
         for k in sorted(k_values)
         if (value := recall_at_k(response, judgement, k)) is not None
     }
-    return {
+    metrics: dict[str, Any] = {
         "recallAtK": recall,
         "mrr": mrr(response, judgement),
         "evidencePrecision": evidence_precision(response, judgement),
         "forbiddenPresent": forbidden_present(response, judgement),
         "abstentionCorrect": abstention_correct(response, judgement),
     }
+    cause = _forbidden_zero_cause(judgement, loaded)
+    if cause is not None:
+        metrics["forbiddenPresentCause"] = cause
+    return metrics
+
+
+def _forbidden_zero_cause(judgement: JudgementEntry, loaded: Corpus) -> str | None:
+    """Why a ``forbiddenPresent: false`` result is guaranteed rather than earned.
+
+    Only stated when every forbidden item is a withheld-plane item classified
+    census-tested: excluded from the index under both build flavors, so its
+    absence proves nothing about ranking. A forbidden item this harness cannot
+    classify (a visible-plane item, or a gate-tested one that could genuinely
+    leak) leaves the cause undecided, and this returns ``None`` rather than
+    guessing.
+    """
+    if not judgement.forbidden:
+        return None
+    classifications = [loaded.coverage_for(item.item_id) for item in judgement.forbidden]
+    if all(c is not None and not c.is_gate_tested for c in classifications):
+        return _FORBIDDEN_ZERO_BY_CONSTRUCTION
+    return None
 
 
 def _equality_section(

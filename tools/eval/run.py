@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Final
 
 from build import BuiltProject, build_both
-from corpus import CorpusError, QueryEntry, load_corpus
+from corpus import BUILD_CEILING, CorpusError, QueryEntry, load_corpus
 from report import (
     HarnessConstants,
     QueryRun,
@@ -59,6 +59,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         include_unapproved=INCLUDE_UNAPPROVED,
         use_dense=USE_DENSE,
         equality_limit=EQUALITY_LIMIT,
+        build_ceiling=BUILD_CEILING.value,
     )
 
     args.out.mkdir(parents=True, exist_ok=True)

@@ -116,7 +116,17 @@ def _build_one(loaded: Corpus, root: Path, name: str, data_dir: Path) -> BuiltPr
     _invoke(root, "migrate", "apply")
 
     started = time.monotonic()
-    build_report = _invoke(root, "index", "build")
+    # Both flavors, not just `full` (ADR-0036, the gate-vs-census derivation
+    # rule): `clean` never holds a withheld row, so admitting drafts to its
+    # index is a no-op there, while making `full` the only flavor that does it
+    # would put `retrieval.indexesUnapproved` -- a published field reporting
+    # exactly this flavor -- into the differing set an equality query is
+    # supposed to hold to {indexBuildId, snapshotId}. One flavor on both sides
+    # turns the property into one query against an index that holds the
+    # withheld documents and an index that never did, with the query itself
+    # left at default flags (`includeUnapproved=false`) -- the query-time gate
+    # is the thing under measurement, not the build.
+    build_report = _invoke(root, "index", "build", "--include-unapproved")
     elapsed_ms = (time.monotonic() - started) * 1000
     index_path = Path(build_report["indexPath"])
     cost = IndexBuildCost(
