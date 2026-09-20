@@ -37,6 +37,18 @@ queries:
   query: How does this project treat a surviving mutant from a mutation run?
   corpora: [full, clean]
 
+# The displacement carrier, authored for the channel presence cannot carry: with
+# includeUnapproved=true against the full build, the withheld draft
+# security.draft-scan-hardening comes back at rank 1, directly above the visible
+# security.secret-scan-policy this query is judged on, and every visible row
+# below it shifts down a slot. So full/clean equality here says something about
+# which rows reached which slot and which excerpt of a visible row was published,
+# and not only that no withheld row appeared.
+- id: q-secret-scan-hardening
+  class: exact-decision
+  query: When the secret scan detectors are hardened, does a detector hit block the index build or only report it?
+  corpora: [full, clean]
+
 # The two CJK probes. Both are aimed at security.jwt-verification-guide;
 # operations.daemon-unyou-guide is the rank distractor, sharing one of the two
 # terms and not the other, and is deliberately neither relevant nor forbidden.

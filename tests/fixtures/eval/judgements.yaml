@@ -4,7 +4,7 @@
 # Negative consequence: there is no inter-annotator agreement to report). They
 # are a committed regression fixture and never an input to ranking.
 #
-# No withheld-plane item appears in any `relevant` list. Two of them appear in
+# No withheld-plane item appears in any `relevant` list. Three of them appear in
 # `forbidden`, which is the only way a judgement may name one.
 judgements:
 
@@ -43,6 +43,16 @@ judgements:
 - queryId: q-mutation-discipline
   relevant:
   - itemId: testing.mutation-discipline
+
+# The displacement carrier (queries.yaml). `forbidden` names the withheld draft
+# that outranks the relevant item when it is visible: the marker sweep reads
+# bodies, so a response publishing this item's id and title without excerpting a
+# marker line would pass that sweep and has to fail here instead.
+- queryId: q-secret-scan-hardening
+  relevant:
+  - itemId: security.secret-scan-policy
+  forbidden:
+  - itemId: security.draft-scan-hardening
 
 - queryId: q-cjk-mixed-length
   relevant:
