@@ -285,11 +285,12 @@ jobs:
           # 0 Markdown links of any kind, so excluding them removes no check.
           #
           # Nothing goes unchecked for it either. Each of the 12 snapshots
-          # records a `sourceAnchors` `filePath` under `docs/adr/`; 12/12
-          # exist and are tracked, 12 distinct (measured 2026-09-20), so every
-          # excluded link is still checked -- once, at `docs/adr/`, where it
-          # means something. The corpus's single `blob/main` self-reference is
-          # in that same set (ADR-0013's), so the argument covers it too.
+          # records a `sourceAnchors` `filePath` under `docs/adr/`: 12
+          # distinct paths, all tracked, and all 12 still byte-identical to
+          # the snapshot (measured 2026-09-20), so the excluded links are
+          # exactly the links still checked at `docs/adr/`, where they mean
+          # something. The corpus's single `blob/main` self-reference is in
+          # that same set (ADR-0013's), so the argument covers it too.
           #
           # What stays in: `tests/fixtures/eval/` outside `knowledge/`, which
           # is 0 Markdown files today (the manifest, queries, judgements and
