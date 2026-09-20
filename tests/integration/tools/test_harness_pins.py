@@ -29,8 +29,8 @@ _HARNESS_DIR = REPO_ROOT / "tools" / "eval"
 if str(_HARNESS_DIR) not in sys.path:
     sys.path.insert(0, str(_HARNESS_DIR))
 
-import build as harness_build  # noqa: E402
 import corpus as harness_corpus  # noqa: E402
+import corpus_build as harness_build  # noqa: E402
 import metrics as harness_metrics  # noqa: E402
 import run as harness_run  # noqa: E402
 from wire import ToolCall, mcp_session  # noqa: E402
@@ -60,6 +60,19 @@ EQUALITY_QUERY = "authenticates inbound requests"
 #: gate T-17a is about), which the reach control below proves is a real gate
 #: rather than the row's simple absence.
 WITHHELD_QUERY = "0710645F7E85DCE09F4B"
+
+#: `token-rotation-policy`'s own text. Measured (this session, against the
+#: committed smoke corpus): at default flags this returns three VISIBLE
+#: results in `full` -- security.token-rotation, architecture.gateway-policy,
+#: architecture.retry-policy, in that order, identical in `clean` -- and with
+#: `includeUnapproved=true` against `full` the draft runbook joins as a
+#: fourth, ranked candidate (security.token-rotation, architecture.gateway-
+#: policy, security.incident-runbook, architecture.retry-policy). So this
+#: query is adversarial-measured candidacy, not asserted: the runbook
+#: genuinely competes for it (shares "rotation"/"ledger"/"immediately"
+#: vocabulary with its own body), and the set-equality property is measured
+#: over >=2 real visible hits, not one.
+COMPETING_VOCABULARY_QUERY = "What is the token rotation policy?"
 
 
 @pytest.fixture(scope="module")
@@ -106,7 +119,9 @@ def _search(
 
 
 @pytest.mark.parametrize(
-    "query", [WITHHELD_QUERY, EQUALITY_QUERY], ids=["gate-tested-vocabulary", "shared-vocabulary"]
+    "query",
+    [WITHHELD_QUERY, EQUALITY_QUERY, COMPETING_VOCABULARY_QUERY],
+    ids=["gate-tested-vocabulary", "shared-vocabulary", "competing-vocabulary"],
 )
 def test_the_equality_query_differs_from_its_clean_counterpart_only_in_build_identity(
     smoke_calls: dict[str, Any], query: str
@@ -122,6 +137,12 @@ def test_the_equality_query_differs_from_its_clean_counterpart_only_in_build_ide
     or whose ``retrieval.snapshotId`` had gone insensitive to canonical
     state -- both are contract changes that should be decided, not silently
     absorbed by a comparison that quietly widens.
+
+    The third parameter is the adversarial case: unlike the other two, the
+    draft row is a genuine ranking *candidate* for this query (see
+    ``COMPETING_VOCABULARY_QUERY``'s own measurement) and >=2 visible items
+    are in play, so this is where a leak through candidate displacement or
+    BM25 collection statistics would actually have somewhere to show up.
     """
     full = _search(smoke_calls, "full", query)
     clean = _search(smoke_calls, "clean", query)
@@ -210,7 +231,74 @@ def test_forbidden_present_cause_is_set_only_for_a_census_tested_trap() -> None:
     assert "forbiddenPresentCause" not in gate_tested
 
 
-# -- C: determinism (decisions 5 and 7) ---------------------------------------
+# -- C: no artifact string value leaks corpus content -------------------------
+
+#: Below this, near-everything is a substring of near-everything -- short
+#: status/sensitivity/class labels (`"rejected"`, `"internal"`) coincide with
+#: ordinary English words the corpus's own prose uses honestly (the rejected
+#: note's body literally says "was rejected"). A real leak -- an excerpt, an
+#: itemId, the withheld secret key -- is always well above this.
+_ARTIFACT_LEAK_MIN_LENGTH = 16
+
+
+def _every_string_value(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for item in value.values() for s in _every_string_value(item)]
+    if isinstance(value, list):
+        return [s for item in value for s in _every_string_value(item)]
+    return []
+
+
+def _corpus_texts() -> list[str]:
+    """Every knowledge body and migration ``metadata.title`` in the smoke corpus."""
+    texts = [
+        path.read_text(encoding="utf-8")
+        for path in sorted((SMOKE_CORPUS / "knowledge").rglob("*.md"))
+    ]
+    for migration_path in sorted((SMOKE_CORPUS / "migrations").glob("*.yaml")):
+        document = yaml.safe_load(migration_path.read_text(encoding="utf-8"))
+        for op in document.get("operations", []):
+            metadata = op.get("metadata")
+            if metadata and "title" in metadata:
+                texts.append(metadata["title"])
+    return texts
+
+
+def test_no_artifact_string_value_is_contained_in_any_corpus_body_or_migration_title() -> None:
+    """ADR-0036 decision 6: the harness produces metrics, never content.
+
+    ``report.json`` and ``timings.json`` publish counts, classes, ids and
+    cause strings -- nothing that should ever contain a knowledge body's
+    prose or a migration's title. Positive probe: the withheld runbook's own
+    synthetic secret key is genuinely present in the corpus (proving the
+    scan can find a real match) and must be absent from both artifacts. This
+    reddens the moment an excerpt- or itemId-bearing field is added to
+    ``report._query_metrics`` and that field's value happens to quote corpus
+    text back.
+    """
+    texts = _corpus_texts()
+    assert any(WITHHELD_QUERY in text for text in texts), (
+        "the positive probe needs its target genuinely present in the corpus"
+    )
+
+    with tempfile.TemporaryDirectory(prefix="theurian-eval-artifact-") as out_name:
+        code = harness_run.main(["--corpus", str(SMOKE_CORPUS), "--out", out_name])
+        assert code == 0
+        report = json.loads((Path(out_name) / "report.json").read_text())
+        timings = json.loads((Path(out_name) / "timings.json").read_text())
+
+    values = _every_string_value(report) + _every_string_value(timings)
+    leaked = [
+        value
+        for value in values
+        if len(value) >= _ARTIFACT_LEAK_MIN_LENGTH and any(value in text for text in texts)
+    ]
+    assert leaked == []
+
+
+# -- D: determinism (decisions 5 and 7) ---------------------------------------
 
 
 def test_two_consecutive_harness_runs_over_the_smoke_corpus_produce_a_byte_identical_report() -> (
@@ -244,7 +332,7 @@ def test_two_consecutive_harness_runs_over_the_smoke_corpus_produce_a_byte_ident
         assert timings_a != timings_b, "decision 7's split is a property, not a filing convention"
 
 
-# -- D: the one loader refusal that needs a real build ------------------------
+# -- E: the one loader refusal that needs a real build ------------------------
 
 _CENSUS_MIGRATION = "1N311FSDACRHQJQV010HQ93Y3Q-sample.yaml"
 

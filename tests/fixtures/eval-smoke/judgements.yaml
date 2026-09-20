@@ -10,8 +10,7 @@ judgements:
   - queryId: mainframe-disaster-recovery
     expectAbstention: true
   - queryId: withheld-incident-key
-    relevant:
-      - itemId: security.incident-runbook
+    expectAbstention: true
   - queryId: gateway-policy-cross-build
     relevant:
       - itemId: architecture.gateway-policy

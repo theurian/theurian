@@ -2,6 +2,7 @@ queries:
   - id: token-rotation-policy
     class: exact-decision
     query: "What is the token rotation policy?"
+    corpora: [full, clean]
   - id: cache-invalidation-current
     class: superseded
     query: "How is the shared cache invalidated?"
