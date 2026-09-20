@@ -92,9 +92,9 @@ returns **11 lines in 5 files**, every one of them an MCP wire-method name
 (`tools/call`, `tools/list`) or a comment naming the `tools/` directory, and
 none of them a harness path — so the narrow key above is empty, and the
 neighbourhood it sits in is stated rather than left to be trusted. The
-ratchet that makes this stay true is a structural test owed to slice S2 and
-named under *Still owed*; until it lands, this is a dated measurement and not an
-enforced invariant.
+ratchet that makes this stay true landed in slice S2 (`9cd9ee34`): a committed
+test recomputes the scan against the tree, so decision 2 is an enforced
+invariant and not only a dated measurement. *Compliance* states its reach.
 
 ### 3. Judgements serve regression detection and design decisions, and nothing else
 
@@ -220,8 +220,14 @@ not know — and nothing here predicts what it would find.
     over `theurian.security.content_secrets.scan_text`. It reports rather than
     refusing, because by then the content is already indexed.
 
-  **Owed at slice S3:** the corpus pull request records which of these two
-  actually reached it, measured rather than assumed.
+  **Discharged at slice S3** ([PR #778](https://github.com/theurian/theurian/pull/778),
+  merged as `d11f3552`), whose body records both, measured rather than assumed,
+  and records that they do not reach the same bytes: the full-history scan
+  covers all 36 bodies — `gitleaks detect` over the commit range and over
+  `tests/fixtures` alone, no leaks found, nothing allowlisted — while the
+  index-time scan sees only what a build writes, 24 bodies in `clean` and 26 in
+  `full`, never the five withheld bodies no build indexes. Reading the two as
+  covering one surface is the error that record exists to prevent.
 - **The three schemas under `tools/eval/schemas/` are the normative contract**
   for `manifest.yaml`, `queries.yaml` and `judgements.yaml`. Each states the
   shape of one file. Cross-file rules — that every `queryId` names a declared
@@ -418,6 +424,93 @@ stated as its body holds it, not as its name suggests:
   test in the same file, and the three `A`-group parametrized cases hold that
   every schema is itself valid JSON Schema.
 
+Landed in Phase A slice S2 (`9cd9ee34`), which also ships the smoke corpus
+(`tests/fixtures/eval-smoke/`) the integration pins below build and query. The
+reach of each is stated as its body holds it — the fixtures it builds and the
+assertions it makes — not as its name or its docstring reads:
+
+- **Decision 2's structural pin** —
+  `tests/unit/tools/test_harness_pins.py::test_no_module_under_core_src_references_the_harness_or_its_fixtures`
+  recomputes the decision-2 key against the tree. It derives its needle
+  population from where a corpus manifest actually sits — an `rglob` for
+  `manifest.yaml` under `tests/fixtures/`, so a corpus nested one directory
+  deeper is still in scope — plus the harness directory taken from the loader
+  module's own `__file__`; expands each root into its repo-relative path, its
+  last two segments, and that short form dotted; asserts the population is
+  non-empty; and asserts that no line of any `.py` file under
+  `packages/theurian-core/src/` contains any of them. A root already two
+  segments deep yields two spellings rather than three, which is why the helper
+  returns a set.
+  **Two positive controls, each against a planted file in `tmp_path` rather
+  than against the tree**:
+  `test_the_reference_scan_reports_a_planted_full_path_reference` plants a line
+  naming a needle with at least two path separators, and
+  `test_the_reference_scan_also_reports_a_planted_short_form_reference` plants
+  one naming a `fixtures/`-prefixed short form; each asserts the scan returns
+  exactly that one file. What the controls hold is that the scan is not blind.
+  That the tree itself is clean is the first test's own assertion.
+- **Decision 6's set-equality pin, its two reach controls and its companion** —
+  `tests/integration/tools/test_harness_pins.py`.
+  `test_the_equality_query_differs_from_its_clean_counterpart_only_in_build_identity`
+  searches each of the two builds at default flags and asserts that
+  `differing_paths` over the whole responses is **equal** to
+  `{retrieval.indexBuildId, retrieval.snapshotId}` — equality, not a subset —
+  for three parametrized queries: the gate-tested row's own synthetic key, a
+  phrase matching one document present identically in both planes, and a query
+  written to compete with the draft row for shared vocabulary.
+  `test_the_default_flag_gate_hides_the_draft_row_the_include_unapproved_flag_reveals`
+  asserts that the first of those returns nothing from `full` at default flags,
+  returns the draft item under `includeUnapproved`, and returns nothing from
+  `clean` under that flag either — so the equality is earned by the gate rather
+  than by the row's absence.
+  `test_the_competing_vocabulary_querys_candidacy_is_an_enforced_premise`
+  asserts the third reaches at least two visible ids, the same ids in the same
+  order from both builds, equal to a pinned set of three, and that the draft row
+  comes back under the flag from `full` and never from `clean`.
+  The companion,
+  `test_both_build_identity_fields_are_constant_and_nonempty_within_one_build`,
+  runs three queries against the `full` build alone and asserts the two excepted
+  fields are equal across all three and that neither is empty — the harness's
+  version of the product's
+  `test_the_build_identity_a_search_reports_does_not_vary_with_the_query`.
+- **The loader's within-document obligations** — five named refusals in
+  `tools/eval/corpus.py`, each driven by a test in
+  `tests/unit/tools/test_harness_pins.py` that builds a minimal corpus
+  violating exactly one rule and asserts `CorpusError.rule` names it:
+  `duplicate-query-id`
+  (`test_duplicate_query_id_rule_refuses_two_queries_sharing_an_id`),
+  `duplicate-judgement-query-id`
+  (`test_duplicate_judgement_query_id_rule_refuses_two_judgements_sharing_a_query_id`),
+  `relevant-forbidden-overlap`
+  (`test_relevant_forbidden_overlap_rule_refuses_the_same_item_id_in_both_lists`),
+  `empty-judgement`
+  (`test_empty_judgement_rule_refuses_a_judgement_that_judges_nothing`) and
+  `evidence-subsumption`
+  (`test_evidence_subsumption_rule_refuses_a_plain_and_narrowed_entry_for_one_source`).
+  **The subsumption obligation is held by two mechanisms, and only one of them
+  is the loader.** `_check_no_evidence_subsumption` intersects the plain
+  `sourceUri` set with the narrowed one, so what that rule and its pin hold is
+  the `(u, absent)`-beside-`(u, f)` half — the one that would let a single
+  anchor satisfy both entries and score twice, inflating evidence precision.
+  The exact-`(sourceUri, filePath)`-pair half is the schema's: `evidence`
+  declares `uniqueItems`, and `evidenceRef` is closed at exactly
+  `{sourceUri, filePath}`, so two entries sharing a pair are the same object and
+  are refused at validation (slice S1, `111ab573`). That closed shape is what
+  keeps the pair case inside `uniqueItems`' reach, since `uniqueItems` compares
+  whole items and two entries agreeing on the field that matters while differing
+  anywhere else would be distinct to it. The S1 test that drives it,
+  `test_judgements_rejects_duplicate_evidence_entries`, plants two
+  **bare-`sourceUri`** entries; the pair case follows from the closed shape
+  rather than from a case any test plants.
+- **The determinism pin for decisions 5 and 7** —
+  `test_two_consecutive_harness_runs_over_the_smoke_corpus_produce_a_byte_identical_report`,
+  in the same file: two runs into two output directories, both asserted to exit
+  0, `report.json` asserted byte-identical between them, and `timings.json`
+  asserted **not** identical. Decision 7's split is held as a property by that
+  second assertion, in the same body rather than by a separate test. The
+  docstring carries the scope decision 5 names — one machine, one interpreter,
+  one SQLite build, consecutive runs — and nothing here reaches a second machine.
+
 Measured now, and reproducible from this ADR (2026-09-20, on the branch of
 PR #776):
 
@@ -429,55 +522,6 @@ PR #776):
 
 Still owed, with the phase that would satisfy it:
 
-- **Phase A slice S2 — a structural pin for decision 2.** A test that
-  recomputes the decision-2 key against the tree and asserts the result is
-  empty, with a positive control proving the scan can see a planted reference —
-  an empty answer from a scan that cannot find anything states nothing. Until
-  it lands, decision 2 is a dated measurement rather than an enforced
-  invariant, and a runtime module could grow a harness import without anything
-  going RED. **The pin derives its population from where a corpus manifest
-  actually sits** — or the contract pins the corpus root — rather than
-  hardcoding the two path prefixes the key above spells, so that relocating the
-  corpus cannot leave the pin green and blind.
-- **Phase A slice S2 — the set-equality pin for decision 6.** A test asserting
-  that the set of fields differing between a `full`-corpus response and a
-  `clean`-corpus response is **equal** to
-  `{retrieval.indexBuildId, retrieval.snapshotId}` — set equality in the
-  direction decision 6 establishes, so that a harness which has stopped
-  publishing an excepted field, or whose `retrieval.snapshotId` has gone
-  insensitive to canonical state, reddens rather than passing — over the
-  whole ordered response, paired with a control proving the battery's queries
-  actually reach the withheld plane. **Its companion is owed with it**: an
-  assertion that both excepted fields are constant across the queries the
-  battery runs against one build. The product's sibling is
-  `tests/integration/test_mcp_tools.py::test_the_build_identity_a_search_reports_does_not_vary_with_the_query`,
-  whose docstring gives the reason — "A field left out of a comparison is a
-  field nothing checks" — and whose body runs one matching and one
-  non-matching query against one project, asserts the two `BUILD_IDENTITY`
-  fields equal between them, and asserts neither is empty. Without the
-  harness's own version, "neither can be a function of a query" is a sentence
-  here where it is a test there.
-- **Phase A slice S2 — the determinism pin for decisions 5 and 7.** Two
-  consecutive runs over one corpus produce a byte-identical `report.json`, with
-  the scope the test measures stated in its own docstring; and its sibling, that
-  a run whose `timings.json` differs leaves `report.json` unchanged, which is
-  what makes decision 7's split a property rather than a filing convention.
-- **Phase A slice S2 — the loader's within-document obligations.** JSON Schema
-  states the shape of one file and cannot reach identity *inside* an array:
-  `uniqueItems` compares whole items, so two entries agreeing on the field that
-  matters and differing anywhere else are distinct to it. So the loader owes,
-  and nothing holds today: `queries[].id` unique; `judgements[].queryId`
-  unique; `relevant` and `forbidden` disjoint within an entry; a judgement
-  entry carrying none of `relevant`, `forbidden`, `evidence` or
-  `expectAbstention` refused, because it judges nothing while validating
-  (`judgementEntry` requires `queryId` alone); and no `evidence` entry that
-  **subsumes** another — no two entries sharing a `sourceUri` where one omits
-  `filePath`, and no two sharing a `(sourceUri, filePath)` pair. The
-  subsumption half is what a pair key alone misses: `filePath` is an "Optional
-  file path narrowing the source anchor to one file within it", so `(u, absent)`
-  standing beside `(u, f)` lets a correct answer citing that file satisfy both
-  entries and score one anchor twice, inflating evidence precision. These sit
-  beside the cross-file rules decision 6 already assigns to that loader.
 - **Phase A slice S4 — the committed baseline and the advisory CI comparison.**
   The Phase A Exit-criteria row's own words: "A baseline report is committed and
   CI reports regressions against it." Until that lands, decision 4's *advisory*
@@ -564,6 +608,59 @@ holding the withheld documents and an index that never did. Build-time-excluded
 mechanisms (sensitivity above the ADR-0025 ceiling) and status-unsurfaceable ones
 (superseded, rejected, deprecated) never enter either index, so equality is
 trivially satisfied for them and tests nothing.
+
+> **Amended 2026-09-20, after slices S2 (`9cd9ee34`) and S3 (`d11f3552`)
+> landed.** The construction above stands: both builds run
+> `index build --include-unapproved`, one flavour on both sides is what
+> preserves the exception set, and default-flag queries are what make the
+> query-time gate the thing under measurement. What the rider got wrong is the
+> **scope of the equality claim** — it reads as asserting whole-response
+> equality wherever the battery runs. Where the `full` index holds withheld rows
+> `clean` never did, equality is not a property the gate can deliver, and the
+> reason is already recorded: the gate decides what is returned, while the BM25
+> collection statistics are computed over what is *indexed* — "true of
+> everything the gate controls and false of what the statistics control"
+> ([threat model](../security/threat-model.md), T-17a).
+>
+> - **Asserted where it is measured and pinned.** On the smoke corpus the
+>   whole-response set equality is a committed assertion (*Compliance*, slice
+>   S2). On a plain build it holds by construction rather than by the gate: no
+>   withheld-plane row reaches either index there, because the loader refuses
+>   the one combination that would let one through — approved and within the
+>   serving ceiling — under its `withheld-item-disclosable` rule
+>   (`test_withheld_item_disclosable_rule_refuses_an_approved_within_ceiling_withheld_item`,
+>   whose two accepted-neighbour cases move one clause each and load).
+> - **A recorded channel where a withheld row can move a collection
+>   statistic.** The S3 corpus is authored with displacement carriers —
+>   `q-secret-scan-hardening` is the one its own comment names — so its
+>   `--include-unapproved` `full` index holds rows `clean` never did, and the
+>   default-flag comparison between the two builds is reported with a count of
+>   what differed rather than asserted equal. This is not a second finding: it
+>   is T-17a's recorded residual. `index build` filters on `may_surface` and
+>   writes no draft, while an `--include-unapproved` index "keeps the drafts and
+>   proposals it legitimately holds" ([threat model](../security/threat-model.md),
+>   T-17a) — an operator build-time flag, absent from the shipped default.
+>
+> The reason this stays inside the boundary, in the words
+> [#787](https://github.com/theurian/theurian/issues/787)'s annotation work
+> carries: *includeUnapproved is a request parameter, not an authorization
+> grant; the Core authenticates one principal (#119); the protection is the
+> absent authorization boundary, not the `_NO_DRAFTS_INDEXED` gate
+> (asymmetric).* Each clause is checkable against the source rather than taken
+> on trust: `mcp/search.py`'s own comment calls `includeUnapproved` "a request
+> parameter a caller can stop passing", and `_NO_DRAFTS_INDEXED` fires in one
+> direction only — drafts requested against an index built without them — so it
+> is not what protects the other direction.
+>
+> **The figure is provisional, and its unit is unsettled.** A reviewer probe
+> over the S3 corpus reported that comparison differing at **17 of 26**. No
+> record this ADR can cite states which unit that counts: this corpus declares
+> 26 enabled queries, while a single response compares many more than 26 paths.
+> It is carried here as an unconfirmed observation and may not be quoted as a
+> measured property. #787 owns the report-side channel annotation and the joint
+> build that will state the figure with its unit; decision 6's *form* is
+> unchanged by any of this — what moved is where that form is asserted as a
+> property and where it is recorded as a channel.
 
 **2. The census is the test for the build-time-excluded and status-unsurfaceable
 mechanisms.** No build indexes these members, so no query can test them and a

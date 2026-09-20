@@ -12,10 +12,14 @@ description: >-
   serving ceiling, the only flavour in which the `full` index holds a withheld row at all: a
   plain `index build` yields 609 for both corpora, because `may_surface` admits draft and
   proposed only under that flag and admits deprecated, superseded and rejected under none. Two
-  of the seven withheld items reach the index; the other five are withheld before it. The
-  response-equality battery is non-vacuous for the draft and the proposed member alone, whose
-  withholding is the query-time gate; the other five are tested by this census instead,
-  `full.items` counting them applied and `full.chunks` counting them excluded. The
+  of the seven withheld items reach the index; the other five are withheld before it. The draft
+  and the proposed member are the query-time gate's own members, and on this corpus the
+  default-flag comparison between the two `--include-unapproved` builds is a recorded channel,
+  reported with a count of what differed rather than asserted equal: those two rows sit in
+  `full`'s index and move BM25 collection statistics there, which is T-17a's recorded residual
+  under an operator build flag and not a leak (ADR-0036 amendment 1, rider 1). The other five
+  are tested by this census instead, `full.items` counting them applied and `full.chunks`
+  counting them excluded. The
   superseded-knowledge error rate this corpus yields is zero by build-time exclusion rather than
   by ranking; the chain judgements are retained so that metric reddens if a superseded row is
   ever indexed.
