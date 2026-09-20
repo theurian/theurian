@@ -566,12 +566,35 @@ mechanisms (sensitivity above the ADR-0025 ceiling) and status-unsurfaceable one
 trivially satisfied for them and tests nothing.
 
 **2. The census is the test for the build-time-excluded and status-unsurfaceable
-mechanisms.** `full.items` counts every applied row while `full.chunks` counts
-only indexed ones, so a confidential or restricted row leaking past the build
-ceiling moves `chunks` and reddens the census-mismatch refusal. Under the
-both-sides-`--include-unapproved` flavour this sharpens: `full.chunks` = visible
-+ draft/proposed-withheld chunks, and an above-ceiling row still may not appear
-in it.
+mechanisms.** No build indexes these members, so no query can test them and a
+count is what does — but which count, and what it can catch, differs by side of
+the seam. On this branch,
+`test_the_manifest_census_agrees_with_the_migrations_it_declares` compares the
+declared `items`, `byStatus` and `bySensitivity` against the same figures
+replayed from the migration files and stops there: `DERIVABLE_CENSUS_KEYS` omits
+`chunks`, and no committed check here measures one. The S3-side guarantee is
+therefore the derived split rather than a number —
+`test_the_withheld_plane_splits_into_gate_tested_and_census_tested_members`
+recomputes each withheld member's class from its folded status and sensitivity
+against sets folded out of `may_surface` and `may_disclose`, compares both
+classes to their pinned item ids and flags any member in neither, so a member
+changing side, or a serving ceiling moving under it, turns that test RED.
+Comparing a *measured* `full.chunks` against the manifest's frozen `615` is the
+S2 loader's census-mismatch refusal
+([PR #780](https://github.com/theurian/theurian/pull/780), in flight as this is
+written), and it catches drift only after the freeze: a row leaking past the
+build ceiling later moves the count, while one already indexed when the number
+was taken is baked into it and no chunk count can report it. Under the
+both-sides-`--include-unapproved` flavour that number sharpens: `full.chunks` =
+visible + draft/proposed-withheld chunks, and an above-ceiling row still may not
+appear in it.
+
+*Corrected in this pull request's round one, at a security-review finding:* the
+sentence this replaces said present-tense that such a leak "moves `chunks` and
+reddens the census-mismatch refusal", naming an instrument this branch does not
+carry and a detection window a frozen number cannot have. The rider's substance
+— that the census and not the battery covers these mechanisms — is the
+slice-S2 lane's round-one text unchanged.
 
 **3. Any reported metric whose zero is forced by build-time exclusion rather than
 by ranking quality carries a cause note beside the number.** The
