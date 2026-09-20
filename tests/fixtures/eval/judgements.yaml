@@ -38,6 +38,12 @@ judgements:
   - sourceUri: https://github.com/theurian/theurian.git
     filePath: docs/adr/0024-a-purge-is-a-build.md
 
+# No evidence: the item is an original document, not an ADR snapshot, so it
+# carries no git source anchor a cited file path could name.
+- queryId: q-mutation-discipline
+  relevant:
+  - itemId: testing.mutation-discipline
+
 - queryId: q-cjk-mixed-length
   relevant:
   - itemId: security.jwt-verification-guide

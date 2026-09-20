@@ -27,6 +27,16 @@ queries:
   query: What happens to the published index when knowledge is withdrawn?
   corpora: [full, clean]
 
+# Aimed at testing.mutation-discipline, whose vocabulary the withheld
+# testing.deprecated-flaky-quarantine was written to share. Without a query
+# here that withheld row sits in no enabled query's blast path, and the
+# full/clean equality battery catches a leak only through a query that
+# reaches it.
+- id: q-mutation-discipline
+  class: exact-decision
+  query: How does this project treat a surviving mutant from a mutation run?
+  corpora: [full, clean]
+
 # The two CJK probes. Both are aimed at security.jwt-verification-guide;
 # operations.daemon-unyou-guide is the rank distractor, sharing one of the two
 # terms and not the other, and is deliberately neither relevant nor forbidden.
