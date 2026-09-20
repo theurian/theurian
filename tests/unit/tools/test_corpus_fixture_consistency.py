@@ -877,7 +877,8 @@ def test_the_withheld_plane_splits_into_gate_tested_and_census_tested_members() 
     corpora answer identically because neither holds the row, and the comparison
     would pass with the gate deleted. Only the two members the
     ``--include-unapproved`` build does index test the gate; the other five are
-    tested by the manifest census, which counts them applied and not indexed.
+    tested by the manifest census, which counts them applied; that they are not
+    indexed is the S2 loader's chunk comparison (PR #780), not this file's.
     Nothing in the fixture declares that split, so without this pin a member
     could change side -- a draft approved, a sensitivity lowered -- and the
     battery would go on reporting coverage it no longer has.
