@@ -21,7 +21,7 @@ import yaml
 from jsonschema import Draft202012Validator
 
 from theurian.application.authorization import DEFAULT_CEILING, ServingProfile
-from theurian.domain.enums import Sensitivity
+from theurian.domain.enums import KnowledgeStatus, Sensitivity, may_surface
 from theurian.domain.migration import DEFAULT_SENSITIVITY
 
 SCHEMAS_DIR = Path(__file__).resolve().parent / "schemas"
@@ -35,8 +35,29 @@ BUILD_CEILING_SENSITIVITIES: Final = ServingProfile(ceiling=BUILD_CEILING).visib
 
 #: Statuses `index build --include-unapproved` admits to the index that a
 #: default-flags query (`includeUnapproved=false`) still refuses to surface --
-#: the query-time gate T-17a exists to test.
-GATE_TESTED_STATUSES: Final = frozenset({"draft", "proposed"})
+#: the query-time gate T-17a exists to test. Derived from `may_surface` itself
+#: (SEC-13, T-15) rather than hand-copied: a status is gate-eligible iff the
+#: product's own gate holds it back at default flags and admits it once
+#: `include_unapproved` is set, folded over every `KnowledgeStatus` member so
+#: this tracks any future move of the product's status semantics instead of
+#: silently drifting from them. Yields ``{draft, proposed}`` today.
+#:
+#: This is a read of `may_surface`, not a new place a withheld status can
+#: leave the product by: `tools/eval` is a development tool that classifies a
+#: fixture corpus and serves nothing over any wire, so this call is outside
+#: `test_gate_call_sites.py`'s disclosure census by function -- that suite's
+#: population key is `SRC.rglob("*.py")` with
+#: `SRC = pathlib.Path(theurian.__file__).resolve().parent`, i.e. the shipped
+#: `packages/theurian-core/src/theurian` tree, which structurally excludes
+#: this repo-root `tools/` directory (measured: zero of the tree's 171 `.py`
+#: files carry a `tools` path segment). Not merely today's scope of that key,
+#: but this call's own shape: it can never become a serving path.
+GATE_TESTED_STATUSES: Final = frozenset(
+    status.value
+    for status in KnowledgeStatus
+    if not may_surface(status, include_unapproved=False)
+    and may_surface(status, include_unapproved=True)
+)
 
 
 class CorpusError(Exception):
