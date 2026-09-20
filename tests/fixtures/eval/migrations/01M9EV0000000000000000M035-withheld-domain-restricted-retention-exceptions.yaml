@@ -1,0 +1,30 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M035
+createdAt: '2026-09-20T00:00:34+00:00'
+author: theurian-maintainers
+description: 'Withheld plane: created internal, reclassified restricted by a later migration.'
+operations:
+- op: createItem
+  itemId: domain.restricted-retention-exceptions
+  kind: domain
+  namespace: domain
+  owner: theurian-maintainers
+  sensitivity: internal
+  trustLevel: reviewed
+- op: upsertRevision
+  itemId: domain.restricted-retention-exceptions
+  revisionId: 01M9EV0000000000000000R035
+  contentFile: ../knowledge/domain/restricted-retention-exceptions.01M9EV0000000000000000R035.md
+  contentSha256: 2832f1c89582135da62bff96b017e0eebe2ae64a2fc61ac3a6f40e129c836362
+  metadata:
+    title: 'Retention exceptions'
+    contentType: text/markdown
+    kind: domain
+    namespace: domain
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: internal
+    labels:
+    - retention
+    - withheld-fixture

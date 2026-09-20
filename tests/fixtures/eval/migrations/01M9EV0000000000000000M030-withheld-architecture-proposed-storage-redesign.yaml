@@ -1,0 +1,30 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M030
+createdAt: '2026-09-20T00:00:29+00:00'
+author: theurian-maintainers
+description: 'Withheld plane: a proposal overlapping the database-principles query.'
+operations:
+- op: createItem
+  itemId: architecture.proposed-storage-redesign
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+  sensitivity: internal
+  trustLevel: unverified
+- op: upsertRevision
+  itemId: architecture.proposed-storage-redesign
+  revisionId: 01M9EV0000000000000000R030
+  contentFile: ../knowledge/architecture/proposed-storage-redesign.01M9EV0000000000000000R030.md
+  contentSha256: 6f2e3d3980a6d912cb7d641e0320cb68013a082d7d0a05b9f95906d34d7cb2be
+  metadata:
+    title: 'Proposed: a single-file storage redesign'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: proposed
+    owner: theurian-maintainers
+    trustLevel: unverified
+    sensitivity: internal
+    labels:
+    - storage
+    - withheld-fixture

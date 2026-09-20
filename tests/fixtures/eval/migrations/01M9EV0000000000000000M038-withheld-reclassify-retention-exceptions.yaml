@@ -1,0 +1,10 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M038
+createdAt: '2026-09-20T00:00:37+00:00'
+author: theurian-maintainers
+description: 'Withheld plane: reclassify the retention exceptions to restricted.'
+operations:
+- op: changeSensitivity
+  itemId: domain.restricted-retention-exceptions
+  sensitivity: restricted
+  reason: 'Exception 3 names where the held records live and who can reach them.'

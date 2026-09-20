@@ -1,0 +1,30 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M033
+createdAt: '2026-09-20T00:00:32+00:00'
+author: theurian-maintainers
+description: 'Withheld plane: created approved, deprecated by a later withheld migration.'
+operations:
+- op: createItem
+  itemId: testing.deprecated-flaky-quarantine
+  kind: testing
+  namespace: testing
+  owner: theurian-maintainers
+  sensitivity: internal
+  trustLevel: reviewed
+- op: upsertRevision
+  itemId: testing.deprecated-flaky-quarantine
+  revisionId: 01M9EV0000000000000000R033
+  contentFile: ../knowledge/testing/deprecated-flaky-quarantine.01M9EV0000000000000000R033.md
+  contentSha256: d6f0fae3889991646bc50bc2514e189ee604e4fa8652399991ffe55f958634ca
+  metadata:
+    title: 'Flaky test quarantine'
+    contentType: text/markdown
+    kind: testing
+    namespace: testing
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: internal
+    labels:
+    - testing
+    - withheld-fixture

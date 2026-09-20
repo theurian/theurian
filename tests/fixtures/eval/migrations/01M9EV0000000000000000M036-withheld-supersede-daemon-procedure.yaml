@@ -1,0 +1,24 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M036
+createdAt: '2026-09-20T00:00:35+00:00'
+author: theurian-maintainers
+description: 'Withheld plane: retire the drained-restart procedure with no successor.'
+operations:
+- op: upsertRevision
+  itemId: operations.superseded-daemon-procedure
+  revisionId: 01M9EV0000000000000000R036
+  expectedRevision: 01M9EV0000000000000000R032
+  contentFile: ../knowledge/operations/superseded-daemon-procedure.01M9EV0000000000000000R036.md
+  contentSha256: 11f6f83cc03b95dc68f9d5a8ca65e61453af9f80d057967ad18df6d1c63add65
+  metadata:
+    title: 'Daemon procedure after a schema version change'
+    contentType: text/markdown
+    kind: operations
+    namespace: operations
+    status: superseded
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: internal
+    labels:
+    - daemon
+    - withheld-fixture

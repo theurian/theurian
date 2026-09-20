@@ -1,0 +1,34 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M029
+createdAt: '2026-09-20T00:00:28+00:00'
+author: theurian-maintainers
+description: 'Withheld plane: a draft overlapping the disclosure-enforcement query, carrying the only withheld-to-visible relation in this corpus.'
+operations:
+- op: createItem
+  itemId: security.draft-scan-hardening
+  kind: security
+  namespace: security
+  owner: theurian-maintainers
+  sensitivity: internal
+  trustLevel: unverified
+- op: upsertRevision
+  itemId: security.draft-scan-hardening
+  revisionId: 01M9EV0000000000000000R029
+  contentFile: ../knowledge/security/draft-scan-hardening.01M9EV0000000000000000R029.md
+  contentSha256: c0817398bf6f175351968c89c3f44cd8e0c3665180845e3c3081470f55c0809d
+  metadata:
+    title: 'Draft: hardening the secret scan before it blocks'
+    contentType: text/markdown
+    kind: security
+    namespace: security
+    status: draft
+    owner: theurian-maintainers
+    trustLevel: unverified
+    sensitivity: internal
+    labels:
+    - secret-scan
+    - withheld-fixture
+- op: addRelation
+  sourceItemId: security.draft-scan-hardening
+  relationType: related_to
+  targetItemId: architecture.a-purge-is-a-build

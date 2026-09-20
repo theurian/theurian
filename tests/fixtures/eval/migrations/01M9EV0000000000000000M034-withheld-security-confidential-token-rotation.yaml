@@ -1,0 +1,30 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M034
+createdAt: '2026-09-20T00:00:33+00:00'
+author: theurian-maintainers
+description: 'Withheld plane: the CJK by sensitivity cross, confidential from creation.'
+operations:
+- op: createItem
+  itemId: security.confidential-token-rotation
+  kind: security
+  namespace: security
+  owner: theurian-maintainers
+  sensitivity: confidential
+  trustLevel: reviewed
+- op: upsertRevision
+  itemId: security.confidential-token-rotation
+  revisionId: 01M9EV0000000000000000R034
+  contentFile: ../knowledge/security/confidential-token-rotation.01M9EV0000000000000000R034.md
+  contentSha256: 65b88550749f1372985a059e98e983e8440b272add9b4c6bcd2cc7736c381849
+  metadata:
+    title: 'トークンのローテーション手順'
+    contentType: text/markdown
+    kind: security
+    namespace: security
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: confidential
+    labels:
+    - cjk
+    - withheld-fixture

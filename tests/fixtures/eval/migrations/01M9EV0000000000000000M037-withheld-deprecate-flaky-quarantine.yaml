@@ -1,0 +1,9 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M037
+createdAt: '2026-09-20T00:00:36+00:00'
+author: theurian-maintainers
+description: 'Withheld plane: deprecate the flaky-test quarantine rule.'
+operations:
+- op: deprecateItem
+  itemId: testing.deprecated-flaky-quarantine
+  reason: 'The four-week timer was a deletion schedule nobody read.'

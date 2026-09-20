@@ -1,0 +1,30 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M032
+createdAt: '2026-09-20T00:00:31+00:00'
+author: theurian-maintainers
+description: 'Withheld plane: created approved, superseded by a later withheld migration.'
+operations:
+- op: createItem
+  itemId: operations.superseded-daemon-procedure
+  kind: operations
+  namespace: operations
+  owner: theurian-maintainers
+  sensitivity: internal
+  trustLevel: reviewed
+- op: upsertRevision
+  itemId: operations.superseded-daemon-procedure
+  revisionId: 01M9EV0000000000000000R032
+  contentFile: ../knowledge/operations/superseded-daemon-procedure.01M9EV0000000000000000R032.md
+  contentSha256: f323896992164199431fe688ad883f0773c24762420eacab9887460778bcd22e
+  metadata:
+    title: 'Daemon procedure after a schema version change'
+    contentType: text/markdown
+    kind: operations
+    namespace: operations
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: internal
+    labels:
+    - daemon
+    - withheld-fixture
