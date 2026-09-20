@@ -203,10 +203,14 @@ not know — and nothing here predicts what it would find.
     combined with `condition = "AND"`, and both `paths` sit under
     `^packages/theurian-core/tests/` — so a corpus living under the
     repository-root `tests/` or `tools/` is inside coverage and allowlisted by
-    nothing. The gap that file records is a shape a YAML corpus document does
-    not have: `NAME: Final = "<token>"` goes unreported "because
+    nothing. **What it does not catch is measured as a count, and only partly
+    described**: eight literal forms, four reported and four not, of which that
+    file **names exactly one** — `NAME: Final = "<token>"`, unreported "because
     `generic-api-key` looks for its keyword within a few characters of the
-    separator and a type annotation pushes it out of range".
+    separator and a type annotation pushes it out of range". That one gap shape
+    is one a YAML corpus document does not have. The other three unreported
+    forms are recorded as a number and never described, so nothing here may
+    claim a corpus file avoids them.
   - **Index-time secret scanning**, which the corpus gets for free from being
     built through the real path (SEC-11,
     [#329](https://github.com/theurian/theurian/issues/329)). `IndexRequest`
@@ -434,8 +438,10 @@ Still owed, with the phase that would satisfy it:
 - **Phase A slice S2 — the set-equality pin for decision 6.** A test asserting
   that the set of fields differing between a `full`-corpus response and a
   `clean`-corpus response is **equal** to
-  `{retrieval.indexBuildId, retrieval.snapshotId}` — set equality, so a newly
-  identity-varying field reddens instead of joining the exception — over the
+  `{retrieval.indexBuildId, retrieval.snapshotId}` — set equality in the
+  direction decision 6 establishes, so that a harness which has stopped
+  publishing an excepted field, or whose `retrieval.snapshotId` has gone
+  insensitive to canonical state, reddens rather than passing — over the
   whole ordered response, paired with a control proving the battery's queries
   actually reach the withheld plane. **Its companion is owed with it**: an
   assertion that both excepted fields are constant across the queries the
@@ -460,9 +466,14 @@ Still owed, with the phase that would satisfy it:
   unique; `relevant` and `forbidden` disjoint within an entry; a judgement
   entry carrying none of `relevant`, `forbidden`, `evidence` or
   `expectAbstention` refused, because it judges nothing while validating
-  (`judgementEntry` requires `queryId` alone); and no two `evidence` entries
-  sharing a `(sourceUri, filePath)` pair. These sit beside the cross-file rules
-  decision 6 already assigns to that loader.
+  (`judgementEntry` requires `queryId` alone); and no `evidence` entry that
+  **subsumes** another — no two entries sharing a `sourceUri` where one omits
+  `filePath`, and no two sharing a `(sourceUri, filePath)` pair. The
+  subsumption half is what a pair key alone misses: `filePath` is an "Optional
+  file path narrowing the source anchor to one file within it", so `(u, absent)`
+  standing beside `(u, f)` lets a correct answer citing that file satisfy both
+  entries and score one anchor twice, inflating evidence precision. These sit
+  beside the cross-file rules decision 6 already assigns to that loader.
 - **Phase A slice S4 — the committed baseline and the advisory CI comparison.**
   The Phase A Exit-criteria row's own words: "A baseline report is committed and
   CI reports regressions against it." Until that lands, decision 4's *advisory*
