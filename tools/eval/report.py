@@ -238,6 +238,12 @@ def _aggregate(queries_section: Mapping[str, Any], k_values: Sequence[int]) -> d
     evidence judgement -- folding it in here would double-weight every
     equality query's contribution to the mean. A query that never ran against
     ``full`` (an unusual ``corpora`` choice) contributes no sample.
+
+    Per-class means nest under ``byClass`` rather than sitting flat beside
+    ``overall`` and ``population``: a query class named either word would
+    otherwise collide with them. The queries schema's closed ``class`` enum
+    makes that unreachable today, but a schema edit adding such a class would
+    make the collision silent rather than a visible key clash.
     """
     samples: list[tuple[str, dict[str, Any]]] = []
     for entry in queries_section.values():
@@ -249,12 +255,11 @@ def _aggregate(queries_section: Mapping[str, Any], k_values: Sequence[int]) -> d
     for class_name, metrics in samples:
         by_class.setdefault(class_name, []).append(metrics)
 
-    aggregated: dict[str, Any] = {
-        name: _aggregate_entries(items, k_values) for name, items in by_class.items()
+    return {
+        "byClass": {name: _aggregate_entries(items, k_values) for name, items in by_class.items()},
+        "overall": _aggregate_entries([metrics for _, metrics in samples], k_values),
+        "population": _AGGREGATION_POPULATION,
     }
-    aggregated["overall"] = _aggregate_entries([metrics for _, metrics in samples], k_values)
-    aggregated["population"] = _AGGREGATION_POPULATION
-    return aggregated
 
 
 def _mean(values: list[float]) -> float | None:

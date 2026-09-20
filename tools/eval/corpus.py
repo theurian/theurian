@@ -12,6 +12,7 @@ rule fired rather than leaving a reader to infer it from a stack trace.
 
 from __future__ import annotations
 
+import functools
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -31,13 +32,23 @@ from theurian.security.yaml_loading import load_yaml_mapping
 SCHEMAS_DIR = Path(__file__).resolve().parent / "schemas"
 #: tools/eval/corpus.py -> eval -> tools -> repo root.
 REPO_ROOT = Path(__file__).resolve().parents[2]
-#: The published migration contract (ADR-0005), read from the repo-root
-#: `schemas/` -- the wire-contract directory, not this harness's own
-#: `tools/eval/schemas/` -- since a migration document is a product artifact,
-#: not a corpus-contract one.
-MIGRATION_SCHEMA: Final[dict[str, Any]] = json.loads(
-    (REPO_ROOT / "schemas" / "migrations" / "migration.schema.json").read_text(encoding="utf-8")
-)
+
+
+@functools.lru_cache(maxsize=1)
+def _migration_schema() -> dict[str, Any]:
+    """The published migration contract (ADR-0005), read from the repo-root
+    `schemas/` -- the wire-contract directory, not this harness's own
+    `tools/eval/schemas/` -- since a migration document is a product
+    artifact, not a corpus-contract one.
+
+    Read lazily rather than at import time: a bare ``FileNotFoundError`` on
+    import -- this module reached outside a full checkout -- would predate
+    every one of this module's own :class:`CorpusError` refusals.
+    """
+    path = REPO_ROOT / "schemas" / "migrations" / "migration.schema.json"
+    loaded: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    return loaded
+
 
 #: The sensitivity ceiling every harness build serves under (build.py never
 #: writes a serving-profile file, so `index build` always falls back to this
@@ -73,6 +84,15 @@ GATE_TESTED_STATUSES: Final = frozenset(
     for status in KnowledgeStatus
     if not may_surface(status, include_unapproved=False)
     and may_surface(status, include_unapproved=True)
+)
+
+#: Statuses a default-flags query (`includeUnapproved=false`) actually
+#: surfaces -- derived the same way as :data:`GATE_TESTED_STATUSES`, so this
+#: file holds no hand-copied "approved" literal beside it. Yields
+#: ``{approved}`` today and tracks any future move of the product's status
+#: semantics instead of drifting from it.
+DEFAULT_SURFACEABLE_STATUSES: Final = frozenset(
+    status.value for status in KnowledgeStatus if may_surface(status, include_unapproved=False)
 )
 
 
@@ -204,7 +224,7 @@ def load_corpus(root: Path) -> Corpus:
         for entry in manifest.migrations
     }
     for entry in manifest.migrations:
-        _validate(f"migrations/{entry.file}", MIGRATION_SCHEMA, documents[entry.file])
+        _validate(f"migrations/{entry.file}", _migration_schema(), documents[entry.file])
 
     _check_migration_order(manifest)
     _check_no_visible_depends_on_withheld(manifest, documents)
@@ -551,7 +571,7 @@ def _check_no_disclosable_withheld_item(manifest: Manifest, documents: dict[str,
         status = status_by_item.get(item_id, "draft")
         sensitivity = sensitivity_by_item.get(item_id, DEFAULT_SENSITIVITY.value)
         within_ceiling = Sensitivity(sensitivity) in BUILD_CEILING_SENSITIVITIES
-        if status == "approved" and within_ceiling:
+        if status in DEFAULT_SURFACEABLE_STATUSES and within_ceiling:
             raise CorpusError(
                 "withheld-item-disclosable",
                 f"withheld-plane item {item_id!r} has final status 'approved' and "
@@ -591,7 +611,7 @@ def _check_relevant_items_retrievable(
                 f"approved, within the build ceiling, and visible-plane.",
             )
         status = status_by_item.get(item_id)
-        if status != "approved":
+        if status not in DEFAULT_SURFACEABLE_STATUSES:
             raise CorpusError(
                 "relevant-item-unretrievable",
                 f"{item_id!r} is judged relevant but its final status is "
