@@ -1,0 +1,454 @@
+"""ADR-0036 held against the tree it discharges its "Still owed" pins into.
+
+**Why this file exists.** ec4e324e moved ADR-0036's slice-S2 "Still owed"
+items into *Compliance*, scoped Amendment 1's rider 1 to where the
+disclosure-equality claim is actually measured, and cited the harness's
+loader-rule and pin names by name. A discharge corrects the durable text;
+nothing recomputes it against the tree it describes. These pins are that
+recomputation, mirroring ``test_phase0_exit_records.py``'s own instrument: a
+committed test reads the live document and a live authority (the loader
+source, the harness's own AST, pytest's own collection), and asserts they
+still agree, so the next edit that moves one without the other reddens here
+instead of ageing quietly into a record nobody rechecks.
+
+**These hold RECORD-truth, not behaviour.** They fail when the ADR disagrees
+with a live measurement of the tree it describes -- a renamed pin, a rule tag
+that moved, a metric key that appeared without the ADR's channel-report
+sentence moving with it. They say nothing about whether the harness is
+correct; ``test_harness_pins.py`` is that file.
+"""
+
+from __future__ import annotations
+
+import ast
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+import pytest
+from jsonschema import Draft202012Validator
+
+pytestmark = pytest.mark.unit
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+ADR = REPO_ROOT / "docs" / "adr" / "0036-golden-judgements-are-committed-regression-fixtures.md"
+_HARNESS_DIR = REPO_ROOT / "tools" / "eval"
+if str(_HARNESS_DIR) not in sys.path:
+    sys.path.insert(0, str(_HARNESS_DIR))
+
+import corpus as harness_corpus  # noqa: E402
+import report as harness_report  # noqa: E402
+
+CORPUS_PY = _HARNESS_DIR / "corpus.py"
+REPORT_PY = _HARNESS_DIR / "report.py"
+JUDGEMENTS_SCHEMA = _HARNESS_DIR / "schemas" / "judgements.schema.json"
+
+
+def _section(text: str, start_marker: str, end_marker: str) -> str:
+    """The substring between two stable, unique markers -- the ADR's own words."""
+    start = text.index(start_marker)
+    end = text.index(end_marker, start)
+    return text[start:end]
+
+
+def _flatten(text: str) -> str:
+    """Collapse markdown blockquote line-wrapping (``> `` at a line start) and
+    run-together whitespace into single spaces, so a substring check does not
+    fail on a soft wrap the ADR's own line width introduced -- the same
+    "rejoin soft-wrapped lines" discipline ``test_phase0_exit_records.py``'s
+    ``_roadmap_blocks`` applies for the same reason.
+    """
+    without_quote_markers = re.sub(r"^>\s?", "", text, flags=re.MULTILINE)
+    return re.sub(r"\s+", " ", without_quote_markers)
+
+
+# -- 1a: rider 1's amendment block carries both halves ------------------------
+
+_AMENDMENT_START = "> **Amended 2026-09-20, after slices S2"
+_RIDER_2_START = "**2. The census is the test"
+
+#: Short, distinctive substrings of the two bolded lead-ins inside rider 1's
+#: amendment block -- not whole sentences, so a copy-edit that keeps the
+#: substance but rewords around it does not falsely redden this. Checked
+#: against the flattened block since the second phrase wraps mid-word
+#: ("collection\n>   statistic") at the ADR's own line width.
+_ASSERTED_WHERE_MEASURED = "Asserted where it is measured and pinned"
+_RECORDED_CHANNEL = "recorded channel where a withheld row can move a collection statistic"
+
+
+def test_rider_1s_amendment_carries_both_the_asserted_and_recorded_channel_halves(
+    adr_path: Path = ADR,
+) -> None:
+    """Guards against the ADR reverting to unconditional whole-response equality.
+
+    Rider 1's amendment corrected exactly this overclaim: the original text
+    read as asserting the disclosure-equality set equality wherever the
+    battery runs, and the fix was to split that into two halves -- asserted
+    where it is measured and pinned (the smoke corpus), and recorded as an
+    unasserted channel where BM25 collection statistics can still move (the
+    S3 corpus, #787). Losing either half back into one unconditional claim is
+    the exact regression this keys on both phrases coexisting in one block.
+    """
+    block = _flatten(
+        _section(adr_path.read_text(encoding="utf-8"), _AMENDMENT_START, _RIDER_2_START)
+    )
+
+    assert _ASSERTED_WHERE_MEASURED in block
+    assert _RECORDED_CHANNEL in block
+
+
+# -- 1b: every test name cited in the ADR's S2 Compliance block collects -----
+
+_S2_COMPLIANCE_START = "Landed in Phase A slice S2 (`9cd9ee34`)"
+_S2_COMPLIANCE_END = "\nMeasured now, and reproducible from this ADR"
+
+#: A backtick-quoted test identifier, ``path::test_name`` or a bare
+#: ``test_name`` -- the two forms the S2 Compliance block actually uses.
+_CITED_TEST_NAME = re.compile(r"`(?:[\w./-]+::)?(test_[A-Za-z0-9_]+)`")
+
+
+def _cited_test_names(adr_path: Path = ADR) -> list[str]:
+    """Every test name the ADR's S2 Compliance block cites, parsed from its own text."""
+    text = adr_path.read_text(encoding="utf-8")
+    section = _section(text, _S2_COMPLIANCE_START, _S2_COMPLIANCE_END)
+    return sorted(set(_CITED_TEST_NAME.findall(section)))
+
+
+def _collected_test_output() -> str:
+    """``pytest --collect-only``'s stdout over every root the cited names live in.
+
+    One collection pass rather than one per name: collecting
+    ``packages/theurian-core/tests`` alone takes a few seconds, and this file
+    cites upward of a dozen names, one of them from that tree (the product's
+    own build-identity sibling test).
+    """
+    result = subprocess.run(  # noqa: S603 - argv is module-owned, never user input
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "--collect-only",
+            "-q",
+            str(REPO_ROOT / "tests" / "unit" / "tools"),
+            str(REPO_ROOT / "tests" / "integration" / "tools"),
+            str(REPO_ROOT / "packages" / "theurian-core" / "tests"),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout
+
+
+def test_every_test_name_cited_in_the_adrs_s2_compliance_block_collects() -> None:
+    """A renamed, moved or deleted pin reddens the ADR's own compliance record.
+
+    The ADR's S2 Compliance section names pins by their test function name --
+    some path-qualified, most bare -- as the record of what each named claim
+    is held by. Nothing recomputed that until this pin: a rename anywhere in
+    ``tests/unit/tools/``, ``tests/integration/tools/`` or the product's own
+    test tree left the ADR's citation pointing at a test that no longer
+    exists, and nothing noticed.
+    """
+    names = _cited_test_names()
+    assert names, "the population must be non-empty, or this pin checks nothing"
+
+    collected = _collected_test_output()
+
+    missing = [name for name in names if name not in collected]
+    assert missing == [], (
+        f"the ADR's S2 Compliance block cites {missing} by name, and pytest's "
+        f"collection over tests/unit/tools, tests/integration/tools and "
+        f"packages/theurian-core/tests contains no test with that name -- it was "
+        f"renamed, moved or deleted without the ADR's record moving with it"
+    )
+
+
+# -- 1c: the five within-document rule names are live CorpusError tags ------
+
+_WITHIN_DOCUMENT_BULLET_START = "**The loader's within-document obligations**"
+_WITHIN_DOCUMENT_BULLET_END = "**The determinism pin for decisions 5 and 7**"
+
+#: A kebab-case rule name immediately followed by its driving test in
+#: parentheses -- the exact shape the within-document-obligations bullet
+#: uses, which is distinctive enough not to also catch an unrelated
+#: kebab-case token (a parametrize id, a filename) elsewhere in the ADR.
+_RULE_NAME_WITH_TEST = re.compile(r"`([a-z]+(?:-[a-z]+)+)`\s*\n?\s*\(`test_[A-Za-z0-9_]+`\)")
+
+
+def _cited_within_document_rule_names(adr_path: Path = ADR) -> list[str]:
+    text = adr_path.read_text(encoding="utf-8")
+    section = _section(text, _WITHIN_DOCUMENT_BULLET_START, _WITHIN_DOCUMENT_BULLET_END)
+    return sorted(set(_RULE_NAME_WITH_TEST.findall(section)))
+
+
+def _corpuserror_rule_tags() -> set[str]:
+    """Every string literal ``corpus.py`` raises a ``CorpusError`` with."""
+    source = CORPUS_PY.read_text(encoding="utf-8")
+    return set(re.findall(r'CorpusError\(\s*\n?\s*"([a-z-]+)"', source))
+
+
+def test_the_five_within_document_rule_names_the_adr_cites_are_live_corpuserror_tags() -> None:
+    """A renamed loader rule reddens the ADR's own citation of it.
+
+    The within-document-obligations bullet names five rule tags
+    (``duplicate-query-id``, ``duplicate-judgement-query-id``,
+    ``relevant-forbidden-overlap``, ``empty-judgement``,
+    ``evidence-subsumption``) as the ones ``corpus.py`` raises for a
+    within-document violation. Read from the ADR's own text against
+    ``corpus.py``'s own ``CorpusError`` call sites, not restated as a literal
+    list here, so a rename on either side is what this pin exists to catch.
+    """
+    cited = _cited_within_document_rule_names()
+    assert cited, "the population must be non-empty, or this pin checks nothing"
+
+    live_tags = _corpuserror_rule_tags()
+
+    missing = [rule for rule in cited if rule not in live_tags]
+    assert missing == [], (
+        f"the ADR cites {missing} as a CorpusError rule tag in tools/eval/corpus.py, "
+        f"but no CorpusError there raises with that tag now -- it was renamed"
+    )
+
+
+# -- 2: the #787 tripwire -- the published per-query metric key set ---------
+
+#: Today's expected key set. A DELIBERATE snapshot, not a derivation: the
+#: whole point is that it does NOT move when report.py gains a new key, so
+#: that the disagreement is visible rather than silently absorbed.
+EXPECTED_QUERY_METRIC_KEYS = frozenset(
+    {
+        "recallAtK",
+        "mrr",
+        "evidencePrecision",
+        "forbiddenPresent",
+        "abstentionCorrect",
+        "forbiddenPresentCause",
+    }
+)
+
+
+def _query_metrics_key_set() -> frozenset[str]:
+    """Every key ``report._query_metrics`` can publish, read via its own AST.
+
+    Instrument: parses ``report.py``, locates the ``_query_metrics`` function
+    definition, and walks its body for (a) any dict-literal assigned there
+    (``recallAtK``'s own comprehension is a ``DictComp``, not a ``Dict``, so
+    its ``str(k)`` keys are correctly excluded) and (b) any
+    ``metrics["key"] = ...`` subscript *store* (the conditional
+    ``forbiddenPresentCause`` branch) -- never a subscript *read*. Scoped to
+    this one function's body, so ``_query_entry``'s own ``atEqualityLimit``
+    wrapper key, one function up, is correctly excluded: it is a nesting
+    label, not a per-query metric.
+    """
+    tree = ast.parse(REPORT_PY.read_text(encoding="utf-8"), filename=str(REPORT_PY))
+    function = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_query_metrics"
+    )
+    keys: set[str] = set()
+    for node in ast.walk(function):
+        if isinstance(node, ast.Dict):
+            for key_node in node.keys:
+                if isinstance(key_node, ast.Constant) and isinstance(key_node.value, str):
+                    keys.add(key_node.value)
+        elif (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.ctx, ast.Store)
+            and isinstance(node.slice, ast.Constant)
+            and isinstance(node.slice.value, str)
+        ):
+            keys.add(node.slice.value)
+    return frozenset(keys)
+
+
+def test_the_787_tripwire_published_per_query_metric_key_set_equals_todays_expected_set() -> None:
+    """PURPOSE: designed to go RED when #787's channel-report member lands.
+
+    This is not a frozen contract -- it is a deliberate tripwire. #787 owns
+    landing a new report field that reports the collection-statistics
+    channel Amendment 1's rider 1 records as unasserted (a count, not an
+    equality). The moment that field's key appears in
+    ``report._query_metrics``, this reddens, and that RED is the signal to
+    move ADR-0036's "recorded channel, reported with a count" sentence from
+    *owed* to *implemented* and update :data:`EXPECTED_QUERY_METRIC_KEYS` in
+    the same commit. Staying green after #787 lands would mean the ADR's
+    record silently fell out of sync with what the harness actually publishes.
+    """
+    assert _query_metrics_key_set() == EXPECTED_QUERY_METRIC_KEYS
+
+
+# -- 3: the no-target pin -- decision 4's harness half -----------------------
+
+#: Unambiguous quality-gate vocabulary: nothing legitimate in this harness is
+#: named with any of these words. Deliberately NOT ``MIN_``/``MAX_``: those
+#: prefixes are shared by legitimate bounds (``MAX_TOKENS``, a request-
+#: parameter cap; ``EQUALITY_LIMIT``, a harness width) and by a quality
+#: floor/ceiling (a hypothetical ``MIN_RECALL``), and no rule distinguishes
+#: them without an allowlist that would defeat the point of a ratchet -- an
+#: allowlist is exactly the kind of key a future author routes a threshold
+#: around. An honest narrow key beats a clever broad one that needs one.
+_THRESHOLD_FAMILY = re.compile(r"THRESHOLD|FLOOR|TARGET", re.IGNORECASE)
+
+
+def _identifiers(tree: ast.AST) -> list[str]:
+    """Every real Python identifier in ``tree`` -- names, arguments, attributes,
+    function/class names. Never a string literal, comment or docstring: this
+    is what makes the scan immune to a docstring saying "no threshold" (three
+    of ``tools/eval``'s own module docstrings say exactly that).
+    """
+    names: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            names.append(node.id)
+        elif isinstance(node, ast.arg):
+            names.append(node.arg)
+        elif isinstance(node, ast.Attribute):
+            names.append(node.attr)
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            names.append(node.name)
+    return names
+
+
+def test_no_threshold_floor_or_target_named_identifier_exists_in_the_harness() -> None:
+    """ADR-0036 decision 4's harness half, held by a machine check rather than prose.
+
+    **Reach, stated honestly.** This catches an identifier spelling
+    THRESHOLD, FLOOR or TARGET anywhere in ``tools/eval/*.py`` -- a
+    ``RECALL_THRESHOLD`` or a ``LATENCY_TARGET_MS`` would redden here. It
+    does **not** catch a quality gate authored under a ``MIN_``/``MAX_`` name
+    (see the constant above for why): that shape is caught only if it also
+    surfaces as a published report key, which
+    :func:`test_a_built_report_carries_no_pass_fail_or_threshold_named_key`
+    below checks. Between the two, an identifier-named threshold and a
+    published one are covered; a threshold that is neither named plainly nor
+    ever reaches the report is not something a machine check can see.
+    """
+    offenders = [
+        f"{path.name}:{identifier}"
+        for path in sorted(_HARNESS_DIR.glob("*.py"))
+        for identifier in _identifiers(
+            ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        )
+        if _THRESHOLD_FAMILY.search(identifier)
+    ]
+    assert offenders == []
+
+
+def _every_dict_key(value: Any) -> list[str]:
+    keys: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            keys.append(key)
+            keys.extend(_every_dict_key(item))
+    elif isinstance(value, list):
+        for item in value:
+            keys.extend(_every_dict_key(item))
+    return keys
+
+
+def _synthetic_report() -> dict[str, Any]:
+    """A real ``report.build_report()`` output, built from hand-constructed
+    inputs rather than a real CLI/SQLite harness run.
+
+    ``build_report`` is a pure function of a :class:`Corpus`, a
+    :class:`HarnessConstants` and a list of :class:`QueryRun`\\ s (each just a
+    dataclass wrapping a raw response dict) -- none of which need a real
+    build to construct. This is what makes the report-key check below a
+    UNIT-weight instrument: a genuine call into the module under test, not a
+    guess about its shape, and no SQLite or subprocess required to make it.
+    """
+    manifest = harness_corpus.Manifest(
+        contract_version=1,
+        corpus_id="no-target-pin",
+        k_values=(1,),
+        migrations=(),
+        census={},
+        description=None,
+    )
+    query = harness_corpus.QueryEntry(
+        id="q", query_class="exact-decision", query="text", enabled=True, corpora=("full",)
+    )
+    judgement = harness_corpus.JudgementEntry(
+        query_id="q",
+        relevant=(harness_corpus.JudgedItem(item_id="a"),),
+        evidence=(),
+        forbidden=(),
+        expect_abstention=False,
+    )
+    loaded = harness_corpus.Corpus(
+        root=Path(),
+        manifest=manifest,
+        queries=(query,),
+        judgements=(judgement,),
+        withheld_coverage=(),
+    )
+    constants = harness_report.HarnessConstants(
+        limit=10,
+        max_tokens=1000,
+        include_unapproved=False,
+        use_dense=False,
+        equality_limit=50,
+        build_ceiling="internal",
+    )
+    response: dict[str, Any] = {"count": 1, "results": [{"itemId": "a", "sourceAnchors": []}]}
+    run = harness_report.QueryRun(
+        query_id="q", corpus="full", limit=10, response=response, latency_ms=1.0
+    )
+    census = {
+        "full": harness_corpus.CorpusCensus(
+            items=1, by_status={"approved": 1}, by_sensitivity={"public": 1}, chunks=1
+        )
+    }
+    return harness_report.build_report(loaded, constants, [run], census)
+
+
+_PASS_FAIL_THRESHOLD = re.compile(r"pass|fail|threshold", re.IGNORECASE)
+
+
+def test_a_built_report_carries_no_pass_fail_or_threshold_named_key() -> None:
+    """The report-key half of decision 4's harness pin: a built report publishes
+    counts and classifications, never a verdict. A ``passed``, ``failed`` or
+    ``thresholdMet``-shaped key appearing anywhere in the report -- at any
+    nesting depth -- would be the harness starting to assert rather than
+    produce (decision 4's own words), and reddens here.
+    """
+    report = _synthetic_report()
+    offending = [key for key in _every_dict_key(report) if _PASS_FAIL_THRESHOLD.search(key)]
+    assert offending == []
+
+
+# -- 4: the undriven exact-pair evidence case --------------------------------
+
+
+def test_judgements_schema_refuses_two_evidence_entries_sharing_the_exact_pair() -> None:
+    """Converts the ADR's Compliance record from schema-property to stated fact.
+
+    The S1 compliance bullet on evidence-subsumption records that the exact-
+    ``(sourceUri, filePath)``-pair case is undriven by any committed test --
+    it follows from ``evidenceRef`` being closed at exactly
+    ``{sourceUri, filePath}`` plus the ``evidence`` array's own
+    ``uniqueItems``, never from a planted instance (the S1 pin,
+    ``test_judgements_rejects_duplicate_evidence_entries``, plants two
+    bare-``sourceUri`` entries only). This plants the pair case directly.
+    """
+    schema = json.loads(JUDGEMENTS_SCHEMA.read_text(encoding="utf-8"))
+    validator = Draft202012Validator(schema)
+    judgements = {
+        "judgements": [
+            {
+                "queryId": "sample-query",
+                "evidence": [
+                    {"sourceUri": "https://example.com/doc", "filePath": "README.md"},
+                    {"sourceUri": "https://example.com/doc", "filePath": "README.md"},
+                ],
+            }
+        ]
+    }
+
+    assert not validator.is_valid(judgements)
