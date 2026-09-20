@@ -107,16 +107,21 @@ class JudgementEntry:
 @dataclass(frozen=True, slots=True)
 class WithheldItemCoverage:
     """One withheld-plane item's classification (ADR-0036, the gate-vs-census
-    derivation rule).
+    derivation rule -- amended there to the three-clause partition below; the
+    amendment is landing on another PR and is cited here by ADR name only).
 
     ``is_gate_tested``: the item's final status is draft or proposed AND its
     final sensitivity sits within :data:`BUILD_CEILING_SENSITIVITIES` -- so it
     is admitted to the index by ``--include-unapproved`` and a default-flags
     query must not leak it through (the T-17a mechanism this harness measures).
-    Otherwise the item is census-tested: it never reaches the index under
-    either build flavor (a retired final status, or a sensitivity above the
-    ceiling), so its absence from a response is a build-time property rather
-    than evidence about the query-time gate.
+    Otherwise the item is census-tested: its final status is superseded,
+    rejected or deprecated, or its final sensitivity sits above the ceiling --
+    either way it never reaches the index under either build flavor, so its
+    absence from a response is a build-time property rather than evidence
+    about the query-time gate. The third combination -- final status approved
+    and within the ceiling -- is disclosable and never reaches this
+    classification: :func:`_check_no_disclosable_withheld_item` refuses the
+    corpus first.
     """
 
     item_id: str
@@ -170,6 +175,7 @@ def load_corpus(root: Path) -> Corpus:
     _check_relevant_forbidden_disjoint(judgements)
     _check_judgement_not_empty(judgements)
     _check_no_evidence_subsumption(judgements)
+    _check_no_disclosable_withheld_item(manifest, documents)
 
     withheld_coverage = _withheld_item_coverage(manifest, documents)
     return Corpus(
@@ -385,26 +391,29 @@ def _check_no_evidence_subsumption(judgements: tuple[JudgementEntry, ...]) -> No
             )
 
 
-def _withheld_item_coverage(
-    manifest: Manifest, documents: dict[str, Any]
-) -> tuple[WithheldItemCoverage, ...]:
-    """Classify every withheld-plane item (ADR-0036, the gate-vs-census derivation rule).
-
-    Final status is the last ``upsertRevision.metadata.status`` in migration
-    order, overridden by a later ``deprecateItem`` -> ``deprecated``. Final
-    sensitivity is the last ``upsertRevision.metadata.sensitivity`` (default
-    ``internal``, ADR-0027 decision 1's own default when a revision omits it),
-    overridden by a later ``changeSensitivity``. An item id is "withheld" if
-    any operation of a withheld-plane migration names it.
-    """
+def _withheld_item_ids(manifest: Manifest, documents: dict[str, Any]) -> set[str]:
+    """Every item id named by an operation of a withheld-plane migration."""
     withheld_files = [entry.file for entry in manifest.migrations if entry.plane == "withheld"]
-    withheld_item_ids: set[str] = set()
+    ids: set[str] = set()
     for filename in withheld_files:
         for op in documents[filename].get("operations", []):
             item_id = op.get("itemId")
             if item_id is not None:
-                withheld_item_ids.add(item_id)
+                ids.add(item_id)
+    return ids
 
+
+def _final_status_and_sensitivity(
+    manifest: Manifest, documents: dict[str, Any], withheld_item_ids: set[str]
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Each withheld item's final status and sensitivity, replayed in migration order.
+
+    Final status is the last ``upsertRevision.metadata.status``, overridden by
+    a later ``deprecateItem`` -> ``deprecated``. Final sensitivity is the last
+    ``upsertRevision.metadata.sensitivity`` (default ``internal``, ADR-0027
+    decision 1's own default when a revision omits it), overridden by a later
+    ``changeSensitivity``.
+    """
     status_by_item: dict[str, str] = {}
     sensitivity_by_item: dict[str, str] = {}
     for entry in manifest.migrations:
@@ -422,6 +431,56 @@ def _withheld_item_coverage(
                 status_by_item[item_id] = "deprecated"
             elif op["op"] == "changeSensitivity":
                 sensitivity_by_item[item_id] = op["sensitivity"]
+    return status_by_item, sensitivity_by_item
+
+
+def _check_no_disclosable_withheld_item(manifest: Manifest, documents: dict[str, Any]) -> None:
+    """No withheld-plane item may end up approved and within the build ceiling.
+
+    ADR-0036's gate-vs-census derivation rule is a three-clause partition
+    (the amendment landing on another PR, cited here by ADR name only):
+    gate-tested iff final status in {draft, proposed} and within the ceiling;
+    census-tested iff final status in {superseded, rejected, deprecated} or
+    above the ceiling. The third combination -- approved and within the
+    ceiling -- is excluded by no mechanism: the item is indexed and surfaced
+    at default flags exactly like any other approved item, so calling it
+    "census-tested" would be false. Refused here rather than given a third
+    label, so the classification below only ever partitions cleanly.
+    """
+    withheld_item_ids = _withheld_item_ids(manifest, documents)
+    status_by_item, sensitivity_by_item = _final_status_and_sensitivity(
+        manifest, documents, withheld_item_ids
+    )
+    for item_id in sorted(withheld_item_ids):
+        status = status_by_item.get(item_id, "draft")
+        sensitivity = sensitivity_by_item.get(item_id, DEFAULT_SENSITIVITY.value)
+        within_ceiling = Sensitivity(sensitivity) in BUILD_CEILING_SENSITIVITIES
+        if status == "approved" and within_ceiling:
+            raise CorpusError(
+                "withheld-item-disclosable",
+                f"withheld-plane item {item_id!r} has final status 'approved' and "
+                f"final sensitivity {sensitivity!r}, within the build ceiling "
+                f"({BUILD_CEILING.value!r}) -- nothing excludes it from either "
+                f"build's index, so it is not a valid withheld-plane item. "
+                f"Author it draft or proposed (gate-tested), or give it a "
+                f"retired final status or a sensitivity above the ceiling "
+                f"(census-tested).",
+            )
+
+
+def _withheld_item_coverage(
+    manifest: Manifest, documents: dict[str, Any]
+) -> tuple[WithheldItemCoverage, ...]:
+    """Classify every withheld-plane item (ADR-0036, the gate-vs-census derivation rule).
+
+    Called only after :func:`_check_no_disclosable_withheld_item` has refused
+    the one combination this classification cannot honestly label, so every
+    item here is either gate-tested or census-tested and never both.
+    """
+    withheld_item_ids = _withheld_item_ids(manifest, documents)
+    status_by_item, sensitivity_by_item = _final_status_and_sensitivity(
+        manifest, documents, withheld_item_ids
+    )
 
     coverage = []
     for item_id in sorted(withheld_item_ids):
