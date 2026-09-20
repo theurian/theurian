@@ -1,0 +1,30 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M013
+createdAt: '2026-09-20T00:00:12+00:00'
+author: theurian-maintainers
+description: 'The six lifecycle statuses and which of them a default query returns.'
+operations:
+- op: createItem
+  itemId: domain.lifecycle-statuses
+  kind: domain
+  namespace: domain
+  owner: theurian-maintainers
+  sensitivity: internal
+  trustLevel: reviewed
+- op: upsertRevision
+  itemId: domain.lifecycle-statuses
+  revisionId: 01M9EV0000000000000000R013
+  contentFile: ../knowledge/domain/lifecycle-statuses.01M9EV0000000000000000R013.md
+  contentSha256: 78de2eec2cf80731af62ed5800498fca06aa1c971a43e6ab7f2ec9a132f554ed
+  metadata:
+    title: 'Knowledge lifecycle statuses'
+    contentType: text/markdown
+    kind: domain
+    namespace: domain
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: internal
+    labels:
+    - lifecycle
+    - status

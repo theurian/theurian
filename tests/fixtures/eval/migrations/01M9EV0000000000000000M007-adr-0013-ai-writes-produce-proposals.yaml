@@ -1,0 +1,35 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M007
+createdAt: '2026-09-20T00:00:06+00:00'
+author: theurian-maintainers
+description: 'Snapshot ADR-0013, verbatim, from commit 111ab5732dd71efb35f5ecbcd155d75f65ee7de0.'
+operations:
+- op: createItem
+  itemId: architecture.ai-writes-produce-proposals
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+  sensitivity: public
+  trustLevel: reviewed
+- op: upsertRevision
+  itemId: architecture.ai-writes-produce-proposals
+  revisionId: 01M9EV0000000000000000R007
+  contentFile: ../knowledge/architecture/ai-writes-produce-proposals.01M9EV0000000000000000R007.md
+  contentSha256: 9f43f77bb7ee45df189911af6e505754bc48179abbb12d40d55613749fc83feb
+  metadata:
+    title: 'ADR-0013: AI writes produce proposals, never approved state'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0013
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 111ab5732dd71efb35f5ecbcd155d75f65ee7de0
+      filePath: docs/adr/0013-ai-writes-produce-proposals.md

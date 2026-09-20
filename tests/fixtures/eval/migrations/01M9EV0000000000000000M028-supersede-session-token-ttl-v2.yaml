@@ -1,0 +1,28 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M028
+createdAt: '2026-09-20T00:00:27+00:00'
+author: theurian-maintainers
+description: 'Supersede the 12-hour TTL policy with the current one-hour policy.'
+operations:
+- op: upsertRevision
+  itemId: domain.session-token-ttl-v2
+  revisionId: 01M9EV0000000000000000R028
+  expectedRevision: 01M9EV0000000000000000R022
+  contentFile: ../knowledge/domain/session-token-ttl-v2.01M9EV0000000000000000R028.md
+  contentSha256: 866a9a64a0840108c274f8d98db149926392d0cd86c2f1d1f6554150af143164
+  metadata:
+    title: 'Session token TTL policy (v2)'
+    contentType: text/markdown
+    kind: domain
+    namespace: domain
+    status: superseded
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: internal
+    labels:
+    - ttl
+    - session-token
+- op: addRelation
+  sourceItemId: domain.session-token-ttl
+  relationType: supersedes
+  targetItemId: domain.session-token-ttl-v2

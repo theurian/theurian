@@ -1,0 +1,35 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M002
+createdAt: '2026-09-20T00:00:01+00:00'
+author: theurian-maintainers
+description: 'Snapshot ADR-0006, verbatim, from commit 111ab5732dd71efb35f5ecbcd155d75f65ee7de0.'
+operations:
+- op: createItem
+  itemId: architecture.immutable-revisions-and-optimistic-concurrency
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+  sensitivity: public
+  trustLevel: reviewed
+- op: upsertRevision
+  itemId: architecture.immutable-revisions-and-optimistic-concurrency
+  revisionId: 01M9EV0000000000000000R002
+  contentFile: ../knowledge/architecture/immutable-revisions-and-optimistic-concurrency.01M9EV0000000000000000R002.md
+  contentSha256: 85852c5077d70cf4d6e8bfe0303c1078b701ea6c881c0c124147d2c4abe4a6a1
+  metadata:
+    title: 'ADR-0006: Immutable revisions with optimistic concurrency'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0006
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 111ab5732dd71efb35f5ecbcd155d75f65ee7de0
+      filePath: docs/adr/0006-immutable-revisions-and-optimistic-concurrency.md

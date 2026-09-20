@@ -1,0 +1,35 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M009
+createdAt: '2026-09-20T00:00:08+00:00'
+author: theurian-maintainers
+description: 'Snapshot ADR-0021, verbatim, from commit 111ab5732dd71efb35f5ecbcd155d75f65ee7de0.'
+operations:
+- op: createItem
+  itemId: architecture.rank-fusion-over-score-normalisation
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+  sensitivity: public
+  trustLevel: reviewed
+- op: upsertRevision
+  itemId: architecture.rank-fusion-over-score-normalisation
+  revisionId: 01M9EV0000000000000000R009
+  contentFile: ../knowledge/architecture/rank-fusion-over-score-normalisation.01M9EV0000000000000000R009.md
+  contentSha256: 741e905b02613766af2c7b6c4f0e2db1c66005a1db68ee60fab8d2ee1ddcafe9
+  metadata:
+    title: 'ADR-0021: Fuse retrievers by rank, not by normalised score'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0021
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 111ab5732dd71efb35f5ecbcd155d75f65ee7de0
+      filePath: docs/adr/0021-rank-fusion-over-score-normalisation.md

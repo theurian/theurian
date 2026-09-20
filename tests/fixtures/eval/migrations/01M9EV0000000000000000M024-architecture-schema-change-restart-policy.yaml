@@ -1,0 +1,30 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M024
+createdAt: '2026-09-20T00:00:23+00:00'
+author: theurian-maintainers
+description: 'The other half of the conflicting pair: this one says a schema change requires a restart.'
+operations:
+- op: createItem
+  itemId: architecture.schema-change-restart-policy
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+  sensitivity: internal
+  trustLevel: reviewed
+- op: upsertRevision
+  itemId: architecture.schema-change-restart-policy
+  revisionId: 01M9EV0000000000000000R024
+  contentFile: ../knowledge/architecture/schema-change-restart-policy.01M9EV0000000000000000R024.md
+  contentSha256: bdba7926a2bae7b5177b142ed9d6efb22ad69442c57055c1a878adcdf35343dc
+  metadata:
+    title: 'Schema change restart policy'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: internal
+    labels:
+    - daemon
+    - schema-version

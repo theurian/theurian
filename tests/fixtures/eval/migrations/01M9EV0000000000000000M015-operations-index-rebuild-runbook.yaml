@@ -1,0 +1,30 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M015
+createdAt: '2026-09-20T00:00:14+00:00'
+author: theurian-maintainers
+description: 'Blue/green index rebuild, the pointer swap, and purge on withdrawal.'
+operations:
+- op: createItem
+  itemId: operations.index-rebuild-runbook
+  kind: operations
+  namespace: operations
+  owner: theurian-maintainers
+  sensitivity: internal
+  trustLevel: reviewed
+- op: upsertRevision
+  itemId: operations.index-rebuild-runbook
+  revisionId: 01M9EV0000000000000000R015
+  contentFile: ../knowledge/operations/index-rebuild-runbook.01M9EV0000000000000000R015.md
+  contentSha256: 73c10cce0f6538825d01302fae3deaa62a0114e7c9c76ec5003743f23a7243b2
+  metadata:
+    title: 'Index rebuild runbook'
+    contentType: text/markdown
+    kind: operations
+    namespace: operations
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: internal
+    labels:
+    - index
+    - runbook

@@ -1,0 +1,30 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M023
+createdAt: '2026-09-20T00:00:22+00:00'
+author: theurian-maintainers
+description: 'The current session token TTL policy: 1 hour.'
+operations:
+- op: createItem
+  itemId: domain.session-token-ttl
+  kind: domain
+  namespace: domain
+  owner: theurian-maintainers
+  sensitivity: internal
+  trustLevel: reviewed
+- op: upsertRevision
+  itemId: domain.session-token-ttl
+  revisionId: 01M9EV0000000000000000R023
+  contentFile: ../knowledge/domain/session-token-ttl.01M9EV0000000000000000R023.md
+  contentSha256: 0d7dc655fc87cc093d757a423511312f231ae48769a5acd428069f7212f7cd41
+  metadata:
+    title: 'Session token TTL policy'
+    contentType: text/markdown
+    kind: domain
+    namespace: domain
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: internal
+    labels:
+    - ttl
+    - session-token

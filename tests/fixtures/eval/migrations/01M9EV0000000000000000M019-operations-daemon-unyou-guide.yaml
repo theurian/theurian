@@ -1,0 +1,30 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M019
+createdAt: '2026-09-20T00:00:18+00:00'
+author: theurian-maintainers
+description: 'The CJK rank distractor: shares one query term with the probe target and not the other.'
+operations:
+- op: createItem
+  itemId: operations.daemon-unyou-guide
+  kind: operations
+  namespace: operations
+  owner: theurian-maintainers
+  sensitivity: internal
+  trustLevel: reviewed
+- op: upsertRevision
+  itemId: operations.daemon-unyou-guide
+  revisionId: 01M9EV0000000000000000R019
+  contentFile: ../knowledge/operations/daemon-unyou-guide.01M9EV0000000000000000R019.md
+  contentSha256: 4b77a3fe9f03165478f62443188d5f50a9523789af1015483c23be650be39995
+  metadata:
+    title: 'デーモン運用ガイド'
+    contentType: text/markdown
+    kind: operations
+    namespace: operations
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: internal
+    labels:
+    - cjk
+    - daemon

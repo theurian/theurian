@@ -1,0 +1,30 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M026
+createdAt: '2026-09-20T00:00:25+00:00'
+author: theurian-maintainers
+description: 'A near-topic distractor for the TTL queries: retention is 90 days.'
+operations:
+- op: createItem
+  itemId: domain.data-retention-policy
+  kind: domain
+  namespace: domain
+  owner: theurian-maintainers
+  sensitivity: internal
+  trustLevel: reviewed
+- op: upsertRevision
+  itemId: domain.data-retention-policy
+  revisionId: 01M9EV0000000000000000R026
+  contentFile: ../knowledge/domain/data-retention-policy.01M9EV0000000000000000R026.md
+  contentSha256: f3aa8874e924e5057ea33775d702f16de76adba7c92e8c73c0d5b530972d5e4e
+  metadata:
+    title: 'Data retention policy'
+    contentType: text/markdown
+    kind: domain
+    namespace: domain
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: internal
+    labels:
+    - retention
+    - policy

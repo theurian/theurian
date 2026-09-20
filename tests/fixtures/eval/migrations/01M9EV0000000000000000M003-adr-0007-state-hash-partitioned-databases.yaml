@@ -1,0 +1,35 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M003
+createdAt: '2026-09-20T00:00:02+00:00'
+author: theurian-maintainers
+description: 'Snapshot ADR-0007, verbatim, from commit 111ab5732dd71efb35f5ecbcd155d75f65ee7de0.'
+operations:
+- op: createItem
+  itemId: architecture.state-hash-partitioned-databases
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+  sensitivity: public
+  trustLevel: reviewed
+- op: upsertRevision
+  itemId: architecture.state-hash-partitioned-databases
+  revisionId: 01M9EV0000000000000000R003
+  contentFile: ../knowledge/architecture/state-hash-partitioned-databases.01M9EV0000000000000000R003.md
+  contentSha256: 7dbd2fa9a392504191aa5de82c0eecb64fe8a4e378fb96d7b0a731bcd0728078
+  metadata:
+    title: 'ADR-0007: State-hash-partitioned databases for Git branches and worktrees'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0007
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 111ab5732dd71efb35f5ecbcd155d75f65ee7de0
+      filePath: docs/adr/0007-state-hash-partitioned-databases.md

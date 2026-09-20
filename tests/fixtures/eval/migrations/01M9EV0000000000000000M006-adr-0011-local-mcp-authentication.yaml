@@ -1,0 +1,35 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M006
+createdAt: '2026-09-20T00:00:05+00:00'
+author: theurian-maintainers
+description: 'Snapshot ADR-0011, verbatim, from commit 111ab5732dd71efb35f5ecbcd155d75f65ee7de0.'
+operations:
+- op: createItem
+  itemId: architecture.local-mcp-authentication
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+  sensitivity: public
+  trustLevel: reviewed
+- op: upsertRevision
+  itemId: architecture.local-mcp-authentication
+  revisionId: 01M9EV0000000000000000R006
+  contentFile: ../knowledge/architecture/local-mcp-authentication.01M9EV0000000000000000R006.md
+  contentSha256: 6e09e06a2cd0d9f6b4ff4b6c59a297fe9a17b5f92f470ce33c7e9e14bbbea267
+  metadata:
+    title: 'ADR-0011: Local MCP authentication and token handling'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0011
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 111ab5732dd71efb35f5ecbcd155d75f65ee7de0
+      filePath: docs/adr/0011-local-mcp-authentication.md

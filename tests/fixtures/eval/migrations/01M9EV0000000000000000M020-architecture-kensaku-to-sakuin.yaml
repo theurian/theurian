@@ -1,0 +1,30 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M020
+createdAt: '2026-09-20T00:00:19+00:00'
+author: theurian-maintainers
+description: 'A mixed CJK and ASCII body: Japanese prose beside FTS5, trigram and RRF.'
+operations:
+- op: createItem
+  itemId: architecture.kensaku-to-sakuin
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+  sensitivity: internal
+  trustLevel: reviewed
+- op: upsertRevision
+  itemId: architecture.kensaku-to-sakuin
+  revisionId: 01M9EV0000000000000000R020
+  contentFile: ../knowledge/architecture/kensaku-to-sakuin.01M9EV0000000000000000R020.md
+  contentSha256: d00820f77f37a474340f3bb75a7547d2c1a24adbfaf89957c703dc132dc9b32e
+  metadata:
+    title: '検索と索引の設計'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: internal
+    labels:
+    - cjk
+    - retrieval

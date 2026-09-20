@@ -1,0 +1,30 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M025
+createdAt: '2026-09-20T00:00:24+00:00'
+author: theurian-maintainers
+description: 'A visible record of a rejected approach. Approved as a record; the approach inside it is the thing that was rejected.'
+operations:
+- op: createItem
+  itemId: domain.rejected-approach-score-normalisation
+  kind: rejected-approach
+  namespace: domain
+  owner: theurian-maintainers
+  sensitivity: internal
+  trustLevel: reviewed
+- op: upsertRevision
+  itemId: domain.rejected-approach-score-normalisation
+  revisionId: 01M9EV0000000000000000R025
+  contentFile: ../knowledge/domain/rejected-approach-score-normalisation.01M9EV0000000000000000R025.md
+  contentSha256: 072f24fb8dd2012c5bb16a0284cad0e80363f482cd2cfbd8b71f59eb5aec2b54
+  metadata:
+    title: 'Rejected: min-max score normalisation across retrievers'
+    contentType: text/markdown
+    kind: rejected-approach
+    namespace: domain
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: internal
+    labels:
+    - rejected-approach
+    - retrieval

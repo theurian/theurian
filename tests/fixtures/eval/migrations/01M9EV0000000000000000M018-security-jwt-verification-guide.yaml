@@ -1,0 +1,30 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M018
+createdAt: '2026-09-20T00:00:17+00:00'
+author: theurian-maintainers
+description: 'The CJK probe target: a Japanese body carrying the terms both CJK queries use.'
+operations:
+- op: createItem
+  itemId: security.jwt-verification-guide
+  kind: security
+  namespace: security
+  owner: theurian-maintainers
+  sensitivity: internal
+  trustLevel: reviewed
+- op: upsertRevision
+  itemId: security.jwt-verification-guide
+  revisionId: 01M9EV0000000000000000R018
+  contentFile: ../knowledge/security/jwt-verification-guide.01M9EV0000000000000000R018.md
+  contentSha256: c738415bb01d608ca1f98f2eda25b514a60c2cfe592d26b9ec61adfd617cb6f6
+  metadata:
+    title: '認証トークンの検証手順'
+    contentType: text/markdown
+    kind: security
+    namespace: security
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: internal
+    labels:
+    - cjk
+    - token

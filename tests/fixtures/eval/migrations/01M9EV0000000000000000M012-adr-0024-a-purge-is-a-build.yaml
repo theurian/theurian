@@ -1,0 +1,35 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M012
+createdAt: '2026-09-20T00:00:11+00:00'
+author: theurian-maintainers
+description: 'Snapshot ADR-0024, verbatim, from commit 111ab5732dd71efb35f5ecbcd155d75f65ee7de0.'
+operations:
+- op: createItem
+  itemId: architecture.a-purge-is-a-build
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+  sensitivity: public
+  trustLevel: reviewed
+- op: upsertRevision
+  itemId: architecture.a-purge-is-a-build
+  revisionId: 01M9EV0000000000000000R012
+  contentFile: ../knowledge/architecture/a-purge-is-a-build.01M9EV0000000000000000R012.md
+  contentSha256: b8a1be52b3162de4df4bb484abee0ba4f19c69eecf812b44d1aed323ebea03f9
+  metadata:
+    title: 'ADR-0024: A purge is a build; a published index is never written'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0024
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 111ab5732dd71efb35f5ecbcd155d75f65ee7de0
+      filePath: docs/adr/0024-a-purge-is-a-build.md

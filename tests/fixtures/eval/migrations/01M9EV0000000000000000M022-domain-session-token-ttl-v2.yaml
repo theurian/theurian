@@ -1,0 +1,30 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M022
+createdAt: '2026-09-20T00:00:21+00:00'
+author: theurian-maintainers
+description: 'The second session token TTL policy: 12 hours. Superseded later in this corpus.'
+operations:
+- op: createItem
+  itemId: domain.session-token-ttl-v2
+  kind: domain
+  namespace: domain
+  owner: theurian-maintainers
+  sensitivity: internal
+  trustLevel: reviewed
+- op: upsertRevision
+  itemId: domain.session-token-ttl-v2
+  revisionId: 01M9EV0000000000000000R022
+  contentFile: ../knowledge/domain/session-token-ttl-v2.01M9EV0000000000000000R022.md
+  contentSha256: a9def808cd63811b17030ec05959aad313309b4a54e4b4022f6f9ed6b58b54dc
+  metadata:
+    title: 'Session token TTL policy (v2)'
+    contentType: text/markdown
+    kind: domain
+    namespace: domain
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: internal
+    labels:
+    - ttl
+    - session-token

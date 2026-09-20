@@ -1,0 +1,35 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M004
+createdAt: '2026-09-20T00:00:03+00:00'
+author: theurian-maintainers
+description: 'Snapshot ADR-0008, verbatim, from commit 111ab5732dd71efb35f5ecbcd155d75f65ee7de0.'
+operations:
+- op: createItem
+  itemId: architecture.raptor-forest
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+  sensitivity: public
+  trustLevel: reviewed
+- op: upsertRevision
+  itemId: architecture.raptor-forest
+  revisionId: 01M9EV0000000000000000R004
+  contentFile: ../knowledge/architecture/raptor-forest.01M9EV0000000000000000R004.md
+  contentSha256: afa528835746847faf3f96eb4b7f319a49d3ea10147cba6d683b674b2f924678
+  metadata:
+    title: 'ADR-0008: A RAPTOR forest, not a single tree'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0008
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 111ab5732dd71efb35f5ecbcd155d75f65ee7de0
+      filePath: docs/adr/0008-raptor-forest.md

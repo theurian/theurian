@@ -1,0 +1,30 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M014
+createdAt: '2026-09-20T00:00:13+00:00'
+author: theurian-maintainers
+description: 'The daemon runbook. One half of the conflicting pair: this one says a schema change needs no restart.'
+operations:
+- op: createItem
+  itemId: operations.daemon-runbook
+  kind: operations
+  namespace: operations
+  owner: theurian-maintainers
+  sensitivity: internal
+  trustLevel: reviewed
+- op: upsertRevision
+  itemId: operations.daemon-runbook
+  revisionId: 01M9EV0000000000000000R014
+  contentFile: ../knowledge/operations/daemon-runbook.01M9EV0000000000000000R014.md
+  contentSha256: 578a15428f18127a5b4dde70f3d9422070a7a40ae6ae15e3d99d3d891177932d
+  metadata:
+    title: 'Daemon runbook'
+    contentType: text/markdown
+    kind: operations
+    namespace: operations
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: internal
+    labels:
+    - daemon
+    - runbook

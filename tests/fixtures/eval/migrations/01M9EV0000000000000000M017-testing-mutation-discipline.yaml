@@ -1,0 +1,30 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M017
+createdAt: '2026-09-20T00:00:16+00:00'
+author: theurian-maintainers
+description: 'Mutation runs, and why a surviving mutant is a finding.'
+operations:
+- op: createItem
+  itemId: testing.mutation-discipline
+  kind: testing
+  namespace: testing
+  owner: theurian-maintainers
+  sensitivity: internal
+  trustLevel: reviewed
+- op: upsertRevision
+  itemId: testing.mutation-discipline
+  revisionId: 01M9EV0000000000000000R017
+  contentFile: ../knowledge/testing/mutation-discipline.01M9EV0000000000000000R017.md
+  contentSha256: ff88d6cfe24f957687955288a4e16619684f37fb3fa33dff5da2d2a825a59bea
+  metadata:
+    title: 'Mutation discipline'
+    contentType: text/markdown
+    kind: testing
+    namespace: testing
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: internal
+    labels:
+    - mutation
+    - testing

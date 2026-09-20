@@ -1,0 +1,35 @@
+apiVersion: theurian.dev/v1
+id: 01M9EV0000000000000000M008
+createdAt: '2026-09-20T00:00:07+00:00'
+author: theurian-maintainers
+description: 'Snapshot ADR-0017, verbatim, from commit 111ab5732dd71efb35f5ecbcd155d75f65ee7de0.'
+operations:
+- op: createItem
+  itemId: architecture.sqlite-schema-versioning
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+  sensitivity: public
+  trustLevel: reviewed
+- op: upsertRevision
+  itemId: architecture.sqlite-schema-versioning
+  revisionId: 01M9EV0000000000000000R008
+  contentFile: ../knowledge/architecture/sqlite-schema-versioning.01M9EV0000000000000000R008.md
+  contentSha256: 7304205198e92efbba98fd75b1d508e03ade593290e8a96cfcd220d67d5f188c
+  metadata:
+    title: 'ADR-0017: SQLite schema version participates in the state hash'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0017
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 111ab5732dd71efb35f5ecbcd155d75f65ee7de0
+      filePath: docs/adr/0017-sqlite-schema-versioning.md
