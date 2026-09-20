@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theurian.dev/schemas/eval/judgements.schema.json",
+  "title": "Retrieval-evaluation golden judgements",
+  "description": "Validates judgements.yaml (parsed to JSON) at a frozen fixture corpus root (Phase A, docs/roadmap.md). Each entry judges the expected results of one query. Whether every `queryId` names a query declared in queries.yaml, and whether every `itemId` in `relevant` or `forbidden` exists in the corpus manifest.yaml's migrations build, are the loader's to verify (S2).",
+  "type": "object",
+  "required": ["judgements"],
+  "additionalProperties": false,
+  "properties": {
+    "judgements": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/judgementEntry" }
+    }
+  },
+  "$defs": {
+    "judgementEntry": {
+      "type": "object",
+      "required": ["queryId"],
+      "additionalProperties": false,
+      "properties": {
+        "queryId": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*$",
+          "description": "The `id` of the query in queries.yaml this entry judges."
+        },
+        "relevant": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/judgedItem" },
+          "description": "Items the harness expects the query to retrieve."
+        },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidenceRef" },
+          "description": "Source anchors the harness expects a correct answer to cite."
+        },
+        "forbidden": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/judgedItem" },
+          "description": "Items that must never appear in the query's results — the superseded-knowledge and disclosure-equality error classes."
+        },
+        "expectAbstention": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether the correct answer is no answer. `true` contradicts a non-empty `relevant` list — see the constraint below."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "expectAbstention": { "const": true } },
+            "required": ["expectAbstention"]
+          },
+          "then": {
+            "properties": { "relevant": { "maxItems": 0 } }
+          }
+        }
+      ]
+    },
+    "judgedItem": {
+      "type": "object",
+      "required": ["itemId"],
+      "additionalProperties": false,
+      "properties": {
+        "itemId": {
+          "type": "string",
+          "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+          "description": "26-character Crockford base32 ULID identifying the item."
+        }
+      }
+    },
+    "evidenceRef": {
+      "type": "object",
+      "required": ["sourceUri"],
+      "additionalProperties": false,
+      "properties": {
+        "sourceUri": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The evidence source anchor's URI the harness expects a correct answer to cite."
+        },
+        "filePath": {
+          "type": "string",
+          "description": "Optional file path narrowing the source anchor to one file within it."
+        }
+      }
+    }
+  }
+}

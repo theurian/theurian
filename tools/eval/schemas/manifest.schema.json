@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://theurian.dev/schemas/eval/manifest.schema.json",
+  "title": "Retrieval-evaluation corpus manifest",
+  "description": "Validates manifest.yaml (parsed to JSON) at a frozen fixture corpus root (Phase A, docs/roadmap.md \"Phase A — Retrieval evaluation baseline\"). Declares the migrations that build the corpus, the k values the harness reports Recall@k and MRR for, and the expected census of the built result. Whether `migrations` order agrees with each file's own ULID ordering, and whether `census` agrees with a real build, are the loader's to verify (S2) — this schema states the shape of the manifest alone.",
+  "type": "object",
+  "required": ["contractVersion", "corpusId", "kValues", "migrations", "census"],
+  "additionalProperties": false,
+  "properties": {
+    "contractVersion": {
+      "const": 1,
+      "description": "Version of this manifest contract. Bumped when a required key is added or removed; the corpus content has its own versioning through `corpusId`."
+    },
+    "corpusId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "description": "Stable slug identifying this fixture corpus, e.g. `adr-corpus-v1`."
+    },
+    "kValues": {
+      "type": "array",
+      "items": { "type": "integer", "minimum": 1 },
+      "minItems": 1,
+      "uniqueItems": true,
+      "description": "The k values Recall@k is reported for, e.g. `[1, 5, 10]`."
+    },
+    "migrations": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/migrationEntry" },
+      "description": "The migration files that build this corpus."
+    },
+    "census": {
+      "type": "object",
+      "required": ["full", "clean"],
+      "additionalProperties": false,
+      "properties": {
+        "full": { "$ref": "#/$defs/corpusCensus" },
+        "clean": { "$ref": "#/$defs/corpusCensus" }
+      },
+      "description": "Expected item and chunk counts for the two indexes every disclosure-equality query runs against: `full` (built from every migration, including `withheld`-plane ones) and `clean` (built from `visible`-plane migrations only)."
+    },
+    "description": {
+      "type": "string",
+      "description": "Human-readable summary of what this corpus fixture covers."
+    }
+  },
+  "$defs": {
+    "migrationEntry": {
+      "type": "object",
+      "required": ["file", "plane"],
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "type": "string",
+          "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}-[a-z0-9-]+\\.yaml$",
+          "description": "Migration filename: a 26-character Crockford base32 ULID followed by a slug, matching this project's migration file naming."
+        },
+        "plane": {
+          "enum": ["visible", "withheld"],
+          "description": "Whether this migration's content belongs to both corpora (`visible`) or to `full` only (`withheld`, the synthetic secret rows a disclosure-equality query must never surface from `clean`)."
+        }
+      }
+    },
+    "corpusCensus": {
+      "type": "object",
+      "required": ["items", "byStatus", "bySensitivity", "chunks"],
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total knowledge items expected in this corpus."
+        },
+        "byStatus": {
+          "type": "object",
+          "propertyNames": { "enum": ["draft", "proposed", "approved", "deprecated", "superseded", "rejected"] },
+          "additionalProperties": { "type": "integer", "minimum": 0 },
+          "description": "Expected item count per status; a status with zero expected items is simply absent rather than listed as `0`."
+        },
+        "bySensitivity": {
+          "type": "object",
+          "propertyNames": { "enum": ["public", "internal", "confidential", "restricted"] },
+          "additionalProperties": { "type": "integer", "minimum": 0 },
+          "description": "Expected item count per sensitivity label; a label with zero expected items is simply absent."
+        },
+        "chunks": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total indexed chunks expected in this corpus."
+        }
+      }
+    }
+  }
+}
