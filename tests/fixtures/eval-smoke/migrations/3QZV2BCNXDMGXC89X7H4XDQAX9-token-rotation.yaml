@@ -1,0 +1,29 @@
+apiVersion: theurian.dev/v1
+id: 3QZV2BCNXDMGXC89X7H4XDQAX9
+createdAt: 2026-09-20T09:02:00+09:00
+author: eval-harness@theurian.dev
+description: Token rotation policy for the Phase A smoke corpus (ADR-0036).
+operations:
+  - op: createItem
+    itemId: security.token-rotation
+    kind: security
+    namespace: eval-smoke
+    owner: eval-harness
+    sensitivity: public
+  - op: upsertRevision
+    itemId: security.token-rotation
+    revisionId: 3V5FT58GSGD0DKV5J8EE6KHZCJ
+    contentFile: ../knowledge/security/token-rotation.md
+    contentSha256: d21c7c708bb210b0874cbf2a3cc17c7bcfd38083eb9d5ec2e88d443c13abef36
+    metadata:
+      title: Token Rotation Policy
+      contentType: text/markdown
+      kind: security
+      namespace: eval-smoke
+      status: approved
+      owner: eval-harness
+      trustLevel: reviewed
+      sensitivity: public
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://eval-smoke/security/token-rotation.md

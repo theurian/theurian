@@ -1,0 +1,52 @@
+# Phase A smoke corpus (ADR-0036), tests/fixtures/eval-smoke.
+#
+# Drives the S2 committed pins -- determinism, the disclosure-equality set
+# comparison, and the loader's own refusals. Not the frozen measurement
+# corpus (a later slice): four to six items, purposive rather than
+# representative.
+#
+# The withheld item's incident key (knowledge/security/incident-runbook.md)
+# is `hashlib.sha256(b"theurian eval-smoke withheld incident key
+# v1").hexdigest()[:20].upper()` -- derived at authoring time, never a
+# pasted credential, per ADR-0036 decision 6's "withheld rows are synthetic
+# only".
+contractVersion: 1
+corpusId: eval-smoke-v1
+kValues: [1, 5, 10]
+description: >-
+  Small, purposive Phase A fixture: four visible-plane items and one
+  withheld-plane item, covering an exact-decision query, a
+  superseded-knowledge trap, an abstention query, and two disclosure-equality
+  queries -- one over shared content (where decision 6's set-equality holds),
+  one over the withheld term itself (a real content difference, which is the
+  reach control the set-equality pin needs to mean anything).
+migrations:
+  - file: 15QXPCC15J8D72P29GA1QG0CBE-gateway-policy.yaml
+    plane: visible
+  - file: 2K1HAZQT4C3A3JGF7SKM33S6E3-retry-policy.yaml
+    plane: visible
+  - file: 3QZV2BCNXDMGXC89X7H4XDQAX9-token-rotation.yaml
+    plane: visible
+  - file: 46MRE714MP3E3P7W5C9M5ACDV0-deprecated-cache.yaml
+    plane: visible
+  - file: 57HHE3965XVTCWPCD1JGN30DCG-withheld-runbook.yaml
+    plane: withheld
+census:
+  full:
+    items: 5
+    byStatus:
+      approved: 4
+      deprecated: 1
+    bySensitivity:
+      public: 3
+      internal: 2
+    chunks: 4
+  clean:
+    items: 4
+    byStatus:
+      approved: 3
+      deprecated: 1
+    bySensitivity:
+      public: 3
+      internal: 1
+    chunks: 3

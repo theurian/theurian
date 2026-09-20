@@ -1,0 +1,17 @@
+judgements:
+  - queryId: token-rotation-policy
+    relevant:
+      - itemId: security.token-rotation
+    evidence:
+      - sourceUri: git://eval-smoke/security/token-rotation.md
+  - queryId: cache-invalidation-current
+    forbidden:
+      - itemId: architecture.deprecated-cache
+  - queryId: mainframe-disaster-recovery
+    expectAbstention: true
+  - queryId: withheld-incident-key
+    relevant:
+      - itemId: security.incident-runbook
+  - queryId: gateway-policy-cross-build
+    relevant:
+      - itemId: architecture.gateway-policy

@@ -1,0 +1,29 @@
+apiVersion: theurian.dev/v1
+id: 15QXPCC15J8D72P29GA1QG0CBE
+createdAt: 2026-09-20T09:00:00+09:00
+author: eval-harness@theurian.dev
+description: Gateway access policy for the Phase A smoke corpus (ADR-0036).
+operations:
+  - op: createItem
+    itemId: architecture.gateway-policy
+    kind: architecture
+    namespace: eval-smoke
+    owner: eval-harness
+    sensitivity: public
+  - op: upsertRevision
+    itemId: architecture.gateway-policy
+    revisionId: 1SY707GWSY55WHMB9PT2HT1ARJ
+    contentFile: ../knowledge/architecture/gateway-policy.md
+    contentSha256: 8ddbf0cd6be074850cb8c429edf4ecc969c2c51aa1c2cfa4a2d9850d2914b3ec
+    metadata:
+      title: Gateway Access Policy
+      contentType: text/markdown
+      kind: architecture
+      namespace: eval-smoke
+      status: approved
+      owner: eval-harness
+      trustLevel: reviewed
+      sensitivity: public
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://eval-smoke/architecture/gateway-policy.md

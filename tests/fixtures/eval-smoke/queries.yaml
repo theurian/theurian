@@ -1,0 +1,18 @@
+queries:
+  - id: token-rotation-policy
+    class: exact-decision
+    query: "What is the token rotation policy?"
+  - id: cache-invalidation-current
+    class: superseded
+    query: "How is the shared cache invalidated?"
+  - id: mainframe-disaster-recovery
+    class: unknown
+    query: "What is the disaster recovery plan for the mainframe?"
+  - id: withheld-incident-key
+    class: cross-adr
+    query: "0710645F7E85DCE09F4B"
+    corpora: [full, clean]
+  - id: gateway-policy-cross-build
+    class: broad-architectural
+    query: "authenticates inbound requests"
+    corpora: [full, clean]

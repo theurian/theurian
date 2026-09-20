@@ -146,6 +146,7 @@ markers = [
     "integration: touches SQLite, the filesystem, or a local subprocess",
     "contract: verifies a published contract between Core and a consumer",
     "e2e: drives the real CLI, daemon, or plugin end to end",
+    "eval: runs the Phase A retrieval-evaluation harness end to end (ADR-0036)",
 ]
 asyncio_mode = "strict"
 filterwarnings = ["error"]

@@ -1,0 +1,29 @@
+apiVersion: theurian.dev/v1
+id: 2K1HAZQT4C3A3JGF7SKM33S6E3
+createdAt: 2026-09-20T09:01:00+09:00
+author: eval-harness@theurian.dev
+description: Retry policy for the Phase A smoke corpus (ADR-0036).
+operations:
+  - op: createItem
+    itemId: architecture.retry-policy
+    kind: architecture
+    namespace: eval-smoke
+    owner: eval-harness
+    sensitivity: internal
+  - op: upsertRevision
+    itemId: architecture.retry-policy
+    revisionId: 27N859RGJ494K2BHCS7CQQMBJT
+    contentFile: ../knowledge/architecture/retry-policy.md
+    contentSha256: 238c000edb107ca58c95fb2cc31b05626e3b1b7397817b479c1c9f4fc5345643
+    metadata:
+      title: Retry Policy
+      contentType: text/markdown
+      kind: architecture
+      namespace: eval-smoke
+      status: approved
+      owner: eval-harness
+      trustLevel: reviewed
+      sensitivity: internal
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://eval-smoke/architecture/retry-policy.md

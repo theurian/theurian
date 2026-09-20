@@ -1,0 +1,32 @@
+apiVersion: theurian.dev/v1
+id: 57HHE3965XVTCWPCD1JGN30DCG
+createdAt: 2026-09-20T09:04:00+09:00
+author: eval-harness@theurian.dev
+description: >-
+  Synthetic incident runbook for the Phase A smoke corpus's withheld plane
+  (ADR-0036 decision 6). The incident key is a derived hex digest, never a
+  pasted credential -- see manifest.yaml's header comment.
+operations:
+  - op: createItem
+    itemId: security.incident-runbook
+    kind: security
+    namespace: eval-smoke
+    owner: eval-harness
+    sensitivity: internal
+  - op: upsertRevision
+    itemId: security.incident-runbook
+    revisionId: 5HE099DJJ0H7EN03V6DD4B1NYV
+    contentFile: ../knowledge/security/incident-runbook.md
+    contentSha256: f2a638a5c04581cf44cd224c3d1f89d4a983a7f60f6b766722c8e3c973aa27bd
+    metadata:
+      title: Tenant Quarantine Runbook
+      contentType: text/markdown
+      kind: security
+      namespace: eval-smoke
+      status: approved
+      owner: eval-harness
+      trustLevel: reviewed
+      sensitivity: internal
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://eval-smoke/security/incident-runbook.md
