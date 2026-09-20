@@ -275,6 +275,10 @@ numbers at all" — a withheld row consuming one of the fifty candidate slots, a
 comparison assembled by listing the numbers someone could think of would have
 reached neither.
 
+**Which withheld members that comparison actually tests is not settled here.**
+*Amendment 1* below states the derivation rule that answers it, and the three
+riders that bound what the battery may be read as covering.
+
 ### 7. The report splits in two: a deterministic pin and a dated annex
 
 | File | Holds | In the determinism pin |
@@ -478,3 +482,117 @@ Still owed, with the phase that would satisfy it:
   The Phase A Exit-criteria row's own words: "A baseline report is committed and
   CI reports regressions against it." Until that lands, decision 4's *advisory*
   describes an intention and not a workflow.
+
+## Amendment 1 — the gate-versus-census derivation rule, and what the equality battery does not test (2026-09-20, Phase A slice S3, PR #778)
+
+> **This is an append-only amendment. The decisions above are unchanged**, and
+> nothing in *Compliance* or *Still owed* moves here. What it adds is the rule
+> decision 6 left implicit: decision 6 fixes the *form* of the
+> disclosure-equality comparison without saying which withheld members that form
+> tests, and a battery run against members no build ever indexed reports coverage
+> it does not have.
+>
+> **The wording of the three riders below is the slice-S2 lane's round-one rider
+> text**, recorded as a comment on
+> [PR #778](https://github.com/theurian/theurian/pull/778) and integrated here
+> rather than paraphrased.
+>
+> **This amendment states rules and measures nothing.** The quantities that
+> exercise them live in the corpus manifest's `census` and in the runs recorded
+> on [PR #778](https://github.com/theurian/theurian/pull/778) (the corpus) and
+> [PR #780](https://github.com/theurian/theurian/pull/780) (the harness). No sha
+> on either branch is reachable from `origin/main` as this is written, so both
+> are named by pull request.
+
+### The derivation rule
+
+A withheld-plane member is **gate-tested** when its final folded state — the last
+`upsertRevision.metadata.status`, overridden by a later `deprecateItem` →
+`deprecated`, and the last `upsertRevision.metadata.sensitivity`, overridden by a
+later `changeSensitivity` — carries a status the `--include-unapproved` flag
+admits beyond the default surface (today `draft` and `proposed`) **and** a
+sensitivity within the deployment's serving ceiling. Such a row enters the `full`
+index and is withheld by the query-time gate, so the response-equality battery
+decision 6 fixes is what tests it.
+
+Every other withheld member is **census-tested**. It is excluded before the index
+— `confidential` and `restricted` by the build ceiling
+([ADR-0025](0025-sensitivity-is-enforced-before-0-1-0-stable.md)), `superseded`,
+`rejected` and `deprecated` by a status no flag re-admits — so what tests it is
+the manifest census: `full.items` counting it applied while `full.chunks` counts
+it excluded.
+
+**The split is derived from the shipped gates, and is never declared as a
+manifest key.** `$defs.migrationEntry` in
+`tools/eval/schemas/manifest.schema.json` is closed at `{file, plane}`, so a
+coverage label cannot be authored into the manifest without a schema change —
+and that is the direction this amendment wants. A declared label is a second
+statement of the gates, and it can drift from them silently: a draft approved, a
+sensitivity lowered, a status moving into or out of what the flag admits. A
+derivation cannot drift, because it is recomputed from those gates on every run.
+
+Both readers implement this one statement rather than each deriving its own, and
+building the S3 corpus with the S2 loader is the divergence detector between
+them:
+
+- **S3, this pull request.**
+  `tests/unit/tools/test_corpus_fixture_consistency.py` folds its two status sets
+  out of `may_surface` (at `include_unapproved=` false and true) and its served
+  sensitivity set out of `may_disclose` against
+  `ServingProfile().visible_sensitivities`, rather than transcribing status
+  lists. `test_the_withheld_plane_splits_into_gate_tested_and_census_tested_members`
+  asserts, over the corpus as committed, that each class derived from a member's
+  own folded state equals its pinned set of item ids and that no withheld member
+  falls in neither. Its two twins restate one member's metadata and assert the
+  rule fires: a withheld `draft` promoted to `approved`, and a `confidential`
+  member lowered to `internal`, which lands in neither class.
+- **S2, PR #780.** `tools/eval/corpus.py` classifies each withheld item by the
+  same statement, from the same folded state, citing this rule by name. Its
+  ceiling side comes from `ServingProfile`; its status side spells the admitted
+  pair literally, and the S3 fold above is the half that is recomputed from
+  `may_surface`.
+
+### Three honesty riders
+
+**1. The equality battery is non-vacuous for the query-time-gate mechanism
+only.** Draft and proposed rows enter the index because *both* builds run
+`index build --include-unapproved` — one flavour on both sides keeps the
+published `retrieval.indexesUnapproved` equal, preserving the
+`{retrieval.indexBuildId, retrieval.snapshotId}` exception set — and default-flag
+queries make the gate the thing under measurement: one query against an index
+holding the withheld documents and an index that never did. Build-time-excluded
+mechanisms (sensitivity above the ADR-0025 ceiling) and status-unsurfaceable ones
+(superseded, rejected, deprecated) never enter either index, so equality is
+trivially satisfied for them and tests nothing.
+
+**2. The census is the test for the build-time-excluded and status-unsurfaceable
+mechanisms.** `full.items` counts every applied row while `full.chunks` counts
+only indexed ones, so a confidential or restricted row leaking past the build
+ceiling moves `chunks` and reddens the census-mismatch refusal. Under the
+both-sides-`--include-unapproved` flavour this sharpens: `full.chunks` = visible
++ draft/proposed-withheld chunks, and an above-ceiling row still may not appear
+in it.
+
+**3. Any reported metric whose zero is forced by build-time exclusion rather than
+by ranking quality carries a cause note beside the number.** The
+superseded-knowledge error rate is the canonical case: 0 because superseded rows
+are never indexed, not because ranking avoided them. Where the cause cannot be
+derived honestly, the number carries no annotation and this ADR states that
+limitation. A zero without its cause is a measurement that misleads.
+
+The riders are implemented on both sides of the same seam. S2's `report.json`
+carries the equality section's `scope` and, beside a metric whose zero follows
+from every forbidden item being census-tested, the cause note — omitted rather
+than guessed where the classification leaves the cause undecided (PR #780, whose
+loader and report name this rule in their own comments). S3's `manifest.yaml`
+`description` names the split and the superseded-knowledge zero, under a citation
+of the decision 6 this amendment extends (PR #778).
+
+### What the rule asks of a corpus editor
+
+A withheld row authored to exercise the gate must end `draft` or `proposed` and
+within the serving ceiling, or it silently becomes census-tested and the battery
+loses a member it is read as covering. An item a judgement lists as `relevant`
+must end `approved`: the battery queries at default flags, so a draft relevant
+item scores zero recall by construction — rider 3's class, a number that measures
+the judgement rather than the retriever.
