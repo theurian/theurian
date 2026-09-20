@@ -22,6 +22,7 @@
         "queryId": {
           "type": "string",
           "pattern": "^[a-z0-9][a-z0-9-]*$",
+          "maxLength": 100,
           "description": "The `id` of the query in queries.yaml this entry judges."
         },
         "relevant": {
@@ -66,8 +67,9 @@
       "properties": {
         "itemId": {
           "type": "string",
-          "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$",
-          "description": "26-character Crockford base32 ULID identifying the item."
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*(?:\\.[a-z0-9]+(?:-[a-z0-9]+)*)*$",
+          "maxLength": 200,
+          "description": "The `itemId` published on a `knowledge.search` result (schemas/knowledge/retrieval-result.schema.json), which is what the loader matches a judgement against."
         }
       }
     },
@@ -79,10 +81,12 @@
         "sourceUri": {
           "type": "string",
           "minLength": 1,
+          "maxLength": 2000,
           "description": "The evidence source anchor's URI the harness expects a correct answer to cite."
         },
         "filePath": {
           "type": "string",
+          "maxLength": 2000,
           "description": "Optional file path narrowing the source anchor to one file within it."
         }
       }

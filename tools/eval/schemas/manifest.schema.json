@@ -14,14 +14,15 @@
     "corpusId": {
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "maxLength": 100,
       "description": "Stable slug identifying this fixture corpus, e.g. `adr-corpus-v1`."
     },
     "kValues": {
       "type": "array",
-      "items": { "type": "integer", "minimum": 1 },
+      "items": { "type": "integer", "minimum": 1, "maximum": 50 },
       "minItems": 1,
       "uniqueItems": true,
-      "description": "The k values Recall@k is reported for, e.g. `[1, 5, 10]`."
+      "description": "The k values Recall@k is reported for, e.g. `[1, 5, 10]`. Bounded to 50, the same bound `knowledge.search`'s wire contract clamps `limit` to (`MAX_RESULTS`, src/theurian/mcp/tools.py) -- a k beyond it could never be reached by a real response."
     },
     "migrations": {
       "type": "array",

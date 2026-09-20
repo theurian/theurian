@@ -22,6 +22,7 @@
         "id": {
           "type": "string",
           "pattern": "^[a-z0-9][a-z0-9-]*$",
+          "maxLength": 100,
           "description": "Stable slug identifying this query within the corpus. What a judgements.yaml entry's `queryId` names."
         },
         "class": {
