@@ -27,8 +27,16 @@ from theurian.security.tokens import generate_token
 
 TOKEN: Final = generate_token()
 PROTOCOL_VERSION: Final = "2025-06-18"
+#: Not the daemon's default 7419: ``TestClient`` never binds a real socket, so
+#: the number is cosmetic today, but 7419 is the resident dogfood daemon's
+#: port and a future real-transport variant of this client must not collide
+#: with it. Fed to both ``BASE_URL`` and ``DaemonConfig`` below -- the two
+#: must agree, since ``build_app``'s DNS-rebinding allow-list is
+#: ``{config.host}:{config.port}`` and a mismatch is the 421 that protection
+#: exists to raise.
+PORT: Final = 7420
 #: DNS-rebinding protection rejects ``TestClient``'s default ``testserver`` host.
-BASE_URL: Final = "http://127.0.0.1:7419"
+BASE_URL: Final = f"http://127.0.0.1:{PORT}"
 _HTTP_OK: Final = 200
 
 _INITIALIZE: Final = {
@@ -44,8 +52,6 @@ _INITIALIZE: Final = {
 
 
 class ToolCall(Protocol):
-    """What :func:`mcp_session` yields: one ``tools/call``, unwrapped to its structured content."""
-
     def __call__(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]: ...
 
 
@@ -78,7 +84,9 @@ def mcp_session(server: MCPServer, data_dir: Path) -> Iterator[ToolCall]:
     The context manager is not optional: mounting the MCP app disables the
     SDK's own lifespan, and without this one the session manager never starts.
     """
-    config = DaemonConfig(token=TOKEN, data_dir=data_dir, started_at=datetime.now(UTC).isoformat())
+    config = DaemonConfig(
+        token=TOKEN, data_dir=data_dir, port=PORT, started_at=datetime.now(UTC).isoformat()
+    )
     with TestClient(build_app(config, server), base_url=BASE_URL) as client:
         opened = client.post("/mcp", json=_INITIALIZE, headers=_headers())
         if opened.status_code != _HTTP_OK:

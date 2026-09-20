@@ -19,8 +19,8 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import Final
 
-from build import BuiltProject, build_both
 from corpus import BUILD_CEILING, CorpusError, QueryEntry, load_corpus
+from corpus_build import BuiltProject, build_both
 from report import (
     HarnessConstants,
     QueryRun,
@@ -47,6 +47,14 @@ EQUALITY_LIMIT: Final = 50
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
+    if args.corpus == DEFAULT_CORPUS and not args.corpus.exists():
+        print(
+            f"corpus refused: {args.corpus} does not exist. The frozen "
+            f"measurement corpus is a later Phase A slice; pass --corpus to "
+            f"point at a fixture corpus that exists.",
+            file=sys.stderr,
+        )
+        return 1
     try:
         loaded = load_corpus(args.corpus)
     except CorpusError as exc:
@@ -69,7 +77,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             built = build_both(loaded, workspace)
         except CorpusError as exc:
-            print(f"corpus refused: {exc}", file=sys.stderr)
+            print(f"build refused: {exc}", file=sys.stderr)
             return 1
 
         runs: list[QueryRun] = []

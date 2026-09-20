@@ -19,8 +19,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
-from build import IndexBuildCost
 from corpus import Corpus, CorpusCensus, JudgementEntry, QueryEntry
+from corpus_build import IndexBuildCost
 from metrics import (
     abstention_correct,
     differing_paths,
@@ -57,6 +57,15 @@ _FORBIDDEN_ZERO_BY_CONSTRUCTION: Final = (
     "build-time property, not evidence about ranking"
 )
 
+#: What `aggregated`'s mean is computed over, stated so the report says it
+#: rather than leaving a reader to assume every corpus a query ran against
+#: contributed a sample.
+_AGGREGATION_POPULATION: Final = (
+    "full-corpus runs only; a query's clean run, where one exists, is not "
+    "counted here -- it exists for the equality section's cross-corpus "
+    "comparison, not as a second sample of the same judgement"
+)
+
 
 @dataclass(frozen=True, slots=True)
 class HarnessConstants:
@@ -78,8 +87,6 @@ class HarnessConstants:
 
 @dataclass(frozen=True, slots=True)
 class QueryRun:
-    """One wire call: a query, the corpus it ran against, at one ``limit``."""
-
     query_id: str
     corpus: str
     limit: int
@@ -99,7 +106,8 @@ def build_report(
             continue
         judgement = loaded.judgement_for(query.id)
         if judgement is None:
-            continue
+            msg = f"loader invariant violated: enabled query {query.id!r} has no judgement"
+            raise RuntimeError(msg)
         queries_section[query.id] = _query_entry(query, judgement, constants, runs, loaded)
 
     return {
@@ -223,16 +231,29 @@ def _find_run(runs: Sequence[QueryRun], query_id: str, corpus_name: str, limit: 
 
 
 def _aggregate(queries_section: Mapping[str, Any], k_values: Sequence[int]) -> dict[str, Any]:
+    """Aggregate recall/MRR/evidence precision over ``full``-corpus runs only.
+
+    A query's ``clean`` run exists for the equality section's cross-corpus
+    comparison, not as a second sample of the same relevant/forbidden/
+    evidence judgement -- folding it in here would double-weight every
+    equality query's contribution to the mean. A query that never ran against
+    ``full`` (an unusual ``corpora`` choice) contributes no sample.
+    """
     samples: list[tuple[str, dict[str, Any]]] = []
     for entry in queries_section.values():
-        samples.extend((entry["class"], metrics) for metrics in entry["corpora"].values())
+        full_metrics = entry["corpora"].get("full")
+        if full_metrics is not None:
+            samples.append((entry["class"], full_metrics))
 
     by_class: dict[str, list[dict[str, Any]]] = {}
     for class_name, metrics in samples:
         by_class.setdefault(class_name, []).append(metrics)
 
-    aggregated = {name: _aggregate_entries(items, k_values) for name, items in by_class.items()}
+    aggregated: dict[str, Any] = {
+        name: _aggregate_entries(items, k_values) for name, items in by_class.items()
+    }
     aggregated["overall"] = _aggregate_entries([metrics for _, metrics in samples], k_values)
+    aggregated["population"] = _AGGREGATION_POPULATION
     return aggregated
 
 
@@ -295,22 +316,36 @@ def write_report(report: dict[str, Any], path: Path) -> None:
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
+def _commit_sha(repo_root: Path) -> str:
+    """This repository's ``HEAD``, or ``"unknown"`` if it cannot be read.
+
+    ``timings.json`` is the dated annex, environment-dependent by design
+    (ADR-0036 decision 7) -- a copied tree with no ``.git``, or a mutation
+    sweep's throwaway checkout, is a real environment this runs in, not a
+    defect to crash on.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],  # noqa: S607
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+    return result.stdout.strip()
+
+
 def build_timings(
     loaded: Corpus,
     runs: Sequence[QueryRun],
     build_costs: Mapping[str, IndexBuildCost],
     repo_root: Path,
 ) -> dict[str, Any]:
-    commit = subprocess.run(
-        ["git", "rev-parse", "HEAD"],  # noqa: S607
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
     return {
         "date": datetime.now(UTC).isoformat(),
-        "commitSha": commit.stdout.strip(),
+        "commitSha": _commit_sha(repo_root),
         "corpusId": loaded.manifest.corpus_id,
         "platform": platform.platform(),
         "pythonVersion": sys.version,

@@ -5,6 +5,11 @@
 ``project register``, ``migrate apply``, ``index build`` -- so the harness
 measures the shipped write, projection and index path rather than a
 hand-assembled database that could drift from it.
+
+Named ``corpus_build`` rather than ``build``: this flat module directory has
+no package, so a sibling import puts ``tools/eval`` on ``sys.path`` and a
+module named ``build`` would shadow the PyPI ``build`` package for the rest
+of that process.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from corpus import Corpus, CorpusCensus, CorpusError
@@ -97,6 +103,25 @@ def _build_one(loaded: Corpus, root: Path, name: str, data_dir: Path) -> BuiltPr
     _invoke(root, "init")
     _invoke(root, "project", "register", "--project-id", project_id)
 
+    _populate_migrations(loaded, root, name)
+    _commit_all(root)
+    _invoke(root, "migrate", "apply")
+
+    cost = _measure_index_build_cost(root)
+    census = _measure_and_verify_census(loaded, root, name, project_id, cost.chunks)
+
+    return BuiltProject(
+        name=name,
+        root=root,
+        project_id=project_id,
+        data_dir=data_dir,
+        census=census,
+        build_cost=cost,
+    )
+
+
+def _populate_migrations(loaded: Corpus, root: Path, name: str) -> None:
+    """Copy the corpus's knowledge bodies and this build's selected migrations into ``root``."""
     knowledge_src = loaded.root / "knowledge"
     if knowledge_src.is_dir():
         shutil.copytree(knowledge_src, root / ".theurian" / "knowledge", dirs_exist_ok=True)
@@ -112,24 +137,26 @@ def _build_one(loaded: Corpus, root: Path, name: str, data_dir: Path) -> BuiltPr
             )
         shutil.copy2(source, migrations_dst / entry.file)
 
-    _commit_all(root)
-    _invoke(root, "migrate", "apply")
 
+def _measure_index_build_cost(root: Path) -> IndexBuildCost:
+    """Build the index and measure its cost.
+
+    Both flavors, not just `full` (ADR-0036, the gate-vs-census derivation
+    rule): `clean` never holds a withheld row, so admitting drafts to its
+    index is a no-op there, while making `full` the only flavor that does it
+    would put `retrieval.indexesUnapproved` -- a published field reporting
+    exactly this flavor -- into the differing set an equality query is
+    supposed to hold to {indexBuildId, snapshotId}. One flavor on both sides
+    turns the property into one query against an index that holds the
+    withheld documents and an index that never did, with the query itself
+    left at default flags (`includeUnapproved=false`) -- the query-time gate
+    is the thing under measurement, not the build.
+    """
     started = time.monotonic()
-    # Both flavors, not just `full` (ADR-0036, the gate-vs-census derivation
-    # rule): `clean` never holds a withheld row, so admitting drafts to its
-    # index is a no-op there, while making `full` the only flavor that does it
-    # would put `retrieval.indexesUnapproved` -- a published field reporting
-    # exactly this flavor -- into the differing set an equality query is
-    # supposed to hold to {indexBuildId, snapshotId}. One flavor on both sides
-    # turns the property into one query against an index that holds the
-    # withheld documents and an index that never did, with the query itself
-    # left at default flags (`includeUnapproved=false`) -- the query-time gate
-    # is the thing under measurement, not the build.
     build_report = _invoke(root, "index", "build", "--include-unapproved")
     elapsed_ms = (time.monotonic() - started) * 1000
     index_path = Path(build_report["indexPath"])
-    cost = IndexBuildCost(
+    return IndexBuildCost(
         wall_clock_ms=elapsed_ms,
         chunks=build_report["chunks"],
         embeddings=build_report["embeddings"],
@@ -137,7 +164,12 @@ def _build_one(loaded: Corpus, root: Path, name: str, data_dir: Path) -> BuiltPr
         index_bytes=index_path.stat().st_size,
     )
 
-    measured = _measure_census(root, project_id=project_id, chunks=cost.chunks)
+
+def _measure_and_verify_census(
+    loaded: Corpus, root: Path, name: str, project_id: str, chunks: int
+) -> CorpusCensus:
+    """Measure the built project's real census and refuse if it disagrees with the manifest."""
+    measured = _measure_census(root, project_id=project_id, chunks=chunks)
     expected = loaded.manifest.census[name]
     if measured != expected:
         raise CorpusError(
@@ -145,15 +177,7 @@ def _build_one(loaded: Corpus, root: Path, name: str, data_dir: Path) -> BuiltPr
             f"{name!r} corpus census does not match manifest.yaml: "
             f"measured {measured}, expected {expected}",
         )
-
-    return BuiltProject(
-        name=name,
-        root=root,
-        project_id=project_id,
-        data_dir=data_dir,
-        census=measured,
-        build_cost=cost,
-    )
+    return measured
 
 
 def _measure_census(root: Path, *, project_id: str, chunks: int) -> CorpusCensus:
@@ -177,7 +201,10 @@ def _measure_census(root: Path, *, project_id: str, chunks: int) -> CorpusCensus
         by_status[item.status.value] = by_status.get(item.status.value, 0) + 1
         by_sensitivity[item.sensitivity.value] = by_sensitivity.get(item.sensitivity.value, 0) + 1
     return CorpusCensus(
-        items=len(items), by_status=by_status, by_sensitivity=by_sensitivity, chunks=chunks
+        items=len(items),
+        by_status=MappingProxyType(by_status),
+        by_sensitivity=MappingProxyType(by_sensitivity),
+        chunks=chunks,
     )
 
 

@@ -57,7 +57,10 @@ def evidence_precision(response: dict[str, Any], judgement: JudgementEntry) -> f
     A judged entry with no ``filePath`` matches any anchor sharing its
     ``sourceUri``; one with a ``filePath`` matches only that exact pair (the
     loader's evidence-subsumption rule keeps these two forms from ever judging
-    the same anchor twice). ``None`` when the judgement carries no evidence.
+    the same anchor twice). ``None`` when the judgement carries no evidence,
+    or when the response returned no anchors to score -- precision is
+    undefined over an empty denominator, not zero, the same convention
+    :func:`recall_at_k` records for its own empty-relevant case.
     """
     if not judgement.evidence:
         return None
@@ -65,7 +68,7 @@ def evidence_precision(response: dict[str, Any], judgement: JudgementEntry) -> f
     narrowed = _narrowed_keys(judgement.evidence)
     anchors = [anchor for hit in response["results"] for anchor in hit["sourceAnchors"]]
     if not anchors:
-        return 0.0
+        return None
     matched = sum(1 for anchor in anchors if _matches(anchor, plain, narrowed))
     return matched / len(anchors)
 
@@ -75,9 +78,7 @@ def _narrowed_keys(evidence: tuple[EvidenceRef, ...]) -> set[tuple[str, str]]:
 
 
 def forbidden_present(response: dict[str, Any], judgement: JudgementEntry) -> bool | None:
-    """Whether any ``judgement.forbidden`` item appears in the results.
-
-    ``None`` when the judgement names nothing forbidden. The
+    """``None`` when the judgement names nothing forbidden. The
     superseded-knowledge error rate is the share of non-``None`` values across
     a query population, computed by the caller.
     """

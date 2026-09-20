@@ -13,8 +13,10 @@ rule fired rather than leaving a reader to infer it from a stack trace.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Final
 
 import yaml
@@ -22,9 +24,20 @@ from jsonschema import Draft202012Validator
 
 from theurian.application.authorization import DEFAULT_CEILING, ServingProfile
 from theurian.domain.enums import KnowledgeStatus, Sensitivity, may_surface
+from theurian.domain.errors import InputTooLargeError
 from theurian.domain.migration import DEFAULT_SENSITIVITY
+from theurian.security.yaml_loading import load_yaml_mapping
 
 SCHEMAS_DIR = Path(__file__).resolve().parent / "schemas"
+#: tools/eval/corpus.py -> eval -> tools -> repo root.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+#: The published migration contract (ADR-0005), read from the repo-root
+#: `schemas/` -- the wire-contract directory, not this harness's own
+#: `tools/eval/schemas/` -- since a migration document is a product artifact,
+#: not a corpus-contract one.
+MIGRATION_SCHEMA: Final[dict[str, Any]] = json.loads(
+    (REPO_ROOT / "schemas" / "migrations" / "migration.schema.json").read_text(encoding="utf-8")
+)
 
 #: The sensitivity ceiling every harness build serves under (build.py never
 #: writes a serving-profile file, so `index build` always falls back to this
@@ -52,6 +65,9 @@ BUILD_CEILING_SENSITIVITIES: Final = ServingProfile(ceiling=BUILD_CEILING).visib
 #: this repo-root `tools/` directory (measured: zero of the tree's 171 `.py`
 #: files carry a `tools` path segment). Not merely today's scope of that key,
 #: but this call's own shape: it can never become a serving path.
+#:
+#: `tools/` carries exactly this one `may_surface` consumer: `git grep -n
+#: "may_surface" -- tools` returns hits only in this file.
 GATE_TESTED_STATUSES: Final = frozenset(
     status.value
     for status in KnowledgeStatus
@@ -63,8 +79,8 @@ GATE_TESTED_STATUSES: Final = frozenset(
 class CorpusError(Exception):
     """A corpus fails one loader rule.
 
-    ``rule`` is a short, stable tag naming the rule that fired -- distinct from
-    the JSON Schema validation errors, which are tagged ``schema:<file>``.
+    ``rule`` is distinct from a JSON Schema validation failure, which is
+    tagged ``schema:<file>``.
     """
 
     def __init__(self, rule: str, message: str) -> None:
@@ -81,8 +97,8 @@ class MigrationEntry:
 @dataclass(frozen=True, slots=True)
 class CorpusCensus:
     items: int
-    by_status: dict[str, int]
-    by_sensitivity: dict[str, int]
+    by_status: Mapping[str, int]
+    by_sensitivity: Mapping[str, int]
     chunks: int
 
 
@@ -92,7 +108,7 @@ class Manifest:
     corpus_id: str
     k_values: tuple[int, ...]
     migrations: tuple[MigrationEntry, ...]
-    census: dict[str, CorpusCensus]
+    census: Mapping[str, CorpusCensus]
     description: str | None
 
 
@@ -176,19 +192,23 @@ def load_corpus(root: Path) -> Corpus:
     queries_raw = _load_yaml(root / "queries.yaml")
     judgements_raw = _load_yaml(root / "judgements.yaml")
 
-    _validate("manifest.yaml", "manifest.schema.json", manifest_raw)
-    _validate("queries.yaml", "queries.schema.json", queries_raw)
-    _validate("judgements.yaml", "judgements.schema.json", judgements_raw)
+    _validate("manifest.yaml", _schema("manifest.schema.json"), manifest_raw)
+    _validate("queries.yaml", _schema("queries.schema.json"), queries_raw)
+    _validate("judgements.yaml", _schema("judgements.schema.json"), judgements_raw)
 
     manifest = _parse_manifest(manifest_raw)
     queries = _parse_queries(queries_raw)
     judgements = _parse_judgements(judgements_raw)
     documents = {
-        entry.file: _load_yaml(root / "migrations" / entry.file) for entry in manifest.migrations
+        entry.file: _load_migration_document(root / "migrations" / entry.file)
+        for entry in manifest.migrations
     }
+    for entry in manifest.migrations:
+        _validate(f"migrations/{entry.file}", MIGRATION_SCHEMA, documents[entry.file])
 
     _check_migration_order(manifest)
     _check_no_visible_depends_on_withheld(manifest, documents)
+    _check_migration_order_is_topological(manifest, documents)
     _check_unique_query_ids(queries)
     _check_unique_judgement_query_ids(judgements)
     _check_judgements_name_declared_queries(queries, judgements)
@@ -197,6 +217,7 @@ def load_corpus(root: Path) -> Corpus:
     _check_judgement_not_empty(judgements)
     _check_no_evidence_subsumption(judgements)
     _check_no_disclosable_withheld_item(manifest, documents)
+    _check_relevant_items_retrievable(manifest, documents, judgements)
 
     withheld_coverage = _withheld_item_coverage(manifest, documents)
     return Corpus(
@@ -221,8 +242,31 @@ def _load_yaml(path: Path) -> Any:
     return yaml.safe_load(text)
 
 
-def _validate(name: str, schema_file: str, instance: Any) -> None:
-    validator = Draft202012Validator(_schema(schema_file))
+def _load_migration_document(path: Path) -> dict[str, Any]:
+    """Load one migration YAML the way the product's own loader does.
+
+    Plain ``yaml.safe_load`` (used for the corpus's own three contract files)
+    turns an unquoted ``createdAt`` timestamp into a ``datetime``, which the
+    migration schema's ``type: string`` then refuses -- not because the
+    migration is malformed, but because this parser disagrees with the
+    product's own (``theurian.security.yaml_loading._StrictLoader`` drops the
+    timestamp resolver, so ``createdAt`` survives as the string every other
+    committed migration fixture in this repository already relies on).
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise CorpusError("file-readable", f"{path} could not be read: {exc}") from exc
+    try:
+        return load_yaml_mapping(text)
+    except (InputTooLargeError, yaml.YAMLError, ValueError) as exc:
+        raise CorpusError(
+            f"schema:migrations/{path.name}", f"{path} is not a valid migration document: {exc}"
+        ) from exc
+
+
+def _validate(name: str, schema: dict[str, Any], instance: Any) -> None:
+    validator = Draft202012Validator(schema)
     errors = sorted(
         validator.iter_errors(instance), key=lambda e: [str(p) for p in e.absolute_path]
     )
@@ -234,7 +278,7 @@ def _validate(name: str, schema_file: str, instance: Any) -> None:
 
 def _parse_manifest(raw: dict[str, Any]) -> Manifest:
     migrations = tuple(MigrationEntry(file=m["file"], plane=m["plane"]) for m in raw["migrations"])
-    census = {name: _parse_census(value) for name, value in raw["census"].items()}
+    census = MappingProxyType({name: _parse_census(value) for name, value in raw["census"].items()})
     return Manifest(
         contract_version=raw["contractVersion"],
         corpus_id=raw["corpusId"],
@@ -248,8 +292,8 @@ def _parse_manifest(raw: dict[str, Any]) -> Manifest:
 def _parse_census(raw: dict[str, Any]) -> CorpusCensus:
     return CorpusCensus(
         items=raw["items"],
-        by_status=dict(raw.get("byStatus", {})),
-        by_sensitivity=dict(raw.get("bySensitivity", {})),
+        by_status=MappingProxyType(dict(raw.get("byStatus", {}))),
+        by_sensitivity=MappingProxyType(dict(raw.get("bySensitivity", {}))),
         chunks=raw["chunks"],
     )
 
@@ -315,6 +359,33 @@ def _check_no_visible_depends_on_withheld(manifest: Manifest, documents: dict[st
                     "visible-depends-on-withheld",
                     f"{entry.file} (plane=visible) depends on {dependency!r}, "
                     f"which is plane=withheld",
+                )
+
+
+def _check_migration_order_is_topological(manifest: Manifest, documents: dict[str, Any]) -> None:
+    """The manifest's filename order must already satisfy every ``dependsOn``.
+
+    ``_final_status_and_sensitivity`` replays migrations in strict manifest
+    order, matching how this harness builds a project -- not the
+    dependency-aware reorder the real ``MigrationEngine.apply`` performs. A
+    manifest whose file order forward-references a dependency would make the
+    replay compute a final status the real apply never produces, and
+    ``census-mismatch`` cannot catch a status-only divergence: the item count
+    is unchanged, only which status it landed in.
+    """
+    position_by_id = {
+        documents[entry.file]["id"]: index for index, entry in enumerate(manifest.migrations)
+    }
+    for index, entry in enumerate(manifest.migrations):
+        for dependency in documents[entry.file].get("dependsOn", []):
+            dependency_position = position_by_id.get(dependency)
+            if dependency_position is None or dependency_position >= index:
+                raise CorpusError(
+                    "migration-order-not-topological",
+                    f"{entry.file} depends on {dependency!r}, which does not appear "
+                    f"earlier in manifest.yaml's migration order -- the harness "
+                    f"replays migrations in that order and would compute a status "
+                    f"the real `migrate apply` never produces",
                 )
 
 
@@ -425,9 +496,13 @@ def _withheld_item_ids(manifest: Manifest, documents: dict[str, Any]) -> set[str
 
 
 def _final_status_and_sensitivity(
-    manifest: Manifest, documents: dict[str, Any], withheld_item_ids: set[str]
+    manifest: Manifest, documents: dict[str, Any], item_ids: set[str]
 ) -> tuple[dict[str, str], dict[str, str]]:
-    """Each withheld item's final status and sensitivity, replayed in migration order.
+    """Each of ``item_ids``' final status and sensitivity, replayed in migration order.
+
+    Not withheld-only: a caller passes whichever item ids it needs replayed,
+    withheld-plane or not -- the relevant-item retrievability rule below
+    replays visible-plane items through the same machinery.
 
     Final status is the last ``upsertRevision.metadata.status``, overridden by
     a later ``deprecateItem`` -> ``deprecated``. Final sensitivity is the last
@@ -440,7 +515,7 @@ def _final_status_and_sensitivity(
     for entry in manifest.migrations:
         for op in documents[entry.file].get("operations", []):
             item_id = op.get("itemId")
-            if item_id not in withheld_item_ids:
+            if item_id not in item_ids:
                 continue
             if op["op"] == "upsertRevision":
                 metadata = op["metadata"]
@@ -486,6 +561,53 @@ def _check_no_disclosable_withheld_item(manifest: Manifest, documents: dict[str,
                 f"Author it draft or proposed (gate-tested), or give it a "
                 f"retired final status or a sensitivity above the ceiling "
                 f"(census-tested).",
+            )
+
+
+def _check_relevant_items_retrievable(
+    manifest: Manifest, documents: dict[str, Any], judgements: tuple[JudgementEntry, ...]
+) -> None:
+    """Every judgement's ``relevant`` itemId must be retrievable at the harness's
+    own default flags -- approved, within the build ceiling, and visible-plane.
+
+    The harness never queries with ``includeUnapproved=true``: a relevant item
+    that is withheld-plane (either coverage class), not approved, or above the
+    ceiling can never come back in a response, which pins recall and MRR to
+    zero for a reason that has nothing to do with ranking quality.
+    """
+    relevant_ids = {item.item_id for judgement in judgements for item in judgement.relevant}
+    if not relevant_ids:
+        return
+    withheld_item_ids = _withheld_item_ids(manifest, documents)
+    status_by_item, sensitivity_by_item = _final_status_and_sensitivity(
+        manifest, documents, relevant_ids
+    )
+    for item_id in sorted(relevant_ids):
+        if item_id in withheld_item_ids:
+            raise CorpusError(
+                "relevant-item-unretrievable",
+                f"{item_id!r} is judged relevant but is withheld-plane, so a "
+                f"default-flags query never returns it. A relevant item must be "
+                f"approved, within the build ceiling, and visible-plane.",
+            )
+        status = status_by_item.get(item_id)
+        if status != "approved":
+            raise CorpusError(
+                "relevant-item-unretrievable",
+                f"{item_id!r} is judged relevant but its final status is "
+                f"{status!r}, not 'approved', so a default-flags query never "
+                f"returns it. A relevant item must be approved, within the "
+                f"build ceiling, and visible-plane.",
+            )
+        sensitivity = sensitivity_by_item.get(item_id, DEFAULT_SENSITIVITY.value)
+        if Sensitivity(sensitivity) not in BUILD_CEILING_SENSITIVITIES:
+            raise CorpusError(
+                "relevant-item-unretrievable",
+                f"{item_id!r} is judged relevant but its final sensitivity "
+                f"{sensitivity!r} is above the build ceiling "
+                f"({BUILD_CEILING.value!r}), so a default-flags query never "
+                f"returns it. A relevant item must be approved, within the "
+                f"build ceiling, and visible-plane.",
             )
 
 
