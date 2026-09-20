@@ -2,7 +2,8 @@
 
 Pins the structural claim decision 2 makes -- "no module under
 ``packages/theurian-core/src/`` reads, imports, or names the corpus, the
-queries or the judgements" -- and the S2 loader's ten named refusals. Each
+queries or the judgements" -- and the S2 loader's eleven named refusals
+(the eleventh, ``withheld-item-disclosable``, landed in 07e7e099). Each
 loader-rule pin builds a minimal corpus that violates exactly one rule and
 asserts :class:`CorpusError.rule` names it, so a rule silently dropped from
 ``load_corpus`` reddens one specific test rather than a vague "something
@@ -98,7 +99,7 @@ def test_the_reference_scan_reports_a_planted_reference(tmp_path: Path) -> None:
     assert hits[0][0] == planted
 
 
-# -- B: the loader's ten named refusals ---------------------------------------
+# -- B: the loader's eleven named refusals -------------------------------------
 
 
 def _valid_manifest() -> dict[str, Any]:
@@ -309,7 +310,85 @@ def test_evidence_subsumption_rule_refuses_a_plain_and_narrowed_entry_for_one_so
     assert excinfo.value.rule == "evidence-subsumption"
 
 
+def _manifest_and_migrations_with_withheld_item(
+    status: str, sensitivity: str
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    manifest = _valid_manifest()
+    manifest["migrations"].append({"file": WITHHELD_MIGRATION, "plane": "withheld"})
+    migrations = _base_migrations()
+    migrations[WITHHELD_MIGRATION] = {
+        "id": "3Y8WCK8TKQY13VGPN206KD1Q6G",
+        "operations": [
+            {"op": "createItem", "itemId": "domain.withheld-item"},
+            {
+                "op": "upsertRevision",
+                "itemId": "domain.withheld-item",
+                "metadata": {"status": status, "sensitivity": sensitivity},
+            },
+        ],
+    }
+    return manifest, migrations
+
+
+def test_withheld_item_disclosable_rule_refuses_an_approved_within_ceiling_withheld_item(
+    tmp_path: Path,
+) -> None:
+    """ADR-0036's gate-vs-census derivation rule, the eleventh named refusal (07e7e099).
+
+    An approved, within-ceiling withheld-plane item is excluded by no
+    mechanism -- indexed and surfaced at default flags exactly like any other
+    approved item -- so neither coverage label would be honest for it, per
+    the tests lane's teeth run (a1f54e82) that prompted this refusal.
+    """
+    manifest, migrations = _manifest_and_migrations_with_withheld_item("approved", "internal")
+    _write_corpus(tmp_path, manifest, _valid_queries(), _valid_judgements(), migrations)
+
+    with pytest.raises(harness_corpus.CorpusError) as excinfo:
+        harness_corpus.load_corpus(tmp_path)
+
+    assert excinfo.value.rule == "withheld-item-disclosable"
+
+
+@pytest.mark.parametrize(
+    ("status", "sensitivity", "expected_gate_tested"),
+    [("draft", "internal", True), ("approved", "confidential", False)],
+    ids=["accepted-gate-tested-neighbour", "accepted-census-tested-neighbour"],
+)
+def test_withheld_item_disclosable_rules_two_accepted_neighbours_load(
+    tmp_path: Path, status: str, sensitivity: str, expected_gate_tested: bool
+) -> None:
+    """The refusal above partitions cleanly: move either clause and the corpus loads.
+
+    Draft-and-within-ceiling is gate-tested; approved-and-above-ceiling is
+    census-tested by the sensitivity clause alone. Only approved-and-within-
+    ceiling -- disclosable by no mechanism -- is refused.
+    """
+    manifest, migrations = _manifest_and_migrations_with_withheld_item(status, sensitivity)
+    _write_corpus(tmp_path, manifest, _valid_queries(), _valid_judgements(), migrations)
+
+    loaded = harness_corpus.load_corpus(tmp_path)
+
+    (coverage,) = loaded.withheld_coverage
+    assert coverage.is_gate_tested is expected_gate_tested
+
+
 # -- C: the gate-vs-census coverage derivation (6ef2b606) ---------------------
+
+
+def test_gate_tested_statuses_equals_draft_and_proposed_today() -> None:
+    """ADR-0036's gate-vs-census derivation rule: the derived value, pinned (f5f677a5).
+
+    GATE_TESTED_STATUSES is DERIVED from theurian.domain.enums.may_surface
+    folded over every KnowledgeStatus member, not a hand-copied literal -- so
+    this pin cannot drift out of sync with the product by construction: it
+    would still read whatever may_surface says. It exists so that a future
+    move in the product's surfaceability semantics reddens here, forcing a
+    recorded eval re-baseline decision instead of letting the eval silently
+    carry a semantics change into its published numbers. Not a tautology: it
+    pins the derived VALUE against today's recorded expectation, not the
+    derivation mechanism against itself.
+    """
+    assert {"draft", "proposed"} == harness_corpus.GATE_TESTED_STATUSES
 
 
 def _coverage_manifest(*files: str) -> harness_corpus.Manifest:
