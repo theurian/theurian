@@ -554,9 +554,9 @@ them:
 
 ### Three honesty riders
 
-**1. The equality battery is non-vacuous for the query-time-gate mechanism
-only.** Draft and proposed rows enter the index because *both* builds run
-`index build --include-unapproved` — one flavour on both sides keeps the
+**1. The disclosure-equality battery is non-vacuous for the query-time-gate
+mechanism only.** Draft and proposed rows enter the index because *both* builds
+run `index build --include-unapproved` — one flavour on both sides keeps the
 published `retrieval.indexesUnapproved` equal, preserving the
 `{retrieval.indexBuildId, retrieval.snapshotId}` exception set — and default-flag
 queries make the gate the thing under measurement: one query against an index
