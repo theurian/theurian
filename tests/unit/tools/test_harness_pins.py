@@ -92,13 +92,15 @@ def _fixture_and_harness_needles() -> list[str]:
     ADR-0036's "Still owed" item 1: hardcoding the two path prefixes the
     decision-2 key spells (``tools/eval``, ``fixtures/eval``) would leave this
     pin green and blind if the corpus or the harness relocated. Both are
-    derived instead: the fixture roots from a glob over every committed
-    corpus manifest, the harness root from the already-imported loader
-    module's own file -- and each root expands to :func:`_needle_forms`'s
-    three spellings, not the one full path alone.
+    derived instead: the fixture roots from a *recursive* glob over every
+    committed corpus manifest -- so a corpus nested under a subdirectory of
+    ``tests/fixtures/`` cannot sit outside the scan -- the harness root from
+    the already-imported loader module's own file. Each root expands to
+    :func:`_needle_forms`'s three spellings, not the one full path alone.
     """
     fixture_roots = [
-        manifest.parent for manifest in sorted(REPO_ROOT.glob("tests/fixtures/*/manifest.yaml"))
+        manifest.parent
+        for manifest in sorted((REPO_ROOT / "tests" / "fixtures").rglob("manifest.yaml"))
     ]
     harness_root = Path(harness_corpus.__file__).resolve().parent
     needles: set[str] = set()

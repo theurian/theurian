@@ -61,18 +61,21 @@ EQUALITY_QUERY = "authenticates inbound requests"
 #: rather than the row's simple absence.
 WITHHELD_QUERY = "0710645F7E85DCE09F4B"
 
-#: `token-rotation-policy`'s own text. Measured (this session, against the
-#: committed smoke corpus): at default flags this returns three VISIBLE
-#: results in `full` -- security.token-rotation, architecture.gateway-policy,
-#: architecture.retry-policy, in that order, identical in `clean` -- and with
-#: `includeUnapproved=true` against `full` the draft runbook joins as a
-#: fourth, ranked candidate (security.token-rotation, architecture.gateway-
-#: policy, security.incident-runbook, architecture.retry-policy). So this
-#: query is adversarial-measured candidacy, not asserted: the runbook
-#: genuinely competes for it (shares "rotation"/"ledger"/"immediately"
-#: vocabulary with its own body), and the set-equality property is measured
-#: over >=2 real visible hits, not one.
+#: `token-rotation-policy`'s own text: the draft runbook shares "rotation"/
+#: "ledger"/"immediately" vocabulary with its own body, so it genuinely
+#: competes for this query rather than merely sitting in the corpus.
+#: `test_the_competing_vocabulary_querys_candidacy_is_an_enforced_premise`
+#: below turns that candidacy into an assertion instead of a comment: a
+#: corpus edit that drops the shared vocabulary, or approves the deprecated
+#: item, reddens there instead of silently returning the set-equality
+#: parametrization to the vacuous state (nothing left to displace).
 COMPETING_VOCABULARY_QUERY = "What is the token rotation policy?"
+
+#: The visible ids `COMPETING_VOCABULARY_QUERY` reaches at default flags,
+#: identical between `full` and `clean` -- enforced, not merely measured.
+COMPETING_VOCABULARY_VISIBLE_IDS = frozenset(
+    {"security.token-rotation", "architecture.gateway-policy", "architecture.retry-policy"}
+)
 
 
 @pytest.fixture(scope="module")
@@ -179,6 +182,44 @@ def test_the_default_flag_gate_hides_the_draft_row_the_include_unapproved_flag_r
     )
 
 
+def test_the_competing_vocabulary_querys_candidacy_is_an_enforced_premise(
+    smoke_calls: dict[str, Any],
+) -> None:
+    """The other reach control the set-equality pin above needs: without it,
+    the ``competing-vocabulary`` parametrization could pass vacuously (no
+    shared visible hits left to displace) with nothing here to notice.
+
+    (a) At default flags both planes reach the same >=2 visible ids for
+    ``COMPETING_VOCABULARY_QUERY`` -- the vocabulary the draft row shares
+    with them, not asserted. (b) With ``includeUnapproved=true`` against
+    ``full``, the same query surfaces the draft row as a genuine ranking
+    candidate, and never in ``clean``, which holds no such row under either
+    flag.
+    """
+    full_default = _search(smoke_calls, "full", COMPETING_VOCABULARY_QUERY)
+    clean_default = _search(smoke_calls, "clean", COMPETING_VOCABULARY_QUERY)
+    full_unapproved = _search(
+        smoke_calls, "full", COMPETING_VOCABULARY_QUERY, include_unapproved=True
+    )
+    clean_unapproved = _search(
+        smoke_calls, "clean", COMPETING_VOCABULARY_QUERY, include_unapproved=True
+    )
+
+    full_default_ids = [hit["itemId"] for hit in full_default["results"]]
+    clean_default_ids = [hit["itemId"] for hit in clean_default["results"]]
+    full_unapproved_ids = [hit["itemId"] for hit in full_unapproved["results"]]
+    clean_unapproved_ids = [hit["itemId"] for hit in clean_unapproved["results"]]
+
+    assert len(set(full_default_ids)) >= 2, (
+        "the set-equality parametrization above needs >=2 real visible hits to displace"
+    )
+    assert full_default_ids == clean_default_ids, "both planes must reach the same visible ids"
+    assert set(full_default_ids) == COMPETING_VOCABULARY_VISIBLE_IDS
+
+    assert "security.incident-runbook" in full_unapproved_ids
+    assert "security.incident-runbook" not in clean_unapproved_ids
+
+
 def test_both_build_identity_fields_are_constant_and_nonempty_within_one_build(
     smoke_calls: dict[str, Any],
 ) -> None:
@@ -252,7 +293,16 @@ def _every_string_value(value: Any) -> list[str]:
 
 
 def _corpus_texts() -> list[str]:
-    """Every knowledge body and migration ``metadata.title`` in the smoke corpus."""
+    """Every knowledge body, migration ``metadata.title``, and corpus identifier
+    (``itemId``, ``revisionId``, ``sourceUri``) in the smoke corpus.
+
+    The identifiers matter as much as the prose: a published field naming
+    *which row* reached it -- an itemId, a revision, a source anchor -- is
+    the "which rows reached a field" disclosure axis, not merely an excerpt
+    of body text. Containment of a corpus identifier is checked the same way
+    as containment of a body excerpt: the artifact value must not appear
+    inside anything in this population.
+    """
     texts = [
         path.read_text(encoding="utf-8")
         for path in sorted((SMOKE_CORPUS / "knowledge").rglob("*.md"))
@@ -260,23 +310,33 @@ def _corpus_texts() -> list[str]:
     for migration_path in sorted((SMOKE_CORPUS / "migrations").glob("*.yaml")):
         document = yaml.safe_load(migration_path.read_text(encoding="utf-8"))
         for op in document.get("operations", []):
+            item_id = op.get("itemId")
+            if item_id:
+                texts.append(item_id)
+            revision_id = op.get("revisionId")
+            if revision_id:
+                texts.append(revision_id)
             metadata = op.get("metadata")
-            if metadata and "title" in metadata:
+            if not metadata:
+                continue
+            if "title" in metadata:
                 texts.append(metadata["title"])
+            for anchor in metadata.get("sourceAnchors", []):
+                if "sourceUri" in anchor:
+                    texts.append(anchor["sourceUri"])
     return texts
 
 
 def test_no_artifact_string_value_is_contained_in_any_corpus_body_or_migration_title() -> None:
     """ADR-0036 decision 6: the harness produces metrics, never content.
 
-    ``report.json`` and ``timings.json`` publish counts, classes, ids and
-    cause strings -- nothing that should ever contain a knowledge body's
-    prose or a migration's title. Positive probe: the withheld runbook's own
-    synthetic secret key is genuinely present in the corpus (proving the
-    scan can find a real match) and must be absent from both artifacts. This
-    reddens the moment an excerpt- or itemId-bearing field is added to
-    ``report._query_metrics`` and that field's value happens to quote corpus
-    text back.
+    ``report.json`` and ``timings.json`` publish counts, classes and cause
+    strings -- never a knowledge body's prose, a migration's title, or a
+    corpus identifier (itemId, revisionId, sourceUri). Positive probe: the
+    withheld runbook's own synthetic secret key is genuinely present in the
+    corpus (proving the scan can find a real match) and must be absent from
+    both artifacts. This reddens the moment an excerpt- or itemId-bearing
+    field is added to ``report._query_metrics``.
     """
     texts = _corpus_texts()
     assert any(WITHHELD_QUERY in text for text in texts), (
