@@ -511,14 +511,49 @@ assertions it makes — not as its name or its docstring reads:
   docstring carries the scope decision 5 names — one machine, one interpreter,
   one SQLite build, consecutive runs — and nothing here reaches a second machine.
 
+What holds this record against the tree is `tests/unit/tools/test_adr36_ratchet.py`,
+landed with this discharge — the file this ADR had never named. Seven pins, three
+of them guarding the citations above.
+`test_every_test_name_cited_in_the_adrs_s2_compliance_block_collects` parses every
+backticked test name out of this block and asserts each appears in `pytest
+--collect-only` output over `tests/unit/tools`, `tests/integration/tools` and
+`packages/theurian-core/tests`, so a renamed or deleted pin reddens the ADR's own
+record rather than rotting in it.
+`test_the_five_within_document_rule_names_the_adr_cites_are_live_corpuserror_tags`
+reads the five rule tags out of the bullet above and asserts each is still a string
+literal some `CorpusError` in `corpus.py` is raised with — containment in that
+direction, so a *new* loader rule this ADR does not cite stays green.
+`test_the_787_tripwire_published_per_query_metric_key_set_equals_todays_expected_set`
+is a tripwire rather than a frozen contract: it reads the key set
+`report._query_metrics` can publish from that function's own AST and compares it to
+today's snapshot, so the moment #787's channel member lands it goes RED — and that
+RED is the signal to move rider 1's "recorded channel" sentence from owed to
+implemented.
+
 Measured now, and reproducible from this ADR (2026-09-20, on the branch of
 PR #776):
 
 - Decision 2's key returns nothing, with the broader-key derivation recorded
   beside it in the decision.
-- Nothing in the repository sets a target value for a retrieval metric: the
-  three contract schemas declare no threshold property and are closed, and no
-  harness exists yet to carry one.
+- Nothing in the repository sets a target value for a retrieval metric, and
+  since slice S2 that is held by machine check rather than by a dated reading.
+  The three contract schemas declare no threshold property and are closed. In
+  the harness,
+  `test_no_threshold_floor_or_target_named_identifier_exists_in_the_harness`
+  parses every `.py` file directly under `tools/eval/` and collects real
+  identifiers from the AST — names, arguments, attributes, function and class
+  names, never a string, comment or docstring — then asserts that none contains
+  `threshold`, `floor` or `target` in any case. A comment promising no threshold
+  therefore cannot satisfy it, which is the point: the harness's own modules
+  carry exactly such a statement. **Its reach stops where its key does** — a
+  quality gate authored under a `MIN_`/`MAX_` name sits outside it, deliberately,
+  because those prefixes are shared with legitimate bounds and the alternative is
+  an allowlist a future author can route around.
+  `test_a_built_report_carries_no_pass_fail_or_threshold_named_key` covers the
+  published half: it calls the real `build_report` over a one-query synthetic
+  corpus and asserts that no key, at any nesting depth of the result, matches
+  `pass`, `fail` or `threshold`. A threshold neither plainly named nor ever
+  published is what neither check can see.
 
 Still owed, with the phase that would satisfy it:
 
