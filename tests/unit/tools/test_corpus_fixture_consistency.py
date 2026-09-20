@@ -27,6 +27,9 @@ import pytest
 import yaml
 from jsonschema import Draft202012Validator
 
+from theurian.application.authorization import ServingProfile
+from theurian.domain.enums import KnowledgeStatus, Sensitivity, may_disclose, may_surface
+
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -41,6 +44,54 @@ DERIVABLE_CENSUS_KEYS = ("items", "byStatus", "bySensitivity")
 
 #: Every key through which an operation names a knowledge item.
 ITEM_REFERENCES = ("itemId", "sourceItemId", "targetItemId", "supersededBy", "alias", "specId")
+
+#: What a default response may hold, and what a ``--include-unapproved`` build
+#: writes. Folded out of the shipped gates rather than spelled out: a status
+#: moving into or out of ``SURFACEABLE_STATUSES``, or a move of
+#: ``DEFAULT_CEILING``, must move this file's derivation with it, or the split
+#: below would go on describing the gate the corpus was authored against.
+DEFAULT_STATUSES = frozenset(
+    status.value for status in KnowledgeStatus if may_surface(status, include_unapproved=False)
+)
+INDEXED_STATUSES = frozenset(
+    status.value for status in KnowledgeStatus if may_surface(status, include_unapproved=True)
+)
+SERVED_SENSITIVITIES = frozenset(
+    level.value
+    for level in Sensitivity
+    if may_disclose(level, visible=ServingProfile().visible_sensitivities)
+)
+
+#: Which withheld members the response-equality battery tests, and which the
+#: manifest census tests instead (ADR-0036 decision 6). Derived at the rule from
+#: each member's final status and sensitivity; pinned here so a member changing
+#: side cannot do so silently. The manifest declares no coverage key --
+#: ``migrationEntry`` is closed at ``{file, plane}`` -- by the same decision.
+GATE_TESTED_ITEMS = frozenset(
+    {"security.draft-scan-hardening", "architecture.proposed-storage-redesign"}
+)
+CENSUS_TESTED_ITEMS = frozenset(
+    {
+        "domain.rejected-credential-cache",
+        "domain.restricted-retention-exceptions",
+        "operations.superseded-daemon-procedure",
+        "security.confidential-token-rotation",
+        "testing.deprecated-flaky-quarantine",
+    }
+)
+
+#: Every withheld member's state once its migrations are folded, and the whole
+#: reason each one lands where it does: two gated at query time, three retired
+#: by status, two above the serving ceiling.
+WITHHELD_FINAL_STATES = {
+    "architecture.proposed-storage-redesign": ("proposed", "internal"),
+    "domain.rejected-credential-cache": ("rejected", "internal"),
+    "domain.restricted-retention-exceptions": ("approved", "restricted"),
+    "operations.superseded-daemon-procedure": ("superseded", "internal"),
+    "security.confidential-token-rotation": ("approved", "confidential"),
+    "security.draft-scan-hardening": ("draft", "internal"),
+    "testing.deprecated-flaky-quarantine": ("deprecated", "internal"),
+}
 
 
 @dataclass(frozen=True)
@@ -117,8 +168,8 @@ def _tally(values: list[str]) -> dict[str, int]:
     return counts
 
 
-def _derive_census(corpus: Corpus, wanted: set[str]) -> dict[str, Any]:
-    """Replay the wanted planes' migrations and count the items they leave behind.
+def _replay(corpus: Corpus, wanted: set[str]) -> dict[str, dict[str, str]]:
+    """Replay the wanted planes' migrations into each item's final state.
 
     Status and sensitivity are read the way the engine reads them: a revision's
     metadata adopts both onto the item (``KnowledgeItem.with_revision``), while
@@ -145,10 +196,31 @@ def _derive_census(corpus: Corpus, wanted: set[str]) -> dict[str, Any]:
                     state[item]["sensitivity"] = operation["sensitivity"]
                 case _:
                     pass
+    return state
+
+
+def _derive_census(corpus: Corpus, wanted: set[str]) -> dict[str, Any]:
+    state = _replay(corpus, wanted)
     return {
         "items": len(state),
         "byStatus": _tally([item["status"] for item in state.values()]),
         "bySensitivity": _tally([item["sensitivity"] for item in state.values()]),
+    }
+
+
+def _withheld_final_states(corpus: Corpus) -> dict[str, tuple[str, str]]:
+    """Each withheld-plane item's ``(status, sensitivity)`` after every migration.
+
+    Folded over both planes, not the withheld one alone: a later visible
+    migration moving a withheld item's state would be missed by a withheld-only
+    replay. ``_plane_dependency_violations`` forbids that direction today, so the
+    two agree on this corpus -- this does not depend on that rule holding.
+    """
+    creators = _creating_plane(corpus)
+    return {
+        item: (fields["status"], fields["sensitivity"])
+        for item, fields in _replay(corpus, {"visible", "withheld"}).items()
+        if creators.get(item) == "withheld"
     }
 
 
@@ -313,6 +385,65 @@ def _census_violations(corpus: Corpus) -> list[str]:
     return found
 
 
+def _coverage_split_violations(corpus: Corpus) -> list[str]:
+    """Derive which instrument tests each withheld member, and compare the pins.
+
+    ``gate`` is a member the ``--include-unapproved`` build indexes and a default
+    query refuses; ``census`` is a member excluded before the index, by status or
+    by the serving ceiling. Both are computed from the member's own final state,
+    never read from a declared key.
+
+    The two are complementary by construction, so disjointness is asserted
+    nowhere: no input satisfies both predicates, which makes such an assertion
+    one that cannot fail. What the union can and does catch is a member in
+    *neither* class -- approved and within the ceiling, hence indexed and
+    ungated, the state ``_surfacing_withheld_violations`` names outright.
+    """
+    states = _withheld_final_states(corpus)
+    gate = {
+        item
+        for item, (status, sensitivity) in states.items()
+        if status in INDEXED_STATUSES - DEFAULT_STATUSES and sensitivity in SERVED_SENSITIVITIES
+    }
+    census = {
+        item
+        for item, (status, sensitivity) in states.items()
+        if status not in INDEXED_STATUSES or sensitivity not in SERVED_SENSITIVITIES
+    }
+    found = []
+    if gate != GATE_TESTED_ITEMS:
+        found.append(f"gate-tested: derived {sorted(gate)}, pinned {sorted(GATE_TESTED_ITEMS)}")
+    if census != CENSUS_TESTED_ITEMS:
+        found.append(
+            f"census-tested: derived {sorted(census)}, pinned {sorted(CENSUS_TESTED_ITEMS)}"
+        )
+    if unclassified := set(states) - gate - census:
+        found.append(f"withheld member in neither class: {sorted(unclassified)}")
+    return found
+
+
+def _surfacing_withheld_violations(corpus: Corpus) -> list[str]:
+    return [
+        f"{item}: ends {status}/{sensitivity}, which a default response may hold"
+        for item, (status, sensitivity) in sorted(_withheld_final_states(corpus).items())
+        if status in DEFAULT_STATUSES and sensitivity in SERVED_SENSITIVITIES
+    ]
+
+
+def _relevant_status_violations(corpus: Corpus) -> list[str]:
+    enabled = {query["id"] for query in corpus.queries["queries"] if query.get("enabled", True)}
+    states = _replay(corpus, {"visible", "withheld"})
+    found = []
+    for entry in corpus.judgements["judgements"]:
+        if entry["queryId"] not in enabled:
+            continue
+        for item in sorted(_ids(entry, "relevant")):
+            status = states.get(item, {}).get("status", "uncreated")
+            if status not in DEFAULT_STATUSES:
+                found.append(f"{entry['queryId']}: relevant item {item} ends {status}")
+    return found
+
+
 # -- the corpus as committed satisfies every rule -----------------------------
 
 
@@ -408,6 +539,81 @@ def test_the_census_omits_every_zero_count_label() -> None:
     ]
 
     assert 0 not in counts
+
+
+def test_each_withheld_member_ends_in_the_state_its_coverage_follows_from() -> None:
+    """The seven states the split below is derived from, said rather than implied.
+
+    Two are gated at query time, three are retired by status and two sit above
+    the serving ceiling -- and the last two of those seven reach their state only
+    through ``deprecateItem`` and ``changeSensitivity`` in a later migration, so
+    a replay that folded revisions alone would report them approved and internal.
+    """
+    assert _withheld_final_states(CORPUS) == WITHHELD_FINAL_STATES
+
+
+def test_the_withheld_plane_splits_into_gate_tested_and_census_tested_members() -> None:
+    """ADR-0036 decision 6: which instrument covers a withheld member is derived.
+
+    The response-equality battery is vacuous for a member no build indexes: both
+    corpora answer identically because neither holds the row, and the comparison
+    would pass with the gate deleted. Only the two members the
+    ``--include-unapproved`` build does index test the gate; the other five are
+    tested by the manifest census, which counts them applied and not indexed.
+    Nothing in the fixture declares that split, so without this pin a member
+    could change side -- a draft approved, a sensitivity lowered -- and the
+    battery would go on reporting coverage it no longer has.
+    """
+    assert _coverage_split_violations(CORPUS) == []
+
+
+def test_no_withheld_member_ends_in_a_state_a_default_response_may_hold() -> None:
+    """The invariant the whole two-corpus design rests on (ADR-0036 decision 6).
+
+    A withheld member that ended approved and within the serving ceiling would be
+    written into ``full`` and refused by nothing at query time, so ``full`` would
+    return a row ``clean`` never held and every equality query reaching it would
+    fail by construction -- a corpus defect read as a retrieval defect. It is
+    also what makes the census class above exhaustive: a member outside the gate
+    class is excluded before the index only while this holds.
+    """
+    assert _surfacing_withheld_violations(CORPUS) == []
+
+
+def test_every_enabled_query_judges_only_items_a_default_response_may_return() -> None:
+    """A ``relevant`` item the default gate withholds scores a miss on every run.
+
+    The battery runs at default flags, so Recall@k for such a judgement is zero
+    against both corpora however well retrieval works, and the metric measures
+    the judgement rather than the retriever. Strengthens the visible-plane rule
+    above, which admits a visible item of any status.
+    """
+    assert _relevant_status_violations(CORPUS) == []
+
+
+def test_the_disabled_historical_query_may_judge_superseded_items_relevant() -> None:
+    """Why the rule above is scoped to enabled queries rather than to all of them.
+
+    ``q-hist-ttl-evolution`` asks how the TTL policy changed over time, so the
+    superseded chain is its answer and not its error. It is disabled, the harness
+    skips it (Phase D), and the scope is what lets the judgement stay committed
+    instead of being deleted to satisfy a rule it was never in.
+    """
+    states = _replay(CORPUS, {"visible", "withheld"})
+    historical = next(
+        entry
+        for entry in CORPUS.judgements["judgements"]
+        if entry["queryId"] == "q-hist-ttl-evolution"
+    )
+    assert {
+        item
+        for item in _ids(historical, "relevant")
+        if states[item]["status"] not in DEFAULT_STATUSES
+    } == {"domain.session-token-ttl-v1", "domain.session-token-ttl-v2"}
+
+    judged = {violation.split(":")[0] for violation in _relevant_status_violations(CORPUS)}
+
+    assert "q-hist-ttl-evolution" not in judged
 
 
 # -- each rule, over a copy carrying the defect it exists to catch ------------
@@ -587,3 +793,55 @@ def test_the_census_rule_catches_a_label_moved_between_two_buckets(key: str) -> 
     manifest["census"]["full"][key][labels[-1]] -= 1
 
     assert _census_violations(replace(CORPUS, manifest=manifest)) != []
+
+
+def _restated(item: str, **fields: str) -> Corpus:
+    """A copy whose every revision of ``item`` carries different metadata."""
+    migrations = copy.deepcopy(list(CORPUS.migrations))
+    for _name, document in migrations:
+        for operation in document["operations"]:
+            if operation["op"] == "upsertRevision" and operation["itemId"] == item:
+                operation["metadata"].update(fields)
+    return replace(CORPUS, migrations=tuple(migrations))
+
+
+def test_the_split_rule_catches_a_withheld_draft_promoted_to_approved() -> None:
+    perturbed = _restated("security.draft-scan-hardening", status="approved")
+
+    assert _coverage_split_violations(perturbed) != []
+
+
+def test_the_split_rule_catches_a_member_the_serving_ceiling_stops_excluding() -> None:
+    """The arm that has to be a third class rather than a complement: lowering
+    this member to ``internal`` leaves it indexed *and* ungated, so it belongs to
+    neither the gate class nor the census class.
+    """
+    perturbed = _restated("security.confidential-token-rotation", sensitivity="internal")
+
+    assert any("neither class" in violation for violation in _coverage_split_violations(perturbed))
+
+
+def test_the_surfacing_rule_catches_a_withheld_member_lowered_into_the_ceiling() -> None:
+    perturbed = _restated("security.confidential-token-rotation", sensitivity="internal")
+
+    assert _surfacing_withheld_violations(perturbed) != []
+
+
+def test_the_relevant_status_rule_catches_an_enabled_query_judging_a_superseded_item() -> None:
+    judgements = copy.deepcopy(CORPUS.judgements)
+    entry = next(e for e in judgements["judgements"] if e["queryId"] == "q-sqlite-derived")
+    entry["relevant"][0]["itemId"] = "domain.session-token-ttl-v1"
+
+    assert _relevant_status_violations(replace(CORPUS, judgements=judgements)) != []
+
+
+def test_the_relevant_status_rule_reaches_the_historical_query_once_it_is_enabled() -> None:
+    """The scope is what exempts that query, not a rule too weak to reach it.
+
+    In memory only: ``queries.schema.json`` refuses a ``historical`` query with
+    ``enabled: true``, so the state cannot be written to the fixture at all.
+    """
+    queries = copy.deepcopy(CORPUS.queries)
+    next(q for q in queries["queries"] if q["id"] == "q-hist-ttl-evolution")["enabled"] = True
+
+    assert _relevant_status_violations(replace(CORPUS, queries=queries)) != []
