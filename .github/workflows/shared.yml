@@ -273,13 +273,39 @@ jobs:
           # Markdown is read here, so the sibling `.theurian/migrations/`
           # (YAML) and `.theurian/proposals/` (JSON) were never in this walk
           # and are not named below.
-          corpus = (".theurian", "knowledge")
+          #
+          # The same class, a second time, which is why this is a set of
+          # prefixes of any length rather than one fixed pair: #778 froze a
+          # retrieval-evaluation corpus under `tests/fixtures/eval/knowledge/`.
+          # 36 Markdown bodies, each pinned by a `contentSha256`, carrying 52
+          # relative links between them -- all 52 reported broken from here,
+          # and all 52 inside the 12 verbatim ADR snapshots taken at 111ab57
+          # (measured 2026-09-20 at c3807c3). The other 24 bodies are
+          # originals written for this corpus, 4 of them Japanese, and carry
+          # 0 Markdown links of any kind, so excluding them removes no check.
+          #
+          # Nothing goes unchecked for it either. Each of the 12 snapshots
+          # records a `sourceAnchors` `filePath` under `docs/adr/`; 12/12
+          # exist and are tracked, 12 distinct (measured 2026-09-20), so every
+          # excluded link is still checked -- once, at `docs/adr/`, where it
+          # means something. The corpus's single `blob/main` self-reference is
+          # in that same set (ADR-0013's), so the argument covers it too.
+          #
+          # What stays in: `tests/fixtures/eval/` outside `knowledge/`, which
+          # is 0 Markdown files today (the manifest, queries, judgements and
+          # migrations beside it are YAML), and everything else -- 120 of the
+          # tree's 205 Markdown files are still walked after both exclusions
+          # (measured 2026-09-20).
+          corpora = {
+              (".theurian", "knowledge"),
+              ("tests", "fixtures", "eval", "knowledge"),
+          }
 
           broken = []
           for md in root.rglob("*.md"):
               if ".venv" in md.parts or ".git" in md.parts:
                   continue
-              if md.parts[:2] == corpus:
+              if any(md.parts[:len(p)] == p for p in corpora):
                   continue
               for target in link.findall(md.read_text(encoding="utf-8")):
                   target = target.split(" ")[0]
