@@ -6164,9 +6164,16 @@ async def test_a_withheld_document_changes_nothing_a_caller_can_see(
         "every field of every hit, including which chunk of a document was excerpted"
     )
     assert probe["count"] == other["count"]
-    assert {k: v for k, v in probe["retrieval"].items() if k not in BUILD_IDENTITY} == {
-        k: v for k, v in other["retrieval"].items() if k not in BUILD_IDENTITY
+    assert probe["retrieval"].keys() == other["retrieval"].keys(), (
+        "a field one build publishes and the other does not is the whole leak, "
+        "not a difference in values"
+    )
+    moved = {
+        key for key in probe["retrieval"] if probe["retrieval"][key] != other["retrieval"][key]
     }
+    assert moved == set(BUILD_IDENTITY), (
+        "exactly the two fields the published contract exempts -- no more, and no fewer"
+    )
 
 
 @pytest.mark.asyncio
