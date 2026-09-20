@@ -178,12 +178,46 @@ not know — and nothing here predicts what it would find.
   YAML knowledge migrations (ADR-0005) and built by applying them, so the
   harness measures the shipped write, projection and index path rather than a
   hand-assembled database that could drift from it.
-- **Two planes.** Each migration declares `plane: visible` or `plane: withheld`.
-  The `full` index is built from every migration; the `clean` index is built
-  from the `visible` ones only and never held the others.
+- **Two planes, declared in the manifest and never in a migration.** The
+  manifest names each migration file with a `plane` of `visible` or `withheld`
+  (`$defs.migrationEntry` in `tools/eval/schemas/manifest.schema.json`). The
+  migration documents stay ordinary ADR-0005 migrations carrying no
+  evaluation-specific key of any kind: `schemas/migrations/migration.schema.json`
+  is `additionalProperties: false` at its root, so a `plane` written into a
+  migration is refused by the published schema. The `full` index is built from
+  every migration; the `clean` index is built from the `visible` ones only and
+  never held the others.
 - **Withheld rows are synthetic only.** No real secret, credential or private
   document goes into a fixture, per the roadmap's Phase A Security row. A
   withheld fixture row is invented text that exists to be *not* returned.
+
+  **The rule is authorial, and nothing at the schema layer enforces it.** The
+  three contract schemas constrain shape, not content, and none of them can tell
+  an invented token from a real one. Two controls do reach the corpus path, and
+  neither was built for it:
+
+  - **The full-history secret scan.** `.gitleaks.toml` extends the default
+    ruleset (`useDefault = true`; the file's own reason is that "a secret scan
+    with no rules is a green job that has stopped checking"). Its two allowlists
+    are each narrowed by `targetRules`, `paths` and an anchored value regex
+    combined with `condition = "AND"`, and both `paths` sit under
+    `^packages/theurian-core/tests/` — so a corpus living under the
+    repository-root `tests/` or `tools/` is inside coverage and allowlisted by
+    nothing. The gap that file records is a shape a YAML corpus document does
+    not have: `NAME: Final = "<token>"` goes unreported "because
+    `generic-api-key` looks for its keyword within a few characters of the
+    separator and a type annotation pushes it out of range".
+  - **Index-time secret scanning**, which the corpus gets for free from being
+    built through the real path (SEC-11,
+    [#329](https://github.com/theurian/theurian/issues/329)). `IndexRequest`
+    requires a `SecretScanPolicy` with **no default** — its own comment records
+    why, that "a defaulted security control is one a composition root can select
+    by forgetting" — and the scan is `theurian.application.index_secret_scan`
+    over `theurian.security.content_secrets.scan_text`. It reports rather than
+    refusing, because by then the content is already indexed.
+
+  **Owed at slice S3:** the corpus pull request records which of these two
+  actually reached it, measured rather than assumed.
 - **The three schemas under `tools/eval/schemas/` are the normative contract**
   for `manifest.yaml`, `queries.yaml` and `judgements.yaml`. Each states the
   shape of one file. Cross-file rules — that every `queryId` names a declared
@@ -200,15 +234,42 @@ a document was chosen. The only fields permitted to differ are exactly
     {retrieval.indexBuildId, retrieval.snapshotId}
 
 — an index build identifier and a canonical state hash, both of which name
-*which artifact answered* and neither of which can be a function of a query. The
-exception is asserted as **set equality** by a named slice-S2 test, never as a
-membership check over a list of allowed names. The difference is the whole
-point: a membership check lets a newly identity-varying field join the exception
-silently, while a set equality reddens and forces someone to decide. That is
-T-17's lesson in evaluation form — the defect there was not a field whose value
-was wrong but a quantity nobody had enumerated, and enumerating field by field
-is what let it survive three review rounds
-([threat model](../security/threat-model.md), T-17).
+*which artifact answered* and neither of which can be a function of a query.
+
+**The exception is asserted as set equality by a named slice-S2 test, never as a
+subset or an exclusion.** The product already records why, for its own pair, and
+the reason is not the one about a newly varying field — a subset check reddens on
+that too. It is the opposite direction:
+
+> An exact set and not a subset: a subset check also passes a response that has
+> stopped publishing `appliedMigrations`, and one whose `stateHash` has gone
+> insensitive to canonical state, both of which are contract changes that should
+> be decided rather than absorbed.
+>
+> — [threat model](../security/threat-model.md), on
+> `test_a_withheld_item_moves_exactly_the_two_fields_the_status_schema_exempts`
+
+Read against the retrieval pair: a subset check passes a harness that has stopped
+publishing `retrieval.indexBuildId` at all, and one whose `retrieval.snapshotId`
+has gone insensitive to canonical state — leaving an equality battery that
+compares two constants and reports agreement.
+
+**And the comparison quantifies over the whole response rather than over a field
+list, because a list is what T-17 defeated.** Its root cause was the gate's
+position, not an unenumerated field:
+
+> Each round reasoned about the face in front of it — one *quantity*, to be
+> moved to the far side of the canonical gate — while the gate itself stayed
+> after the ranking, so the round after it found a sibling.
+>
+> — [threat model](../security/threat-model.md), T-17
+
+Reasoning face by face is what each round did, and it kept producing siblings
+while the gate stayed where it was. The record adds that "The last two are not
+numbers at all" — a withheld row consuming one of the fifty candidate slots, and
+`diversify` choosing which paragraph of a *visible* document to publish — so a
+comparison assembled by listing the numbers someone could think of would have
+reached neither.
 
 ### 7. The report splits in two: a deterministic pin and a dated annex
 
@@ -316,18 +377,34 @@ stated as its body holds it, not as its name suggests:
   `test_judgements_gates_abstention_on_an_empty_relevant_list`: with
   `expectAbstention: true`, a non-empty `relevant` list fails, while an empty
   one and an absent one validate.
-- **A judged `itemId` is a domain slug, never a ULID** —
-  `test_judgements_rejects_a_ulid_shaped_item_id`, which plants a syntactically
-  valid ULID and asserts the document fails.
+- **A judged `itemId` is a domain slug, and a canonically-spelled ULID is
+  rejected** — `test_judgements_rejects_a_ulid_shaped_item_id` plants
+  `01ARZ3NDEKTSV4RRFFQ69G5FAV` and asserts the document fails validation.
+  **The rejection is on case, and the reach is stated rather than rounded up to
+  "never a ULID".** The pattern admits `[a-z0-9]` only, so the same ULID
+  lowercased is 26 admitted characters — and it must be, because the pattern is
+  byte-equal to the wire's own `itemId` (the transcription pin above), which
+  admits it too. That is the pin's reach, not a defect in it. Telling a slug
+  from a lowercased ULID, if it is ever worth telling, belongs to the S2 loader,
+  which can check an id against the built corpus.
 - **Closedness**, which is what decision 4 leans on for "no target key can be
   authored into a contract file", is declared by `additionalProperties: false`
-  throughout all three schemas and **driven at three of those sites**:
-  `test_manifest_rejects_an_undeclared_property_inside_census_full`,
-  `test_queries_rejects_an_undeclared_property_on_a_query_entry` and
+  on **ten** objects across the three schemas —
+  `git grep -c '"additionalProperties": false' -- tools/` reports 4 in the
+  judgements schema, 4 in the manifest and 2 in the queries schema — and it is
+  **driven at three of the ten**: `corpusCensus`, by
+  `test_manifest_rejects_an_undeclared_property_inside_census_full`;
+  `queryEntry`, by
+  `test_queries_rejects_an_undeclared_property_on_a_query_entry`; and
+  `judgedItem`, by
   `test_judgements_rejects_an_undeclared_property_inside_a_relevant_item`. The
-  remaining closed objects — the manifest root, a migration entry, a judgement
-  entry, an evidence reference — are declared closed and not probed; said here
-  so the three are not read as covering the whole contract.
+  **seven undriven** are the manifest root, its `census` wrapper and its
+  `migrationEntry`; the queries root; and the judgements root, its
+  `judgementEntry` and its `evidenceRef`. Three of ten is stated rather than
+  rounded, and an earlier draft of this bullet undercounted the remainder as
+  four: misreporting what is verified is the defect the roadmap's appendix row
+  10 exists to catch, and a sentence written to prevent that reading is the
+  worst place to commit it.
 - Filename shape, the `kValues` ceiling, an empty `corpora` list, the query
   length bound and duplicate evidence entries each have their own rejection
   test in the same file, and the three `A`-group parametrized cases hold that
@@ -350,19 +427,42 @@ Still owed, with the phase that would satisfy it:
   an empty answer from a scan that cannot find anything states nothing. Until
   it lands, decision 2 is a dated measurement rather than an enforced
   invariant, and a runtime module could grow a harness import without anything
-  going RED.
+  going RED. **The pin derives its population from where a corpus manifest
+  actually sits** — or the contract pins the corpus root — rather than
+  hardcoding the two path prefixes the key above spells, so that relocating the
+  corpus cannot leave the pin green and blind.
 - **Phase A slice S2 — the set-equality pin for decision 6.** A test asserting
   that the set of fields differing between a `full`-corpus response and a
   `clean`-corpus response is **equal** to
   `{retrieval.indexBuildId, retrieval.snapshotId}` — set equality, so a newly
   identity-varying field reddens instead of joining the exception — over the
   whole ordered response, paired with a control proving the battery's queries
-  actually reach the withheld plane.
+  actually reach the withheld plane. **Its companion is owed with it**: an
+  assertion that both excepted fields are constant across the queries the
+  battery runs against one build. The product's sibling is
+  `tests/integration/test_mcp_tools.py::test_the_build_identity_a_search_reports_does_not_vary_with_the_query`,
+  whose docstring gives the reason — "A field left out of a comparison is a
+  field nothing checks" — and whose body runs one matching and one
+  non-matching query against one project, asserts the two `BUILD_IDENTITY`
+  fields equal between them, and asserts neither is empty. Without the
+  harness's own version, "neither can be a function of a query" is a sentence
+  here where it is a test there.
 - **Phase A slice S2 — the determinism pin for decisions 5 and 7.** Two
   consecutive runs over one corpus produce a byte-identical `report.json`, with
   the scope the test measures stated in its own docstring; and its sibling, that
   a run whose `timings.json` differs leaves `report.json` unchanged, which is
   what makes decision 7's split a property rather than a filing convention.
+- **Phase A slice S2 — the loader's within-document obligations.** JSON Schema
+  states the shape of one file and cannot reach identity *inside* an array:
+  `uniqueItems` compares whole items, so two entries agreeing on the field that
+  matters and differing anywhere else are distinct to it. So the loader owes,
+  and nothing holds today: `queries[].id` unique; `judgements[].queryId`
+  unique; `relevant` and `forbidden` disjoint within an entry; a judgement
+  entry carrying none of `relevant`, `forbidden`, `evidence` or
+  `expectAbstention` refused, because it judges nothing while validating
+  (`judgementEntry` requires `queryId` alone); and no two `evidence` entries
+  sharing a `(sourceUri, filePath)` pair. These sit beside the cross-file rules
+  decision 6 already assigns to that loader.
 - **Phase A slice S4 — the committed baseline and the advisory CI comparison.**
   The Phase A Exit-criteria row's own words: "A baseline report is committed and
   CI reports regressions against it." Until that lands, decision 4's *advisory*
