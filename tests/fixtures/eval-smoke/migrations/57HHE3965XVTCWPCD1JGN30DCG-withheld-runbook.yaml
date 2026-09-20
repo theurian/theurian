@@ -23,7 +23,7 @@ operations:
       contentType: text/markdown
       kind: security
       namespace: eval-smoke
-      status: approved
+      status: draft
       owner: eval-harness
       trustLevel: reviewed
       sensitivity: internal

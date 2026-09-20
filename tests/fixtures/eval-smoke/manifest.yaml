@@ -5,21 +5,31 @@
 # corpus (a later slice): four to six items, purposive rather than
 # representative.
 #
-# The withheld item's incident key (knowledge/security/incident-runbook.md)
+# The withheld runbook's incident key (knowledge/security/incident-runbook.md)
 # is `hashlib.sha256(b"theurian eval-smoke withheld incident key
 # v1").hexdigest()[:20].upper()` -- derived at authoring time, never a
 # pasted credential, per ADR-0036 decision 6's "withheld rows are synthetic
 # only".
+#
+# Two withheld-plane items, one of each coverage class the gate-vs-census
+# derivation rule (tools/eval/corpus.py's `_withheld_item_coverage`) names:
+# the runbook is `draft`/internal -- gate-tested, admitted to both builds'
+# indexes by `--include-unapproved` and withheld only by the query-time gate
+# a default-flags `knowledge.search` applies -- and the credential note is
+# `rejected` -- census-tested, excluded from every index regardless of that
+# flag, so its absence from a response is a build-time property rather than
+# evidence about the gate.
 contractVersion: 1
 corpusId: eval-smoke-v1
 kValues: [1, 5, 10]
 description: >-
-  Small, purposive Phase A fixture: four visible-plane items and one
-  withheld-plane item, covering an exact-decision query, a
-  superseded-knowledge trap, an abstention query, and two disclosure-equality
-  queries -- one over shared content (where decision 6's set-equality holds),
-  one over the withheld term itself (a real content difference, which is the
-  reach control the set-equality pin needs to mean anything).
+  Small, purposive Phase A fixture: four visible-plane items and two
+  withheld-plane items (one gate-tested, one census-tested), covering an
+  exact-decision query, a superseded-knowledge trap, an abstention query,
+  both forbiddenPresentCause branches, and two disclosure-equality queries --
+  one over shared content (where decision 6's set-equality holds), one over
+  the gate-tested item's own vocabulary (the reach control the set-equality
+  pin needs to mean anything).
 migrations:
   - file: 15QXPCC15J8D72P29GA1QG0CBE-gateway-policy.yaml
     plane: visible
@@ -31,15 +41,19 @@ migrations:
     plane: visible
   - file: 57HHE3965XVTCWPCD1JGN30DCG-withheld-runbook.yaml
     plane: withheld
+  - file: 6390GPPZRBS532TJW5NHNQF0EC-rejected-credential-note.yaml
+    plane: withheld
 census:
   full:
-    items: 5
+    items: 6
     byStatus:
-      approved: 4
+      approved: 3
       deprecated: 1
+      draft: 1
+      rejected: 1
     bySensitivity:
       public: 3
-      internal: 2
+      internal: 3
     chunks: 4
   clean:
     items: 4

@@ -307,3 +307,76 @@ def test_evidence_subsumption_rule_refuses_a_plain_and_narrowed_entry_for_one_so
         harness_corpus.load_corpus(tmp_path)
 
     assert excinfo.value.rule == "evidence-subsumption"
+
+
+# -- C: the gate-vs-census coverage derivation (6ef2b606) ---------------------
+
+
+def _coverage_manifest(*files: str) -> harness_corpus.Manifest:
+    return harness_corpus.Manifest(
+        contract_version=1,
+        corpus_id="coverage-pin",
+        k_values=(1,),
+        migrations=tuple(harness_corpus.MigrationEntry(file=f, plane="withheld") for f in files),
+        census={},
+        description=None,
+    )
+
+
+def _created_and_revised(item_id: str, status: str, sensitivity: str) -> dict[str, Any]:
+    return {
+        "operations": [
+            {"op": "createItem", "itemId": item_id},
+            {
+                "op": "upsertRevision",
+                "itemId": item_id,
+                "metadata": {"status": status, "sensitivity": sensitivity},
+            },
+        ]
+    }
+
+
+@pytest.mark.parametrize(
+    ("status", "sensitivity", "expected_gate_tested"),
+    [
+        ("draft", "internal", True),
+        ("rejected", "internal", False),
+        ("draft", "confidential", False),
+    ],
+    ids=["gate-tested", "census-tested-retired-status", "census-tested-above-ceiling"],
+)
+def test_withheld_item_coverage_classifies_by_final_status_and_sensitivity(
+    status: str, sensitivity: str, expected_gate_tested: bool
+) -> None:
+    """ADR-0036, the gate-vs-census derivation rule (6ef2b606).
+
+    Gate-tested needs both axes: a status ``--include-unapproved`` admits to
+    the index (``draft``/``proposed``) AND a sensitivity within the build
+    ceiling (``internal``, since ``build.py`` writes no serving profile). A
+    retired status or an above-ceiling sensitivity alone is enough to make an
+    item census-tested -- excluded from every index regardless of the flag.
+    """
+    manifest = _coverage_manifest("one.yaml")
+    documents = {"one.yaml": _created_and_revised("security.item", status, sensitivity)}
+
+    (coverage,) = harness_corpus._withheld_item_coverage(manifest, documents)
+
+    assert (coverage.final_status, coverage.final_sensitivity) == (status, sensitivity)
+    assert coverage.is_gate_tested is expected_gate_tested
+
+
+def test_withheld_item_coverage_uses_the_final_status_not_the_first() -> None:
+    """A status set by an early migration and overridden by a later one classifies
+    on the override -- the item's coverage is what it ends up as, not what it
+    started as.
+    """
+    manifest = _coverage_manifest("one.yaml", "two.yaml")
+    documents = {
+        "one.yaml": _created_and_revised("security.item", "draft", "internal"),
+        "two.yaml": {"operations": [{"op": "deprecateItem", "itemId": "security.item"}]},
+    }
+
+    (coverage,) = harness_corpus._withheld_item_coverage(manifest, documents)
+
+    assert coverage.final_status == "deprecated"
+    assert coverage.is_gate_tested is False

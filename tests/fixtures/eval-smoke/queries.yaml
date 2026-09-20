@@ -16,3 +16,6 @@ queries:
     class: broad-architectural
     query: "authenticates inbound requests"
     corpora: [full, clean]
+  - id: rejected-note-forbidden-trap
+    class: superseded
+    query: "What does the deprecated credential note say?"

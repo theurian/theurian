@@ -15,3 +15,8 @@ judgements:
   - queryId: gateway-policy-cross-build
     relevant:
       - itemId: architecture.gateway-policy
+    forbidden:
+      - itemId: security.incident-runbook
+  - queryId: rejected-note-forbidden-trap
+    forbidden:
+      - itemId: security.rejected-credential-note

@@ -11,6 +11,7 @@ puts it on ``sys.path`` itself, the way
 
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 from collections.abc import Iterator
@@ -48,12 +49,16 @@ BUILD_IDENTITY_FIELDS = ("indexBuildId", "snapshotId")
 BUILD_IDENTITY = frozenset(f"retrieval.{field}" for field in BUILD_IDENTITY_FIELDS)
 
 #: Matches only `knowledge/architecture/gateway-policy.md`, present identically
-#: in both planes -- picked to share no vocabulary with the withheld runbook,
-#: so the comparison below is not accidentally reading the other channel.
+#: in both planes -- picked to share no vocabulary with the gate-tested
+#: runbook, so this comparison is not accidentally reading the other channel.
 EQUALITY_QUERY = "authenticates inbound requests"
 
-#: The withheld item's synthetic incident key (see manifest.yaml's header
-#: comment for its derivation) -- present in `full` only.
+#: The gate-tested (draft) withheld item's synthetic incident key (see
+#: manifest.yaml's header comment for its derivation). Since 6ef2b606, both
+#: builds index with `--include-unapproved`, so this row sits in `full`'s
+#: index; a default-flags query must still not surface it (the query-time
+#: gate T-17a is about), which the reach control below proves is a real gate
+#: rather than the row's simple absence.
 WITHHELD_QUERY = "0710645F7E85DCE09F4B"
 
 
@@ -76,57 +81,81 @@ def smoke_calls() -> Iterator[dict[str, Any]]:
             yield {"calls": calls, "projects": built.projects}
 
 
-def _search(smoke_calls: dict[str, Any], corpus_name: str, query: str) -> dict[str, Any]:
+def _search(
+    smoke_calls: dict[str, Any],
+    corpus_name: str,
+    query: str,
+    *,
+    include_unapproved: bool = False,
+) -> dict[str, Any]:
     project = smoke_calls["projects"][corpus_name]
     call: ToolCall = smoke_calls["calls"][corpus_name]
     return call(
         "knowledge.search",
-        {"projectId": project.project_id, "query": query, "limit": 10, "maxTokens": 32_000},
+        {
+            "projectId": project.project_id,
+            "query": query,
+            "limit": 10,
+            "maxTokens": 32_000,
+            "includeUnapproved": include_unapproved,
+        },
     )
 
 
 # -- A: the disclosure-equality set comparison, and its two controls ---------
 
 
+@pytest.mark.parametrize(
+    "query", [WITHHELD_QUERY, EQUALITY_QUERY], ids=["gate-tested-vocabulary", "shared-vocabulary"]
+)
 def test_the_equality_query_differs_from_its_clean_counterpart_only_in_build_identity(
-    smoke_calls: dict[str, Any],
+    smoke_calls: dict[str, Any], query: str
 ) -> None:
-    """ADR-0036 decision 6, "Still owed" item 2. Set equality, not a subset.
+    """ADR-0036 decision 6, "Still owed" item 2, held under 6ef2b606's fix.
 
-    A subset check would also pass a harness that had stopped publishing
-    `retrieval.indexBuildId`, or whose `retrieval.snapshotId` had gone
-    insensitive to canonical state -- both are contract changes that should be
-    decided, not silently absorbed by a comparison that quietly widens.
+    Both builds index with ``--include-unapproved``, so the gate-tested draft
+    row genuinely sits in ``full``'s index (the reach control below proves
+    it) rather than being absent from both by construction; every query here
+    still runs at default flags, so what this measures is the query-time
+    gate over that row, never a build-time exclusion. A subset check would
+    also pass a harness that had stopped publishing ``retrieval.indexBuildId``,
+    or whose ``retrieval.snapshotId`` had gone insensitive to canonical
+    state -- both are contract changes that should be decided, not silently
+    absorbed by a comparison that quietly widens.
     """
-    full = _search(smoke_calls, "full", EQUALITY_QUERY)
-    clean = _search(smoke_calls, "clean", EQUALITY_QUERY)
+    full = _search(smoke_calls, "full", query)
+    clean = _search(smoke_calls, "clean", query)
 
-    assert full["count"] > 0, "a comparison of two empty answers proves nothing"
     moved = harness_metrics.differing_paths(full, clean)
 
     assert moved == BUILD_IDENTITY
 
 
-def test_the_fixture_can_exhibit_a_wider_difference_when_content_genuinely_differs(
+def test_the_default_flag_gate_hides_the_draft_row_the_include_unapproved_flag_reveals(
     smoke_calls: dict[str, Any],
 ) -> None:
-    """Guards the guard: the reach control ADR-0036 "Still owed" item 2 asks for.
+    """The reach control the set-equality pin above needs to mean anything.
 
-    Without this, the equality above could hold because `full` and `clean`
-    happen to be identical, not because nothing withheld leaks through.
-    Mirrors `test_the_depth_probe_reaches_the_withheld_document_inside_the_
-    candidate_depth`'s discipline in `test_mcp_tools.py`: the corpus must be
-    able to show a difference, or the equality above states nothing.
+    Without this, the equality above could hold because the draft row never
+    reached ``full``'s index at all -- the T-17a vacuity 6ef2b606 closed --
+    rather than because a default-flags query correctly withholds a row that
+    genuinely is there. Mirrors ``test_the_depth_probe_reaches_the_withheld_
+    document_inside_the_candidate_depth``'s discipline in ``test_mcp_tools.
+    py``: the same wire path, with one flag flipped, must surface the row in
+    ``full`` and never in ``clean``, which held no such row under either flag
+    (zero-only-counts: a green equality battery over an unreachable row
+    proves nothing).
     """
-    full = _search(smoke_calls, "full", WITHHELD_QUERY)
-    clean = _search(smoke_calls, "clean", WITHHELD_QUERY)
+    full_default = _search(smoke_calls, "full", WITHHELD_QUERY)
+    full_unapproved = _search(smoke_calls, "full", WITHHELD_QUERY, include_unapproved=True)
+    clean_unapproved = _search(smoke_calls, "clean", WITHHELD_QUERY, include_unapproved=True)
 
-    assert full["count"] > 0, "the withheld item must actually be a match in the full build"
-    assert clean["count"] == 0, "and genuinely absent from the clean build, or nothing is withheld"
-    assert any(hit["itemId"] == "security.incident-runbook" for hit in full["results"])
-
-    moved = harness_metrics.differing_paths(full, clean)
-    assert moved > BUILD_IDENTITY, "a real content difference must move more than the exempt pair"
+    assert full_default["count"] == 0, "a default-flags query must not surface the draft row"
+    assert full_unapproved["count"] > 0, "the same row, reached the same way, gate opened"
+    assert any(hit["itemId"] == "security.incident-runbook" for hit in full_unapproved["results"])
+    assert clean_unapproved["count"] == 0, (
+        "clean never held the row at all, flag or no flag -- opening the gate finds nothing"
+    )
 
 
 def test_both_build_identity_fields_are_constant_and_nonempty_within_one_build(
@@ -156,7 +185,32 @@ def test_both_build_identity_fields_are_constant_and_nonempty_within_one_build(
     )
 
 
-# -- B: determinism (decisions 5 and 7) ---------------------------------------
+# -- B: forbiddenPresentCause reads the coverage classification --------------
+
+
+def test_forbidden_present_cause_is_set_only_for_a_census_tested_trap() -> None:
+    """ADR-0036, the gate-vs-census derivation rule (report.py's ``_forbidden_zero_cause``).
+
+    A zero ``forbiddenPresent`` for a census-tested trap (``rejected``, never
+    indexed under either flavor) is guaranteed by construction and annotated
+    as such. For a gate-tested trap (``draft``, indexed in ``full`` since
+    6ef2b606) the same zero is earned by the query-time gate, not guaranteed,
+    so no cause is stated -- an unannotated zero here would misreport a real
+    result as a foregone one.
+    """
+    with tempfile.TemporaryDirectory(prefix="theurian-eval-annotation-") as out_name:
+        code = harness_run.main(["--corpus", str(SMOKE_CORPUS), "--out", out_name])
+        assert code == 0
+        report = json.loads((Path(out_name) / "report.json").read_text())
+
+    census_tested = report["queries"]["rejected-note-forbidden-trap"]["corpora"]["full"]
+    gate_tested = report["queries"]["gateway-policy-cross-build"]["corpora"]["full"]
+
+    assert "forbiddenPresentCause" in census_tested
+    assert "forbiddenPresentCause" not in gate_tested
+
+
+# -- C: determinism (decisions 5 and 7) ---------------------------------------
 
 
 def test_two_consecutive_harness_runs_over_the_smoke_corpus_produce_a_byte_identical_report() -> (
@@ -190,7 +244,7 @@ def test_two_consecutive_harness_runs_over_the_smoke_corpus_produce_a_byte_ident
         assert timings_a != timings_b, "decision 7's split is a property, not a filing convention"
 
 
-# -- C: the one loader refusal that needs a real build ------------------------
+# -- D: the one loader refusal that needs a real build ------------------------
 
 _CENSUS_MIGRATION = "1N311FSDACRHQJQV010HQ93Y3Q-sample.yaml"
 
