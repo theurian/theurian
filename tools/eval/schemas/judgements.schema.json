@@ -33,6 +33,7 @@
         },
         "evidence": {
           "type": "array",
+          "uniqueItems": true,
           "items": { "$ref": "#/$defs/evidenceRef" },
           "description": "Source anchors the harness expects a correct answer to cite."
         },

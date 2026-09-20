@@ -55,9 +55,10 @@
         "corpora": {
           "type": "array",
           "items": { "enum": ["full", "clean"] },
+          "minItems": 1,
           "uniqueItems": true,
           "default": ["full"],
-          "description": "Which corpus indexes this query runs against. Defaults to `[\"full\"]`."
+          "description": "Which corpus indexes this query runs against. Defaults to `[\"full\"]`. An empty list would run against nothing, which is not a query the harness can execute."
         }
       },
       "allOf": [
