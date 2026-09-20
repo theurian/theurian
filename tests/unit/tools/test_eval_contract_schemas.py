@@ -1,7 +1,7 @@
 """Pins for the Phase A corpus interface contract (docs/roadmap.md, "Phase A").
 
 ``tools/eval/schemas/{manifest,queries,judgements}.schema.json`` are what the
-frozen fixture corpus another lane builds (Draft PR #776) is validated
+frozen fixture corpus a later slice (S3) builds will be validated
 against. The S2 loader that consumes them does not exist yet, so without this
 module every ``allOf``/``if``/``then`` gate, closed ``additionalProperties``
 and pattern bound in the three files is a guard no data reaches -- a schema

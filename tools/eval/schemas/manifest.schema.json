@@ -22,7 +22,7 @@
       "items": { "type": "integer", "minimum": 1, "maximum": 50 },
       "minItems": 1,
       "uniqueItems": true,
-      "description": "The k values Recall@k is reported for, e.g. `[1, 5, 10]`. Bounded to 50, the same bound `knowledge.search`'s wire contract clamps `limit` to (`MAX_RESULTS`, src/theurian/mcp/tools.py) -- a k beyond it could never be reached by a real response."
+      "description": "The k values Recall@k is reported for, e.g. `[1, 5, 10]`. Bounded to 50, the same bound `knowledge.search`'s wire contract clamps `limit` to (`MAX_RESULTS`, packages/theurian-core/src/theurian/mcp/tools.py) — a k beyond it could never be reached by a real response."
     },
     "migrations": {
       "type": "array",
@@ -42,6 +42,7 @@
     },
     "description": {
       "type": "string",
+      "maxLength": 2000,
       "description": "Human-readable summary of what this corpus fixture covers."
     }
   },
@@ -54,6 +55,7 @@
         "file": {
           "type": "string",
           "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}-[a-z0-9-]+\\.yaml$",
+          "maxLength": 300,
           "description": "Migration filename: a 26-character Crockford base32 ULID followed by a slug, matching this project's migration file naming."
         },
         "plane": {
