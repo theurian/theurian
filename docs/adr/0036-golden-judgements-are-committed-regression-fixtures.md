@@ -11,11 +11,12 @@
   than amending it: its rejection of learning to rank is re-taken below on its
   own grounds
 
-**Every repository fact below was measured on 2026-09-20 against `1aa61e8a`,
-the branch commit of [PR #776](https://github.com/theurian/theurian/pull/776).**
-That commit is not reachable from `origin/main`, so it carries the pull-request
-qualifier rather than being cited as a plain anchor — a branch sha stops
-resolving the moment the branch squashes.
+**Every repository fact below was measured on 2026-09-20, on the branch of
+[PR #776](https://github.com/theurian/theurian/pull/776) — named by its pull
+request because no sha on it is reachable from `origin/main`.** A branch sha
+stops resolving the moment the branch squashes, so an in-flight measurement is
+anchored to the pull request rather than to a commit name; where a particular
+branch state matters below, the commit is named by its subject.
 
 ## Context
 
@@ -82,7 +83,10 @@ $ git grep -n -E "tools/eval|fixtures/eval" -- packages/theurian-core/src/
 $
 ```
 
-Empty at `1aa61e8a`. It was obtained through the strictly broader key
+Empty on the branch of PR #776, at the schema-pin commit
+`test(eval): pin the corpus contract schemas and their wire-derived bounds` —
+named by its subject rather than by its sha, which that squash will strip. It
+was obtained through the strictly broader key
 `git grep -n -E "tools/|fixtures/" -- packages/theurian-core/src/`, which
 returns **11 lines in 5 files**, every one of them an MCP wire-method name
 (`tools/call`, `tools/list`) or a comment naming the `tools/` directory, and
@@ -329,7 +333,7 @@ stated as its body holds it, not as its name suggests:
   test in the same file, and the three `A`-group parametrized cases hold that
   every schema is itself valid JSON Schema.
 
-Measured now, and reproducible from this ADR (2026-09-20, `1aa61e8a` of
+Measured now, and reproducible from this ADR (2026-09-20, on the branch of
 PR #776):
 
 - Decision 2's key returns nothing, with the broader-key derivation recorded
