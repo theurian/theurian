@@ -28,6 +28,7 @@ operations:
     labels:
     - secret-scan
     - withheld-fixture
+    - authored-in-theurian
 - op: addRelation
   sourceItemId: security.draft-scan-hardening
   relationType: related_to

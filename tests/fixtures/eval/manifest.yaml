@@ -6,8 +6,13 @@ description: >-
   111ab5732dd71efb35f5ecbcd155d75f65ee7de0 and fourteen original documents covering a superseded
   chain, a conflicting pair, three Japanese bodies and four runbook-shaped documents. Seven
   withheld-plane items build only the `full` index and exist to be not returned. Item counts
-  below are fixed from the migration documents. Chunk counts measured via the real apply+index
-  path at authoring; they freeze at the S2 joint build.
+  below are fixed from the migration documents and were confirmed against a real apply. Chunk
+  counts measured via the real apply+index path at authoring; they freeze at the S2 joint build.
+  Both were measured under `theurian index build --include-unapproved` at the shipped `internal`
+  serving ceiling, the only flavour in which the `full` index holds a withheld row at all: a
+  plain `index build` yields 609 for both corpora, because `may_surface` admits draft and
+  proposed only under that flag and admits deprecated, superseded and rejected under none. Two
+  of the seven withheld items reach the index; the other five are withheld before it.
 kValues:
 - 1
 - 5
@@ -104,7 +109,7 @@ census:
       internal: 19
       confidential: 1
       restricted: 1
-    chunks: 0
+    chunks: 615
   clean:
     items: 26
     byStatus:
@@ -113,4 +118,4 @@ census:
     bySensitivity:
       public: 12
       internal: 14
-    chunks: 0
+    chunks: 609

@@ -22,6 +22,7 @@ operations:
     labels:
     - ttl
     - session-token
+    - authored-in-theurian
 - op: addRelation
   sourceItemId: domain.session-token-ttl-v2
   relationType: supersedes
