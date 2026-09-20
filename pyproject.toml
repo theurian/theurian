@@ -79,6 +79,9 @@ ignore = [
 "packages/theurian-core/src/theurian/cli/**" = ["TID251"]
 "packages/theurian-core/src/theurian/daemon/**" = ["TID251"]
 "packages/theurian-core/src/theurian/mcp/**" = ["TID251"]
+# The Phase A eval harness is a composition root too (ADR-0036): it drives the
+# real CLI and reads canonical state directly, the same shape as cli/daemon/mcp.
+"tools/eval/**" = ["TID251"]
 
 # Tests may import late (to assert on module state), chmod directly (to set up
 # permission fixtures), and assert freely.
