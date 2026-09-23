@@ -2,14 +2,16 @@
 
 Pins the structural claim decision 2 makes -- "no module under
 ``packages/theurian-core/src/`` reads, imports, or names the corpus, the
-queries or the judgements" -- and the S2 loader's thirteen named refusals
+queries or the judgements" -- and the S2 loader's fourteen named refusals
 (the eleventh, ``withheld-item-disclosable``, landed in 07e7e099; the
 twelfth and thirteenth, ``relevant-item-unretrievable`` and
 ``migration-order-not-topological``, landed in 636c15ca, which also
 schema-validates every migration document -- ``_base_migrations()`` below
-matches a real fixture's shape for exactly that reason). Each loader-rule
-pin builds a minimal corpus that violates exactly one rule and asserts
-:class:`CorpusError.rule` names it, so a rule silently dropped from
+matches a real fixture's shape for exactly that reason; the fourteenth,
+``relevant-item-unknown``, landed in 6aeab078, splitting rule 12's
+existence clause off its enabled-scoped retrievability clauses). Each
+loader-rule pin builds a minimal corpus that violates exactly one rule and
+asserts :class:`CorpusError.rule` names it, so a rule silently dropped from
 ``load_corpus`` reddens one specific test rather than a vague "something
 changed" failure.
 
@@ -159,7 +161,7 @@ def test_the_reference_scan_also_reports_a_planted_short_form_reference(tmp_path
     assert hits[0][0] == planted
 
 
-# -- B: the loader's thirteen named refusals ------------------------------------
+# -- B: the loader's fourteen named refusals ------------------------------------
 
 
 def _valid_manifest() -> dict[str, Any]:
@@ -610,9 +612,9 @@ def _corpus_with_a_query_judging_a_superseded_item(
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, dict[str, Any]]]:
     """A visible, superseded-status item judged relevant by one added query.
 
-    Shared by both directions of the rule-12 exemption pin below: only
-    ``query_class``/``enabled`` differ between the disabled (Phase-D) shape
-    and the enabled control.
+    Shared by the rule-12 pins below: the exemption and the enabled control
+    vary only ``query_class``/``enabled``; the existence-clause pin further
+    below reuses this and then overwrites the judged itemId.
     """
     manifest, migrations = _manifest_and_migrations_with_extra_visible_item(
         "superseded", "internal"
@@ -636,17 +638,9 @@ def _corpus_with_a_query_judging_a_superseded_item(
 def test_relevant_item_unretrievable_rule_exempts_a_disabled_querys_judgement(
     tmp_path: Path,
 ) -> None:
-    """Rider b of the derivation ruling, closing the Phase A joint-build refusal (c3e4e493).
-
-    The joint build ran the S2 loader over the real S3 corpus and refused a
-    correct corpus: the deliberately-deferred, disabled
-    ``q-hist-ttl-evolution`` query (class=historical) judges
-    ``domain.session-token-ttl-v1`` relevant BY DESIGN -- it exists to be
-    validated once Phase D enables it, not to be retrievable today -- and
-    rule 12, unscoped at the time, raised ``relevant-item-unretrievable``
-    anyway. This corpus reproduces that shape (a disabled, class=historical
-    query judging a superseded item relevant) and must load without refusal,
-    or the S3 corpus's ``q-hist-ttl-evolution`` breaks again.
+    """ADR-0036, "What the rule asks of a corpus editor" (PR #793); the joint-build
+    refusal this closes is narrated in full at
+    ``_check_relevant_items_retrievable``'s own docstring.
     """
     manifest, queries, judgements, migrations = _corpus_with_a_query_judging_a_superseded_item(
         query_class="historical", enabled=False
@@ -666,12 +660,13 @@ def test_relevant_item_unretrievable_rule_still_fires_once_the_same_query_is_ena
     """The exemption above is scoped to ``enabled: false``, not a blanket skip.
 
     The same shape that loads while the query is disabled must still refuse
-    once the query is enabled -- otherwise the rider b exemption in
-    ``_check_relevant_items_retrievable`` would have silently widened into no
-    check at all rather than a scoped one. ``class: historical`` forces
-    ``enabled: false`` in ``queries.schema.json``, so the enabled control
-    changes the class to ``unknown``, which carries no such constraint; the
-    judged item and its superseded status are otherwise identical.
+    once the query is enabled -- otherwise ADR-0036's "What the rule asks of a
+    corpus editor" (PR #793) exemption in ``_check_relevant_items_retrievable``
+    would have silently widened into no check at all rather than a scoped one.
+    ``class: historical`` forces ``enabled: false`` in ``queries.schema.json``,
+    so the enabled control changes the class to ``unknown``, which carries no
+    such constraint; the judged item and its superseded status are otherwise
+    identical.
     """
     manifest, queries, judgements, migrations = _corpus_with_a_query_judging_a_superseded_item(
         query_class="unknown", enabled=True
@@ -682,6 +677,28 @@ def test_relevant_item_unretrievable_rule_still_fires_once_the_same_query_is_ena
         harness_corpus.load_corpus(tmp_path)
 
     assert excinfo.value.rule == "relevant-item-unretrievable"
+    assert "superseded" in str(excinfo.value)
+
+
+def test_relevant_item_unknown_rule_refuses_a_disabled_querys_judgement_naming_no_item(
+    tmp_path: Path,
+) -> None:
+    """The existence clause 6aeab078 split off rule 12, narrated in full at
+    ``_check_relevant_items_retrievable``'s own docstring: it runs over every
+    judgement regardless of ``query.enabled``, so a typo'd itemId in a
+    disabled query's judgement is refused now rather than loading silently
+    and reading as forced zero recall once the query's phase enables it.
+    """
+    manifest, queries, judgements, migrations = _corpus_with_a_query_judging_a_superseded_item(
+        query_class="historical", enabled=False
+    )
+    judgements["judgements"][-1]["relevant"][0]["itemId"] = "domain.no-such-item"
+    _write_corpus(tmp_path, manifest, queries, judgements, migrations)
+
+    with pytest.raises(harness_corpus.CorpusError) as excinfo:
+        harness_corpus.load_corpus(tmp_path)
+
+    assert excinfo.value.rule == "relevant-item-unknown"
 
 
 def test_migration_order_not_topological_rule_refuses_a_forward_referencing_dependson(
@@ -704,6 +721,18 @@ def test_migration_order_not_topological_rule_refuses_a_forward_referencing_depe
         harness_corpus.load_corpus(tmp_path)
 
     assert excinfo.value.rule == "migration-order-not-topological"
+
+
+def test_the_committed_s3_corpus_loads_through_the_loader() -> None:
+    """Converts the joint build's hand verification into CI: a loader rule that
+    refuses the committed S3 corpus reddens HERE, never again first at the
+    joint build.
+    """
+    loaded = harness_corpus.load_corpus(REPO_ROOT / "tests" / "fixtures" / "eval")
+
+    assert len(loaded.queries) == 27
+    assert len(loaded.judgements) == 27
+    assert {query.id for query in loaded.queries if not query.enabled} == {"q-hist-ttl-evolution"}
 
 
 # -- C: the gate-vs-census coverage derivation (6ef2b606) ---------------------
