@@ -237,7 +237,7 @@ def load_corpus(root: Path) -> Corpus:
     _check_judgement_not_empty(judgements)
     _check_no_evidence_subsumption(judgements)
     _check_no_disclosable_withheld_item(manifest, documents)
-    _check_relevant_items_retrievable(manifest, documents, judgements)
+    _check_relevant_items_retrievable(manifest, documents, queries, judgements)
 
     withheld_coverage = _withheld_item_coverage(manifest, documents)
     return Corpus(
@@ -585,17 +585,44 @@ def _check_no_disclosable_withheld_item(manifest: Manifest, documents: dict[str,
 
 
 def _check_relevant_items_retrievable(
-    manifest: Manifest, documents: dict[str, Any], judgements: tuple[JudgementEntry, ...]
+    manifest: Manifest,
+    documents: dict[str, Any],
+    queries: tuple[QueryEntry, ...],
+    judgements: tuple[JudgementEntry, ...],
 ) -> None:
-    """Every judgement's ``relevant`` itemId must be retrievable at the harness's
-    own default flags -- approved, within the build ceiling, and visible-plane.
+    """Every ENABLED query's judged ``relevant`` itemId must be retrievable at
+    the harness's own default flags -- approved, within the build ceiling, and
+    visible-plane.
 
     The harness never queries with ``includeUnapproved=true``: a relevant item
     that is withheld-plane (either coverage class), not approved, or above the
     ceiling can never come back in a response, which pins recall and MRR to
     zero for a reason that has nothing to do with ranking quality.
+
+    Scoped to ``query.enabled`` (rider b of the derivation ruling): a disabled
+    query's judgement may list a non-approved item as relevant BY DESIGN -- it
+    exists to judge reachability once the query's phase enables it, not to be
+    retrievable today. A disabled query never runs at default flags, so
+    default-flag retrievability constrains nothing about it; the phase that
+    enables it validates the judgement under its own flags. Caught by the
+    Phase A joint build: an S3-corpus judgement for the deliberately-deferred,
+    disabled ``q-hist-ttl-evolution`` (class=historical) named
+    ``domain.session-token-ttl-v1`` relevant while its final status was
+    ``superseded``, and this rule -- unscoped at the time -- refused a correct
+    corpus with ``[relevant-item-unretrievable] 'domain.session-token-ttl-v1'
+    is judged relevant but its final status is 'superseded'``.
+
+    ``load_corpus`` runs :func:`_check_judgements_name_declared_queries` before
+    this rule, so every judgement here already names a query ``queries``
+    declares -- the id -> enabled lookup below cannot ``KeyError``.
     """
-    relevant_ids = {item.item_id for judgement in judgements for item in judgement.relevant}
+    enabled_by_id = {query.id: query.enabled for query in queries}
+    relevant_ids = {
+        item.item_id
+        for judgement in judgements
+        if enabled_by_id[judgement.query_id]
+        for item in judgement.relevant
+    }
     if not relevant_ids:
         return
     withheld_item_ids = _withheld_item_ids(manifest, documents)
