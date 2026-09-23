@@ -550,10 +550,12 @@ PR #776):
   because those prefixes are shared with legitimate bounds and the alternative is
   an allowlist a future author can route around.
   `test_a_built_report_carries_no_pass_fail_or_threshold_named_key` covers the
-  published half: it calls the real `build_report` over a one-query synthetic
-  corpus and asserts that no key, at any nesting depth of the result, matches
-  `pass`, `fail` or `threshold`. A threshold neither plainly named nor ever
-  published is what neither check can see.
+  published half: it calls the real `build_report` over a synthetic corpus
+  exercising every publishable branch (a two-corpus equality query and a
+  census-tested forbidden item, alongside the base case) and asserts that no
+  key, at any nesting depth of the result, matches `pass`, `fail` or
+  `threshold`. A threshold neither plainly named nor ever published is what
+  neither check can see.
 
 Still owed, with the phase that would satisfy it:
 

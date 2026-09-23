@@ -107,25 +107,30 @@ _S2_COMPLIANCE_END = "\nMeasured now, and reproducible from this ADR"
 
 #: A backtick-quoted test identifier, ``path::test_name`` or a bare
 #: ``test_name`` -- the two forms the S2 Compliance block actually uses.
-_CITED_TEST_NAME = re.compile(r"`(?:[\w./-]+::)?(test_[A-Za-z0-9_]+)`")
+#: Group 1 is the optional path prefix (``""`` for a bare citation, since
+#: ``findall`` yields an empty string rather than ``None`` for a
+#: non-participating group).
+_CITED_TEST_NAME = re.compile(r"`(?:([\w./-]+)::)?(test_[A-Za-z0-9_]+)`")
 
 
-def _cited_test_names(adr_path: Path = ADR) -> list[str]:
-    """Every test name the ADR's S2 Compliance block cites, parsed from its own text."""
+def _cited_test_citations(adr_path: Path = ADR) -> list[tuple[str, str]]:
+    """Every ``(path, test name)`` pair the ADR's S2 Compliance block cites --
+    path ``""`` for a bare citation -- parsed from the ADR's own text.
+    """
     text = adr_path.read_text(encoding="utf-8")
     section = _section(text, _S2_COMPLIANCE_START, _S2_COMPLIANCE_END)
     return sorted(set(_CITED_TEST_NAME.findall(section)))
 
 
-def _collected_test_output() -> str:
-    """``pytest --collect-only``'s stdout over every root the cited names live in.
+def _collect_only() -> subprocess.CompletedProcess[str]:
+    """One ``pytest --collect-only`` pass over every root the cited names live in.
 
     One collection pass rather than one per name: collecting
     ``packages/theurian-core/tests`` alone takes a few seconds, and this file
     cites upward of a dozen names, one of them from that tree (the product's
     own build-identity sibling test).
     """
-    result = subprocess.run(  # noqa: S603 - argv is module-owned, never user input
+    return subprocess.run(  # noqa: S603 - argv is module-owned, never user input
         [
             sys.executable,
             "-m",
@@ -141,7 +146,26 @@ def _collected_test_output() -> str:
         text=True,
         check=False,
     )
-    return result.stdout
+
+
+def _collected_node_id_components(stdout: str) -> list[tuple[str, str]]:
+    """Each collected node id's ``(path, function name)``, split on its own ``::``.
+
+    A parametrized id's ``[...]`` suffix is stripped from the function name,
+    so a bare-name citation and a path-qualified one see the same base name
+    either way. Compared as components rather than as one raw string below,
+    so a citation cannot pass by substring-matching a different test's node
+    id -- a shorter name inside a longer one, or a name that happens to occur
+    inside some other test's path.
+    """
+    components: list[tuple[str, str]] = []
+    for line in stdout.splitlines():
+        if "::" not in line:
+            continue
+        path, _, rest = line.partition("::")
+        name = rest.rsplit("::", 1)[-1].split("[", 1)[0]
+        components.append((path, name))
+    return components
 
 
 def test_every_test_name_cited_in_the_adrs_s2_compliance_block_collects() -> None:
@@ -152,14 +176,30 @@ def test_every_test_name_cited_in_the_adrs_s2_compliance_block_collects() -> Non
     is held by. Nothing recomputed that until this pin: a rename anywhere in
     ``tests/unit/tools/``, ``tests/integration/tools/`` or the product's own
     test tree left the ADR's citation pointing at a test that no longer
-    exists, and nothing noticed.
+    exists, and nothing noticed. A path-qualified citation is held to that
+    exact path, not merely to a same-named test living anywhere in the tree
+    -- a move that renamed no function would otherwise pass silently.
     """
-    names = _cited_test_names()
-    assert names, "the population must be non-empty, or this pin checks nothing"
+    citations = _cited_test_citations()
+    assert citations, "the population must be non-empty, or this pin checks nothing"
 
-    collected = _collected_test_output()
+    collected = _collect_only()
+    assert collected.returncode in {0, 5}, (
+        f"pytest --collect-only exited {collected.returncode}, neither a clean "
+        f"collection (0) nor a legitimately empty one (5) -- a collection error "
+        f"would make the missing-name check below pass vacuously:\n{collected.stderr}"
+    )
+    components = _collected_node_id_components(collected.stdout)
 
-    missing = [name for name in names if name not in collected]
+    missing: list[str] = []
+    for path, name in citations:
+        if path:
+            if (path, name) not in components:
+                missing.append(f"{path}::{name}")
+        else:
+            pattern = re.compile(rf"\b{re.escape(name)}\b")
+            if not any(pattern.search(collected_name) for _, collected_name in components):
+                missing.append(name)
     assert missing == [], (
         f"the ADR's S2 Compliance block cites {missing} by name, and pytest's "
         f"collection over tests/unit/tools, tests/integration/tools and "
@@ -202,9 +242,25 @@ def test_the_five_within_document_rule_names_the_adr_cites_are_live_corpuserror_
     within-document violation. Read from the ADR's own text against
     ``corpus.py``'s own ``CorpusError`` call sites, not restated as a literal
     list here, so a rename on either side is what this pin exists to catch.
+
+    The population is pinned at exactly five: the within-document-obligations
+    bullet enumerates exactly those five rules, and ``corpus.py``'s other
+    eight ``CorpusError`` tags (``file-readable``, ``migration-order``,
+    ``visible-depends-on-withheld``, ``migration-order-not-topological``,
+    ``judgement-unknown-query``, ``query-missing-judgement``,
+    ``withheld-item-disclosable``, ``relevant-item-unretrievable``) are
+    cross-file or build-time rules outside that bullet's population -- a
+    set-equality check against every live tag would fail on all eight of them
+    and checks the wrong population.
     """
     cited = _cited_within_document_rule_names()
     assert cited, "the population must be non-empty, or this pin checks nothing"
+    assert len(cited) == 5, (
+        f"the within-document-obligations bullet is expected to name exactly "
+        f"the five within-document rules, found {cited} -- either a rule was "
+        f"added or removed from the bullet, or the regex is now over- or "
+        f"under-matching it"
+    )
 
     live_tags = _corpuserror_rule_tags()
 
@@ -247,9 +303,16 @@ def _query_metrics_key_set() -> frozenset[str]:
     """
     tree = ast.parse(REPORT_PY.read_text(encoding="utf-8"), filename=str(REPORT_PY))
     function = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == "_query_metrics"
+        (
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "_query_metrics"
+        ),
+        None,
+    )
+    assert function is not None, (
+        f"{REPORT_PY} no longer defines _query_metrics -- update this scan (and "
+        f"EXPECTED_QUERY_METRIC_KEYS below it) to whatever replaced it"
     )
     keys: set[str] = set()
     for node in ast.walk(function):
@@ -298,9 +361,10 @@ _THRESHOLD_FAMILY = re.compile(r"THRESHOLD|FLOOR|TARGET", re.IGNORECASE)
 
 def _identifiers(tree: ast.AST) -> list[str]:
     """Every real Python identifier in ``tree`` -- names, arguments, attributes,
-    function/class names. Never a string literal, comment or docstring: this
-    is what makes the scan immune to a docstring saying "no threshold" (three
-    of ``tools/eval``'s own module docstrings say exactly that).
+    function/class names, keyword-argument names and import aliases. Never a
+    string literal, comment or docstring: this is what makes the scan immune
+    to a docstring saying "no threshold" (three of ``tools/eval``'s own
+    module docstrings say exactly that).
     """
     names: list[str] = []
     for node in ast.walk(tree):
@@ -312,6 +376,10 @@ def _identifiers(tree: ast.AST) -> list[str]:
             names.append(node.attr)
         elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
             names.append(node.name)
+        elif isinstance(node, ast.keyword) and node.arg is not None:
+            names.append(node.arg)
+        elif isinstance(node, ast.alias):
+            names.append(node.asname or node.name)
     return names
 
 
@@ -319,19 +387,19 @@ def test_no_threshold_floor_or_target_named_identifier_exists_in_the_harness() -
     """ADR-0036 decision 4's harness half, held by a machine check rather than prose.
 
     **Reach, stated honestly.** This catches an identifier spelling
-    THRESHOLD, FLOOR or TARGET anywhere in ``tools/eval/*.py`` -- a
-    ``RECALL_THRESHOLD`` or a ``LATENCY_TARGET_MS`` would redden here. It
-    does **not** catch a quality gate authored under a ``MIN_``/``MAX_`` name
-    (see the constant above for why): that shape is caught only if it also
-    surfaces as a published report key, which
+    THRESHOLD, FLOOR or TARGET anywhere in ``tools/eval/`` (recursively) -- a
+    ``RECALL_THRESHOLD`` or a ``LATENCY_TARGET_MS`` would redden here, however
+    deeply nested. It does **not** catch a quality gate authored under a
+    ``MIN_``/``MAX_`` name (see the constant above for why): that shape is
+    caught only if it also surfaces as a published report key, which
     :func:`test_a_built_report_carries_no_pass_fail_or_threshold_named_key`
     below checks. Between the two, an identifier-named threshold and a
     published one are covered; a threshold that is neither named plainly nor
     ever reaches the report is not something a machine check can see.
     """
     offenders = [
-        f"{path.name}:{identifier}"
-        for path in sorted(_HARNESS_DIR.glob("*.py"))
+        f"{path.relative_to(_HARNESS_DIR)}:{identifier}"
+        for path in sorted(_HARNESS_DIR.rglob("*.py"))
         for identifier in _identifiers(
             ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         )
@@ -362,6 +430,17 @@ def _synthetic_report() -> dict[str, Any]:
     build to construct. This is what makes the report-key check below a
     UNIT-weight instrument: a genuine call into the module under test, not a
     guess about its shape, and no SQLite or subprocess required to make it.
+
+    Two queries, not one: a single-corpus query alone never takes
+    ``report.py``'s conditional branches -- the ``forbiddenPresentCause``
+    cause, the ``atEqualityLimit`` wrapper key, or the equality section's own
+    ``limit``/``differingFields``/``atLimit`` keys -- so a verdict key added
+    only inside one of them could hide from the no-verdict-key scan below by
+    simply never being built. ``q-equality`` runs against ``("full",
+    "clean")`` to take the equality branches; ``q``'s forbidden item is
+    classified census-tested in ``withheld_coverage`` to take the
+    ``forbiddenPresentCause`` branch. The reach test below checks this
+    premise rather than assuming it.
     """
     manifest = harness_corpus.Manifest(
         contract_version=1,
@@ -371,22 +450,44 @@ def _synthetic_report() -> dict[str, Any]:
         census={},
         description=None,
     )
-    query = harness_corpus.QueryEntry(
+    base_query = harness_corpus.QueryEntry(
         id="q", query_class="exact-decision", query="text", enabled=True, corpora=("full",)
     )
-    judgement = harness_corpus.JudgementEntry(
+    equality_query = harness_corpus.QueryEntry(
+        id="q-equality",
+        query_class="exact-decision",
+        query="text",
+        enabled=True,
+        corpora=("full", "clean"),
+    )
+    base_judgement = harness_corpus.JudgementEntry(
         query_id="q",
+        relevant=(harness_corpus.JudgedItem(item_id="a"),),
+        evidence=(),
+        forbidden=(harness_corpus.JudgedItem(item_id="w"),),
+        expect_abstention=False,
+    )
+    equality_judgement = harness_corpus.JudgementEntry(
+        query_id="q-equality",
         relevant=(harness_corpus.JudgedItem(item_id="a"),),
         evidence=(),
         forbidden=(),
         expect_abstention=False,
     )
+    withheld_coverage = (
+        harness_corpus.WithheldItemCoverage(
+            item_id="w",
+            final_status="deprecated",
+            final_sensitivity="internal",
+            is_gate_tested=False,
+        ),
+    )
     loaded = harness_corpus.Corpus(
         root=Path(),
         manifest=manifest,
-        queries=(query,),
-        judgements=(judgement,),
-        withheld_coverage=(),
+        queries=(base_query, equality_query),
+        judgements=(base_judgement, equality_judgement),
+        withheld_coverage=withheld_coverage,
     )
     constants = harness_report.HarnessConstants(
         limit=10,
@@ -397,15 +498,61 @@ def _synthetic_report() -> dict[str, Any]:
         build_ceiling="internal",
     )
     response: dict[str, Any] = {"count": 1, "results": [{"itemId": "a", "sourceAnchors": []}]}
-    run = harness_report.QueryRun(
-        query_id="q", corpus="full", limit=10, response=response, latency_ms=1.0
-    )
+    runs = [
+        harness_report.QueryRun(
+            query_id="q", corpus="full", limit=10, response=response, latency_ms=1.0
+        ),
+        harness_report.QueryRun(
+            query_id="q-equality", corpus="full", limit=10, response=response, latency_ms=1.0
+        ),
+        harness_report.QueryRun(
+            query_id="q-equality", corpus="full", limit=50, response=response, latency_ms=1.0
+        ),
+        harness_report.QueryRun(
+            query_id="q-equality", corpus="clean", limit=10, response=response, latency_ms=1.0
+        ),
+        harness_report.QueryRun(
+            query_id="q-equality", corpus="clean", limit=50, response=response, latency_ms=1.0
+        ),
+    ]
     census = {
         "full": harness_corpus.CorpusCensus(
             items=1, by_status={"approved": 1}, by_sensitivity={"public": 1}, chunks=1
-        )
+        ),
+        "clean": harness_corpus.CorpusCensus(
+            items=1, by_status={"approved": 1}, by_sensitivity={"public": 1}, chunks=1
+        ),
     }
-    return harness_report.build_report(loaded, constants, [run], census)
+    return harness_report.build_report(loaded, constants, runs, census)
+
+
+#: Keys ``report.py`` only builds inside a conditional branch: the
+#: ``forbiddenPresentCause`` cause, the equality-query ``atEqualityLimit``
+#: wrapper, and the equality section's own ``limit``/``differingFields``/
+#: ``atLimit`` keys. A one-query, single-corpus fixture takes none of them.
+_BRANCH_REACH_MARKERS = frozenset(
+    {"forbiddenPresentCause", "atEqualityLimit", "limit", "differingFields", "atLimit"}
+)
+
+
+def test_the_synthetic_report_fixture_reaches_every_conditional_report_branch() -> None:
+    """The reach premise the no-verdict-key scan below depends on.
+
+    A verdict key added only inside a conditional branch report.py never
+    takes would pass the scan below by never being built, not by being
+    absent -- the failure mode a one-query synthetic corpus previously left
+    open. This asserts the fixture is not that: every key the widened report
+    can only carry via a conditional branch is present in what
+    :func:`_synthetic_report` actually returns, so the scan below is known to
+    exercise the branches it claims to cover.
+    """
+    scanned = set(_every_dict_key(_synthetic_report()))
+    missing = _BRANCH_REACH_MARKERS - scanned
+    assert missing == set(), (
+        f"the synthetic report fixture no longer reaches {sorted(missing)} -- "
+        f"report.py's branch(es) publishing them went untaken, so the "
+        f"no-verdict-key scan below would not see a verdict key added inside them"
+    )
 
 
 _PASS_FAIL_THRESHOLD = re.compile(r"pass|fail|threshold", re.IGNORECASE)
@@ -435,7 +582,12 @@ def test_judgements_schema_refuses_two_evidence_entries_sharing_the_exact_pair()
     ``{sourceUri, filePath}`` plus the ``evidence`` array's own
     ``uniqueItems``, never from a planted instance (the S1 pin,
     ``test_judgements_rejects_duplicate_evidence_entries``, plants two
-    bare-``sourceUri`` entries only). This plants the pair case directly.
+    bare-``sourceUri`` entries only). This plants the pair case directly, and
+    asserts ``uniqueItems`` is the validator doing the refusing -- the
+    mechanism the Compliance record credits, not merely that validation fails
+    for some reason. The distinct-pair control (same ``sourceUri``, different
+    ``filePath``) is the shape the refusal must NOT catch: two entries each
+    narrowing the URI to a different file are not the same object.
     """
     schema = json.loads(JUDGEMENTS_SCHEMA.read_text(encoding="utf-8"))
     validator = Draft202012Validator(schema)
@@ -451,4 +603,27 @@ def test_judgements_schema_refuses_two_evidence_entries_sharing_the_exact_pair()
         ]
     }
 
-    assert not validator.is_valid(judgements)
+    errors = list(validator.iter_errors(judgements))
+    assert errors, "the exact-pair case is expected to be refused, but validated cleanly"
+    assert any(error.validator == "uniqueItems" for error in errors), (
+        f"the exact-pair case was refused, but not by uniqueItems as the ADR's "
+        f"Compliance record credits -- refused instead by "
+        f"{sorted({error.validator for error in errors})}"
+    )
+
+    distinct_pair = {
+        "judgements": [
+            {
+                "queryId": "sample-query",
+                "evidence": [
+                    {"sourceUri": "https://example.com/doc", "filePath": "README.md"},
+                    {"sourceUri": "https://example.com/doc", "filePath": "OTHER.md"},
+                ],
+            }
+        ]
+    }
+    assert validator.is_valid(distinct_pair), (
+        "two evidence entries sharing a sourceUri but narrowing it to different "
+        "files are a distinct pair each, not the same object -- uniqueItems must "
+        "not refuse this shape, or the refusal above is broader than the ADR credits"
+    )
