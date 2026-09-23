@@ -515,6 +515,22 @@ def _withheld_item_ids(manifest: Manifest, documents: dict[str, Any]) -> set[str
     return ids
 
 
+def _all_item_ids(manifest: Manifest, documents: dict[str, Any]) -> set[str]:
+    """Every item id named by an operation of any migration, either plane.
+
+    Broader than :func:`_withheld_item_ids`: the existence clause in
+    :func:`_check_relevant_items_retrievable` must catch an itemId no
+    migration ever created, not only one that exists but sits withheld.
+    """
+    ids: set[str] = set()
+    for entry in manifest.migrations:
+        for op in documents[entry.file].get("operations", []):
+            item_id = op.get("itemId")
+            if item_id is not None:
+                ids.add(item_id)
+    return ids
+
+
 def _final_status_and_sensitivity(
     manifest: Manifest, documents: dict[str, Any], item_ids: set[str]
 ) -> tuple[dict[str, str], dict[str, str]]:
@@ -590,32 +606,49 @@ def _check_relevant_items_retrievable(
     queries: tuple[QueryEntry, ...],
     judgements: tuple[JudgementEntry, ...],
 ) -> None:
-    """Every ENABLED query's judged ``relevant`` itemId must be retrievable at
-    the harness's own default flags -- approved, within the build ceiling, and
-    visible-plane.
+    """Every judged ``relevant`` itemId must name an item some migration
+    creates; an ENABLED query's must also be retrievable at the harness's own
+    default flags -- approved, within the build ceiling, and visible-plane.
+
+    Two clauses, two tags, because a typo and a not-yet-approved item are
+    different defect classes. The *existence* clause (``relevant-item-
+    unknown``) runs over every judgement regardless of ``query.enabled``: a
+    typo'd itemId in a disabled query's judgement would otherwise load
+    silently and read as forced zero recall the day the query's phase enables
+    it -- indistinguishable from a genuine miss. The *retrievability* clauses
+    (``relevant-item-unretrievable``, below) are scoped to enabled queries
+    only (ADR-0036, "What the rule asks of a corpus editor", PR #793): a
+    disabled query's judgement may list a non-approved item as relevant BY
+    DESIGN -- it exists to judge reachability once the query's phase enables
+    it, not to be retrievable today. A disabled query never runs at default
+    flags, so default-flag retrievability constrains nothing about it; the
+    phase that enables it validates the judgement under its own flags. Caught
+    by the Phase A joint build: an S3-corpus judgement for the
+    deliberately-deferred, disabled ``q-hist-ttl-evolution`` (class=historical)
+    named ``domain.session-token-ttl-v1`` relevant while its final status was
+    ``superseded``, and this rule -- unscoped at the time -- refused a correct
+    corpus with ``[relevant-item-unretrievable] 'domain.session-token-ttl-v1'
+    is judged relevant but its final status is 'superseded'``.
 
     The harness never queries with ``includeUnapproved=true``: a relevant item
     that is withheld-plane (either coverage class), not approved, or above the
     ceiling can never come back in a response, which pins recall and MRR to
     zero for a reason that has nothing to do with ranking quality.
 
-    Scoped to ``query.enabled`` (rider b of the derivation ruling): a disabled
-    query's judgement may list a non-approved item as relevant BY DESIGN -- it
-    exists to judge reachability once the query's phase enables it, not to be
-    retrievable today. A disabled query never runs at default flags, so
-    default-flag retrievability constrains nothing about it; the phase that
-    enables it validates the judgement under its own flags. Caught by the
-    Phase A joint build: an S3-corpus judgement for the deliberately-deferred,
-    disabled ``q-hist-ttl-evolution`` (class=historical) named
-    ``domain.session-token-ttl-v1`` relevant while its final status was
-    ``superseded``, and this rule -- unscoped at the time -- refused a correct
-    corpus with ``[relevant-item-unretrievable] 'domain.session-token-ttl-v1'
-    is judged relevant but its final status is 'superseded'``.
-
     ``load_corpus`` runs :func:`_check_judgements_name_declared_queries` before
     this rule, so every judgement here already names a query ``queries``
     declares -- the id -> enabled lookup below cannot ``KeyError``.
     """
+    all_item_ids = _all_item_ids(manifest, documents)
+    for judgement in judgements:
+        for item in judgement.relevant:
+            if item.item_id not in all_item_ids:
+                raise CorpusError(
+                    "relevant-item-unknown",
+                    f"judgement for {judgement.query_id!r} lists {item.item_id!r} as "
+                    f"relevant, but no migration operation names an item with that id",
+                )
+
     enabled_by_id = {query.id: query.enabled for query in queries}
     relevant_ids = {
         item.item_id

@@ -615,7 +615,22 @@ of the decision 6 this amendment extends (PR #778).
 
 A withheld row authored to exercise the gate must end `draft` or `proposed` and
 within the serving ceiling, or it silently becomes census-tested and the battery
-loses a member it is read as covering. An item a judgement lists as `relevant`
-must end `approved`: the battery queries at default flags, so a draft relevant
-item scores zero recall by construction — rider 3's class, a number that measures
+loses a member it is read as covering. An item an **enabled** query's judgement
+lists as `relevant` must end `approved`, within the build ceiling, and
+visible-plane: the battery queries at default flags, so a draft relevant item
+scores zero recall by construction — rider 3's class, a number that measures
 the judgement rather than the retriever.
+
+*Corrected in PR #793, at a code-review finding:* the sentence above originally
+read "An item a judgement lists as `relevant` must end `approved`:", with no
+scope to `enabled`. A **disabled** query's judgement is exempt — S3's own
+`q-hist-ttl-evolution` (`class: historical`, `enabled: false`) judges a
+superseded item relevant by design, to be validated once its phase enables the
+query, not retrievable at today's default flags. The Phase A joint build caught
+the unscoped original: it ran the S2 loader over the real S3 corpus and refused
+a corpus that was correct under this exemption. `tools/eval/corpus.py`'s
+`_check_relevant_items_retrievable` carries that refusal's full narrative and
+enforces the split: every judgement's relevant item id must *exist* (a
+`relevant-item-unknown` refusal names a typo no migration operation creates),
+checked regardless of `enabled`, while *retrievability* — approved,
+within-ceiling, visible-plane — is scoped to `enabled: true`.
