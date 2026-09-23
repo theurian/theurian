@@ -602,6 +602,88 @@ def test_relevant_item_unretrievable_rule_refuses_a_visible_item_that_cannot_sur
     assert excinfo.value.rule == "relevant-item-unretrievable"
 
 
+_HISTORICAL_QUERY_ID = "historical-ttl-evolution"
+
+
+def _corpus_with_a_query_judging_a_superseded_item(
+    *, query_class: str, enabled: bool
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, dict[str, Any]]]:
+    """A visible, superseded-status item judged relevant by one added query.
+
+    Shared by both directions of the rule-12 exemption pin below: only
+    ``query_class``/``enabled`` differ between the disabled (Phase-D) shape
+    and the enabled control.
+    """
+    manifest, migrations = _manifest_and_migrations_with_extra_visible_item(
+        "superseded", "internal"
+    )
+    queries = _valid_queries()
+    queries["queries"].append(
+        {
+            "id": _HISTORICAL_QUERY_ID,
+            "class": query_class,
+            "query": "How did the session-token TTL evolve?",
+            "enabled": enabled,
+        }
+    )
+    judgements = _valid_judgements()
+    judgements["judgements"].append(
+        {"queryId": _HISTORICAL_QUERY_ID, "relevant": [{"itemId": "domain.extra-item"}]}
+    )
+    return manifest, queries, judgements, migrations
+
+
+def test_relevant_item_unretrievable_rule_exempts_a_disabled_querys_judgement(
+    tmp_path: Path,
+) -> None:
+    """Rider b of the derivation ruling, closing the Phase A joint-build refusal (c3e4e493).
+
+    The joint build ran the S2 loader over the real S3 corpus and refused a
+    correct corpus: the deliberately-deferred, disabled
+    ``q-hist-ttl-evolution`` query (class=historical) judges
+    ``domain.session-token-ttl-v1`` relevant BY DESIGN -- it exists to be
+    validated once Phase D enables it, not to be retrievable today -- and
+    rule 12, unscoped at the time, raised ``relevant-item-unretrievable``
+    anyway. This corpus reproduces that shape (a disabled, class=historical
+    query judging a superseded item relevant) and must load without refusal,
+    or the S3 corpus's ``q-hist-ttl-evolution`` breaks again.
+    """
+    manifest, queries, judgements, migrations = _corpus_with_a_query_judging_a_superseded_item(
+        query_class="historical", enabled=False
+    )
+    _write_corpus(tmp_path, manifest, queries, judgements, migrations)
+
+    loaded = harness_corpus.load_corpus(tmp_path)
+
+    judgement = loaded.judgement_for(_HISTORICAL_QUERY_ID)
+    assert judgement is not None
+    assert judgement.relevant == (harness_corpus.JudgedItem(item_id="domain.extra-item"),)
+
+
+def test_relevant_item_unretrievable_rule_still_fires_once_the_same_query_is_enabled(
+    tmp_path: Path,
+) -> None:
+    """The exemption above is scoped to ``enabled: false``, not a blanket skip.
+
+    The same shape that loads while the query is disabled must still refuse
+    once the query is enabled -- otherwise the rider b exemption in
+    ``_check_relevant_items_retrievable`` would have silently widened into no
+    check at all rather than a scoped one. ``class: historical`` forces
+    ``enabled: false`` in ``queries.schema.json``, so the enabled control
+    changes the class to ``unknown``, which carries no such constraint; the
+    judged item and its superseded status are otherwise identical.
+    """
+    manifest, queries, judgements, migrations = _corpus_with_a_query_judging_a_superseded_item(
+        query_class="unknown", enabled=True
+    )
+    _write_corpus(tmp_path, manifest, queries, judgements, migrations)
+
+    with pytest.raises(harness_corpus.CorpusError) as excinfo:
+        harness_corpus.load_corpus(tmp_path)
+
+    assert excinfo.value.rule == "relevant-item-unretrievable"
+
+
 def test_migration_order_not_topological_rule_refuses_a_forward_referencing_dependson(
     tmp_path: Path,
 ) -> None:
