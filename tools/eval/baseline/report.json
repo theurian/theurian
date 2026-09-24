@@ -1,0 +1,2248 @@
+{
+  "abstentionProbe": {
+    "includeUnapproved": true,
+    "limits": [
+      10,
+      50
+    ]
+  },
+  "aggregated": {
+    "byClass": {
+      "broad-architectural": {
+        "abstentionAccuracy": null,
+        "evidencePrecision": null,
+        "mrr": 0.583333,
+        "recallAtK": {
+          "1": 0.111111,
+          "10": 1.0,
+          "5": 0.75
+        },
+        "sampleCount": 3,
+        "supersededKnowledgeErrorRate": null
+      },
+      "conflicting": {
+        "abstentionAccuracy": null,
+        "evidencePrecision": null,
+        "mrr": 1.0,
+        "recallAtK": {
+          "1": 0.5,
+          "10": 1.0,
+          "5": 1.0
+        },
+        "sampleCount": 2,
+        "supersededKnowledgeErrorRate": null
+      },
+      "cross-adr": {
+        "abstentionAccuracy": null,
+        "evidencePrecision": 0.267857,
+        "mrr": 1.0,
+        "recallAtK": {
+          "1": 0.666667,
+          "10": 1.0,
+          "5": 1.0
+        },
+        "sampleCount": 3,
+        "supersededKnowledgeErrorRate": null
+      },
+      "exact-decision": {
+        "abstentionAccuracy": null,
+        "evidencePrecision": 0.125992,
+        "mrr": 0.671875,
+        "recallAtK": {
+          "1": 0.625,
+          "10": 0.875,
+          "5": 0.75
+        },
+        "sampleCount": 8,
+        "supersededKnowledgeErrorRate": 0.0
+      },
+      "rejected-alternative": {
+        "abstentionAccuracy": null,
+        "evidencePrecision": 0.115741,
+        "mrr": 1.0,
+        "recallAtK": {
+          "1": 0.833333,
+          "10": 1.0,
+          "5": 1.0
+        },
+        "sampleCount": 3,
+        "supersededKnowledgeErrorRate": null
+      },
+      "superseded": {
+        "abstentionAccuracy": null,
+        "evidencePrecision": null,
+        "mrr": 1.0,
+        "recallAtK": {
+          "1": 1.0,
+          "10": 1.0,
+          "5": 1.0
+        },
+        "sampleCount": 3,
+        "supersededKnowledgeErrorRate": 0.0
+      },
+      "unknown": {
+        "abstentionAccuracy": 0.75,
+        "evidencePrecision": null,
+        "mrr": null,
+        "recallAtK": {},
+        "sampleCount": 4,
+        "supersededKnowledgeErrorRate": 0.0
+      }
+    },
+    "overall": {
+      "abstentionAccuracy": 0.75,
+      "evidencePrecision": 0.154101,
+      "mrr": 0.823864,
+      "recallAtK": {
+        "1": 0.628788,
+        "10": 0.954545,
+        "5": 0.875
+      },
+      "sampleCount": 26,
+      "supersededKnowledgeErrorRate": 0.0
+    },
+    "population": "full-corpus runs only; a query's clean run, where one exists, is not counted here -- it exists for the equality section's cross-corpus comparison, not as a second sample of the same judgement"
+  },
+  "census": {
+    "clean": {
+      "bySensitivity": {
+        "internal": 14,
+        "public": 12
+      },
+      "byStatus": {
+        "approved": 24,
+        "superseded": 2
+      },
+      "chunks": 609,
+      "items": 26
+    },
+    "full": {
+      "bySensitivity": {
+        "confidential": 1,
+        "internal": 19,
+        "public": 12,
+        "restricted": 1
+      },
+      "byStatus": {
+        "approved": 26,
+        "deprecated": 1,
+        "draft": 1,
+        "proposed": 1,
+        "rejected": 1,
+        "superseded": 3
+      },
+      "chunks": 615,
+      "items": 33
+    }
+  },
+  "corpusId": "adr-corpus-v1",
+  "equality": {
+    "channel": {
+      "atEqualityLimit": {
+        "of": 26,
+        "queriesDiffering": 21
+      },
+      "atLimit": {
+        "of": 26,
+        "queriesDiffering": 18
+      },
+      "reason": "recorded channel, T-17a family; not a disclosure finding because includeUnapproved is a request parameter (not a grant) and the Core is one-principal (#119); reachable only under the operator's --include-unapproved build, absent from the shipped default."
+    },
+    "queries": {
+      "q-absent-kubernetes": {
+        "atEqualityLimit": {
+          "differingFields": [
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 50
+        },
+        "atLimit": {
+          "differingFields": [
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 10
+        }
+      },
+      "q-absent-payment-flow": {
+        "atEqualityLimit": {
+          "differingFields": [
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 50
+        },
+        "atLimit": {
+          "differingFields": [
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 10
+        }
+      },
+      "q-cjk-mixed-length": {
+        "atEqualityLimit": {
+          "differingFields": [
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 50
+        },
+        "atLimit": {
+          "differingFields": [
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 10
+        }
+      },
+      "q-cjk-unspaced": {
+        "atEqualityLimit": {
+          "differingFields": [
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 50
+        },
+        "atLimit": {
+          "differingFields": [
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 10
+        }
+      },
+      "q-current-ttl-policy": {
+        "atEqualityLimit": {
+          "differingFields": [
+            "results[3].excerpt",
+            "results[3].freshness.revisionCreatedAt",
+            "results[3].fusedScore",
+            "results[3].itemId",
+            "results[3].revisionId",
+            "results[3].sourceAnchors[0].filePath",
+            "results[3].title",
+            "results[4].excerpt",
+            "results[4].freshness.revisionCreatedAt",
+            "results[4].fusedScore",
+            "results[4].itemId",
+            "results[4].revisionId",
+            "results[4].sourceAnchors[0].filePath",
+            "results[4].title",
+            "results[5].excerpt",
+            "results[5].freshness.revisionCreatedAt",
+            "results[5].fusedScore",
+            "results[5].itemId",
+            "results[5].revisionId",
+            "results[5].sourceAnchors[0].filePath",
+            "results[5].title",
+            "results[6].excerpt",
+            "results[6].foundBy",
+            "results[6].freshness.revisionCreatedAt",
+            "results[6].fusedScore",
+            "results[6].itemId",
+            "results[6].revisionId",
+            "results[6].sourceAnchors[0].filePath",
+            "results[6].title",
+            "results[7].excerpt",
+            "results[7].freshness.revisionCreatedAt",
+            "results[7].fusedScore",
+            "results[7].itemId",
+            "results[7].revisionId",
+            "results[7].sourceAnchors[0].filePath",
+            "results[7].title",
+            "results[8].fusedScore",
+            "results[9].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId",
+            "retrieval.usedTokens"
+          ],
+          "limit": 50
+        },
+        "atLimit": {
+          "differingFields": [
+            "results[3].excerpt",
+            "results[3].freshness.revisionCreatedAt",
+            "results[3].fusedScore",
+            "results[3].itemId",
+            "results[3].revisionId",
+            "results[3].sourceAnchors[0].filePath",
+            "results[3].title",
+            "results[4].excerpt",
+            "results[4].freshness.revisionCreatedAt",
+            "results[4].fusedScore",
+            "results[4].itemId",
+            "results[4].revisionId",
+            "results[4].sourceAnchors[0].filePath",
+            "results[4].title",
+            "results[5].excerpt",
+            "results[5].freshness.revisionCreatedAt",
+            "results[5].fusedScore",
+            "results[5].itemId",
+            "results[5].revisionId",
+            "results[5].sourceAnchors[0].filePath",
+            "results[5].title",
+            "results[6].excerpt",
+            "results[6].foundBy",
+            "results[6].freshness.revisionCreatedAt",
+            "results[6].fusedScore",
+            "results[6].itemId",
+            "results[6].revisionId",
+            "results[6].sourceAnchors[0].filePath",
+            "results[6].title",
+            "results[7].excerpt",
+            "results[7].freshness.revisionCreatedAt",
+            "results[7].fusedScore",
+            "results[7].itemId",
+            "results[7].revisionId",
+            "results[7].sourceAnchors[0].filePath",
+            "results[7].title",
+            "results[8].fusedScore",
+            "results[9].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId",
+            "retrieval.usedTokens"
+          ],
+          "limit": 10
+        }
+      },
+      "q-db-design-principles": {
+        "atEqualityLimit": {
+          "differingFields": [
+            "results[10].fusedScore",
+            "results[3].fusedScore",
+            "results[4].fusedScore",
+            "results[5].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 50
+        },
+        "atLimit": {
+          "differingFields": [
+            "results[3].fusedScore",
+            "results[4].fusedScore",
+            "results[5].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 10
+        }
+      },
+      "q-disclosure-enforcement": {
+        "atEqualityLimit": {
+          "differingFields": [
+            "count",
+            "results",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId",
+            "retrieval.usedTokens"
+          ],
+          "limit": 50
+        },
+        "atLimit": {
+          "differingFields": [
+            "results[2].fusedScore",
+            "results[5].fusedScore",
+            "results[6].fusedScore",
+            "results[7].fusedScore",
+            "results[8].fusedScore",
+            "results[9].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 10
+        }
+      },
+      "q-index-publication": {
+        "atEqualityLimit": {
+          "differingFields": [
+            "count",
+            "results",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId",
+            "retrieval.usedTokens"
+          ],
+          "limit": 50
+        },
+        "atLimit": {
+          "differingFields": [
+            "results[2].fusedScore",
+            "results[6].fusedScore",
+            "results[9].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 10
+        }
+      },
+      "q-mutation-discipline": {
+        "atEqualityLimit": {
+          "differingFields": [
+            "results[10].excerpt",
+            "results[10].foundBy[0]",
+            "results[10].freshness.revisionCreatedAt",
+            "results[10].fusedScore",
+            "results[10].itemId",
+            "results[10].revisionId",
+            "results[10].sensitivity",
+            "results[10].sourceAnchors",
+            "results[10].title",
+            "results[11].excerpt",
+            "results[11].foundBy[0]",
+            "results[11].freshness.revisionCreatedAt",
+            "results[11].itemId",
+            "results[11].revisionId",
+            "results[11].sensitivity",
+            "results[11].sourceAnchors",
+            "results[11].title",
+            "results[12].excerpt",
+            "results[12].freshness.revisionCreatedAt",
+            "results[12].itemId",
+            "results[12].revisionId",
+            "results[12].sensitivity",
+            "results[12].sourceAnchors",
+            "results[12].title",
+            "results[2].fusedScore",
+            "results[5].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId",
+            "retrieval.usedTokens"
+          ],
+          "limit": 50
+        },
+        "atLimit": {
+          "differingFields": [
+            "results[2].fusedScore",
+            "results[5].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId",
+            "retrieval.usedTokens"
+          ],
+          "limit": 10
+        }
+      },
+      "q-optimistic-concurrency": {
+        "atEqualityLimit": {
+          "differingFields": [
+            "results[10].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 50
+        },
+        "atLimit": {
+          "differingFields": [
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 10
+        }
+      },
+      "q-proposal-path": {
+        "atEqualityLimit": {
+          "differingFields": [
+            "results[10].fusedScore",
+            "results[11].fusedScore",
+            "results[14].fusedScore",
+            "results[15].fusedScore",
+            "results[8].fusedScore",
+            "results[9].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 50
+        },
+        "atLimit": {
+          "differingFields": [
+            "results[8].fusedScore",
+            "results[9].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 10
+        }
+      },
+      "q-purge-on-withdrawal": {
+        "atEqualityLimit": {
+          "differingFields": [
+            "results[11].fusedScore",
+            "results[12].excerpt",
+            "results[12].freshness.revisionCreatedAt",
+            "results[12].fusedScore",
+            "results[12].itemId",
+            "results[12].revisionId",
+            "results[12].sourceAnchors[0].filePath",
+            "results[12].title",
+            "results[13].excerpt",
+            "results[13].freshness.revisionCreatedAt",
+            "results[13].fusedScore",
+            "results[13].itemId",
+            "results[13].revisionId",
+            "results[13].sourceAnchors[0].filePath",
+            "results[13].title",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 50
+        },
+        "atLimit": {
+          "differingFields": [
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 10
+        }
+      },
+      "q-rank-fusion-why": {
+        "atEqualityLimit": {
+          "differingFields": [
+            "results[10].fusedScore",
+            "results[4].fusedScore",
+            "results[5].fusedScore",
+            "results[6].fusedScore",
+            "results[7].fusedScore",
+            "results[8].fusedScore",
+            "results[9].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId",
+            "retrieval.usedTokens"
+          ],
+          "limit": 50
+        },
+        "atLimit": {
+          "differingFields": [
+            "results[4].fusedScore",
+            "results[5].fusedScore",
+            "results[6].fusedScore",
+            "results[7].fusedScore",
+            "results[8].fusedScore",
+            "results[9].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId",
+            "retrieval.usedTokens"
+          ],
+          "limit": 10
+        }
+      },
+      "q-rejected-ltr": {
+        "atEqualityLimit": {
+          "differingFields": [
+            "results[10].fusedScore",
+            "results[11].fusedScore",
+            "results[13].excerpt",
+            "results[13].foundBy",
+            "results[13].freshness.revisionCreatedAt",
+            "results[13].fusedScore",
+            "results[13].itemId",
+            "results[13].revisionId",
+            "results[13].title",
+            "results[14].excerpt",
+            "results[14].freshness.revisionCreatedAt",
+            "results[14].fusedScore",
+            "results[14].itemId",
+            "results[14].revisionId",
+            "results[14].title",
+            "results[5].fusedScore",
+            "results[8].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId",
+            "retrieval.usedTokens"
+          ],
+          "limit": 50
+        },
+        "atLimit": {
+          "differingFields": [
+            "results[5].fusedScore",
+            "results[8].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 10
+        }
+      },
+      "q-rejected-score-normalisation": {
+        "atEqualityLimit": {
+          "differingFields": [
+            "results[10].fusedScore",
+            "results[11].fusedScore",
+            "results[12].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 50
+        },
+        "atLimit": {
+          "differingFields": [
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 10
+        }
+      },
+      "q-rejected-vendor-sdk": {
+        "atEqualityLimit": {
+          "differingFields": [
+            "results[16].fusedScore",
+            "results[4].fusedScore",
+            "results[6].excerpt",
+            "results[6].freshness.revisionCreatedAt",
+            "results[6].fusedScore",
+            "results[6].itemId",
+            "results[6].revisionId",
+            "results[6].sourceAnchors[0].filePath",
+            "results[6].title",
+            "results[7].fusedScore",
+            "results[8].excerpt",
+            "results[8].freshness.revisionCreatedAt",
+            "results[8].fusedScore",
+            "results[8].itemId",
+            "results[8].revisionId",
+            "results[8].sourceAnchors[0].filePath",
+            "results[8].title",
+            "results[9].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 50
+        },
+        "atLimit": {
+          "differingFields": [
+            "results[4].fusedScore",
+            "results[6].excerpt",
+            "results[6].freshness.revisionCreatedAt",
+            "results[6].fusedScore",
+            "results[6].itemId",
+            "results[6].revisionId",
+            "results[6].sourceAnchors[0].filePath",
+            "results[6].title",
+            "results[7].fusedScore",
+            "results[8].excerpt",
+            "results[8].freshness.revisionCreatedAt",
+            "results[8].fusedScore",
+            "results[8].itemId",
+            "results[8].revisionId",
+            "results[8].sourceAnchors[0].filePath",
+            "results[8].title",
+            "results[9].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 10
+        }
+      },
+      "q-restart-after-schema-change": {
+        "atEqualityLimit": {
+          "differingFields": [
+            "results[11].fusedScore",
+            "results[6].fusedScore",
+            "results[9].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 50
+        },
+        "atLimit": {
+          "differingFields": [
+            "results[6].fusedScore",
+            "results[9].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 10
+        }
+      },
+      "q-retrieval-architecture": {
+        "atEqualityLimit": {
+          "differingFields": [
+            "count",
+            "results",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId",
+            "retrieval.usedTokens"
+          ],
+          "limit": 50
+        },
+        "atLimit": {
+          "differingFields": [
+            "count",
+            "results",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId",
+            "retrieval.usedTokens"
+          ],
+          "limit": 10
+        }
+      },
+      "q-schema-change-procedure": {
+        "atEqualityLimit": {
+          "differingFields": [
+            "results[4].excerpt",
+            "results[4].freshness.revisionCreatedAt",
+            "results[4].fusedScore",
+            "results[4].itemId",
+            "results[4].revisionId",
+            "results[4].sourceAnchors[0].filePath",
+            "results[4].title",
+            "results[5].excerpt",
+            "results[5].freshness.revisionCreatedAt",
+            "results[5].fusedScore",
+            "results[5].itemId",
+            "results[5].revisionId",
+            "results[5].sourceAnchors[0].filePath",
+            "results[5].title",
+            "results[9].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 50
+        },
+        "atLimit": {
+          "differingFields": [
+            "results[4].excerpt",
+            "results[4].freshness.revisionCreatedAt",
+            "results[4].fusedScore",
+            "results[4].itemId",
+            "results[4].revisionId",
+            "results[4].sourceAnchors[0].filePath",
+            "results[4].title",
+            "results[5].excerpt",
+            "results[5].freshness.revisionCreatedAt",
+            "results[5].fusedScore",
+            "results[5].itemId",
+            "results[5].revisionId",
+            "results[5].sourceAnchors[0].filePath",
+            "results[5].title",
+            "results[9].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 10
+        }
+      },
+      "q-secret-scan-hardening": {
+        "atEqualityLimit": {
+          "differingFields": [
+            "results[0].excerpt",
+            "results[0].fusedScore",
+            "results[10].fusedScore",
+            "results[12].fusedScore",
+            "results[5].fusedScore",
+            "results[6].fusedScore",
+            "results[7].fusedScore",
+            "results[8].excerpt",
+            "results[8].foundBy",
+            "results[8].freshness.revisionCreatedAt",
+            "results[8].fusedScore",
+            "results[8].itemId",
+            "results[8].revisionId",
+            "results[8].sensitivity",
+            "results[8].sourceAnchors",
+            "results[8].title",
+            "results[9].excerpt",
+            "results[9].foundBy[0]",
+            "results[9].freshness.revisionCreatedAt",
+            "results[9].fusedScore",
+            "results[9].itemId",
+            "results[9].revisionId",
+            "results[9].sensitivity",
+            "results[9].sourceAnchors",
+            "results[9].title",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId",
+            "retrieval.usedTokens"
+          ],
+          "limit": 50
+        },
+        "atLimit": {
+          "differingFields": [
+            "results[0].excerpt",
+            "results[0].fusedScore",
+            "results[5].fusedScore",
+            "results[6].fusedScore",
+            "results[7].fusedScore",
+            "results[8].excerpt",
+            "results[8].foundBy",
+            "results[8].freshness.revisionCreatedAt",
+            "results[8].fusedScore",
+            "results[8].itemId",
+            "results[8].revisionId",
+            "results[8].sensitivity",
+            "results[8].sourceAnchors",
+            "results[8].title",
+            "results[9].excerpt",
+            "results[9].foundBy[0]",
+            "results[9].freshness.revisionCreatedAt",
+            "results[9].fusedScore",
+            "results[9].itemId",
+            "results[9].revisionId",
+            "results[9].sensitivity",
+            "results[9].sourceAnchors",
+            "results[9].title",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId",
+            "retrieval.usedTokens"
+          ],
+          "limit": 10
+        }
+      },
+      "q-session-token-ttl": {
+        "atEqualityLimit": {
+          "differingFields": [
+            "results[10].excerpt",
+            "results[10].foundBy[0]",
+            "results[10].freshness.revisionCreatedAt",
+            "results[10].itemId",
+            "results[10].revisionId",
+            "results[10].sourceAnchors[0].filePath",
+            "results[10].title",
+            "results[11].excerpt",
+            "results[11].foundBy[0]",
+            "results[11].freshness.revisionCreatedAt",
+            "results[11].fusedScore",
+            "results[11].itemId",
+            "results[11].revisionId",
+            "results[11].sourceAnchors[0].filePath",
+            "results[11].title",
+            "results[1].fusedScore",
+            "results[3].fusedScore",
+            "results[4].fusedScore",
+            "results[5].fusedScore",
+            "results[7].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 50
+        },
+        "atLimit": {
+          "differingFields": [
+            "results[1].fusedScore",
+            "results[3].fusedScore",
+            "results[4].fusedScore",
+            "results[5].fusedScore",
+            "results[7].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 10
+        }
+      },
+      "q-sqlite-derived": {
+        "atEqualityLimit": {
+          "differingFields": [
+            "results[10].fusedScore",
+            "results[4].fusedScore",
+            "results[9].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 50
+        },
+        "atLimit": {
+          "differingFields": [
+            "results[4].fusedScore",
+            "results[9].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 10
+        }
+      },
+      "q-state-hash-family": {
+        "atEqualityLimit": {
+          "differingFields": [
+            "results[0].excerpt",
+            "results[0].fusedScore",
+            "results[10].fusedScore",
+            "results[11].fusedScore",
+            "results[12].fusedScore",
+            "results[13].fusedScore",
+            "results[1].fusedScore",
+            "results[2].fusedScore",
+            "results[4].fusedScore",
+            "results[5].fusedScore",
+            "results[7].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId",
+            "retrieval.usedTokens"
+          ],
+          "limit": 50
+        },
+        "atLimit": {
+          "differingFields": [
+            "results[0].excerpt",
+            "results[0].fusedScore",
+            "results[1].fusedScore",
+            "results[2].fusedScore",
+            "results[4].fusedScore",
+            "results[5].fusedScore",
+            "results[7].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId",
+            "retrieval.usedTokens"
+          ],
+          "limit": 10
+        }
+      },
+      "q-token-lifetime": {
+        "atEqualityLimit": {
+          "differingFields": [
+            "results[2].fusedScore",
+            "results[6].fusedScore",
+            "results[8].fusedScore",
+            "results[9].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 50
+        },
+        "atLimit": {
+          "differingFields": [
+            "results[2].fusedScore",
+            "results[6].fusedScore",
+            "results[8].fusedScore",
+            "results[9].fusedScore",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 10
+        }
+      },
+      "q-withheld-credential-cache": {
+        "atEqualityLimit": {
+          "differingFields": [
+            "results[1].excerpt",
+            "results[1].fusedScore",
+            "results[3].fusedScore",
+            "results[4].excerpt",
+            "results[4].freshness.revisionCreatedAt",
+            "results[4].fusedScore",
+            "results[4].itemId",
+            "results[4].revisionId",
+            "results[4].sensitivity",
+            "results[4].sourceAnchors",
+            "results[4].title",
+            "results[5].excerpt",
+            "results[5].freshness.revisionCreatedAt",
+            "results[5].fusedScore",
+            "results[5].itemId",
+            "results[5].revisionId",
+            "results[5].sourceAnchors[0].filePath",
+            "results[5].title",
+            "results[6].excerpt",
+            "results[6].freshness.revisionCreatedAt",
+            "results[6].fusedScore",
+            "results[6].itemId",
+            "results[6].revisionId",
+            "results[6].sensitivity",
+            "results[6].sourceAnchors",
+            "results[6].title",
+            "results[7].fusedScore",
+            "results[8].excerpt",
+            "results[8].freshness.revisionCreatedAt",
+            "results[8].fusedScore",
+            "results[8].itemId",
+            "results[8].revisionId",
+            "results[8].sourceAnchors[0].filePath",
+            "results[8].title",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 50
+        },
+        "atLimit": {
+          "differingFields": [
+            "results[1].excerpt",
+            "results[1].fusedScore",
+            "results[3].fusedScore",
+            "results[4].excerpt",
+            "results[4].freshness.revisionCreatedAt",
+            "results[4].fusedScore",
+            "results[4].itemId",
+            "results[4].revisionId",
+            "results[4].sensitivity",
+            "results[4].sourceAnchors",
+            "results[4].title",
+            "results[5].excerpt",
+            "results[5].freshness.revisionCreatedAt",
+            "results[5].fusedScore",
+            "results[5].itemId",
+            "results[5].revisionId",
+            "results[5].sourceAnchors[0].filePath",
+            "results[5].title",
+            "results[6].excerpt",
+            "results[6].freshness.revisionCreatedAt",
+            "results[6].fusedScore",
+            "results[6].itemId",
+            "results[6].revisionId",
+            "results[6].sensitivity",
+            "results[6].sourceAnchors",
+            "results[6].title",
+            "results[7].fusedScore",
+            "results[8].excerpt",
+            "results[8].freshness.revisionCreatedAt",
+            "results[8].fusedScore",
+            "results[8].itemId",
+            "results[8].revisionId",
+            "results[8].sourceAnchors[0].filePath",
+            "results[8].title",
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 10
+        }
+      },
+      "q-withheld-token-rotation": {
+        "atEqualityLimit": {
+          "differingFields": [
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 50
+        },
+        "atLimit": {
+          "differingFields": [
+            "retrieval.indexBuildId",
+            "retrieval.snapshotId"
+          ],
+          "limit": 10
+        }
+      }
+    },
+    "scope": "Query-time gate over draft/proposed rows admitted to the index by --include-unapproved on both builds; every query in this section runs at default flags (includeUnapproved=false)."
+  },
+  "harnessConstants": {
+    "buildCeiling": "internal",
+    "equalityLimit": 50,
+    "includeUnapproved": false,
+    "limit": 10,
+    "maxTokens": 32000,
+    "useDense": false
+  },
+  "kValues": [
+    1,
+    5,
+    10
+  ],
+  "queries": {
+    "q-absent-kubernetes": {
+      "class": "unknown",
+      "corpora": {
+        "clean": {
+          "abstentionCorrect": true,
+          "atEqualityLimit": {
+            "abstentionCorrect": true,
+            "evidencePrecision": null,
+            "forbiddenPresent": null,
+            "mrr": null,
+            "recallAtK": {}
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": null,
+          "mrr": null,
+          "recallAtK": {}
+        },
+        "full": {
+          "abstentionCorrect": true,
+          "atEqualityLimit": {
+            "abstentionCorrect": true,
+            "evidencePrecision": null,
+            "forbiddenPresent": null,
+            "mrr": null,
+            "recallAtK": {}
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": null,
+          "mrr": null,
+          "recallAtK": {}
+        }
+      }
+    },
+    "q-absent-payment-flow": {
+      "class": "unknown",
+      "corpora": {
+        "clean": {
+          "abstentionCorrect": true,
+          "atEqualityLimit": {
+            "abstentionCorrect": true,
+            "evidencePrecision": null,
+            "forbiddenPresent": null,
+            "mrr": null,
+            "recallAtK": {}
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": null,
+          "mrr": null,
+          "recallAtK": {}
+        },
+        "full": {
+          "abstentionCorrect": true,
+          "atEqualityLimit": {
+            "abstentionCorrect": true,
+            "evidencePrecision": null,
+            "forbiddenPresent": null,
+            "mrr": null,
+            "recallAtK": {}
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": null,
+          "mrr": null,
+          "recallAtK": {}
+        }
+      }
+    },
+    "q-cjk-mixed-length": {
+      "class": "exact-decision",
+      "corpora": {
+        "clean": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": null,
+            "forbiddenPresent": null,
+            "mrr": 0.25,
+            "recallAtK": {
+              "1": 0.0,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": null,
+          "mrr": 0.25,
+          "recallAtK": {
+            "1": 0.0,
+            "10": 1.0,
+            "5": 1.0
+          }
+        },
+        "full": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": null,
+            "forbiddenPresent": null,
+            "mrr": 0.25,
+            "recallAtK": {
+              "1": 0.0,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": null,
+          "mrr": 0.25,
+          "recallAtK": {
+            "1": 0.0,
+            "10": 1.0,
+            "5": 1.0
+          }
+        }
+      }
+    },
+    "q-cjk-unspaced": {
+      "class": "exact-decision",
+      "corpora": {
+        "clean": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": null,
+            "forbiddenPresent": null,
+            "mrr": 0.0,
+            "recallAtK": {
+              "1": 0.0,
+              "10": 0.0,
+              "5": 0.0
+            }
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": null,
+          "mrr": 0.0,
+          "recallAtK": {
+            "1": 0.0,
+            "10": 0.0,
+            "5": 0.0
+          }
+        },
+        "full": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": null,
+            "forbiddenPresent": null,
+            "mrr": 0.0,
+            "recallAtK": {
+              "1": 0.0,
+              "10": 0.0,
+              "5": 0.0
+            }
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": null,
+          "mrr": 0.0,
+          "recallAtK": {
+            "1": 0.0,
+            "10": 0.0,
+            "5": 0.0
+          }
+        }
+      }
+    },
+    "q-current-ttl-policy": {
+      "class": "superseded",
+      "corpora": {
+        "clean": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": null,
+            "forbiddenPresent": false,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 1.0,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": false,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 1.0,
+            "10": 1.0,
+            "5": 1.0
+          }
+        },
+        "full": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": null,
+            "forbiddenPresent": false,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 1.0,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": false,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 1.0,
+            "10": 1.0,
+            "5": 1.0
+          }
+        }
+      }
+    },
+    "q-db-design-principles": {
+      "class": "broad-architectural",
+      "corpora": {
+        "clean": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": null,
+            "forbiddenPresent": null,
+            "mrr": 0.5,
+            "recallAtK": {
+              "1": 0.0,
+              "10": 1.0,
+              "5": 0.75
+            }
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": null,
+          "mrr": 0.5,
+          "recallAtK": {
+            "1": 0.0,
+            "10": 1.0,
+            "5": 0.75
+          }
+        },
+        "full": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": null,
+            "forbiddenPresent": null,
+            "mrr": 0.5,
+            "recallAtK": {
+              "1": 0.0,
+              "10": 1.0,
+              "5": 0.75
+            }
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": null,
+          "mrr": 0.5,
+          "recallAtK": {
+            "1": 0.0,
+            "10": 1.0,
+            "5": 0.75
+          }
+        }
+      }
+    },
+    "q-disclosure-enforcement": {
+      "class": "broad-architectural",
+      "corpora": {
+        "clean": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": null,
+            "forbiddenPresent": null,
+            "mrr": 0.25,
+            "recallAtK": {
+              "1": 0.0,
+              "10": 1.0,
+              "5": 0.5
+            }
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": null,
+          "mrr": 0.25,
+          "recallAtK": {
+            "1": 0.0,
+            "10": 1.0,
+            "5": 0.5
+          }
+        },
+        "full": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": null,
+            "forbiddenPresent": null,
+            "mrr": 0.25,
+            "recallAtK": {
+              "1": 0.0,
+              "10": 1.0,
+              "5": 0.5
+            }
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": null,
+          "mrr": 0.25,
+          "recallAtK": {
+            "1": 0.0,
+            "10": 1.0,
+            "5": 0.5
+          }
+        }
+      }
+    },
+    "q-index-publication": {
+      "class": "cross-adr",
+      "corpora": {
+        "clean": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": 0.181818,
+            "forbiddenPresent": null,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 0.5,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": 0.25,
+          "forbiddenPresent": null,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 0.5,
+            "10": 1.0,
+            "5": 1.0
+          }
+        },
+        "full": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": 0.2,
+            "forbiddenPresent": null,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 0.5,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": 0.25,
+          "forbiddenPresent": null,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 0.5,
+            "10": 1.0,
+            "5": 1.0
+          }
+        }
+      }
+    },
+    "q-mutation-discipline": {
+      "class": "exact-decision",
+      "corpora": {
+        "clean": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": null,
+            "forbiddenPresent": null,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 1.0,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": null,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 1.0,
+            "10": 1.0,
+            "5": 1.0
+          }
+        },
+        "full": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": null,
+            "forbiddenPresent": null,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 1.0,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": null,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 1.0,
+            "10": 1.0,
+            "5": 1.0
+          }
+        }
+      }
+    },
+    "q-optimistic-concurrency": {
+      "class": "exact-decision",
+      "corpora": {
+        "clean": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": 0.090909,
+            "forbiddenPresent": null,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 1.0,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": 0.125,
+          "forbiddenPresent": null,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 1.0,
+            "10": 1.0,
+            "5": 1.0
+          }
+        },
+        "full": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": 0.090909,
+            "forbiddenPresent": null,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 1.0,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": 0.125,
+          "forbiddenPresent": null,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 1.0,
+            "10": 1.0,
+            "5": 1.0
+          }
+        }
+      }
+    },
+    "q-proposal-path": {
+      "class": "cross-adr",
+      "corpora": {
+        "clean": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": null,
+            "forbiddenPresent": null,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 1.0,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": null,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 1.0,
+            "10": 1.0,
+            "5": 1.0
+          }
+        },
+        "full": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": null,
+            "forbiddenPresent": null,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 1.0,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": null,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 1.0,
+            "10": 1.0,
+            "5": 1.0
+          }
+        }
+      }
+    },
+    "q-purge-on-withdrawal": {
+      "class": "exact-decision",
+      "corpora": {
+        "clean": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": 0.1,
+            "forbiddenPresent": null,
+            "mrr": 0.125,
+            "recallAtK": {
+              "1": 0.0,
+              "10": 1.0,
+              "5": 0.0
+            }
+          },
+          "evidencePrecision": 0.125,
+          "forbiddenPresent": null,
+          "mrr": 0.125,
+          "recallAtK": {
+            "1": 0.0,
+            "10": 1.0,
+            "5": 0.0
+          }
+        },
+        "full": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": 0.1,
+            "forbiddenPresent": null,
+            "mrr": 0.125,
+            "recallAtK": {
+              "1": 0.0,
+              "10": 1.0,
+              "5": 0.0
+            }
+          },
+          "evidencePrecision": 0.125,
+          "forbiddenPresent": null,
+          "mrr": 0.125,
+          "recallAtK": {
+            "1": 0.0,
+            "10": 1.0,
+            "5": 0.0
+          }
+        }
+      }
+    },
+    "q-rank-fusion-why": {
+      "class": "exact-decision",
+      "corpora": {
+        "clean": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": 0.125,
+            "forbiddenPresent": null,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 1.0,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": 0.142857,
+          "forbiddenPresent": null,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 1.0,
+            "10": 1.0,
+            "5": 1.0
+          }
+        },
+        "full": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": 0.125,
+            "forbiddenPresent": null,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 1.0,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": 0.142857,
+          "forbiddenPresent": null,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 1.0,
+            "10": 1.0,
+            "5": 1.0
+          }
+        }
+      }
+    },
+    "q-rejected-ltr": {
+      "class": "rejected-alternative",
+      "corpora": {
+        "clean": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": 0.083333,
+            "forbiddenPresent": null,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 1.0,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": 0.111111,
+          "forbiddenPresent": null,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 1.0,
+            "10": 1.0,
+            "5": 1.0
+          }
+        },
+        "full": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": 0.083333,
+            "forbiddenPresent": null,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 1.0,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": 0.111111,
+          "forbiddenPresent": null,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 1.0,
+            "10": 1.0,
+            "5": 1.0
+          }
+        }
+      }
+    },
+    "q-rejected-score-normalisation": {
+      "class": "rejected-alternative",
+      "corpora": {
+        "clean": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": 0.083333,
+            "forbiddenPresent": null,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 0.5,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": 0.111111,
+          "forbiddenPresent": null,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 0.5,
+            "10": 1.0,
+            "5": 1.0
+          }
+        },
+        "full": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": 0.083333,
+            "forbiddenPresent": null,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 0.5,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": 0.111111,
+          "forbiddenPresent": null,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 0.5,
+            "10": 1.0,
+            "5": 1.0
+          }
+        }
+      }
+    },
+    "q-rejected-vendor-sdk": {
+      "class": "rejected-alternative",
+      "corpora": {
+        "clean": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": 0.083333,
+            "forbiddenPresent": null,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 1.0,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": 0.125,
+          "forbiddenPresent": null,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 1.0,
+            "10": 1.0,
+            "5": 1.0
+          }
+        },
+        "full": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": 0.083333,
+            "forbiddenPresent": null,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 1.0,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": 0.125,
+          "forbiddenPresent": null,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 1.0,
+            "10": 1.0,
+            "5": 1.0
+          }
+        }
+      }
+    },
+    "q-restart-after-schema-change": {
+      "class": "conflicting",
+      "corpora": {
+        "clean": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": null,
+            "forbiddenPresent": null,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 0.5,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": null,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 0.5,
+            "10": 1.0,
+            "5": 1.0
+          }
+        },
+        "full": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": null,
+            "forbiddenPresent": null,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 0.5,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": null,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 0.5,
+            "10": 1.0,
+            "5": 1.0
+          }
+        }
+      }
+    },
+    "q-retrieval-architecture": {
+      "class": "broad-architectural",
+      "corpora": {
+        "clean": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": null,
+            "forbiddenPresent": null,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 0.333333,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": null,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 0.333333,
+            "10": 1.0,
+            "5": 1.0
+          }
+        },
+        "full": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": null,
+            "forbiddenPresent": null,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 0.333333,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": null,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 0.333333,
+            "10": 1.0,
+            "5": 1.0
+          }
+        }
+      }
+    },
+    "q-schema-change-procedure": {
+      "class": "conflicting",
+      "corpora": {
+        "clean": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": null,
+            "forbiddenPresent": null,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 0.5,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": null,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 0.5,
+            "10": 1.0,
+            "5": 1.0
+          }
+        },
+        "full": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": null,
+            "forbiddenPresent": null,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 0.5,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": null,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 0.5,
+            "10": 1.0,
+            "5": 1.0
+          }
+        }
+      }
+    },
+    "q-secret-scan-hardening": {
+      "class": "exact-decision",
+      "corpora": {
+        "clean": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": null,
+            "forbiddenPresent": false,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 1.0,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": false,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 1.0,
+            "10": 1.0,
+            "5": 1.0
+          }
+        },
+        "full": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": null,
+            "forbiddenPresent": false,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 1.0,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": false,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 1.0,
+            "10": 1.0,
+            "5": 1.0
+          }
+        }
+      }
+    },
+    "q-session-token-ttl": {
+      "class": "superseded",
+      "corpora": {
+        "clean": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": null,
+            "forbiddenPresent": false,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 1.0,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": false,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 1.0,
+            "10": 1.0,
+            "5": 1.0
+          }
+        },
+        "full": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": null,
+            "forbiddenPresent": false,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 1.0,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": false,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 1.0,
+            "10": 1.0,
+            "5": 1.0
+          }
+        }
+      }
+    },
+    "q-sqlite-derived": {
+      "class": "exact-decision",
+      "corpora": {
+        "clean": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": 0.1,
+            "forbiddenPresent": null,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 1.0,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": 0.111111,
+          "forbiddenPresent": null,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 1.0,
+            "10": 1.0,
+            "5": 1.0
+          }
+        },
+        "full": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": 0.1,
+            "forbiddenPresent": null,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 1.0,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": 0.111111,
+          "forbiddenPresent": null,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 1.0,
+            "10": 1.0,
+            "5": 1.0
+          }
+        }
+      }
+    },
+    "q-state-hash-family": {
+      "class": "cross-adr",
+      "corpora": {
+        "clean": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": 0.2,
+            "forbiddenPresent": null,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 0.5,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": 0.285714,
+          "forbiddenPresent": null,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 0.5,
+            "10": 1.0,
+            "5": 1.0
+          }
+        },
+        "full": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": 0.2,
+            "forbiddenPresent": null,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 0.5,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": 0.285714,
+          "forbiddenPresent": null,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 0.5,
+            "10": 1.0,
+            "5": 1.0
+          }
+        }
+      }
+    },
+    "q-token-lifetime": {
+      "class": "superseded",
+      "corpora": {
+        "clean": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": null,
+            "forbiddenPresent": false,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 1.0,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": false,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 1.0,
+            "10": 1.0,
+            "5": 1.0
+          }
+        },
+        "full": {
+          "abstentionCorrect": null,
+          "atEqualityLimit": {
+            "abstentionCorrect": null,
+            "evidencePrecision": null,
+            "forbiddenPresent": false,
+            "mrr": 1.0,
+            "recallAtK": {
+              "1": 1.0,
+              "10": 1.0,
+              "5": 1.0
+            }
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": false,
+          "mrr": 1.0,
+          "recallAtK": {
+            "1": 1.0,
+            "10": 1.0,
+            "5": 1.0
+          }
+        }
+      }
+    },
+    "q-withheld-credential-cache": {
+      "class": "unknown",
+      "corpora": {
+        "clean": {
+          "abstentionCorrect": false,
+          "atEqualityLimit": {
+            "abstentionCorrect": false,
+            "evidencePrecision": null,
+            "forbiddenPresent": false,
+            "forbiddenPresentCause": "zero-by-construction: every forbidden item is census-tested -- excluded from the index under either build flavor, so its absence is a build-time property, not evidence about ranking",
+            "mrr": null,
+            "recallAtK": {}
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": false,
+          "forbiddenPresentCause": "zero-by-construction: every forbidden item is census-tested -- excluded from the index under either build flavor, so its absence is a build-time property, not evidence about ranking",
+          "mrr": null,
+          "recallAtK": {}
+        },
+        "full": {
+          "abstentionCorrect": false,
+          "atEqualityLimit": {
+            "abstentionCorrect": false,
+            "evidencePrecision": null,
+            "forbiddenPresent": false,
+            "forbiddenPresentCause": "zero-by-construction: every forbidden item is census-tested -- excluded from the index under either build flavor, so its absence is a build-time property, not evidence about ranking",
+            "mrr": null,
+            "recallAtK": {}
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": false,
+          "forbiddenPresentCause": "zero-by-construction: every forbidden item is census-tested -- excluded from the index under either build flavor, so its absence is a build-time property, not evidence about ranking",
+          "mrr": null,
+          "recallAtK": {}
+        }
+      }
+    },
+    "q-withheld-token-rotation": {
+      "class": "unknown",
+      "corpora": {
+        "clean": {
+          "abstentionCorrect": true,
+          "atEqualityLimit": {
+            "abstentionCorrect": true,
+            "evidencePrecision": null,
+            "forbiddenPresent": false,
+            "forbiddenPresentCause": "zero-by-construction: every forbidden item is census-tested -- excluded from the index under either build flavor, so its absence is a build-time property, not evidence about ranking",
+            "mrr": null,
+            "recallAtK": {}
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": false,
+          "forbiddenPresentCause": "zero-by-construction: every forbidden item is census-tested -- excluded from the index under either build flavor, so its absence is a build-time property, not evidence about ranking",
+          "mrr": null,
+          "recallAtK": {}
+        },
+        "full": {
+          "abstentionCorrect": true,
+          "atEqualityLimit": {
+            "abstentionCorrect": true,
+            "evidencePrecision": null,
+            "forbiddenPresent": false,
+            "forbiddenPresentCause": "zero-by-construction: every forbidden item is census-tested -- excluded from the index under either build flavor, so its absence is a build-time property, not evidence about ranking",
+            "mrr": null,
+            "recallAtK": {}
+          },
+          "evidencePrecision": null,
+          "forbiddenPresent": false,
+          "forbiddenPresentCause": "zero-by-construction: every forbidden item is census-tested -- excluded from the index under either build flavor, so its absence is a build-time property, not evidence about ranking",
+          "mrr": null,
+          "recallAtK": {}
+        }
+      }
+    }
+  }
+}

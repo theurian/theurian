@@ -1,0 +1,810 @@
+{
+  "commitSha": "a58fdcb588c8189dc00a8935403c00b87b3c5d48",
+  "corpusId": "adr-corpus-v1",
+  "date": "2026-09-24T02:44:49.757030+00:00",
+  "indexBuild": {
+    "clean": {
+      "chunks": 609,
+      "embeddings": 609,
+      "indexBytes": 4071424,
+      "nodes": 0,
+      "wallClockMs": 882.456
+    },
+    "full": {
+      "chunks": 615,
+      "embeddings": 615,
+      "indexBytes": 4128768,
+      "nodes": 0,
+      "wallClockMs": 911.86
+    }
+  },
+  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+  "pythonVersion": "3.13.3 (main, Apr  9 2025, 03:47:57) [Clang 20.1.0 ]",
+  "queries": [
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 7.833,
+      "limit": 10,
+      "queryId": "q-absent-kubernetes"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 7.559,
+      "limit": 50,
+      "queryId": "q-absent-kubernetes"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 7.864,
+      "limit": 10,
+      "queryId": "q-absent-kubernetes"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": true,
+      "latencyMs": 7.44,
+      "limit": 10,
+      "queryId": "q-absent-kubernetes"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 7.575,
+      "limit": 50,
+      "queryId": "q-absent-kubernetes"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": true,
+      "latencyMs": 7.759,
+      "limit": 50,
+      "queryId": "q-absent-kubernetes"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 8.386,
+      "limit": 10,
+      "queryId": "q-absent-payment-flow"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 8.422,
+      "limit": 50,
+      "queryId": "q-absent-payment-flow"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 8.624,
+      "limit": 10,
+      "queryId": "q-absent-payment-flow"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": true,
+      "latencyMs": 8.7,
+      "limit": 10,
+      "queryId": "q-absent-payment-flow"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 9.856,
+      "limit": 50,
+      "queryId": "q-absent-payment-flow"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": true,
+      "latencyMs": 9.075,
+      "limit": 50,
+      "queryId": "q-absent-payment-flow"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 10.598,
+      "limit": 10,
+      "queryId": "q-cjk-mixed-length"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 10.56,
+      "limit": 50,
+      "queryId": "q-cjk-mixed-length"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 10.534,
+      "limit": 10,
+      "queryId": "q-cjk-mixed-length"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 10.916,
+      "limit": 50,
+      "queryId": "q-cjk-mixed-length"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 6.999,
+      "limit": 10,
+      "queryId": "q-cjk-unspaced"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 7.176,
+      "limit": 50,
+      "queryId": "q-cjk-unspaced"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 7.068,
+      "limit": 10,
+      "queryId": "q-cjk-unspaced"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 8.488,
+      "limit": 50,
+      "queryId": "q-cjk-unspaced"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 21.115,
+      "limit": 10,
+      "queryId": "q-current-ttl-policy"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 22.427,
+      "limit": 50,
+      "queryId": "q-current-ttl-policy"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 21.851,
+      "limit": 10,
+      "queryId": "q-current-ttl-policy"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 22.306,
+      "limit": 50,
+      "queryId": "q-current-ttl-policy"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 25.437,
+      "limit": 10,
+      "queryId": "q-db-design-principles"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 26.202,
+      "limit": 50,
+      "queryId": "q-db-design-principles"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 26.652,
+      "limit": 10,
+      "queryId": "q-db-design-principles"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 28.556,
+      "limit": 50,
+      "queryId": "q-db-design-principles"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 22.437,
+      "limit": 10,
+      "queryId": "q-disclosure-enforcement"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 25.341,
+      "limit": 50,
+      "queryId": "q-disclosure-enforcement"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 23.655,
+      "limit": 10,
+      "queryId": "q-disclosure-enforcement"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 26.064,
+      "limit": 50,
+      "queryId": "q-disclosure-enforcement"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 25.09,
+      "limit": 10,
+      "queryId": "q-index-publication"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 28.667,
+      "limit": 50,
+      "queryId": "q-index-publication"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 28.67,
+      "limit": 10,
+      "queryId": "q-index-publication"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 32.284,
+      "limit": 50,
+      "queryId": "q-index-publication"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 22.562,
+      "limit": 10,
+      "queryId": "q-mutation-discipline"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 23.536,
+      "limit": 50,
+      "queryId": "q-mutation-discipline"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 23.279,
+      "limit": 10,
+      "queryId": "q-mutation-discipline"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 24.908,
+      "limit": 50,
+      "queryId": "q-mutation-discipline"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 23.858,
+      "limit": 10,
+      "queryId": "q-optimistic-concurrency"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 26.69,
+      "limit": 50,
+      "queryId": "q-optimistic-concurrency"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 23.805,
+      "limit": 10,
+      "queryId": "q-optimistic-concurrency"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 25.898,
+      "limit": 50,
+      "queryId": "q-optimistic-concurrency"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 23.049,
+      "limit": 10,
+      "queryId": "q-proposal-path"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 26.095,
+      "limit": 50,
+      "queryId": "q-proposal-path"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 23.544,
+      "limit": 10,
+      "queryId": "q-proposal-path"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 26.27,
+      "limit": 50,
+      "queryId": "q-proposal-path"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 22.495,
+      "limit": 10,
+      "queryId": "q-purge-on-withdrawal"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 24.637,
+      "limit": 50,
+      "queryId": "q-purge-on-withdrawal"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 23.774,
+      "limit": 10,
+      "queryId": "q-purge-on-withdrawal"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 25.632,
+      "limit": 50,
+      "queryId": "q-purge-on-withdrawal"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 22.274,
+      "limit": 10,
+      "queryId": "q-rank-fusion-why"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 21.999,
+      "limit": 50,
+      "queryId": "q-rank-fusion-why"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 23.053,
+      "limit": 10,
+      "queryId": "q-rank-fusion-why"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 23.0,
+      "limit": 50,
+      "queryId": "q-rank-fusion-why"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 22.25,
+      "limit": 10,
+      "queryId": "q-rejected-ltr"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 24.761,
+      "limit": 50,
+      "queryId": "q-rejected-ltr"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 23.177,
+      "limit": 10,
+      "queryId": "q-rejected-ltr"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 26.557,
+      "limit": 50,
+      "queryId": "q-rejected-ltr"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 23.695,
+      "limit": 10,
+      "queryId": "q-rejected-score-normalisation"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 30.008,
+      "limit": 50,
+      "queryId": "q-rejected-score-normalisation"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 25.232,
+      "limit": 10,
+      "queryId": "q-rejected-score-normalisation"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 29.28,
+      "limit": 50,
+      "queryId": "q-rejected-score-normalisation"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 22.9,
+      "limit": 10,
+      "queryId": "q-rejected-vendor-sdk"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 35.711,
+      "limit": 50,
+      "queryId": "q-rejected-vendor-sdk"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 21.718,
+      "limit": 10,
+      "queryId": "q-rejected-vendor-sdk"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 24.546,
+      "limit": 50,
+      "queryId": "q-rejected-vendor-sdk"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 21.762,
+      "limit": 10,
+      "queryId": "q-restart-after-schema-change"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 24.971,
+      "limit": 50,
+      "queryId": "q-restart-after-schema-change"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 24.572,
+      "limit": 10,
+      "queryId": "q-restart-after-schema-change"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 29.654,
+      "limit": 50,
+      "queryId": "q-restart-after-schema-change"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 23.653,
+      "limit": 10,
+      "queryId": "q-retrieval-architecture"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 23.737,
+      "limit": 50,
+      "queryId": "q-retrieval-architecture"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 25.3,
+      "limit": 10,
+      "queryId": "q-retrieval-architecture"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 25.257,
+      "limit": 50,
+      "queryId": "q-retrieval-architecture"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 27.556,
+      "limit": 10,
+      "queryId": "q-schema-change-procedure"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 25.999,
+      "limit": 50,
+      "queryId": "q-schema-change-procedure"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 25.11,
+      "limit": 10,
+      "queryId": "q-schema-change-procedure"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 26.923,
+      "limit": 50,
+      "queryId": "q-schema-change-procedure"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 24.887,
+      "limit": 10,
+      "queryId": "q-secret-scan-hardening"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 26.374,
+      "limit": 50,
+      "queryId": "q-secret-scan-hardening"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 27.062,
+      "limit": 10,
+      "queryId": "q-secret-scan-hardening"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 28.187,
+      "limit": 50,
+      "queryId": "q-secret-scan-hardening"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 20.168,
+      "limit": 10,
+      "queryId": "q-session-token-ttl"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 22.629,
+      "limit": 50,
+      "queryId": "q-session-token-ttl"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 21.828,
+      "limit": 10,
+      "queryId": "q-session-token-ttl"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 21.99,
+      "limit": 50,
+      "queryId": "q-session-token-ttl"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 26.206,
+      "limit": 10,
+      "queryId": "q-sqlite-derived"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 25.61,
+      "limit": 50,
+      "queryId": "q-sqlite-derived"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 28.043,
+      "limit": 10,
+      "queryId": "q-sqlite-derived"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 27.225,
+      "limit": 50,
+      "queryId": "q-sqlite-derived"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 24.297,
+      "limit": 10,
+      "queryId": "q-state-hash-family"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 26.681,
+      "limit": 50,
+      "queryId": "q-state-hash-family"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 26.374,
+      "limit": 10,
+      "queryId": "q-state-hash-family"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 28.11,
+      "limit": 50,
+      "queryId": "q-state-hash-family"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 43.42,
+      "limit": 10,
+      "queryId": "q-token-lifetime"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 23.405,
+      "limit": 50,
+      "queryId": "q-token-lifetime"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 21.901,
+      "limit": 10,
+      "queryId": "q-token-lifetime"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 24.491,
+      "limit": 50,
+      "queryId": "q-token-lifetime"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 21.197,
+      "limit": 10,
+      "queryId": "q-withheld-credential-cache"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 25.312,
+      "limit": 50,
+      "queryId": "q-withheld-credential-cache"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 22.692,
+      "limit": 10,
+      "queryId": "q-withheld-credential-cache"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": true,
+      "latencyMs": 21.566,
+      "limit": 10,
+      "queryId": "q-withheld-credential-cache"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 25.4,
+      "limit": 50,
+      "queryId": "q-withheld-credential-cache"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": true,
+      "latencyMs": 26.403,
+      "limit": 50,
+      "queryId": "q-withheld-credential-cache"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 7.129,
+      "limit": 10,
+      "queryId": "q-withheld-token-rotation"
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 6.964,
+      "limit": 50,
+      "queryId": "q-withheld-token-rotation"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 6.934,
+      "limit": 10,
+      "queryId": "q-withheld-token-rotation"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": true,
+      "latencyMs": 6.896,
+      "limit": 10,
+      "queryId": "q-withheld-token-rotation"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 6.889,
+      "limit": 50,
+      "queryId": "q-withheld-token-rotation"
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": true,
+      "latencyMs": 7.202,
+      "limit": 50,
+      "queryId": "q-withheld-token-rotation"
+    }
+  ],
+  "sqliteVersion": "3.47.1"
+}
