@@ -329,13 +329,21 @@ def _raptor_section(
     :func:`build_report` arguments would grow that signature by two for a
     value only this one caller ever varies. Its ``differingFields`` sets are
     reported, not asserted, for a different reason than the base arm's own
-    ``EQUALITY_SCOPE`` gives: RAPTOR summary routing (ADR-0008 decision 8,
-    GHSA-97q9's ``raptorPath`` territory) means an ``--include-unapproved``
-    raptor build derives Domain/Catalog summaries over rows the clean build
-    never held, so a wider set here is expected rather than a regression --
-    exactly the channel ``_channel_summary`` already reports rather than
-    gates on, reused verbatim (only its ``reason`` changes) rather than
-    widening the base arm's own set-equality claim to cover it.
+    ``EQUALITY_SCOPE`` gives: the two builds derive their forests over
+    different chunk populations, so node routing (ADR-0008 decision 8)
+    surfaces a different selection and ordering of APPROVED leaves on each
+    side -- a wider set here is expected rather than a regression. It is not
+    unapproved text reaching a default-flag response, and that is verified
+    rather than assumed: ``IndexStore._node_scope`` applies the same status
+    and sensitivity predicates to a summary node's own scope that a leaf
+    match clears, and
+    ``test_no_raptor_path_title_in_the_full_arms_default_response_leaks_an_unapproved_body``
+    (``tests/integration/tools/test_raptor_baseline.py``) drives a real
+    ``--raptor`` build and checks every ``raptorPath[].title`` a default-flag
+    response actually carries against the unapproved fixture bodies. Exactly
+    the channel ``_channel_summary`` already reports rather than gates on,
+    reused verbatim (only its ``reason`` changes) rather than widening the
+    base arm's own set-equality claim to cover it.
     """
     full = build_report(loaded, constants, runs, census)
     section = {key: value for key, value in full.items() if key not in _RAPTOR_SECTION_DROPPED_KEYS}

@@ -14,6 +14,7 @@ its own docstring.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import tempfile
 from contextlib import ExitStack
@@ -316,46 +317,140 @@ def _fixture_bodies_by_approval(loaded: harness_corpus.Corpus) -> tuple[list[str
 
 #: Below this, a window is common enough English to false-positive (matches
 #: the ``_ARTIFACT_LEAK_MIN_LENGTH`` convention in this directory's
-#: ``test_harness_pins.py``). Stepped at half the window so a leak starting
-#: at any offset within a body -- not only a window-aligned one -- is still
-#: covered by some window.
+#: ``test_harness_pins.py``).
 _RAPTOR_TITLE_LEAK_WINDOW: Final = 16
-_RAPTOR_TITLE_LEAK_STEP: Final = 8
+
+_WHITESPACE_RUN: Final = re.compile(r"\s+")
+
+
+def _normalize_whitespace(text: str) -> str:
+    """Collapse every run of whitespace -- including a markdown blank line --
+    to one space, and strip the ends.
+
+    Load-bearing, not cosmetic: a RAPTOR title never carries a body's own
+    newlines verbatim (measured -- a real title reads as flattened,
+    single-spaced prose), so comparing RAW body text against a title
+    manufactures a "distinctive" window out of pure formatting. Measured
+    case: ``security.draft-scan-hardening`` (unapproved) references "the
+    approved secret scanning policy in one place", while
+    ``security.secret-scan-policy`` (approved) heads itself "# Secret
+    scanning policy\\n\\nTwo secret scans ..." -- the two texts share
+    "scanning policy" verbatim and differ only in what follows it, a space
+    against a markdown blank line, which without normalization is enough to
+    make ``"scanning policy "`` read as absent from the approved corpus.
+    """
+    return _WHITESPACE_RUN.sub(" ", text).strip()
 
 
 def _leaked_windows(
     titles: list[str], unapproved_bodies: list[str], approved_bodies: list[str]
 ) -> list[str]:
-    """Every ``>=16``-char verbatim window of ``unapproved_bodies`` that is
-    DISTINCTIVE to that population -- absent from every string in
-    ``approved_bodies`` -- and that also appears inside some string in
-    ``titles``: the substring-leak detector both the real pin below and its
-    teeth (a hand-built ``titles`` list) run against.
+    """Every ``>=16``-char verbatim window of ``titles`` that is DISTINCTIVE
+    to the unapproved population -- present in some (whitespace-normalized)
+    string in ``unapproved_bodies`` and absent from every (whitespace-
+    normalized) string in ``approved_bodies`` -- the substring-leak detector
+    both the real pin below and its teeth
+    (``test_leaked_windows_catches_a_planted_span_and_excludes_an_approved_shared_one``,
+    a hand-built ``titles`` list) run against.
 
-    The distinctiveness check is load-bearing, not decorative: a first
-    version of this detector checked only "window in titles" and reddened on
-    the real committed baseline -- ``domain.session-token-ttl-v1``/``-v2``
-    (superseded) share their opening heading, ``# Session token TTL
-    policy``, with ``domain.session-token-ttl`` (approved, the same topic
-    evolved forward), so a title genuinely built from the APPROVED body
-    still contains that window. Without excluding windows the approved
-    corpus already carries, every superseded-vs-approved rename or heading
-    reuse in a real knowledge base would false-positive here.
+    **Walks the TITLES, at step 1 -- not the bodies, as an earlier version
+    did (security HIGH).** That version slid a 16-char window across each
+    BODY at step 8, which guarantees full coverage only for a leaked span
+    ``>= 23`` chars (``16 + 8 - 1``): a planted 16-char distinctive span
+    starting at an offset not aligned to 8 (a reviewer's reproduction used
+    offset 11) sits inside no step-8 window and went undetected, while 16 is
+    this very function's own distinctiveness floor. Titles are the
+    responses' own text -- a few hundred characters each -- so walking them
+    at step 1 instead gives EXACT coverage of every ``>=16``-char span at
+    any offset, and is cheaper besides: a handful of short haystacks
+    substring-searched into the (larger, but few) body strings, rather than
+    thousands of body-windows searched into the (larger, many) title
+    strings.
+
+    The distinctiveness check is load-bearing, not decorative -- two false
+    positives found while writing this, both benign topical overlap between
+    an unapproved item and an approved one on the same subject, neither an
+    actual leak: ``domain.session-token-ttl-v1``/``-v2`` (superseded) share
+    their opening heading, ``# Session token TTL policy``, with
+    ``domain.session-token-ttl`` (approved, the same topic evolved forward);
+    ``security.draft-scan-hardening`` (draft) names ``security.secret-scan-
+    policy`` (approved) by its own heading text, "scanning policy". Without
+    excluding windows the approved corpus already carries (whitespace-
+    normalized, see :func:`_normalize_whitespace`), either would
+    false-positive here, and a real knowledge base has more of both --
+    supersession and cross-referencing -- than this one fixture does.
     """
-    joined_titles = "\x00".join(titles)
-    joined_approved = "\x00".join(approved_bodies)
+    joined_unapproved = "\x00".join(_normalize_whitespace(body) for body in unapproved_bodies)
+    joined_approved = "\x00".join(_normalize_whitespace(body) for body in approved_bodies)
     leaked: list[str] = []
-    for body in unapproved_bodies:
-        last_start = max(len(body) - _RAPTOR_TITLE_LEAK_WINDOW, 0)
-        for start in range(0, last_start + 1, _RAPTOR_TITLE_LEAK_STEP):
-            window = body[start : start + _RAPTOR_TITLE_LEAK_WINDOW]
+    for title in titles:
+        normalized_title = _normalize_whitespace(title)
+        last_start = max(len(normalized_title) - _RAPTOR_TITLE_LEAK_WINDOW, 0)
+        for start in range(0, last_start + 1):
+            window = normalized_title[start : start + _RAPTOR_TITLE_LEAK_WINDOW]
             if len(window) != _RAPTOR_TITLE_LEAK_WINDOW:
                 continue
-            if window in joined_approved:
-                continue
-            if window in joined_titles:
+            if window in joined_unapproved and window not in joined_approved:
                 leaked.append(window)
     return leaked
+
+
+def _distinctive_window_population(unapproved_bodies: list[str], approved_bodies: list[str]) -> int:
+    """How many ``>=16``-char windows of ``unapproved_bodies`` (whitespace-
+    normalized, stepped by 8 across each body) are absent from every
+    (whitespace-normalized) ``approved_bodies`` string -- the candidate
+    population :func:`_leaked_windows` would have something to find IF a
+    leak existed. A population of zero would make a green
+    ``_leaked_windows(...) == []`` meaningless: nothing distinctive to find,
+    not nothing found. Step 8 here (not the exact, step-1 coverage the
+    detector above needs) is fine for a population-floor sanity check --
+    undercounting only makes the floor stricter, never wrongly satisfied.
+    """
+    joined_approved = "\x00".join(_normalize_whitespace(body) for body in approved_bodies)
+    count = 0
+    for body in unapproved_bodies:
+        normalized_body = _normalize_whitespace(body)
+        last_start = max(len(normalized_body) - _RAPTOR_TITLE_LEAK_WINDOW, 0)
+        for start in range(0, last_start + 1, 8):
+            window = normalized_body[start : start + _RAPTOR_TITLE_LEAK_WINDOW]
+            if len(window) == _RAPTOR_TITLE_LEAK_WINDOW and window not in joined_approved:
+                count += 1
+    return count
+
+
+def test_leaked_windows_catches_a_planted_span_and_excludes_an_approved_shared_one() -> None:
+    """``_leaked_windows``'s own docstring names this teeth -- a hand-built
+    ``titles`` list, not a real build -- and it did not exist: security
+    MEDIUM, ``git grep -n _leaked_windows`` returned only the function's own
+    definition and the one call inside the real pin below.
+
+    Also drives the security HIGH's own reproduction: the planted span sits
+    at offset 11 in ``unapproved_body``, the exact offset a step-8 body-walk
+    could not reach (``16 + 8 - 1 = 23`` was the shortest span that walk
+    guaranteed), and the shared window proves the approved-body exclusion
+    still holds under the new, inverted (title-walked) detector.
+    """
+    shared_prefix = "Shared opening clause about the policy. "
+    unapproved_body = "xxxxxxxxxxx" + "UNIQUE-WITHDRAWN" + "yyyyyyyyyyyyyyyy" + shared_prefix
+    approved_body = "Ordinary approved prose, nothing distinctive. " + shared_prefix
+
+    distinctive_window = "UNIQUE-WITHDRAWN"
+    shared_window = shared_prefix[:_RAPTOR_TITLE_LEAK_WINDOW]
+    assert len(distinctive_window) == _RAPTOR_TITLE_LEAK_WINDOW
+    assert unapproved_body[11:27] == distinctive_window, (
+        "must sit at offset 11, the HIGH's own reproduction"
+    )
+    assert distinctive_window not in approved_body
+    assert shared_window in unapproved_body
+    assert shared_window in approved_body
+
+    planted_title = f"Domain summary node: {distinctive_window} routes here"
+    shared_title = f"Domain summary node: {shared_window} routes here"
+
+    assert _leaked_windows([planted_title], [unapproved_body], [approved_body]) == [
+        distinctive_window
+    ]
+    assert _leaked_windows([shared_title], [unapproved_body], [approved_body]) == []
 
 
 def test_no_raptor_path_title_in_the_full_arms_default_response_leaks_an_unapproved_body() -> None:
@@ -375,11 +470,27 @@ def test_no_raptor_path_title_in_the_full_arms_default_response_leaks_an_unappro
     responses actually carry and checking each against the UNAPPROVED
     fixture bodies (draft, proposed, rejected, superseded, deprecated status,
     or confidential/restricted sensitivity) rather than the approved ones.
+
+    A green ``== []`` on ``_leaked_windows`` is meaningless without a
+    non-trivial candidate population behind it -- security MEDIUM: the
+    distinctive-window filter could in principle exclude everything, making
+    "nothing found" read as "nothing distinctive existed to find" rather
+    than "checked and clean". Measured (whitespace-normalized, this file's
+    own S3 corpus): 1,434 windows survive the approved-body filter; a dated
+    floor well below that (1,000) is asserted so this pin still means
+    something as the fixture corpus grows or shrinks slightly, without being
+    pinned to an exact count a routine content edit would move.
     """
     loaded = harness_corpus.load_corpus(CORPUS)
     unapproved_bodies, approved_bodies = _fixture_bodies_by_approval(loaded)
     assert unapproved_bodies, "the population must be non-empty, or this pin checks nothing"
     assert approved_bodies, "the population must be non-empty, or this pin checks nothing"
+    survivors = _distinctive_window_population(unapproved_bodies, approved_bodies)
+    assert survivors >= 1000, (
+        f"only {survivors} distinctive windows survived the approved-body filter "
+        f"(measured 1434) -- too few for a green _leaked_windows(...) == [] "
+        f"result to mean anything"
+    )
 
     titles: list[str] = []
     with tempfile.TemporaryDirectory(prefix="theurian-eval-raptor-title-leak-") as workspace_name:
