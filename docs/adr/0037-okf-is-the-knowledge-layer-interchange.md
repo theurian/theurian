@@ -165,9 +165,13 @@ The artifact says so about itself, at two levels:
 courteous.** In plain prose in its body: *this bundle is a point-in-time,
 Index-class copy of approved knowledge; no later withdrawal, correction or
 secret removal reaches it; regenerate from the source deployment rather than
-trusting it as current.* It names the exporting deployment's identity **only if
-that identity is deterministic** — a project id qualifies, a hostname or a run
-id does not — because no value in the bundle may vary with the run. This is the
+trusting it as current.* **It is fixed text and names no deployment.** An
+earlier draft allowed the exporting deployment's identity "if deterministic",
+offering a project id as qualifying; it does not. A project id is neither served
+row data nor a constant of the exporter, so admitting it would be a sixth
+widening owing its own justification — and the notice does its whole job without
+it, since whoever holds the bundle knows where they got it. Fixed text also
+needs no argument about what varies between runs. This is the
 one control in the whole residual that travels *with* the artifact; the three in
 *What this does not close* item 1 all act on the operator's side, where the copy
 is not.
@@ -283,6 +287,16 @@ relation whose other end was gated under the newer state. That is the state and
 lifecycle family, and it is the family a published index build already answers
 with a pointer swap ([ADR-0024](0024-a-purge-is-a-build.md)); the export answers
 it by reading once. S2 owes the pin.
+
+**"Every row, relation and body" is exact, and bodies are the part worth
+checking.** A body is not fetched from `.theurian/knowledge/` at export time: it
+is the `body` column of `knowledge_revisions`, beside `content_type`, and the
+store reconstructs a whole `KnowledgeRevision` from those columns. So the
+transaction covers the bundle's contents entirely, with no filesystem read
+running beside it and no second consistency rule to state. The file on disk is
+tied to that column by the `contentSha256` re-check at load
+(`domain/knowledge.py` lines 201–206), which belongs to the path that built the
+snapshot.
 
 ### 4. Relations export twice — as prose links, and as one namespaced typed key
 
@@ -422,14 +436,20 @@ Everything downstream is unchanged and is the point of choosing this terminus:
 
 **Every path a bundle names is resolved and contained before it is read.**
 `theurian_body_file`, and any §6.2 or §10.2 file reference the importer chooses
-to read, must resolve **under the bundle root after symlink resolution**, or that
-reference is refused — the reference, not the import, so a bundle with one bad
-path still yields a proposal for everything else. The bundle is untrusted input
-that arrived as a directory someone unpacked, which makes it exactly the shape
-SEC-7 and T-4/T-5 already name: a `../` in a front-matter value, or a symlink
-inside the tree pointing at `~/.ssh/id_rsa`, would otherwise read a file outside
-the bundle and land its contents in a proposal a human is about to approve. S3
-owes both pins — the escape and the symlink.
+to read, must resolve **under the bundle root after symlink resolution**, or
+that reference is refused — the reference, not the import, so a bundle with one
+bad path still yields a proposal for everything else. **The root is resolved
+first, not only the reference:** a bundle unpacked under a symlinked directory
+— `/tmp` on macOS is one — would otherwise fail every containment check it
+should pass. This is `security/paths.py::resolve_within_root`, which already
+resolves both sides and compares them with `is_relative_to`, with
+`assert_no_symlink_escape` beside it; S3 calls those rather than rebuilding the
+comparison. The bundle is untrusted input that arrived as a directory someone
+unpacked, which makes it exactly the shape SEC-7 and T-4/T-5 already name: a
+`../` in a front-matter value, or a symlink inside the tree pointing at
+`~/.ssh/id_rsa`, would otherwise read a file outside the bundle and land its
+contents in a proposal a human is about to approve. S3 owes both pins — the
+escape and the symlink.
 
 **A refused reference is recorded as it was written** — the front-matter key and
 the literal string the bundle carried — and **never as the path it resolved
@@ -495,9 +515,16 @@ writes outside its own root.
 
 **Three filenames are reserved against derived concept paths, and a collision
 takes a documented escape rather than a refusal or a silent overwrite.**
-`index.md` and `log.md` are OKF's (§3.1, at any level of the hierarchy) and
-`theurian-bundle.md` is this ADR's, at the bundle root. Nothing stops an item id
-from deriving onto one: `ItemId('index')`, `ItemId('log')`,
+**The reservation is positional — it holds at the level where the name means
+something, not everywhere.** `index.md` and `log.md` are OKF's and are reserved
+at *every* level, because §3.1 gives them meaning "at any level of the
+hierarchy"; `theurian-bundle.md` is this ADR's and is reserved **at the bundle
+root only**, so a nested `architecture/theurian-bundle.md` collides with nothing
+and does **not** escape — there is no manifest at that level for it to displace.
+Reserving it everywhere would rename a row for no reason, and a rename with no
+collision behind it is the kind of rule a later reader deletes because it looks
+arbitrary. Nothing stops an item id from deriving onto one: `ItemId('index')`,
+`ItemId('log')`,
 `ItemId('theurian-bundle')` and `ItemId('architecture.index')` are all valid —
 the id grammar is lowercase alphanumerics with hyphens and dotted namespaces, and
 none of those names is special to it. Left unhandled, a concept would displace
@@ -607,14 +634,14 @@ with non-OKF tooling", with `references/computations/lib/revenue.sql` as the
 example. A structured knowledge body is that case exactly.
 
 **Decision 3's population is untouched by any of this.** A non-markdown row is
-exported like every other row the default channel serves; the media type decides
-where its bytes go and what its sidecar is called, never whether it goes — which
-is a property of the three-step rule above being total, not an aspiration. The alternatives table carries the
-rejected reading, and it is worth saying why it is a trap rather than merely
-wrong: excluding non-markdown rows would leave the two-corpora battery green —
-the filter is a function of the row itself, not of any withheld row — while the
-bundle silently omitted governed knowledge. A passing battery would have said
-nothing about it.
+exported like every other row the default channel serves; the media type
+decides where its bytes go and what its sidecar is called, never whether it
+goes — which is a property of the `contentType` mapping above being total, not
+an aspiration. The alternatives table carries the rejected reading, and it is
+worth saying why it is a trap rather than merely wrong: excluding non-markdown
+rows would leave the two-corpora battery green — the filter is a function of
+the row itself, not of any withheld row — while the bundle silently omitted
+governed knowledge. A passing battery would have said nothing about it.
 
 **OKF `verified` is not emitted, and that is a decision rather than an
 omission.** §5.3 derives a consumer's trust tier from `verified` alone: no key
@@ -640,8 +667,9 @@ Both halves are corrected here rather than softened.
 
 **The bound is the union of two payloads**, measured on 2026-09-24:
 
-- `mcp/results.py::result_payload` (the payload it builds, L88–120) is the single
-  shape every result carries, and it emits `itemId`, `revisionId`, `title`,
+- `mcp/results.py::result_payload` (the payload it builds, L88–120) is the shape
+  underneath every result — a floor rather than a ceiling, since a tool may add
+  to it — and it emits `itemId`, `revisionId`, `title`,
   `excerpt`, `contentType`, `status`, **`trustLevel`** (from
   `revision.metadata.trust_level`), **`sensitivity`** (the item's current one,
   threaded in rather than read off the revision), `freshness.revisionCreatedAt`
@@ -659,6 +687,14 @@ Both halves are corrected here rather than softened.
 That union is what covers the parts of this projection that carry the most: the
 full body in the concept document or its sidecar, and `theurian_relations` with
 the `## Relations` section, whose triple is `knowledge.get`'s triple.
+
+**The union is the two tools this projection draws from, and it is deliberately
+not every served key.** `knowledge.search` adds `fusedScore` and `foundBy` on top
+of the same base shape (`mcp/search.py` L789–790); neither is row metadata, and
+neither is in the union above, so the bound stays where the projection can
+actually reach. Counting them would widen the bound without widening what the
+bundle may say — the wrong direction for a claim whose whole job is to be
+conservative.
 
 **Five things decision 7 emits sit outside the union, and each is a recorded
 widening rather than an oversight:**
@@ -891,8 +927,9 @@ Still owed, with the slice that will satisfy it:
   asserted to produce the byte-identical bundle; the determinism of decision 2 —
   two runs against one canonical state producing byte-identical output, which is
   Phase F ②'s exit criterion and which now has the four ordering rules of
-  decision 2 to hold rather than a property with no sequence in it; a pin that the bundle path is derived from the
-  item id, so a crafted `namespace` cannot reach a path component; and a pin that
+  decision 2 to hold rather than a property with no sequence in it; a pin that
+  the bundle path is derived from the item id, so a crafted `namespace` cannot
+  reach a path component; and a pin that
   a non-markdown row exports as a sidecar whose bytes equal the canonical body,
   with the row present in the bundle either way — the property the two-corpora
   battery cannot see, per the alternatives table's first new row. With it, a pin
