@@ -1061,6 +1061,22 @@ def test_the_loader_refuses_a_manifest_declaring_a_migration_the_directory_lacks
     assert refusal.rule == "file-readable"
 
 
+def test_the_loader_refuses_a_missing_contract_file(tmp_path: Path) -> None:
+    """``file-readable`` has a second raise site, ``_load_yaml`` -- the one
+    that reads the corpus's own three contract files -- distinct from
+    ``_load_migration_document`` above. Written whole with ``_written``, then
+    one file removed from disk, so this drives that site rather than the one
+    the twin above already does.
+    """
+    _written(CORPUS, tmp_path)
+    (tmp_path / "queries.yaml").unlink()
+
+    with pytest.raises(harness_corpus.CorpusError) as excinfo:
+        harness_corpus.load_corpus(tmp_path)
+
+    assert excinfo.value.rule == "file-readable"
+
+
 def test_the_loader_refuses_a_manifest_listing_two_migrations_out_of_order(
     tmp_path: Path,
 ) -> None:

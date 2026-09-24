@@ -166,10 +166,8 @@ class WithheldItemCoverage:
     """One withheld-plane item's classification.
 
     ADR-0036's derivation rule ("The derivation rule") states two clauses --
-    gate-tested and census-tested. A third combination, approved and within
-    the ceiling, is not a clause of that rule but the ADR's separately
-    documented `withheld-item-disclosable` refusal:
-    :func:`_check_no_disclosable_withheld_item` refuses it before this
+    gate-tested and census-tested; see :func:`_check_no_disclosable_withheld_item`
+    for the third combination the rule excludes, refused before this
     classification ever runs.
 
     ``is_gate_tested``: the item's final status is draft or proposed AND its
@@ -260,7 +258,11 @@ def _load_yaml(path: Path) -> Any:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
-        raise CorpusError("file-readable", f"{path} could not be read: {exc}") from exc
+        raise CorpusError(
+            "file-readable",
+            f"{path} could not be read: {exc}. Ensure the corpus root at "
+            f"{path.parent} contains this file.",
+        ) from exc
     return yaml.safe_load(text)
 
 
@@ -278,7 +280,11 @@ def _load_migration_document(path: Path) -> dict[str, Any]:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
-        raise CorpusError("file-readable", f"{path} could not be read: {exc}") from exc
+        raise CorpusError(
+            "file-readable",
+            f"{path} could not be read: {exc}. Add the file under {path.parent}, "
+            f"or remove its entry from manifest.yaml's migrations list.",
+        ) from exc
     try:
         return load_yaml_mapping(text)
     except (InputTooLargeError, yaml.YAMLError, ValueError) as exc:
@@ -681,12 +687,13 @@ def _check_relevant_items_retrievable(
             )
         status = status_by_item.get(item_id)
         if status not in DEFAULT_SURFACEABLE_STATUSES:
+            surfaceable = ", ".join(sorted(DEFAULT_SURFACEABLE_STATUSES))
             raise CorpusError(
                 "relevant-item-unretrievable",
                 f"{item_id!r} is judged relevant but its final status is "
-                f"{status!r}, not one of {sorted(DEFAULT_SURFACEABLE_STATUSES)}, so a "
-                f"default-flags query never returns it. A relevant item must be approved, "
-                f"within the build ceiling, and visible-plane.",
+                f"{status!r}, not one of {surfaceable}, so a default-flags query "
+                f"never returns it. A relevant item must have one of those "
+                f"statuses, sit within the build ceiling, and be visible-plane.",
             )
         sensitivity = sensitivity_by_item.get(item_id, DEFAULT_SENSITIVITY.value)
         if Sensitivity(sensitivity) not in BUILD_CEILING_SENSITIVITIES:
