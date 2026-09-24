@@ -656,9 +656,9 @@ So the split is by media type:
   path with the body's own extension, and the concept's body carries an ordinary
   Markdown link to it — **its link text is that same derived filename**, never
   the canonical body file's author-written name — plus a `theurian_body_file`
-  key holding the same path. The
-  dual-channel shape of decision 4 again: OKF's own channel for a consumer that
-  reads links, a namespaced key for one that reads front matter. A sidecar is not
+  key holding the same path. The dual-channel shape of decision 4 again: OKF's
+  own channel for a consumer that reads links, a namespaced key for one that
+  reads front matter. A sidecar is not
   a concept document (§3.1) and carries no front matter: its concept document
   holds the whole governance projection for the row.
 
@@ -672,11 +672,23 @@ projections of governance and this is a derivation of a filename:
 - everything else → **`.txt`**
 
 `text/x-yaml` is named explicitly because it is the one member of
-`domain/values.py::_STRUCTURED_MEDIA_TYPES` that matches **neither** arm of
-`MediaType.is_structured`'s `endswith(("+json", "+yaml"))` rule — a suffix rule
-alone would send it to `.txt` and spell a YAML body as text. The two `endswith`
-arms are that rule, reused so the bundle spells a type the way the domain
-recognises it.
+`domain/values.py::_STRUCTURED_MEDIA_TYPES` no other arm reaches with the right
+extension: the suffix rule cannot see it — `x-yaml` is a hyphen, not a `+yaml`
+suffix — and the exact spellings beside it carry `application/json` and
+`application/yaml` only, so a rule without it spells a YAML body as text.
+
+**"The one member matching neither `endswith` arm" is not that criterion, and an
+earlier draft of this sentence said it was.** Measured 2026-09-24: **five of the
+seven** match neither — `application/json`, `application/vnd.aai.asyncapi`,
+`application/vnd.oai.openapi`, `application/yaml` and `text/x-yaml` — and two of
+those five take `.txt` **by design**. `application/vnd.aai.asyncapi` and
+`application/vnd.oai.openapi` are API-description formats with no canonical
+serialization: the same document is written as JSON or as YAML, so there is no
+correct structured extension to send them to, and `.txt` is the honest answer
+rather than a gap the rule failed to close. *Compliance* carries the pin over
+that constant, landing with this pull request. The two `endswith` arms are
+`MediaType.is_structured`'s own rule, reused so the bundle spells a type the way
+the domain recognises it.
 
 Four properties, and each is load-bearing rather than pleasant:
 
@@ -1015,6 +1027,13 @@ Landing with this pull request:
   the defect it exists to catch: `theurian_body_file` lived in prose outside that
   table for a round, and an unserved input reached a filename through it. It goes
   RED when anything emitted is in neither the union nor the widenings.
+- **The sidecar extension rule, walked over the media types it ranges on.**
+  `domain/values.py::_STRUCTURED_MEDIA_TYPES` has seven members; decision 7's
+  three arms — the two exact spellings, the `endswith` suffix rule, and `.txt`
+  otherwise — assign each of them the extension recorded above. It goes RED when
+  a member arrives whose extension those arms get wrong, and when the paragraph's
+  five-of-seven measurement — the members matching neither `endswith` arm —
+  stops being five.
 
 Still owed, with the slice that will satisfy it:
 
@@ -1039,7 +1058,12 @@ Still owed, with the slice that will satisfy it:
   a withdrawal landing mid-walk leaves the bundle wholly on one side of it, never
   straddling both (decision 3). And a pin that **an approved item literally named
   `index`, `log` or `theurian-bundle` exports under its escaped stem**, with
-  neither the concept nor the file it would have displaced going missing.
+  neither the concept nor the file it would have displaced going missing. And
+  the escaping rule of decision 2: **row text rendered into structural syntax
+  cannot forge structure** — an index entry whose title carries a bracket
+  followed by a parenthesis, and a relation line whose `note` begins with a run
+  of `#`, each leave the entry list and the `## Relations` section with the
+  shape they had without it.
 - **Slice S3 (import):** that a bundle carrying only bare Markdown links yields a
   drafted migration with **no** `addRelation` operation (decision 5); that an
   import lands only under a proposal directory and reaches no approved state
@@ -1048,7 +1072,10 @@ Still owed, with the slice that will satisfy it:
   still produces a proposal satisfying INV-8 through the bundle's own anchor; and
   the two containment pins of decision 6 — a `theurian_body_file` of `../` form,
   and one reached through a symlink out of the tree, are each refused as
-  references while the rest of the bundle still drafts.
+  references while the rest of the bundle still drafts. Beside those two, the
+  third pin decision 6 assigns: **a refusal records the reference as written,
+  never the resolved target**, so the operator's filesystem layout does not ride
+  a proposal draft into a public pull request (T-25's disclosure).
 - **Slice S2, prose:** a threat-model entry for the distributed-bundle residual
   — a withdrawal, secret removal included, does not propagate to already
   distributed copies. No existing entry covers that shape (*What this does not
