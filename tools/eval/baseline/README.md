@@ -165,8 +165,9 @@ the same shapes as the base arm's own `census`/`queries`/`equality`/
 dropped there, since both arms share one corpus and one set of constants.
 
 **The forest's size, `comparison.nodes`** — a corpus-derived, deterministic
-quantity (ADR-0008 decisions 8/9: the raptor forest is a pure function of the
-chunks the same build just wrote), so it belongs beside the other figures on
+quantity (ADR-0008 decision 7: the default `SummarizationProvider` is extractive
+and deterministic, so the forest a build derives is a function of the chunks that
+build just wrote), so it belongs beside the other figures on
 this page rather than only in `timings.json`'s dated annex, which carries the
 same build's wall-clock cost instead:
 
@@ -183,11 +184,20 @@ forest, always `0`; this is the RAPTOR build's).
 
 **`raptor.equality.channel`** — the raptor pair's own equality entries,
 reported rather than asserted the same way #787's channel already is, but for
-a different reason than the base arm's set-equality claim: RAPTOR summary
-routing over an `--include-unapproved` build derives Domain/Catalog summaries
-over rows the clean build never held (ADR-0008 decision 8, GHSA-97q9's
-`raptorPath` territory), so a wider differing set here is expected rather
-than a regression. This run's `atLimit` count widens from the base arm's `18
+a different reason than the base arm's set-equality claim: the two builds
+derive their forests over different chunk populations, so node routing
+(ADR-0008 decision 8) surfaces a different selection and ordering of
+**approved** leaves on each side, and a wider differing set here is expected
+rather than a regression. **It is not unapproved text reaching a default-flag
+response**, and that is verified rather than argued:
+`test_no_raptor_path_title_in_the_full_arms_default_response_leaks_an_unapproved_body`
+drives a real `--raptor` build over this corpus, walks every
+`results[*].raptorPath[*].title` the default-flag responses actually carry, and
+checks each against the unapproved fixture bodies — `IndexStore._node_scope`
+applies to a summary node's own scope the same status and sensitivity predicates
+a leaf match clears. What stays open in GHSA-97q9's `raptorPath` territory is
+the staleness face the threat model records — a summary build can still quote a
+drifted leaf — which is a different mechanism from this count. This run's `atLimit` count widens from the base arm's `18
 of 26` to `20 of 26`; `atEqualityLimit` holds at `21 of 26` — the base arm's
 own set-equality claim (decision 6) is unchanged and untouched by this
 number, which is why it is reported here rather than folded into that claim:

@@ -27,11 +27,21 @@ changed, and the committed baseline's `comparison` block carries the deltas. On
 the class RAPTOR was designed for, top rank improves substantially —
 broad-architectural Recall@1 `0.111111` → `0.361111`, MRR `0.583333` → `1.0`.
 Across all seven classes it costs top rank instead: Recall@1 `-0.147727`, MRR
-`-0.097601`, concentrated in `cross-adr` and `rejected-alternative`. ΔRecall@10
-is `0.0` everywhere, so what the forest changes on this corpus is the order of
-the first ten results rather than which documents reach them. Turning it on
-remains one `theurian index build --raptor` away, which is what makes declining
-the default a choice about a default rather than a withdrawal of the capability.
+`-0.097601`, concentrated in `cross-adr` and `rejected-alternative` — over 26
+queries, of which 22 carry a `recallAtK` at all, the four `unknown` ones judging
+no relevant item. ΔRecall@10 is `0.0` in every class that carries a delta, so
+the same judged-relevant items stay within the first ten. The returned content's
+composition does move: `evidencePrecision` shifted, and since it is a ratio over
+the set of anchors a response returns it is order-invariant, so that movement is
+the routing changing which content comes back — ADR-0008 decision 8 doing its
+designed work. What decides the question is still the top-rank figures. Moving
+in RAPTOR's favour, and weighed rather than omitted: evidence precision rose
+(`+0.006173` overall, about +16% relative in one of the two cost classes), and
+abstention accuracy and the superseded-knowledge error rate did not move at all.
+Turning it on remains one `theurian index build --raptor` away — though that
+takes the whole per-class profile, since forest routing is index-wide whenever a
+forest exists — which is what makes declining the default a choice about a
+default rather than a withdrawal of the capability.
 
 The reasoning, the relative-not-absolute caveat and the re-check command are in
 [ADR-0008](docs/adr/0008-raptor-forest.md)'s decision 10 amendment. The other

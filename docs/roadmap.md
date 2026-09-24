@@ -618,13 +618,13 @@ and traversal depend on the type being closed.
 
 | Query class | Example | Mechanism needed | Current state |
 | :-- | :-- | :-- | :-- |
-| Exact decision lookup | "Why don't we use optimistic locking?" | lexical + trigram + RRF | Should be sufficient — but unmeasured. Phase A confirms. |
+| Exact decision lookup | "Why don't we use optimistic locking?" | lexical + trigram + RRF | **Measured in the Phase A baseline** (2026-09-24, `exact-decision`, n=8): Recall@1 `0.625`, Recall@5 `0.75`, Recall@10 `0.875`, MRR `0.671875`. Sufficient is now a reading someone takes against those figures rather than an expectation; a later run is compared to them |
 | Rejected alternative | "What did we reject in March?" | as above, plus `kind=rejected-approach`. A rejected *approach* is recorded as approved knowledge; `status=rejected` is the graveyard of proposals that may contain secrets, and is a different thing | Mechanism sufficient; this is a corpus-discipline problem |
 | Conceptual / broad | "What are our database design principles?" | RAPTOR routing as a path into cross-cutting document sets; a real embedding model later | RAPTOR implemented, and **measured in Phase A slice S4c** (2026-09-24): it raises this class's own top rank — broad-architectural Recall@1 0.111111 → 0.361111, MRR 0.583333 → 1.0 — and lowers it overall (Recall@1 -0.147727, MRR -0.097601), so **it stays opt-in and default-on is declined**, recorded in [ADR-0008](adr/0008-raptor-forest.md)'s decision 10 amendment. The mechanism test `test_a_summary_match_routes_to_sibling_leaves_a_leaf_search_misses` stands; what it did not quantify is now in the committed baseline's `comparison` block |
 | Historical / evolution | "How has our consistency strategy evolved?" | traversal of the supersedes chain, plus semantics for historical disclosure | Impossible in principle today — nothing reaches `superseded`. Phase D |
 | Traceability | "Why does this code exist?" | graph traversal, not search | Relations are visible through `get`; multi-hop traversal and external nodes are not. Phase C |
 | Impact | "What breaks if SPEC-104 changes?" | bounded traversal plus an aggregated report | Absent. Phase E |
-| Unknown / abstention | a question with no answer | refusing "withheld" and "absent" in the same words (implemented), plus measurement | Property is tested; accuracy is unmeasured. Include in Phase A's golden set |
+| Unknown / abstention | a question with no answer | refusing "withheld" and "absent" in the same words (implemented), plus measurement | Property is tested, and **accuracy is measured**: the golden set carries four `unknown` queries — two absent-topic, two withheld-topic — and the Phase A baseline reports `abstentionAccuracy` `0.75` over them (2026-09-24), the one miss being `q-withheld-credential-cache`, recorded on [#787](https://github.com/theurian/theurian/issues/787) as benign vocabulary overlap by visible rows. The golden-set instruction is discharged |
 
 ### Query classification is not built — the tool split *is* the router
 
@@ -647,11 +647,14 @@ deterministic, and costs almost no code.
   **Answered on 2026-09-24, in Phase A slice S4c: it buys top rank inside its
   target class and costs it overall, so it stays opt-in.** Broad-architectural
   Recall@1 went 0.111111 → 0.361111 with MRR 0.583333 → 1.0, while overall
-  Recall@1 moved -0.147727 and MRR -0.097601, with the cost concentrated in
-  `cross-adr` and `rejected-alternative`; ΔRecall@10 is `0.0` everywhere, so what
-  the forest changes on this corpus is the order of the first ten rather than
-  which documents reach them. The decision, its reasoning, the relative-not-
-  absolute caveat and the re-check command are recorded in
+  Recall@1 moved -0.147727 and MRR -0.097601 (over 26 queries, of which 22 carry
+  a `recallAtK` at all), with the cost concentrated in `cross-adr` and
+  `rejected-alternative`. ΔRecall@10 is `0.0` in every class that carries a
+  delta, so the same judged-relevant items stay within the first ten; the
+  returned content's composition *does* move — `evidencePrecision` shifted, and
+  it is order-invariant — which is ADR-0008 decision 8's sibling-leaf routing
+  doing its designed work. The decision, its reasoning, the movements in RAPTOR's
+  favour, the relative-not-absolute caveat and the re-check command are recorded in
   [ADR-0008](adr/0008-raptor-forest.md)'s decision 10 amendment, and the numbers
   live in the committed baseline's `comparison` block.
   **Abstractive summarisation (LLM-generated) stays frozen** until SEC-16 and an

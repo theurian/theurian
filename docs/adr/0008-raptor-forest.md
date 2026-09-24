@@ -1163,9 +1163,15 @@ flowchart TB
 >     > **Amended in Phase A slice S4c (2026-09-24): the opt-in posture is
 >     > confirmed by measurement, and default-on is declined on it.** This
 >     > decision shipped RAPTOR opt-in because its acceptance tests were owed and
->     > its build cost was unmeasured. Both have since landed, and the roadmap
->     > reserved the default-on question for a measurement rather than a
->     > preference. The measurement exists now, so the answer is recorded:
+>     > its build cost was unmeasured. Both premises are discharged: the tests
+>     > landed in Milestone 6, and the cost is now on the page — `timings.json`
+>     > records the `full` build at `908.858` ms and `4.13` MB against
+>     > `full-raptor` at `1463.681` ms and `4.64` MB, so the forest costs about
+>     > **+61% wall clock and +12% index bytes** on this corpus (the wall-clock
+>     > half being the dated annex, which is not expected to reproduce
+>     > byte-for-byte). The roadmap reserved the default-on question for a
+>     > measurement rather than a preference. That measurement exists now, so the
+>     > answer is recorded:
 >     > **extractive RAPTOR stays opt-in, and `theurian index build --raptor`
 >     > remains the switch.**
 >     >
@@ -1179,14 +1185,28 @@ flowchart TB
 >     > | broad-architectural (n=3) | **+0.25** | -0.083333 | 0.0 | **+0.416667** |
 >     > | cross-adr (n=3) | -0.666667 | -0.333333 | 0.0 | -0.683333 |
 >     > | rejected-alternative (n=3) | -0.666667 | 0.0 | 0.0 | -0.444444 |
->     > | overall (n=26) | **-0.147727** | -0.056818 | 0.0 | **-0.097601** |
+>     > | overall (n=26 queries; 22 judged) | **-0.147727** | -0.056818 | 0.0 | **-0.097601** |
+>     >
+>     > The overall row's two populations differ and the label says so: the
+>     > `comparison` block reports `sampleCount` `26`, every enabled query, while
+>     > the recall and MRR means are over the **22** that carry a `recallAtK` at
+>     > all — the four `unknown` queries judge no relevant item, so they contribute
+>     > to neither mean.
 >     >
 >     > **The routing does what this ADR designed it for.** On the class it was
 >     > built for — the broad architectural question, the "what are our database
 >     > design principles?" shape — top rank improves substantially: Recall@1
 >     > 0.111111 → 0.361111, MRR 0.583333 → 1.0. That gain is real, and declining
 >     > default-on withdraws nothing: it is one `--raptor` build away for an
->     > operator whose questions look like that class.
+>     > operator whose questions look like that class. **What they opt into is the
+>     > whole profile, not the winning row**, and that is worth saying because the
+>     > switch has no per-class granularity: `retrieval_service.py` records that
+>     > "forest routing is always on when a forest exists and silent when one does
+>     > not", so a `--raptor` build applies the routing index-wide — the
+>     > `broad-architectural` gain and the `cross-adr` loss arrive together. It
+>     > strengthens the default-off choice rather than weakening it: an operator
+>     > who wants the gain must accept the loss on their own corpus, which is
+>     > exactly the judgement this decision declines to make for them.
 >     >
 >     > **Why default-on is declined anyway.** The same forest costs top rank
 >     > elsewhere, and the cost is concentrated rather than diffuse: `cross-adr`
@@ -1199,12 +1219,49 @@ flowchart TB
 >     > refuses: turning a forest on should be somebody's decision, and it is now
 >     > a decision they can make against a number.
 >     >
->     > **What does not move is which documents come back.** ΔRecall@10 is `0.0`
->     > overall and in every class that carries a delta at all — `unknown`
->     > carries none, its queries judging no relevant item — so on this corpus the
->     > forest reorders the first ten results rather than changing which documents
->     > reach them. A re-ranking effect, not a recall-of-set effect, which is why
->     > the top-rank figures are the ones that decide it.
+>     > **What moved in RAPTOR's favour, and why it does not flip this.** Two
+>     > things did, and a decision that only listed the costs would not be worth
+>     > trusting. **Evidence precision rose**: `+0.006173` overall and `+0.018519`
+>     > in `rejected-alternative`, which on that class's base of `0.115741` is
+>     > about **+16% relative** — and `rejected-alternative` is one of the two
+>     > classes paying the top-rank cost, so the forest is improving the anchors it
+>     > returns there even while it loses rank. **Nothing safety-shaped
+>     > regressed**: `ΔabstentionAccuracy` and `ΔsupersededKnowledgeErrorRate` are
+>     > both `0.0`, so the forest neither answered a question it should have
+>     > declined nor surfaced a superseded row. Against that, the cost is larger
+>     > and plainer: Recall@1 `-0.147727` and MRR `-0.097601` over 26 queries, with
+>     > `cross-adr` losing every top-rank hit it had. A precision gain measured in
+>     > thousandths on a base near `0.15`, in one class of three samples, does not
+>     > buy back a top-rank regression across the set — and *first* is what a
+>     > caller reads. That is the weighing, stated so a later reader can disagree
+>     > with it on the same numbers.
+>     >
+>     > **What does not move is where the judged-relevant items sit.** ΔRecall@10
+>     > is `0.0` overall and in every class that carries a delta at all —
+>     > `unknown` carries none, its queries judging no relevant item — so the same
+>     > judged-relevant items stay within the first ten, and what the top-rank
+>     > figures measure is their position inside it. **The returned content's
+>     > composition does move, and that is the forest doing its designed work.**
+>     > `evidencePrecision` shifted for two queries (`q-rejected-score-normalisation`
+>     > `0.111111` → `0.125`, `q-rejected-vendor-sdk` `0.125` → `0.166667`), and
+>     > that metric is a ratio over the *set* of `sourceAnchors` a response
+>     > returns, order-invariant by construction, so a moved value proves the
+>     > returned anchor set itself differs rather than merely its order. Decision 8
+>     > is the mechanism and says so in its own words: a summary match "reaches two
+>     > sibling leaves no leaf retriever for the term can", and
+>     > `retrieval_service.py` fuses such a leaf "as a candidate ... under its own
+>     > name". Membership change is the feature, not a surprise.
+>     >
+>     > *Corrected at an adversarial review finding:* this paragraph read **"What
+>     > does not move is which documents come back … the forest reorders the first
+>     > ten results rather than changing which documents reach them."** That was
+>     > false, and it was inferred rather than measured: Recall@10's denominator is
+>     > the *judged-relevant* set, so `ΔRecall@10 = 0.0` says nothing about the
+>     > other rows in a response, and reading a whole-response property off it is
+>     > the population error this project grades. The order-invariant
+>     > `evidencePrecision` movement above, and decision 8's own routing, both
+>     > contradict it. The decision is unchanged — the top-rank figures still
+>     > decide it — but the reason it holds is not the one that sentence gave.
 >     >
 >     > **The figures are relative, not absolute, and that bounds what this
 >     > decides.** [ADR-0036](0036-golden-judgements-are-committed-regression-fixtures.md)'s
@@ -1216,6 +1273,19 @@ flowchart TB
 >     > of what a forest buys on a real corpus. **So this is a decision taken on a
 >     > measurement, not a finding about RAPTOR**: a different corpus, or a change
 >     > to the fusion, may re-open it.
+>     >
+>     > **A second precondition on any future default-on, and it is not a
+>     > retrieval-quality one.** Turning the forest on by default would also put
+>     > every deployment across an **open** disclosure residual: the
+>     > `raptorPath[].title` face of T-17a, which the
+>     > [threat model](../security/threat-model.md)'s own row records as "**not
+>     > closed here** — a summary build can still quote a drifted leaf; the T-17a
+>     > residual (GHSA-97q9-xxfg-33r6)", because a summary node is derived text
+>     > with no single canonical revision for the serve gate to compare against.
+>     > Today that residual is reached only by an operator who asks for a forest.
+>     > Default-on would make it everyone's, so it has to close — or be re-graded
+>     > with its own recorded decision — before the retrieval numbers are even the
+>     > question.
 >     >
 >     > **Where the numbers live, and how to re-check them.** The durable carrier
 >     > is the committed baseline itself — `tools/eval/baseline/report.json`'s
