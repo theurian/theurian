@@ -98,6 +98,16 @@ def abstention_correct(response: dict[str, Any], judgement: JudgementEntry) -> b
     return bool(response["count"] == 0 and response["results"] == [])
 
 
+def probe_returned_hit(response: dict[str, Any]) -> bool:
+    """Whether #787's flag-probe response reached at least one hit.
+
+    Reads ``response["count"]``, the same field :func:`abstention_correct`
+    checks for zero -- kept here rather than inline in ``report.py`` so which
+    key means "a hit" stays response-shape knowledge this module owns.
+    """
+    return bool(response["count"] > 0)
+
+
 def differing_paths(left: Any, right: Any, prefix: str = "") -> frozenset[str]:
     """Dotted-path set of every leaf where two JSON-like structures disagree.
 

@@ -27,6 +27,7 @@ from metrics import (
     evidence_precision,
     forbidden_present,
     mrr,
+    probe_returned_hit,
     recall_at_k,
 )
 
@@ -70,9 +71,17 @@ _ABSTENTION_GATE_WITHHELD: Final = (
 
 #: What decision 6 permits an equality query's two responses to differ on --
 #: which artifact answered, never what it answered. Matches `differing_paths`'
-#: own dotted-path notation and the integration pin's own `BUILD_IDENTITY`
-#: (tests/integration/tools/test_harness_pins.py).
+#: own dotted-path notation. Pinned equal to the integration pin's own
+#: `BUILD_IDENTITY` (tests/integration/tools/test_harness_pins.py) by a test
+#: in the tests pass that follows this one -- not merely asserted here.
 _BUILD_IDENTITY_EXEMPT: Final = frozenset({"retrieval.indexBuildId", "retrieval.snapshotId"})
+
+#: The two labels an equality query's per-limit entry carries. Shared by
+#: `_equality_section` (which pairs each with its own `HarnessConstants`
+#: limit) and `_channel_summary` (which counts by the same two labels), so
+#: the population either function reads cannot silently drift from the
+#: other's.
+_EQUALITY_LABELS: Final = ("atLimit", "atEqualityLimit")
 
 #: The channel report's reason, verbatim (#787, ADR-0036 Amendment 1 rider 1):
 #: why the T-17a residual the channel summary counts stays inside the
@@ -98,12 +107,19 @@ _AGGREGATION_POPULATION: Final = (
 
 @dataclass(frozen=True, slots=True)
 class HarnessConstants:
-    """Fixed parameters every query is run under, echoed into ``report.json``.
+    """Fixed parameters every query's DEFAULT-FLAGS call runs under, echoed
+    into ``report.json``'s ``harnessConstants``.
 
     ``limit`` is derived from the loaded corpus (``max(kValues)``) rather than
     hardcoded, since a k beyond it could never be reached by a real response.
     No threshold or target value lives here (ADR-0036 decision 4) -- this
     records what was asked, never what would count as good.
+
+    Not every wire call: #787's abstention flag-probe runs under a
+    ``dataclasses.replace(constants, include_unapproved=True)`` copy that
+    never reaches ``harnessConstants`` -- that a probe ran, and at which
+    limits, is what ``report.json``'s sibling ``abstentionProbe`` member
+    (built by :func:`_abstention_probe_summary`) records instead.
     """
 
     limit: int
@@ -128,6 +144,52 @@ class QueryRun:
     include_unapproved: bool = False
 
 
+def probe_limits_for(
+    query: QueryEntry, judgement: JudgementEntry, constants: HarnessConstants
+) -> frozenset[int]:
+    """Which limits #787's flag-probe runs at for ``query``, or empty if it doesn't.
+
+    The one place that decision is made: `run.py` calls this to know which
+    probe wire calls to issue, and :func:`_abstention_probe_summary` reads
+    the probes ``run.py`` actually issued rather than re-deriving this a
+    second time, so the two can never drift apart.
+
+    Empty when the judgement does not expect abstention, or when ``query``
+    never runs against ``full`` at all -- ``clean`` never held a withheld row
+    under either flag (ADR-0036, the gate-vs-census derivation rule), so a
+    probe against it would test nothing. Otherwise mirrors the limits
+    ``query`` itself runs at: the harness's own ``limit``, plus the equality
+    limit when ``query`` runs against both corpora -- one probe per plane, so
+    each plane's cause derives from its own-limit call rather than a
+    different plane's.
+    """
+    if not judgement.expect_abstention or "full" not in set(query.corpora):
+        return frozenset()
+    limits = {constants.limit}
+    if len(set(query.corpora)) > 1:
+        limits.add(constants.equality_limit)
+    return frozenset(limits)
+
+
+def _abstention_probe_summary(runs: Sequence[QueryRun]) -> dict[str, Any] | None:
+    """The #787 flag-probe's own record, beside ``harnessConstants``, or ``None``.
+
+    Read off which :class:`QueryRun`\\ s were actually issued with
+    ``includeUnapproved=true`` -- never re-derived from the corpus a second
+    time, which would be a second copy of :func:`probe_limits_for`'s decision,
+    free to drift from the first. Still deterministic: which calls exist and
+    at which limits is fixed by the corpus and the harness constants, never
+    by wall-clock order -- only ``latency_ms`` and the wire response bytes
+    carry timing or environment, and neither is read here. ``None`` when the
+    corpus's judgements never expect abstention against ``full``: no probe
+    ran, so nothing to record.
+    """
+    limits = sorted({run.limit for run in runs if run.include_unapproved})
+    if not limits:
+        return None
+    return {"includeUnapproved": True, "limits": limits}
+
+
 def build_report(
     loaded: Corpus,
     constants: HarnessConstants,
@@ -145,7 +207,7 @@ def build_report(
         queries_section[query.id] = _query_entry(query, judgement, constants, runs, loaded)
 
     equality_queries = _equality_section(loaded, constants, runs)
-    return {
+    report: dict[str, Any] = {
         "corpusId": loaded.manifest.corpus_id,
         "kValues": list(loaded.manifest.k_values),
         "harnessConstants": {
@@ -165,6 +227,10 @@ def build_report(
         },
         "aggregated": _aggregate(queries_section, loaded.manifest.k_values),
     }
+    probe_summary = _abstention_probe_summary(runs)
+    if probe_summary is not None:
+        report["abstentionProbe"] = probe_summary
+    return report
 
 
 def _query_entry(
@@ -179,12 +245,15 @@ def _query_entry(
     is_equality = len(set(query.corpora)) > 1
     for corpus_name in sorted(set(query.corpora)):
         base = _find_run(runs, query.id, corpus_name, constants.limit)
-        probe = _abstention_probe_response(runs, query, judgement, corpus_name, constants)
+        probe = _abstention_probe_response(runs, query, judgement, corpus_name, constants.limit)
         entry = _query_metrics(base.response, judgement, k_values, loaded, probe)
         if is_equality:
             widened = _find_run(runs, query.id, corpus_name, constants.equality_limit)
+            widened_probe = _abstention_probe_response(
+                runs, query, judgement, corpus_name, constants.equality_limit
+            )
             entry["atEqualityLimit"] = _query_metrics(
-                widened.response, judgement, k_values, loaded, probe
+                widened.response, judgement, k_values, loaded, widened_probe
             )
         corpora_section[corpus_name] = entry
     return {"class": query.query_class, "corpora": corpora_section}
@@ -195,18 +264,21 @@ def _abstention_probe_response(
     query: QueryEntry,
     judgement: JudgementEntry,
     corpus_name: str,
-    constants: HarnessConstants,
+    limit: int,
 ) -> dict[str, Any] | None:
-    """The #787 flag-probe response feeding `corpus_name`'s metrics, or ``None``.
+    """The #787 flag-probe response feeding `corpus_name`'s metrics at ``limit``, or ``None``.
 
-    Scoped to ``full``: `run.py` issues the probe against the full build for
-    every expectAbstention judgement, and ``clean`` never held a withheld row
-    under either flag (ADR-0036, the gate-vs-census derivation rule) -- a
-    probe read against it would test nothing.
+    Scoped to ``full``: ``clean`` never held a withheld row under either flag
+    (ADR-0036, the gate-vs-census derivation rule) -- a probe read against it
+    would test nothing. Keyed on ``limit`` because a probe runs at each limit
+    ``query`` itself runs at (`run.py`'s use of :func:`probe_limits_for`): the
+    ``atEqualityLimit`` plane must read its own-limit probe, never the base
+    plane's -- a single limit-10 probe standing in for both planes would be
+    sound only via an unstated count-monotonicity between the two.
     """
     if not judgement.expect_abstention or corpus_name != "full":
         return None
-    return _find_run(runs, query.id, "full", constants.limit, include_unapproved=True).response
+    return _find_run(runs, query.id, "full", limit, include_unapproved=True).response
 
 
 def _query_metrics(
@@ -275,7 +347,7 @@ def _abstention_cause(correct: bool | None, probe: dict[str, Any] | None) -> str
     """
     if not correct or probe is None:
         return None
-    return _ABSTENTION_GATE_WITHHELD if probe["count"] > 0 else None
+    return _ABSTENTION_GATE_WITHHELD if probe_returned_hit(probe) else None
 
 
 def _equality_section(
@@ -288,6 +360,7 @@ def _equality_section(
     harness's own ``limit`` and at ``equalityLimit`` -- a difference can be
     absorbed inside a smaller result window and only surface at the wider one.
     """
+    limit_by_label = {"atLimit": constants.limit, "atEqualityLimit": constants.equality_limit}
     section: dict[str, Any] = {}
     for query in loaded.queries:
         corpora = sorted(set(query.corpora))
@@ -295,10 +368,8 @@ def _equality_section(
             continue
         left_name, right_name = corpora
         entry: dict[str, Any] = {}
-        for label, limit in (
-            ("atLimit", constants.limit),
-            ("atEqualityLimit", constants.equality_limit),
-        ):
+        for label in _EQUALITY_LABELS:
+            limit = limit_by_label[label]
             left = _find_run(runs, query.id, left_name, limit)
             right = _find_run(runs, query.id, right_name, limit)
             entry[label] = {
@@ -320,7 +391,7 @@ def _channel_summary(section: Mapping[str, dict[str, Any]]) -> dict[str, Any]:
     `section`'s already-computed responses: no timing, no sha.
     """
     channel: dict[str, Any] = {"reason": _CHANNEL_REASON}
-    for label in ("atLimit", "atEqualityLimit"):
+    for label in _EQUALITY_LABELS:
         differing = sum(
             1
             for entry in section.values()
