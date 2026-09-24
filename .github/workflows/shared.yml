@@ -285,7 +285,7 @@ jobs:
           # 36 Markdown bodies, each pinned by a `contentSha256`, carrying 52
           # relative links between them -- all 52 reported broken from here,
           # and all 52 inside the 12 verbatim ADR snapshots taken at 111ab57
-          # (measured 2026-09-20 at c3807c3). The other 24 bodies are
+          # (measured 2026-09-20, PR #778). The other 24 bodies are
           # originals written for this corpus, 4 of them Japanese, and carry
           # 0 Markdown links of any kind, so excluding them removes no check.
           #

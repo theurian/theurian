@@ -37,10 +37,13 @@ _HANGING_UV = "#!/bin/sh\nexec sleep 300\n"
 # a loop; that does not remove the race, because `subprocess.run`'s timeout
 # kills the child the instant the deadline passes, so every write after the
 # first one that arrives too late is already chronologically after its own
-# death sentence -- more attempts do not create more chances. What removes
-# it is the two racy tests below using a timeout (`timeout=5`) far wider
-# than realistic scheduling jitter, so the fake's one write has room to
-# clear the deadline before anything close to it is plausible.
+# death sentence -- more attempts do not create more chances. The two racy
+# tests below use a timeout (`timeout=5`) roughly an order of magnitude past
+# realistic scheduling jitter instead: the boundary is still exactly at the
+# deadline (a delay sweep off a fake prepended with `sleep D` kept through
+# D=4.5s and lost at D=5.5s, the same shape measured at `timeout=1`), so this
+# narrows the danger zone rather than closing it -- a multi-second delay,
+# never observed here, would still lose.
 _HANGING_UV_WITH_PARTIAL_OUTPUT = (
     "#!/bin/sh\nprintf 'tests/integration/test_x.py .....\\n'\nexec sleep 300\n"
 )
