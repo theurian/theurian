@@ -658,26 +658,51 @@ statement of the gates, and it can drift from them silently: a draft approved, a
 sensitivity lowered, a status moving into or out of what the flag admits. A
 derivation cannot drift, because it is recomputed from those gates on every run.
 
-Both readers implement this one statement rather than each deriving its own, and
-building the S3 corpus with the S2 loader is the divergence detector between
-them:
+This statement has **one implementation** — `tools/eval/corpus.py`'s fold — and
+two consumers:
 
-- **S3, this pull request.**
-  `tests/unit/tools/test_corpus_fixture_consistency.py` folds its two status sets
-  out of `may_surface` (at `include_unapproved=` false and true) and its served
-  sensitivity set out of `may_disclose` against
-  `ServingProfile().visible_sensitivities`, rather than transcribing status
-  lists. `test_the_withheld_plane_splits_into_gate_tested_and_census_tested_members`
-  asserts, over the corpus as committed, that each class derived from a member's
-  own folded state equals its pinned set of item ids and that no withheld member
-  falls in neither. Its two twins restate one member's metadata and assert the
-  rule fires: a withheld `draft` promoted to `approved`, and a `confidential`
-  member lowered to `internal`, which lands in neither class.
-- **S2, PR #780.** `tools/eval/corpus.py` classifies each withheld item by the
-  same statement, from the same folded state, citing this rule by name. Its
-  ceiling side comes from `ServingProfile`; its status side spells the admitted
-  pair literally, and the S3 fold above is the half that is recomputed from
-  `may_surface`.
+- **The S2 harness.** `_withheld_item_coverage` classifies each withheld item
+  from its own folded state, citing this rule by name and returning the item's
+  final status, final sensitivity and `is_gate_tested`. Neither side of the
+  split is transcribed: `GATE_TESTED_STATUSES` is folded over every
+  `KnowledgeStatus` member through `may_surface` at `include_unapproved=` false
+  and true, and the ceiling side is `BUILD_CEILING_SENSITIVITIES`,
+  `ServingProfile(ceiling=DEFAULT_CEILING).visible_sensitivities`.
+- **The S3 consistency suite.**
+  `tests/unit/tools/test_corpus_fixture_consistency.py` consumes that
+  classification instead of deriving its own, and imports none of `may_surface`,
+  `may_disclose` or `ServingProfile`.
+  `test_the_withheld_plane_splits_into_gate_tested_and_census_tested_members`
+  loads the committed corpus through `load_corpus` and asserts that the loader's
+  `is_gate_tested` partition of `withheld_coverage` equals the two pinned item-id
+  sets — what the suite pins is *who lands where*, which nothing in the fixture
+  declares. Its twins write a perturbed copy of the corpus to a temporary
+  directory and hand it back to `load_corpus`, so they drive that one
+  implementation:
+  `test_the_loader_refuses_a_withheld_member_a_default_response_may_hold`
+  restates a withheld `draft` to `approved` and a `confidential` member to
+  `internal`, asserting each is refused under `withheld-item-disclosable`, and
+  `test_the_split_pin_catches_a_member_changing_side_without_becoming_disclosable`
+  restates that same draft `rejected` — a move no loader rule refuses — and
+  asserts the member has left the gate class.
+
+*Corrected in PR #799 (#794):* the block above replaces a sentence and two
+bullets that described the suite and the loader as two implementations of this
+rule — "Both readers implement this one statement rather than each deriving its
+own, and building the S3 corpus with the S2 loader is the divergence detector
+between them". The S3 bullet said that suite "folds its two status sets out of
+`may_surface` … and its served sensitivity set out of `may_disclose` against
+`ServingProfile().visible_sensitivities`", and described its twins as driving
+that fold. True at PR #778; the premise is what #794 removed. A divergence
+detector is needed only where two implementations can diverge, and these two
+already had: the loader exempts a *disabled* query's judgement from the
+default-flag retrievability clauses (the `enabled` scoping in "What the rule
+asks of a corpus editor", PR #793) while the suite's own copy of the plane rule
+applied to every judgement, so a disabled query judging a withheld-plane item
+passed one and failed the other. The suite now derives nothing. The S2 bullet's
+"its status side spells the admitted pair literally" was false from the moment
+that loader landed: `GATE_TESTED_STATUSES` has been folded out of `may_surface`
+since `9cd9ee34`.
 
 ### Three honesty riders
 
@@ -845,10 +870,10 @@ replayed from the migration files and stops there: `DERIVABLE_CENSUS_KEYS` omits
 `chunks`, and no committed check here measures one. The S3-side guarantee is
 therefore the derived split rather than a number —
 `test_the_withheld_plane_splits_into_gate_tested_and_census_tested_members`
-recomputes each withheld member's class from its folded status and sensitivity
-against sets folded out of `may_surface` and `may_disclose`, compares both
-classes to their pinned item ids and flags any member in neither, so a member
-changing side, or a serving ceiling moving under it, turns that test RED.
+compares the loader's classification of each withheld member against the pinned
+item ids of both classes, so a member changing side, or a serving ceiling moving
+under it, turns that test RED. A member in *neither* class never reaches that
+comparison: `withheld-item-disclosable` refuses such a corpus first.
 Comparing a *measured* `full.chunks` against the manifest's frozen `615` is the
 S2 loader's census-mismatch refusal
 ([PR #780](https://github.com/theurian/theurian/pull/780), in flight as this is
@@ -865,6 +890,15 @@ reddens the census-mismatch refusal", naming an instrument this branch does not
 carry and a detection window a frozen number cannot have. The rider's substance
 — that the census and not the battery covers these mechanisms — is the
 slice-S2 lane's round-one text unchanged.
+
+*Corrected in PR #799 (#794):* the split-test sentence above previously read
+that the test "recomputes each withheld member's class from its folded status
+and sensitivity against sets folded out of `may_surface` and `may_disclose` …
+and flags any member in neither". Both halves moved. The recomputation is the
+loader's, and that test consumes it (see *The derivation rule* above); the
+helper it calls partitions `withheld_coverage` on the single `is_gate_tested`
+boolean and compares each side to its pinned set, so "neither" is not a state
+that comparison can report — it is a corpus the loader refuses outright.
 
 **3. Any reported metric whose zero is forced by build-time exclusion rather than
 by ranking quality carries a cause note beside the number.** The
