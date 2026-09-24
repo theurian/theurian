@@ -125,8 +125,8 @@ governance by merging a migration.
 The exported bundle is an **Index-class derivative** under
 [ADR-0010](0010-three-layer-knowledge-model.md)'s authority rules: never a record
 of truth, never cited as team knowledge, losable without loss, never promoted to
-approved knowledge. This is ADR candidate #8's proposal, accepted, with OKF as
-the concrete format.
+approved knowledge. This is roadmap §9 ADR candidate 8's proposal, accepted, with
+OKF as the concrete format.
 
 The artifact says so about itself, at two levels:
 
@@ -259,7 +259,7 @@ published schema (`$defs/relationType`) before any of this, so a bundle cannot
 widen the enum by asserting a new value.
 
 This keeps two pressures at zero: no garbage edges, and no pressure to extend
-`RelationType`, whose compatibility policy is roadmap ADR candidate #3 and is not
+`RelationType`, whose compatibility policy is roadmap §9 ADR candidate 3 and is not
 decided here.
 
 ### 6. The import is an on-ramp to the existing write path, not a new source class
@@ -390,7 +390,7 @@ other — a proposal a human reviews.
   does not supply and the extension keys it adds (§11), so the lossy projection
   is a conformant bundle rather than a degraded one.
 - **The Phase F ② governance question is settled with a format attached.** ADR
-  candidate #8 asked whether a derived context package needs a new
+  candidate 8 asked whether a derived context package needs a new
   classification. It does not: Index-class, losable, asserting no truth — and now
   with the concrete artifact named, so S2 implements rather than re-decides.
 - **The disclosure story is one sentence, not a field audit.** Decision 2's
@@ -405,7 +405,7 @@ other — a proposal a human reviews.
   Index-class framing is what makes it airtight: the bundle is losable, so
   nothing of the canonical record depends on OKF at all.
 - **Enum pressure stays at zero.** Decision 5 means the 14-member `RelationType`
-  is neither widened nor filled with guesses, so roadmap candidate #3 stays
+  is neither widened nor filled with guesses, so roadmap §9 ADR candidate 3 stays
   unforced.
 
 ### Negative
@@ -484,7 +484,7 @@ other — a proposal a human reviews.
 | **Synthesize typed relations from OKF body links on import** | §6.1 puts the relationship kind in the surrounding prose, so filling a closed 14-member enum from a bare link is guesswork, and every wrong guess is an edge a human must find and remove. Untyped links do not need a new type; they need a human. |
 | **Treat OKF import as [#223](https://github.com/theurian/theurian/issues/223)-class external-source ingestion, gated on the trust model** | #223 governs *connectors* that snapshot external systems into the source layer without passing a pull request; its gate exists because that path bypasses review. This import produces only a reviewable proposal and reaches approved state through the same merge as everything else, so it inherits ADR-0013's gate rather than needing #223's. Ingesting a bundle as a governed *source* remains #223's, and remains out of scope. |
 | **Reuse `KnowledgeCandidate` for imported concepts**, as #705's "bundle → source → KnowledgeCandidate → proposal" sketch has it | `domain/review.py`'s `PromotionGate` requires seven review-shaped signals — `pull_request_merged`, `thread_resolved`, `fix_commit_present`, `not_dismissed_or_outdated`, `ci_successful`, `generalizable`, `has_evidence` — and `KnowledgeCandidate.__post_init__` raises when the gate is unsatisfied. An OKF bundle satisfies none of them, so reuse means fabricating review facts or weakening the gate for every candidate, review-derived ones included. What the type is kept for is its *precedent*: the `INFERRED` ceiling of decision 6. |
-| **Extend `RelationType` so OKF's untyped links have a home** | Enum extension is roadmap ADR candidate #3, which owes a compatibility policy first; and the problem is not a missing member. An untyped link is untyped, and decision 5 is the answer to it. |
+| **Extend `RelationType` so OKF's untyped links have a home** | Enum extension is roadmap §9 ADR candidate 3, which owes a compatibility policy first; and the problem is not a missing member. An untyped link is untyped, and decision 5 is the answer to it. |
 | **Derive the bundle path from `namespace`** | `namespace` is free text where `../` is spellable; `domain/proposal.py::body_relative_path` already refuses it for exactly this reason, and a bundle is a directory tree, so the failure is writing outside the bundle root. |
 
 ## Compliance
