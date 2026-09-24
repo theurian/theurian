@@ -213,7 +213,8 @@ conformant (§4.1) applies to concept documents, which is where they go.
 
 **The index files, fixed here because §8 leaves their shape to the producer and
 an unfixed shape is a byte nobody bounded.** §8 says an `index.md` MAY appear in
-any directory and gives its body as sections of `* [Title](url)` entries.
+any directory and gives its body as sections of bulleted entries, each a
+bracketed title linking its target.
 
 - **One index in every directory the bundle contains**, not only in those
   holding a concept. The narrower rule breaks the walk it exists to support: an
