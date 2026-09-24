@@ -155,8 +155,9 @@ exception: a bundle-root `index.md` MAY carry an `okf_version` key. So the root
 extension permission that makes the `theurian_*` keys conformant (§4.1) applies
 to concept documents, which is where they go.
 
-**The invariant that makes the bundle safe to hand to someone, and the one S2's
-battery pins:**
+**The invariant that makes the bundle safe to hand to someone. Nothing measures
+it today — no export command exists — so it is S2's to pin, and *Compliance*
+carries it as owed:**
 
 > **Every byte of the bundle is a function of the exported population and the
 > exporter's own version, and of nothing else.** Nothing in it varies with a
