@@ -104,6 +104,45 @@ env:
   UV_VERSION: "0.7.2"
 
 jobs:
+  # This workflow's only per-job path filter. Every other job here runs
+  # whenever the workflow triggers at all, gated by the `on:` block above --
+  # coarse on purpose (see that block's own comment on the corpus-governance
+  # guard: a job that runs and finds nothing costs one run, and narrowing costs
+  # keeping two filters in step by hand). `retrieval-baseline` below earns a
+  # narrower gate for a different reason: it rebuilds two SQLite indexes and
+  # runs the whole harness query set, and putting that on every `pyproject.toml`
+  # bump or `.gitignore` edit that already triggers this workflow would be pure
+  # waste for a check that can only ever find something when retrieval-affecting
+  # code, the harness, or its fixture corpus actually moved.
+  #
+  # `dorny/paths-filter@v4` rather than a new mechanism: it is already this
+  # repository's answer to "gate one job narrower than a whole workflow"
+  # (`shared.yml`'s own `changes` job). All three `retrieval` patterns are
+  # already inside this workflow's own top-level `on.paths` (`packages/
+  # theurian-core/**`, `tools/**`, `tests/**` each cover one), so this job
+  # narrows which job runs; it triggers no run the workflow would not already
+  # have started.
+  #
+  # `.github/workflows/core.yml` is in the filter for the reason #769 exists:
+  # a change to this job's own definition has to be able to run it.
+  changes:
+    name: Detect retrieval-affecting changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      retrieval: ${{ steps.filter.outputs.retrieval }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            retrieval:
+              - 'packages/theurian-core/src/**'
+              - 'tools/eval/**'
+              - 'tests/fixtures/eval/**'
+              - '.github/workflows/core.yml'
+
   quality:
     name: Format, lint, types
     runs-on: ubuntu-latest
@@ -166,6 +205,49 @@ jobs:
         with:
           name: coverage
           path: coverage.xml
+
+  # ADVISORY -- ADR-0036 decision 4, Phase A slice S4b. The roadmap's Phase A
+  # Exit-criteria row: "A baseline report is committed and CI reports
+  # regressions against it." Whether this ever becomes a blocking gate is a
+  # separate decision that row explicitly defers; this job is the advisory
+  # half, and no other.
+  #
+  # A sibling job, not a step tacked onto `test` above, for two reasons. First,
+  # `test` runs the harness once per matrix leg already (`test_baseline_current
+  # .py`, `test_harness_pins.py`) -- adding this here would rebuild both SQLite
+  # indexes and re-run every query a second time, on both operating systems,
+  # for a check whose answer does not depend on the matrix. Second, GitHub
+  # skips the remaining steps in a job once one step fails: bolted onto `test`,
+  # this step would never run on exactly the pull requests most likely to have
+  # moved the baseline without updating it -- the one case its own output is
+  # most useful for.
+  #
+  # `tools/eval/compare_baseline.py --advisory` is what keeps this from ever
+  # failing the job -- see that module's own docstring for why its `--advisory`
+  # is total, unlike `tools/corpus_drift.py`'s partial one, and for the
+  # cross-machine SQLite-build caveat (ADR-0036 decision 5) this job can
+  # legitimately hit with no code change at all.
+  retrieval-baseline:
+    name: Retrieval baseline comparison (advisory)
+    runs-on: ubuntu-latest
+    # The harness builds two indexes and runs the full query set once; measured
+    # under two minutes locally. Sized like `corpus-drift` in `shared.yml`
+    # (10) plus margin for a colder runner and index build, not off an
+    # observed CI tail -- there is no run history for this job yet.
+    timeout-minutes: 15
+    needs: changes
+    if: needs.changes.outputs.retrieval == 'true'
+    steps:
+      # Default depth-1 clone: the comparison reads the working tree and the
+      # committed baseline file, never git history.
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Compare a fresh harness run against the committed baseline
+        run: uv run python tools/eval/compare_baseline.py --advisory --format github --summary
 
   offline:
     name: Full suite with no network
