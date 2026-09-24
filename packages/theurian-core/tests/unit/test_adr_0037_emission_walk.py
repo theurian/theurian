@@ -1,14 +1,12 @@
 """The walk over everything ADR-0037's export emits, and what licenses each byte.
 
 Two sibling modules pin the instruments: ``test_adr_0037_claims.py`` holds the
-constants the ADR measured -- the served population, the relation vocabulary,
-the governed metadata, ``result_payload``'s published key set -- and
-``test_adr_0037_knowledge_get_bound.py`` holds the second payload the bound is
-drawn on. This module holds the claim those instruments are *for*: decision 7's
-universal, that **the projection publishes nothing outside the measured union
-except the five recorded widenings**, and decision 2's closure of it, that
-**every byte of the bundle belongs to exactly one byte-source family**. The
-Compliance section says both land with this pull request.
+constants the ADR measured, and ``test_adr_0037_knowledge_get_bound.py`` the
+second payload its bound is drawn on. This module holds the claim they are
+*for*: decision 7's universal, that **the projection publishes nothing outside
+the measured union except the five recorded widenings**, and decision 2's
+closure of it, that **every byte of the bundle belongs to exactly one
+byte-source family**. Compliance says both land with this pull request.
 
 **The walk's population is the emission inventory, not one table**, and that is
 the ADR's own correction rather than a preference. Its first draft bounded the
@@ -27,12 +25,12 @@ is assembled from three separate enumerations the ADR ships:
   which is where ``generated.by`` lives -- a byte in every concept document that
   neither of the other two enumerations spells.
 
-Every member holds exactly one of four licenses, and each license is verified
-against the thing it names rather than against another table: a served key path
-against a payload this module builds, a ``knowledge.get`` addition against that
-tool's syntax tree, a widening against the ADR's own widening table, an exporter
-constant against the family table's bound. An emission in none of them is a byte
-the export publishes with nothing licensing it.
+Every member holds exactly one of four licenses, each verified against the thing
+it names rather than against another table: a served key path against a payload
+this module builds, a ``knowledge.get`` addition against that tool's syntax
+tree, a widening against the ADR's widening table, an exporter constant against
+the family table's bound. An emission in none of them is a byte the export
+publishes with nothing licensing it.
 
 Pure: it reads one Markdown file and ``mcp/tools.py``'s AST, and builds one
 in-memory revision. No database, no socket, no temporary directory.
@@ -68,9 +66,8 @@ pytestmark = pytest.mark.unit
 # has to be renumbered is a pin that gets updated without being read.
 # ---------------------------------------------------------------------------
 
-#: A prefix rather than the whole heading: what identifies the table is *which
-#: decision* it belongs to, and the Compliance section refers to it as
-#: "decision 7's projection table".
+#: A prefix rather than the whole heading: what identifies this table is *which
+#: decision* it belongs to, as the Compliance section's own reference to it does.
 DECISION_7: Final = "### 7."
 
 #: The header row of the widening table, which is its only stable anchor -- the
@@ -156,11 +153,10 @@ THE_BODY: Final = "the concept body, embedded or as a sidecar"
 #: key path or paths it derives from.
 #:
 #: ``theurian_body_file`` is the one the ADR's first draft got wrong, and it is
-#: **served-derived rather than served**: its stem comes from the item id and its
-#: extension from ``contentType``, both published, while the canonical body
-#: file's own author-written suffix -- neither -- is dropped as an input. Both
-#: halves are named, so a rule reaching for a third input has one served path to
-#: name for it or goes RED.
+#: **served-derived rather than served**: stem from the item id, extension from
+#: ``contentType``, both published, and the canonical body file's own
+#: author-written suffix -- neither -- dropped as an input. The ADR's sentence
+#: stating that derivation is pinned below.
 SERVED_BY_RESULT_PAYLOAD: Final[dict[str, tuple[str, ...]]] = {
     "title": ("title",),
     "status": ("status",),
@@ -226,15 +222,6 @@ LICENSES: Final[tuple[tuple[str, frozenset[str]], ...]] = (
     ("served by a `knowledge.get` addition", frozenset(SERVED_BY_A_KNOWLEDGE_GET_ADDITION)),
     ("a recorded widening", frozenset(A_RECORDED_WIDENING)),
     ("not a row projection", frozenset(NOT_A_ROW_PROJECTION)),
-)
-
-RECOGNIZED_LICENSES: Final[frozenset[str]] = frozenset(
-    {
-        "served by `result_payload`",
-        "served by a `knowledge.get` addition",
-        "a recorded widening",
-        "not a row projection",
-    }
 )
 
 #: Decision 2's seven byte-source families.
@@ -412,22 +399,25 @@ def test_every_emission_the_adr_enumerates_carries_exactly_one_license() -> None
 
     ADR-0037's first draft of decision 7's bound asserted the projection
     publishes nothing the serve path withholds and cited ``result_payload``
-    alone. It was false of its own table -- five rows emit keys that payload never
-    carries. The *second* refutation is the one this population exists for: the
-    walk over the corrected bound read decision 7's table only, and
-    ``theurian_body_file`` is defined in decision 7's prose, so an author-written
-    filename suffix reached a bundle path for a round with the pin green.
+    alone; it was false of its own table. The *second* refutation is the one this
+    population exists for: the walk over the corrected bound read decision 7's
+    table only, and ``theurian_body_file`` is defined in decision 7's prose, so
+    an author-written filename suffix reached a bundle path with the pin green.
 
     **Exactly one license, not at least one.** The four are not interchangeable
-    --``theurian_relations`` is served by ``knowledge.get`` and by nothing in
-    ``result_payload`` -- so an emission holding two of them is checked against
-    whichever instrument a reader happens to read.
+    -- ``theurian_relations`` is served by ``knowledge.get`` and by nothing in
+    ``result_payload`` -- so an emission holding two is checked against whichever
+    instrument a reader happens to read.
     """
-    assert {name for name, _ in LICENSES} == RECOGNIZED_LICENSES, (
-        f"this walk now runs {sorted(name for name, _ in LICENSES)} against "
-        f"{sorted(RECOGNIZED_LICENSES)}. A fifth license is a decision to publish "
-        f"something on a ground ADR-0037 does not record, which owes a paragraph in "
-        f"the ADR before it owes a map here."
+    assert [name for name, _ in LICENSES] == [
+        "served by `result_payload`",
+        "served by a `knowledge.get` addition",
+        "a recorded widening",
+        "not a row projection",
+    ], (
+        f"this walk now runs {[name for name, _ in LICENSES]}. A fifth license is a "
+        f"decision to publish something on a ground ADR-0037 does not record, which "
+        f"owes a paragraph in the ADR before it owes a map here."
     )
 
     licensed: set[str] = set()
@@ -572,14 +562,11 @@ def test_the_byte_source_families_are_the_seven_the_adr_enumerates() -> None:
     assertion, after two closure arguments over populations nobody had listed
     were refuted in turn. Its prose ratchet -- a new byte source takes a row here
     *first*, not a bound widened to admit it -- is enforceable only against a
-    pinned set: an eighth family is a byte source that arrived without the
-    enumeration being re-read, and a deleted one is a bound that stopped being
-    stated while its bytes kept being written.
-
-    The bound and check cells are asserted non-empty because that is the closure
-    sentence's own requirement -- *each family states its bound and what checks
-    it* -- and a row with an empty bound would satisfy the set pin while closing
-    nothing.
+    pinned set: an eighth family arrived without the enumeration being re-read,
+    and a deleted one is a bound that stopped being stated while its bytes kept
+    being written. The cells are asserted non-empty because that is the closure
+    sentence's own requirement, and a row with an empty bound would satisfy the
+    set pin while closing nothing.
     """
     families = _families()
 
@@ -602,10 +589,8 @@ def test_the_byte_source_families_are_the_seven_the_adr_enumerates() -> None:
 def test_the_projection_table_rows_are_the_ones_this_walk_categorizes() -> None:
     """The row identities, held apart from the emissions they contribute.
 
-    A rewired row is invisible to the emission walk: changing
-    ``| trustLevel | theurian_trust_level |`` to ``| owner | ... |`` leaves the
-    emitted key exactly where it was, while the ADR now says a key inside the
-    disclosure bound projects a field outside it.
+    A rewired row is invisible to the emission walk: the emitted key stays
+    exactly where it was while the ADR starts saying it projects another field.
     """
     rows = _projection_rows()
 
@@ -626,8 +611,8 @@ def test_decision_7_ships_the_three_tables_this_walk_reads() -> None:
     """A fourth table under decision 7 is a mapping nothing here walks.
 
     The projection walk reads the first; the widening pin reads the second by its
-    own header. A table appended to that section would be a governance projection
-    with no pin over it, and every existing assertion would stay green.
+    own header. A table appended to that section is a governance projection with
+    no pin over it, and every other assertion in this module stays green.
     """
     headings = _decision_7_table_headings()
 
@@ -642,16 +627,14 @@ def test_the_exported_anchor_fields_are_exactly_the_ones_the_serve_path_publishe
     """The one emission that is a field list, walked field by field.
 
     Every other row of decision 7's table projects one value. The
-    ``sourceAnchors[]`` row projects a brace list into ``theurian_anchor`` plus
-    ``resource``, and that list is where a disclosure defect would sit unread:
-    adding ``blob_sha`` to it exports provenance the serve path withholds from
-    the same rows, which is precisely the drop the ADR justifies by this payload
-    not carrying it.
+    ``sourceAnchors[]`` row projects a brace list into ``theurian_anchor``, and
+    that list is where a disclosure defect would sit unread: adding ``blob_sha``
+    to it exports provenance the serve path withholds from the same rows, which
+    is precisely the drop the ADR justifies by this payload not carrying it.
 
     The row is selected by scanning rather than through a dict keyed on the
     Theurian column: decision 7's table holds two ``item id`` rows and two
-    ``status`` rows, so such a dict silently keeps one of each pair -- benign for
-    this row today, and a trap for the next one.
+    ``status`` rows, so such a dict silently keeps one of each pair.
     """
     rows = [
         cells
@@ -716,6 +699,33 @@ def test_the_adr_still_states_the_union_bound_and_its_five_widenings() -> None:
             "This is the claim the walk is the check for, and the ADR says as much -- "
             "`a statement a check can walk`. Losing it leaves the five widenings "
             "reading as examples rather than as the closed exception list."
+        ),
+    )
+
+
+def test_the_adr_still_states_the_two_served_inputs_the_body_file_derives_from() -> None:
+    """The prose half of the one emission that has a *derivation* rather than a source.
+
+    ``SERVED_BY_RESULT_PAYLOAD`` names ``theurian_body_file``'s two inputs -- the
+    item id for the stem, ``contentType`` for the extension -- and checks both
+    against the payload. What it cannot check is whether the ADR still derives
+    the name from those two and no others: a third input restored to the rule
+    would leave every assertion here green, because the map is what declares the
+    derivation and the map would not have moved.
+
+    That is not hypothetical. The rejected first draft of the sidecar rule took
+    the canonical body file's own suffix as step one -- an author-written string
+    no served payload publishes -- and the alternatives table now carries the
+    three ways it failed. This fragment is what makes restoring it RED.
+    """
+    assert_the_adr_states(
+        "so `theurian_body_file` is a function of served data end to end: the stem "
+        "from the item id, the extension from `contentType`, and `itemId` is served too.",
+        because=(
+            "It is the derivation `SERVED_BY_RESULT_PAYLOAD` declares for this key, and "
+            "the only place the ADR bounds its inputs at two. A third input -- the "
+            "rejected `contentFile` suffix above all -- is unserved data reaching a "
+            "bundle filename, which is the defect that widened this walk's population."
         ),
     )
 
