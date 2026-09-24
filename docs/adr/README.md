@@ -37,11 +37,11 @@ alternatives that were rejected and why.
 | [0027](0027-accept-validates-before-it-moves.md) | Accept validates before it moves, and every revision pins its body | accepted |
 | [0028](0028-a-local-proposal-is-a-different-directory.md) | Proposals stay committable; a local proposal is a different directory | accepted |
 | [0029](0029-review-findings-are-governed-knowledge.md) | Review findings are governed knowledge, ingested from commit trailers | accepted |
-| [0030](0030-github-review-ingestion-spawns-gh.md) | Review ingestion spawns `gh`, over public allowlisted repositories only | proposed |
+| [0030](0030-github-review-ingestion-spawns-gh.md) | Review ingestion spawns `gh`, over public allowlisted repositories only | accepted |
 | [0031](0031-mcp-input-is-schema-validated-in-middleware.md) | MCP tool input is validated against its published schema, in middleware | accepted |
 | [0032](0032-the-write-intent-mcp-tool-surface.md) | The write-intent MCP tool surface, and when `writeTools` flips | proposed |
 | [0033](0033-knowledge-candidate-generation.md) | Candidate generation: the caller is the model; Theurian verifies the gate | accepted |
-| [0034](0034-migrate-apply-enforces-the-merge.md) | `migrate apply` enforces the merge | proposed |
+| [0034](0034-migrate-apply-enforces-the-merge.md) | `migrate apply` enforces the merge | accepted |
 | [0035](0035-interactive-source-curation-is-agent-mediated.md) | Interactive curation of sources is agent-mediated and does not relax the approval gate | proposed |
 | [0036](0036-golden-judgements-are-committed-regression-fixtures.md) | Golden judgements are committed regression fixtures, never a ranking input | accepted |
 

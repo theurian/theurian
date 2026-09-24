@@ -1,6 +1,6 @@
 # ADR-0030: Review ingestion spawns `gh`, over public allowlisted repositories only
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-09-05
 - Deciders: Theurian maintainers
 - Requirements: FR-V1, FR-V5, FR-V6, SEC-9, SEC-10, SEC-11, SEC-15, SEC-19, T-3,
