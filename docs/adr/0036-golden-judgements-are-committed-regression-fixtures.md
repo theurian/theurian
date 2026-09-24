@@ -710,28 +710,62 @@ trivially satisfied for them and tests nothing.
 > which supersedes the provisional 17 of 26. The differences fall in T-17's own
 > families: `fusedScore` most often, then `retrieval.usedTokens` with `count`,
 > tail-slot displacement of visible rows, and which paragraph was excerpted.
+> **The denominator is diluted, and reading it as a rate understates the
+> channel:** `of` counts every equality query that ran against both corpora,
+> including the withheld-topic probes that correctly return no rows on either
+> side. A query that cannot differ is still in the denominator, so the published
+> proportion is conservative by construction.
 >
 > `report.json` now publishes `equality.channel` — `queriesDiffering` and `of`
 > at both limits, beside a `reason` carrying #787's annotation phrasing verbatim
 > — and `abstentionCause`, set only where the flag-on probe returns a hit the
 > default-flag query did not, so a gate-earned abstention is annotated while an
-> absence-earned one stays bare. Both landed in slice S4a, named here by commit
-> subject rather than by sha because no sha on that branch is reachable from
-> `origin/main` as this is written: *feat(eval): abstention cause and the
-> include-unapproved channel report*, pinned by *test(eval): pin the abstention
-> cause, the channel summary, and the probe's containment*. The tripwire fired
-> as designed on the way — `EXPECTED_QUERY_METRIC_KEYS` moved in the same commit
-> that added the key, which is the owed-to-implemented signal
-> `tests/unit/tools/test_adr36_ratchet.py`'s own tripwire docstring describes.
+> absence-earned one stays bare. Both landed in slice S4a
+> ([PR #795](https://github.com/theurian/theurian/pull/795)), cited by pull
+> request rather than by sha or by commit subject: no sha on that branch is
+> reachable from `origin/main`, and a squash-merge replaces the branch with one
+> new commit, so a subject citation rots exactly as a sha does — the pin
+> commit's subject disappears entirely.
+>
+> **The flag-on calls are visible in the report, not only in their effect.**
+> `report.json` carries a sibling `abstentionProbe` member —
+> `{includeUnapproved: true, limits}` — recording that probe calls ran and at
+> which limits; and `timings.json`'s per-run rows each carry `includeUnapproved`
+> beside `latencyMs`, so a duration measured on a flag-on call over the withheld
+> plane is published as one. Named here rather than left for a reader to
+> discover: a duration is its own disclosure channel, not a by-product of the
+> count.
+> `test_the_equality_querys_two_planes_each_carry_their_own_probes_cause_and_timings_row`
+> holds all three — each plane's `abstentionCause` derived from its own-limit
+> probe, `abstentionProbe` equal to `{includeUnapproved: true, limits: [10, 50]}`,
+> and exactly the two flag-on `timings.json` rows, `(10, true)` and `(50, true)`,
+> for that query.
+>
+> **What the tripwire caught was `abstentionCause`, not the channel.**
+> `EXPECTED_QUERY_METRIC_KEYS` moved in the same commit that added that key,
+> which is the owed-to-implemented signal firing as designed. It does not reach
+> `equality.channel`: the tripwire scans `_query_metrics`' own AST, while the
+> channel summary is assembled one level up in `build_report`, structurally
+> outside that scan. `equality.channel` is held by the integration pin named
+> below instead.
 >
 > **The mechanism is pinned; these two figures are not.**
 > `test_the_equality_channel_summary_carries_the_787_reason_verbatim_and_the_measured_counts`
 > asserts the *smoke* corpus's own summary — `queriesDiffering` 0 of 3 at both
-> limits — and pins `reason` by equality against the module's constant, so a
-> paraphrase reddens rather than passing; its own docstring states that those
-> counts are not the S3 corpus's. 18 of 26 and 21 of 26 stay a dated measurement
-> anchored to `4ce0868f`, and slice S4's committed baseline is what will hold
-> them.
+> limits — and pins `reason` by equality against a **literal copy of the phrase
+> written into the pin itself**, so a drift in `report._CHANNEL_REASON` diverges
+> from that copy and reddens; its own docstring states that those counts are not
+> the S3 corpus's. 18 of 26 and 21 of 26 stay a dated measurement anchored to
+> `4ce0868f`, and slice S4's committed baseline is what will hold them.
+>
+> *Corrected in PR #795's trio round, at an adversarial finding:* the sentence
+> above previously read that `reason` was pinned "by equality against the
+> module's constant, so a paraphrase reddens rather than passing" — enforcement
+> that check could not provide. Both sides of the comparison read the same
+> constant, so mutating it moved both: the `single-user` paraphrase **survived 78
+> of 78**, the measurement recorded in the pin file's own comment. A pin's
+> authority has to be independent of the value it checks, which is what the
+> literal copy — now at both the unit and the integration site — supplies.
 >
 > **The aggregate is annotated, not split.** `abstentionAccuracy` still blends
 > gate-earned and absence-earned samples, matching the `forbiddenPresentCause`
