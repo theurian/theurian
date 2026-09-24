@@ -433,6 +433,17 @@ def _a_committed_async_test_function_name() -> str:
     return names[0]
 
 
+def _skip_unless_git_repository() -> None:
+    """#788: `mutate.py --prepare-tree` without `--with-git` copies this file
+    into a tree with no `.git` at all, where every `git grep`/`git cat-file`
+    below fails closed with exit 128 rather than the exit these two tests are
+    driving -- a real checkout is what the claim below is about, and there is
+    no real checkout to ask.
+    """
+    if not premise_verify.git_repository_present(premise_check.run_command):
+        pytest.skip("no git repository in this tree (mutate.py --prepare-tree without --with-git)")
+
+
 def test_an_async_def_test_under_the_core_package_tree_is_found() -> None:
     """The #718 lesson: every `async def test_...` in this repository lives
     only under `packages/theurian-core/tests` (measured 2026-09-19: none
@@ -442,6 +453,7 @@ def test_an_async_def_test_under_the_core_package_tree_is_found() -> None:
     real checkout's own `git`, not a script, because the claim is about what
     `git grep -P` actually matches.
     """
+    _skip_unless_git_repository()
     name = _a_committed_async_test_function_name()
 
     result = premise_verify._verify_test_name(name, premise_check.run_command)
@@ -454,6 +466,7 @@ def test_a_test_name_committed_nowhere_is_dangling_via_the_real_seam() -> None:
     from the pattern actually matching, not from `_verify_test_name` returning
     `INTACT` unconditionally.
     """
+    _skip_unless_git_repository()
     result = premise_verify._verify_test_name(
         "test_this_name_is_not_defined_anywhere_in_this_repository_zzqx",
         premise_check.run_command,

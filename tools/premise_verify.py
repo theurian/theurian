@@ -75,6 +75,19 @@ class CommandResult:
 Runner = Callable[[Sequence[str]], CommandResult]
 
 
+def git_repository_present(runner: Runner) -> bool:
+    """Whether ``runner`` sits inside a git repository at all.
+
+    ``mutate.py --prepare-tree`` without ``--with-git`` produces exactly that
+    (#788): every plumbing command below then fails with exit 128 ("not a
+    git repository"), and a recipe that maps that code onto its kind's own
+    not-found status reports a verdict this checkout never actually computed.
+    A caller that cannot proceed without git checks this first and degrades,
+    mirroring ``eval/report.py``'s ``commitSha == "unknown"``.
+    """
+    return runner(("git", "rev-parse", "--is-inside-work-tree")).returncode == 0
+
+
 @dataclass(frozen=True, slots=True)
 class VerifyResult:
     command: str
