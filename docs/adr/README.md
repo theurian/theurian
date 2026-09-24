@@ -44,6 +44,7 @@ alternatives that were rejected and why.
 | [0034](0034-migrate-apply-enforces-the-merge.md) | `migrate apply` enforces the merge | proposed |
 | [0035](0035-interactive-source-curation-is-agent-mediated.md) | Interactive curation of sources is agent-mediated and does not relax the approval gate | proposed |
 | [0036](0036-golden-judgements-are-committed-regression-fixtures.md) | Golden judgements are committed regression fixtures, never a ranking input | accepted |
+| [0037](0037-okf-is-the-knowledge-layer-interchange.md) | OKF is the knowledge layer's interchange — an Index-class export and a gated import | accepted |
 
 ## Writing a new ADR
 
