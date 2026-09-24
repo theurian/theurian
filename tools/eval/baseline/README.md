@@ -40,9 +40,15 @@ committed integration pin
 `test_two_consecutive_harness_runs_over_the_smoke_corpus_produce_a_byte_identical_report`
 (`tests/integration/tools/test_harness_pins.py`) drives, and the one
 `tests/integration/tools/test_baseline_current.py` drives against this exact
-corpus. The determinism pin (ADR-0036 decisions 5 and 7) is what makes the two
-paths equivalent: `report.json` does not vary with how `run.main` is invoked,
-only with the corpus, the code, and the machine. The driver was run **twice**;
+corpus. **The equivalence of the documented command and that in-process call is
+held directly, not inferred from determinism:**
+`test_the_documented_cli_command_reproduces_the_committed_baseline_report` (the
+same file) runs `tools/eval/run.py` as a real subprocess from the repository
+root, over this corpus, and byte-compares its `report.json` against the
+committed one. Its reach is the subprocess boundary — it invokes the current
+interpreter directly, so the `uv run` wrapper in the `$` line above is not
+itself exercised. The determinism pin (ADR-0036 decisions 5 and 7) is what the
+two *in-process* runs below lean on. The driver was run **twice**;
 `report.json` came back byte-identical both times:
 
 ```console

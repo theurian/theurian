@@ -12,6 +12,44 @@ changes, and milestone completions.
 
 ## Repository history
 
+### 2026-09-24 — Phase A's retrieval evaluation baseline committed
+
+Retrieval quality has a reproducible measurement for the first time, so a
+ranking change is argued with a number instead of an intuition
+([ADR-0036](docs/adr/0036-golden-judgements-are-committed-regression-fixtures.md),
+[`docs/roadmap.md`](docs/roadmap.md) Phase A). Four parts, **none of them inside
+either distributed artifact**:
+
+- The `tools/eval/` harness — a loader that refuses a malformed corpus under
+  fourteen named rules (`corpus.py`'s own `CorpusError` tags; `corpus_build.py`
+  raises four more at build time, `census-mismatch` among them), a two-plane
+  build (`full` and `clean`, both under `index build --include-unapproved`, so
+  what a disclosure-equality query measures is the query-time gate rather than a
+  build-time exclusion), an in-process Streamable HTTP wire client through the
+  SEC-12 middleware seat, and pure metrics.
+- The frozen fixture corpus at `tests/fixtures/eval` — 33 items in `full` and 26
+  in `clean`, with 26 of its 27 declared golden queries enabled.
+- The first committed baseline under `tools/eval/baseline/`.
+- An advisory CI comparison (`tools/eval/compare_baseline.py`, run by
+  `core.yml`'s `retrieval-baseline` job when retrieval-affecting paths change).
+
+**The harness produces; it does not assert.** No minimum Recall@k, no MRR floor
+and no maximum latency appears in the three contract schemas or in the harness,
+and the baseline's own README states what that makes the first run: "This run
+DEFINES the baseline; it does not assert one." The figures are a dated
+measurement — 2026-09-24, at `a58fdcb5` — and whether any of them is acceptable
+is a judgement recorded against a later run. Whether the advisory comparison
+ever becomes a blocking gate is a decision ADR-0036 records as untaken.
+
+Recorded here rather than in either artifact's changelog because none of it
+reaches an installer: `tools/eval/` and the fixture corpus are repository
+development tooling, and no wire surface, schema or runtime dependency moved.
+**It is not Phase A's completion.** That row's Exit criteria ask for three
+things, and this is the first two — a baseline report committed, and CI
+reporting against it. The third, that "the RAPTOR, CJK and dense decisions each
+have a measurement behind them", is what a baseline makes possible rather than
+something it settles: none of those decisions is taken here.
+
 ### 2026-08-20 — Forward planning moved from milestones to phases
 
 [`docs/roadmap.md`](docs/roadmap.md) was adopted as the plan of record, and the

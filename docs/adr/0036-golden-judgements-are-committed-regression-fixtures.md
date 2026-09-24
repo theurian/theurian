@@ -578,12 +578,26 @@ for "A baseline report is committed and CI reports regressions against it":
   `.github/workflows/core.yml`'s `retrieval-baseline` job under
   `--advisory --format github --summary`, behind a paths filter on
   `packages/theurian-core/src/**`, `tools/eval/**`, `tests/fixtures/eval/**` and
-  the workflow itself. `--advisory` is total, so the job reports and never
-  reddens, which is deliberate and not a weakened gate: decision 5 measures
-  byte-identity at one machine, one interpreter and one SQLite build, so a
-  runner with a different SQLite build can legitimately produce a different
-  report with no code change at all. **Its scope is the module's own statement
-  rather than a wider reading of it** — "the LOCAL comparison, not the
+  the workflow itself. **What `--advisory` covers is stated in one place, and
+  this is not it**: `compare_baseline.py`'s own module docstring is the single
+  authority for that scope and for the blocking-gate decision, and it enumerates
+  the five outcomes that converge on an errored status and still exit 0 — an
+  unreadable or invalid committed baseline, a harness that exits nonzero, one
+  that raises instead of returning, one that returns 0 without writing a
+  `report.json`, and a `$GITHUB_STEP_SUMMARY` that cannot be written. A reader
+  who needs the boundary goes there rather than to a copy here, because an
+  earlier version of this bullet carried its own wording and was written before
+  three of those five were reproduced as escapes and closed. **The property is
+  now held by tests rather than by either prose**, and they close the gap a
+  returning fake left open: the fakes *raise* — a `RuntimeError` monkeypatched
+  over `run.main` in
+  `test_main_never_fails_under_advisory_when_the_harness_raises_instead_of_returning`,
+  beside its siblings for a harness that writes no report
+  (`test_main_never_fails_under_advisory_when_the_harness_writes_no_report`) and
+  an unparseable committed baseline
+  (`test_main_never_fails_under_advisory_when_the_committed_baseline_is_not_valid_json`),
+  each asserting `main` returns 0 under `--advisory`. The comparison's *target*
+  is the module's own statement too — "the LOCAL comparison, not the
   CROSS-COMMIT one … (a pull request's regeneration against the baseline
   committed on `main`); that remains unbuilt" — so a run compares this
   checkout's regeneration against this checkout's own committed baseline.
