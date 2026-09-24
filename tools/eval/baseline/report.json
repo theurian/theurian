@@ -138,69 +138,101 @@
   "comparison": {
     "byClass": {
       "broad-architectural": {
+        "abstentionAccuracy": null,
+        "evidencePrecision": null,
         "mrr": 0.416667,
         "recallAtK": {
           "1": 0.25,
           "10": 0.0,
           "5": -0.083333
-        }
+        },
+        "sampleCount": 3,
+        "supersededKnowledgeErrorRate": null
       },
       "conflicting": {
+        "abstentionAccuracy": null,
+        "evidencePrecision": null,
         "mrr": 0.0,
         "recallAtK": {
           "1": 0.0,
           "10": 0.0,
           "5": 0.0
-        }
+        },
+        "sampleCount": 2,
+        "supersededKnowledgeErrorRate": null
       },
       "cross-adr": {
+        "abstentionAccuracy": null,
+        "evidencePrecision": 0.0,
         "mrr": -0.683333,
         "recallAtK": {
           "1": -0.666667,
           "10": 0.0,
           "5": -0.333333
-        }
+        },
+        "sampleCount": 3,
+        "supersededKnowledgeErrorRate": null
       },
       "exact-decision": {
+        "abstentionAccuracy": null,
+        "evidencePrecision": 0.0,
         "mrr": -0.001736,
         "recallAtK": {
           "1": 0.0,
           "10": 0.0,
           "5": 0.0
-        }
+        },
+        "sampleCount": 8,
+        "supersededKnowledgeErrorRate": 0.0
       },
       "rejected-alternative": {
+        "abstentionAccuracy": null,
+        "evidencePrecision": 0.018519,
         "mrr": -0.444444,
         "recallAtK": {
           "1": -0.666667,
           "10": 0.0,
           "5": 0.0
-        }
+        },
+        "sampleCount": 3,
+        "supersededKnowledgeErrorRate": null
       },
       "superseded": {
+        "abstentionAccuracy": null,
+        "evidencePrecision": null,
         "mrr": 0.0,
         "recallAtK": {
           "1": 0.0,
           "10": 0.0,
           "5": 0.0
-        }
+        },
+        "sampleCount": 3,
+        "supersededKnowledgeErrorRate": 0.0
       },
       "unknown": {
+        "abstentionAccuracy": 0.0,
+        "evidencePrecision": null,
         "mrr": null,
-        "recallAtK": {}
+        "recallAtK": {},
+        "sampleCount": 4,
+        "supersededKnowledgeErrorRate": 0.0
       }
     },
     "nodes": {
-      "clean": 26,
-      "full": 28
+      "clean-raptor": 26,
+      "full-raptor": 28
     },
     "overall": {
+      "abstentionAccuracy": 0.0,
+      "evidencePrecision": 0.006173,
       "mrr": -0.097601,
       "recallAtK": {
         "1": -0.147727,
         "10": 0.0,
         "5": -0.056818
-      }
+      },
+      "sampleCount": 26,
+      "supersededKnowledgeErrorRate": 0.0
     }
   },
   "corpusId": "adr-corpus-v1",
@@ -2460,7 +2492,7 @@
           "of": 26,
           "queriesDiffering": 20
         },
-        "reason": "recorded channel, T-17a family; not a disclosure finding because includeUnapproved is a request parameter (not a grant) and the Core is one-principal (#119); reachable only under the operator's --include-unapproved build, absent from the shipped default."
+        "reason": "recorded channel, T-17a family and RAPTOR summary routing (ADR-0008 decision 8, GHSA-97q9's raptorPath territory); not a disclosure finding because includeUnapproved is a request parameter (not a grant) and the Core is one-principal (#119); reachable only under the operator's --include-unapproved AND --raptor build, absent from the shipped default."
       },
       "queries": {
         "q-absent-kubernetes": {
@@ -3631,7 +3663,7 @@
           }
         }
       },
-      "scope": "Query-time gate over draft/proposed rows admitted to the index by --include-unapproved on both builds; every query in this section runs at default flags (includeUnapproved=false)."
+      "scope": "Query-time gate over draft/proposed rows admitted to the index by --include-unapproved on both builds, plus the RAPTOR node-traversal gate (ADR-0008 decision 8) between a matched summary node and the leaves it may route to; every query in this section runs at default flags (includeUnapproved=false)."
     },
     "queries": {
       "q-absent-kubernetes": {

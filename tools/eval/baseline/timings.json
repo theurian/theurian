@@ -1,35 +1,35 @@
 {
-  "commitSha": "673b12cfd12fbb652c40cfd481be098e2e1ff20b",
+  "commitSha": "b1922f0e08478102ad078e7c0f54c213216ebd6c",
   "corpusId": "adr-corpus-v1",
-  "date": "2026-09-24T06:25:51.484147+00:00",
+  "date": "2026-09-24T07:13:08.322675+00:00",
   "indexBuild": {
     "clean": {
       "chunks": 609,
       "embeddings": 609,
       "indexBytes": 4071424,
       "nodes": 0,
-      "wallClockMs": 892.53
+      "wallClockMs": 890.877
     },
     "clean-raptor": {
       "chunks": 609,
       "embeddings": 609,
       "indexBytes": 4554752,
       "nodes": 26,
-      "wallClockMs": 1392.769
+      "wallClockMs": 1386.26
     },
     "full": {
       "chunks": 615,
       "embeddings": 615,
       "indexBytes": 4128768,
       "nodes": 0,
-      "wallClockMs": 928.226
+      "wallClockMs": 908.858
     },
     "full-raptor": {
       "chunks": 615,
       "embeddings": 615,
       "indexBytes": 4636672,
       "nodes": 28,
-      "wallClockMs": 1409.424
+      "wallClockMs": 1463.681
     }
   },
   "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
@@ -38,7 +38,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 9.198,
+      "latencyMs": 7.896,
       "limit": 10,
       "queryId": "q-absent-kubernetes",
       "raptor": false
@@ -46,7 +46,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 8.57,
+      "latencyMs": 7.283,
       "limit": 50,
       "queryId": "q-absent-kubernetes",
       "raptor": false
@@ -54,7 +54,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 9.448,
+      "latencyMs": 8.72,
       "limit": 10,
       "queryId": "q-absent-kubernetes",
       "raptor": true
@@ -62,7 +62,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 9.256,
+      "latencyMs": 8.006,
       "limit": 50,
       "queryId": "q-absent-kubernetes",
       "raptor": true
@@ -70,7 +70,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 9.837,
+      "latencyMs": 9.142,
       "limit": 10,
       "queryId": "q-absent-kubernetes",
       "raptor": false
@@ -78,7 +78,7 @@
     {
       "corpus": "full",
       "includeUnapproved": true,
-      "latencyMs": 9.927,
+      "latencyMs": 7.18,
       "limit": 10,
       "queryId": "q-absent-kubernetes",
       "raptor": false
@@ -86,7 +86,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 9.584,
+      "latencyMs": 8.317,
       "limit": 50,
       "queryId": "q-absent-kubernetes",
       "raptor": false
@@ -94,7 +94,7 @@
     {
       "corpus": "full",
       "includeUnapproved": true,
-      "latencyMs": 8.967,
+      "latencyMs": 7.016,
       "limit": 50,
       "queryId": "q-absent-kubernetes",
       "raptor": false
@@ -102,7 +102,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 9.092,
+      "latencyMs": 8.354,
       "limit": 10,
       "queryId": "q-absent-kubernetes",
       "raptor": true
@@ -110,7 +110,7 @@
     {
       "corpus": "full",
       "includeUnapproved": true,
-      "latencyMs": 9.668,
+      "latencyMs": 10.324,
       "limit": 10,
       "queryId": "q-absent-kubernetes",
       "raptor": true
@@ -118,7 +118,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 9.855,
+      "latencyMs": 8.511,
       "limit": 50,
       "queryId": "q-absent-kubernetes",
       "raptor": true
@@ -126,7 +126,7 @@
     {
       "corpus": "full",
       "includeUnapproved": true,
-      "latencyMs": 9.924,
+      "latencyMs": 9.705,
       "limit": 50,
       "queryId": "q-absent-kubernetes",
       "raptor": true
@@ -134,7 +134,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 9.714,
+      "latencyMs": 9.462,
       "limit": 10,
       "queryId": "q-absent-payment-flow",
       "raptor": false
@@ -142,7 +142,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 8.872,
+      "latencyMs": 10.606,
       "limit": 50,
       "queryId": "q-absent-payment-flow",
       "raptor": false
@@ -150,7 +150,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 10.547,
+      "latencyMs": 9.872,
       "limit": 10,
       "queryId": "q-absent-payment-flow",
       "raptor": true
@@ -158,7 +158,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 9.762,
+      "latencyMs": 9.156,
       "limit": 50,
       "queryId": "q-absent-payment-flow",
       "raptor": true
@@ -166,7 +166,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 9.739,
+      "latencyMs": 10.289,
       "limit": 10,
       "queryId": "q-absent-payment-flow",
       "raptor": false
@@ -174,7 +174,7 @@
     {
       "corpus": "full",
       "includeUnapproved": true,
-      "latencyMs": 8.827,
+      "latencyMs": 8.717,
       "limit": 10,
       "queryId": "q-absent-payment-flow",
       "raptor": false
@@ -182,7 +182,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 9.263,
+      "latencyMs": 9.493,
       "limit": 50,
       "queryId": "q-absent-payment-flow",
       "raptor": false
@@ -190,7 +190,7 @@
     {
       "corpus": "full",
       "includeUnapproved": true,
-      "latencyMs": 8.269,
+      "latencyMs": 9.368,
       "limit": 50,
       "queryId": "q-absent-payment-flow",
       "raptor": false
@@ -198,7 +198,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 10.953,
+      "latencyMs": 10.684,
       "limit": 10,
       "queryId": "q-absent-payment-flow",
       "raptor": true
@@ -206,7 +206,7 @@
     {
       "corpus": "full",
       "includeUnapproved": true,
-      "latencyMs": 10.651,
+      "latencyMs": 9.218,
       "limit": 10,
       "queryId": "q-absent-payment-flow",
       "raptor": true
@@ -214,7 +214,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 11.772,
+      "latencyMs": 9.712,
       "limit": 50,
       "queryId": "q-absent-payment-flow",
       "raptor": true
@@ -222,7 +222,7 @@
     {
       "corpus": "full",
       "includeUnapproved": true,
-      "latencyMs": 10.827,
+      "latencyMs": 8.957,
       "limit": 50,
       "queryId": "q-absent-payment-flow",
       "raptor": true
@@ -230,7 +230,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 11.846,
+      "latencyMs": 10.649,
       "limit": 10,
       "queryId": "q-cjk-mixed-length",
       "raptor": false
@@ -238,7 +238,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 11.613,
+      "latencyMs": 9.804,
       "limit": 50,
       "queryId": "q-cjk-mixed-length",
       "raptor": false
@@ -246,7 +246,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 13.899,
+      "latencyMs": 11.762,
       "limit": 10,
       "queryId": "q-cjk-mixed-length",
       "raptor": true
@@ -254,7 +254,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 13.677,
+      "latencyMs": 12.193,
       "limit": 50,
       "queryId": "q-cjk-mixed-length",
       "raptor": true
@@ -262,7 +262,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 12.656,
+      "latencyMs": 10.277,
       "limit": 10,
       "queryId": "q-cjk-mixed-length",
       "raptor": false
@@ -270,7 +270,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 12.429,
+      "latencyMs": 10.573,
       "limit": 50,
       "queryId": "q-cjk-mixed-length",
       "raptor": false
@@ -278,7 +278,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 14.06,
+      "latencyMs": 12.991,
       "limit": 10,
       "queryId": "q-cjk-mixed-length",
       "raptor": true
@@ -286,7 +286,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 13.476,
+      "latencyMs": 12.053,
       "limit": 50,
       "queryId": "q-cjk-mixed-length",
       "raptor": true
@@ -294,7 +294,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 7.711,
+      "latencyMs": 6.802,
       "limit": 10,
       "queryId": "q-cjk-unspaced",
       "raptor": false
@@ -302,7 +302,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 6.669,
+      "latencyMs": 6.538,
       "limit": 50,
       "queryId": "q-cjk-unspaced",
       "raptor": false
@@ -310,7 +310,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 7.174,
+      "latencyMs": 6.974,
       "limit": 10,
       "queryId": "q-cjk-unspaced",
       "raptor": true
@@ -318,7 +318,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 6.948,
+      "latencyMs": 7.012,
       "limit": 50,
       "queryId": "q-cjk-unspaced",
       "raptor": true
@@ -326,7 +326,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 8.016,
+      "latencyMs": 7.351,
       "limit": 10,
       "queryId": "q-cjk-unspaced",
       "raptor": false
@@ -334,7 +334,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 6.6,
+      "latencyMs": 6.577,
       "limit": 50,
       "queryId": "q-cjk-unspaced",
       "raptor": false
@@ -342,7 +342,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 7.067,
+      "latencyMs": 7.33,
       "limit": 10,
       "queryId": "q-cjk-unspaced",
       "raptor": true
@@ -350,7 +350,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 8.046,
+      "latencyMs": 7.002,
       "limit": 50,
       "queryId": "q-cjk-unspaced",
       "raptor": true
@@ -358,7 +358,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 23.801,
+      "latencyMs": 21.636,
       "limit": 10,
       "queryId": "q-current-ttl-policy",
       "raptor": false
@@ -366,7 +366,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 23.389,
+      "latencyMs": 21.988,
       "limit": 50,
       "queryId": "q-current-ttl-policy",
       "raptor": false
@@ -374,7 +374,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 32.129,
+      "latencyMs": 32.53,
       "limit": 10,
       "queryId": "q-current-ttl-policy",
       "raptor": true
@@ -382,7 +382,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 32.793,
+      "latencyMs": 32.265,
       "limit": 50,
       "queryId": "q-current-ttl-policy",
       "raptor": true
@@ -390,7 +390,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 23.933,
+      "latencyMs": 24.22,
       "limit": 10,
       "queryId": "q-current-ttl-policy",
       "raptor": false
@@ -398,7 +398,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 25.796,
+      "latencyMs": 24.383,
       "limit": 50,
       "queryId": "q-current-ttl-policy",
       "raptor": false
@@ -406,7 +406,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 34.353,
+      "latencyMs": 32.061,
       "limit": 10,
       "queryId": "q-current-ttl-policy",
       "raptor": true
@@ -414,7 +414,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 34.803,
+      "latencyMs": 33.577,
       "limit": 50,
       "queryId": "q-current-ttl-policy",
       "raptor": true
@@ -422,7 +422,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 28.384,
+      "latencyMs": 24.828,
       "limit": 10,
       "queryId": "q-db-design-principles",
       "raptor": false
@@ -430,7 +430,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 29.54,
+      "latencyMs": 26.649,
       "limit": 50,
       "queryId": "q-db-design-principles",
       "raptor": false
@@ -438,7 +438,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 39.452,
+      "latencyMs": 36.484,
       "limit": 10,
       "queryId": "q-db-design-principles",
       "raptor": true
@@ -446,7 +446,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 44.042,
+      "latencyMs": 40.726,
       "limit": 50,
       "queryId": "q-db-design-principles",
       "raptor": true
@@ -454,7 +454,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 29.467,
+      "latencyMs": 26.767,
       "limit": 10,
       "queryId": "q-db-design-principles",
       "raptor": false
@@ -462,7 +462,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 31.055,
+      "latencyMs": 28.433,
       "limit": 50,
       "queryId": "q-db-design-principles",
       "raptor": false
@@ -470,7 +470,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 43.0,
+      "latencyMs": 39.455,
       "limit": 10,
       "queryId": "q-db-design-principles",
       "raptor": true
@@ -478,7 +478,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 46.271,
+      "latencyMs": 44.424,
       "limit": 50,
       "queryId": "q-db-design-principles",
       "raptor": true
@@ -486,7 +486,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 22.946,
+      "latencyMs": 23.571,
       "limit": 10,
       "queryId": "q-disclosure-enforcement",
       "raptor": false
@@ -494,7 +494,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 27.439,
+      "latencyMs": 26.564,
       "limit": 50,
       "queryId": "q-disclosure-enforcement",
       "raptor": false
@@ -502,7 +502,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 34.253,
+      "latencyMs": 32.643,
       "limit": 10,
       "queryId": "q-disclosure-enforcement",
       "raptor": true
@@ -510,7 +510,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 39.693,
+      "latencyMs": 37.89,
       "limit": 50,
       "queryId": "q-disclosure-enforcement",
       "raptor": true
@@ -518,7 +518,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 24.802,
+      "latencyMs": 24.586,
       "limit": 10,
       "queryId": "q-disclosure-enforcement",
       "raptor": false
@@ -526,7 +526,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 28.457,
+      "latencyMs": 28.662,
       "limit": 50,
       "queryId": "q-disclosure-enforcement",
       "raptor": false
@@ -534,7 +534,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 35.241,
+      "latencyMs": 34.519,
       "limit": 10,
       "queryId": "q-disclosure-enforcement",
       "raptor": true
@@ -542,7 +542,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 39.206,
+      "latencyMs": 38.327,
       "limit": 50,
       "queryId": "q-disclosure-enforcement",
       "raptor": true
@@ -550,7 +550,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 24.536,
+      "latencyMs": 25.251,
       "limit": 10,
       "queryId": "q-index-publication",
       "raptor": false
@@ -558,7 +558,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 28.354,
+      "latencyMs": 28.229,
       "limit": 50,
       "queryId": "q-index-publication",
       "raptor": false
@@ -566,7 +566,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 39.787,
+      "latencyMs": 38.475,
       "limit": 10,
       "queryId": "q-index-publication",
       "raptor": true
@@ -574,7 +574,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 46.143,
+      "latencyMs": 43.396,
       "limit": 50,
       "queryId": "q-index-publication",
       "raptor": true
@@ -582,7 +582,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 27.303,
+      "latencyMs": 27.546,
       "limit": 10,
       "queryId": "q-index-publication",
       "raptor": false
@@ -590,7 +590,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 29.278,
+      "latencyMs": 28.916,
       "limit": 50,
       "queryId": "q-index-publication",
       "raptor": false
@@ -598,7 +598,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 41.272,
+      "latencyMs": 38.705,
       "limit": 10,
       "queryId": "q-index-publication",
       "raptor": true
@@ -606,7 +606,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 45.32,
+      "latencyMs": 43.255,
       "limit": 50,
       "queryId": "q-index-publication",
       "raptor": true
@@ -614,7 +614,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 22.502,
+      "latencyMs": 22.32,
       "limit": 10,
       "queryId": "q-mutation-discipline",
       "raptor": false
@@ -622,73 +622,9 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 23.736,
+      "latencyMs": 23.712,
       "limit": 50,
       "queryId": "q-mutation-discipline",
-      "raptor": false
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 31.3,
-      "limit": 10,
-      "queryId": "q-mutation-discipline",
-      "raptor": true
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 35.609,
-      "limit": 50,
-      "queryId": "q-mutation-discipline",
-      "raptor": true
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 24.051,
-      "limit": 10,
-      "queryId": "q-mutation-discipline",
-      "raptor": false
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 24.805,
-      "limit": 50,
-      "queryId": "q-mutation-discipline",
-      "raptor": false
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 33.83,
-      "limit": 10,
-      "queryId": "q-mutation-discipline",
-      "raptor": true
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 36.573,
-      "limit": 50,
-      "queryId": "q-mutation-discipline",
-      "raptor": true
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 23.538,
-      "limit": 10,
-      "queryId": "q-optimistic-concurrency",
-      "raptor": false
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 24.505,
-      "limit": 50,
-      "queryId": "q-optimistic-concurrency",
       "raptor": false
     },
     {
@@ -696,13 +632,77 @@
       "includeUnapproved": false,
       "latencyMs": 31.397,
       "limit": 10,
+      "queryId": "q-mutation-discipline",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 35.361,
+      "limit": 50,
+      "queryId": "q-mutation-discipline",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 23.267,
+      "limit": 10,
+      "queryId": "q-mutation-discipline",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 25.268,
+      "limit": 50,
+      "queryId": "q-mutation-discipline",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 32.95,
+      "limit": 10,
+      "queryId": "q-mutation-discipline",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 35.645,
+      "limit": 50,
+      "queryId": "q-mutation-discipline",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 23.467,
+      "limit": 10,
+      "queryId": "q-optimistic-concurrency",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 25.311,
+      "limit": 50,
+      "queryId": "q-optimistic-concurrency",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 31.749,
+      "limit": 10,
       "queryId": "q-optimistic-concurrency",
       "raptor": true
     },
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 35.932,
+      "latencyMs": 35.199,
       "limit": 50,
       "queryId": "q-optimistic-concurrency",
       "raptor": true
@@ -710,7 +710,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 24.204,
+      "latencyMs": 24.043,
       "limit": 10,
       "queryId": "q-optimistic-concurrency",
       "raptor": false
@@ -718,7 +718,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 25.643,
+      "latencyMs": 25.692,
       "limit": 50,
       "queryId": "q-optimistic-concurrency",
       "raptor": false
@@ -726,7 +726,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 35.897,
+      "latencyMs": 33.78,
       "limit": 10,
       "queryId": "q-optimistic-concurrency",
       "raptor": true
@@ -734,7 +734,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 38.863,
+      "latencyMs": 37.42,
       "limit": 50,
       "queryId": "q-optimistic-concurrency",
       "raptor": true
@@ -742,7 +742,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 22.737,
+      "latencyMs": 22.15,
       "limit": 10,
       "queryId": "q-proposal-path",
       "raptor": false
@@ -750,7 +750,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 25.934,
+      "latencyMs": 25.28,
       "limit": 50,
       "queryId": "q-proposal-path",
       "raptor": false
@@ -758,7 +758,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 30.395,
+      "latencyMs": 30.698,
       "limit": 10,
       "queryId": "q-proposal-path",
       "raptor": true
@@ -766,7 +766,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 37.888,
+      "latencyMs": 37.921,
       "limit": 50,
       "queryId": "q-proposal-path",
       "raptor": true
@@ -774,439 +774,439 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 23.403,
+      "latencyMs": 23.259,
       "limit": 10,
       "queryId": "q-proposal-path",
       "raptor": false
     },
     {
       "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 26.481,
-      "limit": 50,
-      "queryId": "q-proposal-path",
-      "raptor": false
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 32.04,
-      "limit": 10,
-      "queryId": "q-proposal-path",
-      "raptor": true
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 42.369,
-      "limit": 50,
-      "queryId": "q-proposal-path",
-      "raptor": true
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 24.431,
-      "limit": 10,
-      "queryId": "q-purge-on-withdrawal",
-      "raptor": false
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 25.542,
-      "limit": 50,
-      "queryId": "q-purge-on-withdrawal",
-      "raptor": false
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 33.656,
-      "limit": 10,
-      "queryId": "q-purge-on-withdrawal",
-      "raptor": true
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 37.337,
-      "limit": 50,
-      "queryId": "q-purge-on-withdrawal",
-      "raptor": true
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 24.497,
-      "limit": 10,
-      "queryId": "q-purge-on-withdrawal",
-      "raptor": false
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 26.156,
-      "limit": 50,
-      "queryId": "q-purge-on-withdrawal",
-      "raptor": false
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 35.451,
-      "limit": 10,
-      "queryId": "q-purge-on-withdrawal",
-      "raptor": true
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 37.841,
-      "limit": 50,
-      "queryId": "q-purge-on-withdrawal",
-      "raptor": true
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 21.023,
-      "limit": 10,
-      "queryId": "q-rank-fusion-why",
-      "raptor": false
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 40.99,
-      "limit": 50,
-      "queryId": "q-rank-fusion-why",
-      "raptor": false
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 30.513,
-      "limit": 10,
-      "queryId": "q-rank-fusion-why",
-      "raptor": true
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 31.448,
-      "limit": 50,
-      "queryId": "q-rank-fusion-why",
-      "raptor": true
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 24.444,
-      "limit": 10,
-      "queryId": "q-rank-fusion-why",
-      "raptor": false
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 23.216,
-      "limit": 50,
-      "queryId": "q-rank-fusion-why",
-      "raptor": false
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 31.473,
-      "limit": 10,
-      "queryId": "q-rank-fusion-why",
-      "raptor": true
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 32.462,
-      "limit": 50,
-      "queryId": "q-rank-fusion-why",
-      "raptor": true
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 20.969,
-      "limit": 10,
-      "queryId": "q-rejected-ltr",
-      "raptor": false
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 24.268,
-      "limit": 50,
-      "queryId": "q-rejected-ltr",
-      "raptor": false
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 29.201,
-      "limit": 10,
-      "queryId": "q-rejected-ltr",
-      "raptor": true
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 35.423,
-      "limit": 50,
-      "queryId": "q-rejected-ltr",
-      "raptor": true
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 22.153,
-      "limit": 10,
-      "queryId": "q-rejected-ltr",
-      "raptor": false
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 24.986,
-      "limit": 50,
-      "queryId": "q-rejected-ltr",
-      "raptor": false
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 30.944,
-      "limit": 10,
-      "queryId": "q-rejected-ltr",
-      "raptor": true
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 36.617,
-      "limit": 50,
-      "queryId": "q-rejected-ltr",
-      "raptor": true
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 25.79,
-      "limit": 10,
-      "queryId": "q-rejected-score-normalisation",
-      "raptor": false
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 27.961,
-      "limit": 50,
-      "queryId": "q-rejected-score-normalisation",
-      "raptor": false
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 34.077,
-      "limit": 10,
-      "queryId": "q-rejected-score-normalisation",
-      "raptor": true
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 39.201,
-      "limit": 50,
-      "queryId": "q-rejected-score-normalisation",
-      "raptor": true
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 26.049,
-      "limit": 10,
-      "queryId": "q-rejected-score-normalisation",
-      "raptor": false
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 28.333,
-      "limit": 50,
-      "queryId": "q-rejected-score-normalisation",
-      "raptor": false
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 35.478,
-      "limit": 10,
-      "queryId": "q-rejected-score-normalisation",
-      "raptor": true
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 40.027,
-      "limit": 50,
-      "queryId": "q-rejected-score-normalisation",
-      "raptor": true
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 20.309,
-      "limit": 10,
-      "queryId": "q-rejected-vendor-sdk",
-      "raptor": false
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 23.593,
-      "limit": 50,
-      "queryId": "q-rejected-vendor-sdk",
-      "raptor": false
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 29.362,
-      "limit": 10,
-      "queryId": "q-rejected-vendor-sdk",
-      "raptor": true
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 36.049,
-      "limit": 50,
-      "queryId": "q-rejected-vendor-sdk",
-      "raptor": true
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 21.966,
-      "limit": 10,
-      "queryId": "q-rejected-vendor-sdk",
-      "raptor": false
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 27.023,
-      "limit": 50,
-      "queryId": "q-rejected-vendor-sdk",
-      "raptor": false
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 30.825,
-      "limit": 10,
-      "queryId": "q-rejected-vendor-sdk",
-      "raptor": true
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 37.344,
-      "limit": 50,
-      "queryId": "q-rejected-vendor-sdk",
-      "raptor": true
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 21.968,
-      "limit": 10,
-      "queryId": "q-restart-after-schema-change",
-      "raptor": false
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 25.962,
-      "limit": 50,
-      "queryId": "q-restart-after-schema-change",
-      "raptor": false
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 32.086,
-      "limit": 10,
-      "queryId": "q-restart-after-schema-change",
-      "raptor": true
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 39.591,
-      "limit": 50,
-      "queryId": "q-restart-after-schema-change",
-      "raptor": true
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 25.902,
-      "limit": 10,
-      "queryId": "q-restart-after-schema-change",
-      "raptor": false
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 26.803,
-      "limit": 50,
-      "queryId": "q-restart-after-schema-change",
-      "raptor": false
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 33.736,
-      "limit": 10,
-      "queryId": "q-restart-after-schema-change",
-      "raptor": true
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 41.033,
-      "limit": 50,
-      "queryId": "q-restart-after-schema-change",
-      "raptor": true
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 26.491,
-      "limit": 10,
-      "queryId": "q-retrieval-architecture",
-      "raptor": false
-    },
-    {
-      "corpus": "clean",
       "includeUnapproved": false,
       "latencyMs": 26.527,
       "limit": 50,
+      "queryId": "q-proposal-path",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 32.024,
+      "limit": 10,
+      "queryId": "q-proposal-path",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 40.089,
+      "limit": 50,
+      "queryId": "q-proposal-path",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 24.445,
+      "limit": 10,
+      "queryId": "q-purge-on-withdrawal",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 24.671,
+      "limit": 50,
+      "queryId": "q-purge-on-withdrawal",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 32.401,
+      "limit": 10,
+      "queryId": "q-purge-on-withdrawal",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 36.496,
+      "limit": 50,
+      "queryId": "q-purge-on-withdrawal",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 23.862,
+      "limit": 10,
+      "queryId": "q-purge-on-withdrawal",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 25.741,
+      "limit": 50,
+      "queryId": "q-purge-on-withdrawal",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 34.89,
+      "limit": 10,
+      "queryId": "q-purge-on-withdrawal",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 38.16,
+      "limit": 50,
+      "queryId": "q-purge-on-withdrawal",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 21.83,
+      "limit": 10,
+      "queryId": "q-rank-fusion-why",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 22.434,
+      "limit": 50,
+      "queryId": "q-rank-fusion-why",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 30.801,
+      "limit": 10,
+      "queryId": "q-rank-fusion-why",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 32.882,
+      "limit": 50,
+      "queryId": "q-rank-fusion-why",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 22.778,
+      "limit": 10,
+      "queryId": "q-rank-fusion-why",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 22.813,
+      "limit": 50,
+      "queryId": "q-rank-fusion-why",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 32.768,
+      "limit": 10,
+      "queryId": "q-rank-fusion-why",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 32.75,
+      "limit": 50,
+      "queryId": "q-rank-fusion-why",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 20.7,
+      "limit": 10,
+      "queryId": "q-rejected-ltr",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 24.112,
+      "limit": 50,
+      "queryId": "q-rejected-ltr",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 30.418,
+      "limit": 10,
+      "queryId": "q-rejected-ltr",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 35.834,
+      "limit": 50,
+      "queryId": "q-rejected-ltr",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 21.877,
+      "limit": 10,
+      "queryId": "q-rejected-ltr",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 25.121,
+      "limit": 50,
+      "queryId": "q-rejected-ltr",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 30.961,
+      "limit": 10,
+      "queryId": "q-rejected-ltr",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 36.789,
+      "limit": 50,
+      "queryId": "q-rejected-ltr",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 24.588,
+      "limit": 10,
+      "queryId": "q-rejected-score-normalisation",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 25.925,
+      "limit": 50,
+      "queryId": "q-rejected-score-normalisation",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 34.753,
+      "limit": 10,
+      "queryId": "q-rejected-score-normalisation",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 38.69,
+      "limit": 50,
+      "queryId": "q-rejected-score-normalisation",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 25.802,
+      "limit": 10,
+      "queryId": "q-rejected-score-normalisation",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 27.757,
+      "limit": 50,
+      "queryId": "q-rejected-score-normalisation",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 34.966,
+      "limit": 10,
+      "queryId": "q-rejected-score-normalisation",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 40.448,
+      "limit": 50,
+      "queryId": "q-rejected-score-normalisation",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 20.879,
+      "limit": 10,
+      "queryId": "q-rejected-vendor-sdk",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 24.667,
+      "limit": 50,
+      "queryId": "q-rejected-vendor-sdk",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 28.168,
+      "limit": 10,
+      "queryId": "q-rejected-vendor-sdk",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 36.249,
+      "limit": 50,
+      "queryId": "q-rejected-vendor-sdk",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 22.231,
+      "limit": 10,
+      "queryId": "q-rejected-vendor-sdk",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 25.002,
+      "limit": 50,
+      "queryId": "q-rejected-vendor-sdk",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 30.395,
+      "limit": 10,
+      "queryId": "q-rejected-vendor-sdk",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 37.488,
+      "limit": 50,
+      "queryId": "q-rejected-vendor-sdk",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 22.21,
+      "limit": 10,
+      "queryId": "q-restart-after-schema-change",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 25.87,
+      "limit": 50,
+      "queryId": "q-restart-after-schema-change",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 31.577,
+      "limit": 10,
+      "queryId": "q-restart-after-schema-change",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 38.264,
+      "limit": 50,
+      "queryId": "q-restart-after-schema-change",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 22.897,
+      "limit": 10,
+      "queryId": "q-restart-after-schema-change",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 25.803,
+      "limit": 50,
+      "queryId": "q-restart-after-schema-change",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 33.314,
+      "limit": 10,
+      "queryId": "q-restart-after-schema-change",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 40.412,
+      "limit": 50,
+      "queryId": "q-restart-after-schema-change",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 24.391,
+      "limit": 10,
       "queryId": "q-retrieval-architecture",
       "raptor": false
     },
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 36.612,
+      "latencyMs": 24.535,
+      "limit": 50,
+      "queryId": "q-retrieval-architecture",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 35.292,
       "limit": 10,
       "queryId": "q-retrieval-architecture",
       "raptor": true
@@ -1214,7 +1214,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 35.57,
+      "latencyMs": 34.985,
       "limit": 50,
       "queryId": "q-retrieval-architecture",
       "raptor": true
@@ -1222,7 +1222,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 27.562,
+      "latencyMs": 25.853,
       "limit": 10,
       "queryId": "q-retrieval-architecture",
       "raptor": false
@@ -1230,7 +1230,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 26.76,
+      "latencyMs": 24.878,
       "limit": 50,
       "queryId": "q-retrieval-architecture",
       "raptor": false
@@ -1238,7 +1238,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 36.415,
+      "latencyMs": 36.058,
       "limit": 10,
       "queryId": "q-retrieval-architecture",
       "raptor": true
@@ -1246,7 +1246,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 36.025,
+      "latencyMs": 35.524,
       "limit": 50,
       "queryId": "q-retrieval-architecture",
       "raptor": true
@@ -1254,7 +1254,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 23.624,
+      "latencyMs": 23.05,
       "limit": 10,
       "queryId": "q-schema-change-procedure",
       "raptor": false
@@ -1262,7 +1262,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 26.769,
+      "latencyMs": 25.089,
       "limit": 50,
       "queryId": "q-schema-change-procedure",
       "raptor": false
@@ -1270,7 +1270,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 34.547,
+      "latencyMs": 33.385,
       "limit": 10,
       "queryId": "q-schema-change-procedure",
       "raptor": true
@@ -1278,7 +1278,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 38.778,
+      "latencyMs": 40.167,
       "limit": 50,
       "queryId": "q-schema-change-procedure",
       "raptor": true
@@ -1286,7 +1286,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 26.613,
+      "latencyMs": 24.467,
       "limit": 10,
       "queryId": "q-schema-change-procedure",
       "raptor": false
@@ -1294,7 +1294,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 27.405,
+      "latencyMs": 25.783,
       "limit": 50,
       "queryId": "q-schema-change-procedure",
       "raptor": false
@@ -1302,7 +1302,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 36.974,
+      "latencyMs": 54.519,
       "limit": 10,
       "queryId": "q-schema-change-procedure",
       "raptor": true
@@ -1310,7 +1310,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 41.553,
+      "latencyMs": 40.184,
       "limit": 50,
       "queryId": "q-schema-change-procedure",
       "raptor": true
@@ -1318,7 +1318,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 25.814,
+      "latencyMs": 26.002,
       "limit": 10,
       "queryId": "q-secret-scan-hardening",
       "raptor": false
@@ -1326,7 +1326,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 27.324,
+      "latencyMs": 26.703,
       "limit": 50,
       "queryId": "q-secret-scan-hardening",
       "raptor": false
@@ -1334,7 +1334,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 36.402,
+      "latencyMs": 36.928,
       "limit": 10,
       "queryId": "q-secret-scan-hardening",
       "raptor": true
@@ -1342,7 +1342,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 39.236,
+      "latencyMs": 39.312,
       "limit": 50,
       "queryId": "q-secret-scan-hardening",
       "raptor": true
@@ -1350,7 +1350,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 27.831,
+      "latencyMs": 27.01,
       "limit": 10,
       "queryId": "q-secret-scan-hardening",
       "raptor": false
@@ -1358,7 +1358,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 28.27,
+      "latencyMs": 27.982,
       "limit": 50,
       "queryId": "q-secret-scan-hardening",
       "raptor": false
@@ -1366,7 +1366,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 38.776,
+      "latencyMs": 40.951,
       "limit": 10,
       "queryId": "q-secret-scan-hardening",
       "raptor": true
@@ -1374,7 +1374,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 44.313,
+      "latencyMs": 42.279,
       "limit": 50,
       "queryId": "q-secret-scan-hardening",
       "raptor": true
@@ -1382,7 +1382,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 24.427,
+      "latencyMs": 20.157,
       "limit": 10,
       "queryId": "q-session-token-ttl",
       "raptor": false
@@ -1390,7 +1390,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 26.596,
+      "latencyMs": 21.52,
       "limit": 50,
       "queryId": "q-session-token-ttl",
       "raptor": false
@@ -1398,7 +1398,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 30.589,
+      "latencyMs": 29.242,
       "limit": 10,
       "queryId": "q-session-token-ttl",
       "raptor": true
@@ -1406,7 +1406,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 33.629,
+      "latencyMs": 30.626,
       "limit": 50,
       "queryId": "q-session-token-ttl",
       "raptor": true
@@ -1414,7 +1414,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 23.359,
+      "latencyMs": 20.875,
       "limit": 10,
       "queryId": "q-session-token-ttl",
       "raptor": false
@@ -1422,7 +1422,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 57.619,
+      "latencyMs": 21.808,
       "limit": 50,
       "queryId": "q-session-token-ttl",
       "raptor": false
@@ -1430,7 +1430,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 32.214,
+      "latencyMs": 28.924,
       "limit": 10,
       "queryId": "q-session-token-ttl",
       "raptor": true
@@ -1438,7 +1438,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 35.77,
+      "latencyMs": 63.419,
       "limit": 50,
       "queryId": "q-session-token-ttl",
       "raptor": true
@@ -1446,7 +1446,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 24.349,
+      "latencyMs": 24.328,
       "limit": 10,
       "queryId": "q-sqlite-derived",
       "raptor": false
@@ -1454,7 +1454,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 25.505,
+      "latencyMs": 24.671,
       "limit": 50,
       "queryId": "q-sqlite-derived",
       "raptor": false
@@ -1462,7 +1462,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 35.535,
+      "latencyMs": 35.892,
       "limit": 10,
       "queryId": "q-sqlite-derived",
       "raptor": true
@@ -1470,7 +1470,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 37.753,
+      "latencyMs": 37.351,
       "limit": 50,
       "queryId": "q-sqlite-derived",
       "raptor": true
@@ -1478,7 +1478,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 25.843,
+      "latencyMs": 25.673,
       "limit": 10,
       "queryId": "q-sqlite-derived",
       "raptor": false
@@ -1486,7 +1486,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 25.993,
+      "latencyMs": 26.017,
       "limit": 50,
       "queryId": "q-sqlite-derived",
       "raptor": false
@@ -1494,7 +1494,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 36.73,
+      "latencyMs": 36.798,
       "limit": 10,
       "queryId": "q-sqlite-derived",
       "raptor": true
@@ -1502,7 +1502,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 40.495,
+      "latencyMs": 39.637,
       "limit": 50,
       "queryId": "q-sqlite-derived",
       "raptor": true
@@ -1510,7 +1510,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 22.862,
+      "latencyMs": 23.238,
       "limit": 10,
       "queryId": "q-state-hash-family",
       "raptor": false
@@ -1518,7 +1518,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 25.526,
+      "latencyMs": 25.827,
       "limit": 50,
       "queryId": "q-state-hash-family",
       "raptor": false
@@ -1526,7 +1526,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 33.418,
+      "latencyMs": 34.074,
       "limit": 10,
       "queryId": "q-state-hash-family",
       "raptor": true
@@ -1534,7 +1534,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 38.191,
+      "latencyMs": 38.136,
       "limit": 50,
       "queryId": "q-state-hash-family",
       "raptor": true
@@ -1542,7 +1542,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 24.234,
+      "latencyMs": 24.521,
       "limit": 10,
       "queryId": "q-state-hash-family",
       "raptor": false
@@ -1550,7 +1550,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 26.604,
+      "latencyMs": 27.216,
       "limit": 50,
       "queryId": "q-state-hash-family",
       "raptor": false
@@ -1558,7 +1558,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 35.719,
+      "latencyMs": 35.477,
       "limit": 10,
       "queryId": "q-state-hash-family",
       "raptor": true
@@ -1566,7 +1566,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 39.836,
+      "latencyMs": 41.804,
       "limit": 50,
       "queryId": "q-state-hash-family",
       "raptor": true
@@ -1574,7 +1574,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 23.073,
+      "latencyMs": 21.936,
       "limit": 10,
       "queryId": "q-token-lifetime",
       "raptor": false
@@ -1582,7 +1582,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 28.481,
+      "latencyMs": 23.969,
       "limit": 50,
       "queryId": "q-token-lifetime",
       "raptor": false
@@ -1590,7 +1590,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 34.468,
+      "latencyMs": 29.945,
       "limit": 10,
       "queryId": "q-token-lifetime",
       "raptor": true
@@ -1598,7 +1598,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 40.0,
+      "latencyMs": 37.316,
       "limit": 50,
       "queryId": "q-token-lifetime",
       "raptor": true
@@ -1606,7 +1606,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 24.109,
+      "latencyMs": 22.979,
       "limit": 10,
       "queryId": "q-token-lifetime",
       "raptor": false
@@ -1614,7 +1614,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 27.34,
+      "latencyMs": 26.617,
       "limit": 50,
       "queryId": "q-token-lifetime",
       "raptor": false
@@ -1622,7 +1622,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 34.204,
+      "latencyMs": 31.416,
       "limit": 10,
       "queryId": "q-token-lifetime",
       "raptor": true
@@ -1630,7 +1630,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 39.735,
+      "latencyMs": 39.005,
       "limit": 50,
       "queryId": "q-token-lifetime",
       "raptor": true
@@ -1638,7 +1638,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 23.986,
+      "latencyMs": 22.785,
       "limit": 10,
       "queryId": "q-withheld-credential-cache",
       "raptor": false
@@ -1646,7 +1646,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 26.444,
+      "latencyMs": 24.66,
       "limit": 50,
       "queryId": "q-withheld-credential-cache",
       "raptor": false
@@ -1654,7 +1654,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 33.008,
+      "latencyMs": 30.822,
       "limit": 10,
       "queryId": "q-withheld-credential-cache",
       "raptor": true
@@ -1662,7 +1662,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 38.588,
+      "latencyMs": 35.057,
       "limit": 50,
       "queryId": "q-withheld-credential-cache",
       "raptor": true
@@ -1670,7 +1670,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 26.012,
+      "latencyMs": 23.022,
       "limit": 10,
       "queryId": "q-withheld-credential-cache",
       "raptor": false
@@ -1678,7 +1678,7 @@
     {
       "corpus": "full",
       "includeUnapproved": true,
-      "latencyMs": 24.05,
+      "latencyMs": 22.451,
       "limit": 10,
       "queryId": "q-withheld-credential-cache",
       "raptor": false
@@ -1686,7 +1686,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 28.633,
+      "latencyMs": 27.283,
       "limit": 50,
       "queryId": "q-withheld-credential-cache",
       "raptor": false
@@ -1694,7 +1694,7 @@
     {
       "corpus": "full",
       "includeUnapproved": true,
-      "latencyMs": 29.431,
+      "latencyMs": 27.006,
       "limit": 50,
       "queryId": "q-withheld-credential-cache",
       "raptor": false
@@ -1702,7 +1702,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 35.068,
+      "latencyMs": 32.751,
       "limit": 10,
       "queryId": "q-withheld-credential-cache",
       "raptor": true
@@ -1710,7 +1710,7 @@
     {
       "corpus": "full",
       "includeUnapproved": true,
-      "latencyMs": 32.708,
+      "latencyMs": 31.841,
       "limit": 10,
       "queryId": "q-withheld-credential-cache",
       "raptor": true
@@ -1718,7 +1718,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 62.26,
+      "latencyMs": 37.663,
       "limit": 50,
       "queryId": "q-withheld-credential-cache",
       "raptor": true
@@ -1726,7 +1726,7 @@
     {
       "corpus": "full",
       "includeUnapproved": true,
-      "latencyMs": 42.86,
+      "latencyMs": 38.859,
       "limit": 50,
       "queryId": "q-withheld-credential-cache",
       "raptor": true
@@ -1734,7 +1734,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 8.703,
+      "latencyMs": 7.054,
       "limit": 10,
       "queryId": "q-withheld-token-rotation",
       "raptor": false
@@ -1742,7 +1742,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 7.387,
+      "latencyMs": 6.845,
       "limit": 50,
       "queryId": "q-withheld-token-rotation",
       "raptor": false
@@ -1750,7 +1750,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 9.301,
+      "latencyMs": 8.093,
       "limit": 10,
       "queryId": "q-withheld-token-rotation",
       "raptor": true
@@ -1758,7 +1758,7 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 8.147,
+      "latencyMs": 7.578,
       "limit": 50,
       "queryId": "q-withheld-token-rotation",
       "raptor": true
@@ -1766,7 +1766,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 8.145,
+      "latencyMs": 7.977,
       "limit": 10,
       "queryId": "q-withheld-token-rotation",
       "raptor": false
@@ -1774,7 +1774,7 @@
     {
       "corpus": "full",
       "includeUnapproved": true,
-      "latencyMs": 8.526,
+      "latencyMs": 8.28,
       "limit": 10,
       "queryId": "q-withheld-token-rotation",
       "raptor": false
@@ -1782,7 +1782,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 7.431,
+      "latencyMs": 7.876,
       "limit": 50,
       "queryId": "q-withheld-token-rotation",
       "raptor": false
@@ -1790,7 +1790,7 @@
     {
       "corpus": "full",
       "includeUnapproved": true,
-      "latencyMs": 7.712,
+      "latencyMs": 7.173,
       "limit": 50,
       "queryId": "q-withheld-token-rotation",
       "raptor": false
@@ -1798,7 +1798,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 9.157,
+      "latencyMs": 7.751,
       "limit": 10,
       "queryId": "q-withheld-token-rotation",
       "raptor": true
@@ -1806,7 +1806,7 @@
     {
       "corpus": "full",
       "includeUnapproved": true,
-      "latencyMs": 8.172,
+      "latencyMs": 8.076,
       "limit": 10,
       "queryId": "q-withheld-token-rotation",
       "raptor": true
@@ -1814,7 +1814,7 @@
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 8.319,
+      "latencyMs": 7.881,
       "limit": 50,
       "queryId": "q-withheld-token-rotation",
       "raptor": true
@@ -1822,7 +1822,7 @@
     {
       "corpus": "full",
       "includeUnapproved": true,
-      "latencyMs": 8.719,
+      "latencyMs": 8.711,
       "limit": 50,
       "queryId": "q-withheld-token-rotation",
       "raptor": true

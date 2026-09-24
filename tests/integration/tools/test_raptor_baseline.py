@@ -97,7 +97,7 @@ def test_the_committed_comparisons_node_counts(baseline_report: dict[str, Any]) 
     moment the committed S3 corpus (``tests/fixtures/eval``) changes and the
     baseline is re-measured, the same way ``comparison``'s deltas above do.
     """
-    assert baseline_report["comparison"]["nodes"] == {"full": 28, "clean": 26}
+    assert baseline_report["comparison"]["nodes"] == {"full-raptor": 28, "clean-raptor": 26}
 
 
 # -- C: the raptor pair's equality channel is reported, never asserted equal -

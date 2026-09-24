@@ -104,11 +104,42 @@ _AGGREGATION_POPULATION: Final = (
     "comparison, not as a second sample of the same judgement"
 )
 
-#: The keys `_raptor_section` keeps from a full `build_report` call over the
-#: raptor arm's own runs -- everything but `corpusId`/`kValues`/
-#: `harnessConstants`, which the raptor arm shares with the base arm verbatim
-#: (same corpus, same constants) and would otherwise just duplicate.
-_RAPTOR_SECTION_KEYS: Final = ("census", "queries", "equality", "aggregated")
+#: The keys `_raptor_section` drops from a full `build_report` call over the
+#: raptor arm's own runs -- shared verbatim by both arms (one corpus, one set
+#: of constants), so repeating them under `report["raptor"]` would be noise,
+#: not a second measurement. Everything else `build_report` ever publishes --
+#: `abstentionProbe` today, and a key neither arm's author has written yet --
+#: flows to both arms by default, which an allowlist of the current keys
+#: could not guarantee for the ones still to come.
+_RAPTOR_SECTION_DROPPED_KEYS: Final = frozenset({"corpusId", "kValues", "harnessConstants"})
+
+#: The raptor arm's own equality scope (Phase A slice S4c): everything
+#: `EQUALITY_SCOPE` names, plus the RAPTOR node-traversal gate a raptor build
+#: additionally exercises -- a matched summary node still has to clear
+#: `_may_surface` at every descended leaf before that leaf may surface
+#: (ADR-0008 decision 8's routing-only invariant), so this arm's equality
+#: queries exercise a second gate the base arm's own scope does not name.
+RAPTOR_EQUALITY_SCOPE: Final = (
+    "Query-time gate over draft/proposed rows admitted to the index by "
+    "--include-unapproved on both builds, plus the RAPTOR node-traversal "
+    "gate (ADR-0008 decision 8) between a matched summary node and the "
+    "leaves it may route to; every query in this section runs at default "
+    "flags (includeUnapproved=false)."
+)
+
+#: The raptor arm's own channel reason (Phase A slice S4c). `_CHANNEL_REASON`
+#: names `--include-unapproved` as the reachable condition, which is true of
+#: the base arm's own T-17a residual but under-describes this one: reaching
+#: it also needs `--raptor` (ADR-0008 decision 8, GHSA-97q9's `raptorPath`
+#: territory), so quoting the base string here would omit half of what makes
+#: this channel unreachable from the shipped default.
+_RAPTOR_CHANNEL_REASON: Final = (
+    "recorded channel, T-17a family and RAPTOR summary routing (ADR-0008 "
+    "decision 8, GHSA-97q9's raptorPath territory); not a disclosure finding "
+    "because includeUnapproved is a request parameter (not a grant) and the "
+    "Core is one-principal (#119); reachable only under the operator's "
+    "--include-unapproved AND --raptor build, absent from the shipped default."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -267,7 +298,12 @@ def build_report(
             report["aggregated"],
             report["raptor"]["aggregated"],
             loaded.manifest.k_values,
-            {name: cost.nodes for name, cost in raptor.build_costs.items()},
+            # `-raptor`-suffixed, matching `build_timings`'s own `indexBuild`
+            # keys for these same builds -- a bare `full`/`clean` here would
+            # answer two different questions under one key (`indexBuild.full
+            # .nodes` is the BASE build's forest, always 0; this is the
+            # RAPTOR build's).
+            {f"{name}-raptor": cost.nodes for name, cost in raptor.build_costs.items()},
         )
     return report
 
@@ -281,27 +317,33 @@ def _raptor_section(
     """The raptor arm's per-query, equality and aggregate metrics (Phase A slice S4c).
 
     Built by recursing into :func:`build_report` over the raptor arm's own
-    ``runs``/``census`` with no ``raptor_runs`` of its own -- the same
-    per-query, equality and channel machinery the base arm uses, so the two
-    can never drift in shape. ``corpusId``, ``kValues`` and
-    ``harnessConstants`` are dropped: both arms share one corpus and one set
-    of constants, so repeating them here would be noise, not a second
-    measurement.
+    ``runs``/``census`` with no ``raptor`` of its own -- the same per-query,
+    equality and channel machinery the base arm uses, so the two can never
+    drift in shape, and a future ``build_report`` key reaches both arms
+    without this function naming it (:data:`_RAPTOR_SECTION_DROPPED_KEYS`).
 
-    Its ``equality`` entries are reported, not asserted, for a different
-    reason than the base arm's own ``EQUALITY_SCOPE`` gives: RAPTOR summary
-    routing (ADR-0008 decision 8, GHSA-97q9's ``raptorPath`` territory) means
-    an ``--include-unapproved`` raptor build derives Domain/Catalog summaries
-    over rows the clean build never held, so a wider ``differingFields`` set
-    here is expected rather than a regression -- exactly the channel
-    ``_channel_summary`` already reports rather than gates on, reused
-    verbatim rather than widening the base arm's own set-equality claim to
-    cover it.
+    Its ``equality.scope`` and ``equality.channel.reason`` are relabelled
+    after the recursive call returns, not threaded through
+    :func:`build_report` as parameters: the two strings are pure description,
+    read by nothing the counts depend on, and adding them as
+    :func:`build_report` arguments would grow that signature by two for a
+    value only this one caller ever varies. Its ``differingFields`` sets are
+    reported, not asserted, for a different reason than the base arm's own
+    ``EQUALITY_SCOPE`` gives: RAPTOR summary routing (ADR-0008 decision 8,
+    GHSA-97q9's ``raptorPath`` territory) means an ``--include-unapproved``
+    raptor build derives Domain/Catalog summaries over rows the clean build
+    never held, so a wider set here is expected rather than a regression --
+    exactly the channel ``_channel_summary`` already reports rather than
+    gates on, reused verbatim (only its ``reason`` changes) rather than
+    widening the base arm's own set-equality claim to cover it.
     """
     full = build_report(loaded, constants, runs, census)
-    section = {key: full[key] for key in _RAPTOR_SECTION_KEYS}
-    if "abstentionProbe" in full:
-        section["abstentionProbe"] = full["abstentionProbe"]
+    section = {key: value for key, value in full.items() if key not in _RAPTOR_SECTION_DROPPED_KEYS}
+    section["equality"] = {**section["equality"], "scope": RAPTOR_EQUALITY_SCOPE}
+    section["equality"]["channel"] = {
+        **section["equality"]["channel"],
+        "reason": _RAPTOR_CHANNEL_REASON,
+    }
     return section
 
 
@@ -314,12 +356,20 @@ def _comparison(
     """Raptor-on minus raptor-off, over the ``full``-corpus default-flag runs (decision 4: deltas
     only, no judgment about whether a move is good or bad).
 
+    Every :func:`_aggregate_entries` family gets a delta -- ``recallAtK``,
+    ``mrr``, ``evidencePrecision``, ``abstentionAccuracy`` and
+    ``supersededKnowledgeErrorRate`` -- plus ``sampleCount`` as context (not a
+    delta: both arms measure the same population, so this is the shared
+    denominator a reader needs to weigh the others by, not a second number to
+    subtract). A block naming only two of five families would let a mover in
+    one of the other three go unpublished.
+
     Both sides' ``byClass`` share one key set: the classes come from the same
     loaded queries against the same judged corpus, RAPTOR only ever moving
-    which rows rank where. ``recallAtK``/``mrr`` follow
-    :func:`_aggregate_entries`'s own ``None``-for-empty-denominator
-    convention -- a class or k either side has no sample for stays out of the
-    delta rather than reading as a false zero.
+    which rows rank where. Every family follows :func:`_aggregate_entries`'s
+    own ``None``-for-empty-denominator convention -- a class or k either side
+    has no sample for stays out of the delta rather than reading as a false
+    zero.
     """
     return {
         "byClass": {
@@ -331,6 +381,17 @@ def _comparison(
         ),
         "nodes": dict(raptor_build_nodes),
     }
+
+
+#: The `_aggregate_entries` families `_aggregate_delta` subtracts straight
+#: (every one but `recallAtK`, which is per-k and handled separately, and
+#: `sampleCount`, which is context rather than a delta).
+_DELTA_FAMILIES: Final = (
+    "mrr",
+    "evidencePrecision",
+    "abstentionAccuracy",
+    "supersededKnowledgeErrorRate",
+)
 
 
 def _aggregate_delta(
@@ -346,7 +407,10 @@ def _aggregate_delta(
         )
         is not None
     }
-    return {"recallAtK": recall, "mrr": _delta(raptor_entry["mrr"], base_entry["mrr"])}
+    deltas: dict[str, Any] = {
+        family: _delta(raptor_entry[family], base_entry[family]) for family in _DELTA_FAMILIES
+    }
+    return {"recallAtK": recall, **deltas, "sampleCount": base_entry["sampleCount"]}
 
 
 def _delta(raptor_value: float | None, base_value: float | None) -> float | None:
@@ -690,12 +754,12 @@ def build_timings(
             {
                 "queryId": run.query_id,
                 "corpus": run.corpus,
-                "raptor": raptor,
+                "raptor": is_raptor,
                 "limit": run.limit,
                 "includeUnapproved": run.include_unapproved,
                 "latencyMs": round(run.latency_ms, 3),
             }
-            for run, raptor in sorted(
+            for run, is_raptor in sorted(
                 tagged_runs,
                 key=lambda pair: (
                     pair[0].query_id,

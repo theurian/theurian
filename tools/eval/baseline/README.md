@@ -21,8 +21,10 @@ already documented).
 ## Measured
 
 - **Date:** 2026-09-24
-- **Commit:** `673b12cfd12fbb652c40cfd481be098e2e1ff20b` (S4c's own re-measurement,
-  carrying both arms in one file; S4b's original was measured at
+- **Commit:** `b1922f0e08478102ad078e7c0f54c213216ebd6c` (the S4c review round's
+  re-measurement -- widened `comparison` families, renamed `comparison.nodes`
+  keys, the raptor arm's own scope/reason strings; S4c's first measurement
+  was at `673b12cfd12fbb652c40cfd481be098e2e1ff20b`, S4b's original at
   `a58fdcb588c8189dc00a8935403c00b87b3c5d48`)
 - **Corpus:** `tests/fixtures/eval` (`corpusId: adr-corpus-v1`)
 - **Census** (echoed from `report.json`'s own `census` member):
@@ -170,9 +172,14 @@ same build's wall-clock cost instead:
 
 ```json
 "comparison": {
-  "nodes": {"clean": 26, "full": 28}
+  "nodes": {"clean-raptor": 26, "full-raptor": 28}
 }
 ```
+
+Keyed `-raptor`, matching `timings.json`'s own `indexBuild` keys for these
+same builds: a bare `full`/`clean` key here would answer two different
+questions under one name (`indexBuild.full.nodes` is the BASE build's
+forest, always `0`; this is the RAPTOR build's).
 
 **`raptor.equality.channel`** — the raptor pair's own equality entries,
 reported rather than asserted the same way #787's channel already is, but for
@@ -189,6 +196,7 @@ number, which is why it is reported here rather than folded into that claim:
 "raptor": {
   "equality": {
     "channel": {
+      "reason": "recorded channel, T-17a family and RAPTOR summary routing (ADR-0008 decision 8, GHSA-97q9's raptorPath territory); not a disclosure finding because includeUnapproved is a request parameter (not a grant) and the Core is one-principal (#119); reachable only under the operator's --include-unapproved AND --raptor build, absent from the shipped default.",
       "atLimit": {"queriesDiffering": 20, "of": 26},
       "atEqualityLimit": {"queriesDiffering": 21, "of": 26}
     }
@@ -196,34 +204,45 @@ number, which is why it is reported here rather than folded into that claim:
 }
 ```
 
+`reason` is its own string, not the base arm's `_CHANNEL_REASON` reused: that
+one names `--include-unapproved` alone as the reachable condition, which
+under-describes this channel -- reaching it also needs `--raptor`.
+
 **`comparison.byClass`/`comparison.overall`** — raptor-on minus raptor-off,
 over the `full`-corpus default-flag runs (deltas only, no judgement about
 whether a move is good or bad, matching decision 4's own convention above):
 
-| class | n | ΔRecall@1 | ΔRecall@5 | ΔRecall@10 | ΔMRR |
-| :-- | --: | --: | --: | --: | --: |
-| broad-architectural | 3 | 0.25 | -0.083333 | 0.0 | 0.416667 |
-| conflicting | 2 | 0.0 | 0.0 | 0.0 | 0.0 |
-| cross-adr | 3 | -0.666667 | -0.333333 | 0.0 | -0.683333 |
-| exact-decision | 8 | 0.0 | 0.0 | 0.0 | -0.001736 |
-| rejected-alternative | 3 | -0.666667 | 0.0 | 0.0 | -0.444444 |
-| superseded | 3 | 0.0 | 0.0 | 0.0 | 0.0 |
-| unknown | 4 | — | — | — | — |
-| **overall** | 26 | -0.147727 | -0.056818 | 0.0 | -0.097601 |
+| class | n | ΔRecall@1 | ΔRecall@5 | ΔRecall@10 | ΔMRR | ΔevidencePrecision | ΔabstentionAccuracy | ΔsupersededKnowledgeErrorRate |
+| :-- | --: | --: | --: | --: | --: | --: | --: | --: |
+| broad-architectural | 3 | 0.25 | -0.083333 | 0.0 | 0.416667 | — | — | — |
+| conflicting | 2 | 0.0 | 0.0 | 0.0 | 0.0 | — | — | — |
+| cross-adr | 3 | -0.666667 | -0.333333 | 0.0 | -0.683333 | 0.0 | — | — |
+| exact-decision | 8 | 0.0 | 0.0 | 0.0 | -0.001736 | 0.0 | — | 0.0 |
+| rejected-alternative | 3 | -0.666667 | 0.0 | 0.0 | -0.444444 | 0.018519 | — | — |
+| superseded | 3 | 0.0 | 0.0 | 0.0 | 0.0 | — | — | 0.0 |
+| unknown | 4 | — | — | — | — | — | 0.0 | 0.0 |
+| **overall** | 26 | -0.147727 | -0.056818 | 0.0 | -0.097601 | 0.006173 | 0.0 | 0.0 |
 
-`unknown` carries no delta: every query in that class is an abstention
-probe with no judged `relevant` item, so both arms' `recallAtK`/`mrr` read
-`None` for it (the same `_aggregate_entries` denominator-empty convention the
-base arm's own table follows), and a delta between two `None`s is `None`
-rather than a false zero.
+Every `_aggregate_entries` family gets a delta, not only recall/MRR: a class
+or k either arm has no sample for (`—` above) follows the same
+`None`-for-empty-denominator convention the base arm's own table follows,
+and stays `—` rather than a false zero. `rejected-alternative`'s
+`evidencePrecision` moves +0.018519 (+16% relative to its base figure of
+0.115741 above), the only nonzero movement among the three families beyond
+recall/MRR — omitted from the block before this round, which is why every
+family is published now rather than only two of five. `unknown` carries no
+recall/MRR/evidencePrecision delta (every query in that class is an
+abstention probe with no judged `relevant` item, so both arms read `None`
+there), but its `abstentionAccuracy` and `supersededKnowledgeErrorRate`
+deltas are real measurements (`0.0`, flat), not absent ones.
 
 **Raptor build cost** (`timings.json`, outside the byte-identity property,
 same as the Environment section above):
 
 | | nodes | wallClockMs | indexBytes |
 | :-- | --: | --: | --: |
-| `full-raptor` | 28 | 1409.424 | 4636672 |
-| `clean-raptor` | 26 | 1392.769 | 4554752 |
+| `full-raptor` | 28 | 1463.681 | 4636672 |
+| `clean-raptor` | 26 | 1386.26 | 4554752 |
 
 ## Re-check commands
 

@@ -110,9 +110,10 @@ jobs:
   # guard: a job that runs and finds nothing costs one run, and narrowing costs
   # keeping two filters in step by hand). `retrieval-baseline` below earns a
   # narrower gate anyway, because its own cost is not "one wasted run" -- it
-  # rebuilds two SQLite indexes and runs the whole harness query set -- and
-  # because "a path that can move retrieval quality" is a small, nameable set,
-  # unlike the corpus-governance guard's population.
+  # rebuilds four SQLite indexes (the base pair plus the raptor-on pair,
+  # Phase A slice S4c) and runs the whole harness query set against each pair
+  # -- and because "a path that can move retrieval quality" is a small,
+  # nameable set, unlike the corpus-governance guard's population.
   #
   # `pyproject.toml` and `uv.lock` are deliberately not in `retrieval`'s own
   # list below, and the reason is not that cost: it is that both are already
@@ -226,9 +227,9 @@ jobs:
   #
   # A sibling job, not a step tacked onto `test` above, for two reasons. First,
   # `test` runs the harness once per matrix leg already (`test_baseline_current
-  # .py`, `test_harness_pins.py`) -- adding this here would rebuild both SQLite
-  # indexes and re-run every query a second time, on both operating systems,
-  # for a check whose answer does not depend on the matrix. Second, GitHub
+  # .py`, `test_harness_pins.py`) -- adding this here would rebuild all four
+  # SQLite indexes and re-run every query a second time, on both operating
+  # systems, for a check whose answer does not depend on the matrix. Second, GitHub
   # skips the remaining steps in a job once one step fails: bolted onto `test`,
   # this step would never run on exactly the pull requests most likely to have
   # moved the baseline without updating it -- the one case its own output is
@@ -241,10 +242,13 @@ jobs:
   retrieval-baseline:
     name: Retrieval baseline comparison (advisory)
     runs-on: ubuntu-latest
-    # The harness builds two indexes and runs the full query set once; measured
-    # under two minutes locally. Sized like `corpus-drift` in `shared.yml`
-    # (10) plus margin for a colder runner and index build, not off an
-    # observed CI tail -- there is no run history for this job yet.
+    # The harness builds four indexes (the base pair plus the raptor-on pair,
+    # Phase A slice S4c) and runs the full query set against each pair once;
+    # measured ~15s locally, this job's own command (`uv run python
+    # tools/eval/compare_baseline.py --advisory --format github`). Sized like
+    # `corpus-drift` in `shared.yml` (10) plus margin for a colder runner and
+    # index build, not off an observed CI tail -- there is no run history for
+    # this job yet.
     timeout-minutes: 15
     needs: changes
     if: needs.changes.outputs.retrieval == 'true'
