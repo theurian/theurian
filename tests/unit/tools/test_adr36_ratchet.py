@@ -47,9 +47,15 @@ REPORT_PY = _HARNESS_DIR / "report.py"
 JUDGEMENTS_SCHEMA = _HARNESS_DIR / "schemas" / "judgements.schema.json"
 
 
-def _section(text: str, start_marker: str, end_marker: str) -> str:
-    """The substring between two stable, unique markers -- the ADR's own words."""
+def _section(text: str, start_marker: str, end_marker: str | None) -> str:
+    """The substring between two stable, unique markers -- the ADR's own words.
+
+    ``end_marker=None`` bounds the section at end of text, for a block with no
+    following heading or paragraph to end on.
+    """
     start = text.index(start_marker)
+    if end_marker is None:
+        return text[start:]
     end = text.index(end_marker, start)
     return text[start:end]
 
@@ -119,11 +125,15 @@ _S4_COMPLIANCE_END = "\n**Nothing in this ADR is owed to a later phase"
 
 #: Amendment 2's block, appended after every marker above. It cites the pin
 #: that exercises the restated sensitivity clause, so it joins this population
-#: in the same commit that lands it rather than being hand-checked once. The
-#: block ends at its own closing paragraph, the last stable unique text in the
-#: file.
+#: in the same commit that lands it rather than being hand-checked once. Ends
+#: at end of file, not at its closing paragraph's opening bold: Amendment 2 is
+#: the file's last section, with no following ``## `` heading, and bounding at
+#: the paragraph's own opening words left that paragraph's body -- where a
+#: cited test name would land -- outside the block (a code-review MEDIUM,
+#: PR #803 round two: a citation appended there would escape this population
+#: silently).
 _AMENDMENT_2_START = "## Amendment 2 — `createItem.sensitivity` is the base"
-_AMENDMENT_2_END = "\n**Nothing else in this ADR moves."
+_AMENDMENT_2_END: str | None = None
 
 #: A backtick-quoted test identifier, ``path::test_name`` or a bare
 #: ``test_name`` -- the two forms both blocks below actually use. Group 1 is
@@ -147,7 +157,7 @@ _CITED_TEST_SECTIONS = (
 
 
 def _cited_test_citations(
-    start_marker: str, end_marker: str, adr_path: Path = ADR
+    start_marker: str, end_marker: str | None, adr_path: Path = ADR
 ) -> list[tuple[str, str]]:
     """Every ``(path, test name)`` pair one block of the ADR cites -- path
     ``""`` for a bare citation -- parsed from the ADR's own text.
@@ -220,7 +230,7 @@ def collected_test_node_ids() -> list[tuple[str, str]]:
 
 @pytest.mark.parametrize(("start_marker", "end_marker"), _CITED_TEST_SECTIONS)
 def test_every_test_name_cited_in_the_adrs_s2_compliance_block_collects(
-    start_marker: str, end_marker: str, collected_test_node_ids: list[tuple[str, str]]
+    start_marker: str, end_marker: str | None, collected_test_node_ids: list[tuple[str, str]]
 ) -> None:
     """A renamed, moved or deleted pin reddens the ADR's own citation record.
 
@@ -363,12 +373,12 @@ def test_amendment_2s_restated_clause_carries_both_the_base_and_fallback_halves(
     assert _CREATEITEM_SENSITIVITY_IS_THE_BASE in block, (
         f"Amendment 2's block no longer names createItem.sensitivity as the "
         f"sensitivity fold's base -- reverted toward Amendment 1's no-base "
-        f"wording (between {_AMENDMENT_2_START!r} and {_AMENDMENT_2_END!r})"
+        f"wording (from {_AMENDMENT_2_START!r} through end of file)"
     )
     assert _DEFAULT_SENSITIVITY_IS_THE_FALLBACK in block, (
         f"Amendment 2's block no longer names DEFAULT_SENSITIVITY as the "
         f"base's fallback when createItem omits the optional field "
-        f"(between {_AMENDMENT_2_START!r} and {_AMENDMENT_2_END!r})"
+        f"(from {_AMENDMENT_2_START!r} through end of file)"
     )
 
 
