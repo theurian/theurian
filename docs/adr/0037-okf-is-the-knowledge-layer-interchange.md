@@ -404,13 +404,38 @@ So the split is by media type:
   path with the body's own extension, and the concept's body carries an ordinary
   Markdown link to it plus a `theurian_body_file` key holding the same path. The
   dual-channel shape of decision 4 again: OKF's own channel for a consumer that
-  reads links, a namespaced key for one that reads front matter. The extension
-  comes from `domain/proposal.py::body_extension`, the same function the
-  canonical write path uses, and its recorded refusal is the behaviour the export
-  wants too — an unmapped media type raises rather than guessing an extension,
-  because a mislabelled body is worse than a refused export. A sidecar is not a
-  concept document (§3.1) and carries no front matter: its concept document holds
-  the whole governance projection for the row.
+  reads links, a namespaced key for one that reads front matter. A sidecar is not
+  a concept document (§3.1) and carries no front matter: its concept document
+  holds the whole governance projection for the row.
+
+**A gate-cleared row is never refused, so the sidecar extension is a total
+function of the row's own canonical data.** Three steps, in order:
+
+1. **The canonical body file's own suffix**, when it has one. The body a
+   migration names is already a real file, and its name already ends the way the
+   author wrote it. Note that `$defs/contentFile` bounds the path's length and
+   refuses an absolute one, and constrains the suffix not at all — so this step
+   is "the recorded suffix if there is one", never "the suffix there must be".
+2. **Otherwise the media type's own structured-suffix rule** — `+json` → `.json`,
+   `+yaml` → `.yaml` — mirroring the `endswith(("+json", "+yaml"))` half of
+   `domain/values.py::MediaType.is_structured`, so the bundle spells a type the
+   same way the domain recognises it.
+3. **Otherwise `.txt`**, fixed and neutral. A body whose type says nothing about
+   its encoding still leaves the deployment intact and readable.
+
+**This is a correction, and the measurement is why.** An earlier draft took the
+extension from `domain/proposal.py::body_extension` and called that function's
+refusal desirable. `_EXTENSIONS` holds **three** entries — `text/markdown`,
+`application/json`, `application/yaml` — while `_STRUCTURED_MEDIA_TYPES` holds
+**seven** plus everything ending `+json` or `+yaml`. Measured 2026-09-24: **five
+of the seven** structured types (`application/schema+json`,
+`application/vnd.oai.openapi`, `application/vnd.oai.openapi+json`,
+`application/vnd.aai.asyncapi`, `text/x-yaml`) and `text/plain` are outside
+`_EXTENSIONS`, so the refusal would have fired on this rule's own motivating
+example — an approved OpenAPI document — and aborted the **whole** export. One
+hand-authored row would deny the entire corpus its bundle. That is the
+availability trap decision 3's population rule exists to prevent, arriving
+through the back door.
 
 **The OKF spec settles that a non-markdown member is legal, and does not merely
 tolerate it.** §3 characterises a bundle as a directory tree of markdown files,
@@ -429,7 +454,8 @@ example. A structured knowledge body is that case exactly.
 
 **Decision 3's population is untouched by any of this.** A non-markdown row is
 exported like every other row the default channel serves; the media type decides
-where its bytes go, never whether it goes. The alternatives table carries the
+where its bytes go and what its sidecar is called, never whether it goes — which
+is a property of the three-step rule above being total, not an aspiration. The alternatives table carries the
 rejected reading, and it is worth saying why it is a trap rather than merely
 wrong: excluding non-markdown rows would leave the two-corpora battery green —
 the filter is a function of the row itself, not of any withheld row — while the
@@ -651,6 +677,7 @@ other — a proposal a human reviews.
 | **Reuse `KnowledgeCandidate` for imported concepts**, as #705's "bundle → source → KnowledgeCandidate → proposal" sketch has it | `domain/review.py`'s `PromotionGate` requires seven review-shaped signals — `pull_request_merged`, `thread_resolved`, `fix_commit_present`, `not_dismissed_or_outdated`, `ci_successful`, `generalizable`, `has_evidence` — and `KnowledgeCandidate.__post_init__` raises when the gate is unsatisfied. An OKF bundle satisfies none of them, so reuse means fabricating review facts or weakening the gate for every candidate, review-derived ones included. What the type is kept for is its *precedent*: the `INFERRED` ceiling of decision 6. |
 | **Extend `RelationType` so OKF's untyped links have a home** | Enum extension is roadmap §9 ADR candidate 3, which owes a compatibility policy first; and the problem is not a missing member. An untyped link is untyped, and decision 5 is the answer to it. |
 | **Export only the markdown-bodied rows, leaving structured knowledge out of the bundle** | It breaks decision 3's population rule — the bundle would no longer be the rows this deployment serves — and it drops governed knowledge from an artifact that says it carries the approved corpus. **The trap is that nothing would catch it:** the filter is a function of the row's own media type, not of any withheld row, so the two-corpora battery stays green while the bundle omits every OpenAPI document and JSON Schema in the corpus. A green battery would have asserted nothing about the omission. |
+| **Take the sidecar extension from `body_extension`, refusing an unmapped media type** | The first draft of the sidecar rule did this and called the refusal a virtue. Measured 2026-09-24: `_EXTENSIONS` holds three media types against `_STRUCTURED_MEDIA_TYPES`' seven-plus, so **five of the seven** structured types and `text/plain` would refuse — including `application/vnd.oai.openapi`, the rule's own motivating example. Worse, the refusal is not per-row: one hand-authored row denies the whole corpus its export. A gate-cleared row must never be refused, which is why the three-step derivation above is total. |
 | **Fence a non-markdown body inside its concept document instead of writing a sidecar** | It converts what [ADR-0010](0010-three-layer-knowledge-model.md) rule 5 and the schema's own `contentType` description say to *preserve*, and it does so silently: a consumer gets YAML wrapped in Markdown, no longer byte-identical to the canonical body and no longer parseable without unwrapping it first. The spec makes the choice unnecessary — §10.3 offers the file form for content "already kept as a real file shared with non-OKF tooling", which is this case. It stays the fallback only if a future spec revision forbids non-`.md` members, and it would then be recorded as a conversion, not presented as a projection. |
 | **Derive the bundle path from `namespace`** | `namespace` is free text where `../` is spellable; `domain/proposal.py::body_relative_path` already refuses it for exactly this reason, and a bundle is a directory tree, so the failure is writing outside the bundle root. |
 
@@ -703,7 +730,10 @@ Still owed, with the slice that will satisfy it:
   item id, so a crafted `namespace` cannot reach a path component; and a pin that
   a non-markdown row exports as a sidecar whose bytes equal the canonical body,
   with the row present in the bundle either way — the property the two-corpora
-  battery cannot see, per the alternatives table's first new row.
+  battery cannot see, per the alternatives table's first new row. With it, a pin
+  that **an approved row whose media type is outside `_EXTENSIONS` exports as a
+  sidecar rather than refusing**, since that is where the first draft's refusal
+  would have fired.
 - **Slice S3 (import):** that a bundle carrying only bare Markdown links yields a
   drafted migration with **no** `addRelation` operation (decision 5); that an
   import lands only under a proposal directory and reaches no approved state
