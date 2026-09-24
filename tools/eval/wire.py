@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final, Protocol
@@ -27,15 +27,21 @@ from theurian.daemon.server import DaemonConfig, build_app
 from theurian.security.tokens import generate_token
 
 #: MCPServer.__init__ unconditionally calls the SDK's own configure_logging(),
-#: which installs a rich stderr handler at INFO on the root logger the first
-#: time this harness constructs one -- burying a run's own output under a
-#: session-id line per session and an HTTP-request line per call (#796). The
-#: request line is logged by ``httpx2`` (this dependency's actual import
-#: name; ``logging.getLogger("httpx")`` matches nothing here and leaves the
-#: noise in place). Quieted here, in this module alone, rather than at the
-#: root logger: a future harness log statement must still reach stderr.
-for _name in ("mcp", "httpx2"):
-    logging.getLogger(_name).setLevel(logging.WARNING)
+#: which installs a rich stderr handler at INFO the first time this harness
+#: constructs one -- burying a run's own output under a session-id line per
+#: session and an HTTP-request line per call (#796). The request line is
+#: logged by ``httpx2`` (this dependency's actual import name;
+#: ``logging.getLogger("httpx")`` matches nothing here and leaves the noise in
+#: place). Quieted for the lifetime of one :func:`mcp_session` only, restoring
+#: each logger's prior level on exit -- never at the root logger, and never as
+#: a lasting process-global mutation: a bare module-level ``setLevel`` here
+#: silenced both loggers for an importing process's whole lifetime (measured:
+#: ``logging.getLogger(n).level`` for ``n`` in ("mcp", "httpx2") read 0, 0
+#: before ``import wire`` and 30, 30 -- WARNING -- after, with nothing ever
+#: restoring them), which is why two integration test modules that import this
+#: one at collection time silenced both trees for every other test in the same
+#: pytest session.
+_QUIETED_LOGGERS: Final = ("mcp", "httpx2")
 
 TOKEN: Final = generate_token()
 PROTOCOL_VERSION: Final = "2025-06-18"
@@ -99,38 +105,44 @@ def mcp_session(server: MCPServer, data_dir: Path) -> Iterator[ToolCall]:
     config = DaemonConfig(
         token=TOKEN, data_dir=data_dir, port=PORT, started_at=datetime.now(UTC).isoformat()
     )
-    with TestClient(build_app(config, server), base_url=BASE_URL) as client:
-        opened = client.post("/mcp", json=_INITIALIZE, headers=_headers())
-        if opened.status_code != _HTTP_OK:
-            raise RuntimeError(f"MCP handshake failed: {opened.status_code} {opened.text}")
-        session = opened.headers["mcp-session-id"]
-        client.post(
-            "/mcp",
-            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
-            headers=_headers(session),
-        )
+    with ExitStack() as quiet:
+        for name in _QUIETED_LOGGERS:
+            logger = logging.getLogger(name)
+            quiet.callback(logger.setLevel, logger.level)
+            logger.setLevel(logging.WARNING)
 
-        def call(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
-            response = client.post(
+        with TestClient(build_app(config, server), base_url=BASE_URL) as client:
+            opened = client.post("/mcp", json=_INITIALIZE, headers=_headers())
+            if opened.status_code != _HTTP_OK:
+                raise RuntimeError(f"MCP handshake failed: {opened.status_code} {opened.text}")
+            session = opened.headers["mcp-session-id"]
+            client.post(
                 "/mcp",
-                json={
-                    "jsonrpc": "2.0",
-                    "id": 2,
-                    "method": "tools/call",
-                    "params": {"name": tool, "arguments": arguments},
-                },
+                json={"jsonrpc": "2.0", "method": "notifications/initialized"},
                 headers=_headers(session),
             )
-            if response.status_code != _HTTP_OK:
-                raise RuntimeError(f"tools/call failed: {response.status_code} {response.text}")
-            result = _payload(response).get("result")
-            if not isinstance(result, dict):
-                raise RuntimeError(f"malformed tools/call response for {tool!r}: {result!r}")
-            if result.get("isError"):
-                raise RuntimeError(f"`{tool}` returned an error: {result}")
-            structured = result.get("structuredContent")
-            if not isinstance(structured, dict):
-                raise RuntimeError(f"`{tool}` published no structuredContent: {result!r}")
-            return structured
 
-        yield call
+            def call(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+                response = client.post(
+                    "/mcp",
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/call",
+                        "params": {"name": tool, "arguments": arguments},
+                    },
+                    headers=_headers(session),
+                )
+                if response.status_code != _HTTP_OK:
+                    raise RuntimeError(f"tools/call failed: {response.status_code} {response.text}")
+                result = _payload(response).get("result")
+                if not isinstance(result, dict):
+                    raise RuntimeError(f"malformed tools/call response for {tool!r}: {result!r}")
+                if result.get("isError"):
+                    raise RuntimeError(f"`{tool}` returned an error: {result}")
+                structured = result.get("structuredContent")
+                if not isinstance(structured, dict):
+                    raise RuntimeError(f"`{tool}` published no structuredContent: {result!r}")
+                return structured
+
+            yield call
