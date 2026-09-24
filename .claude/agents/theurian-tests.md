@@ -170,3 +170,21 @@ record](https://github.com/theurian/theurian/pull/744#issuecomment-5739349093)).
 Then the encoding face the 0.4.0 anchored pass found (PR #766 HIGH-1): the
 pinning fixture decoded with `errors="replace"`, holding an encodable U+FFFD, so
 it could not produce the surrogate shape its own name claimed.
+
+## A population's count is stale the moment it moves
+
+A count or membership claim over a moving population must never be stated as a
+live number in prose or a docstring — state the population's key (what makes
+something a member), a deriving command, and one dated measurement instead.
+When asked to reconcile a count, RUN the deriving command: a hand-audit of a
+candidate list is the failure mode this rule exists to catch, not a lighter
+form of compliance. When a population has more than two outcome kinds (skip,
+fail, error-at-collection, …), name the taxonomy rather than collapsing it to
+two, or the third kind goes uncounted. The worked example is
+`tools/mutate.py`'s `_lend_git_objects` docstring (PR #802): round one
+restated the with-git population as "five" after the population's own prior
+fix (#788) had added two members, and round two "fixed" it to "seven" by
+hand-auditing a candidate list after an explicit instruction to derive it by
+command — a HIGH then found members the hand-audit still missed, including a
+collection-error outcome the skip/fail taxonomy had no word for. Burned in
+after that recurrence, twice in one PR.
