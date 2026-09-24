@@ -642,6 +642,9 @@ sensitivity within the deployment's serving ceiling. Such a row enters the `full
 index and is withheld by the query-time gate, so the response-equality battery
 decision 6 fixes is what tests it.
 
+*Amended in Amendment 2 (PR #803):* the sensitivity clause's base is
+`createItem.sensitivity`, not the first revision.
+
 Every other withheld member is **census-tested**. It is excluded before the index
 — `confidential` and `restricted` by the build ceiling
 ([ADR-0025](0025-sensitivity-is-enforced-before-0-1-0-stable.md)), `superseded`,
