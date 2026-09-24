@@ -954,7 +954,7 @@ within-ceiling, visible-plane — is scoped to `enabled: true`.
 > fold change is reachable from `origin/main` as this is written, and a
 > squash-merge replaces the branch with one new commit, so a sha or a commit
 > subject would resolve on no ref the moment it lands — the reason Amendment 1
-> cites #778 and #780 the same way.
+> cites its pull requests the same way.
 
 ### The sensitivity clause, restated
 
