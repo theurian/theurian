@@ -74,16 +74,16 @@ every test (or, for one module, the collection step itself) whose outcome
 under a gitless copy differs from its outcome under a ``--with-git`` twin of
 the same commit -- stated as a key and a command, not as a count, because the
 count has been wrong every time it was stated as one: four (2026-08-31), five
-(#679), seven (#788) and twenty-five (PR #802), each an honest hand-audit
-under a narrower key than the one above. Read `_lend_git_objects`'s docstring
-for what the population actually contains today and how to re-measure it.
+(#679), seven (#788), each an honest hand-audit under a narrower key than the
+one above. Read `_lend_git_objects`'s docstring for the current,
+command-derived figure and what the population actually contains today.
 Without the flag, the population's *skip*-type members run nothing and report
 SURVIVED with no sign the harness missed the check; its *fail*-type members
 and the one module that cannot even be collected instead turn the unmutated
-control red, which correctly voids the batch, but only once someone reads that
-flag rather than the KILLED verdicts it produced (see `_lend_git_objects` for
-which is which). The cost of lending the objects is per-tree, not per-batch,
-and the durable figure is
+control red, which correctly voids the batch, but only once someone reads
+that flag rather than the KILLED verdicts it produced (see
+`_lend_git_objects` for which is which). The cost of lending the objects is
+per-tree, not per-batch, and the durable figure is
 machine-independent -- ~104 KB of copied ``.git`` bytes (measured
 2026-08-31). The working copy itself is not: ~13 MB on a clean checkout,
 measured up to ~124 MB on a developer machine carrying other agents'
@@ -547,12 +547,23 @@ def _lend_git_objects(destination: Path) -> None:
 
     Command: from a plain clone (``--with-git`` refuses inside a linked
     worktree or a bare checkout), build one tree of each kind at the same
-    commit, then run each with ``-q -rA --tb=no --continue-on-collection-errors``
+    commit::
+
+        uv run python tools/mutate.py --prepare-tree --work-dir <bare-dir> \\
+            --file <f> --old <a> --new <b> --label bare
+        uv run python tools/mutate.py --prepare-tree --with-git --work-dir <git-dir> \\
+            --file <f> --old <a> --new <b> --label wg
+
+    then, having cleared each tree's ``__pycache__`` (a stale ``.pyc`` left from
+    an earlier run is a recorded source of a false verdict), run each with::
+
+        sh <dir>/tree-0/.mutate-run -q -rA --tb=no --continue-on-collection-errors
+
     (the last flag matters: one member below is a collection error, and without
     it pytest aborts before running anything else) and diff the PASSED / FAILED
     / SKIPPED / ERROR lines.
 
-    Measured 2026-09-25, PR #802 -- 25 members, none of them read a blob alone:
+    Measured 2026-09-25, PR #802 -- 25 members:
 
     - **Skip under the gitless tree, pass under ``--with-git`` (5):**
       ``test_dogfood_corpus_governance.py::test_every_pinned_body_is_byte
