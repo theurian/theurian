@@ -302,13 +302,34 @@ its bound and what checks it.**
 
 | Family | Bound | Check |
 | :-- | :-- | :-- |
-| **Paths and names** | The stem from the item id's own dotted segments — never the `namespace` field, which decision 7's containment argument bars from paths — the extension from `contentType`, bounded to `{.json, .yaml, .txt}`, and the positional reserved-name escape | The emission walk, since names derive from walked emissions; S2's collision and escape pins |
-| **Concept front matter** | The measured served union plus the recorded widenings (decision 7), plus exactly two exporter constants: `theurian_export_version` and `generated.by`, which the invariant's own *and the exporter's own version* clause admits | The inventory walk pin, landing with this pull request |
-| **Concept body** | The canonical body, plus the generated `## Relations` section, which renders only the served relation triple `{type, target, note}` of relations visible at both endpoints — link text included, being the triple's `target` (decision 4) — in the stated `(type, target)` order | Prose here; S2's bytes battery |
+| **Paths and names** | The stem from the item id's own dotted segments — never the `namespace` field, which decision 7's containment argument bars from paths — a sidecar's extension from `contentType`, bounded to `{.json, .yaml, .txt}`, and where the positional reserved-name escape fires | For the stem and the sidecar extension, the emission walk, since both derive from walked emissions (`itemId`, `contentType`); the structural names they are spelled with — a concept document's own `.md`, the three reserved names, the `_item` suffix — are the seventh family's. S2's collision and escape pins |
+| **Concept front matter** | The measured served union plus the recorded widenings (decision 7), plus the two exporter constants: `theurian_export_version`, the mapping version of decision 7's table, and `generated.by`, the tool actor of §7 — both admitted by the invariant's own *and the exporter's own version* clause. This bounds the family's **front-matter keys**, not every constant spelling in the bundle: the document's structure around them is the seventh family's | The inventory walk pin, landing with this pull request |
+| **Concept body** | When `contentType` is `text/markdown`, the canonical body; otherwise the generated sidecar-link paragraph, whose link text *and* target are both the sidecar's own derived filename — `theurian_body_file`'s derivation and not a second one, the stem from the item id and the extension from `contentType`, both served (decision 7). Either way, plus the generated `## Relations` section, which renders only the served relation triple `{type, target, note}` of relations visible at both endpoints — link text included, being the triple's `target` (decision 4) — in the stated `(type, target)` order. The frame around both — the heading, and the fixed wording the link sits in — is the seventh family's | Prose here; S2's bytes battery |
 | **Sidecar bytes** | The snapshot's `body` column, byte for byte | S2's bytes-equal pin |
-| **Index files** | Per decision 2 above: one per directory, a single section headed by the directory's path component, entries of title and bundle-absolute path drawn from walked emissions, path-ordered, no description | Prose here; S2's determinism battery |
+| **Index files** | Per decision 2 above: one per directory, a single section headed by the directory's path component, entries of title and bundle-absolute path drawn from walked emissions — a subdirectory entry's title being that path component, derived from item ids rather than from any walked `title` — path-ordered, no description | Prose here; S2's determinism battery |
 | **The manifest** | Fixed text (`type`, the holder notice), `theurian_export_version` as a constant, and `theurian_bundle_digest` as a function of the bundle's own files in the stated path order | The manifest field-set paragraph above; S2's determinism battery |
-| **Bundle-structural constants** | `okf_version: "0.2"` on the root `index.md`, fixed by this ADR from the spec version it targets, and the root index heading `# Theurian Bundle`. The rule that the export writes no `log.md` belongs here as the absence it names | Prose here; S2's determinism battery sees each as a byte of a walked file |
+| **Bundle-structural constants** | **Every byte the exporter renders that projects no row value.** The class bound is that each is a constant of the exporter version: its spelling is fixed before any row is read, so no member varies with a corpus or with a run. Enumerated — the concept skeleton (the front-matter fences, the `## Relations` heading, the fixed wording the sidecar link sits in); a concept document's own `.md` extension; the reserved names `index.md`, `log.md` and `theurian-bundle.md`, and the `_item` escape suffix; the index entry syntax — the list marker `*`, then the bracketed title, then the parenthesized bundle-absolute path, §8's own form; `okf_version: "0.2"` on the root `index.md`, fixed by this ADR from the spec version it targets; the root index heading `# Theurian Bundle`; and the absence the no-`log.md` rule names | Prose here; S2's determinism battery and decision 3's two-corpora battery, which quantify over every byte of the bundle and so redden on a member of this family that varied. Neither can see a member missing from the enumeration — the paragraph below says why |
+
+**What the batteries close, and what only the enumeration closes.** S2's
+determinism battery and decision 3's two-corpora battery quantify over every byte
+of the bundle, so they hold the invariant itself in the two directions it names:
+no byte varies with a withheld row, and none varies with when the export ran.
+That is what checks the seventh family's class bound, and it is **not** a proof
+of the partition. A byte belonging to no family at all is still corpus-invariant
+and still deterministic — which is exactly what the concept document's `.md`
+extension, the index entry's list marker and `okf_version` were, sitting outside
+every bound, and neither battery would have said anything about any of them once
+S2 lands it. **The partition is closed by reading this table; what the pins hold
+is the enumeration's shape** — the seven family names, and every row stating both
+a bound and a check — and the ratchet below is what keeps the reading current.
+
+**Row text rendered into structural syntax is escaped, and the exact rule is
+S2's.** An index entry's title and a relation line's `note` are row values placed
+where Markdown means something: a title carrying a bracket followed by a
+parenthesis closes the entry's link early, and a note beginning with a run of `#`
+reads as a heading and splits the `## Relations` section. Neither may forge
+structure, so both are rendered with Markdown-syntax escaping. What the escape
+covers and the pin that drives it are S2's, and *Compliance* carries it as owed.
 
 **The ratchet, in prose, so the next design change cannot repeat the last two:**
 a new byte source takes a row in this table *first*. Not a bound widened to
@@ -633,7 +654,9 @@ So the split is by media type:
   as everywhere else in this ADR.
 - **Anything else** is written beside its concept document, at the concept's own
   path with the body's own extension, and the concept's body carries an ordinary
-  Markdown link to it plus a `theurian_body_file` key holding the same path. The
+  Markdown link to it — **its link text is that same derived filename**, never
+  the canonical body file's author-written name — plus a `theurian_body_file`
+  key holding the same path. The
   dual-channel shape of decision 4 again: OKF's own channel for a consumer that
   reads links, a namespaced key for one that reads front matter. A sidecar is not
   a concept document (§3.1) and carries no front matter: its concept document
