@@ -360,17 +360,30 @@ def _query_metrics_key_set() -> frozenset[str]:
 
 
 def test_the_787_tripwire_published_per_query_metric_key_set_equals_todays_expected_set() -> None:
-    """PURPOSE: designed to go RED when #787's channel-report member lands.
+    """Not a frozen contract -- a deliberate tripwire, and #787 has already
+    tripped it once (past tense, corrected: the ADR now records both members
+    implemented, not owed).
 
-    This is not a frozen contract -- it is a deliberate tripwire. #787 owns
-    landing a new report field that reports the collection-statistics
-    channel Amendment 1's rider 1 records as unasserted (a count, not an
-    equality). The moment that field's key appears in
-    ``report._query_metrics``, this reddens, and that RED is the signal to
-    move ADR-0036's "recorded channel, reported with a count" sentence from
-    *owed* to *implemented* and update :data:`EXPECTED_QUERY_METRIC_KEYS` in
-    the same commit. Staying green after #787 lands would mean the ADR's
-    record silently fell out of sync with what the harness actually publishes.
+    The tripwire's originally stated target -- the collection-statistics
+    channel Amendment 1's rider 1 recorded as unasserted -- landed as
+    ``equality.channel``, a member of ``build_report``'s own return dict built
+    by ``_channel_summary``, never a key ``_query_metrics`` writes. This
+    tripwire, scoped to ``_query_metrics``'s own AST (see
+    :func:`_query_metrics_key_set`), could never have caught it landing --
+    that claim was wrong from the start. What actually tripped it was
+    ``abstentionCause``, #787's other member and a genuine per-query key,
+    added to :data:`EXPECTED_QUERY_METRIC_KEYS` in the same commit that
+    introduced it (5955989a), the owed-to-implemented signal this file's own
+    module docstring describes. ``equality.channel`` is held instead by
+    ``test_the_equality_channel_summary_carries_the_787_reason_verbatim_and_the_measured_counts``
+    (``tests/integration/tools/test_harness_pins.py``), a section-level pin
+    outside this snapshot's reach.
+
+    The snapshot now guards whichever per-query key ``_query_metrics`` gains
+    next: the moment one appears here uninvited, this reddens, and that RED
+    is the signal to decide -- in the same commit -- whether the new key
+    belongs in :data:`EXPECTED_QUERY_METRIC_KEYS` and whether some ADR
+    sentence needs to move with it.
     """
     assert _query_metrics_key_set() == EXPECTED_QUERY_METRIC_KEYS
 
@@ -460,15 +473,20 @@ def _synthetic_report() -> dict[str, Any]:
     UNIT-weight instrument: a genuine call into the module under test, not a
     guess about its shape, and no SQLite or subprocess required to make it.
 
-    Two queries, not one: a single-corpus query alone never takes
-    ``report.py``'s conditional branches -- the ``forbiddenPresentCause``
-    cause, the ``atEqualityLimit`` wrapper key, or the equality section's own
-    ``limit``/``differingFields``/``atLimit`` keys -- so a verdict key added
+    Three queries, not one: a single-corpus, non-abstention query alone never
+    takes ``report.py``'s conditional branches -- the ``forbiddenPresentCause``
+    cause, the ``atEqualityLimit`` wrapper key, the equality section's own
+    ``limit``/``differingFields``/``atLimit`` keys, or ``abstentionCause`` and
+    its sibling top-level ``abstentionProbe`` member -- so a verdict key added
     only inside one of them could hide from the no-verdict-key scan below by
     simply never being built. ``q-equality`` runs against ``("full",
     "clean")`` to take the equality branches; ``q``'s forbidden item is
     classified census-tested in ``withheld_coverage`` to take the
-    ``forbiddenPresentCause`` branch. The reach test below checks this
+    ``forbiddenPresentCause`` branch; ``q-abstention`` pairs an empty
+    default-flags ``full`` response with an ``include_unapproved=True`` probe
+    run at the same limit (the NEW per-limit shape, e49c6520) returning a hit,
+    so ``_abstention_cause`` takes its gate-earned branch and ``build_report``
+    gains its ``abstentionProbe`` member. The reach test below checks this
     premise rather than assuming it.
     """
     manifest = harness_corpus.Manifest(
@@ -489,6 +507,9 @@ def _synthetic_report() -> dict[str, Any]:
         enabled=True,
         corpora=("full", "clean"),
     )
+    abstention_query = harness_corpus.QueryEntry(
+        id="q-abstention", query_class="unknown", query="text", enabled=True, corpora=("full",)
+    )
     base_judgement = harness_corpus.JudgementEntry(
         query_id="q",
         relevant=(harness_corpus.JudgedItem(item_id="a"),),
@@ -503,6 +524,13 @@ def _synthetic_report() -> dict[str, Any]:
         forbidden=(),
         expect_abstention=False,
     )
+    abstention_judgement = harness_corpus.JudgementEntry(
+        query_id="q-abstention",
+        relevant=(),
+        evidence=(),
+        forbidden=(),
+        expect_abstention=True,
+    )
     withheld_coverage = (
         harness_corpus.WithheldItemCoverage(
             item_id="w",
@@ -514,8 +542,8 @@ def _synthetic_report() -> dict[str, Any]:
     loaded = harness_corpus.Corpus(
         root=Path(),
         manifest=manifest,
-        queries=(base_query, equality_query),
-        judgements=(base_judgement, equality_judgement),
+        queries=(base_query, equality_query, abstention_query),
+        judgements=(base_judgement, equality_judgement, abstention_judgement),
         withheld_coverage=withheld_coverage,
     )
     constants = harness_report.HarnessConstants(
@@ -527,6 +555,7 @@ def _synthetic_report() -> dict[str, Any]:
         build_ceiling="internal",
     )
     response: dict[str, Any] = {"count": 1, "results": [{"itemId": "a", "sourceAnchors": []}]}
+    empty_response: dict[str, Any] = {"count": 0, "results": []}
     runs = [
         harness_report.QueryRun(
             query_id="q", corpus="full", limit=10, response=response, latency_ms=1.0
@@ -543,6 +572,21 @@ def _synthetic_report() -> dict[str, Any]:
         harness_report.QueryRun(
             query_id="q-equality", corpus="clean", limit=50, response=response, latency_ms=1.0
         ),
+        harness_report.QueryRun(
+            query_id="q-abstention",
+            corpus="full",
+            limit=10,
+            response=empty_response,
+            latency_ms=1.0,
+        ),
+        harness_report.QueryRun(
+            query_id="q-abstention",
+            corpus="full",
+            limit=10,
+            response=response,
+            latency_ms=1.0,
+            include_unapproved=True,
+        ),
     ]
     census = {
         "full": harness_corpus.CorpusCensus(
@@ -557,10 +601,21 @@ def _synthetic_report() -> dict[str, Any]:
 
 #: Keys ``report.py`` only builds inside a conditional branch: the
 #: ``forbiddenPresentCause`` cause, the equality-query ``atEqualityLimit``
-#: wrapper, and the equality section's own ``limit``/``differingFields``/
-#: ``atLimit`` keys. A one-query, single-corpus fixture takes none of them.
+#: wrapper, the equality section's own ``limit``/``differingFields``/
+#: ``atLimit`` keys, ``abstentionCause`` (#787's gate-earned annotation), and
+#: its sibling top-level ``abstentionProbe`` member (built only when some
+#: ``QueryRun`` carries ``include_unapproved=True``). A one-query,
+#: single-corpus, non-abstention fixture takes none of them.
 _BRANCH_REACH_MARKERS = frozenset(
-    {"forbiddenPresentCause", "atEqualityLimit", "limit", "differingFields", "atLimit"}
+    {
+        "forbiddenPresentCause",
+        "atEqualityLimit",
+        "limit",
+        "differingFields",
+        "atLimit",
+        "abstentionCause",
+        "abstentionProbe",
+    }
 )
 
 

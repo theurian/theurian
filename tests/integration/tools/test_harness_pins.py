@@ -503,17 +503,24 @@ def test_census_mismatch_rule_refuses_a_manifest_whose_census_disagrees_with_a_r
 
 
 @pytest.fixture(scope="module")
-def smoke_report() -> dict[str, Any]:
-    """One ``harness_run.main`` build-and-report over the smoke corpus, shared
-    by every read-only assertion in this section -- these check what one
-    report says, not whether two runs agree (the byte-identity pin above is
-    that check).
+def smoke_run() -> tuple[dict[str, Any], dict[str, Any]]:
+    """One ``harness_run.main`` build over the smoke corpus, both artifacts --
+    shared by every read-only assertion in this section that needs
+    ``report.json``, ``timings.json``, or both. These check what one run
+    says, not whether two runs agree (the byte-identity pin above is that
+    check).
     """
     with tempfile.TemporaryDirectory(prefix="theurian-eval-smoke-report-") as out_name:
         code = harness_run.main(["--corpus", str(SMOKE_CORPUS), "--out", out_name])
         assert code == 0
         report: dict[str, Any] = json.loads((Path(out_name) / "report.json").read_text())
-        return report
+        timings: dict[str, Any] = json.loads((Path(out_name) / "timings.json").read_text())
+        return report, timings
+
+
+@pytest.fixture(scope="module")
+def smoke_report(smoke_run: tuple[dict[str, Any], dict[str, Any]]) -> dict[str, Any]:
+    return smoke_run[0]
 
 
 def test_abstention_cause_marks_the_gate_earned_sample_and_leaves_its_clean_counterpart_bare(
@@ -573,15 +580,31 @@ def test_an_abstention_query_that_returns_a_hit_of_its_own_is_not_mislabeled_gat
     assert "abstentionCause" not in entry
 
 
+#: A literal copy of ``report._CHANNEL_REASON``'s value, not a reference to
+#: the constant itself. Comparing the module's published ``reason`` against
+#: the SAME constant that produced it is structurally unfailable: an
+#: adversarial mutation replacing ``_CHANNEL_REASON``'s wording with a
+#: "single-user" paraphrase (specifically wrong -- the daemon serves many
+#: agents, #119) survived 78/78 against the constant-referencing form, since
+#: both sides of the comparison read the mutated value. This literal is the
+#: canonical test-side site for that rationale: the literal is the pin's own
+#: authority, and drifting ``_CHANNEL_REASON`` now diverges from the copy
+#: below and reds, whatever the constant says.
+_CHANNEL_REASON_LITERAL = (
+    "recorded channel, T-17a family; not a disclosure finding because "
+    "includeUnapproved is a request parameter (not a grant) and the Core is "
+    "one-principal (#119); reachable only under the operator's "
+    "--include-unapproved build, absent from the shipped default."
+)
+
+
 def test_the_equality_channel_summary_carries_the_787_reason_verbatim_and_the_measured_counts(
     smoke_report: dict[str, Any],
 ) -> None:
     """ADR-0036 Amendment 1 rider 1, #787's channel summary.
 
-    ``reason`` is pinned by exact equality against the module's own constant
-    -- a paraphrase drifting (e.g. into "single-user", specifically wrong
-    since the daemon serves many agents) is the failure this pins against,
-    not merely "some string is present". ``queriesDiffering``/``of`` are the
+    ``reason`` is pinned against ``_CHANNEL_REASON_LITERAL`` above, not
+    merely "some string is present". ``queriesDiffering``/``of`` are the
     smoke corpus's own measured counts (3 equality queries -- excluding
     non-equality ``mainframe-disaster-recovery`` and the two single-corpus
     superseded/forbidden-trap queries -- none differing beyond build
@@ -589,10 +612,27 @@ def test_the_equality_channel_summary_carries_the_787_reason_verbatim_and_the_me
     unrelated 18/26 and 21/26.
     """
     assert smoke_report["equality"]["channel"] == {
-        "reason": harness_report._CHANNEL_REASON,
+        "reason": _CHANNEL_REASON_LITERAL,
         "atLimit": {"queriesDiffering": 0, "of": 3},
         "atEqualityLimit": {"queriesDiffering": 0, "of": 3},
     }
+
+
+def test_the_channel_exempt_field_set_matches_this_files_own_build_identity_constant() -> None:
+    """report.py's own comment on ``_BUILD_IDENTITY_EXEMPT`` promises this test
+    (adversarial finding M1, constant half).
+
+    Two independent authorities name the same two fields: ``BUILD_IDENTITY``
+    above (what the equality set-comparison
+    ``test_the_equality_query_differs_from_its_clean_counterpart_only_in_build_identity``
+    enforces a response may differ on) and ``_BUILD_IDENTITY_EXEMPT`` (what
+    ``_channel_summary`` excludes when counting a query as differing). Widening
+    either -- adding, say, ``count``, ``results`` or ``usedTokens`` to the
+    exempt set -- would silently stop counting a real content difference as a
+    channel occurrence while this file's own equality pin kept enforcing the
+    narrower set, with nothing to notice the two had drifted apart.
+    """
+    assert harness_report._BUILD_IDENTITY_EXEMPT == BUILD_IDENTITY
 
 
 def test_the_abstention_flag_probe_adds_no_extra_query_entry_to_the_report(
@@ -610,3 +650,168 @@ def test_the_abstention_flag_probe_adds_no_extra_query_entry_to_the_report(
 
     assert set(smoke_report["queries"]) == enabled_ids
     assert set(smoke_report["equality"]["queries"]) == equality_ids
+
+
+def test_the_equality_querys_two_planes_each_carry_their_own_probes_cause_and_timings_row(
+    smoke_run: tuple[dict[str, Any], dict[str, Any]],
+) -> None:
+    """The per-limit fix (e49c6520): the ``atLimit`` and ``atEqualityLimit``
+    planes of an equality abstention query each derive ``abstentionCause``
+    from their OWN-limit probe, never one plane's probe standing in for the
+    other via an unstated count-monotonicity between limit 10 and limit 50
+    (code/security/adversarial MEDIUM, "single-limit probe stands in for the
+    atEqualityLimit plane"). ``abstentionProbe`` records both flag-on limits
+    the corpus actually issued a probe at, and ``timings.json`` carries a row
+    for each -- ``{10, true}`` feeding the base plane, ``{50, true}`` feeding
+    ``atEqualityLimit``.
+    """
+    report, timings = smoke_run
+
+    full = report["queries"]["withheld-incident-key"]["corpora"]["full"]
+    assert full["abstentionCause"] == harness_report._ABSTENTION_GATE_WITHHELD
+    assert full["atEqualityLimit"]["abstentionCause"] == harness_report._ABSTENTION_GATE_WITHHELD
+
+    assert report["abstentionProbe"] == {"includeUnapproved": True, "limits": [10, 50]}
+
+    probe_rows = {
+        (row["limit"], row["includeUnapproved"])
+        for row in timings["queries"]
+        if row["queryId"] == "withheld-incident-key" and row["includeUnapproved"]
+    }
+    assert probe_rows == {(10, True), (50, True)}
+
+
+# -- G: the probe never escapes a clean-only query's declared corpora --------
+
+_CLEAN_ONLY_ABSTENTION_MIGRATION = "1N311FSDACRHQJQV010HQ93Y3Q-clean-only.yaml"
+
+
+def _write_clean_only_abstention_corpus(root: Path) -> None:
+    """A one-item corpus whose sole query declares ``corpora: [clean]`` alone.
+
+    Census measured against a real ``corpus_build.build_both`` run of this
+    exact content (one visible, approved, public item): both planes hold
+    ``items=1, chunks=1``.
+    """
+    manifest = {
+        "contractVersion": 1,
+        "corpusId": "clean-only-abstention-pin-v1",
+        "kValues": [1, 5],
+        "migrations": [{"file": _CLEAN_ONLY_ABSTENTION_MIGRATION, "plane": "visible"}],
+        "census": {
+            "full": {
+                "items": 1,
+                "byStatus": {"approved": 1},
+                "bySensitivity": {"public": 1},
+                "chunks": 1,
+            },
+            "clean": {
+                "items": 1,
+                "byStatus": {"approved": 1},
+                "bySensitivity": {"public": 1},
+                "chunks": 1,
+            },
+        },
+    }
+    queries = {
+        "queries": [
+            {
+                "id": "clean-only-abstention",
+                "class": "unknown",
+                "query": "a phrase sharing no vocabulary with the corpus at all",
+                "corpora": ["clean"],
+            }
+        ]
+    }
+    judgements = {"judgements": [{"queryId": "clean-only-abstention", "expectAbstention": True}]}
+    migration = {
+        "apiVersion": "theurian.dev/v1",
+        "id": "1N311FSDACRHQJQV010HQ93Y3Q",
+        "createdAt": "2026-09-20T09:00:00+09:00",
+        "author": "eval-harness@theurian.dev",
+        "operations": [
+            {
+                "op": "createItem",
+                "itemId": "domain.sample-item",
+                "kind": "domain",
+                "namespace": "pin-corpus",
+                "owner": "eval-harness",
+                "sensitivity": "public",
+            },
+            {
+                "op": "upsertRevision",
+                "itemId": "domain.sample-item",
+                "revisionId": "1C2T1H7RR1GG39BJXXW5WV5YFD",
+                "contentFile": "../knowledge/sample-item.md",
+                "contentSha256": "517dc231187d99708415ca6b43b2d097fb996e20f9d0a77113cedb856275aa4c",
+                "metadata": {
+                    "title": "Sample Item",
+                    "contentType": "text/markdown",
+                    "kind": "domain",
+                    "namespace": "pin-corpus",
+                    "status": "approved",
+                    "owner": "eval-harness",
+                    "trustLevel": "reviewed",
+                    "sensitivity": "public",
+                    "sourceAnchors": [
+                        {"provider": "git", "sourceUri": "git://clean-only-pin/sample-item.md"}
+                    ],
+                },
+            },
+        ],
+    }
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "manifest.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+    (root / "queries.yaml").write_text(yaml.safe_dump(queries, sort_keys=False), encoding="utf-8")
+    (root / "judgements.yaml").write_text(
+        yaml.safe_dump(judgements, sort_keys=False), encoding="utf-8"
+    )
+    migrations_dir = root / "migrations"
+    migrations_dir.mkdir()
+    (migrations_dir / _CLEAN_ONLY_ABSTENTION_MIGRATION).write_text(
+        yaml.safe_dump(migration, sort_keys=False), encoding="utf-8"
+    )
+    knowledge_dir = root / "knowledge"
+    knowledge_dir.mkdir()
+    (knowledge_dir / "sample-item.md").write_text(
+        "# Sample Item\n\nA single sample item for the clean-only abstention pin.\n",
+        encoding="utf-8",
+    )
+
+
+def test_a_clean_only_abstention_querys_probe_never_escapes_into_a_full_or_flagged_timings_row(
+    tmp_path: Path,
+) -> None:
+    """The adversarial's phantom-row reproduction (code/security/adversarial
+    MEDIUM), committed: ``probe_limits_for`` gates on ``"full"`` being in
+    ``query.corpora`` -- a clean-only abstention query must get no probe wire
+    call and no ``full`` entry at all, never a phantom ``full``/flag-on row
+    the query itself never declared.
+
+    The corpus's own single item happens to rank for this query regardless
+    of shared vocabulary (measured; the same one-item-corpus effect
+    ``test_an_abstention_query_that_returns_a_hit_of_its_own_is_not_mislabeled_gate_earned``
+    records for ``mainframe-disaster-recovery``) -- irrelevant to what this
+    pin checks, which is containment, not whether the query's own abstention
+    judgement holds.
+    """
+    corpus_root = tmp_path / "corpus"
+    _write_clean_only_abstention_corpus(corpus_root)
+
+    with tempfile.TemporaryDirectory(prefix="theurian-eval-clean-only-") as out_name:
+        code = harness_run.main(["--corpus", str(corpus_root), "--out", out_name])
+        assert code == 0
+        report: dict[str, Any] = json.loads((Path(out_name) / "report.json").read_text())
+        timings: dict[str, Any] = json.loads((Path(out_name) / "timings.json").read_text())
+
+    assert set(report["queries"]["clean-only-abstention"]["corpora"]) == {"clean"}
+    assert "abstentionProbe" not in report
+
+    assert len(timings["queries"]) == 1
+    row = timings["queries"][0]
+    assert (row["queryId"], row["corpus"], row["limit"], row["includeUnapproved"]) == (
+        "clean-only-abstention",
+        "clean",
+        5,
+        False,
+    )

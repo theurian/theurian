@@ -1083,11 +1083,28 @@ def test_abstention_cause_is_none_when_no_probe_was_run() -> None:
     assert harness_report._abstention_cause(True, None) is None
 
 
+#: A literal copy of ``report._CHANNEL_REASON``'s value, not a reference to
+#: the constant itself -- comparing the module's output to the same constant
+#: that produced it is structurally unfailable (adversarial finding: the
+#: single-user mutation below survived 78/78 against the constant-referencing
+#: form). This literal is the pin's own authority: drifting ``_CHANNEL_REASON``
+#: now diverges from the copy below and reds. See
+#: ``test_the_equality_channel_summary_carries_the_787_reason_verbatim_and_the_measured_counts``
+#: (tests/integration/tools/test_harness_pins.py) for why the exact wording
+#: matters, not merely "some string is present".
+_CHANNEL_REASON_LITERAL = (
+    "recorded channel, T-17a family; not a disclosure finding because "
+    "includeUnapproved is a request parameter (not a grant) and the Core is "
+    "one-principal (#119); reachable only under the operator's "
+    "--include-unapproved build, absent from the shipped default."
+)
+
+
 def test_channel_summary_counts_only_queries_differing_beyond_build_identity() -> None:
     """``_channel_summary``'s own contract (#787): a query whose only difference
     is which artifact answered (the two ``_BUILD_IDENTITY_EXEMPT`` fields)
     does not count; anything beyond it does. Exact dict equality pins the
-    shape, the counts and the constant ``reason`` together.
+    shape, the counts and the reason together.
     """
     section = {
         "identity-only": {
@@ -1104,7 +1121,7 @@ def test_channel_summary_counts_only_queries_differing_beyond_build_identity() -
     }
 
     assert harness_report._channel_summary(section) == {
-        "reason": harness_report._CHANNEL_REASON,
+        "reason": _CHANNEL_REASON_LITERAL,
         "atLimit": {"queriesDiffering": 1, "of": 2},
         "atEqualityLimit": {"queriesDiffering": 1, "of": 2},
     }
