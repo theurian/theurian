@@ -156,9 +156,9 @@ WITHHELD_FINAL_STATES = {
 #: positive control: the member's final state differs from that revision's, so a
 #: pair drifted there disagrees rather than agreeing vacuously.
 FOLD_BRANCH_WITNESSES = {
-    "a fold that kept the first revision": ("domain.session-token-ttl-v1", 0),
-    "a fold that lost deprecateItem": ("testing.deprecated-flaky-quarantine", -1),
-    "a fold that lost changeSensitivity": ("domain.restricted-retention-exceptions", -1),
+    "first-revision-kept": ("domain.session-token-ttl-v1", 0),
+    "deprecate-item-lost": ("testing.deprecated-flaky-quarantine", -1),
+    "change-sensitivity-lost": ("domain.restricted-retention-exceptions", -1),
 }
 
 
@@ -1099,6 +1099,13 @@ def test_the_loader_refuses_a_withheld_item_promoted_into_relevant(tmp_path: Pat
     """A ``relevant`` withheld item would ask the ``clean`` corpus to return a
     document it never held, so every equality query would score a miss that is
     not a retrieval defect. A withheld item may still be named in ``forbidden``.
+
+    The message, not the tag: all three retrievability clauses raise
+    ``relevant-item-unretrievable``, and every withheld member of a *loadable*
+    corpus is either unapproved or above the ceiling -- that is what
+    ``withheld-item-disclosable`` guarantees -- so the status clause would catch
+    this perturbation too. Measured: with the plane clause deleted this test
+    still passed on the tag alone.
     """
     judgements = copy.deepcopy(CORPUS.judgements)
     judgements["judgements"][0]["relevant"][0]["itemId"] = "domain.rejected-credential-cache"
@@ -1106,6 +1113,7 @@ def test_the_loader_refuses_a_withheld_item_promoted_into_relevant(tmp_path: Pat
     refusal = _refusal(replace(CORPUS, judgements=judgements), tmp_path)
 
     assert refusal.rule == "relevant-item-unretrievable"
+    assert "is withheld-plane" in str(refusal)
 
 
 def test_the_loader_refuses_an_enabled_query_judging_a_superseded_item(tmp_path: Path) -> None:
@@ -1199,6 +1207,9 @@ def test_the_split_pin_catches_a_member_changing_side_without_becoming_disclosab
     """
     written = _accepted(_restated("security.draft-scan-hardening", status="rejected"), tmp_path)
 
+    gate = {item.item_id for item in written.withheld_coverage if item.is_gate_tested}
+
+    assert gate == GATE_TESTED_ITEMS - {"security.draft-scan-hardening"}
     assert _coverage_split_violations(written.withheld_coverage) != []
 
 
@@ -1529,7 +1540,7 @@ def _revision_metadata(corpus: Corpus, item: str) -> list[dict[str, Any]]:
 @pytest.mark.parametrize(
     ("losing_fold", "witness"),
     sorted(FOLD_BRANCH_WITNESSES.items()),
-    ids=lambda value: value if isinstance(value, str) else "",
+    ids=sorted(FOLD_BRANCH_WITNESSES),
 )
 def test_the_committed_corpus_separates_every_fold_the_pin_below_would_otherwise_admit(
     losing_fold: str, witness: tuple[str, int]
