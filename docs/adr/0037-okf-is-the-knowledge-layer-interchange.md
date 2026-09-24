@@ -149,9 +149,10 @@ The artifact says so about itself, at two levels:
   produced it.
 - **A bundle-root manifest concept**, `theurian-bundle.md` with
   `type: Theurian Bundle`, carries `theurian_export_version` and
-  `theurian_bundle_digest` — a digest over the bundle's own files, the manifest
-  excluded, since it is where the digest sits. Its inputs are the bundle and
-  nothing else, which is the property that makes it publishable.
+  `theurian_bundle_digest` — a digest over every file the export writes,
+  concept documents, index files and the body sidecars of decision 7 alike,
+  with the manifest excluded since it is where the digest sits. Its inputs are
+  the bundle and nothing else, which is the property that makes it publishable.
 
 `generated.by` names the *exporter*, not an author, because the document is a
 projection: §5.2 defines `by` as the actor that produced the current content, and
@@ -340,8 +341,9 @@ stays viewable beside it, and the final artifact is a reviewable pull request.
 
 | Theurian | OKF slot | Notes |
 | :-- | :-- | :-- |
-| `kind` (11 members) | `type` (§4.1, required) | Exported verbatim: `architecture`, `decision`, … Type values are not centrally registered and consumers MUST NOT reject unknown ones (§4.1, §11). |
+| `kind` | `type` (§4.1, required) | Exported verbatim: `architecture`, `decision`, … Type values are not centrally registered and consumers MUST NOT reject unknown ones (§4.1, §11). |
 | `title` | `title` (§4.1) | |
+| `contentType` | `theurian_content_type`, always | On every concept, markdown included, so the body's type is stated rather than inferred from whether a sidecar is present. It discloses nothing new: `result_payload` publishes `contentType` (see below). It also **decides where the body goes** — the next block. |
 | item id | the concept's path in the bundle (§2 Concept ID) | Derived from the **item id**, never from `namespace` — see below. |
 | item id | `theurian_item_id` | So a consumer cites the id rather than reconstructing it from a path. |
 | `namespace` | `theurian_namespace` | Governed metadata, and not a path component. |
@@ -383,6 +385,57 @@ lowercase kebab-case and cannot express a traversal at all. A bundle is a
 directory tree, so this is the difference between a contained export and one that
 writes outside its own root.
 
+**A markdown body embeds in its concept document; a non-markdown body is written
+as a sidecar file beside it, byte for byte.** `contentType` is a free media type
+in the published schema, whose own description states the rule this follows —
+*"Media type of the body. Preserved rather than converted, so a structured source
+stays structured (ADR-0010)"* — and [ADR-0010](0010-three-layer-knowledge-model.md)'s
+rule 5 says the same from the other end: Markdown is the recommended authoring
+format for human prose and is *never* the canonical form of something that was
+born structured. A bundle that flattened an OpenAPI document into prose would
+destroy exactly what that rule protects, and would do it in the artifact most
+likely to be read by a tool rather than a person.
+
+So the split is by media type:
+
+- **`text/markdown`** — the overwhelming case — is the concept document's body,
+  as everywhere else in this ADR.
+- **Anything else** is written beside its concept document, at the concept's own
+  path with the body's own extension, and the concept's body carries an ordinary
+  Markdown link to it plus a `theurian_body_file` key holding the same path. The
+  dual-channel shape of decision 4 again: OKF's own channel for a consumer that
+  reads links, a namespaced key for one that reads front matter. The extension
+  comes from `domain/proposal.py::body_extension`, the same function the
+  canonical write path uses, and its recorded refusal is the behaviour the export
+  wants too — an unmapped media type raises rather than guessing an extension,
+  because a mislabelled body is worse than a refused export. A sidecar is not a
+  concept document (§3.1) and carries no front matter: its concept document holds
+  the whole governance projection for the row.
+
+**The OKF spec settles that a non-markdown member is legal, and does not merely
+tolerate it.** §3 characterises a bundle as a directory tree of markdown files,
+but every rule that classifies or constrains a member is keyed on the `.md`
+suffix: §3.1 reserves two filenames and says "all other `.md` files are concept
+documents", and §11's three conformance clauses each range over `.md` files, so a
+non-`.md` member cannot make a bundle non-conformant. The spec then uses such
+members itself. §6.3's `references/` convention mirrors "external material, run
+instructions, or code as first-class concepts within the bundle", its own example
+being `references/attesters/revenue.py`; §10.2 gives `computation` as "a path
+(§6.2) to a file holding the computation"; and §10.3 offers precisely this
+ADR's choice — *inline* a fenced block in the body, or *file*, the latter "best
+for a long or generated computation, or one already kept as a real file shared
+with non-OKF tooling", with `references/computations/lib/revenue.sql` as the
+example. A structured knowledge body is that case exactly.
+
+**Decision 3's population is untouched by any of this.** A non-markdown row is
+exported like every other row the default channel serves; the media type decides
+where its bytes go, never whether it goes. The alternatives table carries the
+rejected reading, and it is worth saying why it is a trap rather than merely
+wrong: excluding non-markdown rows would leave the two-corpora battery green —
+the filter is a function of the row itself, not of any withheld row — while the
+bundle silently omitted governed knowledge. A passing battery would have said
+nothing about it.
+
 **OKF `verified` is not emitted, and that is a decision rather than an
 omission.** §5.3 derives a consumer's trust tier from `verified` alone: no key
 means *unverified*, a non-`human:` actor means *machine-confirmed*, and a
@@ -405,9 +458,9 @@ it emits `itemId`, `revisionId`, `title`, `excerpt`, `contentType`, `status`,
 item's current one, threaded in rather than read off the revision),
 `freshness.revisionCreatedAt` and a `sourceAnchors[]` of exactly `provider`,
 `sourceUri`, `repository`, `commitSha`, `filePath`, `lineStart` and `lineEnd`.
-So `theurian_trust_level`, `theurian_sensitivity` and the `generated.at` drawn
-from `created_at` are labels a caller of that deployment already receives on
-those same rows — the export changes the *container*, not the audience's view of
+So `theurian_trust_level`, `theurian_sensitivity`, `theurian_content_type` and
+the `generated.at` drawn from `created_at` are labels a caller of that deployment
+already receives on those same rows — the export changes the *container*, not the audience's view of
 a row. **The two anchor fields that payload does not carry, `blobSha` and
 `externalId`, are therefore not exported either**, which is what makes this a
 universal statement about the front matter rather than a claim with a carve-out
@@ -423,7 +476,7 @@ adjective:
 | The immutable revision history | The bundle carries the current revision only; `theurian_revision_id` names which. |
 | The `supersedes` chain | A `superseded` item is outside decision 3's population, so a `SUPERSEDES` edge never clears decision 4's both-endpoints gate. Nothing of the chain survives but the exported row's own `theurian_status` — which is `approved` for every exported row today, so in practice **no trace of supersession leaves the bundle at all**. |
 | `blobSha`, `externalId` | The two `sourceAnchor` fields `result_payload` does not publish (see below). Exporting them would put provenance in a portable artifact that the serve path withholds from the same rows. |
-| `contentSha256` | The exported body is a projection — it gains the generated `## Relations` section — so a digest of the canonical body sitting beside it would be unverifiable against the file it is on. |
+| `contentSha256` | The exported body is a projection — it gains the generated `## Relations` section — so a digest of the canonical body sitting beside it would be unverifiable against the file it is on. A sidecar body *is* byte-identical, so the digest would be checkable there; it is still not emitted, so that one rule holds for every concept rather than for most of them. Available to a later mapping version if a consumer asks for it. |
 | `tenantId`, `aclGroup` | Fixed today and unenforceable otherwise: `application/migration_engine.py` refuses a revision naming a tenant other than `local` or an ACL group other than `default`. Exporting a field that carries no information invites a consumer to route on it. |
 | Evidence records | The evidence plane has no OKF counterpart; as prose it would read as content. |
 | `scope.paths` | Glob patterns over a repository the bundle's recipient may not have. |
@@ -498,8 +551,9 @@ other — a proposal a human reviews.
   `theurian_export_version`, `theurian_bundle_digest`, `theurian_item_id`,
   `theurian_revision_id`, `theurian_status`, `theurian_namespace`,
   `theurian_owner`, `theurian_trust_level`, `theurian_sensitivity`,
-  `theurian_relations`, `theurian_anchor`. Snake case, matching OKF's own key
-  style (`okf_version`, `stale_after`, `last_modified`).
+  `theurian_content_type`, `theurian_body_file`, `theurian_relations`,
+  `theurian_anchor`. Snake case, matching OKF's own key style (`okf_version`,
+  `stale_after`, `last_modified`).
 
 ## What this does not close
 
@@ -562,6 +616,8 @@ other — a proposal a human reviews.
 | **Treat OKF import as [#223](https://github.com/theurian/theurian/issues/223)-class external-source ingestion, gated on the trust model** | #223 governs *connectors* that snapshot external systems into the source layer without passing a pull request; its gate exists because that path bypasses review. This import produces only a reviewable proposal and reaches approved state through the same merge as everything else, so it inherits ADR-0013's gate rather than needing #223's. **The boundary that makes the distinction hold is the one decision 6 states: the input is a local directory and the importer fetches nothing.** A remote fetch would put this back in #223's class and owe T-7's fetch controls with it; ingesting a bundle as a governed *source* is #223's either way, and remains out of scope. |
 | **Reuse `KnowledgeCandidate` for imported concepts**, as #705's "bundle → source → KnowledgeCandidate → proposal" sketch has it | `domain/review.py`'s `PromotionGate` requires seven review-shaped signals — `pull_request_merged`, `thread_resolved`, `fix_commit_present`, `not_dismissed_or_outdated`, `ci_successful`, `generalizable`, `has_evidence` — and `KnowledgeCandidate.__post_init__` raises when the gate is unsatisfied. An OKF bundle satisfies none of them, so reuse means fabricating review facts or weakening the gate for every candidate, review-derived ones included. What the type is kept for is its *precedent*: the `INFERRED` ceiling of decision 6. |
 | **Extend `RelationType` so OKF's untyped links have a home** | Enum extension is roadmap §9 ADR candidate 3, which owes a compatibility policy first; and the problem is not a missing member. An untyped link is untyped, and decision 5 is the answer to it. |
+| **Export only the markdown-bodied rows, leaving structured knowledge out of the bundle** | It breaks decision 3's population rule — the bundle would no longer be the rows this deployment serves — and it drops governed knowledge from an artifact that says it carries the approved corpus. **The trap is that nothing would catch it:** the filter is a function of the row's own media type, not of any withheld row, so the two-corpora battery stays green while the bundle omits every OpenAPI document and JSON Schema in the corpus. A green battery would have asserted nothing about the omission. |
+| **Fence a non-markdown body inside its concept document instead of writing a sidecar** | It converts what [ADR-0010](0010-three-layer-knowledge-model.md) rule 5 and the schema's own `contentType` description say to *preserve*, and it does so silently: a consumer gets YAML wrapped in Markdown, no longer byte-identical to the canonical body and no longer parseable without unwrapping it first. The spec makes the choice unnecessary — §10.3 offers the file form for content "already kept as a real file shared with non-OKF tooling", which is this case. It stays the fallback only if a future spec revision forbids non-`.md` members, and it would then be recorded as a conversion, not presented as a projection. |
 | **Derive the bundle path from `namespace`** | `namespace` is free text where `../` is spellable; `domain/proposal.py::body_relative_path` already refuses it for exactly this reason, and a bundle is a directory tree, so the failure is writing outside the bundle root. |
 
 ## Compliance
@@ -602,8 +658,11 @@ Still owed, with the slice that will satisfy it:
   against two corpora, one holding the withheld rows and one that never did,
   asserted to produce the byte-identical bundle; the determinism of decision 2 —
   two runs against one canonical state producing byte-identical output, which is
-  Phase F ②'s exit criterion; and a pin that the bundle path is derived from the
-  item id, so a crafted `namespace` cannot reach a path component.
+  Phase F ②'s exit criterion; a pin that the bundle path is derived from the
+  item id, so a crafted `namespace` cannot reach a path component; and a pin that
+  a non-markdown row exports as a sidecar whose bytes equal the canonical body,
+  with the row present in the bundle either way — the property the two-corpora
+  battery cannot see, per the alternatives table's first new row.
 - **Slice S3 (import):** that a bundle carrying only bare Markdown links yields a
   drafted migration with **no** `addRelation` operation (decision 5); that an
   import lands only under a proposal directory and reaches no approved state
