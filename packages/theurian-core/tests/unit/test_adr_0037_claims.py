@@ -324,9 +324,9 @@ def test_the_governed_metadata_is_the_six_required_and_nine_carried_fields() -> 
     whose gaps are undocumented.
 
     What this does **not** assert is that each field has a row in one of those two
-    tables. That check is RED today -- ``contentType`` is required, is published
-    by ``result_payload``, and appears in neither table -- and a pin is not
-    weakened to pass, so the gap is reported rather than encoded here.
+    tables. That check was RED when this pin landed -- ``contentType`` had no
+    disposition -- and the ADR was amended (the sidecar rule, ``14c97c50``) rather
+    than the pin weakened; a new field landing here re-raises the same question.
     """
     metadata = _schema_defs()["revisionMetadata"]
 
