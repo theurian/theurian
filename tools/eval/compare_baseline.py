@@ -17,12 +17,20 @@ runner with a different SQLite build can legitimately reproduce a different ``re
 no code change at all, and that must not turn a job red.
 
 Whether this comparison ever becomes a blocking gate is a separate decision (ADR-0036 decision 4)
-this tool does not take. ``--advisory`` is total here, unlike ``tools/corpus_drift.py``'s own
-partial one: that tool keeps an unsuppressible "the checker stopped checking" exit because its
-subject is a governed corpus this repository holds to a floor. This comparison has no floor and no
-target value anywhere (decision 4), so nothing it can find is worth failing a build over yet -- not
-even a harness that could not run: a real harness defect already fails the separate, non-advisory
-``test`` job that this one does not gate.
+this tool does not take. This module's docstring is the one place that decision, and this tool's
+own ``--advisory`` scope, is stated -- a caller citing it (``.github/workflows/core.yml``, an ADR)
+should point here rather than restate it, so the claim has one authority instead of drifting
+copies. ``--advisory`` is **total** here, unlike ``tools/corpus_drift.py``'s own partial one: that
+tool keeps an unsuppressible "the checker stopped checking" exit because its subject is a governed
+corpus this repository holds to a floor. This comparison has no floor and no target value anywhere
+(decision 4), so nothing it can find is worth failing a build over yet -- not even a harness that
+could not run at all: a real harness defect already fails the separate, non-advisory ``test`` job
+that this one does not gate. Concretely, every one of the following converges to :attr:`Status.
+ERRORED` and still exits 0 under ``--advisory``: the committed baseline is unreadable or is not
+valid JSON, ``tools/eval/run.py`` exits nonzero, it raises instead of returning, it returns 0
+without writing a ``report.json``, or ``$GITHUB_STEP_SUMMARY`` cannot be written to. :func:`_run`
+is where all of those are caught in one place, deliberately, rather than one exception type at a
+time -- see its own docstring.
 
 Usage
 -----
@@ -61,7 +69,7 @@ REMEDY: Final = (
 
 
 class HarnessError(RuntimeError):
-    """``tools/eval/run.py`` did not produce a ``report.json`` to compare."""
+    """``tools/eval/run.py`` exited nonzero instead of producing a ``report.json`` to compare."""
 
 
 class Status(Enum):
@@ -74,12 +82,16 @@ class Status(Enum):
 
 @dataclass(frozen=True, slots=True)
 class Comparison:
-    """One run's outcome. ``differing_paths`` is populated only for :attr:`Status.DIFFERS`;
-    ``detail`` is the one sentence every render function prints.
+    """One run's outcome. ``differing`` is populated only for :attr:`Status.DIFFERS`; ``detail``
+    is the one sentence every render function prints.
+
+    Named ``differing``, not ``differing_paths``: this module also imports
+    :func:`metrics.differing_paths`, and a field of that name would read as if it were that
+    function shadowed rather than a value computed by calling it.
     """
 
     status: Status
-    differing_paths: frozenset[str] = field(default_factory=frozenset)
+    differing: frozenset[str] = field(default_factory=frozenset)
     detail: str = ""
 
 
@@ -88,7 +100,10 @@ def regenerate_report_bytes(corpus: Path = harness_run.DEFAULT_CORPUS) -> bytes:
 
     The same call path ``tests/integration/tools/test_baseline_current.py`` drives -- no
     subprocess, so this reads the harness already on ``sys.path``, not a second interpreter's
-    copy of it.
+    copy of it. Raises :class:`HarnessError` when the harness exits nonzero; a bare
+    ``FileNotFoundError`` when it exits 0 but writes nothing; and whatever the harness itself
+    raises, uncaught, when it raises instead of returning. :func:`_run` is where all three (and
+    every other failure mode) converge to one outcome -- nothing here is a place to catch them.
     """
     with tempfile.TemporaryDirectory(prefix="theurian-eval-compare-") as out_name:
         code = harness_run.main(["--corpus", str(corpus), "--out", out_name])
@@ -104,7 +119,8 @@ def compare(baseline_bytes: bytes, current_bytes: bytes) -> Comparison:
     the same property ``test_baseline_current.py`` pins, so it answers "holds" with no JSON parse
     at all. Only when it fails is either side parsed, purely to name *which* field moved --
     :func:`metrics.differing_paths`, the function ADR-0036 decision 6's own equality section
-    already uses for exactly this shape.
+    already uses for exactly this shape. ``json.loads`` raises uncaught on an unparseable
+    baseline or an unparseable regeneration; see :func:`_run`.
     """
     if baseline_bytes == current_bytes:
         return Comparison(
@@ -138,7 +154,7 @@ def exit_code(comparison: Comparison, *, advisory: bool) -> int:
 def render_text(comparison: Comparison) -> str:
     """The human report, for a local run and for the CI job log."""
     lines = [f"Baseline comparison: {comparison.status.value} -- {comparison.detail}"]
-    lines.extend(f"  DIFFERS  {path}" for path in sorted(comparison.differing_paths))
+    lines.extend(f"  DIFFERS  {path}" for path in sorted(comparison.differing))
     if comparison.status is Status.DIFFERS:
         lines.extend(("", REMEDY))
     return "\n".join(lines)
@@ -152,12 +168,12 @@ def render_github(comparison: Comparison) -> tuple[str, ...]:
         return ()
     if comparison.status is Status.ERRORED:
         return (f"::warning title=Retrieval baseline comparison did not run::{comparison.detail}",)
-    if not comparison.differing_paths:
+    if not comparison.differing:
         return (f"::warning title=Retrieval baseline differs::{comparison.detail} {REMEDY}",)
     return tuple(
         f"::warning file=tools/eval/baseline/report.json,title=Retrieval baseline differs::"
         f"`{path}` moved from the committed baseline. {REMEDY}"
-        for path in sorted(comparison.differing_paths)
+        for path in sorted(comparison.differing)
     )
 
 
@@ -169,12 +185,12 @@ def render_summary(comparison: Comparison) -> str:
         f"**{comparison.status.value}** -- {comparison.detail}",
         "",
     ]
-    if comparison.differing_paths:
+    if comparison.differing:
         lines.extend(
             (
                 "| Field |",
                 "| :-- |",
-                *(f"| `{path}` |" for path in sorted(comparison.differing_paths)),
+                *(f"| `{path}` |" for path in sorted(comparison.differing)),
                 "",
                 REMEDY,
                 "",
@@ -184,15 +200,39 @@ def render_summary(comparison: Comparison) -> str:
 
 
 def _run() -> Comparison:
+    """The whole comparison, one exception clause wide.
+
+    Reproduced escaping this tool before this clause existed: the committed baseline unreadable
+    or not valid JSON, ``tools/eval/run.py`` exiting nonzero (:class:`HarnessError`, named so its
+    own message is specific), exiting 0 without writing a ``report.json`` (a bare
+    ``FileNotFoundError`` from :func:`regenerate_report_bytes`), and the harness *raising* instead
+    of returning (``run.py``'s ``RuntimeError`` on a build or corpus refusal is a live example --
+    nothing inside ``run.main`` guards ``build_server``/``mcp_session`` against raising). A
+    catch-all rather than one clause per case: the list above is what was found, not a claim that
+    it is complete, and ``--advisory`` is total (see the module docstring) precisely because a
+    fifth uncaught exception must not be a fifth way to fail this job.
+    """
     try:
         baseline_bytes = BASELINE_REPORT.read_bytes()
-    except OSError as error:
-        return Comparison(Status.ERRORED, detail=f"{BASELINE_REPORT} could not be read: {error}")
-    try:
         current_bytes = regenerate_report_bytes()
-    except HarnessError as error:
-        return Comparison(Status.ERRORED, detail=str(error))
-    return compare(baseline_bytes, current_bytes)
+        return compare(baseline_bytes, current_bytes)
+    except Exception as error:  # deliberate and total; see the docstring above
+        return Comparison(Status.ERRORED, detail=f"{type(error).__name__}: {error}")
+
+
+def _write_summary(comparison: Comparison) -> None:
+    """Best-effort append to ``$GITHUB_STEP_SUMMARY``. A step summary GitHub's runner cannot
+    accept is not this tool's failure to report -- it is caught here rather than in :func:`_run`
+    because it happens after the comparison already has an outcome, and must not overwrite one.
+    """
+    summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_file:
+        return
+    try:
+        with Path(summary_file).open("a", encoding="utf-8") as handle:
+            handle.write(render_summary(comparison) + "\n")
+    except OSError as error:
+        print(f"::warning title=Retrieval baseline summary not written::{error}")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -220,10 +260,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.format == "github":
         for command in render_github(comparison):
             print(command)
-    summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
-    if arguments.summary and summary_file:
-        with Path(summary_file).open("a", encoding="utf-8") as handle:
-            handle.write(render_summary(comparison) + "\n")
+    if arguments.summary:
+        _write_summary(comparison)
     return exit_code(comparison, advisory=arguments.advisory)
 
 

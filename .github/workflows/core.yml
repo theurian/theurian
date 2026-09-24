@@ -109,22 +109,34 @@ jobs:
   # coarse on purpose (see that block's own comment on the corpus-governance
   # guard: a job that runs and finds nothing costs one run, and narrowing costs
   # keeping two filters in step by hand). `retrieval-baseline` below earns a
-  # narrower gate for a different reason: it rebuilds two SQLite indexes and
-  # runs the whole harness query set, and putting that on every `pyproject.toml`
-  # bump or `.gitignore` edit that already triggers this workflow would be pure
-  # waste for a check that can only ever find something when retrieval-affecting
-  # code, the harness, or its fixture corpus actually moved.
+  # narrower gate anyway, because its own cost is not "one wasted run" -- it
+  # rebuilds two SQLite indexes and runs the whole harness query set -- and
+  # because "a path that can move retrieval quality" is a small, nameable set,
+  # unlike the corpus-governance guard's population.
+  #
+  # `pyproject.toml` and `uv.lock` are deliberately not in `retrieval`'s own
+  # list below, and the reason is not that cost: it is that both are already
+  # in this workflow's top-level `on.paths`, so a dependency bump that changed
+  # the harness's own output already runs `test`'s `test_baseline_current.py`
+  # on every trigger, and that pin is non-advisory -- it goes red before this
+  # job's own advisory finding would ever be the one that mattered.
   #
   # `dorny/paths-filter@v4` rather than a new mechanism: it is already this
   # repository's answer to "gate one job narrower than a whole workflow"
-  # (`shared.yml`'s own `changes` job). All three `retrieval` patterns are
+  # (`shared.yml`'s own `changes` job). All four `retrieval` patterns below are
   # already inside this workflow's own top-level `on.paths` (`packages/
-  # theurian-core/**`, `tools/**`, `tests/**` each cover one), so this job
-  # narrows which job runs; it triggers no run the workflow would not already
-  # have started.
+  # theurian-core/**`, `tools/**` and `tests/**` each cover one; the fourth,
+  # this file, is covered by `.github/workflows/*.yml`), so this job narrows
+  # which job runs; it starts no run the workflow would not already have.
   #
-  # `.github/workflows/core.yml` is in the filter for the reason #769 exists:
-  # a change to this job's own definition has to be able to run it.
+  # `.github/workflows/core.yml` is in `retrieval`'s own list for the reason
+  # #769 exists -- a change to this job's own definition has to be able to run
+  # it -- and it is wider than "retrieval quality" in exactly the direction
+  # #769 already accepted for the top-level filter: an edit to an unrelated
+  # job in this file also flips this output to `true`. Machine-checked against
+  # what `tools/eval/compare_baseline.py` (and the `tools/eval` siblings it
+  # imports) actually reads by
+  # `tests/ci/test_core_paths_filter_covers_reads.py`'s own second check.
   changes:
     name: Detect retrieval-affecting changes
     runs-on: ubuntu-latest
@@ -223,10 +235,9 @@ jobs:
   # most useful for.
   #
   # `tools/eval/compare_baseline.py --advisory` is what keeps this from ever
-  # failing the job -- see that module's own docstring for why its `--advisory`
-  # is total, unlike `tools/corpus_drift.py`'s partial one, and for the
-  # cross-machine SQLite-build caveat (ADR-0036 decision 5) this job can
-  # legitimately hit with no code change at all.
+  # failing the job. That module's own docstring is the one authority for what
+  # `--advisory` covers and why -- read it there rather than here, so the claim
+  # has one place to go stale.
   retrieval-baseline:
     name: Retrieval baseline comparison (advisory)
     runs-on: ubuntu-latest

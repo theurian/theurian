@@ -69,6 +69,26 @@ against. A plain filesystem walk of `tools/**` also returns
 fresh clone -- so the parametrized case list would differ between a developer
 machine and the runner. A read that resolves to a directory with no glob on it
 is an import root, and demands recursive coverage.
+
+A second, unrelated check (PR #797's light pass, MEDIUM-1)
+-----------------------------------------------------------
+Everything above holds `core.yml`'s top-level `on.paths` to what `tests/ci`
+reads. The `retrieval-baseline` job's own `dorny/paths-filter` -- a *second*,
+narrower filter, gating one job rather than the whole workflow -- had no
+machine check at all: nothing noticed if it stopped covering what
+`tools/eval/compare_baseline.py` reads. The functions below reuse this file's
+matcher (`_matches`, `_regex`) and probe machinery (`_probes`) against that
+filter instead, with their own corpus and their own derivation --
+:func:`_retrieval_read_corpus` and :func:`_retrieval_requirements` -- because
+the population is different in kind, not just in target: `compare_baseline.py`
+does not read `tools/eval/run.py` or `tools/eval/metrics.py` through any
+`pathlib.Path` expression the scan above understands, it reaches them through
+plain `import` statements, so what counts as "a read" here is *the module
+graph*, not path-expression AST. Deliberately shallow: it stops at
+`compare_baseline.py`'s own direct imports (`run`, `metrics`) rather than
+following `run.py`'s further imports (`corpus.py` reads
+`schemas/migrations/migration.schema.json`, a real read and well outside
+"retrieval quality") -- see :func:`_retrieval_read_corpus`'s own docstring.
 """
 
 from __future__ import annotations
@@ -78,7 +98,7 @@ import pathlib
 import re
 import shutil
 import subprocess
-from typing import Any, cast
+from typing import Any, Final, cast
 
 import pytest
 import yaml
@@ -601,3 +621,154 @@ def test_every_path_tests_ci_reads_is_covered_by_the_filter(
             f"pins. Add an entry covering {pattern!r} to both `push.paths` and "
             "`pull_request.paths`."
         )
+
+
+# --------------------------------------------------------------------------
+# The `retrieval-baseline` job's own filter (PR #797, MEDIUM-1)
+# --------------------------------------------------------------------------
+# See the module docstring's own section for why this is a second, narrower
+# check rather than an extension of the scan above.
+
+COMPARE_BASELINE = REPO_ROOT / "tools" / "eval" / "compare_baseline.py"
+
+#: `compare_baseline.py` runs *as a step inside* the job this defines -- no
+#: Python expression names this path, so nothing above would ever derive it.
+#: The same reasoning #769 already applies to the top-level filter reading its
+#: own workflow file.
+RETRIEVAL_WORKFLOW_REQUIREMENT: Final = ".github/workflows/core.yml"
+
+
+def _direct_local_imports(module: pathlib.Path) -> list[pathlib.Path]:
+    """Sibling `.py` files `module` imports directly, resolved to paths beside it.
+
+    Not transitive -- see the module docstring's own section for why stopping
+    at one level is the deliberate scope, not an oversight.
+    """
+    tree = ast.parse(module.read_text(encoding="utf-8"))
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module is not None and node.level == 0:
+            names.add(node.module)
+    return sorted(
+        module.parent / f"{name}.py" for name in names if (module.parent / f"{name}.py").exists()
+    )
+
+
+def _retrieval_read_corpus() -> list[pathlib.Path]:
+    """`compare_baseline.py` and the `tools/eval` siblings it imports directly.
+
+    `run.py` and `metrics.py` today. Each contributes two kinds of requirement:
+    its own file path (compare_baseline.py *imports* it, so an edit to it is an
+    edit to what compare_baseline.py runs) and whatever `_patterns` derives
+    from its source the same way the scan above does for `tests/ci` -- `run.py`
+    builds `DEFAULT_CORPUS` from `REPO_ROOT`, which is exactly that shape.
+
+    Stops at one level of import on purpose. `run.py`'s own further imports
+    (`corpus.py`, `corpus_build.py`, `report.py`, `wire.py`) are a different,
+    larger population: `corpus.py` alone reads
+    `schemas/migrations/migration.schema.json`, a real read and one this rule
+    does not claim to cover, because "everything the harness eventually
+    touches" is not "a path that can move retrieval quality" -- the filter
+    this rule holds to account is deliberately scoped to the latter, by prose,
+    in `core.yml`'s own comment.
+    """
+    return sorted({COMPARE_BASELINE, *_direct_local_imports(COMPARE_BASELINE)})
+
+
+def _retrieval_filter() -> list[str]:
+    """The `retrieval` entry of the `changes` job's own `dorny/paths-filter`.
+
+    A *second* YAML document: `dorny/paths-filter`'s `filters:` step input is a
+    string that the action itself parses as YAML at run time, not something
+    GitHub's own workflow parser expands -- so covering it means parsing that
+    string a second time, deliberately, rather than treating it as opaque text.
+    """
+    document = cast(dict[str, Any], yaml.safe_load(CORE_WORKFLOW.read_text(encoding="utf-8")))
+    jobs = document.get("jobs")
+    assert isinstance(jobs, dict), f"{CORE_WORKFLOW.name} has no `jobs:` mapping"
+    changes_job = jobs.get("changes")
+    assert isinstance(changes_job, dict), f"{CORE_WORKFLOW.name} has no `changes:` job"
+    steps = changes_job.get("steps")
+    assert isinstance(steps, list), f"{CORE_WORKFLOW.name}'s `changes` job carries no `steps:` list"
+    filter_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict) and str(step.get("uses", "")).startswith("dorny/paths-filter@")
+    ]
+    assert len(filter_steps) == 1, (
+        f"{CORE_WORKFLOW.name}'s `changes` job carries {len(filter_steps)} `dorny/paths-filter` "
+        "step(s), not the 1 this function assumes"
+    )
+    filters_text = filter_steps[0].get("with", {}).get("filters")
+    assert isinstance(filters_text, str), (
+        "the `dorny/paths-filter` step carries no `filters:` string"
+    )
+    embedded = cast(dict[str, Any], yaml.safe_load(filters_text))
+    retrieval = embedded.get("retrieval")
+    assert isinstance(retrieval, list) and retrieval, "the `retrieval` filter is empty or missing"
+    return [str(entry) for entry in retrieval]
+
+
+def _retrieval_requirements() -> list[tuple[str, str, str]]:
+    """`(pattern, probe, readers)`, the same shape as :data:`REQUIREMENTS`, over the
+    `retrieval-baseline` job's own filter instead of the top-level one.
+    """
+    citations: dict[str, set[str]] = {
+        RETRIEVAL_WORKFLOW_REQUIREMENT: {"compare_baseline.py (runs inside this job)"}
+    }
+    for module in _retrieval_read_corpus():
+        citations.setdefault(module.relative_to(REPO_ROOT).as_posix(), set()).add(
+            "compare_baseline.py (direct import)"
+        )
+        for pattern in _patterns(module):
+            citations.setdefault(pattern, set()).add(module.name)
+    return [
+        (pattern, probe, ", ".join(sorted(readers)))
+        for pattern, readers in sorted(citations.items())
+        for probe in _probes(pattern)
+    ]
+
+
+RETRIEVAL_REQUIREMENTS = _retrieval_requirements()
+
+
+def test_the_retrieval_derivation_is_not_vacuous() -> None:
+    """An anti-vacuity control for :data:`RETRIEVAL_REQUIREMENTS` -- the same shape as
+    :func:`test_the_derivation_still_finds_the_reads_that_762_was_filed_over`, sized to what this
+    corpus is known to contain today rather than carrying over the unrelated #762 floor.
+    """
+    derived = {pattern for pattern, _, _ in RETRIEVAL_REQUIREMENTS}
+
+    assert derived >= {
+        "tools/eval/compare_baseline.py",
+        "tools/eval/run.py",
+        "tools/eval/metrics.py",
+        "tests/fixtures/eval/**",
+        RETRIEVAL_WORKFLOW_REQUIREMENT,
+    }, (
+        f"the retrieval-baseline derivation only reaches {sorted(derived)}. Either "
+        "`compare_baseline.py` stopped importing `run`/`metrics`, or the scan stopped "
+        "understanding how it does."
+    )
+
+
+@pytest.mark.parametrize(
+    ("pattern", "probe", "readers"),
+    RETRIEVAL_REQUIREMENTS,
+    ids=[f"{pattern}::{probe}" for pattern, probe, _ in RETRIEVAL_REQUIREMENTS],
+)
+def test_every_path_compare_baseline_reads_is_covered_by_the_retrieval_filter(
+    pattern: str, probe: str, readers: str
+) -> None:
+    """MEDIUM-1 (PR #797's light pass): the `retrieval-baseline` job only runs when its own
+    filter says so, and nothing previously checked that the filter kept covering what
+    `compare_baseline.py` reads.
+    """
+    entries = _retrieval_filter()
+    assert any(_matches(entry, probe) for entry in entries), (
+        f"the `changes` job's `retrieval` filter matches nothing for {probe!r}. {readers} reads "
+        f"{pattern!r}, and `retrieval-baseline` is gated on that filter alone, so a commit "
+        f"touching that path never runs the comparison. Add an entry covering {pattern!r}."
+    )
