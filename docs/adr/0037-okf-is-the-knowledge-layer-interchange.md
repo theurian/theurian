@@ -95,6 +95,19 @@ and it is not enough to call the two formats the same thing. It also decides the
 direction of every rule below — an exporter may synthesize front matter, and an
 importer may never read front matter as governance.
 
+**Two of #705's further framings are refined rather than followed, and the
+arguments for both live below rather than here**, so that a reader of the
+proposal can see where it was corrected instead of finding an ADR that quietly
+diverged from it. The proposal routes the import "through the external-source
+ingestion family ([#223](https://github.com/theurian/theurian/issues/223))" and
+sketches it as "OKF bundle → source → `KnowledgeCandidate` → proposal". Decision
+6 takes the first — the import is an on-ramp to the write path that already
+exists, not a #223-class connector, and the boundary that keeps those apart is
+stated there — and the alternatives table takes the second, with the measurement
+that `KnowledgeCandidate` is a review-shaped type an OKF bundle cannot satisfy.
+Counting the front-matter premise above, **this ADR corrects #705 in three
+places and agrees with it everywhere else**, its layer correction included.
+
 ## Decision
 
 ### 1. OKF is an adapter at the knowledge layer, in both directions
@@ -274,6 +287,25 @@ invariant applied to a second on-ramp, and nothing about it enters the source
 layer. How many proposals one bundle becomes is slice S3's question, not this
 ADR's.
 
+**The input is a local directory the operator names, and the importer fetches
+nothing.** No URL, no network call, no credential: the bundle is already on disk
+when the import runs, put there by whoever cloned, unpacked or copied it. **A
+remote OKF fetch — pulling a bundle from a URL or a registry — is out of scope
+and is [#223](https://github.com/theurian/theurian/issues/223)-class**, because
+fetching is what makes something a connector: it would carry
+[T-7](../security/threat-model.md)'s fetch-control family (SEC-10's repository
+allowlist, the scheme allowlist and private-network rejection — the last two
+owed on the non-`gh` path to
+[#429](https://github.com/theurian/theurian/issues/429)) on top of #223's
+trust-model gate, and neither obligation is discharged by anything here.
+
+This boundary is what keeps decision 6's classification stable rather than
+rhetorical. An on-ramp that fetches is a connector wearing the wrong name: the
+word "on-ramp" would quietly absorb a network surface, and the controls that
+surface owes would be owed by an ADR that never mentioned them. A local
+directory has no such obligations, which is exactly why the line is drawn at the
+filesystem and stated here rather than left to S3.
+
 Everything downstream is unchanged and is the point of choosing this terminus:
 
 - **The approval gate.** proposal → PR → human review → merge → `migrate apply`
@@ -317,7 +349,7 @@ stays viewable beside it, and the final artifact is a reviewable pull request.
 | `status` | `theurian_status` | The canonical value, uncollapsed. |
 | `labels` | `tags` (§4.1) | A direct fit: short strings for cross-cutting categorization. |
 | `owner` | `theurian_owner` | |
-| `sourceAnchors[]` | `sources[]` (§5.1) | `sourceUri` → the entry's required `resource`; the remaining anchor fields ride the same entry as `theurian_anchor: { provider, repository, commit_sha, blob_sha, file_path, line_start, line_end, external_id }`. |
+| `sourceAnchors[]` | `sources[]` (§5.1) | `sourceUri` → the entry's required `resource`; the remaining **served** anchor fields ride the same entry as `theurian_anchor: { provider, repository, commit_sha, file_path, line_start, line_end }`. `blobSha` and `externalId` are not exported — see below. |
 | `validTo` | `stale_after` (§5.5) | Emitted only when the revision records one. |
 | `created_at` | `generated.at` (§5.2) | Decision 2. |
 | `trustLevel` | `theurian_trust_level` | Not `verified` — see below. |
@@ -365,12 +397,32 @@ Theurian cannot supply. The honest value is no value, and OKF is explicitly buil
 to be read that way: absence means unverified, and a consumer MUST NOT reject a
 concept for it (§5.3, §11).
 
+**The projection publishes no metadata the serve path withholds, and the bound
+is the served payload rather than a judgement.**
+`mcp/results.py::result_payload` is the single shape every result carries, and
+it emits `itemId`, `revisionId`, `title`, `excerpt`, `contentType`, `status`,
+**`trustLevel`** (from `revision.metadata.trust_level`), **`sensitivity`** (the
+item's current one, threaded in rather than read off the revision),
+`freshness.revisionCreatedAt` and a `sourceAnchors[]` of exactly `provider`,
+`sourceUri`, `repository`, `commitSha`, `filePath`, `lineStart` and `lineEnd`.
+So `theurian_trust_level`, `theurian_sensitivity` and the `generated.at` drawn
+from `created_at` are labels a caller of that deployment already receives on
+those same rows — the export changes the *container*, not the audience's view of
+a row. **The two anchor fields that payload does not carry, `blobSha` and
+`externalId`, are therefore not exported either**, which is what makes this a
+universal statement about the front matter rather than a claim with a carve-out
+in it. The two-corpora battery of decision 3 is what holds the other half:
+withheld rows cannot perturb any of these values, because they cannot reach the
+bundle at all.
+
 **Dropped without a slot**, enumerated so that "lossy" is a list rather than an
 adjective:
 
 | Dropped | Why it has no home |
 | :-- | :-- |
 | The immutable revision history | The bundle carries the current revision only; `theurian_revision_id` names which. |
+| The `supersedes` chain | A `superseded` item is outside decision 3's population, so a `SUPERSEDES` edge never clears decision 4's both-endpoints gate. Nothing of the chain survives but the exported row's own `theurian_status` — which is `approved` for every exported row today, so in practice **no trace of supersession leaves the bundle at all**. |
+| `blobSha`, `externalId` | The two `sourceAnchor` fields `result_payload` does not publish (see below). Exporting them would put provenance in a portable artifact that the serve path withholds from the same rows. |
 | `contentSha256` | The exported body is a projection — it gains the generated `## Relations` section — so a digest of the canonical body sitting beside it would be unverifiable against the file it is on. |
 | `tenantId`, `aclGroup` | Fixed today and unenforceable otherwise: `application/migration_engine.py` refuses a revision naming a tenant other than `local` or an ACL group other than `default`. Exporting a field that carries no information invites a consumer to route on it. |
 | Evidence records | The evidence plane has no OKF counterpart; as prose it would read as content. |
@@ -411,8 +463,12 @@ other — a proposal a human reviews.
 
 ### Negative
 
-- **The bundle is a second copy of approved knowledge with no purge machinery.**
-  See the first residual below. This is accepted, not solved.
+- **The bundle is a second copy of approved knowledge that no withdrawal can
+  reach.** A secret-removal withdrawal propagates to every index build on the
+  machine and to no distributed copy. That is a disclosure residual rather than
+  a staleness one, it is the price of the artifact being portable at all, and
+  the first residual below states it in full — including the threat-model entry
+  it owes.
 - **A recipient cannot reconstruct governance**, by design. The projection is
   lossy and one-way; the dropped list above is the price, stated in full so that
   nobody discovers it later by needing one of the rows.
@@ -447,16 +503,36 @@ other — a proposal a human reviews.
 
 ## What this does not close
 
-1. **The purge gap, which is real and accepted.** A withdrawal produces a new
-   index build and swaps the pointer
-   ([ADR-0024](0024-a-purge-is-a-build.md)); **an exported bundle on disk has no
-   equivalent, and a file survives a withdrawal the index has already honoured.**
-   Three things bound it rather than fix it: the bundle is Index-class, so
-   deleting it loses nothing; `theurian_bundle_digest` makes staleness
-   *detectable* by regenerating and comparing; and the guidance the export ships
-   with is to regenerate rather than to edit. What none of that reaches is a copy
-   already handed to someone. Recorded as accepted, at the same standing as any
-   other derived artifact a user has copied out of the project.
+1. **The purge gap. It is a disclosure residual, not a freshness caveat, and it
+   is accepted as one.** A withdrawal publishes a purged index build
+   synchronously and swaps the pointer
+   ([ADR-0024](0024-a-purge-is-a-build.md),
+   `application/withdrawal_purge.py`); **an exported bundle has no equivalent,
+   and the withdrawal does not propagate to copies already distributed.** The
+   case that fixes the severity is the one the purge machinery exists for: a
+   **secret-removal withdrawal**. A credential withdrawn from every index build
+   on this machine survives in every distributed bundle until that bundle is
+   regenerated *and redistributed*, and redistribution is outside Theurian's
+   reach entirely — there is no list of who holds a copy, and no mechanism that
+   could reach them if there were. The same holds for a row withdrawn because it
+   should never have been approved.
+
+   This is the distributed-artifact shape: **an artifact in someone else's hands
+   holds records the live state has since withdrawn.** It is not in the threat
+   model today. Grepped on 2026-09-24: entries run T-1 through T-26, and the
+   withdrawal→purge treatment there (T-17, T-17a, and T-15's remediation clause)
+   is entirely about the *locally published index build*; T-24 is a different
+   shape — a repository shipping its own `.theurian/review/` — and does not
+   cover this. So **a threat-model entry is owed by slice S2**, when the export
+   mechanism lands, alongside the T-3 entry S3 owes for the import; *Compliance*
+   carries both.
+
+   Three things bound the residual and none removes it: the bundle is
+   Index-class, so deleting a copy loses nothing; `theurian_bundle_digest` makes
+   staleness detectable by regenerating and comparing; and the guidance the
+   export ships with is to regenerate rather than to edit. An operator choosing
+   to distribute a bundle is choosing this residual, which is the reason it is
+   written here in those words rather than as a note about freshness.
 2. **Round-trip is not identity.** Export followed by import produces a
    *proposal*, never a restoration: new revision ids, a trust ceiling of
    `INFERRED`, and a human merge in between. Anyone reading the two directions as
@@ -483,7 +559,7 @@ other — a proposal a human reviews.
 | **Stamp the whole-tree `stateHash` in the bundle**, as Phase F ② and [#279](https://github.com/theurian/theurian/issues/279) both say | `domain/state.py`'s `StateInputs` covers *every* migration in the working tree plus every referenced body checksum ([ADR-0016](0016-state-hash-covers-the-working-tree.md)), so the value moves when a `rejected`, `draft` or above-ceiling row moves. Putting it in a shippable artifact would carry a statistic over rows the recipient may not read, and would falsify decision 3's two-corpora equality by construction — the bundle would differ across the two corpora in exactly one field. The staleness need it served is met by a digest over the bundle's own files. Whether the *command* reports the state hash locally, to its operator, is S2's and is untouched by this. |
 | **Emit OKF `verified` from Theurian's approval** | §5.3 keys the trust tier off this field, and the approving identity is not in the canonical store (roadmap §9 candidate 10). A `human:<id>` built from `KnowledgeRevision.author` launders authorship into review; a `process:` actor claims a machine confirmation that never ran. Absence is a meaning OKF defines, and it is the true one. |
 | **Synthesize typed relations from OKF body links on import** | §6.1 puts the relationship kind in the surrounding prose, so filling a closed 14-member enum from a bare link is guesswork, and every wrong guess is an edge a human must find and remove. Untyped links do not need a new type; they need a human. |
-| **Treat OKF import as [#223](https://github.com/theurian/theurian/issues/223)-class external-source ingestion, gated on the trust model** | #223 governs *connectors* that snapshot external systems into the source layer without passing a pull request; its gate exists because that path bypasses review. This import produces only a reviewable proposal and reaches approved state through the same merge as everything else, so it inherits ADR-0013's gate rather than needing #223's. Ingesting a bundle as a governed *source* remains #223's, and remains out of scope. |
+| **Treat OKF import as [#223](https://github.com/theurian/theurian/issues/223)-class external-source ingestion, gated on the trust model** | #223 governs *connectors* that snapshot external systems into the source layer without passing a pull request; its gate exists because that path bypasses review. This import produces only a reviewable proposal and reaches approved state through the same merge as everything else, so it inherits ADR-0013's gate rather than needing #223's. **The boundary that makes the distinction hold is the one decision 6 states: the input is a local directory and the importer fetches nothing.** A remote fetch would put this back in #223's class and owe T-7's fetch controls with it; ingesting a bundle as a governed *source* is #223's either way, and remains out of scope. |
 | **Reuse `KnowledgeCandidate` for imported concepts**, as #705's "bundle → source → KnowledgeCandidate → proposal" sketch has it | `domain/review.py`'s `PromotionGate` requires seven review-shaped signals — `pull_request_merged`, `thread_resolved`, `fix_commit_present`, `not_dismissed_or_outdated`, `ci_successful`, `generalizable`, `has_evidence` — and `KnowledgeCandidate.__post_init__` raises when the gate is unsatisfied. An OKF bundle satisfies none of them, so reuse means fabricating review facts or weakening the gate for every candidate, review-derived ones included. What the type is kept for is its *precedent*: the `INFERRED` ceiling of decision 6. |
 | **Extend `RelationType` so OKF's untyped links have a home** | Enum extension is roadmap §9 ADR candidate 3, which owes a compatibility policy first; and the problem is not a missing member. An untyped link is untyped, and decision 5 is the answer to it. |
 | **Derive the bundle path from `namespace`** | `namespace` is free text where `../` is spellable; `domain/proposal.py::body_relative_path` already refuses it for exactly this reason, and a bundle is a directory tree, so the failure is writing outside the bundle root. |
@@ -534,5 +610,9 @@ Still owed, with the slice that will satisfy it:
   (decision 6, the same shape ADR-0032 and ADR-0035 owe); that the proposed trust
   level is capped at `INFERRED`; and that a bundle with no usable `sources[]`
   still produces a proposal satisfying INV-8 through the bundle's own anchor.
+- **Slice S2, prose:** a threat-model entry for the distributed-bundle residual
+  — a withdrawal, secret removal included, does not propagate to already
+  distributed copies. No existing entry covers that shape (*What this does not
+  close* item 1 records the grep), so it is an addition rather than an amendment.
 - **Slice S3, prose:** the T-3 threat-model entry for the import path, named in
   *What this does not close* item 4.
