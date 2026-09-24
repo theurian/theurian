@@ -1,4 +1,4 @@
-"""The LOCAL half of ADR-0036 slice S4's ratchet (Phase A, "Still owed").
+"""The LOCAL half of ADR-0036 slice S4's ratchet (Phase A, Compliance).
 
 The committed baseline (``tools/eval/baseline/report.json``) must reproduce
 byte-for-byte from a fresh run over the same tree -- otherwise it silently
@@ -15,6 +15,7 @@ on ``sys.path`` itself, the way ``test_harness_pins.py`` beside it does.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -49,6 +50,43 @@ def test_a_fresh_run_over_the_frozen_corpus_reproduces_the_committed_baseline_re
     with tempfile.TemporaryDirectory(prefix="theurian-eval-baseline-check-") as out_name:
         code = harness_run.main(["--corpus", str(CORPUS), "--out", out_name])
         assert code == 0
+        regenerated = (Path(out_name) / "report.json").read_bytes()
+
+    assert regenerated == BASELINE_REPORT.read_bytes()
+
+
+def test_the_documented_cli_command_reproduces_the_committed_baseline_report() -> None:
+    """The instrument-equivalence pin the baseline README's own method block leans on.
+
+    ``tools/eval/baseline/README.md``'s "Instrument" section documents
+    ``uv run python tools/eval/run.py --corpus tests/fixtures/eval --out <dir>``
+    as the canonical reproduction, and asserts that "the determinism pin ...
+    is what makes the two paths equivalent" -- but what actually produced the
+    baseline, and what the sibling pin above drives, is the in-process
+    ``run.main()`` call; nothing has ever driven the DOCUMENTED subprocess
+    form and shown it produces the same bytes. This drives the real
+    subprocess (the exact argv the README's ``$`` line types, ``cwd=REPO_ROOT``
+    so the relative script and corpus paths resolve exactly as a reader typing
+    that line from the repo root would see) and pins its output against the
+    same committed baseline -- naming the instrument on both sides rather than
+    leaving the equivalence asserted prose.
+    """
+    with tempfile.TemporaryDirectory(prefix="theurian-eval-cli-baseline-check-") as out_name:
+        result = subprocess.run(  # noqa: S603 - argv is module-owned, never user input
+            [
+                sys.executable,
+                "tools/eval/run.py",
+                "--corpus",
+                "tests/fixtures/eval",
+                "--out",
+                out_name,
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
         regenerated = (Path(out_name) / "report.json").read_bytes()
 
     assert regenerated == BASELINE_REPORT.read_bytes()

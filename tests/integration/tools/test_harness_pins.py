@@ -130,7 +130,7 @@ def _search(
 def test_the_equality_query_differs_from_its_clean_counterpart_only_in_build_identity(
     smoke_calls: dict[str, Any], query: str
 ) -> None:
-    """ADR-0036 decision 6, "Still owed" item 2, held under 6ef2b606's fix.
+    """ADR-0036 decision 6 (Compliance), held under 6ef2b606's fix.
 
     Both builds index with ``--include-unapproved``, so the gate-tested draft
     row genuinely sits in ``full``'s index (the reach control below proves
@@ -224,7 +224,7 @@ def test_the_competing_vocabulary_querys_candidacy_is_an_enforced_premise(
 def test_both_build_identity_fields_are_constant_and_nonempty_within_one_build(
     smoke_calls: dict[str, Any],
 ) -> None:
-    """The set-equality pin's companion (ADR-0036, "Still owed" item 2).
+    """The set-equality pin's companion (ADR-0036 decision 6, Compliance).
 
     A field left out of a comparison is a field nothing checks, so the two
     fields the comparison above excludes are checked here instead: they must
@@ -365,7 +365,7 @@ def test_no_artifact_string_value_is_contained_in_any_corpus_body_or_migration_t
 def test_two_consecutive_harness_runs_over_the_smoke_corpus_produce_a_byte_identical_report() -> (
     None
 ):
-    """ADR-0036 decisions 5 and 7, "Still owed" item 3.
+    """ADR-0036 decisions 5 and 7 (Compliance).
 
     Measured at the scope decision 5 states, and at no wider one: one machine,
     one interpreter, one SQLite build, consecutive runs. Cross-install

@@ -91,7 +91,7 @@ def _needle_forms(root: Path) -> set[str]:
 def _fixture_and_harness_needles() -> list[str]:
     """Population derived from where a corpus manifest actually sits, not hardcoded.
 
-    ADR-0036's "Still owed" item 1: hardcoding the two path prefixes the
+    ADR-0036 decision 2 (Compliance): hardcoding the two path prefixes the
     decision-2 key spells (``tools/eval``, ``fixtures/eval``) would leave this
     pin green and blind if the corpus or the harness relocated. Both are
     derived instead: the fixture roots from a *recursive* glob over every
@@ -112,7 +112,7 @@ def _fixture_and_harness_needles() -> list[str]:
 
 
 def test_no_module_under_core_src_references_the_harness_or_its_fixtures() -> None:
-    """ADR-0036 decision 2, "Still owed" item 1.
+    """ADR-0036 decision 2 (Compliance).
 
     The retrieval path never reads the judgements: this is the enforced form
     of the decision-2 key (``git grep -n -E "tools/eval|fixtures/eval" --

@@ -489,7 +489,7 @@ def _check_no_evidence_subsumption(judgements: tuple[JudgementEntry, ...]) -> No
     JSON Schema's ``uniqueItems`` already refuses two byte-identical entries;
     what it cannot see is a plain ``sourceUri`` entry standing beside a
     ``(sourceUri, filePath)`` entry narrowing the same URI -- a hit citing that
-    file would satisfy both, scoring one anchor twice (ADR-0036, "Still owed").
+    file would satisfy both, scoring one anchor twice (ADR-0036, Compliance).
     """
     for judgement in judgements:
         plain = {ref.source_uri for ref in judgement.evidence if ref.file_path is None}

@@ -111,9 +111,9 @@ _S2_COMPLIANCE_END = "\nMeasured now, and reproducible from this ADR"
 #: populations, which is why its one citation (the S4b baseline pin) was
 #: checked by hand rather than by this pin until now. No dedicated heading
 #: follows the block to end on: the next stable, unique text is the
-#: paragraph explaining why no *Still owed* section exists, which is prose
-#: about the ADR's own structure rather than part of the compliance record
-#: itself, so it is where the block ends.
+#: paragraph recording that nothing in this ADR remains owed to a later
+#: phase, which is prose about the ADR's own structure rather than part of
+#: the compliance record itself, so it is where the block ends.
 _S4_COMPLIANCE_START = "Landed in Phase A slice S4 — the committed baseline and the advisory CI"
 _S4_COMPLIANCE_END = "\n**Nothing in this ADR is owed to a later phase"
 

@@ -818,7 +818,7 @@ def test_no_judgement_both_requires_and_forbids_an_item() -> None:
 def test_no_judgement_entry_judges_nothing() -> None:
     """``judgementEntry`` requires ``queryId`` alone, so an entry carrying none
     of the four judging fields validates while asserting nothing (ADR-0036,
-    *Still owed*).
+    Compliance).
     """
     assert _empty_judgement_violations(CORPUS) == []
 
@@ -826,7 +826,7 @@ def test_no_judgement_entry_judges_nothing() -> None:
 def test_no_evidence_entry_subsumes_another() -> None:
     """``filePath`` narrows a ``sourceUri``, so ``(u, absent)`` standing beside
     ``(u, f)`` lets one cited anchor satisfy both entries and score twice,
-    inflating evidence precision (ADR-0036, *Still owed*).
+    inflating evidence precision (ADR-0036, Compliance).
     """
     assert _evidence_subsumption_violations(CORPUS) == []
 
