@@ -117,6 +117,14 @@ _S2_COMPLIANCE_END = "\nMeasured now, and reproducible from this ADR"
 _S4_COMPLIANCE_START = "Landed in Phase A slice S4 — the committed baseline and the advisory CI"
 _S4_COMPLIANCE_END = "\n**Nothing in this ADR is owed to a later phase"
 
+#: Amendment 2's block, appended after every marker above. It cites the pin
+#: that exercises the restated sensitivity clause, so it joins this population
+#: in the same commit that lands it rather than being hand-checked once. The
+#: block ends at its own closing paragraph, the last stable unique text in the
+#: file.
+_AMENDMENT_2_START = "## Amendment 2 — `createItem.sensitivity` is the base"
+_AMENDMENT_2_END = "\n**Nothing else in this ADR moves."
+
 #: A backtick-quoted test identifier, ``path::test_name`` or a bare
 #: ``test_name`` -- the two forms both blocks below actually use. Group 1 is
 #: the optional path prefix (``""`` for a bare citation, since ``findall``
@@ -124,7 +132,7 @@ _S4_COMPLIANCE_END = "\n**Nothing in this ADR is owed to a later phase"
 #: group).
 _CITED_TEST_NAME = re.compile(r"`(?:([\w./-]+)::)?(test_[A-Za-z0-9_]+)`")
 
-#: The three blocks the ADR cites test names by name from, each enforced
+#: The four blocks the ADR cites test names by name from, each enforced
 #: independently. S4a's #787 append landed a new citation inside rider 1's
 #: own amendment block (``_AMENDMENT_START``/``_RIDER_2_START``, pin 1a's
 #: bounds), and the S4b docs pass landed another inside the new S4 Compliance
@@ -134,6 +142,7 @@ _CITED_TEST_SECTIONS = (
     pytest.param(_S2_COMPLIANCE_START, _S2_COMPLIANCE_END, id="s2-compliance"),
     pytest.param(_AMENDMENT_START, _RIDER_2_START, id="rider-1-amendment"),
     pytest.param(_S4_COMPLIANCE_START, _S4_COMPLIANCE_END, id="s4-compliance"),
+    pytest.param(_AMENDMENT_2_START, _AMENDMENT_2_END, id="amendment-2"),
 )
 
 
@@ -215,7 +224,7 @@ def test_every_test_name_cited_in_the_adrs_s2_compliance_block_collects(
 ) -> None:
     """A renamed, moved or deleted pin reddens the ADR's own citation record.
 
-    All three blocks name pins by their test function name -- some
+    All four blocks name pins by their test function name -- some
     path-qualified, most bare -- as the record of what each named claim is
     held by. A rename anywhere in ``tests/unit/tools/``,
     ``tests/integration/tools/`` or the product's own test tree would
@@ -223,11 +232,12 @@ def test_every_test_name_cited_in_the_adrs_s2_compliance_block_collects(
     unnoticed. A path-qualified citation is held to that exact path, not
     merely to a same-named test living anywhere in the tree -- a move that
     renamed no function would otherwise pass silently. Parametrized over all
-    three blocks rather than one shared scan: each was landed by a docs pass
+    four blocks rather than one shared scan: each was landed by a docs pass
     that appended a new citation outside every population this pin already
     covered -- rider 1's amendment block (id ``rider-1-amendment``, S4a) and
     the S4 Compliance block (id ``s4-compliance``, S4b) -- checked by hand,
     not by this pin, until each joined it. Exactly the check that rots.
+    Amendment 2 (id ``amendment-2``) joined in the commit that landed it.
     """
     citations = _cited_test_citations(start_marker, end_marker)
     assert citations, "the population must be non-empty, or this pin checks nothing"

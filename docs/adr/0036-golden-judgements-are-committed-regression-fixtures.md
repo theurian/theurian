@@ -938,3 +938,83 @@ enforces the split: every judgement's relevant item id must *exist* (a
 `relevant-item-unknown` refusal names a typo no migration operation creates),
 checked regardless of `enabled`, while *retrievability* — approved,
 within-ceiling, visible-plane — is scoped to `enabled: true`.
+
+## Amendment 2 — `createItem.sensitivity` is the base of the sensitivity fold (2026-09-25, PR #803)
+
+> **This is an append-only amendment.** The decisions above and Amendment 1 are
+> unchanged, and nothing in *Compliance* moves here. What it corrects is one
+> clause of Amendment 1's *derivation rule*: that section names
+> `tools/eval/corpus.py`'s fold as this statement's one implementation while
+> describing a fold that implementation no longer performs.
+>
+> **Cited by pull request, not by sha.** No commit on the branch carrying the
+> fold change is reachable from `origin/main` as this is written, and a
+> squash-merge replaces the branch with one new commit, so a sha or a commit
+> subject would resolve on no ref the moment it lands — the reason Amendment 1
+> cites #778 and #780 the same way.
+
+### The sensitivity clause, restated
+
+A withheld-plane member's final sensitivity is:
+
+1. `createItem.sensitivity` — the base, and `DEFAULT_SENSITIVITY`
+   (`theurian.domain.migration`, `internal` today) when that operation omits
+   the optional field;
+2. then the last `upsertRevision.metadata.sensitivity`, which replaces it — the
+   same default again when that revision's metadata omits the field;
+3. then a later `changeSensitivity`, which replaces whatever stands.
+
+Amendment 1 wrote this clause with no base: it began at the first revision, so
+a member created `confidential` and never revised read as the default,
+`internal`.
+
+The status clause does not move — the last `upsertRevision.metadata.status`,
+overridden by a later `deprecateItem` → `deprecated` — and neither does what
+the derivation rule builds on the pair: the gate-tested/census-tested split,
+the build ceiling, the census. It is silent about a member no revision reaches,
+and so is the fold: `_final_status_and_sensitivity` records no status for one.
+The two withheld-plane sites that consume it —
+`_check_no_disclosable_withheld_item` and `_withheld_item_coverage` — read
+`status_by_item.get(item_id, "draft")`, the `KnowledgeStatus.DRAFT`
+`MigrationEngine._create_item` sets.
+
+### Why the fold is right and the record was wrong
+
+The fold replays `MigrationEngine`, so the engine settles what the record may
+say, not the other way round. `_create_item` builds the `KnowledgeItem` with
+`sensitivity=operation.sensitivity`, and `KnowledgeItem.with_revision`
+(`packages/theurian-core/src/theurian/domain/knowledge.py`) replaces
+`sensitivity` with `revision.metadata.sensitivity` wholesale — it adopts the
+revision's value and never merges it with what came before. An item created
+`confidential` that no revision and no `changeSensitivity` touches is
+`confidential` in the product, so it is `confidential` in the fold; a rule that
+folds it to `internal` describes neither.
+
+The divergence reaches the split, not only the field. Given a withheld-plane
+migration holding one `createItem` with `sensitivity: confidential` and nothing
+else, the shipped classification returns `final_sensitivity='confidential'`,
+`is_gate_tested=False` — census-tested, because `confidential` is outside
+`BUILD_CEILING_SENSITIVITIES` (`{internal, public}`). Amendment 1's written
+rule yields `internal`, inside that ceiling, over a status that falls back to
+`draft`, which is in `GATE_TESTED_STATUSES` — so the same member reads
+gate-tested, and a reader would count the response-equality battery as covering
+a row the build ceiling keeps out of both indexes.
+**Neither committed corpus holds a createItem-only item**, so nothing in
+today's `tests/fixtures/eval` or `tests/fixtures/eval-smoke` classification
+moves; what was wrong was the record, for any corpus that authors one.
+
+`test_the_fold_credits_create_items_sensitivity_when_no_revision_overrides_it`
+(`tests/unit/tools/test_corpus_fixture_consistency.py`) exercises the base
+clause: it hands the loader's fold one migration document carrying two
+`createItem` operations and no revision at all, and asserts the returned
+sensitivity is `confidential` for the item declaring it and the migration
+schema's declared `revisionMetadata.sensitivity` default for the item omitting
+it. It asserts nothing about status, and it compares no second fold.
+
+**Provenance.** Found as a code-review HIGH in
+[PR #803](https://github.com/theurian/theurian/pull/803)'s review round,
+against the fold change the same pull request carries.
+
+**Nothing else in this ADR moves.** Amendment 1 keeps its text, including the
+sentence this supersedes; this section is where its sensitivity clause is read
+from.
