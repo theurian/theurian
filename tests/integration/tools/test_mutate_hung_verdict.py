@@ -29,9 +29,24 @@ pytestmark = pytest.mark.integration
 _HANGING_UV = "#!/bin/sh\nexec sleep 300\n"
 
 # A hang that has already printed something before it was killed -- the
-# common case, and the one MEDIUM-2 says used to be thrown away.
+# common case, and the one MEDIUM-2 says used to be thrown away. #761: a
+# single `printf` then `sleep` raced the harness's own timeout under lane
+# contention -- scheduling the fake script's first line could itself take
+# long enough that the 1s kill (below) landed before the write ever
+# happened, dropping the line 1 run in 8 (two independent measurements,
+# PR #765's round and window 3). Repeating the write for well under the
+# harness's own timeout removes the race rather than narrowing it: any
+# scheduling delay short of the loop's own span still leaves it time to
+# write at least once before the kill.
 _HANGING_UV_WITH_PARTIAL_OUTPUT = (
-    "#!/bin/sh\nprintf 'tests/integration/test_x.py .....\\n'\nexec sleep 300\n"
+    "#!/bin/sh\n"
+    "i=0\n"
+    'while [ "$i" -lt 40 ]; do\n'
+    "  printf 'tests/integration/test_x.py .....\\n'\n"
+    "  i=$((i + 1))\n"
+    "  sleep 0.02\n"
+    "done\n"
+    "exec sleep 300\n"
 )
 
 
