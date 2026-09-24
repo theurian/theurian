@@ -1159,6 +1159,84 @@ flowchart TB
 >     > have a reader. The consumer list inside that record was left at the count
 >     > it was taken with rather than re-counted, since the schema has gained
 >     > test-side consumers only.
+>     >
+>     > **Amended in Phase A slice S4c (2026-09-24): the opt-in posture is
+>     > confirmed by measurement, and default-on is declined on it.** This
+>     > decision shipped RAPTOR opt-in because its acceptance tests were owed and
+>     > its build cost was unmeasured. Both have since landed, and the roadmap
+>     > reserved the default-on question for a measurement rather than a
+>     > preference. The measurement exists now, so the answer is recorded:
+>     > **extractive RAPTOR stays opt-in, and `theurian index build --raptor`
+>     > remains the switch.**
+>     >
+>     > **What was measured.** One variable moves between the two arms — same
+>     > corpus, same queries, same flags, same interpreter, one run, with the
+>     > forest built or not built — and the deltas are raptor-on minus raptor-off
+>     > over the `full`-corpus default-flag runs:
+>     >
+>     > | | ΔRecall@1 | ΔRecall@5 | ΔRecall@10 | ΔMRR |
+>     > | :-- | --: | --: | --: | --: |
+>     > | broad-architectural (n=3) | **+0.25** | -0.083333 | 0.0 | **+0.416667** |
+>     > | cross-adr (n=3) | -0.666667 | -0.333333 | 0.0 | -0.683333 |
+>     > | rejected-alternative (n=3) | -0.666667 | 0.0 | 0.0 | -0.444444 |
+>     > | overall (n=26) | **-0.147727** | -0.056818 | 0.0 | **-0.097601** |
+>     >
+>     > **The routing does what this ADR designed it for.** On the class it was
+>     > built for — the broad architectural question, the "what are our database
+>     > design principles?" shape — top rank improves substantially: Recall@1
+>     > 0.111111 → 0.361111, MRR 0.583333 → 1.0. That gain is real, and declining
+>     > default-on withdraws nothing: it is one `--raptor` build away for an
+>     > operator whose questions look like that class.
+>     >
+>     > **Why default-on is declined anyway.** The same forest costs top rank
+>     > elsewhere, and the cost is concentrated rather than diffuse: `cross-adr`
+>     > falls from Recall@1 0.666667 to 0.0 — every top-rank hit it had — and
+>     > `rejected-alternative` drops by the same 0.666667 from 0.833333. Across
+>     > all seven classes that is Recall@1 -0.147727 and MRR -0.097601. Default-on
+>     > would trade a top-rank regression over the whole query set for a gain in
+>     > one class of three samples, on the corpus this project uses as its
+>     > measuring stick — and that is the trade this decision's own sentence
+>     > refuses: turning a forest on should be somebody's decision, and it is now
+>     > a decision they can make against a number.
+>     >
+>     > **What does not move is which documents come back.** ΔRecall@10 is `0.0`
+>     > overall and in every class that carries a delta at all — `unknown`
+>     > carries none, its queries judging no relevant item — so on this corpus the
+>     > forest reorders the first ten results rather than changing which documents
+>     > reach them. A re-ranking effect, not a recall-of-set effect, which is why
+>     > the top-rank figures are the ones that decide it.
+>     >
+>     > **The figures are relative, not absolute, and that bounds what this
+>     > decides.** [ADR-0036](0036-golden-judgements-are-committed-regression-fixtures.md)'s
+>     > own Negative consequence governs how they may be read: "The fixture is
+>     > small and synthetic, so the numbers are relative, not absolute … It is not
+>     > a claim about how Theurian performs on anyone's real knowledge base, and
+>     > no published figure may be read that way." Three samples in the winning
+>     > class and three in each losing one is a regression signal, not an estimate
+>     > of what a forest buys on a real corpus. **So this is a decision taken on a
+>     > measurement, not a finding about RAPTOR**: a different corpus, or a change
+>     > to the fusion, may re-open it.
+>     >
+>     > **Where the numbers live, and how to re-check them.** The durable carrier
+>     > is the committed baseline itself — `tools/eval/baseline/report.json`'s
+>     > `comparison.byClass` and `comparison.overall`, echoed as a table in
+>     > `tools/eval/baseline/README.md`'s "The RAPTOR comparison arm" section —
+>     > rather than a commit name: the arm landed on a branch with no sha
+>     > reachable from `origin/main`, so its commits are named by subject
+>     > (*feat(eval): the RAPTOR comparison arm — raptor-on variant, per-class
+>     > deltas, regenerated baseline*, pinned by *test(eval): pin the raptor arm —
+>     > symmetric timings, derived deltas, reported-not-asserted channel*). The
+>     > base arm's figures are unchanged by the addition. The re-check is the one
+>     > command the README documents, which runs both arms:
+>     >
+>     > ```console
+>     > $ uv run python tools/eval/run.py --corpus tests/fixtures/eval --out <dir>
+>     > ```
+>     >
+>     > **Abstractive RAPTOR is untouched.** What is decided here is the default
+>     > for the *extractive* summariser this ADR ships. Abstractive summarisation
+>     > stays frozen behind SEC-16 and sits in Phase F ④; nothing measured here
+>     > speaks to it.
 
 ## Consequences
 

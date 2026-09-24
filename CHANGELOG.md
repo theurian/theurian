@@ -12,6 +12,39 @@ changes, and milestone completions.
 
 ## Repository history
 
+### 2026-09-24 — Phase A complete: the RAPTOR decision closed its exit criteria
+
+The entry below, from earlier the same day, recorded the baseline and said in
+terms that it was **not** Phase A's completion, because the row's third exit
+clause — "the RAPTOR, CJK and dense decisions each have a measurement behind
+them" — was unmet. It is met now, and that entry stays as the honest record of
+where the phase stood at that point.
+
+What closed it is a decision rather than more code: **extractive RAPTOR stays
+opt-in, and default-on is declined on the measurement.** A second, raptor-ON arm
+of the harness runs the same corpus and the same queries with one variable
+changed, and the committed baseline's `comparison` block carries the deltas. On
+the class RAPTOR was designed for, top rank improves substantially —
+broad-architectural Recall@1 `0.111111` → `0.361111`, MRR `0.583333` → `1.0`.
+Across all seven classes it costs top rank instead: Recall@1 `-0.147727`, MRR
+`-0.097601`, concentrated in `cross-adr` and `rejected-alternative`. ΔRecall@10
+is `0.0` everywhere, so what the forest changes on this corpus is the order of
+the first ten results rather than which documents reach them. Turning it on
+remains one `theurian index build --raptor` away, which is what makes declining
+the default a choice about a default rather than a withdrawal of the capability.
+
+The reasoning, the relative-not-absolute caveat and the re-check command are in
+[ADR-0008](docs/adr/0008-raptor-forest.md)'s decision 10 amendment. The other
+two clauses were already satisfied by measurements rather than by this decision:
+the CJK defects are quantified by the baseline's own two CJK members, and the
+dense question rests on the hashed embedder that
+[ADR-0009](docs/adr/0009-no-llm-vendor-lock-in.md) already measured as
+uninformative — an arm that ran and lost, with only a real-model arm awaiting a
+real provider.
+
+Recorded here as a phase completion, the successor to the milestone completions
+below. No artifact version moved: nothing in this phase reaches an installer.
+
 ### 2026-09-24 — Phase A's retrieval evaluation baseline committed
 
 Retrieval quality has a reproducible measurement for the first time, so a
