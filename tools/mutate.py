@@ -74,7 +74,7 @@ root-corpus applicability test, two rules in ``test_git_trailer_source.py``,
 the two ``premise_check`` ``test_name`` verification pins, and the port-count
 row's own re-derivation (the full, dated list is in ``_lend_git_objects``'s
 docstring; two of the seven actually read a blob, two more need
-``ls-files``/refs, two ask ``git rev-parse --is-inside-work-tree`` for the
+``ls-files``/refs, two check for a ``.git`` of the tree's own for the
 premise_check pins, and the seventh's own guard fails rather than skips).
 Without the flag six of the seven skip, so a mutation whose only killer is
 one of them reports SURVIVED with no sign the harness never ran the test
@@ -553,9 +553,10 @@ def _lend_git_objects(destination: Path) -> None:
       ref still skips it under ``--with-git``.
     - ``test_premise_check_verification.py::test_an_async_def_test_under_the
       _core_package_tree_is_found`` and ``::test_a_test_name_committed_nowhere
-      _is_dangling_via_the_real_seam`` -- both ask ``git rev-parse
-      --is-inside-work-tree`` via :func:`premise_verify.git_repository_present`
-      before running a `git grep` these two tests otherwise drive directly (#788).
+      _is_dangling_via_the_real_seam`` -- both check
+      :func:`premise_verify.git_repository_present` (a ``.git`` beside this
+      checkout's own root) before running a `git grep` these two tests
+      otherwise drive directly (#788).
     - ``test_port_count_row_claims.py::test_the_port_count_row_inventories
       _the_population_its_own_key_returns`` -- ``git grep``/``git ls-files
       --cached`` recomputing a roadmap row's own published counts (#679).

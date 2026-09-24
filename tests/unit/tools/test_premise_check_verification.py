@@ -440,7 +440,7 @@ def _skip_unless_git_repository() -> None:
     driving -- a real checkout is what the claim below is about, and there is
     no real checkout to ask.
     """
-    if not premise_verify.git_repository_present(premise_check.run_command):
+    if not premise_verify.git_repository_present(premise_check.REPO_ROOT):
         pytest.skip("no git repository in this tree (mutate.py --prepare-tree without --with-git)")
 
 

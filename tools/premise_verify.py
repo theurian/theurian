@@ -22,7 +22,7 @@ import re
 import shlex
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Final
 
 #: The two trees ``pytest`` itself walks (``pyproject.toml``'s
@@ -75,17 +75,26 @@ class CommandResult:
 Runner = Callable[[Sequence[str]], CommandResult]
 
 
-def git_repository_present(runner: Runner) -> bool:
-    """Whether ``runner`` sits inside a git repository at all.
+def git_repository_present(repo_root: Path) -> bool:
+    """Whether ``repo_root`` itself carries a ``.git`` -- not some ancestor of it.
 
-    ``mutate.py --prepare-tree`` without ``--with-git`` produces exactly that
-    (#788): every plumbing command below then fails with exit 128 ("not a
-    git repository"), and a recipe that maps that code onto its kind's own
-    not-found status reports a verdict this checkout never actually computed.
-    A caller that cannot proceed without git checks this first and degrades,
-    mirroring ``eval/report.py``'s ``commitSha == "unknown"``.
+    ``mutate.py --prepare-tree`` without ``--with-git`` produces exactly a
+    tree with no ``.git`` of its own (#788): every plumbing command below then
+    fails with exit 128 ("not a git repository"), and a recipe that maps that
+    code onto its kind's own not-found status reports a verdict this checkout
+    never actually computed. A caller that cannot proceed without git checks
+    this first and degrades, mirroring ``eval/report.py``'s
+    ``commitSha == "unknown"``.
+
+    Not ``git rev-parse --is-inside-work-tree`` (round 1 M1): that walks
+    *upward* through every ancestor looking for a ``.git``, so a gitless copy
+    placed underneath a real repository -- ``--prepare-tree --work-dir``
+    pointed at a path inside a clone -- answers "inside" and this guard would
+    never fire, reproducing #788's exact symptom under a different
+    ``--work-dir``. ``.exists()`` rather than ``.is_dir()``: ``.git`` is a
+    file, not a directory, inside a linked worktree.
     """
-    return runner(("git", "rev-parse", "--is-inside-work-tree")).returncode == 0
+    return (repo_root / ".git").exists()
 
 
 @dataclass(frozen=True, slots=True)
