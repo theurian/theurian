@@ -229,9 +229,9 @@ bracketed title linking its target.
   component. The root has no path component, so its heading is the exporter
   constant `# Theurian Bundle`, matching the manifest's `type`.
 - **Entries are the directory's own concept documents** — the manifest included,
-  at the root — as `* [<title>](<bundle-absolute path>)`, **and one entry per
-  immediate subdirectory**, titled by its path component and linking to it with
-  a trailing slash, the form §8's own example uses.
+  at the root — each a bracketed title linking its bundle-absolute path, **and
+  one entry per immediate subdirectory**, titled by its path component and
+  linking to it with a trailing slash, the form §8's own example uses.
 - **All entries in one list, ordered bytewise by their bundle-absolute path.**
   One total order over both kinds rather than two rules, which is what the
   determinism pin needs.
