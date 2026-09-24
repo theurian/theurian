@@ -324,6 +324,54 @@ def test_the_five_within_document_rule_names_the_adr_cites_are_live_corpuserror_
     )
 
 
+# -- 1d: Amendment 2's restated clause carries both the createItem base and --
+#         DEFAULT_SENSITIVITY fallback halves --------------------------------
+
+#: Short, distinctive substrings of the restated sensitivity clause's own
+#: words -- not the whole enumerated item, so a copy-edit that keeps the
+#: substance but rewords around it does not falsely redden this. Checked
+#: against the flattened block since the enumerated item wraps mid-clause
+#: ("`DEFAULT_SENSITIVITY`\n   (`theurian.domain.migration`") at the ADR's
+#: own line width.
+_CREATEITEM_SENSITIVITY_IS_THE_BASE = "`createItem.sensitivity` — the base"
+_DEFAULT_SENSITIVITY_IS_THE_FALLBACK = (
+    "`DEFAULT_SENSITIVITY` (`theurian.domain.migration`, `internal` today) "
+    "when that operation omits the optional field"
+)
+
+
+def test_amendment_2s_restated_clause_carries_both_the_base_and_fallback_halves(
+    adr_path: Path = ADR,
+) -> None:
+    """Guards against Amendment 2 reverting to Amendment 1's no-base clause.
+
+    Amendment 2 corrected exactly this overclaim: Amendment 1's derivation
+    rule began the sensitivity fold at the first revision, so a member
+    created ``confidential`` and never revised read as the default,
+    ``internal``. The FACT side of that correction is pinned by
+    ``test_the_fold_credits_create_items_sensitivity_when_no_revision_overrides_it``
+    (``tests/unit/tools/test_corpus_fixture_consistency.py``), which reddens
+    if the fold's ``createItem`` branch is removed from the source. This pins
+    the PROSE side -- the restated clause reverting to revision-only wording
+    would leave the fold correct and the record wrong again, unnoticed, since
+    pin 1b only checks that the citations inside this block still collect.
+    """
+    block = _flatten(
+        _section(adr_path.read_text(encoding="utf-8"), _AMENDMENT_2_START, _AMENDMENT_2_END)
+    )
+
+    assert _CREATEITEM_SENSITIVITY_IS_THE_BASE in block, (
+        f"Amendment 2's block no longer names createItem.sensitivity as the "
+        f"sensitivity fold's base -- reverted toward Amendment 1's no-base "
+        f"wording (between {_AMENDMENT_2_START!r} and {_AMENDMENT_2_END!r})"
+    )
+    assert _DEFAULT_SENSITIVITY_IS_THE_FALLBACK in block, (
+        f"Amendment 2's block no longer names DEFAULT_SENSITIVITY as the "
+        f"base's fallback when createItem omits the optional field "
+        f"(between {_AMENDMENT_2_START!r} and {_AMENDMENT_2_END!r})"
+    )
+
+
 # -- 2: the #787 tripwire -- the published per-query metric key set ---------
 
 #: Today's expected key set. A DELIBERATE snapshot, not a derivation: the
