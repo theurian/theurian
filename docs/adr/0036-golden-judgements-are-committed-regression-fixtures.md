@@ -698,6 +698,48 @@ trivially satisfied for them and tests nothing.
 > build that will state the figure with its unit; decision 6's *form* is
 > unchanged by any of this — what moved is where that form is asserted as a
 > property and where it is recorded as a channel.
+>
+> **Superseded at slice S4a: the figure is measured, the unit is settled, and
+> the channel is implemented.** The paragraph above stays as the record of what
+> was known on 2026-09-20 and is no longer the live reading. The unit is **per
+> query**. On the committed S3 corpus, **18 of 26** enabled queries differ
+> beyond the exception set at the harness `limit` of 10, and **21 of 26** at the
+> equality limit of 50 — measured at `4ce0868f` with the shipped loader and
+> recorded on
+> [#787](https://github.com/theurian/theurian/issues/787#issuecomment-5804290254),
+> which supersedes the provisional 17 of 26. The differences fall in T-17's own
+> families: `fusedScore` most often, then `retrieval.usedTokens` with `count`,
+> tail-slot displacement of visible rows, and which paragraph was excerpted.
+>
+> `report.json` now publishes `equality.channel` — `queriesDiffering` and `of`
+> at both limits, beside a `reason` carrying #787's annotation phrasing verbatim
+> — and `abstentionCause`, set only where the flag-on probe returns a hit the
+> default-flag query did not, so a gate-earned abstention is annotated while an
+> absence-earned one stays bare. Both landed in slice S4a, named here by commit
+> subject rather than by sha because no sha on that branch is reachable from
+> `origin/main` as this is written: *feat(eval): abstention cause and the
+> include-unapproved channel report*, pinned by *test(eval): pin the abstention
+> cause, the channel summary, and the probe's containment*. The tripwire fired
+> as designed on the way — `EXPECTED_QUERY_METRIC_KEYS` moved in the same commit
+> that added the key, which is the owed-to-implemented signal
+> `tests/unit/tools/test_adr36_ratchet.py`'s own tripwire docstring describes.
+>
+> **The mechanism is pinned; these two figures are not.**
+> `test_the_equality_channel_summary_carries_the_787_reason_verbatim_and_the_measured_counts`
+> asserts the *smoke* corpus's own summary — `queriesDiffering` 0 of 3 at both
+> limits — and pins `reason` by equality against the module's constant, so a
+> paraphrase reddens rather than passing; its own docstring states that those
+> counts are not the S3 corpus's. 18 of 26 and 21 of 26 stay a dated measurement
+> anchored to `4ce0868f`, and slice S4's committed baseline is what will hold
+> them.
+>
+> **The aggregate is annotated, not split.** `abstentionAccuracy` still blends
+> gate-earned and absence-earned samples, matching the `forbiddenPresentCause`
+> convention this mirrors, where an annotated zero still counts toward
+> `supersededKnowledgeErrorRate`. #787's design sketch also offered reporting
+> the two populations separately, or excluding annotated samples from the mean;
+> neither was taken, and `_abstention_cause`'s docstring carries that choice
+> where a reader meets the number.
 
 **2. The census is the test for the build-time-excluded and status-unsurfaceable
 mechanisms.** No build indexes these members, so no query can test them and a
