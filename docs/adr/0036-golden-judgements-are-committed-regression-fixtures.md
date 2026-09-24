@@ -710,11 +710,18 @@ trivially satisfied for them and tests nothing.
 > which supersedes the provisional 17 of 26. The differences fall in T-17's own
 > families: `fusedScore` most often, then `retrieval.usedTokens` with `count`,
 > tail-slot displacement of visible rows, and which paragraph was excerpted.
-> **The denominator is diluted, and reading it as a rate understates the
-> channel:** `of` counts every equality query that ran against both corpora,
-> including the withheld-topic probes that correctly return no rows on either
-> side. A query that cannot differ is still in the denominator, so the published
-> proportion is conservative by construction.
+> **The denominator is a population, not a rate.** `of` counts every equality
+> query that ran against both corpora — all 26 of them in this corpus — and that
+> includes queries whose responses held no result rows in the run being
+> reported: at `4ce0868f`, three of the four abstention-expecting queries
+> abstained correctly on the `full` build, the one miss being
+> `q-withheld-credential-cache`, which #787 records as benign vocabulary overlap
+> by visible rows rather than a leak. Five of the 26 did not differ at the
+> equality limit and eight did not at limit 10. **Which queries made up those
+> sets is in no record this ADR can cite**, and the per-query population is what
+> slice S4b's committed baseline states. Until it does, reading 18 or 21 out of
+> 26 as a rate understates the channel — a dated observation about that one run,
+> not a property of the corpus.
 >
 > `report.json` now publishes `equality.channel` — `queriesDiffering` and `of`
 > at both limits, beside a `reason` carrying #787's annotation phrasing verbatim
@@ -736,10 +743,17 @@ trivially satisfied for them and tests nothing.
 > discover: a duration is its own disclosure channel, not a by-product of the
 > count.
 > `test_the_equality_querys_two_planes_each_carry_their_own_probes_cause_and_timings_row`
-> holds all three — each plane's `abstentionCause` derived from its own-limit
-> probe, `abstentionProbe` equal to `{includeUnapproved: true, limits: [10, 50]}`,
-> and exactly the two flag-on `timings.json` rows, `(10, true)` and `(50, true)`,
-> for that query.
+> holds three things: each plane's `abstentionCause` derived from its own-limit
+> probe; the report's `abstentionProbe` reading
+> `{includeUnapproved: true, limits: [10, 50]}`; and, filtered to that query's
+> own id, exactly the two flag-on `timings.json` rows `(10, true)` and
+> `(50, true)`. **`limits` is a union across every probed query in the corpus,
+> never one query's own list** — the smoke corpus's non-equality abstention query
+> is probed at the base limit alone, and the member still reads `[10, 50]`
+> because the equality query beside it is probed at both. A single query's set is
+> derivable from its own entry instead: the base limit always, and the equality
+> limit exactly when that entry carries `atEqualityLimit`, since the probe's
+> limits and that branch are decided by the same both-corpora predicate.
 >
 > **What the tripwire caught was `abstentionCause`, not the channel.**
 > `EXPECTED_QUERY_METRIC_KEYS` moved in the same commit that added that key,
