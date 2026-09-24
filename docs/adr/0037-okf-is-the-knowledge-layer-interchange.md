@@ -222,6 +222,26 @@ tarball or a clone rewrites all three, and a battery that compared them would
 fail for reasons that have nothing to do with the projection. The batteries
 compare file contents.
 
+**A function of a set is not yet a sequence, so every ordering the bundle
+contains is fixed here.** Without this the determinism pin has nothing to hold:
+two runs over one state could emit the same values in a different order and both
+satisfy the sentence above.
+
+- **The digest** is over `(relative POSIX path, sha256 of the file)` pairs,
+  sorted bytewise by path.
+- **`index.md` entries** are ordered by bundle path.
+- **`theurian_relations` and the `## Relations` section** are ordered by
+  `(relation type, target item id)`. Neither is a stored order: `list_relations`
+  answers a query, and the section groups by type in any case.
+- **`sources[]` and `tags` keep their in-row order**, and that order is a
+  property of the row rather than of the query. Measured: `labels` is a JSON
+  array column round-tripped by `json.dumps`/`json.loads`
+  (`knowledge_revisions.labels`), so the sequence the migration recorded is the
+  sequence read back; anchors come back `ORDER BY anchor_id`, an
+  `INTEGER PRIMARY KEY AUTOINCREMENT`, so the read is a total order that
+  reproduces the order the revision recorded them in. Neither reaches the export
+  through a query with no `ORDER BY`.
+
 Both of the properties this ADR is asked for fall out of that one sentence
 rather than out of a checklist of excluded fields: the two-corpora equality of
 decision 3, and the regeneration determinism the roadmap's Phase F ② exit
@@ -410,6 +430,15 @@ SEC-7 and T-4/T-5 already name: a `../` in a front-matter value, or a symlink
 inside the tree pointing at `~/.ssh/id_rsa`, would otherwise read a file outside
 the bundle and land its contents in a proposal a human is about to approve. S3
 owes both pins — the escape and the symlink.
+
+**A refused reference is recorded as it was written** — the front-matter key and
+the literal string the bundle carried — and **never as the path it resolved
+to**. The resolved form names directories on the machine that ran the import,
+and the record of a refusal ends up in a proposal draft that is committed and
+pushed for review: printing the target would carry the operator's filesystem
+layout into a public pull request, which is the disclosure T-25 closed on the
+MCP surface and which has no reason to reopen here. S3 owes this pin beside the
+other two.
 
 T-3 — an agent acting on instructions injected into indexed content — is the live
 threat on this direction, and it is guarded by exactly the controls ADR-0035
@@ -638,7 +667,7 @@ widening rather than an oversight:**
 | :-- | :-- |
 | `type` ← `kind` | OKF's one required key (§4.1): a bundle cannot exist without it. It states the governance *class* of a row the recipient is already reading. |
 | `theurian_namespace` ← `namespace` | One of the six required fields, so a faithful re-proposal of an exported row needs it. It names internal structure — the same kind of exposure `owner` carries, and it is recorded here for the same reason. |
-| `tags` ← `labels` | Author-chosen strings on a row the recipient reads, and OKF's own cross-cutting categorization slot. A team that puts something sensitive in a label has put it on the row. |
+| `tags` ← `labels` | **Unserved, so this is a recorded exposure like `owner`'s, not a safe projection.** No `result_payload` key carries labels, no search parameter filters on them, and the FTS5 table indexes `heading` and `text` only (`infrastructure/sqlite/index_schema.py`'s `chunks_fts`) — a label reaches no reader today. What makes emitting them acceptable is the gate, not the intent: `metadata.labels` is scanned element by element at accept, under the default `block` policy (`application/proposal_service.py::_metadata_strings` → `_list_strings`, L4245). |
 | `stale_after` ← `validTo` | The serve path publishes `freshness.isWithinValidity`, a boolean this instant produces; the bundle publishes the instant, which is strictly more than the boolean. Emitted because a bundle is read asynchronously, where a boolean computed at export time would be wrong by the time it is read. |
 | `theurian_owner` ← `owner` | Already carried as a residual under *Negative* — the recorded `owner` string travels, and a team that set it to a person's handle is exporting that handle. |
 
@@ -861,7 +890,8 @@ Still owed, with the slice that will satisfy it:
   against two corpora, one holding the withheld rows and one that never did,
   asserted to produce the byte-identical bundle; the determinism of decision 2 —
   two runs against one canonical state producing byte-identical output, which is
-  Phase F ②'s exit criterion; a pin that the bundle path is derived from the
+  Phase F ②'s exit criterion and which now has the four ordering rules of
+  decision 2 to hold rather than a property with no sequence in it; a pin that the bundle path is derived from the
   item id, so a crafted `namespace` cannot reach a path component; and a pin that
   a non-markdown row exports as a sidecar whose bytes equal the canonical body,
   with the row present in the bundle either way — the property the two-corpora
