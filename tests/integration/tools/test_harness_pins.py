@@ -794,6 +794,15 @@ def test_a_clean_only_abstention_querys_probe_never_escapes_into_a_full_or_flagg
     records for ``mainframe-disaster-recovery``) -- irrelevant to what this
     pin checks, which is containment, not whether the query's own abstention
     judgement holds.
+
+    Slice S4c's symmetric raptor arm (``run.py`` dispatches every enabled
+    query against both arms) adds a second ``clean`` row for this same query
+    -- a ``raptor:True`` sibling of the ``raptor:False`` row above, still
+    containment-clean. The property this pin always meant survives that: no
+    ``full`` row, no ``includeUnapproved:true`` row, ever. Pinned as an exact
+    two-row set rather than tolerated by a widened count, so a THIRD row (a
+    reappearing phantom, or the raptor arm losing its own containment) would
+    still redden here.
     """
     corpus_root = tmp_path / "corpus"
     _write_clean_only_abstention_corpus(corpus_root)
@@ -806,12 +815,14 @@ def test_a_clean_only_abstention_querys_probe_never_escapes_into_a_full_or_flagg
 
     assert set(report["queries"]["clean-only-abstention"]["corpora"]) == {"clean"}
     assert "abstentionProbe" not in report
+    assert set(report["raptor"]["queries"]["clean-only-abstention"]["corpora"]) == {"clean"}
+    assert "abstentionProbe" not in report["raptor"]
 
-    assert len(timings["queries"]) == 1
-    row = timings["queries"][0]
-    assert (row["queryId"], row["corpus"], row["limit"], row["includeUnapproved"]) == (
-        "clean-only-abstention",
-        "clean",
-        5,
-        False,
-    )
+    rows = {
+        (row["queryId"], row["corpus"], row["limit"], row["includeUnapproved"], row["raptor"])
+        for row in timings["queries"]
+    }
+    assert rows == {
+        ("clean-only-abstention", "clean", 5, False, False),
+        ("clean-only-abstention", "clean", 5, False, True),
+    }
