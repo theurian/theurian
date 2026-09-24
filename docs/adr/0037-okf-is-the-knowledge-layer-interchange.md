@@ -231,7 +231,11 @@ bracketed title linking its target.
 - **Entries are the directory's own concept documents** — the manifest included,
   at the root — each a bracketed title linking its bundle-absolute path, **and
   one entry per immediate subdirectory**, titled by its path component and
-  linking to it with a trailing slash, the form §8's own example uses.
+  linking to it with a trailing slash, the form §8's own example uses. **The
+  manifest's own entry is titled `Theurian Bundle`**, a fixed string like the
+  root heading rather than a walked one: the manifest projects no row, so it
+  carries no `title` for an entry to draw on, and leaving it unsaid is a byte
+  nobody bounded.
 - **All entries in one list, ordered bytewise by their bundle-absolute path.**
   One total order over both kinds rather than two rules, which is what the
   determinism pin needs.
@@ -308,7 +312,7 @@ its bound and what checks it.**
 | **Sidecar bytes** | The snapshot's `body` column, byte for byte | S2's bytes-equal pin |
 | **Index files** | Per decision 2 above: one per directory, a single section headed by the directory's path component, entries of title and bundle-absolute path drawn from walked emissions — a subdirectory entry's title being that path component, derived from item ids rather than from any walked `title` — path-ordered, no description | Prose here; S2's determinism battery |
 | **The manifest** | Fixed text (`type`, the holder notice), `theurian_export_version` as a constant, and `theurian_bundle_digest` as a function of the bundle's own files in the stated path order | The manifest field-set paragraph above; S2's determinism battery |
-| **Bundle-structural constants** | **Every byte the exporter renders that projects no row value.** The class bound is that each is a constant of the exporter version: its spelling is fixed before any row is read, so no member varies with a corpus or with a run. Enumerated — the concept skeleton (the front-matter fences, the `## Relations` heading, the fixed wording the sidecar link sits in); a concept document's own `.md` extension; the reserved names `index.md`, `log.md` and `theurian-bundle.md`, and the `_item` escape suffix; the index entry syntax — the list marker `*`, then the bracketed title, then the parenthesized bundle-absolute path, §8's own form; `okf_version: "0.2"` on the root `index.md`, fixed by this ADR from the spec version it targets; the root index heading `# Theurian Bundle`; and the absence the no-`log.md` rule names | Prose here; S2's determinism battery and decision 3's two-corpora battery, which quantify over every byte of the bundle and so redden on a member of this family that varied. Neither can see a member missing from the enumeration — the paragraph below says why |
+| **Bundle-structural constants** | **Every byte the exporter renders that projects no row value.** The class bound is that each is a constant of the exporter version: its spelling is fixed before any row is read, so no member varies with a corpus or with a run. Enumerated — the concept skeleton (the front-matter fences, the front-matter key order and the serializer that renders it, the `## Relations` heading, the fixed wording the sidecar link sits in); a concept document's own `.md` extension; the reserved names `index.md`, `log.md` and `theurian-bundle.md`, and the `_item` escape suffix; the index entry syntax — the list marker `*`, then the bracketed title, then the parenthesized bundle-absolute path, §8's own form — and a subdirectory entry's trailing slash; the relations section's own list marker and the heading level its per-type sub-headings sit at; every index heading's `#` marker, the root's whole heading `# Theurian Bundle` and the manifest's index entry title of the same fixed string; `okf_version: "0.2"` on the root `index.md`, fixed by this ADR from the spec version it targets; and the absence the no-`log.md` rule names. The quoting a particular value draws from the serializer is that value's; which serializer runs, and in what key order, is not | Prose here; S2's determinism battery and decision 3's two-corpora battery, which quantify over every byte of the bundle and so redden on a member of this family that varied. Neither can see a member missing from the enumeration — the paragraph below says why |
 
 **What the batteries close, and what only the enumeration closes.** S2's
 determinism battery and decision 3's two-corpora battery quantify over every byte
@@ -323,13 +327,29 @@ S2 lands it. **The partition is closed by reading this table; what the pins hold
 is the enumeration's shape** — the seven family names, and every row stating both
 a bound and a check — and the ratchet below is what keeps the reading current.
 
-**Row text rendered into structural syntax is escaped, and the exact rule is
-S2's.** An index entry's title and a relation line's `note` are row values placed
-where Markdown means something: a title carrying a bracket followed by a
-parenthesis closes the entry's link early, and a note beginning with a run of `#`
-reads as a heading and splits the `## Relations` section. Neither may forge
-structure, so both are rendered with Markdown-syntax escaping. What the escape
-covers and the pin that drives it are S2's, and *Compliance* carries it as owed.
+**Row text rendered into structural syntax is escaped, at both site kinds, and
+the exact rule is S2's.** The strings that reach those positions are bounded by
+*length alone*: `schemas/migrations/migration.schema.json` gives `title` a
+`maxLength` of 300, `owner` 200, each `labels` item 64 and an `addRelation`
+`note` 1000, and **none of the four carries `namespace`'s control-character
+pattern** `^[^\u0000-\u001f\u007f]*$`. A newline is therefore a spellable
+character in an approved row's title, and it lands in two different kinds of
+position:
+
+- **YAML front matter.** Every front-matter value is emitted through a YAML
+  serializer that quotes and escapes, so a newline inside a title terminates no
+  value and opens no key. The concrete failure without it: a title ending in a
+  line break followed by `theurian_sensitivity: public` forges a governance key
+  in a distributed bundle, and the row asserts its own sensitivity label to
+  every consumer that reads front matter.
+- **Markdown.** An index entry's title and a relation line's `note` land where
+  Markdown means something: a title carrying a bracket followed by a parenthesis
+  closes the entry's link early, and a note beginning with a run of `#` reads as
+  a heading and splits the `## Relations` section. Both are rendered with
+  Markdown-syntax escaping.
+
+Neither site may be forged from row text. What each escape covers, and the pin
+that drives **both**, are S2's — *Compliance* carries it as owed.
 
 **The ratchet, in prose, so the next design change cannot repeat the last two:**
 a new byte source takes a row in this table *first*. Not a bound widened to
@@ -1029,11 +1049,12 @@ Landing with this pull request:
   RED when anything emitted is in neither the union nor the widenings.
 - **The sidecar extension rule, walked over the media types it ranges on.**
   `domain/values.py::_STRUCTURED_MEDIA_TYPES` has seven members; decision 7's
-  three arms — the two exact spellings, the `endswith` suffix rule, and `.txt`
-  otherwise — assign each of them the extension recorded above. It goes RED when
-  a member arrives whose extension those arms get wrong, and when the paragraph's
-  five-of-seven measurement — the members matching neither `endswith` arm —
-  stops being five.
+  three arms — `application/json` and anything ending `+json` to `.json`;
+  `application/yaml`, `text/x-yaml` and anything ending `+yaml` to `.yaml`;
+  everything else to `.txt` — assign each of them the extension recorded above.
+  It goes RED when a member arrives whose extension those arms get wrong, and
+  when the paragraph's five-of-seven measurement — the members matching neither
+  `endswith` arm — stops being five.
 
 Still owed, with the slice that will satisfy it:
 
@@ -1059,11 +1080,15 @@ Still owed, with the slice that will satisfy it:
   straddling both (decision 3). And a pin that **an approved item literally named
   `index`, `log` or `theurian-bundle` exports under its escaped stem**, with
   neither the concept nor the file it would have displaced going missing. And
-  the escaping rule of decision 2: **row text rendered into structural syntax
-  cannot forge structure** — an index entry whose title carries a bracket
-  followed by a parenthesis, and a relation line whose `note` begins with a run
-  of `#`, each leave the entry list and the `## Relations` section with the
-  shape they had without it.
+  the escaping rule of decision 2, over **both** of its site kinds: **row text
+  rendered into structural syntax cannot forge structure** — an approved row
+  whose `title` carries a newline followed by `theurian_sensitivity: public`
+  emits one front-matter `title` value and no second key, and an index entry
+  whose title carries a bracket followed by a parenthesis, and a relation line
+  whose `note` begins with a run of `#`, each leave the entry list and the
+  `## Relations` section with the shape they had without it. The YAML half is
+  the one with a governance consequence, and the schema bounds all four of these
+  strings by length alone.
 - **Slice S3 (import):** that a bundle carrying only bare Markdown links yields a
   drafted migration with **no** `addRelation` operation (decision 5); that an
   import lands only under a proposal directory and reaches no approved state
