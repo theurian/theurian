@@ -163,9 +163,12 @@ class JudgementEntry:
 
 @dataclass(frozen=True, slots=True)
 class WithheldItemCoverage:
-    """One withheld-plane item's classification (ADR-0036, the gate-vs-census
-    derivation rule -- amended there to the three-clause partition below; the
-    amendment is landing on another PR and is cited here by ADR name only).
+    """One withheld-plane item's classification.
+
+    ADR-0036's derivation rule ("The derivation rule") states two clauses --
+    gate-tested and census-tested. The third case below is not a clause of
+    that rule: it is the ADR's separately documented `withheld-item-disclosable`
+    refusal, which never reaches this classification.
 
     ``is_gate_tested``: the item's final status is draft or proposed AND its
     final sensitivity sits within :data:`BUILD_CEILING_SENSITIVITIES` -- so it
@@ -569,15 +572,16 @@ def _final_status_and_sensitivity(
 def _check_no_disclosable_withheld_item(manifest: Manifest, documents: dict[str, Any]) -> None:
     """No withheld-plane item may end up approved and within the build ceiling.
 
-    ADR-0036's gate-vs-census derivation rule is a three-clause partition
-    (the amendment landing on another PR, cited here by ADR name only):
-    gate-tested iff final status in {draft, proposed} and within the ceiling;
-    census-tested iff final status in {superseded, rejected, deprecated} or
-    above the ceiling. The third combination -- approved and within the
-    ceiling -- is excluded by no mechanism: the item is indexed and surfaced
-    at default flags exactly like any other approved item, so calling it
-    "census-tested" would be false. Refused here rather than given a third
-    label, so the classification below only ever partitions cleanly.
+    ADR-0036's derivation rule states two clauses: gate-tested iff final
+    status in {draft, proposed} and within the ceiling; census-tested iff
+    final status in {superseded, rejected, deprecated} or above the ceiling.
+    The third combination -- approved and within the ceiling -- is not a
+    clause of that rule: the item is indexed and surfaced at default flags
+    exactly like any other approved item, so calling it "census-tested" would
+    be false. This function is the ADR's separately documented
+    `withheld-item-disclosable` refusal, which runs before
+    :func:`_withheld_item_coverage` so that classification's own two clauses
+    partition cleanly.
     """
     withheld_item_ids = _withheld_item_ids(manifest, documents)
     status_by_item, sensitivity_by_item = _final_status_and_sensitivity(
@@ -590,7 +594,7 @@ def _check_no_disclosable_withheld_item(manifest: Manifest, documents: dict[str,
         if status in DEFAULT_SURFACEABLE_STATUSES and within_ceiling:
             raise CorpusError(
                 "withheld-item-disclosable",
-                f"withheld-plane item {item_id!r} has final status 'approved' and "
+                f"withheld-plane item {item_id!r} has final status {status!r} and "
                 f"final sensitivity {sensitivity!r}, within the build ceiling "
                 f"({BUILD_CEILING.value!r}) -- nothing excludes it from either "
                 f"build's index, so it is not a valid withheld-plane item. "
@@ -675,9 +679,9 @@ def _check_relevant_items_retrievable(
             raise CorpusError(
                 "relevant-item-unretrievable",
                 f"{item_id!r} is judged relevant but its final status is "
-                f"{status!r}, not 'approved', so a default-flags query never "
-                f"returns it. A relevant item must be approved, within the "
-                f"build ceiling, and visible-plane.",
+                f"{status!r}, not one of {sorted(DEFAULT_SURFACEABLE_STATUSES)}, so a "
+                f"default-flags query never returns it. A relevant item must be approved, "
+                f"within the build ceiling, and visible-plane.",
             )
         sensitivity = sensitivity_by_item.get(item_id, DEFAULT_SENSITIVITY.value)
         if Sensitivity(sensitivity) not in BUILD_CEILING_SENSITIVITIES:
