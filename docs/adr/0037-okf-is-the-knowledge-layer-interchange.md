@@ -510,34 +510,57 @@ So the split is by media type:
   a concept document (§3.1) and carries no front matter: its concept document
   holds the whole governance projection for the row.
 
-**A gate-cleared row is never refused, so the sidecar extension is a total
-function of the row's own canonical data.** Three steps, in order:
+**A gate-cleared row is never refused, and the sidecar extension is a total
+function of `contentType` alone.** The whole mapping, and there is no other
+input — written as rules rather than as a table, because decision 7's tables are
+projections of governance and this is a derivation of a filename:
 
-1. **The canonical body file's own suffix**, when it has one. The body a
-   migration names is already a real file, and its name already ends the way the
-   author wrote it. Note that `$defs/contentFile` bounds the path's length and
-   refuses an absolute one, and constrains the suffix not at all — so this step
-   is "the recorded suffix if there is one", never "the suffix there must be".
-2. **Otherwise the media type's own structured-suffix rule** — `+json` → `.json`,
-   `+yaml` → `.yaml` — mirroring the `endswith(("+json", "+yaml"))` half of
-   `domain/values.py::MediaType.is_structured`, so the bundle spells a type the
-   same way the domain recognises it.
-3. **Otherwise `.txt`**, fixed and neutral. A body whose type says nothing about
-   its encoding still leaves the deployment intact and readable.
+- `application/json`, or anything ending `+json` → **`.json`**
+- `application/yaml`, `text/x-yaml`, or anything ending `+yaml` → **`.yaml`**
+- everything else → **`.txt`**
 
-**This is a correction, and the measurement is why.** An earlier draft took the
-extension from `domain/proposal.py::body_extension` and called that function's
-refusal desirable. `_EXTENSIONS` holds **three** entries — `text/markdown`,
-`application/json`, `application/yaml` — while `_STRUCTURED_MEDIA_TYPES` holds
-**seven** plus everything ending `+json` or `+yaml`. Measured 2026-09-24: **five
-of the seven** structured types (`application/schema+json`,
-`application/vnd.oai.openapi`, `application/vnd.oai.openapi+json`,
-`application/vnd.aai.asyncapi`, `text/x-yaml`) and `text/plain` are outside
-`_EXTENSIONS`, so the refusal would have fired on this rule's own motivating
-example — an approved OpenAPI document — and aborted the **whole** export. One
-hand-authored row would deny the entire corpus its bundle. That is the
-availability trap decision 3's population rule exists to prevent, arriving
-through the back door.
+`text/x-yaml` is named explicitly because it is the one member of
+`domain/values.py::_STRUCTURED_MEDIA_TYPES` that matches **neither** arm of
+`MediaType.is_structured`'s `endswith(("+json", "+yaml"))` rule — a suffix rule
+alone would send it to `.txt` and spell a YAML body as text. The two `endswith`
+arms are that rule, reused so the bundle spells a type the way the domain
+recognises it.
+
+Four properties, and each is load-bearing rather than pleasant:
+
+- **The range is `{.json, .yaml, .txt}`** — bounded, filesystem-safe, and short.
+  No path built from it can overrun a filename limit.
+- **It is never `.md`.** Markdown embeds in its concept document and never
+  reaches this rule, so a sidecar can never be written at a concept document's
+  own path.
+- **`contentType` is inside the disclosure bound** (`result_payload` publishes
+  it), so `theurian_body_file` is a function of served data end to end: the stem
+  from the item id, the extension from `contentType`, and `itemId` is served too.
+  **It is a derived key defined in prose rather than a projection-table row, and
+  the walk's population is the emission inventory for exactly that reason** — a
+  key documented outside the table was how an unbounded input reached a filename
+  for a round, and widening the *instrument* is what stops the next one rather
+  than relocating this one.
+- **`contentType` is in the one-snapshot read**, as a column of the revision row
+  decision 3's single transaction already reads.
+
+**The canonical body file's own suffix is dropped as an input, and this is a
+correction.** An earlier draft made it step one — "the recorded suffix when it
+has one" — and it was wrong twice over. It is **not in the snapshot**:
+`knowledge_revisions` has no path column and `KnowledgeRevision` has no path
+field, so reading it means a second read outside the transaction decision 3
+commits to. And it is **unconstrained author text**: `$defs/contentFile` bounds
+length at 1024 and refuses an absolute path, and says nothing whatever about the
+suffix. The alternatives table carries the three faces that fell out of it.
+
+**The sidecar's bytes are the snapshot's, not the filesystem's.** "Preserved
+byte for byte" means the canonical body the revision row holds — `body` is a
+column of `knowledge_revisions` beside `content_type`, and the store
+reconstructs a `KnowledgeRevision` from those columns — so writing a sidecar
+needs no second read of `.theurian/knowledge/` and stays inside decision 3's one
+transaction. What pins that body to the file the author wrote is the
+`contentSha256` check at load (`domain/knowledge.py` lines 201–206), on the path
+that built the snapshot rather than on the export.
 
 **The OKF spec settles that a non-markdown member is legal, and does not merely
 tolerate it.** §3 characterises a bundle as a directory tree of markdown files,
@@ -783,6 +806,7 @@ other — a proposal a human reviews.
 | **Reuse `KnowledgeCandidate` for imported concepts**, as #705's "bundle → source → KnowledgeCandidate → proposal" sketch has it | `domain/review.py`'s `PromotionGate` requires seven review-shaped signals — `pull_request_merged`, `thread_resolved`, `fix_commit_present`, `not_dismissed_or_outdated`, `ci_successful`, `generalizable`, `has_evidence` — and `KnowledgeCandidate.__post_init__` raises when the gate is unsatisfied. An OKF bundle satisfies none of them, so reuse means fabricating review facts or weakening the gate for every candidate, review-derived ones included. What the type is kept for is its *precedent*: the `INFERRED` ceiling of decision 6. |
 | **Extend `RelationType` so OKF's untyped links have a home** | Enum extension is roadmap §9 ADR candidate 3, which owes a compatibility policy first; and the problem is not a missing member. An untyped link is untyped, and decision 5 is the answer to it. |
 | **Export only the markdown-bodied rows, leaving structured knowledge out of the bundle** | It breaks decision 3's population rule — the bundle would no longer be the rows this deployment serves — and it drops governed knowledge from an artifact that says it carries the approved corpus. **The trap is that nothing would catch it:** the filter is a function of the row's own media type, not of any withheld row, so the two-corpora battery stays green while the bundle omits every OpenAPI document and JSON Schema in the corpus. A green battery would have asserted nothing about the omission. |
+| **Derive the sidecar extension from the canonical body file's suffix** | This was step one of the accepted rule for one round, and it failed in three independent ways. **(a) It is outside the disclosure bound.** The suffix is an author-written string that neither served payload publishes, so `theurian_body_file` — itself defined in prose outside the projection table, and so outside the walk's population — carried unserved data into the bundle: round 1's under-enumerated universal, one key over. **(b) It admits `.md`.** A row with `contentType: application/yaml` and a `contentFile` ending `.md` — a plausible hand-authored mistake, and nothing refuses it — writes the sidecar at the concept document's own path, silently losing whichever of the two is written first: governance front matter, or the body bytes. Both owed batteries are blind to it by construction, since it is a function of the row's own data and both corpora hold the row. **(c) It is not in the snapshot and can be unbounded.** `knowledge_revisions` has no path column and `KnowledgeRevision` no path field, so reading it breaks decision 3's one-transaction rule; and `$defs/contentFile` permits 1024 characters with no suffix constraint, so a long tail becomes `ENAMETOOLONG` and denies the whole corpus its export. The accepted rule takes `contentType` alone, whose range is `{.json, .yaml, .txt}`. |
 | **Take the sidecar extension from `body_extension`, refusing an unmapped media type** | The first draft of the sidecar rule did this and called the refusal a virtue. Measured 2026-09-24: `_EXTENSIONS` holds three media types against `_STRUCTURED_MEDIA_TYPES`' seven-plus, so **five of the seven** structured types and `text/plain` would refuse — including `application/vnd.oai.openapi`, the rule's own motivating example. Worse, the refusal is not per-row: one hand-authored row denies the whole corpus its export. A gate-cleared row must never be refused, which is why the three-step derivation above is total. |
 | **Fence a non-markdown body inside its concept document instead of writing a sidecar** | It converts what [ADR-0010](0010-three-layer-knowledge-model.md) rule 5 and the schema's own `contentType` description say to *preserve*, and it does so silently: a consumer gets YAML wrapped in Markdown, no longer byte-identical to the canonical body and no longer parseable without unwrapping it first. The spec makes the choice unnecessary — §10.3 offers the file form for content "already kept as a real file shared with non-OKF tooling", which is this case. It stays the fallback only if a future spec revision forbids non-`.md` members, and it would then be recorded as a conversion, not presented as a projection. |
 | **Derive the bundle path from `namespace`** | `namespace` is free text where `../` is spellable; `domain/proposal.py::body_relative_path` already refuses it for exactly this reason, and a bundle is a directory tree, so the failure is writing outside the bundle root. |
@@ -821,10 +845,15 @@ Rests on enforcement that already holds:
 
 Landing with this pull request:
 
-- **A walk of decision 7's projection table against the disclosure bound** — the
+- **A walk of everything this ADR emits against the disclosure bound** — the
   union of `result_payload` and `knowledge.get`'s four additions, plus the five
-  recorded widenings. It goes RED when a row is added to the table that is in
-  neither, which is the failure the first draft of that paragraph shipped.
+  recorded widenings. Its subject is **the whole emission inventory**, not one
+  table: all thirteen `theurian_*` keys (*Neutral*, third bullet) **and** the
+  OKF-side emissions — `type`, `title`, `tags`, `status`, `stale_after`,
+  `generated`, `sources[]` and the body. Scoping it to the projection table is
+  the defect it exists to catch: `theurian_body_file` lived in prose outside that
+  table for a round, and an unserved input reached a filename through it. It goes
+  RED when anything emitted is in neither the union nor the widenings.
 
 Still owed, with the slice that will satisfy it:
 
@@ -839,7 +868,11 @@ Still owed, with the slice that will satisfy it:
   battery cannot see, per the alternatives table's first new row. With it, a pin
   that **an approved row whose media type is outside `_EXTENSIONS` exports as a
   sidecar rather than refusing**, since that is where the first draft's refusal
-  would have fired. A pin that **the export reads one canonical snapshot** —
+  would have fired — and beside it the collision case that closes the suffix
+  rule's second face: **an approved row with `contentType:
+  application/vnd.oai.openapi` and a `contentFile` ending `.md` exports a concept
+  document *and* a distinct sidecar, both present**, neither overwriting the
+  other. A pin that **the export reads one canonical snapshot** —
   a withdrawal landing mid-walk leaves the bundle wholly on one side of it, never
   straddling both (decision 3). And a pin that **an approved item literally named
   `index`, `log` or `theurian-bundle` exports under its escaped stem**, with
