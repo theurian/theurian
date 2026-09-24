@@ -207,9 +207,41 @@ what matters for a consumer either way is that it is not `human:`, which is what
 The manifest is a concept document rather than front matter on the root
 `index.md` because §8 permits index files no front matter at all, with one
 exception: a bundle-root `index.md` MAY carry an `okf_version` key. So the root
-`index.md` carries `okf_version: "0.2"` (§12) and nothing else, and the producer
-extension permission that makes the `theurian_*` keys conformant (§4.1) applies
-to concept documents, which is where they go.
+`index.md` carries `okf_version: "0.2"` (§12) and nothing else in its front
+matter, and the producer extension permission that makes the `theurian_*` keys
+conformant (§4.1) applies to concept documents, which is where they go.
+
+**The index files, fixed here because §8 leaves their shape to the producer and
+an unfixed shape is a byte nobody bounded.** §8 says an `index.md` MAY appear in
+any directory and gives its body as sections of `* [Title](url)` entries.
+
+- **One index in every directory the bundle contains**, not only in those
+  holding a concept. The narrower rule breaks the walk it exists to support: an
+  item id of `architecture.auth.session.policy` puts its concept at
+  `architecture/auth/session/policy.md`, and `architecture/` then holds nothing
+  but a subdirectory. Skipping its index leaves it unlisted by the root, and
+  everything beneath it unreachable by following indexes — which is the
+  progressive disclosure §8 is for. Every directory exists only because a
+  concept sits somewhere beneath it, so "every directory" is the rule that
+  matches the shape.
+- **One section per index**, headed `# ` plus the directory's own path
+  component. The root has no path component, so its heading is the exporter
+  constant `# Theurian Bundle`, matching the manifest's `type`.
+- **Entries are the directory's own concept documents** — the manifest included,
+  at the root — as `* [<title>](<bundle-absolute path>)`, **and one entry per
+  immediate subdirectory**, titled by its path component and linking to it with
+  a trailing slash, the form §8's own example uses.
+- **All entries in one list, ordered bytewise by their bundle-absolute path.**
+  One total order over both kinds rather than two rules, which is what the
+  determinism pin needs.
+- **No description.** Entries SHOULD carry one (§8) and Theurian holds no
+  counterpart, as decision 7 records.
+
+**The export writes no `log.md`.** §9 makes it a chronological history of
+updates, which needs a per-change instant; the invariant below forbids any value
+that varies with when the export ran, and a revision's own instant is not a
+record of *this bundle's* updates. A bundle that needs history is regenerated,
+and the deployment it came from has the real one.
 
 **The invariant that makes the bundle safe to hand to someone. Nothing measures
 it today — no export command exists — so it is S2's to pin, and *Compliance*
@@ -233,7 +265,9 @@ satisfy the sentence above.
 
 - **The digest** is over `(relative POSIX path, sha256 of the file)` pairs,
   sorted bytewise by path.
-- **`index.md` entries** are ordered by bundle path.
+- **`index.md` entries** are ordered bytewise by their bundle-absolute path, one
+  list over concepts and subdirectories alike — the index rule above states it
+  once, and this is the same rule, not a second one.
 - **`theurian_relations` and the `## Relations` section** are ordered by
   `(relation type, target item id)`. Neither is a stored order: `list_relations`
   answers a query, and the section groups by type in any case.
@@ -253,6 +287,36 @@ criterion names. It also settles a value the roadmap's Phase F ② row and
 [#279](https://github.com/theurian/theurian/issues/279) had both specified the
 other way — the *stamp the whole-tree `stateHash`* row of the alternatives table
 carries the reasoning and the measurement.
+
+#### The bundle's byte sources, enumerated
+
+**A universal is only as good as the enumeration under it, and twice now this
+one was not.** The first draft of decision 7's disclosure bound was refuted by
+fields outside the table it walked; the sidecar rule was then refuted by a byte
+source — an author-written filename suffix — outside the front-matter keys
+entirely. Both were true-sounding closure arguments over a population nobody had
+listed. So the invariant above is closed the only way that survives: **every
+byte of the bundle belongs to exactly one family below, and each family states
+its bound and what checks it.**
+
+| Family | Bound | Check |
+| :-- | :-- | :-- |
+| **Paths and names** | The stem from the item id's own dotted segments — never the `namespace` field, which decision 7's containment argument bars from paths — the extension from `contentType`, bounded to `{.json, .yaml, .txt}`, and the positional reserved-name escape | The emission walk, since names derive from walked emissions; S2's collision and escape pins |
+| **Concept front matter** | The measured served union plus the recorded widenings (decision 7), plus exactly two exporter constants: `theurian_export_version` and `generated.by`, which the invariant's own *and the exporter's own version* clause admits | The inventory walk pin, landing with this pull request |
+| **Concept body** | The canonical body, plus the generated `## Relations` section, which renders only the served relation triple `{type, target, note}` of relations visible at both endpoints — link text included, being the triple's `target` (decision 4) — in the stated `(type, target)` order | Prose here; S2's bytes battery |
+| **Sidecar bytes** | The snapshot's `body` column, byte for byte | S2's bytes-equal pin |
+| **Index files** | Per decision 2 above: one per directory, a single section headed by the directory's path component, entries of title and bundle-absolute path drawn from walked emissions, path-ordered, no description | Prose here; S2's determinism battery |
+| **The manifest** | Fixed text (`type`, the holder notice), `theurian_export_version` as a constant, and `theurian_bundle_digest` as a function of the bundle's own files in the stated path order | The manifest field-set paragraph above; S2's determinism battery |
+| **Bundle-structural constants** | `okf_version: "0.2"` on the root `index.md`, fixed by this ADR from the spec version it targets, and the root index heading `# Theurian Bundle`. The rule that the export writes no `log.md` belongs here as the absence it names | Prose here; S2's determinism battery sees each as a byte of a walked file |
+
+**The ratchet, in prose, so the next design change cannot repeat the last two:**
+a new byte source takes a row in this table *first*. Not a bound widened to
+admit it, not a sentence elsewhere describing it — a row, with its own bound and
+its own check. The seventh family is what that discipline produced on its first
+run: enumerating the six that were drafted turned up `okf_version` and the root
+heading sitting in no family at all, benign constants that no bound reached.
+Finding them is the exercise working; a bound quietly stretched to cover them
+would have been the same defect a third time.
 
 ### 3. The exported population is exactly the rows the default channel serves
 
@@ -314,6 +378,13 @@ OKF. So each visible relation is exported through **both** channels:
    a heading naming the relation type — the type conveyed in prose, which is
    exactly what §6.1 asks for, and readable by any OKF consumer with no Theurian
    knowledge. Links are bundle-absolute (a leading `/`), §6.1's recommended form.
+   **The link's text is the target's item id** — the `target` of the same triple
+   — so the whole section renders from `{type, target, note}` and nothing else.
+   The alternative was the target's *title*, which is served and would read
+   better; it is rejected because it couples this section's bytes to a second
+   row's field for a cosmetic gain, and widening a bound for cosmetics is how
+   the bound stops being checkable. A consumer wanting the title follows the
+   link and reads the concept's own front matter.
 2. **A `theurian_relations` front-matter key**, a list of
    `{ type, target, note }` — the typed edge, machine-readable, lossless.
    Conformant because a consumer MUST NOT reject unknown additional front-matter
@@ -491,7 +562,8 @@ Two OKF recommended keys are deliberately absent: `resource`, which §4.1 says i
 "absent for concepts that describe abstract ideas rather than physical
 resources", and `description`, for which Theurian holds no counterpart — so
 `index.md` entries carry title and link without the description §8 says they
-SHOULD include.
+SHOULD include, which is the last bullet of decision 2's index rule seen from
+this end.
 
 **`stable` is the only OKF `status` the export can emit today, and the rest of
 the mapping is reserved rather than live.** `deprecated` and `superseded` are not
