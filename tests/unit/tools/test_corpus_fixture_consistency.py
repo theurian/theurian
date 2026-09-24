@@ -29,6 +29,7 @@ import copy
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 import sys
 from collections.abc import Iterable, Mapping
@@ -197,13 +198,26 @@ def _load() -> Corpus:
 
 CORPUS = _load()
 
+_SCHEMA_DEFS = json.loads(MIGRATION_SCHEMA.read_text(encoding="utf-8"))["$defs"]
+
 #: Every ``op`` the migration schema admits, read off its own discriminated
 #: union rather than listed here.
 SCHEMA_OPERATIONS = frozenset(
     definition["properties"]["op"]["const"]
-    for definition in json.loads(MIGRATION_SCHEMA.read_text(encoding="utf-8"))["$defs"].values()
+    for definition in _SCHEMA_DEFS.values()
     if "const" in definition.get("properties", {}).get("op", {})
 )
+
+#: The sensitivity a migration that omits the optional field publishes, read off
+#: the contract that declares it the way ``SCHEMA_OPERATIONS`` is. Declared on
+#: ``revisionMetadata`` alone; ``createItem`` takes the same value because both
+#: operations' domain dataclasses default to ``DEFAULT_SENSITIVITY``
+#: (``theurian.domain.migration``), which is the constant the loader's fold
+#: fills. Two sources for one value, deliberately: a pin whose halves read the
+#: same source cannot report them disagreeing.
+SCHEMA_DEFAULT_SENSITIVITY: str = _SCHEMA_DEFS["revisionMetadata"]["properties"]["sensitivity"][
+    "default"
+]
 
 
 @pytest.fixture(scope="module")
@@ -227,8 +241,15 @@ def _written(corpus: Corpus, root: Path) -> Path:
     (``git grep -c "contentFile" tools/eval/corpus.py`` finds none), so a copy
     that carries only the three contract files and the migrations is the whole
     input to every rule it holds.
+
+    ``migrations/`` is cleared rather than written over, so the tree is a
+    function of ``corpus`` and not of whatever a previous call left in ``root``
+    -- a twin that *removes* a migration would otherwise be handed the file it
+    removed. The three contract files need no counterpart: every call writes
+    all three.
     """
-    (root / "migrations").mkdir(parents=True, exist_ok=True)
+    shutil.rmtree(root / "migrations", ignore_errors=True)
+    (root / "migrations").mkdir(parents=True)
     for name, document in (
         ("manifest.yaml", corpus.manifest),
         ("queries.yaml", corpus.queries),
@@ -303,6 +324,13 @@ def _replay(corpus: Corpus, wanted: set[str]) -> dict[str, dict[str, str]]:
     cannot be consumed here, because it has no plane filter and the ``clean``
     census needs one. Kept as a second implementation under the equivalence pin
     the last section holds, not as an unpinned copy (#794).
+
+    ``sensitivity`` is optional on ``createItem`` and on a revision's metadata.
+    Both branches fill ``SCHEMA_DEFAULT_SENSITIVITY``, the default the migration
+    contract declares, where the loader's fold fills the domain constant --
+    which is what makes the pin below a comparison. ``status`` needs no
+    counterpart: the schema requires it in every metadata block, which is why
+    the loader subscripts it too.
     """
     planes = _planes(corpus)
     state: dict[str, dict[str, str]] = {}
@@ -313,11 +341,16 @@ def _replay(corpus: Corpus, wanted: set[str]) -> dict[str, dict[str, str]]:
             item = operation.get("itemId")
             match operation["op"]:
                 case "createItem":
-                    state[item] = {"status": "", "sensitivity": operation["sensitivity"]}
+                    state[item] = {
+                        "status": "",
+                        "sensitivity": operation.get("sensitivity", SCHEMA_DEFAULT_SENSITIVITY),
+                    }
                 case "upsertRevision":
                     state[item] = {
                         "status": operation["metadata"]["status"],
-                        "sensitivity": operation["metadata"]["sensitivity"],
+                        "sensitivity": operation["metadata"].get(
+                            "sensitivity", SCHEMA_DEFAULT_SENSITIVITY
+                        ),
                     }
                 case "deprecateItem" if item in state:
                     state[item]["status"] = "deprecated"
@@ -640,10 +673,11 @@ def _coverage_split_violations(
     which nothing in the fixture declares.
 
     The two are complementary by construction -- ``is_gate_tested`` is one
-    boolean -- so disjointness is asserted nowhere. A member in neither class,
-    approved and within the ceiling, is the state the loader refuses outright
-    with ``withheld-item-disclosable``, and the twin for that refusal is in the
-    converged section above.
+    boolean -- so disjointness is asserted nowhere. A member in neither class --
+    final status in ``DEFAULT_SURFACEABLE_STATUSES`` and within the ceiling, the
+    loader's own predicate rather than a status spelled here -- is the state the
+    loader refuses outright with ``withheld-item-disclosable``, and the twin for
+    that refusal is in the converged section above.
     """
     gate = {item.item_id for item in coverage if item.is_gate_tested}
     census = {item.item_id for item in coverage if not item.is_gate_tested}
@@ -681,10 +715,33 @@ def test_an_unperturbed_copy_of_the_corpus_still_loads(tmp_path: Path) -> None:
     perturbation, not from how ``_written`` serialises the corpus. Without this,
     a serialiser that produced nonsense would make every twin pass.
     """
+    committed = harness_corpus.load_corpus(CORPUS_ROOT)
+
     written = _accepted(CORPUS, tmp_path)
 
-    assert written.queries == harness_corpus.load_corpus(CORPUS_ROOT).queries
-    assert written.withheld_coverage == harness_corpus.load_corpus(CORPUS_ROOT).withheld_coverage
+    assert written.manifest == committed.manifest
+    assert written.queries == committed.queries
+    assert written.withheld_coverage == committed.withheld_coverage
+
+
+def test_a_copy_written_where_another_stood_holds_only_its_own_migrations(
+    tmp_path: Path,
+) -> None:
+    """The other half of that control: the tree is the Corpus, not the union.
+
+    ``_written`` used to write over whatever ``root`` already held. No twin
+    removes a migration today, so nothing was misreporting -- but the first one
+    to try would have been handed back the file it removed, and would have run
+    its rule against a corpus nobody constructed.
+    """
+    reduced = replace(CORPUS, migrations=CORPUS.migrations[:-1])
+
+    _written(CORPUS, tmp_path)
+    root = _written(reduced, tmp_path)
+
+    assert sorted(path.name for path in (root / "migrations").iterdir()) == [
+        name for name, _document in reduced.migrations
+    ]
 
 
 def test_each_withheld_member_ends_in_the_state_its_coverage_follows_from(
@@ -1585,9 +1642,25 @@ def test_the_suites_replay_and_the_loaders_fold_agree_on_every_item_the_corpus_c
 def test_the_two_folds_agree_on_a_constructed_history_the_fixture_does_not_hold() -> None:
     """The same pin over an input built here rather than read off the fixture.
 
-    Two revisions, a ``deprecateItem`` and a ``changeSensitivity`` on one item,
-    so every branch moves and the naive answers all differ from the agreed one.
-    A frozen fixture can stop exercising a branch -- this input cannot.
+    Three items, one per input family the fold has to get right, because a
+    frozen fixture can stop exercising a branch and this input cannot.
+
+    ``domain.drifting`` takes two revisions, a ``deprecateItem`` and a
+    ``changeSensitivity``, so every moving branch moves and the naive answers
+    all differ from the agreed one. The other two carry the family this pin was
+    missing until #799: ``sensitivity`` is optional on both operations that
+    declare one, a document omitting it is accepted by
+    ``migration.schema.json`` with zero errors, and on that input the loader
+    folded to its default while ``_replay`` raised ``KeyError`` -- RED before
+    the fix in the same commit, green after. The revision-side item is created
+    ``public`` so the agreed answer is the default and not a value the document
+    names: a ``_replay`` that carried the ``createItem`` sensitivity forward
+    instead of defaulting would disagree here.
+
+    The two halves read that default from two places -- the schema's declared
+    ``default`` here, ``theurian.domain.migration.DEFAULT_SENSITIVITY`` in the
+    loader -- so this also reddens if the contract and the implementation ever
+    name different values.
     """
     migrations = (
         (
@@ -1605,6 +1678,22 @@ def test_the_two_folds_agree_on_a_constructed_history_the_fixture_does_not_hold(
                         "op": "upsertRevision",
                         "itemId": "domain.drifting",
                         "metadata": {"status": "proposed", "sensitivity": "internal"},
+                    },
+                    {
+                        "op": "createItem",
+                        "itemId": "domain.revision-omits-sensitivity",
+                        "sensitivity": "public",
+                    },
+                    {
+                        "op": "upsertRevision",
+                        "itemId": "domain.revision-omits-sensitivity",
+                        "metadata": {"status": "approved"},
+                    },
+                    {"op": "createItem", "itemId": "domain.create-omits-sensitivity"},
+                    {
+                        "op": "upsertRevision",
+                        "itemId": "domain.create-omits-sensitivity",
+                        "metadata": {"status": "approved", "sensitivity": "restricted"},
                     },
                 ],
             },
@@ -1636,6 +1725,17 @@ def test_the_two_folds_agree_on_a_constructed_history_the_fixture_does_not_hold(
     replayed = _replay(suite_corpus, {"visible"})
     status, sensitivity = _loader_fold(migrations)
 
-    assert replayed == {"domain.drifting": {"status": "deprecated", "sensitivity": "confidential"}}
+    assert SCHEMA_DEFAULT_SENSITIVITY != "public", (
+        "the revision-side item is created 'public' so the default is a different value; "
+        "with the two equal, a fold carrying the createItem sensitivity forward passes below"
+    )
+    assert replayed == {
+        "domain.drifting": {"status": "deprecated", "sensitivity": "confidential"},
+        "domain.revision-omits-sensitivity": {
+            "status": "approved",
+            "sensitivity": SCHEMA_DEFAULT_SENSITIVITY,
+        },
+        "domain.create-omits-sensitivity": {"status": "approved", "sensitivity": "restricted"},
+    }
     assert {item: state["status"] for item, state in replayed.items()} == status
     assert {item: state["sensitivity"] for item, state in replayed.items()} == sensitivity
