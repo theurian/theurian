@@ -68,15 +68,17 @@ The two are not interchangeable, which is why the prepared tree reports no
 verdict at all: it prints a path, never a KILLED or a SURVIVED. What you see
 inside a prepared tree is a lead. Turn it into a verdict on the verdict path.
 
-**Add ``--with-git`` to either mode when the question touches the corpus's
-four rules that need the source's object store** -- the corpus byte-identity
-pin, the root-corpus applicability test, and two rules in
-``test_git_trailer_source.py`` (the full, dated list is in
-``_lend_git_objects``'s docstring; only two of the four actually read a
-blob, the other two need ``ls-files``/refs). Without the flag every copy
-skips all four, so a mutation whose only killer is one of them reports
-SURVIVED with no sign the harness never ran the test that would have caught
-it. The cost is per-tree, not per-batch, and the durable figure is
+**Add ``--with-git`` to either mode when the question touches the five rules
+that need the source's object store** -- the corpus byte-identity pin, the
+root-corpus applicability test, two rules in ``test_git_trailer_source.py``,
+and the port-count row's own re-derivation (the full, dated list is in
+``_lend_git_objects``'s docstring; only two of the five actually read a
+blob, two more need ``ls-files``/refs, and the fifth's own guard fails
+rather than skips). Without the flag every copy skips the first four, so a
+mutation whose only killer is one of them reports SURVIVED with no sign the
+harness never ran the test that would have caught it -- and the fifth
+instead turns the control red (#679). The cost is per-tree, not per-batch,
+and the durable figure is
 machine-independent -- ~104 KB of copied ``.git`` bytes (measured
 2026-08-31). The working copy itself is not: ~13 MB on a clean checkout,
 measured up to ~124 MB on a developer machine carrying other agents'
@@ -525,9 +527,11 @@ def _lend_git_objects(destination: Path) -> None:
     **Why a copy needs one at all.** ``_COPY_IGNORE`` drops ``.git`` and
     :func:`_record_population` hands the suite a path list instead, which is
     enough for every rule that reads a *path* or the bytes in the working tree.
-    It is not enough for a rule that reads a **blob**, and this suite has four
+    It is not enough for a rule that reads a **blob**, and this suite has five
     of them -- measured 2026-08-31 at f1b6711, ``pytest -rs`` inside a copy with
-    and without this flag, diffing which SKIPs disappear:
+    and without this flag, diffing which SKIPs disappear (the fifth added
+    #679, whose control does not appear in that diff because it fails rather
+    than skips -- see below):
 
     - ``test_dogfood_corpus_governance.py::test_every_pinned_body_is_byte_identical
       _to_its_source_anchor_commit`` -- a committed body against
@@ -544,14 +548,23 @@ def _lend_git_objects(destination: Path) -> None:
       availability inside a copy therefore depends on the *source*'s own fetch
       state, not on this flag alone: a source with no ``origin`` remote-tracking
       ref still skips it under ``--with-git``.
+    - ``test_port_count_row_claims.py::test_the_port_count_row_inventories
+      _the_population_its_own_key_returns`` -- ``git grep``/``git ls-files
+      --cached`` recomputing a roadmap row's own published counts (#679).
+      Its guard is a bare ``assert completed.returncode in (0, 1)``, not a
+      git-shaped SKIP, so a gitless copy does not skip this one: it
+      **fails**, turning the control red rather than reporting SURVIVED.
 
-    In a copy without this flag, each of the four reaches its own git-shaped
-    guard, sees the population came from the manifest (or finds no ``.git`` at
-    all), and **skips**. So a mutation whose only killer is one of the four --
+    In a copy without this flag, the first four reach their own git-shaped
+    guard, see the population came from the manifest (or find no ``.git`` at
+    all), and **skip**. So a mutation whose only killer is one of those four --
     an anchor repointed at another commit, a body re-pinned consistently in both
     places, a frozen-corpus trailer count perturbed, a live-tip accounting
     break -- comes back SURVIVED from a harness that never ran the test that
     holds it, and the reader has no way to tell that verdict from a real one.
+    The fifth has no such guard and fails outright, so its absence shows up as
+    a red control instead -- correctly voiding the batch, but only once
+    someone reads that flag rather than the KILLED verdicts it produced.
 
     **Why objects are lent rather than copied.** Measured 2026-08-31, on two
     machines: a scratch clone and this machine's own checkout root both copy
@@ -587,8 +600,9 @@ def _lend_git_objects(destination: Path) -> None:
         raise HarnessError(
             f"--with-git needs a plain repository at {git_dir}; a linked worktree or a "
             "bare checkout does not carry the index this lends. Drop --with-git and "
-            "accept that the four rules it unblocks (see this function's docstring) "
-            "skip, or run the batch from the plain checkout this worktree belongs to "
+            "accept that the five rules it unblocks (see this function's docstring; "
+            "one fails rather than skips) do not run, or run the batch from the plain "
+            "checkout this worktree belongs to "
             "-- its own committed history and its own working tree, not this "
             "worktree's uncommitted or untracked changes. A fresh clone loses those "
             "the same way `git worktree add HEAD` does (see this module's docstring), "
@@ -610,8 +624,9 @@ def _lend_git_objects(destination: Path) -> None:
             "different object hash algorithm) and a reftable refs backend (plain SHA-1 "
             "objects, but refs stored outside refs/ and packed-refs) both do, and this "
             "hardcoded config would handle neither correctly. Drop --with-git and accept "
-            "that the four rules it unblocks (see this function's docstring) skip, or run "
-            "the batch against a repositoryformatversion=0 clone of this source instead."
+            "that the five rules it unblocks (see this function's docstring; one fails "
+            "rather than skips) do not run, or run the batch against a "
+            "repositoryformatversion=0 clone of this source instead."
         )
 
     borrowed = destination / ".git"
@@ -949,9 +964,10 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         "--with-git",
         action="store_true",
         help=(
-            "give each copy a .git that borrows the source's objects, so the four rules "
+            "give each copy a .git that borrows the source's objects, so the five rules "
             "that need the source's object store (corpus byte-identity, root-corpus "
-            "apply, and two test_git_trailer_source.py rules) run instead of skipping"
+            "apply, two test_git_trailer_source.py rules, and the port-count row's own "
+            "re-derivation) run instead of skipping -- or, for the last one, failing"
         ),
     )
     parser.add_argument(
