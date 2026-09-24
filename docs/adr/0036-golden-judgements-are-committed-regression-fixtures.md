@@ -557,12 +557,44 @@ PR #776):
   `threshold`. A threshold neither plainly named nor ever published is what
   neither check can see.
 
-Still owed, with the phase that would satisfy it:
+Landed in Phase A slice S4 — the committed baseline and the advisory CI
+comparison, which were this ADR's last owed item. The Exit-criteria row asked
+for "A baseline report is committed and CI reports regressions against it":
 
-- **Phase A slice S4 — the committed baseline and the advisory CI comparison.**
-  The Phase A Exit-criteria row's own words: "A baseline report is committed and
-  CI reports regressions against it." Until that lands, decision 4's *advisory*
-  describes an intention and not a workflow.
+- **The baseline** is `tools/eval/baseline/report.json` and `timings.json`, with
+  `README.md` beside them as the method record — what was measured (2026-09-24,
+  at `a58fdcb5`, over `tests/fixtures/eval`), the census it echoes from the
+  report, the instrument that produced it, and the environment `timings.json`
+  carries outside the byte-identity property. Its own statement of what the run
+  is for: "This run DEFINES the baseline; it does not assert one."
+- **The local ratchet** is
+  `test_a_fresh_run_over_the_frozen_corpus_reproduces_the_committed_baseline_report`
+  (`tests/integration/tools/test_baseline_current.py`), which runs the harness
+  over the committed corpus into a temporary directory, asserts it exits 0, and
+  asserts the regenerated `report.json` is byte-identical to the committed one.
+  A corpus or harness change that moves the report reddens there instead of
+  waiting for someone to diff two files by hand.
+- **The advisory comparison** is `tools/eval/compare_baseline.py`, run by
+  `.github/workflows/core.yml`'s `retrieval-baseline` job under
+  `--advisory --format github --summary`, behind a paths filter on
+  `packages/theurian-core/src/**`, `tools/eval/**`, `tests/fixtures/eval/**` and
+  the workflow itself. `--advisory` is total, so the job reports and never
+  reddens, which is deliberate and not a weakened gate: decision 5 measures
+  byte-identity at one machine, one interpreter and one SQLite build, so a
+  runner with a different SQLite build can legitimately produce a different
+  report with no code change at all. **Its scope is the module's own statement
+  rather than a wider reading of it** — "the LOCAL comparison, not the
+  CROSS-COMMIT one … (a pull request's regeneration against the baseline
+  committed on `main`); that remains unbuilt" — so a run compares this
+  checkout's regeneration against this checkout's own committed baseline.
+  Decision 4's *advisory* is now a workflow rather than an intention.
+
+**Nothing in this ADR is owed to a later phase, which is why no *Still owed*
+section follows.** The two questions it records as open are recorded decisions
+not taken rather than obligations, and neither is addressed to a slice: whether
+the advisory comparison becomes a blocking gate (decision 4), and whether
+BM25-derived orderings are identical across installs (decision 5, deliberately
+unasserted).
 
 ## Amendment 1 — the gate-versus-census derivation rule, and what the equality battery does not test (2026-09-20, Phase A slice S3, PR #778)
 

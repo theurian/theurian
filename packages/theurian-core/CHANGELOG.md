@@ -10,6 +10,36 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
+## [Unreleased]
+
+### Added
+
+- **A retrieval-evaluation baseline, so a ranking change is argued with a number
+  instead of an intuition**
+  ([ADR-0036](../../docs/adr/0036-golden-judgements-are-committed-regression-fixtures.md),
+  roadmap Phase A). Four parts, **none of them inside the distributed package**:
+  the `tools/eval/` harness — a loader that refuses a malformed corpus under
+  fourteen named rules (`corpus.py`'s own `CorpusError` tags; `corpus_build.py`
+  raises four more at build time, `census-mismatch` among them), a two-plane
+  build (`full` and `clean`, both under `index build --include-unapproved`, so
+  what a disclosure-equality query measures is the query-time gate rather than a
+  build-time exclusion), an in-process Streamable HTTP wire client through the
+  SEC-12 middleware seat, and pure metrics; the frozen fixture corpus at
+  `tests/fixtures/eval` (33 items in `full` and 26 in `clean`, with 26 of its 27
+  declared golden queries enabled); the first committed baseline under
+  `tools/eval/baseline/`; and an advisory CI comparison
+  (`tools/eval/compare_baseline.py`, run by `core.yml`'s `retrieval-baseline`
+  job when retrieval-affecting paths change).
+
+  **The harness produces; it does not assert.** No minimum Recall@k, no MRR
+  floor and no maximum latency appears in the three contract schemas or in the
+  harness, and the baseline's own README states what that makes the first run:
+  "This run DEFINES the baseline; it does not assert one." The figures are a
+  dated measurement — 2026-09-24, at `a58fdcb5` — and whether any of them is
+  acceptable is a judgement recorded against a later run. Whether the advisory
+  comparison ever becomes a blocking gate is a decision ADR-0036 records as
+  untaken.
+
 ## [0.4.0] - 2026-09-19
 
 ### Added
@@ -10609,6 +10639,7 @@ error is the one reading the release notes to decide whether to upgrade.
 - Migration `contentFile` paths are rejected at both schema and runtime level if
   they escape the project root.
 
+[Unreleased]: https://github.com/theurian/theurian/compare/core-v0.4.0...main
 [0.4.0]: https://github.com/theurian/theurian/compare/core-v0.3.0...core-v0.4.0
 [0.3.0]: https://github.com/theurian/theurian/compare/core-v0.2.3...core-v0.3.0
 [0.2.3]: https://github.com/theurian/theurian/compare/core-v0.2.2...core-v0.2.3
