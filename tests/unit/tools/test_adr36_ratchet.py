@@ -106,6 +106,17 @@ def test_rider_1s_amendment_carries_both_the_asserted_and_recorded_channel_halve
 _S2_COMPLIANCE_START = "Landed in Phase A slice S2 (`9cd9ee34`)"
 _S2_COMPLIANCE_END = "\nMeasured now, and reproducible from this ADR"
 
+#: The S4 Compliance block, appended after the S2 one and after
+#: ``_S2_COMPLIANCE_END``'s own marker text -- outside both existing
+#: populations, which is why its one citation (the S4b baseline pin) was
+#: checked by hand rather than by this pin until now. No dedicated heading
+#: follows the block to end on: the next stable, unique text is the
+#: paragraph explaining why no *Still owed* section exists, which is prose
+#: about the ADR's own structure rather than part of the compliance record
+#: itself, so it is where the block ends.
+_S4_COMPLIANCE_START = "Landed in Phase A slice S4 — the committed baseline and the advisory CI"
+_S4_COMPLIANCE_END = "\n**Nothing in this ADR is owed to a later phase"
+
 #: A backtick-quoted test identifier, ``path::test_name`` or a bare
 #: ``test_name`` -- the two forms both blocks below actually use. Group 1 is
 #: the optional path prefix (``""`` for a bare citation, since ``findall``
@@ -113,14 +124,16 @@ _S2_COMPLIANCE_END = "\nMeasured now, and reproducible from this ADR"
 #: group).
 _CITED_TEST_NAME = re.compile(r"`(?:([\w./-]+)::)?(test_[A-Za-z0-9_]+)`")
 
-#: The two blocks the ADR cites test names by name from, each enforced
+#: The three blocks the ADR cites test names by name from, each enforced
 #: independently. S4a's #787 append landed a new citation inside rider 1's
 #: own amendment block (``_AMENDMENT_START``/``_RIDER_2_START``, pin 1a's
-#: bounds) -- a block only the S2 Compliance block's own pin was checking, so
-#: the new citation went unenforced and was verified by hand instead.
+#: bounds), and the S4b docs pass landed another inside the new S4 Compliance
+#: block -- each time a block only the earlier population(s) were checking,
+#: so the new citation went unenforced and was verified by hand instead.
 _CITED_TEST_SECTIONS = (
     pytest.param(_S2_COMPLIANCE_START, _S2_COMPLIANCE_END, id="s2-compliance"),
     pytest.param(_AMENDMENT_START, _RIDER_2_START, id="rider-1-amendment"),
+    pytest.param(_S4_COMPLIANCE_START, _S4_COMPLIANCE_END, id="s4-compliance"),
 )
 
 
@@ -202,17 +215,19 @@ def test_every_test_name_cited_in_the_adrs_s2_compliance_block_collects(
 ) -> None:
     """A renamed, moved or deleted pin reddens the ADR's own citation record.
 
-    Both blocks name pins by their test function name -- some path-qualified,
-    most bare -- as the record of what each named claim is held by. A rename
-    anywhere in ``tests/unit/tools/``, ``tests/integration/tools/`` or the
-    product's own test tree would otherwise leave a citation pointing at a
-    test that no longer exists, unnoticed. A path-qualified citation is held
-    to that exact path, not merely to a same-named test living anywhere in
-    the tree -- a move that renamed no function would otherwise pass
-    silently. Parametrized over both blocks rather than one shared scan: the
-    S4a docs append that landed a citation inside rider 1's amendment block
-    (id ``rider-1-amendment``) was checked by hand, not by this pin, until it
-    covered that block too -- exactly the check that rots.
+    All three blocks name pins by their test function name -- some
+    path-qualified, most bare -- as the record of what each named claim is
+    held by. A rename anywhere in ``tests/unit/tools/``,
+    ``tests/integration/tools/`` or the product's own test tree would
+    otherwise leave a citation pointing at a test that no longer exists,
+    unnoticed. A path-qualified citation is held to that exact path, not
+    merely to a same-named test living anywhere in the tree -- a move that
+    renamed no function would otherwise pass silently. Parametrized over all
+    three blocks rather than one shared scan: each was landed by a docs pass
+    that appended a new citation outside every population this pin already
+    covered -- rider 1's amendment block (id ``rider-1-amendment``, S4a) and
+    the S4 Compliance block (id ``s4-compliance``, S4b) -- checked by hand,
+    not by this pin, until each joined it. Exactly the check that rots.
     """
     citations = _cited_test_citations(start_marker, end_marker)
     assert citations, "the population must be non-empty, or this pin checks nothing"

@@ -1,4 +1,4 @@
-"""Committed pins for the Phase A retrieval-evaluation harness (ADR-0036, "Still owed").
+"""Committed pins for the Phase A retrieval-evaluation harness (ADR-0036, Compliance).
 
 Pins the structural claim decision 2 makes -- "no module under
 ``packages/theurian-core/src/`` reads, imports, or names the corpus, the

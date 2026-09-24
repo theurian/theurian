@@ -1,4 +1,4 @@
-"""Committed integration pins for the Phase A harness (ADR-0036, "Still owed").
+"""Committed integration pins for the Phase A harness (ADR-0036, Compliance).
 
 Determinism (decisions 5 and 7), the disclosure-equality set comparison
 (decision 6) with its reach and companion controls, and the one loader
