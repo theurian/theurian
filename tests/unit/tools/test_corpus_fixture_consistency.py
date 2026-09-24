@@ -1041,6 +1041,26 @@ def test_the_loader_refuses_a_migration_missing_its_api_version(tmp_path: Path) 
     assert refusal.rule == f"schema:migrations/{name}"
 
 
+def test_the_loader_refuses_a_manifest_declaring_a_migration_the_directory_lacks(
+    tmp_path: Path,
+) -> None:
+    """``file-readable`` had no driving test anywhere in the repository (#800):
+    the tag's only other hit is a tag-enumeration pin in
+    ``test_adr36_ratchet.py`` that proves the tag exists, not that the rule
+    fires. ``_written`` writes only the migrations ``corpus.migrations``
+    names, so a manifest entry with no matching tuple member never lands on
+    disk.
+    """
+    manifest = copy.deepcopy(CORPUS.manifest)
+    manifest["migrations"].append(
+        {"file": "01M9EV0000000000000000M999-ghost.yaml", "plane": "visible"}
+    )
+
+    refusal = _refusal(replace(CORPUS, manifest=manifest), tmp_path)
+
+    assert refusal.rule == "file-readable"
+
+
 def test_the_loader_refuses_a_manifest_listing_two_migrations_out_of_order(
     tmp_path: Path,
 ) -> None:
