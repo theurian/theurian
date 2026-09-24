@@ -1182,6 +1182,38 @@ def _filter_covers(entries: Sequence[str], path: str) -> bool:
     return any(re.fullmatch(_filter_regex(entry), path) for entry in entries)
 
 
+#: `_filter_regex` reads `?`, `+`, `[` and `]` as literal characters (round 1
+#: M3); GitHub reads them as quantifiers and a character class. Without this
+#: guard an entry carrying one would make `_filter_covers` answer a question
+#: GitHub was never asked, silently. `tests/ci/test_core_paths_filter_covers
+#: _reads.py`'s own `UNIMPLEMENTED_METACHARACTERS` is the master copy of this
+#: alphabet; the two are duplicated, not shared, for the same reason
+#: `_filter_regex` itself is (see that function's docstring) -- keep them in
+#: step by hand until both live in one module.
+_UNIMPLEMENTED_METACHARACTERS = "?+[]"
+
+
+@pytest.mark.parametrize("event", ["push", "pull_request"])
+def test_the_filter_uses_only_the_alphabet_filter_regex_implements(event: str) -> None:
+    """`_filter_regex` cannot answer for a character GitHub reads differently.
+
+    The same check `tests/ci/test_core_paths_filter_covers_reads.py` runs over
+    its own copy of the matcher, against the same filter this module reads.
+    """
+    entries = _triggers(CORE_WORKFLOW)[event]["paths"]
+
+    offenders = {
+        entry: sorted(set(entry) & set(_UNIMPLEMENTED_METACHARACTERS))
+        for entry in entries
+        if set(entry) & set(_UNIMPLEMENTED_METACHARACTERS)
+    }
+
+    assert offenders == {}, (
+        f"core.yml's {event}.paths carries {offenders}, and _filter_regex reads those "
+        "characters literally while GitHub reads them as quantifiers or a character class."
+    )
+
+
 def test_a_change_to_the_workflow_under_test_runs_this_file() -> None:
     """A test that does not run when its subject changes is not coverage.
 
