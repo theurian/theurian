@@ -6,6 +6,14 @@ corpora it names over the real MCP wire, and writes ``report.json`` (the
 deterministic metrics pin) and ``timings.json`` (the dated annex), per
 decision 7's split. The harness produces measurements; it asserts nothing
 (decision 4) -- there is no pass/fail threshold anywhere in this module.
+
+**Slice S4c adds a second, raptor-ON pair, run through the identical query
+loop.** Every enabled query is dispatched against the raptor pair exactly as
+against the base pair -- same default flags, same limits, same #787
+abstention-probe machinery -- and the symmetry is deliberate: it is what lets
+``report.py``'s ``comparison`` block attribute a metric move to the RAPTOR
+forest's presence alone, rather than to some other difference between the
+two runs.
 """
 
 from __future__ import annotations
@@ -21,10 +29,11 @@ from pathlib import Path
 from typing import Final
 
 from corpus import BUILD_CEILING, CorpusError, JudgementEntry, QueryEntry, load_corpus
-from corpus_build import BuiltProject, build_both
+from corpus_build import BuildResult, BuiltProject, build_both
 from report import (
     HarnessConstants,
     QueryRun,
+    RaptorArm,
     build_report,
     build_timings,
     probe_limits_for,
@@ -78,20 +87,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         workspace = Path(workspace_name)
         try:
             built = build_both(loaded, workspace)
+            raptor_built = build_both(loaded, workspace, raptor=True)
         except CorpusError as exc:
             print(f"build refused: {exc}", file=sys.stderr)
             return 1
 
         runs: list[QueryRun] = []
+        raptor_runs: list[QueryRun] = []
         with ExitStack() as sessions:
-            calls = {
-                name: sessions.enter_context(
-                    mcp_session(
-                        build_server(ProjectRegistry.default(project.data_dir)), project.data_dir
-                    )
-                )
-                for name, project in built.projects.items()
-            }
+            calls = _open_sessions(sessions, built)
+            raptor_calls = _open_sessions(sessions, raptor_built)
             for query in loaded.queries:
                 if not query.enabled:
                     continue
@@ -100,15 +105,34 @@ def main(argv: Sequence[str] | None = None) -> int:
                     msg = f"loader invariant violated: enabled query {query.id!r} has no judgement"
                     raise RuntimeError(msg)
                 runs.extend(_run_query(calls, built.projects, query, judgement, constants))
+                raptor_runs.extend(
+                    _run_query(raptor_calls, raptor_built.projects, query, judgement, constants)
+                )
 
         census = {name: project.census for name, project in built.projects.items()}
         build_costs = {name: project.build_cost for name, project in built.projects.items()}
-        report = build_report(loaded, constants, runs, census)
-        timings = build_timings(loaded, runs, build_costs, REPO_ROOT)
+        raptor_arm = RaptorArm(
+            runs=raptor_runs,
+            census={name: project.census for name, project in raptor_built.projects.items()},
+            build_costs={
+                name: project.build_cost for name, project in raptor_built.projects.items()
+            },
+        )
+        report = build_report(loaded, constants, runs, census, raptor=raptor_arm)
+        timings = build_timings(loaded, runs, build_costs, REPO_ROOT, raptor=raptor_arm)
 
     write_report(report, args.out / "report.json")
     write_timings(timings, args.out / "timings.json")
     return 0
+
+
+def _open_sessions(sessions: ExitStack, built: BuildResult) -> dict[str, ToolCall]:
+    return {
+        name: sessions.enter_context(
+            mcp_session(build_server(ProjectRegistry.default(project.data_dir)), project.data_dir)
+        )
+        for name, project in built.projects.items()
+    }
 
 
 def _run_query(

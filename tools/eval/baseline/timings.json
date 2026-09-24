@@ -1,21 +1,35 @@
 {
-  "commitSha": "a58fdcb588c8189dc00a8935403c00b87b3c5d48",
+  "commitSha": "673b12cfd12fbb652c40cfd481be098e2e1ff20b",
   "corpusId": "adr-corpus-v1",
-  "date": "2026-09-24T02:44:49.757030+00:00",
+  "date": "2026-09-24T06:25:51.484147+00:00",
   "indexBuild": {
     "clean": {
       "chunks": 609,
       "embeddings": 609,
       "indexBytes": 4071424,
       "nodes": 0,
-      "wallClockMs": 882.456
+      "wallClockMs": 892.53
+    },
+    "clean-raptor": {
+      "chunks": 609,
+      "embeddings": 609,
+      "indexBytes": 4554752,
+      "nodes": 26,
+      "wallClockMs": 1392.769
     },
     "full": {
       "chunks": 615,
       "embeddings": 615,
       "indexBytes": 4128768,
       "nodes": 0,
-      "wallClockMs": 911.86
+      "wallClockMs": 928.226
+    },
+    "full-raptor": {
+      "chunks": 615,
+      "embeddings": 615,
+      "indexBytes": 4636672,
+      "nodes": 28,
+      "wallClockMs": 1409.424
     }
   },
   "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
@@ -24,786 +38,1794 @@
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 7.833,
+      "latencyMs": 9.198,
       "limit": 10,
-      "queryId": "q-absent-kubernetes"
+      "queryId": "q-absent-kubernetes",
+      "raptor": false
     },
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 7.559,
+      "latencyMs": 8.57,
       "limit": 50,
-      "queryId": "q-absent-kubernetes"
+      "queryId": "q-absent-kubernetes",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 9.448,
+      "limit": 10,
+      "queryId": "q-absent-kubernetes",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 9.256,
+      "limit": 50,
+      "queryId": "q-absent-kubernetes",
+      "raptor": true
     },
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 7.864,
+      "latencyMs": 9.837,
       "limit": 10,
-      "queryId": "q-absent-kubernetes"
+      "queryId": "q-absent-kubernetes",
+      "raptor": false
     },
     {
       "corpus": "full",
       "includeUnapproved": true,
-      "latencyMs": 7.44,
+      "latencyMs": 9.927,
       "limit": 10,
-      "queryId": "q-absent-kubernetes"
+      "queryId": "q-absent-kubernetes",
+      "raptor": false
     },
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 7.575,
+      "latencyMs": 9.584,
       "limit": 50,
-      "queryId": "q-absent-kubernetes"
+      "queryId": "q-absent-kubernetes",
+      "raptor": false
     },
     {
       "corpus": "full",
       "includeUnapproved": true,
-      "latencyMs": 7.759,
+      "latencyMs": 8.967,
       "limit": 50,
-      "queryId": "q-absent-kubernetes"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 8.386,
-      "limit": 10,
-      "queryId": "q-absent-payment-flow"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 8.422,
-      "limit": 50,
-      "queryId": "q-absent-payment-flow"
+      "queryId": "q-absent-kubernetes",
+      "raptor": false
     },
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 8.624,
+      "latencyMs": 9.092,
       "limit": 10,
-      "queryId": "q-absent-payment-flow"
+      "queryId": "q-absent-kubernetes",
+      "raptor": true
     },
     {
       "corpus": "full",
       "includeUnapproved": true,
-      "latencyMs": 8.7,
+      "latencyMs": 9.668,
       "limit": 10,
-      "queryId": "q-absent-payment-flow"
+      "queryId": "q-absent-kubernetes",
+      "raptor": true
     },
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 9.856,
+      "latencyMs": 9.855,
       "limit": 50,
-      "queryId": "q-absent-payment-flow"
+      "queryId": "q-absent-kubernetes",
+      "raptor": true
     },
     {
       "corpus": "full",
       "includeUnapproved": true,
-      "latencyMs": 9.075,
+      "latencyMs": 9.924,
       "limit": 50,
-      "queryId": "q-absent-payment-flow"
+      "queryId": "q-absent-kubernetes",
+      "raptor": true
     },
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 10.598,
+      "latencyMs": 9.714,
       "limit": 10,
-      "queryId": "q-cjk-mixed-length"
+      "queryId": "q-absent-payment-flow",
+      "raptor": false
     },
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 10.56,
+      "latencyMs": 8.872,
       "limit": 50,
-      "queryId": "q-cjk-mixed-length"
+      "queryId": "q-absent-payment-flow",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 10.547,
+      "limit": 10,
+      "queryId": "q-absent-payment-flow",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 9.762,
+      "limit": 50,
+      "queryId": "q-absent-payment-flow",
+      "raptor": true
     },
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 10.534,
+      "latencyMs": 9.739,
       "limit": 10,
-      "queryId": "q-cjk-mixed-length"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 10.916,
-      "limit": 50,
-      "queryId": "q-cjk-mixed-length"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 6.999,
-      "limit": 10,
-      "queryId": "q-cjk-unspaced"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 7.176,
-      "limit": 50,
-      "queryId": "q-cjk-unspaced"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 7.068,
-      "limit": 10,
-      "queryId": "q-cjk-unspaced"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 8.488,
-      "limit": 50,
-      "queryId": "q-cjk-unspaced"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 21.115,
-      "limit": 10,
-      "queryId": "q-current-ttl-policy"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 22.427,
-      "limit": 50,
-      "queryId": "q-current-ttl-policy"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 21.851,
-      "limit": 10,
-      "queryId": "q-current-ttl-policy"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 22.306,
-      "limit": 50,
-      "queryId": "q-current-ttl-policy"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 25.437,
-      "limit": 10,
-      "queryId": "q-db-design-principles"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 26.202,
-      "limit": 50,
-      "queryId": "q-db-design-principles"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 26.652,
-      "limit": 10,
-      "queryId": "q-db-design-principles"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 28.556,
-      "limit": 50,
-      "queryId": "q-db-design-principles"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 22.437,
-      "limit": 10,
-      "queryId": "q-disclosure-enforcement"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 25.341,
-      "limit": 50,
-      "queryId": "q-disclosure-enforcement"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 23.655,
-      "limit": 10,
-      "queryId": "q-disclosure-enforcement"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 26.064,
-      "limit": 50,
-      "queryId": "q-disclosure-enforcement"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 25.09,
-      "limit": 10,
-      "queryId": "q-index-publication"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 28.667,
-      "limit": 50,
-      "queryId": "q-index-publication"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 28.67,
-      "limit": 10,
-      "queryId": "q-index-publication"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 32.284,
-      "limit": 50,
-      "queryId": "q-index-publication"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 22.562,
-      "limit": 10,
-      "queryId": "q-mutation-discipline"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 23.536,
-      "limit": 50,
-      "queryId": "q-mutation-discipline"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 23.279,
-      "limit": 10,
-      "queryId": "q-mutation-discipline"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 24.908,
-      "limit": 50,
-      "queryId": "q-mutation-discipline"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 23.858,
-      "limit": 10,
-      "queryId": "q-optimistic-concurrency"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 26.69,
-      "limit": 50,
-      "queryId": "q-optimistic-concurrency"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 23.805,
-      "limit": 10,
-      "queryId": "q-optimistic-concurrency"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 25.898,
-      "limit": 50,
-      "queryId": "q-optimistic-concurrency"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 23.049,
-      "limit": 10,
-      "queryId": "q-proposal-path"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 26.095,
-      "limit": 50,
-      "queryId": "q-proposal-path"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 23.544,
-      "limit": 10,
-      "queryId": "q-proposal-path"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 26.27,
-      "limit": 50,
-      "queryId": "q-proposal-path"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 22.495,
-      "limit": 10,
-      "queryId": "q-purge-on-withdrawal"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 24.637,
-      "limit": 50,
-      "queryId": "q-purge-on-withdrawal"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 23.774,
-      "limit": 10,
-      "queryId": "q-purge-on-withdrawal"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 25.632,
-      "limit": 50,
-      "queryId": "q-purge-on-withdrawal"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 22.274,
-      "limit": 10,
-      "queryId": "q-rank-fusion-why"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 21.999,
-      "limit": 50,
-      "queryId": "q-rank-fusion-why"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 23.053,
-      "limit": 10,
-      "queryId": "q-rank-fusion-why"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 23.0,
-      "limit": 50,
-      "queryId": "q-rank-fusion-why"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 22.25,
-      "limit": 10,
-      "queryId": "q-rejected-ltr"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 24.761,
-      "limit": 50,
-      "queryId": "q-rejected-ltr"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 23.177,
-      "limit": 10,
-      "queryId": "q-rejected-ltr"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 26.557,
-      "limit": 50,
-      "queryId": "q-rejected-ltr"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 23.695,
-      "limit": 10,
-      "queryId": "q-rejected-score-normalisation"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 30.008,
-      "limit": 50,
-      "queryId": "q-rejected-score-normalisation"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 25.232,
-      "limit": 10,
-      "queryId": "q-rejected-score-normalisation"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 29.28,
-      "limit": 50,
-      "queryId": "q-rejected-score-normalisation"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 22.9,
-      "limit": 10,
-      "queryId": "q-rejected-vendor-sdk"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 35.711,
-      "limit": 50,
-      "queryId": "q-rejected-vendor-sdk"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 21.718,
-      "limit": 10,
-      "queryId": "q-rejected-vendor-sdk"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 24.546,
-      "limit": 50,
-      "queryId": "q-rejected-vendor-sdk"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 21.762,
-      "limit": 10,
-      "queryId": "q-restart-after-schema-change"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 24.971,
-      "limit": 50,
-      "queryId": "q-restart-after-schema-change"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 24.572,
-      "limit": 10,
-      "queryId": "q-restart-after-schema-change"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 29.654,
-      "limit": 50,
-      "queryId": "q-restart-after-schema-change"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 23.653,
-      "limit": 10,
-      "queryId": "q-retrieval-architecture"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 23.737,
-      "limit": 50,
-      "queryId": "q-retrieval-architecture"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 25.3,
-      "limit": 10,
-      "queryId": "q-retrieval-architecture"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 25.257,
-      "limit": 50,
-      "queryId": "q-retrieval-architecture"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 27.556,
-      "limit": 10,
-      "queryId": "q-schema-change-procedure"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 25.999,
-      "limit": 50,
-      "queryId": "q-schema-change-procedure"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 25.11,
-      "limit": 10,
-      "queryId": "q-schema-change-procedure"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 26.923,
-      "limit": 50,
-      "queryId": "q-schema-change-procedure"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 24.887,
-      "limit": 10,
-      "queryId": "q-secret-scan-hardening"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 26.374,
-      "limit": 50,
-      "queryId": "q-secret-scan-hardening"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 27.062,
-      "limit": 10,
-      "queryId": "q-secret-scan-hardening"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 28.187,
-      "limit": 50,
-      "queryId": "q-secret-scan-hardening"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 20.168,
-      "limit": 10,
-      "queryId": "q-session-token-ttl"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 22.629,
-      "limit": 50,
-      "queryId": "q-session-token-ttl"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 21.828,
-      "limit": 10,
-      "queryId": "q-session-token-ttl"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 21.99,
-      "limit": 50,
-      "queryId": "q-session-token-ttl"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 26.206,
-      "limit": 10,
-      "queryId": "q-sqlite-derived"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 25.61,
-      "limit": 50,
-      "queryId": "q-sqlite-derived"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 28.043,
-      "limit": 10,
-      "queryId": "q-sqlite-derived"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 27.225,
-      "limit": 50,
-      "queryId": "q-sqlite-derived"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 24.297,
-      "limit": 10,
-      "queryId": "q-state-hash-family"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 26.681,
-      "limit": 50,
-      "queryId": "q-state-hash-family"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 26.374,
-      "limit": 10,
-      "queryId": "q-state-hash-family"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 28.11,
-      "limit": 50,
-      "queryId": "q-state-hash-family"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 43.42,
-      "limit": 10,
-      "queryId": "q-token-lifetime"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 23.405,
-      "limit": 50,
-      "queryId": "q-token-lifetime"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 21.901,
-      "limit": 10,
-      "queryId": "q-token-lifetime"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 24.491,
-      "limit": 50,
-      "queryId": "q-token-lifetime"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 21.197,
-      "limit": 10,
-      "queryId": "q-withheld-credential-cache"
-    },
-    {
-      "corpus": "clean",
-      "includeUnapproved": false,
-      "latencyMs": 25.312,
-      "limit": 50,
-      "queryId": "q-withheld-credential-cache"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": false,
-      "latencyMs": 22.692,
-      "limit": 10,
-      "queryId": "q-withheld-credential-cache"
+      "queryId": "q-absent-payment-flow",
+      "raptor": false
     },
     {
       "corpus": "full",
       "includeUnapproved": true,
-      "latencyMs": 21.566,
+      "latencyMs": 8.827,
       "limit": 10,
-      "queryId": "q-withheld-credential-cache"
+      "queryId": "q-absent-payment-flow",
+      "raptor": false
     },
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 25.4,
+      "latencyMs": 9.263,
       "limit": 50,
-      "queryId": "q-withheld-credential-cache"
+      "queryId": "q-absent-payment-flow",
+      "raptor": false
     },
     {
       "corpus": "full",
       "includeUnapproved": true,
-      "latencyMs": 26.403,
+      "latencyMs": 8.269,
       "limit": 50,
-      "queryId": "q-withheld-credential-cache"
+      "queryId": "q-absent-payment-flow",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 10.953,
+      "limit": 10,
+      "queryId": "q-absent-payment-flow",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": true,
+      "latencyMs": 10.651,
+      "limit": 10,
+      "queryId": "q-absent-payment-flow",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 11.772,
+      "limit": 50,
+      "queryId": "q-absent-payment-flow",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": true,
+      "latencyMs": 10.827,
+      "limit": 50,
+      "queryId": "q-absent-payment-flow",
+      "raptor": true
     },
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 7.129,
+      "latencyMs": 11.846,
       "limit": 10,
-      "queryId": "q-withheld-token-rotation"
+      "queryId": "q-cjk-mixed-length",
+      "raptor": false
     },
     {
       "corpus": "clean",
       "includeUnapproved": false,
-      "latencyMs": 6.964,
+      "latencyMs": 11.613,
       "limit": 50,
-      "queryId": "q-withheld-token-rotation"
+      "queryId": "q-cjk-mixed-length",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 13.899,
+      "limit": 10,
+      "queryId": "q-cjk-mixed-length",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 13.677,
+      "limit": 50,
+      "queryId": "q-cjk-mixed-length",
+      "raptor": true
     },
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 6.934,
+      "latencyMs": 12.656,
       "limit": 10,
-      "queryId": "q-withheld-token-rotation"
-    },
-    {
-      "corpus": "full",
-      "includeUnapproved": true,
-      "latencyMs": 6.896,
-      "limit": 10,
-      "queryId": "q-withheld-token-rotation"
+      "queryId": "q-cjk-mixed-length",
+      "raptor": false
     },
     {
       "corpus": "full",
       "includeUnapproved": false,
-      "latencyMs": 6.889,
+      "latencyMs": 12.429,
       "limit": 50,
-      "queryId": "q-withheld-token-rotation"
+      "queryId": "q-cjk-mixed-length",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 14.06,
+      "limit": 10,
+      "queryId": "q-cjk-mixed-length",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 13.476,
+      "limit": 50,
+      "queryId": "q-cjk-mixed-length",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 7.711,
+      "limit": 10,
+      "queryId": "q-cjk-unspaced",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 6.669,
+      "limit": 50,
+      "queryId": "q-cjk-unspaced",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 7.174,
+      "limit": 10,
+      "queryId": "q-cjk-unspaced",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 6.948,
+      "limit": 50,
+      "queryId": "q-cjk-unspaced",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 8.016,
+      "limit": 10,
+      "queryId": "q-cjk-unspaced",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 6.6,
+      "limit": 50,
+      "queryId": "q-cjk-unspaced",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 7.067,
+      "limit": 10,
+      "queryId": "q-cjk-unspaced",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 8.046,
+      "limit": 50,
+      "queryId": "q-cjk-unspaced",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 23.801,
+      "limit": 10,
+      "queryId": "q-current-ttl-policy",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 23.389,
+      "limit": 50,
+      "queryId": "q-current-ttl-policy",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 32.129,
+      "limit": 10,
+      "queryId": "q-current-ttl-policy",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 32.793,
+      "limit": 50,
+      "queryId": "q-current-ttl-policy",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 23.933,
+      "limit": 10,
+      "queryId": "q-current-ttl-policy",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 25.796,
+      "limit": 50,
+      "queryId": "q-current-ttl-policy",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 34.353,
+      "limit": 10,
+      "queryId": "q-current-ttl-policy",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 34.803,
+      "limit": 50,
+      "queryId": "q-current-ttl-policy",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 28.384,
+      "limit": 10,
+      "queryId": "q-db-design-principles",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 29.54,
+      "limit": 50,
+      "queryId": "q-db-design-principles",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 39.452,
+      "limit": 10,
+      "queryId": "q-db-design-principles",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 44.042,
+      "limit": 50,
+      "queryId": "q-db-design-principles",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 29.467,
+      "limit": 10,
+      "queryId": "q-db-design-principles",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 31.055,
+      "limit": 50,
+      "queryId": "q-db-design-principles",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 43.0,
+      "limit": 10,
+      "queryId": "q-db-design-principles",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 46.271,
+      "limit": 50,
+      "queryId": "q-db-design-principles",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 22.946,
+      "limit": 10,
+      "queryId": "q-disclosure-enforcement",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 27.439,
+      "limit": 50,
+      "queryId": "q-disclosure-enforcement",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 34.253,
+      "limit": 10,
+      "queryId": "q-disclosure-enforcement",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 39.693,
+      "limit": 50,
+      "queryId": "q-disclosure-enforcement",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 24.802,
+      "limit": 10,
+      "queryId": "q-disclosure-enforcement",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 28.457,
+      "limit": 50,
+      "queryId": "q-disclosure-enforcement",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 35.241,
+      "limit": 10,
+      "queryId": "q-disclosure-enforcement",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 39.206,
+      "limit": 50,
+      "queryId": "q-disclosure-enforcement",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 24.536,
+      "limit": 10,
+      "queryId": "q-index-publication",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 28.354,
+      "limit": 50,
+      "queryId": "q-index-publication",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 39.787,
+      "limit": 10,
+      "queryId": "q-index-publication",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 46.143,
+      "limit": 50,
+      "queryId": "q-index-publication",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 27.303,
+      "limit": 10,
+      "queryId": "q-index-publication",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 29.278,
+      "limit": 50,
+      "queryId": "q-index-publication",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 41.272,
+      "limit": 10,
+      "queryId": "q-index-publication",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 45.32,
+      "limit": 50,
+      "queryId": "q-index-publication",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 22.502,
+      "limit": 10,
+      "queryId": "q-mutation-discipline",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 23.736,
+      "limit": 50,
+      "queryId": "q-mutation-discipline",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 31.3,
+      "limit": 10,
+      "queryId": "q-mutation-discipline",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 35.609,
+      "limit": 50,
+      "queryId": "q-mutation-discipline",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 24.051,
+      "limit": 10,
+      "queryId": "q-mutation-discipline",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 24.805,
+      "limit": 50,
+      "queryId": "q-mutation-discipline",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 33.83,
+      "limit": 10,
+      "queryId": "q-mutation-discipline",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 36.573,
+      "limit": 50,
+      "queryId": "q-mutation-discipline",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 23.538,
+      "limit": 10,
+      "queryId": "q-optimistic-concurrency",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 24.505,
+      "limit": 50,
+      "queryId": "q-optimistic-concurrency",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 31.397,
+      "limit": 10,
+      "queryId": "q-optimistic-concurrency",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 35.932,
+      "limit": 50,
+      "queryId": "q-optimistic-concurrency",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 24.204,
+      "limit": 10,
+      "queryId": "q-optimistic-concurrency",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 25.643,
+      "limit": 50,
+      "queryId": "q-optimistic-concurrency",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 35.897,
+      "limit": 10,
+      "queryId": "q-optimistic-concurrency",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 38.863,
+      "limit": 50,
+      "queryId": "q-optimistic-concurrency",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 22.737,
+      "limit": 10,
+      "queryId": "q-proposal-path",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 25.934,
+      "limit": 50,
+      "queryId": "q-proposal-path",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 30.395,
+      "limit": 10,
+      "queryId": "q-proposal-path",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 37.888,
+      "limit": 50,
+      "queryId": "q-proposal-path",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 23.403,
+      "limit": 10,
+      "queryId": "q-proposal-path",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 26.481,
+      "limit": 50,
+      "queryId": "q-proposal-path",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 32.04,
+      "limit": 10,
+      "queryId": "q-proposal-path",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 42.369,
+      "limit": 50,
+      "queryId": "q-proposal-path",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 24.431,
+      "limit": 10,
+      "queryId": "q-purge-on-withdrawal",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 25.542,
+      "limit": 50,
+      "queryId": "q-purge-on-withdrawal",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 33.656,
+      "limit": 10,
+      "queryId": "q-purge-on-withdrawal",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 37.337,
+      "limit": 50,
+      "queryId": "q-purge-on-withdrawal",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 24.497,
+      "limit": 10,
+      "queryId": "q-purge-on-withdrawal",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 26.156,
+      "limit": 50,
+      "queryId": "q-purge-on-withdrawal",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 35.451,
+      "limit": 10,
+      "queryId": "q-purge-on-withdrawal",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 37.841,
+      "limit": 50,
+      "queryId": "q-purge-on-withdrawal",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 21.023,
+      "limit": 10,
+      "queryId": "q-rank-fusion-why",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 40.99,
+      "limit": 50,
+      "queryId": "q-rank-fusion-why",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 30.513,
+      "limit": 10,
+      "queryId": "q-rank-fusion-why",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 31.448,
+      "limit": 50,
+      "queryId": "q-rank-fusion-why",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 24.444,
+      "limit": 10,
+      "queryId": "q-rank-fusion-why",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 23.216,
+      "limit": 50,
+      "queryId": "q-rank-fusion-why",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 31.473,
+      "limit": 10,
+      "queryId": "q-rank-fusion-why",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 32.462,
+      "limit": 50,
+      "queryId": "q-rank-fusion-why",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 20.969,
+      "limit": 10,
+      "queryId": "q-rejected-ltr",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 24.268,
+      "limit": 50,
+      "queryId": "q-rejected-ltr",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 29.201,
+      "limit": 10,
+      "queryId": "q-rejected-ltr",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 35.423,
+      "limit": 50,
+      "queryId": "q-rejected-ltr",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 22.153,
+      "limit": 10,
+      "queryId": "q-rejected-ltr",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 24.986,
+      "limit": 50,
+      "queryId": "q-rejected-ltr",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 30.944,
+      "limit": 10,
+      "queryId": "q-rejected-ltr",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 36.617,
+      "limit": 50,
+      "queryId": "q-rejected-ltr",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 25.79,
+      "limit": 10,
+      "queryId": "q-rejected-score-normalisation",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 27.961,
+      "limit": 50,
+      "queryId": "q-rejected-score-normalisation",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 34.077,
+      "limit": 10,
+      "queryId": "q-rejected-score-normalisation",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 39.201,
+      "limit": 50,
+      "queryId": "q-rejected-score-normalisation",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 26.049,
+      "limit": 10,
+      "queryId": "q-rejected-score-normalisation",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 28.333,
+      "limit": 50,
+      "queryId": "q-rejected-score-normalisation",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 35.478,
+      "limit": 10,
+      "queryId": "q-rejected-score-normalisation",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 40.027,
+      "limit": 50,
+      "queryId": "q-rejected-score-normalisation",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 20.309,
+      "limit": 10,
+      "queryId": "q-rejected-vendor-sdk",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 23.593,
+      "limit": 50,
+      "queryId": "q-rejected-vendor-sdk",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 29.362,
+      "limit": 10,
+      "queryId": "q-rejected-vendor-sdk",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 36.049,
+      "limit": 50,
+      "queryId": "q-rejected-vendor-sdk",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 21.966,
+      "limit": 10,
+      "queryId": "q-rejected-vendor-sdk",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 27.023,
+      "limit": 50,
+      "queryId": "q-rejected-vendor-sdk",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 30.825,
+      "limit": 10,
+      "queryId": "q-rejected-vendor-sdk",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 37.344,
+      "limit": 50,
+      "queryId": "q-rejected-vendor-sdk",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 21.968,
+      "limit": 10,
+      "queryId": "q-restart-after-schema-change",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 25.962,
+      "limit": 50,
+      "queryId": "q-restart-after-schema-change",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 32.086,
+      "limit": 10,
+      "queryId": "q-restart-after-schema-change",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 39.591,
+      "limit": 50,
+      "queryId": "q-restart-after-schema-change",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 25.902,
+      "limit": 10,
+      "queryId": "q-restart-after-schema-change",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 26.803,
+      "limit": 50,
+      "queryId": "q-restart-after-schema-change",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 33.736,
+      "limit": 10,
+      "queryId": "q-restart-after-schema-change",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 41.033,
+      "limit": 50,
+      "queryId": "q-restart-after-schema-change",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 26.491,
+      "limit": 10,
+      "queryId": "q-retrieval-architecture",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 26.527,
+      "limit": 50,
+      "queryId": "q-retrieval-architecture",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 36.612,
+      "limit": 10,
+      "queryId": "q-retrieval-architecture",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 35.57,
+      "limit": 50,
+      "queryId": "q-retrieval-architecture",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 27.562,
+      "limit": 10,
+      "queryId": "q-retrieval-architecture",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 26.76,
+      "limit": 50,
+      "queryId": "q-retrieval-architecture",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 36.415,
+      "limit": 10,
+      "queryId": "q-retrieval-architecture",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 36.025,
+      "limit": 50,
+      "queryId": "q-retrieval-architecture",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 23.624,
+      "limit": 10,
+      "queryId": "q-schema-change-procedure",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 26.769,
+      "limit": 50,
+      "queryId": "q-schema-change-procedure",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 34.547,
+      "limit": 10,
+      "queryId": "q-schema-change-procedure",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 38.778,
+      "limit": 50,
+      "queryId": "q-schema-change-procedure",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 26.613,
+      "limit": 10,
+      "queryId": "q-schema-change-procedure",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 27.405,
+      "limit": 50,
+      "queryId": "q-schema-change-procedure",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 36.974,
+      "limit": 10,
+      "queryId": "q-schema-change-procedure",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 41.553,
+      "limit": 50,
+      "queryId": "q-schema-change-procedure",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 25.814,
+      "limit": 10,
+      "queryId": "q-secret-scan-hardening",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 27.324,
+      "limit": 50,
+      "queryId": "q-secret-scan-hardening",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 36.402,
+      "limit": 10,
+      "queryId": "q-secret-scan-hardening",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 39.236,
+      "limit": 50,
+      "queryId": "q-secret-scan-hardening",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 27.831,
+      "limit": 10,
+      "queryId": "q-secret-scan-hardening",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 28.27,
+      "limit": 50,
+      "queryId": "q-secret-scan-hardening",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 38.776,
+      "limit": 10,
+      "queryId": "q-secret-scan-hardening",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 44.313,
+      "limit": 50,
+      "queryId": "q-secret-scan-hardening",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 24.427,
+      "limit": 10,
+      "queryId": "q-session-token-ttl",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 26.596,
+      "limit": 50,
+      "queryId": "q-session-token-ttl",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 30.589,
+      "limit": 10,
+      "queryId": "q-session-token-ttl",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 33.629,
+      "limit": 50,
+      "queryId": "q-session-token-ttl",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 23.359,
+      "limit": 10,
+      "queryId": "q-session-token-ttl",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 57.619,
+      "limit": 50,
+      "queryId": "q-session-token-ttl",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 32.214,
+      "limit": 10,
+      "queryId": "q-session-token-ttl",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 35.77,
+      "limit": 50,
+      "queryId": "q-session-token-ttl",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 24.349,
+      "limit": 10,
+      "queryId": "q-sqlite-derived",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 25.505,
+      "limit": 50,
+      "queryId": "q-sqlite-derived",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 35.535,
+      "limit": 10,
+      "queryId": "q-sqlite-derived",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 37.753,
+      "limit": 50,
+      "queryId": "q-sqlite-derived",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 25.843,
+      "limit": 10,
+      "queryId": "q-sqlite-derived",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 25.993,
+      "limit": 50,
+      "queryId": "q-sqlite-derived",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 36.73,
+      "limit": 10,
+      "queryId": "q-sqlite-derived",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 40.495,
+      "limit": 50,
+      "queryId": "q-sqlite-derived",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 22.862,
+      "limit": 10,
+      "queryId": "q-state-hash-family",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 25.526,
+      "limit": 50,
+      "queryId": "q-state-hash-family",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 33.418,
+      "limit": 10,
+      "queryId": "q-state-hash-family",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 38.191,
+      "limit": 50,
+      "queryId": "q-state-hash-family",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 24.234,
+      "limit": 10,
+      "queryId": "q-state-hash-family",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 26.604,
+      "limit": 50,
+      "queryId": "q-state-hash-family",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 35.719,
+      "limit": 10,
+      "queryId": "q-state-hash-family",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 39.836,
+      "limit": 50,
+      "queryId": "q-state-hash-family",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 23.073,
+      "limit": 10,
+      "queryId": "q-token-lifetime",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 28.481,
+      "limit": 50,
+      "queryId": "q-token-lifetime",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 34.468,
+      "limit": 10,
+      "queryId": "q-token-lifetime",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 40.0,
+      "limit": 50,
+      "queryId": "q-token-lifetime",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 24.109,
+      "limit": 10,
+      "queryId": "q-token-lifetime",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 27.34,
+      "limit": 50,
+      "queryId": "q-token-lifetime",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 34.204,
+      "limit": 10,
+      "queryId": "q-token-lifetime",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 39.735,
+      "limit": 50,
+      "queryId": "q-token-lifetime",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 23.986,
+      "limit": 10,
+      "queryId": "q-withheld-credential-cache",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 26.444,
+      "limit": 50,
+      "queryId": "q-withheld-credential-cache",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 33.008,
+      "limit": 10,
+      "queryId": "q-withheld-credential-cache",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 38.588,
+      "limit": 50,
+      "queryId": "q-withheld-credential-cache",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 26.012,
+      "limit": 10,
+      "queryId": "q-withheld-credential-cache",
+      "raptor": false
     },
     {
       "corpus": "full",
       "includeUnapproved": true,
-      "latencyMs": 7.202,
+      "latencyMs": 24.05,
+      "limit": 10,
+      "queryId": "q-withheld-credential-cache",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 28.633,
       "limit": 50,
-      "queryId": "q-withheld-token-rotation"
+      "queryId": "q-withheld-credential-cache",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": true,
+      "latencyMs": 29.431,
+      "limit": 50,
+      "queryId": "q-withheld-credential-cache",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 35.068,
+      "limit": 10,
+      "queryId": "q-withheld-credential-cache",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": true,
+      "latencyMs": 32.708,
+      "limit": 10,
+      "queryId": "q-withheld-credential-cache",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 62.26,
+      "limit": 50,
+      "queryId": "q-withheld-credential-cache",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": true,
+      "latencyMs": 42.86,
+      "limit": 50,
+      "queryId": "q-withheld-credential-cache",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 8.703,
+      "limit": 10,
+      "queryId": "q-withheld-token-rotation",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 7.387,
+      "limit": 50,
+      "queryId": "q-withheld-token-rotation",
+      "raptor": false
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 9.301,
+      "limit": 10,
+      "queryId": "q-withheld-token-rotation",
+      "raptor": true
+    },
+    {
+      "corpus": "clean",
+      "includeUnapproved": false,
+      "latencyMs": 8.147,
+      "limit": 50,
+      "queryId": "q-withheld-token-rotation",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 8.145,
+      "limit": 10,
+      "queryId": "q-withheld-token-rotation",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": true,
+      "latencyMs": 8.526,
+      "limit": 10,
+      "queryId": "q-withheld-token-rotation",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 7.431,
+      "limit": 50,
+      "queryId": "q-withheld-token-rotation",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": true,
+      "latencyMs": 7.712,
+      "limit": 50,
+      "queryId": "q-withheld-token-rotation",
+      "raptor": false
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 9.157,
+      "limit": 10,
+      "queryId": "q-withheld-token-rotation",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": true,
+      "latencyMs": 8.172,
+      "limit": 10,
+      "queryId": "q-withheld-token-rotation",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": false,
+      "latencyMs": 8.319,
+      "limit": 50,
+      "queryId": "q-withheld-token-rotation",
+      "raptor": true
+    },
+    {
+      "corpus": "full",
+      "includeUnapproved": true,
+      "latencyMs": 8.719,
+      "limit": 50,
+      "queryId": "q-withheld-token-rotation",
+      "raptor": true
     }
   ],
   "sqliteVersion": "3.47.1"

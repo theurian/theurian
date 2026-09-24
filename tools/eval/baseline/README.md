@@ -11,10 +11,19 @@ itself is a target — there is no minimum Recall@k, no MRR floor, no maximum
 latency anywhere in the contract. A future regression is read against these
 figures by a human decision, not by a threshold this harness carries.
 
+Slice S4c (below, "The RAPTOR comparison arm") extends the same run with a
+second, raptor-ON pair and a `comparison` block against this one — the base
+figures on this page are untouched by that extension (confirmed the same way
+the byte-identity pin confirms everything else: the regenerated
+`report.json` minus its new `raptor`/`comparison` keys equals what this page
+already documented).
+
 ## Measured
 
 - **Date:** 2026-09-24
-- **Commit:** `a58fdcb588c8189dc00a8935403c00b87b3c5d48`
+- **Commit:** `673b12cfd12fbb652c40cfd481be098e2e1ff20b` (S4c's own re-measurement,
+  carrying both arms in one file; S4b's original was measured at
+  `a58fdcb588c8189dc00a8935403c00b87b3c5d48`)
 - **Corpus:** `tests/fixtures/eval` (`corpusId: adr-corpus-v1`)
 - **Census** (echoed from `report.json`'s own `census` member):
 
@@ -61,6 +70,11 @@ exit: 1
 
 `timings.json` here is the **second** run's (decision 7's dated annex is
 expected to differ run to run; only `report.json` is the determinism pin).
+
+Since slice S4c, the same command builds and queries the raptor-ON pair too
+(`corpus_build.build_both(..., raptor=True)`, symmetric to the base pair) —
+the two-run comparison above is over the whole `report.json`, so it already
+covers the `raptor` and `comparison` keys, not only the base arm's.
 
 ## Environment (from `timings.json`, outside the byte-identity property)
 
@@ -133,6 +147,83 @@ run, never made here):
 `aggregated.population` states the denominator: full-corpus runs only, one
 sample per enabled query — a query's `clean` run (where one exists) is not a
 second sample of the same judgement.
+
+## The RAPTOR comparison arm (slice S4c)
+
+The Phase A exit criteria name the RAPTOR default-on decision as one this
+harness must measure (`docs/roadmap.md`, Phase A exit criteria row). This
+section is that measurement: a second, raptor-ON build of the same two
+projects (`full-raptor`, `clean-raptor`), queried with every enabled query
+under the identical default flags, limits and #787 abstention-probe
+machinery the base arm uses (`run.py`'s own docstring states the symmetry is
+deliberate) — the RAPTOR forest's presence is the only variable the
+`comparison` block below isolates. `report.json`'s `raptor` section carries
+the same shapes as the base arm's own `census`/`queries`/`equality`/
+`aggregated` members; only `corpusId`/`kValues`/`harnessConstants` are
+dropped there, since both arms share one corpus and one set of constants.
+
+**The forest's size, `comparison.nodes`** — a corpus-derived, deterministic
+quantity (ADR-0008 decisions 8/9: the raptor forest is a pure function of the
+chunks the same build just wrote), so it belongs beside the other figures on
+this page rather than only in `timings.json`'s dated annex, which carries the
+same build's wall-clock cost instead:
+
+```json
+"comparison": {
+  "nodes": {"clean": 26, "full": 28}
+}
+```
+
+**`raptor.equality.channel`** — the raptor pair's own equality entries,
+reported rather than asserted the same way #787's channel already is, but for
+a different reason than the base arm's set-equality claim: RAPTOR summary
+routing over an `--include-unapproved` build derives Domain/Catalog summaries
+over rows the clean build never held (ADR-0008 decision 8, GHSA-97q9's
+`raptorPath` territory), so a wider differing set here is expected rather
+than a regression. This run's `atLimit` count widens from the base arm's `18
+of 26` to `20 of 26`; `atEqualityLimit` holds at `21 of 26` — the base arm's
+own set-equality claim (decision 6) is unchanged and untouched by this
+number, which is why it is reported here rather than folded into that claim:
+
+```json
+"raptor": {
+  "equality": {
+    "channel": {
+      "atLimit": {"queriesDiffering": 20, "of": 26},
+      "atEqualityLimit": {"queriesDiffering": 21, "of": 26}
+    }
+  }
+}
+```
+
+**`comparison.byClass`/`comparison.overall`** — raptor-on minus raptor-off,
+over the `full`-corpus default-flag runs (deltas only, no judgement about
+whether a move is good or bad, matching decision 4's own convention above):
+
+| class | n | ΔRecall@1 | ΔRecall@5 | ΔRecall@10 | ΔMRR |
+| :-- | --: | --: | --: | --: | --: |
+| broad-architectural | 3 | 0.25 | -0.083333 | 0.0 | 0.416667 |
+| conflicting | 2 | 0.0 | 0.0 | 0.0 | 0.0 |
+| cross-adr | 3 | -0.666667 | -0.333333 | 0.0 | -0.683333 |
+| exact-decision | 8 | 0.0 | 0.0 | 0.0 | -0.001736 |
+| rejected-alternative | 3 | -0.666667 | 0.0 | 0.0 | -0.444444 |
+| superseded | 3 | 0.0 | 0.0 | 0.0 | 0.0 |
+| unknown | 4 | — | — | — | — |
+| **overall** | 26 | -0.147727 | -0.056818 | 0.0 | -0.097601 |
+
+`unknown` carries no delta: every query in that class is an abstention
+probe with no judged `relevant` item, so both arms' `recallAtK`/`mrr` read
+`None` for it (the same `_aggregate_entries` denominator-empty convention the
+base arm's own table follows), and a delta between two `None`s is `None`
+rather than a false zero.
+
+**Raptor build cost** (`timings.json`, outside the byte-identity property,
+same as the Environment section above):
+
+| | nodes | wallClockMs | indexBytes |
+| :-- | --: | --: | --: |
+| `full-raptor` | 28 | 1409.424 | 4636672 |
+| `clean-raptor` | 26 | 1392.769 | 4554752 |
 
 ## Re-check commands
 

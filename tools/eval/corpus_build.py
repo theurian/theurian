@@ -72,7 +72,7 @@ class BuildResult:
     home: Path
 
 
-def build_both(loaded: Corpus, workspace: Path) -> BuildResult:
+def build_both(loaded: Corpus, workspace: Path, *, raptor: bool = False) -> BuildResult:
     """Build ``full`` and ``clean``, each under its own ``THEURIAN_DATA_DIR``.
 
     Both builds register under the **same** ``projectId`` -- the manifest's
@@ -84,19 +84,33 @@ def build_both(loaded: Corpus, workspace: Path) -> BuildResult:
     same way, one registry and one server per side of the pair. Raises
     :class:`CorpusError` if either build's measured census disagrees with
     ``manifest.yaml``: a corpus defect is not a measurement.
+
+    ``raptor=True`` builds the RAPTOR-ON pair (Phase A slice S4c) beside a
+    ``raptor=False`` call already made against the same ``workspace``: each
+    project lands under its own ``<plane>-raptor`` subdirectory, so the two
+    pairs' roots and data dirs never collide, while :attr:`BuiltProject.name`
+    stays ``"full"``/``"clean"`` either way -- the caller tells the pairs
+    apart by which :class:`BuildResult` it holds, not by a name suffix, so
+    ``report.py``'s per-corpus-name functions run over the raptor pair
+    unchanged.
     """
     home = workspace / "home"
     home.mkdir(parents=True, exist_ok=True)
     projects: dict[str, BuiltProject] = {}
     for name in PLANES:
-        data_dir = workspace / name / "data"
+        directory = f"{name}-raptor" if raptor else name
+        data_dir = workspace / directory / "data"
         data_dir.mkdir(parents=True, exist_ok=True)
         with _environment(HOME=str(home), THEURIAN_DATA_DIR=str(data_dir)):
-            projects[name] = _build_one(loaded, workspace / name / "project", name, data_dir)
+            projects[name] = _build_one(
+                loaded, workspace / directory / "project", name, data_dir, raptor=raptor
+            )
     return BuildResult(projects=projects, home=home)
 
 
-def _build_one(loaded: Corpus, root: Path, name: str, data_dir: Path) -> BuiltProject:
+def _build_one(
+    loaded: Corpus, root: Path, name: str, data_dir: Path, *, raptor: bool = False
+) -> BuiltProject:
     project_id = loaded.manifest.corpus_id
     root.mkdir(parents=True)
     _git_init(root)
@@ -107,7 +121,7 @@ def _build_one(loaded: Corpus, root: Path, name: str, data_dir: Path) -> BuiltPr
     _commit_all(root)
     _invoke(root, "migrate", "apply")
 
-    cost = _measure_index_build_cost(root)
+    cost = _measure_index_build_cost(root, raptor=raptor)
     census = _measure_and_verify_census(loaded, root, name, project_id, cost.chunks)
 
     return BuiltProject(
@@ -138,7 +152,7 @@ def _populate_migrations(loaded: Corpus, root: Path, name: str) -> None:
         shutil.copy2(source, migrations_dst / entry.file)
 
 
-def _measure_index_build_cost(root: Path) -> IndexBuildCost:
+def _measure_index_build_cost(root: Path, *, raptor: bool = False) -> IndexBuildCost:
     """Build the index and measure its cost.
 
     Both flavors, not just `full` (ADR-0036, the gate-vs-census derivation
@@ -151,9 +165,18 @@ def _measure_index_build_cost(root: Path) -> IndexBuildCost:
     withheld documents and an index that never did, with the query itself
     left at default flags (`includeUnapproved=false`) -- the query-time gate
     is the thing under measurement, not the build.
+
+    ``raptor=True`` adds ``--raptor``: `IndexBuildCost.nodes` is then the
+    forest's size, a deterministic pure function of the chunks the same build
+    just wrote (ADR-0008 decisions 8/9), so it is fit for `report.json`'s
+    determinism pin -- unlike `wall_clock_ms`, which stays in `timings.json`
+    the same as every other build's does.
     """
     started = time.monotonic()
-    build_report = _invoke(root, "index", "build", "--include-unapproved")
+    args = ["index", "build", "--include-unapproved"]
+    if raptor:
+        args.append("--raptor")
+    build_report = _invoke(root, *args)
     elapsed_ms = (time.monotonic() - started) * 1000
     index_path = Path(build_report["indexPath"])
     return IndexBuildCost(

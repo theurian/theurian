@@ -104,6 +104,12 @@ _AGGREGATION_POPULATION: Final = (
     "comparison, not as a second sample of the same judgement"
 )
 
+#: The keys `_raptor_section` keeps from a full `build_report` call over the
+#: raptor arm's own runs -- everything but `corpusId`/`kValues`/
+#: `harnessConstants`, which the raptor arm shares with the base arm verbatim
+#: (same corpus, same constants) and would otherwise just duplicate.
+_RAPTOR_SECTION_KEYS: Final = ("census", "queries", "equality", "aggregated")
+
 
 @dataclass(frozen=True, slots=True)
 class HarnessConstants:
@@ -142,6 +148,20 @@ class QueryRun:
     #: corpus, limit) with the ordinary "full" run it exists to compare
     #: against, and `_find_run` must not confuse the two.
     include_unapproved: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class RaptorArm:
+    """The raptor-on arm's own measurements (Phase A slice S4c), bundled so
+    ``build_report``/``build_timings`` each take one extra parameter rather
+    than three -- ``runs``, ``census`` and ``build_costs`` always travel
+    together, one call to ``corpus_build.build_both(..., raptor=True)`` and
+    one query loop over it (``run.py``).
+    """
+
+    runs: Sequence[QueryRun]
+    census: Mapping[str, CorpusCensus]
+    build_costs: Mapping[str, IndexBuildCost]
 
 
 def probe_limits_for(
@@ -195,7 +215,18 @@ def build_report(
     constants: HarnessConstants,
     runs: Sequence[QueryRun],
     census: Mapping[str, CorpusCensus],
+    *,
+    raptor: RaptorArm | None = None,
 ) -> dict[str, Any]:
+    """Assemble the base arm's report, and -- when ``raptor`` is given -- the
+    raptor arm's own ``raptor`` section and the ``comparison`` block between
+    the two (Phase A slice S4c).
+
+    ``raptor.runs`` symmetric to ``runs``: the same enabled queries, against
+    the same corpora, at the same limits, with the same #787 abstention
+    probes -- the only variable the comparison isolates is the RAPTOR
+    forest's presence (``run.py`` is what keeps the two calls symmetric).
+    """
     queries_section: dict[str, Any] = {}
     for query in loaded.queries:
         if not query.enabled:
@@ -230,7 +261,96 @@ def build_report(
     probe_summary = _abstention_probe_summary(runs)
     if probe_summary is not None:
         report["abstentionProbe"] = probe_summary
+    if raptor is not None:
+        report["raptor"] = _raptor_section(loaded, constants, raptor.runs, raptor.census)
+        report["comparison"] = _comparison(
+            report["aggregated"],
+            report["raptor"]["aggregated"],
+            loaded.manifest.k_values,
+            {name: cost.nodes for name, cost in raptor.build_costs.items()},
+        )
     return report
+
+
+def _raptor_section(
+    loaded: Corpus,
+    constants: HarnessConstants,
+    runs: Sequence[QueryRun],
+    census: Mapping[str, CorpusCensus],
+) -> dict[str, Any]:
+    """The raptor arm's per-query, equality and aggregate metrics (Phase A slice S4c).
+
+    Built by recursing into :func:`build_report` over the raptor arm's own
+    ``runs``/``census`` with no ``raptor_runs`` of its own -- the same
+    per-query, equality and channel machinery the base arm uses, so the two
+    can never drift in shape. ``corpusId``, ``kValues`` and
+    ``harnessConstants`` are dropped: both arms share one corpus and one set
+    of constants, so repeating them here would be noise, not a second
+    measurement.
+
+    Its ``equality`` entries are reported, not asserted, for a different
+    reason than the base arm's own ``EQUALITY_SCOPE`` gives: RAPTOR summary
+    routing (ADR-0008 decision 8, GHSA-97q9's ``raptorPath`` territory) means
+    an ``--include-unapproved`` raptor build derives Domain/Catalog summaries
+    over rows the clean build never held, so a wider ``differingFields`` set
+    here is expected rather than a regression -- exactly the channel
+    ``_channel_summary`` already reports rather than gates on, reused
+    verbatim rather than widening the base arm's own set-equality claim to
+    cover it.
+    """
+    full = build_report(loaded, constants, runs, census)
+    section = {key: full[key] for key in _RAPTOR_SECTION_KEYS}
+    if "abstentionProbe" in full:
+        section["abstentionProbe"] = full["abstentionProbe"]
+    return section
+
+
+def _comparison(
+    base_aggregated: Mapping[str, Any],
+    raptor_aggregated: Mapping[str, Any],
+    k_values: Sequence[int],
+    raptor_build_nodes: Mapping[str, int],
+) -> dict[str, Any]:
+    """Raptor-on minus raptor-off, over the ``full``-corpus default-flag runs (decision 4: deltas
+    only, no judgment about whether a move is good or bad).
+
+    Both sides' ``byClass`` share one key set: the classes come from the same
+    loaded queries against the same judged corpus, RAPTOR only ever moving
+    which rows rank where. ``recallAtK``/``mrr`` follow
+    :func:`_aggregate_entries`'s own ``None``-for-empty-denominator
+    convention -- a class or k either side has no sample for stays out of the
+    delta rather than reading as a false zero.
+    """
+    return {
+        "byClass": {
+            name: _aggregate_delta(raptor_aggregated["byClass"][name], entry, k_values)
+            for name, entry in base_aggregated["byClass"].items()
+        },
+        "overall": _aggregate_delta(
+            raptor_aggregated["overall"], base_aggregated["overall"], k_values
+        ),
+        "nodes": dict(raptor_build_nodes),
+    }
+
+
+def _aggregate_delta(
+    raptor_entry: Mapping[str, Any], base_entry: Mapping[str, Any], k_values: Sequence[int]
+) -> dict[str, Any]:
+    recall = {
+        str(k): delta
+        for k in sorted(k_values)
+        if (
+            delta := _delta(
+                raptor_entry["recallAtK"].get(str(k)), base_entry["recallAtK"].get(str(k))
+            )
+        )
+        is not None
+    }
+    return {"recallAtK": recall, "mrr": _delta(raptor_entry["mrr"], base_entry["mrr"])}
+
+
+def _delta(raptor_value: float | None, base_value: float | None) -> float | None:
+    return None if raptor_value is None or base_value is None else raptor_value - base_value
 
 
 def _query_entry(
@@ -540,7 +660,24 @@ def build_timings(
     runs: Sequence[QueryRun],
     build_costs: Mapping[str, IndexBuildCost],
     repo_root: Path,
+    *,
+    raptor: RaptorArm | None = None,
 ) -> dict[str, Any]:
+    """The dated annex, over both arms when ``raptor`` is given.
+
+    A raptor query row shares ``(queryId, corpus, limit, includeUnapproved)`` with its base-arm
+    counterpart -- both arms' :class:`BuiltProject` are named ``"full"``/``"clean"`` (see
+    ``corpus_build.build_both``) -- so ``raptor`` is a fifth field on every row rather than a
+    fifth key in the tuple a caller might already be matching on.
+    """
+    index_build = {name: _cost_dict(cost) for name, cost in build_costs.items()}
+    if raptor is not None:
+        index_build.update(
+            {f"{name}-raptor": _cost_dict(cost) for name, cost in raptor.build_costs.items()}
+        )
+    tagged_runs = [(run, False) for run in runs] + [
+        (run, True) for run in (raptor.runs if raptor is not None else ())
+    ]
     return {
         "date": datetime.now(UTC).isoformat(),
         "commitSha": _commit_sha(repo_root),
@@ -548,17 +685,25 @@ def build_timings(
         "platform": platform.platform(),
         "pythonVersion": sys.version,
         "sqliteVersion": sqlite3.sqlite_version,
-        "indexBuild": {name: _cost_dict(cost) for name, cost in build_costs.items()},
+        "indexBuild": index_build,
         "queries": [
             {
                 "queryId": run.query_id,
                 "corpus": run.corpus,
+                "raptor": raptor,
                 "limit": run.limit,
                 "includeUnapproved": run.include_unapproved,
                 "latencyMs": round(run.latency_ms, 3),
             }
-            for run in sorted(
-                runs, key=lambda r: (r.query_id, r.corpus, r.limit, r.include_unapproved)
+            for run, raptor in sorted(
+                tagged_runs,
+                key=lambda pair: (
+                    pair[0].query_id,
+                    pair[0].corpus,
+                    pair[1],
+                    pair[0].limit,
+                    pair[0].include_unapproved,
+                ),
             )
         ],
     }
