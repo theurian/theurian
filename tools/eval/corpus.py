@@ -166,9 +166,11 @@ class WithheldItemCoverage:
     """One withheld-plane item's classification.
 
     ADR-0036's derivation rule ("The derivation rule") states two clauses --
-    gate-tested and census-tested. The third case below is not a clause of
-    that rule: it is the ADR's separately documented `withheld-item-disclosable`
-    refusal, which never reaches this classification.
+    gate-tested and census-tested. A third combination, approved and within
+    the ceiling, is not a clause of that rule but the ADR's separately
+    documented `withheld-item-disclosable` refusal:
+    :func:`_check_no_disclosable_withheld_item` refuses it before this
+    classification ever runs.
 
     ``is_gate_tested``: the item's final status is draft or proposed AND its
     final sensitivity sits within :data:`BUILD_CEILING_SENSITIVITIES` -- so it
@@ -178,10 +180,7 @@ class WithheldItemCoverage:
     rejected or deprecated, or its final sensitivity sits above the ceiling --
     either way it never reaches the index under either build flavor, so its
     absence from a response is a build-time property rather than evidence
-    about the query-time gate. The third combination -- final status approved
-    and within the ceiling -- is disclosable and never reaches this
-    classification: :func:`_check_no_disclosable_withheld_item` refuses the
-    corpus first.
+    about the query-time gate.
     """
 
     item_id: str
