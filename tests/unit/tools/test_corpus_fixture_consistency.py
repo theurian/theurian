@@ -1739,3 +1739,35 @@ def test_the_two_folds_agree_on_a_constructed_history_the_fixture_does_not_hold(
     }
     assert {item: state["status"] for item, state in replayed.items()} == status
     assert {item: state["sensitivity"] for item, state in replayed.items()} == sensitivity
+
+
+def test_the_fold_credits_create_items_sensitivity_when_no_revision_overrides_it() -> None:
+    """The gap #801 named: a createItem-only item's sensitivity was invisible to
+    the fold, which then fell back to the schema default at every call site
+    instead of what createItem declared -- masked in the committed corpus
+    because every fixture item also carries a revision. Matches the real
+    engine: ``KnowledgeItem.sensitivity`` is set at create
+    (``MigrationEngine._create_item``) and stays there until something else
+    changes it; nothing else touches these two items.
+    """
+    migrations = (
+        (
+            "1M23BW8DJNKT2GJB31BMEYQP08-create-only.yaml",
+            {
+                "id": "1M23BW8DJNKT2GJB31BMEYQP08",
+                "operations": [
+                    {
+                        "op": "createItem",
+                        "itemId": "domain.create-only-confidential",
+                        "sensitivity": "confidential",
+                    },
+                    {"op": "createItem", "itemId": "domain.create-only-default"},
+                ],
+            },
+        ),
+    )
+
+    _status, sensitivity = _loader_fold(migrations)
+
+    assert sensitivity["domain.create-only-confidential"] == "confidential"
+    assert sensitivity["domain.create-only-default"] == SCHEMA_DEFAULT_SENSITIVITY

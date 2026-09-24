@@ -544,10 +544,14 @@ def _final_status_and_sensitivity(
     replays visible-plane items through the same machinery.
 
     Final status is the last ``upsertRevision.metadata.status``, overridden by
-    a later ``deprecateItem`` -> ``deprecated``. Final sensitivity is the last
-    ``upsertRevision.metadata.sensitivity`` (default ``internal``, ADR-0027
-    decision 1's own default when a revision omits it), overridden by a later
-    ``changeSensitivity``.
+    a later ``deprecateItem`` -> ``deprecated``. Final sensitivity is
+    ``createItem.sensitivity`` (default ``internal``, ADR-0027 decision 1's own
+    default when the operation omits it), overridden by every later
+    ``upsertRevision.metadata.sensitivity`` (same default when that revision
+    omits it) and then by every later ``changeSensitivity`` -- matching
+    ``KnowledgeItem.sensitivity``, which ``MigrationEngine`` sets at create and
+    replaces wholesale on each later operation that touches it, never merging
+    with what came before.
     """
     status_by_item: dict[str, str] = {}
     sensitivity_by_item: dict[str, str] = {}
@@ -556,7 +560,9 @@ def _final_status_and_sensitivity(
             item_id = op.get("itemId")
             if item_id not in item_ids:
                 continue
-            if op["op"] == "upsertRevision":
+            if op["op"] == "createItem":
+                sensitivity_by_item[item_id] = op.get("sensitivity", DEFAULT_SENSITIVITY.value)
+            elif op["op"] == "upsertRevision":
                 metadata = op["metadata"]
                 status_by_item[item_id] = metadata["status"]
                 sensitivity_by_item[item_id] = metadata.get(
