@@ -65,11 +65,11 @@ def test_the_documented_cli_command_reproduces_the_committed_baseline_report() -
     baseline, and what the sibling pin above drives, is the in-process
     ``run.main()`` call; nothing has ever driven the DOCUMENTED subprocess
     form and shown it produces the same bytes. This drives the real
-    subprocess (the exact argv the README's ``$`` line types, ``cwd=REPO_ROOT``
-    so the relative script and corpus paths resolve exactly as a reader typing
-    that line from the repo root would see) and pins its output against the
-    same committed baseline -- naming the instrument on both sides rather than
-    leaving the equivalence asserted prose.
+    subprocess (the same script, corpus and output flags as the README's
+    ``$`` line, without its ``uv run`` wrapper -- see that README's own reach
+    statement) and pins its output against the same committed baseline --
+    naming the instrument on both sides rather than leaving the equivalence
+    asserted prose.
     """
     with tempfile.TemporaryDirectory(prefix="theurian-eval-cli-baseline-check-") as out_name:
         result = subprocess.run(  # noqa: S603 - argv is module-owned, never user input
