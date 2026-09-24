@@ -450,23 +450,57 @@ Theurian cannot supply. The honest value is no value, and OKF is explicitly buil
 to be read that way: absence means unverified, and a consumer MUST NOT reject a
 concept for it (§5.3, §11).
 
-**The projection publishes no metadata the serve path withholds, and the bound
-is the served payload rather than a judgement.**
-`mcp/results.py::result_payload` is the single shape every result carries, and
-it emits `itemId`, `revisionId`, `title`, `excerpt`, `contentType`, `status`,
-**`trustLevel`** (from `revision.metadata.trust_level`), **`sensitivity`** (the
-item's current one, threaded in rather than read off the revision),
-`freshness.revisionCreatedAt` and a `sourceAnchors[]` of exactly `provider`,
-`sourceUri`, `repository`, `commitSha`, `filePath`, `lineStart` and `lineEnd`.
-So `theurian_trust_level`, `theurian_sensitivity`, `theurian_content_type` and
-the `generated.at` drawn from `created_at` are labels a caller of that deployment
-already receives on those same rows — the export changes the *container*, not the audience's view of
-a row. **The two anchor fields that payload does not carry, `blobSha` and
-`externalId`, are therefore not exported either**, which is what makes this a
-universal statement about the front matter rather than a claim with a carve-out
-in it. The two-corpora battery of decision 3 is what holds the other half:
-withheld rows cannot perturb any of these values, because they cannot reach the
-bundle at all.
+**What the projection may publish is bounded by two measured instruments, and
+five deliberate widenings are recorded against that bound.** An earlier draft of
+this paragraph said the projection publishes nothing the serve path withholds and
+cited `result_payload` alone. That was false of its own table — five of the rows
+above are not in that payload at all — and it named the wrong instrument for the
+body, which the export carries whole while `result_payload` carries an `excerpt`.
+Both halves are corrected here rather than softened.
+
+**The bound is the union of two payloads**, measured on 2026-09-24:
+
+- `mcp/results.py::result_payload` (the payload it builds, L88–120) is the single
+  shape every result carries, and it emits `itemId`, `revisionId`, `title`,
+  `excerpt`, `contentType`, `status`, **`trustLevel`** (from
+  `revision.metadata.trust_level`), **`sensitivity`** (the item's current one,
+  threaded in rather than read off the revision), `freshness.revisionCreatedAt`
+  and a `sourceAnchors[]` of exactly `provider`, `sourceUri`, `repository`,
+  `commitSha`, `filePath`, `lineStart` and `lineEnd`. Beside that instant the
+  same `freshness` object holds `isWithinValidity` and `ageDays`, and the payload
+  carries the three `SAFETY` labels and `raptorPath` when a forest was walked —
+  named here because a *bound* has to be the whole payload, where the
+  enumeration before it is the part this projection draws from.
+- **`knowledge.get`'s additions** (`mcp/tools.py` L2430–2442), which are exactly
+  four: **`body`** — the whole body, not the excerpt — **`relations`**, each
+  `{relationType, targetItemId, note}` and each gated by
+  `_relation_is_visible`, **`structured`**, and a conditional `integrity`.
+
+That union is what covers the parts of this projection that carry the most: the
+full body in the concept document or its sidecar, and `theurian_relations` with
+the `## Relations` section, whose triple is `knowledge.get`'s triple.
+
+**Five things decision 7 emits sit outside the union, and each is a recorded
+widening rather than an oversight:**
+
+| Widened | The justification, one line each |
+| :-- | :-- |
+| `type` ← `kind` | OKF's one required key (§4.1): a bundle cannot exist without it. It states the governance *class* of a row the recipient is already reading. |
+| `theurian_namespace` ← `namespace` | One of the six required fields, so a faithful re-proposal of an exported row needs it. It names internal structure — the same kind of exposure `owner` carries, and it is recorded here for the same reason. |
+| `tags` ← `labels` | Author-chosen strings on a row the recipient reads, and OKF's own cross-cutting categorization slot. A team that puts something sensitive in a label has put it on the row. |
+| `stale_after` ← `validTo` | The serve path publishes `freshness.isWithinValidity`, a boolean this instant produces; the bundle publishes the instant, which is strictly more than the boolean. Emitted because a bundle is read asynchronously, where a boolean computed at export time would be wrong by the time it is read. |
+| `theurian_owner` ← `owner` | Already carried as a residual under *Negative* — the recorded `owner` string travels, and a team that set it to a person's handle is exporting that handle. |
+
+**So the universal is: the projection publishes nothing outside that union except
+the five widenings above.** It is a statement a check can walk, which is the
+point of writing it this way; a pin walking decision 7's table against the union
+plus this table **lands with this pull request**, and *Compliance* carries it.
+
+**The two anchor fields that payload does not carry, `blobSha` and `externalId`,
+are therefore not exported either** — and neither of `knowledge.get`'s four
+additions carries them, so widening there was available and was not taken. The
+two-corpora battery of decision 3 holds the other half: withheld rows cannot
+perturb any of these values, because they cannot reach the bundle at all.
 
 **Dropped without a slot**, enumerated so that "lossy" is a list rather than an
 adjective:
@@ -475,7 +509,7 @@ adjective:
 | :-- | :-- |
 | The immutable revision history | The bundle carries the current revision only; `theurian_revision_id` names which. |
 | The `supersedes` chain | A `superseded` item is outside decision 3's population, so a `SUPERSEDES` edge never clears decision 4's both-endpoints gate. Nothing of the chain survives but the exported row's own `theurian_status` — which is `approved` for every exported row today, so in practice **no trace of supersession leaves the bundle at all**. |
-| `blobSha`, `externalId` | The two `sourceAnchor` fields `result_payload` does not publish (see below). Exporting them would put provenance in a portable artifact that the serve path withholds from the same rows. |
+| `blobSha`, `externalId` | The two `sourceAnchor` fields neither served payload publishes (see the bound above). Exporting them would put provenance in a portable artifact that the serve path withholds from the same rows. |
 | `contentSha256` | The exported body is a projection — it gains the generated `## Relations` section — so a digest of the canonical body sitting beside it would be unverifiable against the file it is on. A sidecar body *is* byte-identical, so the digest would be checkable there; it is still not emitted, so that one rule holds for every concept rather than for most of them. Available to a later mapping version if a consumer asks for it. |
 | `tenantId`, `aclGroup` | Fixed today and unenforceable otherwise: `application/migration_engine.py` refuses a revision naming a tenant other than `local` or an ACL group other than `default`. Exporting a field that carries no information invites a consumer to route on it. |
 | Evidence records | The evidence plane has no OKF counterpart; as prose it would read as content. |
@@ -651,6 +685,13 @@ Rests on enforcement that already holds:
   six-input scan at `ProposalService.accept` and
   [ADR-0034](0034-migrate-apply-enforces-the-merge.md)'s committed check beyond
   it.
+
+Landing with this pull request:
+
+- **A walk of decision 7's projection table against the disclosure bound** — the
+  union of `result_payload` and `knowledge.get`'s four additions, plus the five
+  recorded widenings. It goes RED when a row is added to the table that is in
+  neither, which is the failure the first draft of that paragraph shipped.
 
 Still owed, with the slice that will satisfy it:
 
