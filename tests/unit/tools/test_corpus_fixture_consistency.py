@@ -1,20 +1,26 @@
 """The frozen fixture corpus under ``tests/fixtures/eval/`` holds its own rules.
 
-Nothing else checks it. The three contract schemas state the shape of one file
-each and cannot reach across two (ADR-0036 decision 6), the S2 loader that would
-is not written, and ``schemas/migrations/migration.schema.json`` is applied by
-``theurian migrate`` against a project's own migrations, never against a fixture
-directory. So until S2 lands, an edited body whose ``contentSha256`` was not
-re-pinned, a judgement naming an item no migration creates, or a withheld item
-promoted into a ``relevant`` list would each be committed green.
+Most of them belong to the S2 loader (``tools/eval/corpus.py``), and this file
+consumes that loader rather than reimplementing it -- one implementation, two
+consumers (#794). Until that issue it carried its own copy of the loader's
+schema validation and eleven of its thirteen named refusals, with no equivalence
+pin, and the two had already drifted: the loader exempts a *disabled* query's
+judgement from the default-flag retrievability clauses (ADR-0036, "What the rule
+asks of a corpus editor", PR #793), and the copy here did not.
 
-Every rule below is a function returning the violations it found, and every one
-is asserted twice: once over the corpus as committed, and once over a deep copy
-carrying exactly the defect the rule exists to catch. A rule asserted only over
-a corpus that satisfies it is a rule that would also pass if it checked nothing.
-The one rule whose subject is a *pair* -- an ADR snapshot and the ``docs/adr/``
-file it was taken from -- is perturbed on the live half, because the frozen half
-is what the pin exists to keep unedited.
+What remains is what the loader does not carry -- the body bytes and their
+``contentSha256``, the absent-topic tokens, the abstention classes, the
+``corpora`` invariant, the ADR-snapshot link walk, and the manifest census
+derived without a build -- plus three rules that overlap the loader's semantics
+without consuming it, each carrying the equivalence pin the last section holds.
+
+Every rule is asserted twice: once over the corpus as committed, and once over a
+copy carrying exactly the defect the rule exists to catch. A converged rule's
+copy is written to a temporary directory and handed to ``load_corpus``, so its
+twin drives the shared implementation; a rule that stays here is perturbed in
+memory as before. The one rule whose subject is a *pair* -- an ADR snapshot and
+the ``docs/adr/`` file it was taken from -- is perturbed on the live half,
+because the frozen half is what the pin exists to keep unedited.
 """
 
 from __future__ import annotations
@@ -24,6 +30,7 @@ import hashlib
 import json
 import re
 import subprocess
+import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -32,17 +39,22 @@ from urllib.parse import urlparse
 
 import pytest
 import yaml
-from jsonschema import Draft202012Validator
-
-from theurian.application.authorization import ServingProfile
-from theurian.domain.enums import KnowledgeStatus, Sensitivity, may_disclose, may_surface
 
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+
+#: ``tools/eval`` is a flat script directory, not a package: this file puts it
+#: on ``sys.path`` itself, the route ``test_harness_pins.py`` and
+#: ``test_adr36_ratchet.py`` in this directory already take.
+_HARNESS_DIR = REPO_ROOT / "tools" / "eval"
+if str(_HARNESS_DIR) not in sys.path:
+    sys.path.insert(0, str(_HARNESS_DIR))
+
+import corpus as harness_corpus  # noqa: E402
+
 CORPUS_ROOT = REPO_ROOT / "tests" / "fixtures" / "eval"
 MIGRATIONS_DIR = CORPUS_ROOT / "migrations"
-EVAL_SCHEMAS = REPO_ROOT / "tools" / "eval" / "schemas"
 MIGRATION_SCHEMA = REPO_ROOT / "schemas" / "migrations" / "migration.schema.json"
 
 #: Item counts, statuses and sensitivities follow from the migration operations;
@@ -107,27 +119,10 @@ MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 #: the walk's corpus-exclusion comment states ("12 distinct paths, all tracked").
 ADR_SNAPSHOT_COUNT = 12
 
-#: What a default response may hold, and what a ``--include-unapproved`` build
-#: writes. Folded out of the shipped gates rather than spelled out: a status
-#: moving into or out of ``SURFACEABLE_STATUSES``, or a move of
-#: ``DEFAULT_CEILING``, must move this file's derivation with it, or the split
-#: below would go on describing the gate the corpus was authored against.
-DEFAULT_STATUSES = frozenset(
-    status.value for status in KnowledgeStatus if may_surface(status, include_unapproved=False)
-)
-INDEXED_STATUSES = frozenset(
-    status.value for status in KnowledgeStatus if may_surface(status, include_unapproved=True)
-)
-SERVED_SENSITIVITIES = frozenset(
-    level.value
-    for level in Sensitivity
-    if may_disclose(level, visible=ServingProfile().visible_sensitivities)
-)
-
 #: Which withheld members the response-equality battery tests, and which the
-#: manifest census tests instead (ADR-0036 decision 6). Derived at the rule from
-#: each member's final status and sensitivity; pinned here so a member changing
-#: side cannot do so silently. The manifest declares no coverage key --
+#: manifest census tests instead (ADR-0036 decision 6). Derived by the loader
+#: from each member's final status and sensitivity; pinned here so a member
+#: changing side cannot do so silently. The manifest declares no coverage key --
 #: ``migrationEntry`` is closed at ``{file, plane}`` -- by the same decision.
 GATE_TESTED_ITEMS = frozenset(
     {"security.draft-scan-hardening", "architecture.proposed-storage-redesign"}
@@ -155,6 +150,17 @@ WITHHELD_FINAL_STATES = {
     "testing.deprecated-flaky-quarantine": ("deprecated", "internal"),
 }
 
+#: Each way a replay can drift, the committed member that separates it from the
+#: real fold, and which of that member's revisions the drifted fold would report
+#: instead (0 the first, -1 the last). Read by the fold-equivalence pin's
+#: positive control: the member's final state differs from that revision's, so a
+#: pair drifted there disagrees rather than agreeing vacuously.
+FOLD_BRANCH_WITNESSES = {
+    "a fold that kept the first revision": ("domain.session-token-ttl-v1", 0),
+    "a fold that lost deprecateItem": ("testing.deprecated-flaky-quarantine", -1),
+    "a fold that lost changeSensitivity": ("domain.restricted-retention-exceptions", -1),
+}
+
 
 @dataclass(frozen=True)
 class Corpus:
@@ -170,10 +176,6 @@ class Corpus:
 def _yaml(path: Path) -> dict[str, Any]:
     loaded: dict[str, Any] = yaml.safe_load(path.read_text(encoding="utf-8"))
     return loaded
-
-
-def _schema(path: Path) -> Draft202012Validator:
-    return Draft202012Validator(json.loads(path.read_text(encoding="utf-8")))
 
 
 def _load() -> Corpus:
@@ -195,11 +197,6 @@ def _load() -> Corpus:
 
 CORPUS = _load()
 
-MANIFEST_VALIDATOR = _schema(EVAL_SCHEMAS / "manifest.schema.json")
-QUERIES_VALIDATOR = _schema(EVAL_SCHEMAS / "queries.schema.json")
-JUDGEMENTS_VALIDATOR = _schema(EVAL_SCHEMAS / "judgements.schema.json")
-MIGRATION_VALIDATOR = _schema(MIGRATION_SCHEMA)
-
 #: Every ``op`` the migration schema admits, read off its own discriminated
 #: union rather than listed here.
 SCHEMA_OPERATIONS = frozenset(
@@ -207,6 +204,52 @@ SCHEMA_OPERATIONS = frozenset(
     for definition in json.loads(MIGRATION_SCHEMA.read_text(encoding="utf-8"))["$defs"].values()
     if "const" in definition.get("properties", {}).get("op", {})
 )
+
+
+@pytest.fixture(scope="module")
+def loaded() -> harness_corpus.Corpus:
+    """The committed corpus as ``load_corpus`` returns it.
+
+    Every rule this file converged onto the loader has its positive assertion
+    here: the corpus loading at all is that assertion, since ``load_corpus``
+    raises on the first rule violated.
+    """
+    return harness_corpus.load_corpus(CORPUS_ROOT)
+
+
+# -- handing a perturbed copy to the loader -----------------------------------
+
+
+def _written(corpus: Corpus, root: Path) -> Path:
+    """``corpus`` serialised where ``load_corpus`` reads it.
+
+    The bodies are not written: the loader never opens a ``contentFile``
+    (``git grep -c "contentFile" tools/eval/corpus.py`` finds none), so a copy
+    that carries only the three contract files and the migrations is the whole
+    input to every rule it holds.
+    """
+    (root / "migrations").mkdir(parents=True, exist_ok=True)
+    for name, document in (
+        ("manifest.yaml", corpus.manifest),
+        ("queries.yaml", corpus.queries),
+        ("judgements.yaml", corpus.judgements),
+    ):
+        (root / name).write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    for name, document in corpus.migrations:
+        (root / "migrations" / name).write_text(
+            yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
+        )
+    return root
+
+
+def _refusal(corpus: Corpus, root: Path) -> harness_corpus.CorpusError:
+    with pytest.raises(harness_corpus.CorpusError) as excinfo:
+        harness_corpus.load_corpus(_written(corpus, root))
+    return excinfo.value
+
+
+def _accepted(corpus: Corpus, root: Path) -> harness_corpus.Corpus:
+    return harness_corpus.load_corpus(_written(corpus, root))
 
 
 # -- derivation helpers -------------------------------------------------------
@@ -225,7 +268,7 @@ def _creating_plane(corpus: Corpus) -> dict[str, str]:
 
     A migration the manifest does not declare reads as ``withheld`` here. That
     default is never reached by a corpus this module passes --
-    ``_manifest_order_violations`` reports declared-against-present as a
+    ``_manifest_listing_violations`` reports declared-against-present as a
     violation of its own -- and it leans that way rather than raising so one
     undeclared file cannot stop every other rule from reporting.
     """
@@ -255,6 +298,11 @@ def _replay(corpus: Corpus, wanted: set[str]) -> dict[str, dict[str, str]]:
     skipped, which is sound only for the nine the engine's own dispatch leaves
     item state alone for. ``_unmodelled_operation_violations`` is what holds the
     corpus inside that boundary; ``restoreItem`` is what it exists to catch.
+
+    The loader folds the same four in ``_final_status_and_sensitivity`` and
+    cannot be consumed here, because it has no plane filter and the ``clean``
+    census needs one. Kept as a second implementation under the equivalence pin
+    the last section holds, not as an unpinned copy (#794).
     """
     planes = _planes(corpus)
     state: dict[str, dict[str, str]] = {}
@@ -280,28 +328,32 @@ def _replay(corpus: Corpus, wanted: set[str]) -> dict[str, dict[str, str]]:
     return state
 
 
+def _loader_fold(
+    migrations: tuple[tuple[str, dict[str, Any]], ...],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """``_final_status_and_sensitivity`` over ``migrations``, every item it names."""
+    manifest = harness_corpus.Manifest(
+        contract_version=1,
+        corpus_id="fold-equivalence-pin",
+        k_values=(),
+        migrations=tuple(
+            harness_corpus.MigrationEntry(file=name, plane="visible") for name, _doc in migrations
+        ),
+        census={},
+        description=None,
+    )
+    documents = dict(migrations)
+    return harness_corpus._final_status_and_sensitivity(
+        manifest, documents, harness_corpus._all_item_ids(manifest, documents)
+    )
+
+
 def _derive_census(corpus: Corpus, wanted: set[str]) -> dict[str, Any]:
     state = _replay(corpus, wanted)
     return {
         "items": len(state),
         "byStatus": _tally([item["status"] for item in state.values()]),
         "bySensitivity": _tally([item["sensitivity"] for item in state.values()]),
-    }
-
-
-def _withheld_final_states(corpus: Corpus) -> dict[str, tuple[str, str]]:
-    """Each withheld-plane item's ``(status, sensitivity)`` after every migration.
-
-    Folded over both planes, not the withheld one alone: a later visible
-    migration moving a withheld item's state would be missed by a withheld-only
-    replay. ``_plane_dependency_violations`` forbids that direction today, so the
-    two agree on this corpus -- this does not depend on that rule holding.
-    """
-    creators = _creating_plane(corpus)
-    return {
-        item: (fields["status"], fields["sensitivity"])
-        for item, fields in _replay(corpus, {"visible", "withheld"}).items()
-        if creators.get(item) == "withheld"
     }
 
 
@@ -368,25 +420,7 @@ def _tracked_sources(paths: Iterable[str]) -> dict[str, str]:
     }
 
 
-# -- the rules ----------------------------------------------------------------
-
-
-def _schema_violations(corpus: Corpus) -> list[str]:
-    found = [
-        f"{name}: {error.json_path}"
-        for name, document, validator in (
-            ("manifest.yaml", corpus.manifest, MANIFEST_VALIDATOR),
-            ("queries.yaml", corpus.queries, QUERIES_VALIDATOR),
-            ("judgements.yaml", corpus.judgements, JUDGEMENTS_VALIDATOR),
-        )
-        for error in validator.iter_errors(document)
-    ]
-    found += [
-        f"{name}: {error.json_path}"
-        for name, document in corpus.migrations
-        for error in MIGRATION_VALIDATOR.iter_errors(document)
-    ]
-    return found
+# -- the rules the loader does not carry --------------------------------------
 
 
 def _content_hash_violations(corpus: Corpus) -> list[str]:
@@ -504,12 +538,18 @@ def _snapshot_link_violations(corpus: Corpus, live: Mapping[str, str]) -> list[s
     return found
 
 
-def _manifest_order_violations(corpus: Corpus) -> list[str]:
+def _manifest_listing_violations(corpus: Corpus) -> list[str]:
+    """What the manifest declares against what the directory holds.
+
+    Filename order is the loader's ``migration-order``; both clauses here are
+    outside its reach. It resolves each declared file under ``migrations/`` and
+    never lists the directory, so a committed migration the manifest omits is
+    invisible to it -- and no loader rule reads a filename against the
+    document's own ``id``.
+    """
     declared = [entry["file"] for entry in corpus.manifest["migrations"]]
     present = [name for name, _document in corpus.migrations]
     found = []
-    if declared != sorted(declared):
-        found.append("manifest order disagrees with ULID order")
     if declared != present:
         found.append("manifest names a different set of files than the directory holds")
     found += [
@@ -520,10 +560,15 @@ def _manifest_order_violations(corpus: Corpus) -> list[str]:
     return found
 
 
-def _plane_dependency_violations(corpus: Corpus) -> list[str]:
+def _visible_reference_violations(corpus: Corpus) -> list[str]:
     """A ``visible`` migration must not name an item only a ``withheld`` one creates.
 
-    The reverse is allowed and used once: the withheld draft carries a
+    Not the loader's ``visible-depends-on-withheld``, which reads a migration's
+    ``dependsOn`` against another migration's plane. This reads every key
+    through which an *operation* names an item, and the two populations do not
+    overlap: no fixture migration declares ``dependsOn`` at all.
+
+    The reverse direction is allowed and used once: the withheld draft carries a
     ``related_to`` edge onto a visible ADR. That direction is the affordance the
     corpus exists to exercise; this one would make the ``clean`` build fail.
     """
@@ -539,11 +584,6 @@ def _plane_dependency_violations(corpus: Corpus) -> list[str]:
     ]
 
 
-def _query_id_violations(corpus: Corpus) -> list[str]:
-    ids = [query["id"] for query in corpus.queries["queries"]]
-    return sorted({name for name in ids if ids.count(name) > 1})
-
-
 def _corpora_invariant_violations(corpus: Corpus) -> list[str]:
     return [
         query["id"]
@@ -552,71 +592,30 @@ def _corpora_invariant_violations(corpus: Corpus) -> list[str]:
     ]
 
 
-def _judgement_coverage_violations(corpus: Corpus) -> list[str]:
-    judged = [entry["queryId"] for entry in corpus.judgements["judgements"]]
-    declared = {query["id"] for query in corpus.queries["queries"]}
-    enabled = {query["id"] for query in corpus.queries["queries"] if query.get("enabled", True)}
-    duplicated = {name for name in judged if judged.count(name) > 1}
-    return (
-        [f"unjudged enabled query: {name}" for name in sorted(enabled - set(judged))]
-        + [f"judgement names no query: {name}" for name in sorted(set(judged) - declared)]
-        + [f"query judged twice: {name}" for name in sorted(duplicated)]
-    )
+def _uncreated_judged_item_violations(corpus: Corpus) -> list[str]:
+    """Every judged itemId -- ``relevant`` or ``forbidden`` -- is one a
+    ``createItem`` names.
 
-
-def _disjointness_violations(corpus: Corpus) -> list[str]:
-    return [
-        f"{entry['queryId']}: {sorted(overlap)}"
-        for entry in corpus.judgements["judgements"]
-        if (overlap := _ids(entry, "relevant") & _ids(entry, "forbidden"))
-    ]
-
-
-def _empty_judgement_violations(corpus: Corpus) -> list[str]:
-    return [
-        entry["queryId"]
-        for entry in corpus.judgements["judgements"]
-        if not (
-            entry.get("relevant")
-            or entry.get("forbidden")
-            or entry.get("evidence")
-            or entry.get("expectAbstention")
-        )
-    ]
-
-
-def _evidence_subsumption_violations(corpus: Corpus) -> list[str]:
-    found = []
-    for entry in corpus.judgements["judgements"]:
-        pairs = [(ref["sourceUri"], ref.get("filePath")) for ref in entry.get("evidence", [])]
-        found += [
-            f"{entry['queryId']}: duplicate {pair}"
-            for pair in sorted({p for p in pairs if pairs.count(p) > 1})
-        ]
-        bare = {uri for uri, path in pairs if path is None}
-        narrowed = {uri for uri, path in pairs if path is not None}
-        found += [f"{entry['queryId']}: subsumed {uri}" for uri in sorted(bare & narrowed)]
-    return found
-
-
-def _judged_item_violations(corpus: Corpus) -> list[str]:
+    Stronger than the loader's ``relevant-item-unknown`` on two axes, both
+    measured and pinned in the last section: that rule reads ``relevant`` alone,
+    and it keys on any operation's ``itemId`` rather than on ``createItem``.
+    """
     creators = _creating_plane(corpus)
-    found = []
-    for entry in corpus.judgements["judgements"]:
-        judged = _ids(entry, "relevant") | _ids(entry, "forbidden")
-        found += [
-            f"{entry['queryId']}: no migration creates {name}"
-            for name in sorted(judged - set(creators))
-        ]
-        found += [
-            f"{entry['queryId']}: relevant item {name} is not visible-plane"
-            for name in sorted(_ids(entry, "relevant"))
-            if creators.get(name, "withheld") != "visible"
-        ]
-    return found
+    return [
+        f"{entry['queryId']}: no migration creates {name}"
+        for entry in corpus.judgements["judgements"]
+        for name in sorted((_ids(entry, "relevant") | _ids(entry, "forbidden")) - set(creators))
+    ]
 
 
 def _census_violations(corpus: Corpus) -> list[str]:
+    """The manifest census against the migrations, with no build.
+
+    ``corpus_build.py``'s ``census-mismatch`` asks the same question of a real
+    ``index build``, which unit weight cannot reach; ``load_corpus`` asks it of
+    nothing at all -- it parses ``census`` into the manifest and never compares
+    it.
+    """
     found = []
     for plane, wanted in (("full", {"visible", "withheld"}), ("clean", {"visible"})):
         derived = _derive_census(corpus, wanted)
@@ -629,31 +628,25 @@ def _census_violations(corpus: Corpus) -> list[str]:
     return found
 
 
-def _coverage_split_violations(corpus: Corpus) -> list[str]:
-    """Derive which instrument tests each withheld member, and compare the pins.
+def _coverage_split_violations(
+    coverage: tuple[harness_corpus.WithheldItemCoverage, ...],
+) -> list[str]:
+    """Compare the loader's own coverage classification against the pinned split.
 
     ``gate`` is a member the ``--include-unapproved`` build indexes and a default
     query refuses; ``census`` is a member excluded before the index, by status or
-    by the serving ceiling. Both are computed from the member's own final state,
-    never read from a declared key.
+    by the serving ceiling. Which is which is ``load_corpus``'s to decide
+    (``_withheld_item_coverage``); what is pinned here is *who lands where*,
+    which nothing in the fixture declares.
 
-    The two are complementary by construction, so disjointness is asserted
-    nowhere: no input satisfies both predicates, which makes such an assertion
-    one that cannot fail. What the union can and does catch is a member in
-    *neither* class -- approved and within the ceiling, hence indexed and
-    ungated, the state ``_surfacing_withheld_violations`` names outright.
+    The two are complementary by construction -- ``is_gate_tested`` is one
+    boolean -- so disjointness is asserted nowhere. A member in neither class,
+    approved and within the ceiling, is the state the loader refuses outright
+    with ``withheld-item-disclosable``, and the twin for that refusal is in the
+    converged section above.
     """
-    states = _withheld_final_states(corpus)
-    gate = {
-        item
-        for item, (status, sensitivity) in states.items()
-        if status in INDEXED_STATUSES - DEFAULT_STATUSES and sensitivity in SERVED_SENSITIVITIES
-    }
-    census = {
-        item
-        for item, (status, sensitivity) in states.items()
-        if status not in INDEXED_STATUSES or sensitivity not in SERVED_SENSITIVITIES
-    }
+    gate = {item.item_id for item in coverage if item.is_gate_tested}
+    census = {item.item_id for item in coverage if not item.is_gate_tested}
     found = []
     if gate != GATE_TESTED_ITEMS:
         found.append(f"gate-tested: derived {sorted(gate)}, pinned {sorted(GATE_TESTED_ITEMS)}")
@@ -661,44 +654,134 @@ def _coverage_split_violations(corpus: Corpus) -> list[str]:
         found.append(
             f"census-tested: derived {sorted(census)}, pinned {sorted(CENSUS_TESTED_ITEMS)}"
         )
-    if unclassified := set(states) - gate - census:
-        found.append(f"withheld member in neither class: {sorted(unclassified)}")
     return found
 
 
-def _surfacing_withheld_violations(corpus: Corpus) -> list[str]:
-    return [
-        f"{item}: ends {status}/{sensitivity}, which a default response may hold"
-        for item, (status, sensitivity) in sorted(_withheld_final_states(corpus).items())
-        if status in DEFAULT_STATUSES and sensitivity in SERVED_SENSITIVITIES
-    ]
+# -- the corpus as committed satisfies every rule the loader holds ------------
 
 
-def _relevant_state_violations(corpus: Corpus) -> list[str]:
-    enabled = {query["id"] for query in corpus.queries["queries"] if query.get("enabled", True)}
-    states = _replay(corpus, {"visible", "withheld"})
-    found = []
-    for entry in corpus.judgements["judgements"]:
-        if entry["queryId"] not in enabled:
-            continue
-        for item in sorted(_ids(entry, "relevant")):
-            state = states.get(item, {})
-            status = state.get("status", "uncreated")
-            sensitivity = state.get("sensitivity", "uncreated")
-            if status not in DEFAULT_STATUSES:
-                found.append(f"{entry['queryId']}: relevant item {item} ends status {status}")
-            if sensitivity not in SERVED_SENSITIVITIES:
-                found.append(
-                    f"{entry['queryId']}: relevant item {item} ends sensitivity {sensitivity}"
-                )
-    return found
+def test_the_committed_corpus_loads_through_the_loader_that_owns_its_rules(
+    loaded: harness_corpus.Corpus,
+) -> None:
+    """The positive half of every rule #794 converged onto ``load_corpus``.
+
+    Schema validation, migration order and its topology, query and judgement
+    identity and coverage, disjointness, non-emptiness, evidence subsumption,
+    relevant-item existence and retrievability, and the withheld-plane
+    disclosability rule are all one refusal away from this call: it raises on
+    the first rule violated. Asserting each separately here would assert the
+    same call fourteen times.
+    """
+    assert len(loaded.queries) == len(CORPUS.queries["queries"])
+    assert len(loaded.judgements) == len(CORPUS.judgements["judgements"])
 
 
-# -- the corpus as committed satisfies every rule -----------------------------
+def test_an_unperturbed_copy_of_the_corpus_still_loads(tmp_path: Path) -> None:
+    """The control every twin below rests on: a refusal must come from the
+    perturbation, not from how ``_written`` serialises the corpus. Without this,
+    a serialiser that produced nonsense would make every twin pass.
+    """
+    written = _accepted(CORPUS, tmp_path)
+
+    assert written.queries == harness_corpus.load_corpus(CORPUS_ROOT).queries
+    assert written.withheld_coverage == harness_corpus.load_corpus(CORPUS_ROOT).withheld_coverage
 
 
-def test_every_contract_document_and_migration_validates_against_its_schema() -> None:
-    assert _schema_violations(CORPUS) == []
+def test_each_withheld_member_ends_in_the_state_its_coverage_follows_from(
+    loaded: harness_corpus.Corpus,
+) -> None:
+    """The seven states the split below is derived from, said rather than implied.
+
+    Two are gated at query time, three are retired by status and two sit above
+    the serving ceiling -- and the last two of those seven reach their state only
+    through ``deprecateItem`` and ``changeSensitivity`` in a later migration, so
+    a loader fold that folded revisions alone would report them approved and
+    internal.
+    """
+    states = {
+        item.item_id: (item.final_status, item.final_sensitivity)
+        for item in loaded.withheld_coverage
+    }
+
+    assert states == WITHHELD_FINAL_STATES
+
+
+def test_the_withheld_plane_splits_into_gate_tested_and_census_tested_members(
+    loaded: harness_corpus.Corpus,
+) -> None:
+    """ADR-0036 decision 6: which instrument covers a withheld member is derived.
+
+    The response-equality battery is vacuous for a member no build indexes: both
+    corpora answer identically because neither holds the row, and the comparison
+    would pass with the gate deleted. Only the two members the
+    ``--include-unapproved`` build does index test the gate; the other five are
+    tested by the manifest census, which counts them applied; that they are not
+    indexed is the S2 loader's chunk comparison (PR #780), not this file's.
+    Nothing in the fixture declares that split, so without this pin a member
+    could change side -- a draft approved, a sensitivity lowered -- and the
+    battery would go on reporting coverage it no longer has.
+    """
+    assert _coverage_split_violations(loaded.withheld_coverage) == []
+
+
+def test_the_disabled_historical_query_judges_superseded_items_and_the_corpus_loads(
+    loaded: harness_corpus.Corpus,
+) -> None:
+    """The rider-b exemption, exercised rather than asserted (#793, #794).
+
+    ``q-hist-ttl-evolution`` asks how the TTL policy changed over time, so the
+    superseded chain is its answer and not its error. It is disabled, the
+    harness skips it (Phase D), and the loader's enabled scoping is what lets
+    the judgement stay committed instead of being deleted to satisfy a rule it
+    was never in. This file used to apply its own copy of that rule to every
+    judgement, unscoped, and the two disagreed until #794.
+
+    The first assertion is the exemption's positive control: if no relevant item
+    of that query were unretrievable, the corpus loading would say nothing about
+    the scoping.
+    """
+    documents = dict(CORPUS.migrations)
+    status, _sensitivity = harness_corpus._final_status_and_sensitivity(
+        loaded.manifest, documents, harness_corpus._all_item_ids(loaded.manifest, documents)
+    )
+    judgement = loaded.judgement_for("q-hist-ttl-evolution")
+    assert judgement is not None
+
+    unretrievable = {
+        item.item_id
+        for item in judgement.relevant
+        if status[item.item_id] not in harness_corpus.DEFAULT_SURFACEABLE_STATUSES
+    }
+
+    assert unretrievable == {"domain.session-token-ttl-v1", "domain.session-token-ttl-v2"}
+
+
+def test_the_loader_admits_a_disabled_querys_judgement_of_a_withheld_item(
+    tmp_path: Path,
+) -> None:
+    """The #794 divergence itself, resolved by consumption.
+
+    A disabled query judging a withheld-plane item passes ``load_corpus`` and
+    failed this file's own copy of the plane rule, which applied it to every
+    judgement. The copy is gone; the loader's scoping is what this corpus is now
+    held to, and this is the shape that used to separate them.
+    """
+    judgements = copy.deepcopy(CORPUS.judgements)
+    historical = next(
+        entry for entry in judgements["judgements"] if entry["queryId"] == "q-hist-ttl-evolution"
+    )
+    historical["relevant"].append({"itemId": "domain.rejected-credential-cache"})
+
+    written = _accepted(replace(CORPUS, judgements=judgements), tmp_path)
+
+    judgement = written.judgement_for("q-hist-ttl-evolution")
+    assert judgement is not None
+    assert harness_corpus.JudgedItem(item_id="domain.rejected-credential-cache") in (
+        judgement.relevant
+    )
+
+
+# -- the corpus as committed satisfies every rule that stays here -------------
 
 
 def test_every_content_sha256_matches_the_body_bytes_committed_beside_it() -> None:
@@ -708,28 +791,26 @@ def test_every_content_sha256_matches_the_body_bytes_committed_beside_it() -> No
 def test_no_migration_document_declares_a_plane() -> None:
     """ADR-0036 decision 6: the plane lives in the manifest and nowhere else.
 
-    ``_schema_violations`` above runs ``MIGRATION_VALIDATOR`` over these very
-    documents and its root carries ``additionalProperties: false``, so a
-    ``plane`` key here is already refused -- as a bare ``json_path``, by a rule
-    that would report the same way for a typo. This one names the key, says
+    The migration schema's root carries ``additionalProperties: false``, so the
+    loader already refuses a ``plane`` key here -- as a bare ``json_path``, by a
+    rule that would report the same way for a typo. This one names the key, says
     where the plane belongs instead, and is what still holds the decision if
-    that root is ever reopened.
+    that root is ever reopened. The two are pinned as agreeing in the last
+    section.
     """
     assert _plane_key_violations(CORPUS) == []
 
 
-def test_the_manifest_lists_every_migration_once_in_ulid_order() -> None:
-    assert _manifest_order_violations(CORPUS) == []
+def test_the_manifest_declares_exactly_the_migrations_the_directory_holds() -> None:
+    assert _manifest_listing_violations(CORPUS) == []
 
 
 def test_every_operation_is_one_this_modules_replay_folds_or_may_safely_skip() -> None:
     """``_replay`` is a four-operation fold, and nine more are safe to skip.
 
     The schema admits fourteen. ``restoreItem`` is the one in neither set: it
-    sets ``approved``, so a corpus carrying one would have a census, a withheld
-    member's final state and a coverage split derived from a status the real
-    apply contradicts -- and every rule here reads that fold, so all of them
-    would agree with each other and with nothing else.
+    sets ``approved``, so a corpus carrying one would have a census and a
+    coverage split derived from a status the real apply contradicts.
     """
     assert _unmodelled_operation_violations(CORPUS) == []
 
@@ -751,11 +832,12 @@ def test_restore_item_is_the_only_operation_this_module_declines_to_classify() -
 def test_every_committed_body_is_named_by_exactly_one_migration() -> None:
     """A ``.md`` under ``knowledge/`` that no ``contentFile`` names is checked by nothing.
 
-    The docs link walk skips the whole prefix and ``_content_hash_violations``
-    keys off ``contentFile``, so an orphan body would be committed, shipped and
-    read by no rule at all. The other two directions matter for the same reason
-    in reverse: a ``contentFile`` naming nothing breaks the apply, and two
-    migrations naming one body make a single edit move two revisions.
+    The docs link walk skips the whole prefix, ``_content_hash_violations`` keys
+    off ``contentFile`` and the loader never opens one at all, so an orphan body
+    would be committed, shipped and read by no rule. The other two directions
+    matter for the same reason in reverse: a ``contentFile`` naming nothing
+    breaks the apply, and two migrations naming one body make a single edit move
+    two revisions.
     """
     assert _body_file_violations(CORPUS) == []
 
@@ -787,16 +869,12 @@ def test_every_unknown_class_query_is_judged_by_abstention_and_only_those() -> N
     assert _abstention_class_violations(CORPUS) == []
 
 
-def test_no_visible_migration_depends_on_a_withheld_one() -> None:
+def test_no_visible_migration_references_an_item_only_a_withheld_one_creates() -> None:
     """The ``clean`` build applies the visible plane alone; a visible migration
     naming a withheld item would make that build fail outright, which is a
     corpus defect and not a retrieval measurement.
     """
-    assert _plane_dependency_violations(CORPUS) == []
-
-
-def test_no_two_queries_share_an_id() -> None:
-    assert _query_id_violations(CORPUS) == []
+    assert _visible_reference_violations(CORPUS) == []
 
 
 def test_every_enabled_query_runs_against_both_corpora() -> None:
@@ -807,38 +885,8 @@ def test_every_enabled_query_runs_against_both_corpora() -> None:
     assert _corpora_invariant_violations(CORPUS) == []
 
 
-def test_every_enabled_query_has_exactly_one_judgement() -> None:
-    assert _judgement_coverage_violations(CORPUS) == []
-
-
-def test_no_judgement_both_requires_and_forbids_an_item() -> None:
-    assert _disjointness_violations(CORPUS) == []
-
-
-def test_no_judgement_entry_judges_nothing() -> None:
-    """``judgementEntry`` requires ``queryId`` alone, so an entry carrying none
-    of the four judging fields validates while asserting nothing (ADR-0036,
-    Compliance).
-    """
-    assert _empty_judgement_violations(CORPUS) == []
-
-
-def test_no_evidence_entry_subsumes_another() -> None:
-    """``filePath`` narrows a ``sourceUri``, so ``(u, absent)`` standing beside
-    ``(u, f)`` lets one cited anchor satisfy both entries and score twice,
-    inflating evidence precision (ADR-0036, Compliance).
-    """
-    assert _evidence_subsumption_violations(CORPUS) == []
-
-
-def test_every_judged_item_exists_and_every_relevant_one_is_visible_plane() -> None:
-    """A withheld item may be named in ``forbidden`` and never in ``relevant``.
-
-    A ``relevant`` withheld item would ask the ``clean`` corpus to return a
-    document it never held, so every equality query would score a miss that is
-    not a retrieval defect.
-    """
-    assert _judged_item_violations(CORPUS) == []
+def test_every_judged_item_is_one_a_create_item_operation_names() -> None:
+    assert _uncreated_judged_item_violations(CORPUS) == []
 
 
 def test_the_manifest_census_agrees_with_the_migrations_it_declares() -> None:
@@ -857,60 +905,6 @@ def test_the_census_omits_every_zero_count_label() -> None:
     ]
 
     assert 0 not in counts
-
-
-def test_each_withheld_member_ends_in_the_state_its_coverage_follows_from() -> None:
-    """The seven states the split below is derived from, said rather than implied.
-
-    Two are gated at query time, three are retired by status and two sit above
-    the serving ceiling -- and the last two of those seven reach their state only
-    through ``deprecateItem`` and ``changeSensitivity`` in a later migration, so
-    a replay that folded revisions alone would report them approved and internal.
-    """
-    assert _withheld_final_states(CORPUS) == WITHHELD_FINAL_STATES
-
-
-def test_the_withheld_plane_splits_into_gate_tested_and_census_tested_members() -> None:
-    """ADR-0036 decision 6: which instrument covers a withheld member is derived.
-
-    The response-equality battery is vacuous for a member no build indexes: both
-    corpora answer identically because neither holds the row, and the comparison
-    would pass with the gate deleted. Only the two members the
-    ``--include-unapproved`` build does index test the gate; the other five are
-    tested by the manifest census, which counts them applied; that they are not
-    indexed is the S2 loader's chunk comparison (PR #780), not this file's.
-    Nothing in the fixture declares that split, so without this pin a member
-    could change side -- a draft approved, a sensitivity lowered -- and the
-    battery would go on reporting coverage it no longer has.
-    """
-    assert _coverage_split_violations(CORPUS) == []
-
-
-def test_no_withheld_member_ends_in_a_state_a_default_response_may_hold() -> None:
-    """The invariant the whole two-corpus design rests on (ADR-0036 decision 6).
-
-    A withheld member that ended approved and within the serving ceiling would be
-    written into ``full`` and refused by nothing at query time, so ``full`` would
-    return a row ``clean`` never held and every equality query reaching it would
-    fail by construction -- a corpus defect read as a retrieval defect. It is
-    also what makes the census class above exhaustive: a member outside the gate
-    class is excluded before the index only while this holds.
-    """
-    assert _surfacing_withheld_violations(CORPUS) == []
-
-
-def test_every_enabled_query_judges_only_items_a_default_response_may_return() -> None:
-    """A ``relevant`` item the default gate withholds scores a miss on every run.
-
-    The battery runs at default flags, so Recall@k for such a judgement is zero
-    against both corpora however well retrieval works, and the metric measures
-    the judgement rather than the retriever. Both axes of the default gate, not
-    one: a visible item reclassified above the serving ceiling is withheld just
-    as completely as an unapproved one, and reclassifying is the likelier edit.
-    Strengthens the visible-plane rule above, which admits a visible item of any
-    status and any sensitivity.
-    """
-    assert _relevant_state_violations(CORPUS) == []
 
 
 def test_every_source_anchor_names_a_file_this_repository_still_tracks() -> None:
@@ -947,32 +941,21 @@ def test_every_adr_snapshot_links_only_where_its_live_source_still_links() -> No
     assert _snapshot_link_violations(CORPUS, live) == []
 
 
-def test_the_disabled_historical_query_may_judge_superseded_items_relevant() -> None:
-    """Why the rule above is scoped to enabled queries rather than to all of them.
-
-    ``q-hist-ttl-evolution`` asks how the TTL policy changed over time, so the
-    superseded chain is its answer and not its error. It is disabled, the harness
-    skips it (Phase D), and the scope is what lets the judgement stay committed
-    instead of being deleted to satisfy a rule it was never in.
-    """
-    states = _replay(CORPUS, {"visible", "withheld"})
-    historical = next(
-        entry
-        for entry in CORPUS.judgements["judgements"]
-        if entry["queryId"] == "q-hist-ttl-evolution"
-    )
-    assert {
-        item
-        for item in _ids(historical, "relevant")
-        if states[item]["status"] not in DEFAULT_STATUSES
-    } == {"domain.session-token-ttl-v1", "domain.session-token-ttl-v2"}
-
-    judged = {violation.split(":")[0] for violation in _relevant_state_violations(CORPUS)}
-
-    assert "q-hist-ttl-evolution" not in judged
+# -- each converged rule, driven RED through the loader -----------------------
 
 
-# -- each rule, over a copy carrying the defect it exists to catch ------------
+def _restated(item: str, **fields: str) -> Corpus:
+    """A copy whose every revision of ``item`` carries different metadata."""
+    migrations = copy.deepcopy(list(CORPUS.migrations))
+    for _name, document in migrations:
+        for operation in document["operations"]:
+            if operation["op"] == "upsertRevision" and operation["itemId"] == item:
+                operation["metadata"].update(fields)
+    return replace(CORPUS, migrations=tuple(migrations))
+
+
+def _perturbed_migrations() -> list[tuple[str, dict[str, Any]]]:
+    return copy.deepcopy(list(CORPUS.migrations))
 
 
 def _revisions(migrations: list[tuple[str, dict[str, Any]]]) -> list[dict[str, Any]]:
@@ -984,19 +967,242 @@ def _revisions(migrations: list[tuple[str, dict[str, Any]]]) -> list[dict[str, A
     ]
 
 
-def test_the_schema_rule_catches_a_query_id_the_pattern_refuses() -> None:
+def test_the_loader_refuses_a_query_id_the_schema_pattern_forbids(tmp_path: Path) -> None:
     queries = copy.deepcopy(CORPUS.queries)
     queries["queries"][0]["id"] = "Q-Uppercase"
 
-    assert _schema_violations(replace(CORPUS, queries=queries)) != []
+    assert _refusal(replace(CORPUS, queries=queries), tmp_path).rule == "schema:queries.yaml"
 
 
-def test_the_schema_rule_catches_a_migration_missing_its_api_version() -> None:
-    name, document = CORPUS.migrations[0]
-    broken = copy.deepcopy(document)
-    del broken["apiVersion"]
+def test_the_loader_refuses_a_migration_missing_its_api_version(tmp_path: Path) -> None:
+    migrations = _perturbed_migrations()
+    name, document = migrations[0]
+    del document["apiVersion"]
 
-    assert _schema_violations(replace(CORPUS, migrations=((name, broken),))) != []
+    refusal = _refusal(replace(CORPUS, migrations=tuple(migrations)), tmp_path)
+
+    assert refusal.rule == f"schema:migrations/{name}"
+
+
+def test_the_loader_refuses_a_manifest_listing_two_migrations_out_of_order(
+    tmp_path: Path,
+) -> None:
+    manifest = copy.deepcopy(CORPUS.manifest)
+    manifest["migrations"][0], manifest["migrations"][1] = (
+        manifest["migrations"][1],
+        manifest["migrations"][0],
+    )
+
+    assert _refusal(replace(CORPUS, manifest=manifest), tmp_path).rule == "migration-order"
+
+
+def test_the_loader_refuses_a_duplicated_query_id(tmp_path: Path) -> None:
+    queries = copy.deepcopy(CORPUS.queries)
+    queries["queries"].append(copy.deepcopy(queries["queries"][0]))
+
+    assert _refusal(replace(CORPUS, queries=queries), tmp_path).rule == "duplicate-query-id"
+
+
+def test_the_loader_refuses_an_enabled_query_nobody_judged(tmp_path: Path) -> None:
+    judgements = copy.deepcopy(CORPUS.judgements)
+    del judgements["judgements"][0]
+
+    refusal = _refusal(replace(CORPUS, judgements=judgements), tmp_path)
+
+    assert refusal.rule == "query-missing-judgement"
+
+
+def test_the_loader_refuses_a_judgement_naming_no_declared_query(tmp_path: Path) -> None:
+    judgements = copy.deepcopy(CORPUS.judgements)
+    judgements["judgements"][0]["queryId"] = "q-never-declared"
+
+    refusal = _refusal(replace(CORPUS, judgements=judgements), tmp_path)
+
+    assert refusal.rule == "judgement-unknown-query"
+
+
+def test_the_loader_refuses_one_query_judged_twice(tmp_path: Path) -> None:
+    judgements = copy.deepcopy(CORPUS.judgements)
+    judgements["judgements"].append(copy.deepcopy(judgements["judgements"][0]))
+
+    refusal = _refusal(replace(CORPUS, judgements=judgements), tmp_path)
+
+    assert refusal.rule == "duplicate-judgement-query-id"
+
+
+def test_the_loader_refuses_an_item_both_required_and_forbidden(tmp_path: Path) -> None:
+    judgements = copy.deepcopy(CORPUS.judgements)
+    entry = judgements["judgements"][0]
+    entry["forbidden"] = [copy.deepcopy(entry["relevant"][0])]
+
+    refusal = _refusal(replace(CORPUS, judgements=judgements), tmp_path)
+
+    assert refusal.rule == "relevant-forbidden-overlap"
+
+
+def test_the_loader_refuses_an_entry_carrying_only_a_query_id(tmp_path: Path) -> None:
+    """``judgementEntry`` requires ``queryId`` alone, so an entry carrying none
+    of the four judging fields validates while asserting nothing (ADR-0036,
+    Compliance).
+    """
+    judgements = copy.deepcopy(CORPUS.judgements)
+    judgements["judgements"][0] = {"queryId": judgements["judgements"][0]["queryId"]}
+
+    assert _refusal(replace(CORPUS, judgements=judgements), tmp_path).rule == "empty-judgement"
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    [
+        pytest.param(
+            {"sourceUri": "https://github.com/theurian/theurian.git"},
+            "evidence-subsumption",
+            id="subsumes",
+        ),
+        pytest.param(
+            {
+                "sourceUri": "https://github.com/theurian/theurian.git",
+                "filePath": "docs/adr/0006-immutable-revisions-and-optimistic-concurrency.md",
+            },
+            "schema:judgements.yaml",
+            id="duplicate-pair",
+        ),
+    ],
+)
+def test_the_loader_refuses_an_entry_that_scores_one_anchor_twice(
+    tmp_path: Path, extra: dict[str, str], expected: str
+) -> None:
+    """``filePath`` narrows a ``sourceUri``, so ``(u, absent)`` standing beside
+    ``(u, f)`` lets one cited anchor satisfy both entries and score twice,
+    inflating evidence precision (ADR-0036, Compliance). The byte-identical
+    second entry is refused a layer earlier, by ``uniqueItems`` on the
+    judgements schema's own ``evidence`` array -- which is why the two cases
+    expect different rule tags.
+    """
+    judgements = copy.deepcopy(CORPUS.judgements)
+    entry = next(e for e in judgements["judgements"] if e["queryId"] == "q-optimistic-concurrency")
+    entry["evidence"].append(extra)
+
+    assert _refusal(replace(CORPUS, judgements=judgements), tmp_path).rule == expected
+
+
+def test_the_loader_refuses_a_relevant_item_no_migration_names(tmp_path: Path) -> None:
+    judgements = copy.deepcopy(CORPUS.judgements)
+    judgements["judgements"][0]["relevant"][0]["itemId"] = "architecture.never-created"
+
+    refusal = _refusal(replace(CORPUS, judgements=judgements), tmp_path)
+
+    assert refusal.rule == "relevant-item-unknown"
+
+
+def test_the_loader_refuses_a_withheld_item_promoted_into_relevant(tmp_path: Path) -> None:
+    """A ``relevant`` withheld item would ask the ``clean`` corpus to return a
+    document it never held, so every equality query would score a miss that is
+    not a retrieval defect. A withheld item may still be named in ``forbidden``.
+    """
+    judgements = copy.deepcopy(CORPUS.judgements)
+    judgements["judgements"][0]["relevant"][0]["itemId"] = "domain.rejected-credential-cache"
+
+    refusal = _refusal(replace(CORPUS, judgements=judgements), tmp_path)
+
+    assert refusal.rule == "relevant-item-unretrievable"
+
+
+def test_the_loader_refuses_an_enabled_query_judging_a_superseded_item(tmp_path: Path) -> None:
+    judgements = copy.deepcopy(CORPUS.judgements)
+    entry = next(e for e in judgements["judgements"] if e["queryId"] == "q-sqlite-derived")
+    entry["relevant"][0]["itemId"] = "domain.session-token-ttl-v1"
+
+    refusal = _refusal(replace(CORPUS, judgements=judgements), tmp_path)
+
+    assert refusal.rule == "relevant-item-unretrievable"
+    assert "superseded" in str(refusal)
+
+
+def test_the_loader_refuses_a_relevant_item_raised_above_the_ceiling(tmp_path: Path) -> None:
+    """The axis the status conjunct alone does not reach.
+
+    Reclassifying a visible, approved item to ``confidential`` leaves it
+    ``approved`` and visible-plane, so the plane clause, the status clause and
+    the withheld-member rules all stay green -- and every enabled query naming
+    it scores Recall@k of zero against both corpora for good.
+    """
+    refusal = _refusal(
+        _restated("architecture.sqlite-is-a-derived-artifact", sensitivity="confidential"),
+        tmp_path,
+    )
+
+    assert refusal.rule == "relevant-item-unretrievable"
+    assert "confidential" in str(refusal)
+
+
+def test_the_loader_refuses_the_historical_judgement_once_its_query_is_enabled(
+    tmp_path: Path,
+) -> None:
+    """The rider-b exemption is scoped to ``enabled: false``, not a blanket skip.
+
+    The committed judgement that loads while ``q-hist-ttl-evolution`` is
+    disabled must be refused the moment it is enabled, or the scoping widened
+    into no check at all. ``queries.schema.json`` refuses a ``historical`` query
+    with ``enabled: true``, so the control moves the class to ``unknown``, which
+    carries no such constraint; the judgement and its superseded items are the
+    committed ones.
+    """
+    queries = copy.deepcopy(CORPUS.queries)
+    historical = next(q for q in queries["queries"] if q["id"] == "q-hist-ttl-evolution")
+    historical["class"] = "unknown"
+    historical["enabled"] = True
+
+    refusal = _refusal(replace(CORPUS, queries=queries), tmp_path)
+
+    assert refusal.rule == "relevant-item-unretrievable"
+    assert "superseded" in str(refusal)
+
+
+@pytest.mark.parametrize(
+    ("item", "fields"),
+    [
+        pytest.param("security.draft-scan-hardening", {"status": "approved"}, id="draft-approved"),
+        pytest.param(
+            "security.confidential-token-rotation",
+            {"sensitivity": "internal"},
+            id="lowered-into-the-ceiling",
+        ),
+    ],
+)
+def test_the_loader_refuses_a_withheld_member_a_default_response_may_hold(
+    tmp_path: Path, item: str, fields: dict[str, str]
+) -> None:
+    """The invariant the whole two-corpus design rests on (ADR-0036 decision 6).
+
+    A withheld member that ended approved and within the serving ceiling would
+    be written into ``full`` and refused by nothing at query time, so ``full``
+    would return a row ``clean`` never held and every equality query reaching it
+    would fail by construction -- a corpus defect read as a retrieval defect. It
+    is also what keeps the coverage split exhaustive: such a member is in
+    neither class, and the loader refuses it rather than labelling it.
+    """
+    refusal = _refusal(_restated(item, **fields), tmp_path)
+
+    assert refusal.rule == "withheld-item-disclosable"
+
+
+def test_the_split_pin_catches_a_member_changing_side_without_becoming_disclosable(
+    tmp_path: Path,
+) -> None:
+    """What the loader accepts and only the pinned split refuses.
+
+    A withheld draft restated ``rejected`` is still excluded from every index,
+    so no loader rule fires -- but it has moved from the gate class to the
+    census class, and the response-equality battery silently loses one of the
+    two members that give it teeth.
+    """
+    written = _accepted(_restated("security.draft-scan-hardening", status="rejected"), tmp_path)
+
+    assert _coverage_split_violations(written.withheld_coverage) != []
+
+
+# -- each rule that stays here, over a copy carrying its own defect -----------
 
 
 def test_the_content_hash_rule_catches_a_body_edited_after_it_was_pinned() -> None:
@@ -1007,24 +1213,18 @@ def test_the_content_hash_rule_catches_a_body_edited_after_it_was_pinned() -> No
     assert _content_hash_violations(replace(CORPUS, bodies=bodies)) != []
 
 
-def test_the_plane_rule_catches_a_plane_written_into_a_migration() -> None:
-    name, document = CORPUS.migrations[0]
-    perturbed = copy.deepcopy(document)
-    perturbed["plane"] = "withheld"
-
-    assert _plane_key_violations(replace(CORPUS, migrations=((name, perturbed),))) != []
-
-
-def test_the_operation_rule_catches_a_restore_the_replay_folds_as_if_it_were_absent() -> None:
+def test_the_operation_rule_catches_a_restore_the_replay_folds_as_if_it_were_absent(
+    tmp_path: Path,
+) -> None:
     """Three facts, and the rule exists because of the first two.
 
-    The schema admits ``restoreItem`` with nothing but an ``itemId``, so no
-    contract document refuses the perturbation below. ``_replay``'s ``case _``
+    The schema admits ``restoreItem`` with nothing but an ``itemId``, so the
+    loader accepts the perturbation below outright. ``_replay``'s ``case _``
     then drops it, and the fold goes on reporting ``deprecated`` for an item
     ``MigrationEngine`` leaves ``approved`` -- which would move this member out
     of the census class and into neither class, with no rule saying so.
     """
-    migrations = copy.deepcopy(list(CORPUS.migrations))
+    migrations = _perturbed_migrations()
     deprecating = next(
         document
         for name, document in migrations
@@ -1035,7 +1235,7 @@ def test_the_operation_rule_catches_a_restore_the_replay_folds_as_if_it_were_abs
     )
     perturbed = replace(CORPUS, migrations=tuple(migrations))
 
-    assert _schema_violations(perturbed) == []
+    _accepted(perturbed, tmp_path)
     assert _replay(perturbed, {"visible", "withheld"})["testing.deprecated-flaky-quarantine"] == {
         "status": "deprecated",
         "sensitivity": "internal",
@@ -1045,7 +1245,7 @@ def test_the_operation_rule_catches_a_restore_the_replay_folds_as_if_it_were_abs
 
 
 def test_the_body_rule_catches_a_committed_body_no_migration_names() -> None:
-    migrations = copy.deepcopy(list(CORPUS.migrations))
+    migrations = _perturbed_migrations()
     _name, document = migrations[0]
     document["operations"] = [
         operation for operation in document["operations"] if operation["op"] != "upsertRevision"
@@ -1055,42 +1255,41 @@ def test_the_body_rule_catches_a_committed_body_no_migration_names() -> None:
 
 
 def test_the_body_rule_catches_a_content_file_naming_nothing_committed() -> None:
-    migrations = copy.deepcopy(list(CORPUS.migrations))
+    migrations = _perturbed_migrations()
     _revisions(migrations)[0]["contentFile"] = "../knowledge/architecture/never-written.md"
 
     assert _body_file_violations(replace(CORPUS, migrations=tuple(migrations))) != []
 
 
 def test_the_body_rule_catches_two_migrations_claiming_one_body() -> None:
-    migrations = copy.deepcopy(list(CORPUS.migrations))
+    migrations = _perturbed_migrations()
     first, second = _revisions(migrations)[:2]
     second["contentFile"] = first["contentFile"]
 
     assert _body_file_violations(replace(CORPUS, migrations=tuple(migrations))) != []
 
 
-def test_the_order_rule_catches_a_manifest_listing_two_migrations_out_of_order() -> None:
-    manifest = copy.deepcopy(CORPUS.manifest)
-    manifest["migrations"][0], manifest["migrations"][1] = (
-        manifest["migrations"][1],
-        manifest["migrations"][0],
-    )
-
-    assert _manifest_order_violations(replace(CORPUS, manifest=manifest)) != []
-
-
-def test_the_order_rule_catches_a_migration_the_manifest_never_declares() -> None:
+def test_the_listing_rule_catches_a_migration_the_manifest_never_declares() -> None:
+    """The loader resolves the declared list and never lists the directory, so
+    this file is the only thing that reads the committed set against it.
+    """
     manifest = copy.deepcopy(CORPUS.manifest)
     del manifest["migrations"][-1]
 
-    assert _manifest_order_violations(replace(CORPUS, manifest=manifest)) != []
+    assert _manifest_listing_violations(replace(CORPUS, manifest=manifest)) != []
 
 
-def test_the_plane_dependency_rule_catches_a_visible_edge_onto_a_withheld_item() -> None:
-    manifest = copy.deepcopy(CORPUS.manifest)
-    migrations = copy.deepcopy(list(CORPUS.migrations))
+def test_the_listing_rule_catches_a_filename_whose_prefix_is_not_the_migration_id() -> None:
+    migrations = _perturbed_migrations()
+    migrations[0][1]["id"] = "01M9EV000000000000000ZZZZZ"
+
+    assert _manifest_listing_violations(replace(CORPUS, migrations=tuple(migrations))) != []
+
+
+def test_the_visible_reference_rule_catches_a_visible_edge_onto_a_withheld_item() -> None:
+    migrations = _perturbed_migrations()
     withheld = next(
-        entry["file"] for entry in manifest["migrations"] if entry["plane"] == "withheld"
+        entry["file"] for entry in CORPUS.manifest["migrations"] if entry["plane"] == "withheld"
     )
     visible = next(index for index, (name, _doc) in enumerate(migrations) if name != withheld)
     migrations[visible][1]["operations"].append(
@@ -1102,9 +1301,9 @@ def test_the_plane_dependency_rule_catches_a_visible_edge_onto_a_withheld_item()
         }
     )
 
-    perturbed = replace(CORPUS, manifest=manifest, migrations=tuple(migrations))
+    perturbed = replace(CORPUS, migrations=tuple(migrations))
 
-    assert _plane_dependency_violations(perturbed) != []
+    assert _visible_reference_violations(perturbed) != []
 
 
 def test_the_absent_topic_rule_catches_a_pinned_token_reintroduced_into_a_body() -> None:
@@ -1123,7 +1322,7 @@ def test_the_absent_topic_rule_catches_a_pinned_token_reintroduced_into_a_body()
 
 def test_the_absent_topic_rule_catches_a_pinned_token_reintroduced_into_a_title() -> None:
     """Titles are indexed beside bodies, and no body changes, so no hash moves."""
-    migrations = copy.deepcopy(list(CORPUS.migrations))
+    migrations = _perturbed_migrations()
     _revisions(migrations)[0]["metadata"]["title"] = "Ingress autoscaling for the kubelet"
 
     assert _absent_topic_violations(replace(CORPUS, migrations=tuple(migrations))) != []
@@ -1155,91 +1354,11 @@ def test_the_abstention_rule_catches_an_answerable_query_judged_by_abstention() 
     assert _abstention_class_violations(replace(CORPUS, judgements=judgements)) != []
 
 
-def test_the_query_id_rule_catches_a_duplicated_id() -> None:
-    queries = copy.deepcopy(CORPUS.queries)
-    queries["queries"].append(copy.deepcopy(queries["queries"][0]))
-
-    assert _query_id_violations(replace(CORPUS, queries=queries)) != []
-
-
 def test_the_corpora_rule_catches_an_enabled_query_running_against_one_index() -> None:
     queries = copy.deepcopy(CORPUS.queries)
     queries["queries"][0]["corpora"] = ["full"]
 
     assert _corpora_invariant_violations(replace(CORPUS, queries=queries)) != []
-
-
-def test_the_coverage_rule_catches_an_enabled_query_nobody_judged() -> None:
-    judgements = copy.deepcopy(CORPUS.judgements)
-    del judgements["judgements"][0]
-
-    assert _judgement_coverage_violations(replace(CORPUS, judgements=judgements)) != []
-
-
-def test_the_coverage_rule_catches_a_judgement_naming_no_declared_query() -> None:
-    judgements = copy.deepcopy(CORPUS.judgements)
-    judgements["judgements"][0]["queryId"] = "q-never-declared"
-
-    assert _judgement_coverage_violations(replace(CORPUS, judgements=judgements)) != []
-
-
-def test_the_coverage_rule_catches_one_query_judged_twice() -> None:
-    judgements = copy.deepcopy(CORPUS.judgements)
-    judgements["judgements"].append(copy.deepcopy(judgements["judgements"][0]))
-
-    assert _judgement_coverage_violations(replace(CORPUS, judgements=judgements)) != []
-
-
-def test_the_disjointness_rule_catches_an_item_both_required_and_forbidden() -> None:
-    judgements = copy.deepcopy(CORPUS.judgements)
-    entry = judgements["judgements"][0]
-    entry["forbidden"] = [copy.deepcopy(entry["relevant"][0])]
-
-    assert _disjointness_violations(replace(CORPUS, judgements=judgements)) != []
-
-
-def test_the_empty_judgement_rule_catches_an_entry_carrying_only_a_query_id() -> None:
-    judgements = copy.deepcopy(CORPUS.judgements)
-    judgements["judgements"][0] = {"queryId": judgements["judgements"][0]["queryId"]}
-
-    assert _empty_judgement_violations(replace(CORPUS, judgements=judgements)) != []
-
-
-@pytest.mark.parametrize(
-    "extra",
-    [
-        pytest.param({"sourceUri": "https://github.com/theurian/theurian.git"}, id="subsumes"),
-        pytest.param(
-            {
-                "sourceUri": "https://github.com/theurian/theurian.git",
-                "filePath": "docs/adr/0006-immutable-revisions-and-optimistic-concurrency.md",
-            },
-            id="duplicate-pair",
-        ),
-    ],
-)
-def test_the_evidence_rule_catches_an_entry_that_scores_one_anchor_twice(
-    extra: dict[str, str],
-) -> None:
-    judgements = copy.deepcopy(CORPUS.judgements)
-    entry = next(e for e in judgements["judgements"] if e["queryId"] == "q-optimistic-concurrency")
-    entry["evidence"].append(extra)
-
-    assert _evidence_subsumption_violations(replace(CORPUS, judgements=judgements)) != []
-
-
-def test_the_judged_item_rule_catches_a_judgement_naming_an_item_no_migration_creates() -> None:
-    judgements = copy.deepcopy(CORPUS.judgements)
-    judgements["judgements"][0]["relevant"][0]["itemId"] = "architecture.never-created"
-
-    assert _judged_item_violations(replace(CORPUS, judgements=judgements)) != []
-
-
-def test_the_judged_item_rule_catches_a_withheld_item_promoted_into_relevant() -> None:
-    judgements = copy.deepcopy(CORPUS.judgements)
-    judgements["judgements"][0]["relevant"][0]["itemId"] = "domain.rejected-credential-cache"
-
-    assert _judged_item_violations(replace(CORPUS, judgements=judgements)) != []
 
 
 @pytest.mark.parametrize("plane", ["full", "clean"])
@@ -1273,74 +1392,6 @@ def test_the_census_rule_reports_a_missing_census_key_instead_of_raising() -> No
     del manifest["census"]["full"]["byStatus"]
 
     assert _census_violations(replace(CORPUS, manifest=manifest)) != []
-
-
-def _restated(item: str, **fields: str) -> Corpus:
-    """A copy whose every revision of ``item`` carries different metadata."""
-    migrations = copy.deepcopy(list(CORPUS.migrations))
-    for _name, document in migrations:
-        for operation in document["operations"]:
-            if operation["op"] == "upsertRevision" and operation["itemId"] == item:
-                operation["metadata"].update(fields)
-    return replace(CORPUS, migrations=tuple(migrations))
-
-
-def test_the_split_rule_catches_a_withheld_draft_promoted_to_approved() -> None:
-    perturbed = _restated("security.draft-scan-hardening", status="approved")
-
-    assert _coverage_split_violations(perturbed) != []
-
-
-def test_the_split_rule_catches_a_member_the_serving_ceiling_stops_excluding() -> None:
-    """The arm that has to be a third class rather than a complement: lowering
-    this member to ``internal`` leaves it indexed *and* ungated, so it belongs to
-    neither the gate class nor the census class.
-    """
-    perturbed = _restated("security.confidential-token-rotation", sensitivity="internal")
-
-    assert any("neither class" in violation for violation in _coverage_split_violations(perturbed))
-
-
-def test_the_surfacing_rule_catches_a_withheld_member_lowered_into_the_ceiling() -> None:
-    perturbed = _restated("security.confidential-token-rotation", sensitivity="internal")
-
-    assert _surfacing_withheld_violations(perturbed) != []
-
-
-def test_the_relevant_state_rule_catches_an_enabled_query_judging_a_superseded_item() -> None:
-    judgements = copy.deepcopy(CORPUS.judgements)
-    entry = next(e for e in judgements["judgements"] if e["queryId"] == "q-sqlite-derived")
-    entry["relevant"][0]["itemId"] = "domain.session-token-ttl-v1"
-
-    assert _relevant_state_violations(replace(CORPUS, judgements=judgements)) != []
-
-
-def test_the_relevant_state_rule_catches_a_relevant_item_raised_above_the_ceiling() -> None:
-    """The axis the status conjunct alone does not reach.
-
-    Reclassifying a visible, approved item to ``confidential`` leaves it
-    ``approved`` and visible-plane, so the status rule, the visible-plane rule
-    and the withheld-member rules all stay green -- and every enabled query
-    naming it scores Recall@k of zero against both corpora for good.
-    """
-    perturbed = _restated("architecture.sqlite-is-a-derived-artifact", sensitivity="confidential")
-
-    assert any(
-        "ends sensitivity confidential" in violation
-        for violation in _relevant_state_violations(perturbed)
-    )
-
-
-def test_the_relevant_state_rule_reaches_the_historical_query_once_it_is_enabled() -> None:
-    """The scope is what exempts that query, not a rule too weak to reach it.
-
-    In memory only: ``queries.schema.json`` refuses a ``historical`` query with
-    ``enabled: true``, so the state cannot be written to the fixture at all.
-    """
-    queries = copy.deepcopy(CORPUS.queries)
-    next(q for q in queries["queries"] if q["id"] == "q-hist-ttl-evolution")["enabled"] = True
-
-    assert _relevant_state_violations(replace(CORPUS, queries=queries)) != []
 
 
 def test_the_snapshot_link_rule_catches_a_live_adr_dropping_a_link_the_snapshot_keeps() -> None:
@@ -1391,3 +1442,189 @@ def test_the_snapshot_link_rule_catches_an_anchor_naming_an_untracked_file() -> 
     del live["docs/adr/0004-sqlite-is-a-derived-artifact.md"]
 
     assert _snapshot_link_violations(CORPUS, live) != []
+
+
+# -- where this file is stronger than the loader, and the pins that say so ----
+#
+# Three rules above overlap the loader's semantics without consuming it, because
+# each reaches something the loader does not. Every one carries a pin over an
+# input on which a drifted pair would disagree -- the check #794 found missing,
+# and the reason the drift it records went unnoticed.
+
+
+def test_the_plane_key_rule_and_the_migration_schema_refuse_the_same_document(
+    tmp_path: Path,
+) -> None:
+    """The equivalence the ``plane`` rule's authority statement rests on.
+
+    Its value is that it survives ``additionalProperties`` being reopened on the
+    migration schema's root; while that root stays closed, the loader must
+    refuse the same document. Reopening it -- the drift this pin exists for --
+    makes the second assertion fail while the first still holds.
+    """
+    migrations = _perturbed_migrations()
+    name, document = migrations[0]
+    document["plane"] = "withheld"
+    perturbed = replace(CORPUS, migrations=tuple(migrations))
+
+    assert _plane_key_violations(perturbed) == [name]
+    assert _refusal(perturbed, tmp_path).rule == f"schema:migrations/{name}"
+
+
+def test_the_existence_clause_and_the_loader_agree_on_a_relevant_item_named_nowhere(
+    tmp_path: Path,
+) -> None:
+    """The axis ``_uncreated_judged_item_violations`` and ``relevant-item-unknown``
+    share: a ``relevant`` itemId no operation anywhere names. A pair drifted on
+    that axis -- either side stopping at the judgement's own file -- disagrees
+    here.
+    """
+    judgements = copy.deepcopy(CORPUS.judgements)
+    judgements["judgements"][0]["relevant"][0]["itemId"] = "architecture.never-created"
+    perturbed = replace(CORPUS, judgements=judgements)
+
+    assert _uncreated_judged_item_violations(perturbed) != []
+    assert _refusal(perturbed, tmp_path).rule == "relevant-item-unknown"
+
+
+@pytest.mark.parametrize("field", ["relevant", "forbidden"])
+def test_the_existence_clause_keys_on_create_item_where_the_loader_keys_on_any_operation(
+    tmp_path: Path, field: str
+) -> None:
+    """The first of two axes on which this file is deliberately stronger.
+
+    ``_all_item_ids`` collects every operation's ``itemId``, so an item an
+    ``upsertRevision`` names and no ``createItem`` creates satisfies the loader
+    -- a shape the real ``migrate apply`` refuses, and one this corpus must not
+    carry into a build. The ``forbidden`` parameter carries the second axis in
+    the same act: ``relevant-item-unknown`` reads ``relevant`` alone.
+    """
+    judgements = copy.deepcopy(CORPUS.judgements)
+    entry = next(e for e in judgements["judgements"] if e.get(field))
+    orphan = entry[field][0]["itemId"]
+    migrations = _perturbed_migrations()
+    for _name, document in migrations:
+        document["operations"] = [
+            operation
+            for operation in document["operations"]
+            if not (operation["op"] == "createItem" and operation.get("itemId") == orphan)
+        ]
+    perturbed = replace(CORPUS, judgements=judgements, migrations=tuple(migrations))
+
+    _accepted(perturbed, tmp_path)
+
+    assert _uncreated_judged_item_violations(perturbed) != []
+
+
+def _revision_metadata(corpus: Corpus, item: str) -> list[dict[str, Any]]:
+    """Every ``upsertRevision`` metadata block naming ``item``, in migration order."""
+    return [
+        operation["metadata"]
+        for _name, document in corpus.migrations
+        for operation in document["operations"]
+        if operation["op"] == "upsertRevision" and operation["itemId"] == item
+    ]
+
+
+@pytest.mark.parametrize(
+    ("losing_fold", "witness"),
+    sorted(FOLD_BRANCH_WITNESSES.items()),
+    ids=lambda value: value if isinstance(value, str) else "",
+)
+def test_the_committed_corpus_separates_every_fold_the_pin_below_would_otherwise_admit(
+    losing_fold: str, witness: tuple[str, int]
+) -> None:
+    """The positive control for the fold-equivalence pin (#794, WatchDog ruling).
+
+    Two folds compared only on inputs that cannot separate them agree for free.
+    Each witness ends in a state the revision its drifted fold would report does
+    not name, so that fold disagrees here rather than passing vacuously. A
+    parameter going RED names which drift has stopped being detectable.
+    """
+    item, index = witness
+
+    final = _replay(CORPUS, {"visible", "withheld"})[item]
+    reported = _revision_metadata(CORPUS, item)[index]
+
+    assert (final["status"], final["sensitivity"]) != (
+        reported["status"],
+        reported["sensitivity"],
+    ), losing_fold
+
+
+def test_the_suites_replay_and_the_loaders_fold_agree_on_every_item_the_corpus_creates() -> None:
+    """The second axis on which this file keeps its own implementation (#794).
+
+    ``_replay`` takes a plane set and ``_final_status_and_sensitivity`` does not,
+    and the ``clean`` census needs one -- so the census cannot consume the
+    loader's fold. What it can do is agree with it over the whole population,
+    which is what the test above makes a non-trivial claim. Dict equality
+    compares key sets too: an item a ``createItem`` names and no revision ever
+    reaches is in ``_replay``'s answer and in neither of the loader's, and would
+    redden here rather than being silently folded two different ways.
+    """
+    replayed = _replay(CORPUS, {"visible", "withheld"})
+
+    status, sensitivity = _loader_fold(CORPUS.migrations)
+
+    assert {item: state["status"] for item, state in replayed.items()} == status
+    assert {item: state["sensitivity"] for item, state in replayed.items()} == sensitivity
+
+
+def test_the_two_folds_agree_on_a_constructed_history_the_fixture_does_not_hold() -> None:
+    """The same pin over an input built here rather than read off the fixture.
+
+    Two revisions, a ``deprecateItem`` and a ``changeSensitivity`` on one item,
+    so every branch moves and the naive answers all differ from the agreed one.
+    A frozen fixture can stop exercising a branch -- this input cannot.
+    """
+    migrations = (
+        (
+            "1M23BW8DJNKT2GJB31BMEYQP08-first.yaml",
+            {
+                "id": "1M23BW8DJNKT2GJB31BMEYQP08",
+                "operations": [
+                    {"op": "createItem", "itemId": "domain.drifting", "sensitivity": "public"},
+                    {
+                        "op": "upsertRevision",
+                        "itemId": "domain.drifting",
+                        "metadata": {"status": "approved", "sensitivity": "public"},
+                    },
+                    {
+                        "op": "upsertRevision",
+                        "itemId": "domain.drifting",
+                        "metadata": {"status": "proposed", "sensitivity": "internal"},
+                    },
+                ],
+            },
+        ),
+        (
+            "2R8B5ZVNYVVS83VJW4JTPDGDA2-second.yaml",
+            {
+                "id": "2R8B5ZVNYVVS83VJW4JTPDGDA2",
+                "operations": [
+                    {"op": "deprecateItem", "itemId": "domain.drifting"},
+                    {
+                        "op": "changeSensitivity",
+                        "itemId": "domain.drifting",
+                        "sensitivity": "confidential",
+                    },
+                ],
+            },
+        ),
+    )
+    entries = [{"file": name, "plane": "visible"} for name, _document in migrations]
+    suite_corpus = Corpus(
+        manifest={"migrations": entries},
+        queries={},
+        judgements={},
+        migrations=migrations,
+        bodies={},
+    )
+
+    replayed = _replay(suite_corpus, {"visible"})
+    status, sensitivity = _loader_fold(migrations)
+
+    assert replayed == {"domain.drifting": {"status": "deprecated", "sensitivity": "confidential"}}
+    assert {item: state["status"] for item, state in replayed.items()} == status
+    assert {item: state["sensitivity"] for item, state in replayed.items()} == sensitivity
