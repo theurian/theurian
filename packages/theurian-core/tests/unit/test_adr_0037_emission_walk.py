@@ -527,10 +527,10 @@ def test_the_exporter_emissions_are_the_constants_the_family_table_bounds() -> N
     """The fourth license, checked against the family whose bound admits it.
 
     ``theurian_export_version`` and ``generated.by`` are admitted by the
-    invariant's *and the exporter's own version* clause, and the ADR bounds them
-    at **exactly two** -- a third is a byte of every concept document varying
-    with something the invariant does not admit, and it must not be able to
-    arrive by being listed beside the other two.
+    invariant's *and the exporter's own version* clause, and decision 2's
+    *Concept front matter* row names **those two** -- a third would be a byte
+    of every concept document varying with something the invariant does not
+    admit. The row bounds front-matter keys, not every constant spelling.
     """
     families = _families()
 

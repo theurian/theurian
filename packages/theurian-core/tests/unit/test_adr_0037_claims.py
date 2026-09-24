@@ -31,13 +31,14 @@ What is held here:
   ``sourceAnchor`` fields it does *not* publish -- which is why the ADR drops
   them rather than exporting them.
 
-**What the export emits is walked in two sibling modules**, both reading this
+**What the export emits is walked in three sibling modules**, all reading this
 document and this fixture through ``adr_0037_support``:
 ``test_adr_0037_emission_walk.py`` holds the emission inventory against the
-disclosure bound and decision 2's seven byte-source families, and
+disclosure bound and decision 2's seven byte-source families,
 ``test_adr_0037_knowledge_get_bound.py`` holds the bound's second instrument --
 ``knowledge.get``'s four additions, and the syntax-tree reader that measures
-them.
+them -- and ``test_adr_0037_sidecar_extension.py`` holds decision 7's
+extension rule against the media types it ranges on.
 
 Pure: it reads ``domain/enums.py``'s constants, one JSON schema, one Markdown
 file, and builds one in-memory revision. No database, no socket, no temporary
