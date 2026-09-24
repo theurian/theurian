@@ -21,11 +21,31 @@ already documented).
 ## Measured
 
 - **Date:** 2026-09-24
-- **Commit:** `b1922f0e08478102ad078e7c0f54c213216ebd6c` (the S4c review round's
-  re-measurement -- widened `comparison` families, renamed `comparison.nodes`
-  keys, the raptor arm's own scope/reason strings; S4c's first measurement
-  was at `673b12cfd12fbb652c40cfd481be098e2e1ff20b`, S4b's original at
-  `a58fdcb588c8189dc00a8935403c00b87b3c5d48`)
+- **Measured on:** the slice-S4c review round's re-measurement — *fix(eval):
+  widen the comparison block to every family and fix the raptor arm's own
+  labels*, on [PR #798](https://github.com/theurian/theurian/pull/798). That is
+  where the widened `comparison` families, the renamed `comparison.nodes` keys
+  and the raptor arm's own scope and reason strings actually live. Named by
+  subject and pull request rather than by sha, for the reason the next bullet
+  gives.
+- **What `timings.json`'s `commitSha` says, and what it does not.** The annex
+  stamps `b1922f0e08478102ad078e7c0f54c213216ebd6c`. That is honest about the
+  tree that ran — it was `HEAD` at the time — and **it is not the commit that
+  produced these figures**: the `report.py` change they come from was still
+  uncommitted, so the stamp names an in-flight tree's parent and *predates the
+  code it measures*. A `commitSha` on this page is the nearest commit, never an
+  attribution of the change. The earlier stamps read the same way: S4c's first
+  measurement stamped `673b12cfd12fbb652c40cfd481be098e2e1ff20b`, which carries
+  no raptor arm at all; S4b's original stamped
+  `a58fdcb588c8189dc00a8935403c00b87b3c5d48`, which does contain the harness it
+  measured.
+- **What makes the figures checkable is same-tree reproduction, not the stamp.**
+  `tests/integration/tools/test_baseline_current.py` regenerates `report.json`
+  at whatever commit is checked out and byte-compares it against the committed
+  one, so at every committed state the pair is self-consistent or it reddens —
+  which is the property a stamp cannot give and this one did not. The durable
+  anchor for this page is the merge commit this pull request squashes into,
+  which its own body will name.
 - **Corpus:** `tests/fixtures/eval` (`corpusId: adr-corpus-v1`)
 - **Census** (echoed from `report.json`'s own `census` member):
 

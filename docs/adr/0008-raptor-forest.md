@@ -1242,8 +1242,11 @@ flowchart TB
 >     > judged-relevant items stay within the first ten, and what the top-rank
 >     > figures measure is their position inside it. **The returned content's
 >     > composition does move, and that is the forest doing its designed work.**
->     > `evidencePrecision` shifted for two queries (`q-rejected-score-normalisation`
->     > `0.111111` → `0.125`, `q-rejected-vendor-sdk` `0.125` → `0.166667`), and
+>     > `evidencePrecision` shifted for two of the `full`-corpus default-flag runs
+>     > the `comparison` block aggregates (`q-rejected-score-normalisation`
+>     > `0.111111` → `0.125`, `q-rejected-vendor-sdk` `0.125` → `0.166667`) — a
+>     > third query, `q-sqlite-derived`, moved on its `clean` run only, which that
+>     > block does not report — and
 >     > that metric is a ratio over the *set* of `sourceAnchors` a response
 >     > returns, order-invariant by construction, so a moved value proves the
 >     > returned anchor set itself differs rather than merely its order. Decision 8
