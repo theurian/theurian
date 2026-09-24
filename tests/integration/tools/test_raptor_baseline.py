@@ -1,25 +1,44 @@
 """Pins over slice S4c's committed raptor-arm baseline (ADR-0036, Compliance).
 
-These read ``tools/eval/baseline/report.json`` and ``timings.json`` directly,
-the way ``test_adr36_ratchet.py`` reads the ADR's own text or ``report.py``'s
-own source: no SQLite, no MCP wire, no subprocess. Regenerating the baseline
-and byte-comparing it -- which already covers the raptor arm's own
-determinism, since ``report.json``'s committed bytes now include ``raptor``
-and ``comparison`` -- is ``test_baseline_current.py``'s job, not this file's.
+Most of these read ``tools/eval/baseline/report.json`` and ``timings.json``
+directly, the way ``test_adr36_ratchet.py`` reads the ADR's own text or
+``report.py``'s own source: no SQLite, no MCP wire, no subprocess.
+Regenerating the baseline and byte-comparing it -- which already covers the
+raptor arm's own determinism, since ``report.json``'s committed bytes now
+include ``raptor`` and ``comparison`` -- is ``test_baseline_current.py``'s
+job, not this file's. Two pins are the exception (a live ``build_report``
+call, and a real raptor-enabled build over the S3 corpus): each says why in
+its own docstring.
 """
 
 from __future__ import annotations
 
 import json
+import sys
+import tempfile
+from contextlib import ExitStack
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 
 pytestmark = [pytest.mark.integration, pytest.mark.eval]
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+_HARNESS_DIR = REPO_ROOT / "tools" / "eval"
+if str(_HARNESS_DIR) not in sys.path:
+    sys.path.insert(0, str(_HARNESS_DIR))
+
+import corpus as harness_corpus  # noqa: E402
+import corpus_build as harness_build  # noqa: E402
+import report as harness_report  # noqa: E402
+from wire import mcp_session  # noqa: E402
+
+from theurian.application.project_service import ProjectRegistry  # noqa: E402
+from theurian.daemon.runner import build_server  # noqa: E402
+
 _BASELINE_DIR = REPO_ROOT / "tools" / "eval" / "baseline"
+CORPUS = REPO_ROOT / "tests" / "fixtures" / "eval"
 
 
 @pytest.fixture(scope="module")
@@ -36,30 +55,54 @@ def baseline_timings() -> dict[str, Any]:
     return timings
 
 
-# -- A: comparison's deltas are derived from the report's own two sections ---
+# -- A: every comparison delta, every population, within a measured tolerance
+
+#: The double-rounding residual `comparison`'s own derivation can carry:
+#: `write_report` rounds the whole tree to 6 decimals in ONE pass, after
+#: `comparison` is already computed from full-precision `aggregated` floats,
+#: so re-deriving from the already-rounded figures here is a SECOND rounding
+#: that does not always reproduce the first. Plus headroom for float-
+#: representation noise in the comparison itself: Python's own
+#: ``0.018519 - 0.018518`` is ``1.000000000001e-06``, not exactly the
+#: mathematical ``1e-06`` a naive ``<= 1e-6`` literal would require. Measured
+#: worst case over the whole committed baseline (every class, every k, every
+#: family): ``1.0000000000287557e-06``, at
+#: ``rejected-alternative``'s recall@1 -- comfortably inside this tolerance,
+#: never enough to hide a genuine second mismatch (a real corruption is
+#: orders of magnitude larger).
+_DELTA_TOLERANCE: Final = 1e-6 + 1e-9
+
+#: The `_aggregate_entries` families `_aggregate_delta` subtracts (mirrors
+#: `report._DELTA_FAMILIES`, read as a literal here for the same reason the
+#: channel-reason pins below compare against literals, not the constant).
+_DELTA_FAMILIES: Final = (
+    "mrr",
+    "evidencePrecision",
+    "abstentionAccuracy",
+    "supersededKnowledgeErrorRate",
+)
 
 
-def test_the_comparisons_overall_and_broad_architectural_deltas_are_raptor_minus_base(
+def test_every_comparison_delta_in_every_population_is_raptor_minus_base_within_tolerance(
     baseline_report: dict[str, Any],
 ) -> None:
-    """``report._aggregate_delta``'s own contract: every delta is
-    ``raptor_value - base_value``, recomputed here from ``aggregated`` and
-    ``raptor.aggregated`` rather than pasted as a literal -- a re-measurement
-    that moves either side without moving ``comparison`` to match reddens
-    here, not two commits later when someone diffs the numbers by hand.
+    """``report._aggregate_delta``'s own contract, over every population
+    ``comparison`` publishes -- ``overall`` and every ``byClass`` member, not
+    only the two the narrower predecessor of this pin covered. Every delta is
+    ``raptor_value - base_value``, within ``_DELTA_TOLERANCE`` above, not
+    pasted as a literal. ``cross-adr`` -- the concentrated-cost class the
+    baseline's own README singles out -- is in this population now, along
+    with `conflicting`, `exact-decision`, `superseded` and `unknown`.
 
-    Scoped to ``overall`` and ``broad-architectural`` (RAPTOR's own
-    Domain/Catalog routing target, and the baseline README's headline
-    figures) rather than every class, because this file reads only the
-    already-disk-rounded ``report.json`` -- ``build_report`` computes
-    ``comparison`` from full-precision floats, then ``write_report`` rounds
-    the whole tree to 6 decimals in one pass, so re-deriving from the
-    rounded ``aggregated`` figures and rounding again is a SECOND rounding
-    that does not always reproduce the first. Measured: it agrees exactly
-    for these two populations' every k and mrr; it does not for at least one
-    other class (``rejected-alternative``'s recall@1: -0.666666 recomputed
-    here vs -0.666667 committed) -- a real property of the format, not a
-    bug this test works around by widening its own population.
+    The re-measurement scenario the narrower predecessor of this pin named
+    ("a re-measurement that moves either side without moving ``comparison``
+    to match") cannot actually happen: ``comparison`` is computed from
+    ``aggregated``/``raptor.aggregated`` inside the same ``build_report``
+    call that produces both, so the two can never legitimately disagree in a
+    committed baseline. What this pin's population actually reaches is a
+    HAND-EDITED ``report.json`` -- one number changed in any population
+    without recomputing its dependents -- which is exactly the failure a
+    derivation pin exists to catch.
     """
     comparison = baseline_report["comparison"]
     base_aggregated = baseline_report["aggregated"]
@@ -67,75 +110,311 @@ def test_the_comparisons_overall_and_broad_architectural_deltas_are_raptor_minus
     k_values = [str(k) for k in sorted(baseline_report["kValues"])]
 
     populations = {
-        "overall": (
-            base_aggregated["overall"],
-            raptor_aggregated["overall"],
-            comparison["overall"],
-        ),
-        "broad-architectural": (
-            base_aggregated["byClass"]["broad-architectural"],
-            raptor_aggregated["byClass"]["broad-architectural"],
-            comparison["byClass"]["broad-architectural"],
-        ),
+        "overall": (base_aggregated["overall"], raptor_aggregated["overall"], comparison["overall"])
     }
+    for cls in base_aggregated["byClass"]:
+        populations[cls] = (
+            base_aggregated["byClass"][cls],
+            raptor_aggregated["byClass"][cls],
+            comparison["byClass"][cls],
+        )
+    assert set(populations) == set(comparison["byClass"]) | {"overall"}
 
     for name, (base_entry, raptor_entry, delta_entry) in populations.items():
-        assert delta_entry["mrr"] == round(raptor_entry["mrr"] - base_entry["mrr"], 6), name
+        assert (
+            raptor_entry["sampleCount"] == base_entry["sampleCount"] == delta_entry["sampleCount"]
+        ), name
+
+        for family in _DELTA_FAMILIES:
+            base_value = base_entry[family]
+            raptor_value = raptor_entry[family]
+            stored = delta_entry[family]
+            if base_value is None or raptor_value is None:
+                assert stored is None, (name, family)
+                continue
+            assert abs(stored - round(raptor_value - base_value, 6)) <= _DELTA_TOLERANCE, (
+                name,
+                family,
+            )
+
         for k in k_values:
-            expected = round(raptor_entry["recallAtK"][k] - base_entry["recallAtK"][k], 6)
-            assert delta_entry["recallAtK"][k] == expected, (name, k)
+            base_value = base_entry["recallAtK"].get(k)
+            raptor_value = raptor_entry["recallAtK"].get(k)
+            stored = delta_entry["recallAtK"].get(k)
+            if base_value is None or raptor_value is None:
+                assert stored is None, (name, "recallAtK", k)
+                continue
+            expected = round(raptor_value - base_value, 6)
+            assert abs(stored - expected) <= _DELTA_TOLERANCE, (name, "recallAtK", k)
 
 
 # -- B: the dated, corpus-derived forest-size pin -----------------------------
 
 
 def test_the_committed_comparisons_node_counts(baseline_report: dict[str, Any]) -> None:
-    """``comparison.nodes`` is the RAPTOR forest's size (``IndexBuildCost.nodes``,
-    a deterministic pure function of the chunks the same build wrote --
-    ADR-0008 decisions 8/9), echoed from the raptor builds' own
-    :class:`IndexBuildCost`. A DATED pin, not a structural one: it moves the
-    moment the committed S3 corpus (``tests/fixtures/eval``) changes and the
-    baseline is re-measured, the same way ``comparison``'s deltas above do.
+    """``comparison.nodes`` is the RAPTOR forest's size (``IndexBuildCost.nodes``),
+    echoed from the raptor builds' own :class:`IndexBuildCost`, keyed
+    ``full-raptor``/``clean-raptor`` to match ``timings.json``'s own
+    ``indexBuild`` suffix. Deterministic because the default
+    ``SummarizationProvider`` is extractive (ADR-0008 decision 7): tree
+    derivation is a pure function of the surviving rows for a provider with
+    that property, which is the property decision 7 chooses the extractive
+    default for. A DATED pin, not a structural one: it moves the moment the
+    committed S3 corpus (``tests/fixtures/eval``) changes and the baseline is
+    re-measured, the same way ``comparison``'s deltas above do.
     """
     assert baseline_report["comparison"]["nodes"] == {"full-raptor": 28, "clean-raptor": 26}
 
 
-# -- C: the raptor pair's equality channel is reported, never asserted equal -
+# -- C: the raptor channel's counts are derived, and its own strings pinned --
 
 
-def test_the_raptor_pairs_equality_channel_is_reported_with_real_counts(
+def test_the_raptor_channels_counts_are_derived_from_its_own_per_query_differing_fields(
     baseline_report: dict[str, Any],
 ) -> None:
-    """``raptor.equality.channel`` exists with the same shape the base arm's
-    channel carries, and its counts are real measured integers -- this pin
-    checks that the report says something, not that the raptor pair's two
-    corpora agree.
+    """adversarial MEDIUM M1: the shape-only predecessor of this pin
+    (``isinstance``/bounds checks alone) could not fail -- swapping in the
+    BASE arm's own channel, or an all-zero stub with a matching ``of``, both
+    satisfied every assertion it made, because nothing read the raptor arm's
+    own per-query data. This recomputes each count directly from
+    ``raptor.equality.queries``' own ``differingFields`` entries -- the same
+    population ``report._channel_summary`` reads, counting a query as
+    differing when its set exceeds ``report._BUILD_IDENTITY_EXEMPT`` -- and
+    asserts equality with the published counts: an independent derivation,
+    not a shape check.
 
-    No committed test extends the base arm's set-equality claim
-    (``test_the_equality_query_differs_from_its_clean_counterpart_only_in_build_identity``,
-    ``tests/integration/tools/test_harness_pins.py``) to the raptor pair, and
-    none should: an ``--include-unapproved`` raptor build derives Domain/
-    Catalog summary nodes from the chunks it indexes, so a raptor-pair
-    equality query's response can differ by more than build identity even
-    when nothing is actually leaking -- GHSA-97q9-xxfg-33r6's own territory
-    (a RAPTOR-derived field carrying content from rows the plain build never
-    held). That is exactly why this channel is reported (a count) rather
-    than gated on (a set-equality assertion): the base arm's own committed
-    reach control already proves the plain gate holds; this residual is a
-    different, RAPTOR-specific channel, not a regression of that gate.
+    **Why this channel is reported, never asserted equal, and why it is
+    measured wider today.** The threat model's own T-17a row
+    (``docs/security/threat-model.md``) is the accurate citation, not an
+    invented one: GHSA-97q9-xxfg-33r6 closes the *purge-failed*-build cell --
+    a build that still holds withdrawn rows can leak one through a
+    ``--raptor`` build's ``raptorPath[].title``, and the advisory's fix is to
+    refuse serving such a build at all. That is a different failure mode
+    than "the raptor pair's two corpora disagree by more than build
+    identity", which is what this channel counts; the base arm's own
+    ``EQUALITY_SCOPE`` claim (query-time gate over draft/proposed rows) does
+    not, on its own, explain today's widening either. The real control is
+    the approved-content population itself: the committed census shows
+    ``full`` and ``clean`` legitimately disagree on *approved* content alone
+    (26 vs 24 approved items, ``report.json``'s own ``census``), before
+    RAPTOR enters at all, and RAPTOR's node-routing layer gives that
+    pre-existing, legitimate difference more surface to show up on --
+    clustering, node counts and excerpts all move with which approved
+    documents exist, not with which unapproved ones leaked through. What
+    rules OUT the unapproved-leak explanation is
+    ``test_no_raptor_path_title_in_the_full_arms_default_response_leaks_an_unapproved_body``
+    below: it verifies, over a real build, that no title in the full-raptor
+    arm's default-flags responses contains any unapproved fixture body's
+    text -- this pin's teeth for that claim, not an assumption backing it.
+
+    A dated expectation, not a structural one: today the raptor channel
+    differs from the base arm's at ``atLimit`` (20 vs 18) and agrees with it
+    at ``atEqualityLimit`` (21 == 21) -- both read here from the committed
+    baseline, and both move the moment the corpus or the harness does.
     """
-    channel = baseline_report["raptor"]["equality"]["channel"]
+    exempt = harness_report._BUILD_IDENTITY_EXEMPT
+    raptor_queries = baseline_report["raptor"]["equality"]["queries"]
+    assert raptor_queries, "the population must be non-empty, or this pin checks nothing"
+    base_channel = baseline_report["equality"]["channel"]
+    raptor_channel = baseline_report["raptor"]["equality"]["channel"]
 
-    assert isinstance(channel["reason"], str) and channel["reason"]
     for label in ("atLimit", "atEqualityLimit"):
-        entry = channel[label]
-        assert isinstance(entry["queriesDiffering"], int)
-        assert isinstance(entry["of"], int)
-        assert 0 <= entry["queriesDiffering"] <= entry["of"]
-        assert entry["of"] == len(baseline_report["raptor"]["equality"]["queries"])
+        derived = sum(
+            1 for entry in raptor_queries.values() if set(entry[label]["differingFields"]) - exempt
+        )
+        assert raptor_channel[label]["queriesDiffering"] == derived, label
+        assert raptor_channel[label]["of"] == len(raptor_queries), label
+
+    assert raptor_channel["atLimit"]["queriesDiffering"] == 20
+    assert base_channel["atLimit"]["queriesDiffering"] == 18
+    assert (
+        raptor_channel["atLimit"]["queriesDiffering"] != base_channel["atLimit"]["queriesDiffering"]
+    )
+    assert (
+        raptor_channel["atEqualityLimit"]["queriesDiffering"]
+        == base_channel["atEqualityLimit"]["queriesDiffering"]
+        == 21
+    )
 
 
-# -- D: determinism is already re-held by test_baseline_current --------------
+#: Literal copies of ``report.RAPTOR_EQUALITY_SCOPE``/``report._RAPTOR_CHANNEL_REASON``,
+#: not references to the constants themselves -- the same discipline the base
+#: arm's ``_CHANNEL_REASON_LITERAL`` pin uses
+#: (``tests/integration/tools/test_harness_pins.py``): comparing the module's
+#: published string to the same constant that produced it is structurally
+#: unfailable, whatever the constant is later edited to say.
+_RAPTOR_EQUALITY_SCOPE_LITERAL = (
+    "Query-time gate over draft/proposed rows admitted to the index by "
+    "--include-unapproved on both builds, plus the RAPTOR node-traversal "
+    "gate (ADR-0008 decision 8) between a matched summary node and the "
+    "leaves it may route to; every query in this section runs at default "
+    "flags (includeUnapproved=false)."
+)
+_RAPTOR_CHANNEL_REASON_LITERAL = (
+    "recorded channel, T-17a family and RAPTOR summary routing (ADR-0008 "
+    "decision 8, GHSA-97q9's raptorPath territory); not a disclosure finding "
+    "because includeUnapproved is a request parameter (not a grant) and the "
+    "Core is one-principal (#119); reachable only under the operator's "
+    "--include-unapproved AND --raptor build, absent from the shipped default."
+)
+
+
+def test_the_raptor_arms_own_equality_scope_and_channel_reason_are_pinned_verbatim(
+    baseline_report: dict[str, Any],
+) -> None:
+    """security M1's pin half: the raptor arm's ``equality.scope`` and
+    ``equality.channel.reason`` are its OWN strings (a code MEDIUM finding
+    this round fixed -- they used to be the base arm's, reused verbatim and
+    under-describing the ``--raptor`` condition), pinned by exact equality
+    against literal copies above, never against ``report.py``'s own
+    constants -- the same self-reference trap the derivation pin above
+    replaced a shape-only check to avoid.
+    """
+    assert baseline_report["raptor"]["equality"]["scope"] == _RAPTOR_EQUALITY_SCOPE_LITERAL
+    assert (
+        baseline_report["raptor"]["equality"]["channel"]["reason"] == _RAPTOR_CHANNEL_REASON_LITERAL
+    )
+
+
+# -- D: no raptorPath title leaks an unapproved fixture body -----------------
+
+
+def _fixture_bodies_by_approval(loaded: harness_corpus.Corpus) -> tuple[list[str], list[str]]:
+    """Every revision body, split into ``(unapproved, approved)`` by this
+    build's own default-flags surfaceability -- unapproved means draft,
+    proposed, rejected, superseded or deprecated status, or above-ceiling
+    (confidential/restricted) sensitivity; everything else is approved. Read
+    straight from the fixture files ``tests/fixtures/eval/migrations``
+    reference, via the same replay ``corpus.py``'s own loader uses
+    (``_final_status_and_sensitivity``) rather than a second, hand-rolled
+    classification.
+    """
+    documents = {
+        entry.file: harness_corpus._load_migration_document(CORPUS / "migrations" / entry.file)
+        for entry in loaded.manifest.migrations
+    }
+    all_ids = harness_corpus._all_item_ids(loaded.manifest, documents)
+    status_by_item, sensitivity_by_item = harness_corpus._final_status_and_sensitivity(
+        loaded.manifest, documents, all_ids
+    )
+    unapproved_ids = {
+        item_id
+        for item_id in all_ids
+        if status_by_item.get(item_id) not in harness_corpus.DEFAULT_SURFACEABLE_STATUSES
+        or sensitivity_by_item.get(item_id) not in harness_corpus.BUILD_CEILING_SENSITIVITIES
+    }
+    unapproved: list[str] = []
+    approved: list[str] = []
+    for entry in loaded.manifest.migrations:
+        for op in documents[entry.file].get("operations", []):
+            if op.get("op") != "upsertRevision":
+                continue
+            text = (CORPUS / "migrations" / op["contentFile"]).read_text(encoding="utf-8")
+            (unapproved if op.get("itemId") in unapproved_ids else approved).append(text)
+    return unapproved, approved
+
+
+#: Below this, a window is common enough English to false-positive (matches
+#: the ``_ARTIFACT_LEAK_MIN_LENGTH`` convention in this directory's
+#: ``test_harness_pins.py``). Stepped at half the window so a leak starting
+#: at any offset within a body -- not only a window-aligned one -- is still
+#: covered by some window.
+_RAPTOR_TITLE_LEAK_WINDOW: Final = 16
+_RAPTOR_TITLE_LEAK_STEP: Final = 8
+
+
+def _leaked_windows(
+    titles: list[str], unapproved_bodies: list[str], approved_bodies: list[str]
+) -> list[str]:
+    """Every ``>=16``-char verbatim window of ``unapproved_bodies`` that is
+    DISTINCTIVE to that population -- absent from every string in
+    ``approved_bodies`` -- and that also appears inside some string in
+    ``titles``: the substring-leak detector both the real pin below and its
+    teeth (a hand-built ``titles`` list) run against.
+
+    The distinctiveness check is load-bearing, not decorative: a first
+    version of this detector checked only "window in titles" and reddened on
+    the real committed baseline -- ``domain.session-token-ttl-v1``/``-v2``
+    (superseded) share their opening heading, ``# Session token TTL
+    policy``, with ``domain.session-token-ttl`` (approved, the same topic
+    evolved forward), so a title genuinely built from the APPROVED body
+    still contains that window. Without excluding windows the approved
+    corpus already carries, every superseded-vs-approved rename or heading
+    reuse in a real knowledge base would false-positive here.
+    """
+    joined_titles = "\x00".join(titles)
+    joined_approved = "\x00".join(approved_bodies)
+    leaked: list[str] = []
+    for body in unapproved_bodies:
+        last_start = max(len(body) - _RAPTOR_TITLE_LEAK_WINDOW, 0)
+        for start in range(0, last_start + 1, _RAPTOR_TITLE_LEAK_STEP):
+            window = body[start : start + _RAPTOR_TITLE_LEAK_WINDOW]
+            if len(window) != _RAPTOR_TITLE_LEAK_WINDOW:
+                continue
+            if window in joined_approved:
+                continue
+            if window in joined_titles:
+                leaked.append(window)
+    return leaked
+
+
+def test_no_raptor_path_title_in_the_full_arms_default_response_leaks_an_unapproved_body() -> None:
+    """security MEDIUM M2's teeth: ``IndexStore._node_scope``
+    (``packages/theurian-core/src/theurian/infrastructure/sqlite/index_store.py``,
+    ~1517) applies the same status/sensitivity predicates to a summary
+    node's own scope that a leaf match clears -- "a draft-scope or
+    above-ceiling summary node is ... not even traversed on a default
+    query". This VERIFIES that claim over the real S3 corpus rather than
+    assuming it.
+
+    ``report.json`` stores only ``differingFields`` paths, never response
+    bodies, so this is one of the two pins in this file that drives a real
+    build: a raptor-enabled build (``index build --raptor``) over the
+    committed corpus, then every enabled query at DEFAULT flags against the
+    ``full`` plane, walking every ``results[*].raptorPath[*].title`` the
+    responses actually carry and checking each against the UNAPPROVED
+    fixture bodies (draft, proposed, rejected, superseded, deprecated status,
+    or confidential/restricted sensitivity) rather than the approved ones.
+    """
+    loaded = harness_corpus.load_corpus(CORPUS)
+    unapproved_bodies, approved_bodies = _fixture_bodies_by_approval(loaded)
+    assert unapproved_bodies, "the population must be non-empty, or this pin checks nothing"
+    assert approved_bodies, "the population must be non-empty, or this pin checks nothing"
+
+    titles: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="theurian-eval-raptor-title-leak-") as workspace_name:
+        built = harness_build.build_both(loaded, Path(workspace_name), raptor=True)
+        with ExitStack() as sessions:
+            project = built.projects["full"]
+            call = sessions.enter_context(
+                mcp_session(
+                    build_server(ProjectRegistry.default(project.data_dir)), project.data_dir
+                )
+            )
+            for query in loaded.queries:
+                if not query.enabled:
+                    continue
+                response = call(
+                    "knowledge.search",
+                    {
+                        "projectId": project.project_id,
+                        "query": query.query,
+                        "limit": 10,
+                        "maxTokens": 32_000,
+                        "includeUnapproved": False,
+                    },
+                )
+                for hit in response["results"]:
+                    for segment in hit.get("raptorPath") or []:
+                        title = segment.get("title")
+                        if title:
+                            titles.append(title)
+
+    assert titles, "the population must be non-empty, or this pin checks nothing"
+    assert _leaked_windows(titles, unapproved_bodies, approved_bodies) == []
+
+
+# -- E: determinism is already re-held by test_baseline_current --------------
 #
 # test_a_fresh_run_over_the_frozen_corpus_reproduces_the_committed_baseline_report
 # (tests/integration/tools/test_baseline_current.py) byte-compares the WHOLE
@@ -143,25 +422,74 @@ def test_the_raptor_pairs_equality_channel_is_reported_with_real_counts(
 # since slice S4c landed. No separate raptor determinism pin belongs here.
 
 
-# -- E: isolation -- the only thing that differs between the two arms is the -
+# -- F: isolation -- the only thing that differs between the two arms is the -
 #       RAPTOR forest's presence ---------------------------------------------
 
 
-def test_the_raptor_section_echoes_no_divergent_harness_constants_of_its_own(
-    baseline_report: dict[str, Any],
-) -> None:
-    """The isolation property `report.py`'s own shape makes true by construction:
-    ``report["raptor"]`` never carries its own ``harnessConstants``,
-    ``corpusId`` or ``kValues`` -- the whole report has exactly one of each,
-    shared by both arms, so there is no per-arm copy that a future change
-    could let diverge unnoticed.
+def test_the_raptor_sections_key_set_drops_exactly_corpus_id_k_values_and_harness_constants() -> (
+    None
+):
+    """code MEDIUM M3's pin half: ``report._RAPTOR_SECTION_DROPPED_KEYS`` is a
+    DROP-list (this round's fix) -- everything ``build_report`` publishes
+    flows to both arms by default, not only the keys an allowlist happened
+    to name -- verified against a REAL, live ``build_report``/
+    ``_raptor_section`` call, not the committed ``report.json``, which could
+    silently drift from what ``report.py`` now produces until someone
+    re-runs the harness and re-commits it. The cheapest honest instrument: a
+    one-query synthetic corpus, no SQLite, no subprocess -- the same
+    ``build_report`` call ``test_adr36_ratchet.py``'s own
+    ``_synthetic_report`` fixture drives (``tests/unit/tools/``), not
+    imported cross-file since the two files are independently owned.
     """
-    raptor = baseline_report["raptor"]
+    manifest = harness_corpus.Manifest(
+        contract_version=1,
+        corpus_id="raptor-shape-pin",
+        k_values=(1,),
+        migrations=(),
+        census={},
+        description=None,
+    )
+    query = harness_corpus.QueryEntry(
+        id="q", query_class="exact-decision", query="text", enabled=True, corpora=("full",)
+    )
+    judgement = harness_corpus.JudgementEntry(
+        query_id="q",
+        relevant=(harness_corpus.JudgedItem(item_id="a"),),
+        evidence=(),
+        forbidden=(),
+        expect_abstention=False,
+    )
+    loaded = harness_corpus.Corpus(
+        root=Path(),
+        manifest=manifest,
+        queries=(query,),
+        judgements=(judgement,),
+        withheld_coverage=(),
+    )
+    constants = harness_report.HarnessConstants(
+        limit=10,
+        max_tokens=1000,
+        include_unapproved=False,
+        use_dense=False,
+        equality_limit=50,
+        build_ceiling="internal",
+    )
+    response: dict[str, Any] = {"count": 1, "results": [{"itemId": "a", "sourceAnchors": []}]}
+    runs = [
+        harness_report.QueryRun(
+            query_id="q", corpus="full", limit=10, response=response, latency_ms=1.0
+        )
+    ]
+    census = {
+        "full": harness_corpus.CorpusCensus(
+            items=1, by_status={"approved": 1}, by_sensitivity={"public": 1}, chunks=1
+        )
+    }
 
-    assert set(raptor) == {"abstentionProbe", "aggregated", "census", "equality", "queries"}
-    assert "harnessConstants" not in raptor
-    assert "corpusId" not in raptor
-    assert "kValues" not in raptor
+    full = harness_report.build_report(loaded, constants, runs, census)
+    section = harness_report._raptor_section(loaded, constants, runs, census)
+
+    assert set(full) - set(section) == {"corpusId", "kValues", "harnessConstants"}
 
 
 def test_every_base_arm_wire_call_has_a_raptor_arm_twin_at_the_same_limit_and_flags(
