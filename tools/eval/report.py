@@ -57,6 +57,35 @@ _FORBIDDEN_ZERO_BY_CONSTRUCTION: Final = (
     "build-time property, not evidence about ranking"
 )
 
+#: #787's flag-probe cause: an expectAbstention query's default-flags call
+#: returned nothing, but the same query against the full build with
+#: includeUnapproved=true returned something -- the row is indexed and only
+#: the query-time gate withheld it, not absence. Mirrors
+#: _FORBIDDEN_ZERO_BY_CONSTRUCTION's convention: annotated when the cause is
+#: derived, never guessed; unannotated (absence-earned) when the flagged call
+#: also returns nothing.
+_ABSTENTION_GATE_WITHHELD: Final = (
+    "gate-withheld: the row is in the index and the default-flag gate held it back"
+)
+
+#: What decision 6 permits an equality query's two responses to differ on --
+#: which artifact answered, never what it answered. Matches `differing_paths`'
+#: own dotted-path notation and the integration pin's own `BUILD_IDENTITY`
+#: (tests/integration/tools/test_harness_pins.py).
+_BUILD_IDENTITY_EXEMPT: Final = frozenset({"retrieval.indexBuildId", "retrieval.snapshotId"})
+
+#: The channel report's reason, verbatim (#787, ADR-0036 Amendment 1 rider 1):
+#: why the T-17a residual the channel summary counts stays inside the
+#: disclosure boundary rather than reading as a finding. Quoted, never
+#: paraphrased -- "single-user" is specifically wrong here, since the daemon
+#: serves many agents.
+_CHANNEL_REASON: Final = (
+    "recorded channel, T-17a family; not a disclosure finding because "
+    "includeUnapproved is a request parameter (not a grant) and the Core is "
+    "one-principal (#119); reachable only under the operator's "
+    "--include-unapproved build, absent from the shipped default."
+)
+
 #: What `aggregated`'s mean is computed over, stated so the report says it
 #: rather than leaving a reader to assume every corpus a query ran against
 #: contributed a sample.
@@ -92,6 +121,11 @@ class QueryRun:
     limit: int
     response: dict[str, Any]
     latency_ms: float
+    #: True only for #787's abstention flag-probe call -- every ordinary run
+    #: is a default-flags call. Needed because the probe shares (query_id,
+    #: corpus, limit) with the ordinary "full" run it exists to compare
+    #: against, and `_find_run` must not confuse the two.
+    include_unapproved: bool = False
 
 
 def build_report(
@@ -110,6 +144,7 @@ def build_report(
             raise RuntimeError(msg)
         queries_section[query.id] = _query_entry(query, judgement, constants, runs, loaded)
 
+    equality_queries = _equality_section(loaded, constants, runs)
     return {
         "corpusId": loaded.manifest.corpus_id,
         "kValues": list(loaded.manifest.k_values),
@@ -125,7 +160,8 @@ def build_report(
         "queries": queries_section,
         "equality": {
             "scope": EQUALITY_SCOPE,
-            "queries": _equality_section(loaded, constants, runs),
+            "queries": equality_queries,
+            "channel": _channel_summary(equality_queries),
         },
         "aggregated": _aggregate(queries_section, loaded.manifest.k_values),
     }
@@ -143,32 +179,62 @@ def _query_entry(
     is_equality = len(set(query.corpora)) > 1
     for corpus_name in sorted(set(query.corpora)):
         base = _find_run(runs, query.id, corpus_name, constants.limit)
-        entry = _query_metrics(base.response, judgement, k_values, loaded)
+        probe = _abstention_probe_response(runs, query, judgement, corpus_name, constants)
+        entry = _query_metrics(base.response, judgement, k_values, loaded, probe)
         if is_equality:
             widened = _find_run(runs, query.id, corpus_name, constants.equality_limit)
-            entry["atEqualityLimit"] = _query_metrics(widened.response, judgement, k_values, loaded)
+            entry["atEqualityLimit"] = _query_metrics(
+                widened.response, judgement, k_values, loaded, probe
+            )
         corpora_section[corpus_name] = entry
     return {"class": query.query_class, "corpora": corpora_section}
 
 
+def _abstention_probe_response(
+    runs: Sequence[QueryRun],
+    query: QueryEntry,
+    judgement: JudgementEntry,
+    corpus_name: str,
+    constants: HarnessConstants,
+) -> dict[str, Any] | None:
+    """The #787 flag-probe response feeding `corpus_name`'s metrics, or ``None``.
+
+    Scoped to ``full``: `run.py` issues the probe against the full build for
+    every expectAbstention judgement, and ``clean`` never held a withheld row
+    under either flag (ADR-0036, the gate-vs-census derivation rule) -- a
+    probe read against it would test nothing.
+    """
+    if not judgement.expect_abstention or corpus_name != "full":
+        return None
+    return _find_run(runs, query.id, "full", constants.limit, include_unapproved=True).response
+
+
 def _query_metrics(
-    response: dict[str, Any], judgement: JudgementEntry, k_values: Sequence[int], loaded: Corpus
+    response: dict[str, Any],
+    judgement: JudgementEntry,
+    k_values: Sequence[int],
+    loaded: Corpus,
+    abstention_probe: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     recall = {
         str(k): value
         for k in sorted(k_values)
         if (value := recall_at_k(response, judgement, k)) is not None
     }
+    correct = abstention_correct(response, judgement)
     metrics: dict[str, Any] = {
         "recallAtK": recall,
         "mrr": mrr(response, judgement),
         "evidencePrecision": evidence_precision(response, judgement),
         "forbiddenPresent": forbidden_present(response, judgement),
-        "abstentionCorrect": abstention_correct(response, judgement),
+        "abstentionCorrect": correct,
     }
     cause = _forbidden_zero_cause(judgement, loaded)
     if cause is not None:
         metrics["forbiddenPresentCause"] = cause
+    abstention_cause = _abstention_cause(correct, abstention_probe)
+    if abstention_cause is not None:
+        metrics["abstentionCause"] = abstention_cause
     return metrics
 
 
@@ -188,6 +254,28 @@ def _forbidden_zero_cause(judgement: JudgementEntry, loaded: Corpus) -> str | No
     if all(c is not None and not c.is_gate_tested for c in classifications):
         return _FORBIDDEN_ZERO_BY_CONSTRUCTION
     return None
+
+
+def _abstention_cause(correct: bool | None, probe: dict[str, Any] | None) -> str | None:
+    """Why an earned ``abstentionCorrect: true`` is gate-earned rather than absence-earned.
+
+    ``probe`` is #787's flag-probe response (the same query against the full
+    build with ``includeUnapproved=true``). A non-earned or unclassifiable
+    outcome (``correct`` is not ``True``, or no probe was run) leaves the
+    cause undecided -- ``None`` rather than a guess, the same convention
+    :func:`_forbidden_zero_cause` uses. Where the probe still returns nothing,
+    the zero is absence-earned, the default reading, and stays unannotated.
+
+    Aggregation note, matching the ``forbiddenPresentCause`` convention this
+    mirrors: this cause annotates a sample, it does not split or exclude it --
+    ``_aggregate_entries``'s blended ``abstentionAccuracy`` mean still counts
+    every non-``None`` ``abstentionCorrect``, gate-earned or absence-earned
+    alike, the same way an annotated ``forbiddenPresent`` zero still counts
+    toward ``supersededKnowledgeErrorRate``.
+    """
+    if not correct or probe is None:
+        return None
+    return _ABSTENTION_GATE_WITHHELD if probe["count"] > 0 else None
 
 
 def _equality_section(
@@ -221,12 +309,46 @@ def _equality_section(
     return section
 
 
-def _find_run(runs: Sequence[QueryRun], query_id: str, corpus_name: str, limit: int) -> QueryRun:
+def _channel_summary(section: Mapping[str, dict[str, Any]]) -> dict[str, Any]:
+    """The T-17a residual counted, not asserted (ADR-0036 Amendment 1 rider 1; #787).
+
+    ``of`` is `section`'s own population -- the enabled queries that actually
+    ran on both corpora -- never the harness's whole query count. A query
+    counts as differing at a given limit when its ``differingFields`` there
+    holds something beyond :data:`_BUILD_IDENTITY_EXEMPT`, the two fields
+    naming which artifact answered rather than what it answered. Pure over
+    `section`'s already-computed responses: no timing, no sha.
+    """
+    channel: dict[str, Any] = {"reason": _CHANNEL_REASON}
+    for label in ("atLimit", "atEqualityLimit"):
+        differing = sum(
+            1
+            for entry in section.values()
+            if set(entry[label]["differingFields"]) - _BUILD_IDENTITY_EXEMPT
+        )
+        channel[label] = {"queriesDiffering": differing, "of": len(section)}
+    return channel
+
+
+def _find_run(
+    runs: Sequence[QueryRun],
+    query_id: str,
+    corpus_name: str,
+    limit: int,
+    *,
+    include_unapproved: bool = False,
+) -> QueryRun:
     for run in runs:
-        if run.query_id == query_id and run.corpus == corpus_name and run.limit == limit:
+        if (
+            run.query_id == query_id
+            and run.corpus == corpus_name
+            and run.limit == limit
+            and run.include_unapproved == include_unapproved
+        ):
             return run
     raise KeyError(
-        f"no wire call recorded for query={query_id!r} corpus={corpus_name!r} limit={limit}"
+        f"no wire call recorded for query={query_id!r} corpus={corpus_name!r} "
+        f"limit={limit} includeUnapproved={include_unapproved}"
     )
 
 
@@ -361,9 +483,12 @@ def build_timings(
                 "queryId": run.query_id,
                 "corpus": run.corpus,
                 "limit": run.limit,
+                "includeUnapproved": run.include_unapproved,
                 "latencyMs": round(run.latency_ms, 3),
             }
-            for run in sorted(runs, key=lambda r: (r.query_id, r.corpus, r.limit))
+            for run in sorted(
+                runs, key=lambda r: (r.query_id, r.corpus, r.limit, r.include_unapproved)
+            )
         ],
     }
 

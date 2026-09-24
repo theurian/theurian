@@ -11,6 +11,7 @@ decision 7's split. The harness produces measurements; it asserts nothing
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import sys
 import tempfile
 import time
@@ -19,7 +20,7 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import Final
 
-from corpus import BUILD_CEILING, CorpusError, QueryEntry, load_corpus
+from corpus import BUILD_CEILING, CorpusError, JudgementEntry, QueryEntry, load_corpus
 from corpus_build import BuiltProject, build_both
 from report import (
     HarnessConstants,
@@ -93,7 +94,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             for query in loaded.queries:
                 if not query.enabled:
                     continue
-                runs.extend(_run_query(calls, built.projects, query, constants))
+                judgement = loaded.judgement_for(query.id)
+                if judgement is None:
+                    msg = f"loader invariant violated: enabled query {query.id!r} has no judgement"
+                    raise RuntimeError(msg)
+                runs.extend(_run_query(calls, built.projects, query, judgement, constants))
 
         census = {name: project.census for name, project in built.projects.items()}
         build_costs = {name: project.build_cost for name, project in built.projects.items()}
@@ -109,6 +114,7 @@ def _run_query(
     calls: dict[str, ToolCall],
     projects: dict[str, BuiltProject],
     query: QueryEntry,
+    judgement: JudgementEntry,
     constants: HarnessConstants,
 ) -> list[QueryRun]:
     limits = {constants.limit}
@@ -119,6 +125,18 @@ def _run_query(
         project = projects[corpus_name]
         for limit in sorted(limits):
             runs.append(_one_call(calls[corpus_name], project, query, limit, constants))
+    if judgement.expect_abstention:
+        # #787's flag-probe: the same wire path, once more against the full
+        # build with includeUnapproved=true. report.py reads this beside the
+        # default-flags "full" call above to tell a gate-earned abstention
+        # (the row is indexed and the gate held it back) from an
+        # absence-earned one (nothing there under either flag). A
+        # probe-flavored HarnessConstants, not a new _one_call parameter: the
+        # flag `_one_call` reads is already `constants.include_unapproved`.
+        probe_constants = dataclasses.replace(constants, include_unapproved=True)
+        runs.append(
+            _one_call(calls["full"], projects["full"], query, constants.limit, probe_constants)
+        )
     return runs
 
 
@@ -148,6 +166,7 @@ def _one_call(
         limit=limit,
         response=response,
         latency_ms=latency_ms,
+        include_unapproved=constants.include_unapproved,
     )
 
 

@@ -284,6 +284,7 @@ EXPECTED_QUERY_METRIC_KEYS = frozenset(
         "forbiddenPresent",
         "abstentionCorrect",
         "forbiddenPresentCause",
+        "abstentionCause",
     }
 )
 
