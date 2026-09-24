@@ -25,11 +25,12 @@ name: Core
 #     is what #762 found -- an edit to `security.yml` alone, and a new workflow
 #     carrying no `timeout-minutes` at all, each landed green.
 #
-# `release-core.yml` is *also* listed by name, redundantly against that glob and
-# on purpose: `tests/release`'s
-# `test_a_change_to_the_workflow_under_test_runs_this_file` asserts that exact
-# string is present, not that the filter covers the file. Delete the entry and
-# that assertion together, never one alone.
+# `release-core.yml` needs no entry of its own: `.github/workflows/*.yml`
+# already matches it, and `tests/release`'s
+# `test_a_change_to_the_workflow_under_test_runs_this_file` checks that
+# coverage by pattern rather than pinning the filter's spelling (#770 --
+# an explicit, redundant entry used to sit here for the literal string that
+# assertion pinned instead).
 #
 # GitHub's `*` does not cross a `/`, so the pattern is that directory and
 # nothing deeper. It does mean a `plugin.yml`- or `pages.yml`-only edit now
@@ -48,10 +49,9 @@ on:
       - "tools/**"
       - "pyproject.toml"
       - "uv.lock"
-      # Every workflow file, and `release-core.yml` again by name; the top of
-      # this file says why both lines are here.
+      # Every workflow file; the top of this file says why release-core.yml
+      # needs no entry of its own.
       - ".github/workflows/*.yml"
-      - ".github/workflows/release-core.yml"
       # The four below are read BY `tests/ci/`, whose prose pins hold this
       # repository's workflow text and its process documentation to each other.
       # An edit to one of them is exactly what breaks those pins, and without
@@ -74,10 +74,9 @@ on:
       - "tools/**"
       - "pyproject.toml"
       - "uv.lock"
-      # Every workflow file, and `release-core.yml` again by name; the top of
-      # this file says why both lines are here.
+      # Every workflow file; the top of this file says why release-core.yml
+      # needs no entry of its own.
       - ".github/workflows/*.yml"
-      - ".github/workflows/release-core.yml"
       # The four below are read BY `tests/ci/`, whose prose pins hold this
       # repository's workflow text and its process documentation to each other.
       # An edit to one of them is exactly what breaks those pins, and without

@@ -93,6 +93,7 @@ import contextlib
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -1153,6 +1154,34 @@ def test_the_draft_exists_before_the_upload_and_is_published_after_it() -> None:
     assert "publish-pypi" in _job("publish-release")["needs"]
 
 
+def _filter_regex(pattern: str) -> str:
+    """GitHub's path-filter alphabet: `**` crosses `/`, `*` does not, else literal.
+
+    The same minimal grammar `tests/ci/test_core_paths_filter_covers_reads.py`'s
+    `_regex` implements (that module's docstring is the derivation of why `?`,
+    `+`, `[` and `]` are foreclosed rather than approximated); duplicated here
+    rather than imported because neither `tests/ci` nor `tests/release` is a
+    package under this repository's `--import-mode=importlib` collection.
+    """
+    out: list[str] = []
+    index = 0
+    while index < len(pattern):
+        if pattern.startswith("**", index):
+            out.append(".*")
+            index += 2
+        elif pattern[index] == "*":
+            out.append("[^/]*")
+            index += 1
+        else:
+            out.append(re.escape(pattern[index]))
+            index += 1
+    return "".join(out)
+
+
+def _filter_covers(entries: Sequence[str], path: str) -> bool:
+    return any(re.fullmatch(_filter_regex(entry), path) for entry in entries)
+
+
 def test_a_change_to_the_workflow_under_test_runs_this_file() -> None:
     """A test that does not run when its subject changes is not coverage.
 
@@ -1161,12 +1190,21 @@ def test_a_change_to_the_workflow_under_test_runs_this_file() -> None:
     covers editing the tests — but nothing that covers editing the thing they
     test. Both events matter: `pull_request` is where a change is reviewed, and
     `push` is what keeps main's badge honest about it.
+
+    #770: this used to assert the literal string
+    `.github/workflows/release-core.yml` was one of the filter's entries,
+    pinning the filter's *spelling* where what matters is its *coverage* — an
+    honest generalisation of the filter (`.github/workflows/*.yml`, which
+    already matches this file) went false-RED on it. Matched by pattern instead,
+    the same way `tests/ci/test_core_paths_filter_covers_reads.py` checks
+    coverage of everything else this workflow reads.
     """
     triggers = _triggers(CORE_WORKFLOW)
 
     for event in ("push", "pull_request"):
-        assert ".github/workflows/release-core.yml" in triggers[event]["paths"], event
-        assert "tests/**" in triggers[event]["paths"], event
+        entries = triggers[event]["paths"]
+        assert _filter_covers(entries, ".github/workflows/release-core.yml"), event
+        assert "tests/**" in entries, event
 
 
 def test_a_tag_push_cannot_reach_the_publication_jobs_without_running_this_file() -> None:
