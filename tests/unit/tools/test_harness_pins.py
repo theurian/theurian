@@ -1048,6 +1048,68 @@ def test_build_timings_degrades_commit_sha_to_unknown_when_git_is_unavailable(
     assert timings["commitSha"] == "unknown"
 
 
+# -- E2: report._abstention_cause / _channel_summary, pure (#787) -------------
+
+
+def test_abstention_cause_is_gate_withheld_when_the_flagged_probe_reaches_a_hit() -> None:
+    assert (
+        harness_report._abstention_cause(True, {"count": 1, "results": [{"itemId": "x"}]})
+        == harness_report._ABSTENTION_GATE_WITHHELD
+    )
+
+
+def test_abstention_cause_is_none_when_the_flagged_probe_also_returns_nothing() -> None:
+    """The absence-earned half of #787's cause: silence under either flag, never
+    a guess. The smoke corpus's own two abstention samples cannot drive this
+    branch -- one is gate-earned (the probe finds the row) and the other
+    fails its own abstention judgement before the probe is even read (see
+    ``test_harness_pins.py``'s integration file) -- so this is pinned
+    directly on the pure function instead.
+    """
+    assert harness_report._abstention_cause(True, {"count": 0, "results": []}) is None
+
+
+def test_abstention_cause_is_none_when_the_outcome_was_not_itself_correct() -> None:
+    """The guard reads ``correct`` before it ever reads ``probe`` -- a wrong
+    abstention outcome must not read as gate-earned merely because the
+    flagged call happens to return something.
+    """
+    assert (
+        harness_report._abstention_cause(False, {"count": 5, "results": [{"itemId": "x"}]}) is None
+    )
+
+
+def test_abstention_cause_is_none_when_no_probe_was_run() -> None:
+    assert harness_report._abstention_cause(True, None) is None
+
+
+def test_channel_summary_counts_only_queries_differing_beyond_build_identity() -> None:
+    """``_channel_summary``'s own contract (#787): a query whose only difference
+    is which artifact answered (the two ``_BUILD_IDENTITY_EXEMPT`` fields)
+    does not count; anything beyond it does. Exact dict equality pins the
+    shape, the counts and the constant ``reason`` together.
+    """
+    section = {
+        "identity-only": {
+            "atLimit": {"limit": 10, "differingFields": ["retrieval.indexBuildId"]},
+            "atEqualityLimit": {"limit": 50, "differingFields": []},
+        },
+        "beyond-identity": {
+            "atLimit": {
+                "limit": 10,
+                "differingFields": ["retrieval.snapshotId", "results[0].itemId"],
+            },
+            "atEqualityLimit": {"limit": 50, "differingFields": ["results[3].itemId"]},
+        },
+    }
+
+    assert harness_report._channel_summary(section) == {
+        "reason": harness_report._CHANNEL_REASON,
+        "atLimit": {"queriesDiffering": 1, "of": 2},
+        "atEqualityLimit": {"queriesDiffering": 1, "of": 2},
+    }
+
+
 # -- F: the withheld incident key is genuinely derived, not merely documented -
 
 

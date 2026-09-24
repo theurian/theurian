@@ -32,6 +32,7 @@ if str(_HARNESS_DIR) not in sys.path:
 import corpus as harness_corpus  # noqa: E402
 import corpus_build as harness_build  # noqa: E402
 import metrics as harness_metrics  # noqa: E402
+import report as harness_report  # noqa: E402
 import run as harness_run  # noqa: E402
 from wire import ToolCall, mcp_session  # noqa: E402
 
@@ -496,3 +497,116 @@ def test_census_mismatch_rule_refuses_a_manifest_whose_census_disagrees_with_a_r
         harness_build.build_both(loaded, Path(workspace_name))
 
     assert excinfo.value.rule == "census-mismatch"
+
+
+# -- F: #787's abstention-cause flag-probe and the equality channel summary --
+
+
+@pytest.fixture(scope="module")
+def smoke_report() -> dict[str, Any]:
+    """One ``harness_run.main`` build-and-report over the smoke corpus, shared
+    by every read-only assertion in this section -- these check what one
+    report says, not whether two runs agree (the byte-identity pin above is
+    that check).
+    """
+    with tempfile.TemporaryDirectory(prefix="theurian-eval-smoke-report-") as out_name:
+        code = harness_run.main(["--corpus", str(SMOKE_CORPUS), "--out", out_name])
+        assert code == 0
+        report: dict[str, Any] = json.loads((Path(out_name) / "report.json").read_text())
+        return report
+
+
+def test_abstention_cause_marks_the_gate_earned_sample_and_leaves_its_clean_counterpart_bare(
+    smoke_report: dict[str, Any],
+) -> None:
+    """#787's flag-probe, read over ``withheld-incident-key``'s own two planes.
+
+    ``full``'s default-flags call returns nothing while the flagged probe
+    reaches the draft row (the reach control
+    ``test_the_default_flag_gate_hides_the_draft_row_the_include_unapproved_flag_reveals``
+    proves that same reach) -- gate-earned, so ``abstentionCause`` states it,
+    pinned by exact equality against the module's own constant. ``clean``
+    abstains for the unrelated reason that it never held the row at all
+    under either flag, but the probe is scoped to ``full`` alone
+    (``_abstention_probe_response``), so ``clean``'s entry -- also correctly
+    abstaining -- must carry no cause.
+    """
+    corpora = smoke_report["queries"]["withheld-incident-key"]["corpora"]
+
+    assert corpora["full"]["abstentionCorrect"] is True
+    assert corpora["full"]["abstentionCause"] == harness_report._ABSTENTION_GATE_WITHHELD
+    assert corpora["clean"]["abstentionCorrect"] is True
+    assert "abstentionCause" not in corpora["clean"]
+
+
+def test_abstention_cause_never_appears_on_a_query_that_does_not_expect_abstention(
+    smoke_report: dict[str, Any],
+) -> None:
+    """A judgement that never expects abstention leaves ``abstentionCorrect``
+    at ``None``, and ``_abstention_cause``'s guard reads ``None`` as much
+    "not True" as ``False`` -- checked over two different query classes
+    (exact-decision, superseded), not just one.
+    """
+    for query_id in ("token-rotation-policy", "cache-invalidation-current"):
+        entry = smoke_report["queries"][query_id]["corpora"]["full"]
+        assert entry["abstentionCorrect"] is None
+        assert "abstentionCause" not in entry
+
+
+def test_an_abstention_query_that_returns_a_hit_of_its_own_is_not_mislabeled_gate_earned(
+    smoke_report: dict[str, Any],
+) -> None:
+    """``mainframe-disaster-recovery`` shares no vocabulary with anything in the
+    smoke corpus (measured: none of "mainframe", "disaster" or "recovery"
+    appears anywhere under ``knowledge/``), yet the smoke corpus's default
+    plane holds only three approved items and ranking still returns all
+    three at default flags -- ``abstentionCorrect`` is measured ``False``
+    here, a genuinely wrong abstention rather than an absence-earned or
+    gate-earned one. ``_abstention_cause`` reads ``correct`` before it ever
+    reads the probe, so this wrong outcome must not read as gate-earned even
+    though the flagged probe (run for every ``expectAbstention`` judgement)
+    does add the withheld runbook to this same query's hit set.
+    """
+    entry = smoke_report["queries"]["mainframe-disaster-recovery"]["corpora"]["full"]
+
+    assert entry["abstentionCorrect"] is False
+    assert "abstentionCause" not in entry
+
+
+def test_the_equality_channel_summary_carries_the_787_reason_verbatim_and_the_measured_counts(
+    smoke_report: dict[str, Any],
+) -> None:
+    """ADR-0036 Amendment 1 rider 1, #787's channel summary.
+
+    ``reason`` is pinned by exact equality against the module's own constant
+    -- a paraphrase drifting (e.g. into "single-user", specifically wrong
+    since the daemon serves many agents) is the failure this pins against,
+    not merely "some string is present". ``queriesDiffering``/``of`` are the
+    smoke corpus's own measured counts (3 equality queries -- excluding
+    non-equality ``mainframe-disaster-recovery`` and the two single-corpus
+    superseded/forbidden-trap queries -- none differing beyond build
+    identity at either limit), not assumed from the frozen S3 corpus's
+    unrelated 18/26 and 21/26.
+    """
+    assert smoke_report["equality"]["channel"] == {
+        "reason": harness_report._CHANNEL_REASON,
+        "atLimit": {"queriesDiffering": 0, "of": 3},
+        "atEqualityLimit": {"queriesDiffering": 0, "of": 3},
+    }
+
+
+def test_the_abstention_flag_probe_adds_no_extra_query_entry_to_the_report(
+    smoke_report: dict[str, Any],
+) -> None:
+    """The probe (#787) is a second wire call feeding an existing entry's
+    ``abstentionCause``, never a query of its own: it must not inflate
+    ``queries`` or the ``equality`` section's population.
+    """
+    loaded = harness_corpus.load_corpus(SMOKE_CORPUS)
+    enabled_ids = {query.id for query in loaded.queries if query.enabled}
+    equality_ids = {
+        query.id for query in loaded.queries if query.enabled and len(set(query.corpora)) == 2
+    }
+
+    assert set(smoke_report["queries"]) == enabled_ids
+    assert set(smoke_report["equality"]["queries"]) == equality_ids
