@@ -13,6 +13,7 @@ this harness runs goes through here.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -24,6 +25,17 @@ from starlette.testclient import TestClient
 
 from theurian.daemon.server import DaemonConfig, build_app
 from theurian.security.tokens import generate_token
+
+#: MCPServer.__init__ unconditionally calls the SDK's own configure_logging(),
+#: which installs a rich stderr handler at INFO on the root logger the first
+#: time this harness constructs one -- burying a run's own output under a
+#: session-id line per session and an HTTP-request line per call (#796). The
+#: request line is logged by ``httpx2`` (this dependency's actual import
+#: name; ``logging.getLogger("httpx")`` matches nothing here and leaves the
+#: noise in place). Quieted here, in this module alone, rather than at the
+#: root logger: a future harness log statement must still reach stderr.
+for _name in ("mcp", "httpx2"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
 
 TOKEN: Final = generate_token()
 PROTOCOL_VERSION: Final = "2025-06-18"
