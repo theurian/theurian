@@ -143,24 +143,62 @@ OKF as the concrete format.
 
 The artifact says so about itself, at two levels:
 
-- **Every concept file** carries OKF `generated: { by: process:theurian/<version>,
-  at: <the revision's own instant> }` (§5.2, §7) and
-  `theurian_export_version: 1`. A file that escapes the bundle still names what
-  produced it.
+- **Every concept document projected from a knowledge row** carries OKF
+  `generated: { by: theurian/<version>, at: <the revision's own instant> }`
+  (§5.2, §7), `theurian_export_version: 1` and the `theurian_content_type` of
+  decision 7. A file that escapes the bundle still names what produced it. These
+  are per-row rules and the manifest is not a row, so they do not reach it.
 - **A bundle-root manifest concept**, `theurian-bundle.md` with
-  `type: Theurian Bundle`, carries `theurian_export_version` and
-  `theurian_bundle_digest` — a digest over every file the export writes,
-  concept documents, index files and the body sidecars of decision 7 alike,
+  `type: Theurian Bundle`, carries `theurian_export_version`,
+  `theurian_bundle_digest` and the holder notice below — and **no `generated`
+  block at all**. It has no revision, so it has no revision instant to carry, and
+  export time is forbidden by the invariant below; a `generated` with a `by` and
+  no honest `at` would be worse than none. For the same reason it carries no
+  `theurian_content_type`: it projects no body.
+
+  `theurian_bundle_digest` is a digest over every file the export writes —
+  concept documents, index files and the body sidecars of decision 7 alike —
   with the manifest excluded since it is where the digest sits. Its inputs are
   the bundle and nothing else, which is the property that makes it publishable.
+
+**The manifest carries a holder-facing notice, and it is mandatory rather than
+courteous.** In plain prose in its body: *this bundle is a point-in-time,
+Index-class copy of approved knowledge; no later withdrawal, correction or
+secret removal reaches it; regenerate from the source deployment rather than
+trusting it as current.* It names the exporting deployment's identity **only if
+that identity is deterministic** — a project id qualifies, a hostname or a run
+id does not — because no value in the bundle may vary with the run. This is the
+one control in the whole residual that travels *with* the artifact; the three in
+*What this does not close* item 1 all act on the operator's side, where the copy
+is not.
 
 `generated.by` names the *exporter*, not an author, because the document is a
 projection: §5.2 defines `by` as the actor that produced the current content, and
 the content of this file is Theurian's rendering. `generated.at` is the
 **revision's own `created_at`** (`domain/knowledge.py`'s `KnowledgeRevision`),
 not the time the export ran — §5.2 defines `at` as "the content's last meaningful
-change", and revisions are immutable (INV-1), so the revision's instant is
-exactly that.
+change", and a revision is immutable, so the row's content last changed when the
+revision landed.
+
+**The relation projection is deliberately outside that "meaningful change", and
+saying so is the honest form of this rule.** `addRelation` and `removeRelation`
+mint no revision, so the `## Relations` section and `theurian_relations` can
+differ between two exports whose `generated.at` is identical. The section
+describes the graph *as of export*, and the alternative — taking `at` as the
+maximum over the row's relation instants — is rejected on a measured property of
+the store: `removeRelation` **deletes** the `knowledge_relations` row rather than
+tombstoning it (`infrastructure/sqlite/store.py::remove_relation`, a bare
+`DELETE FROM knowledge_relations`), so that maximum is non-monotonic and removing
+an edge would move `generated.at` *backwards*. A timestamp that can run backwards
+is worse than one with a stated scope.
+
+**The actor form is §7's tool form, `theurian/<version>`**, not `process:`. §7
+gives three spellings — `<producer>/<version>` for agents and tools, `human:<id>`
+for a person, `process:<id>` for an automated process — and an earlier draft here
+hybridised the first two into `process:theurian/<version>`, which is none of
+them. The export is a tool a person runs, so the tool form is the accurate one;
+what matters for a consumer either way is that it is not `human:`, which is what
+§5.3's trust tiers key on.
 
 The manifest is a concept document rather than front matter on the root
 `index.md` because §8 permits index files no front matter at all, with one
@@ -207,6 +245,18 @@ There is no `--include-unapproved` bundle and no flag that widens this
 population. A caller that may not read a row through `search` or `knowledge.get`
 may not read it through a bundle either, and the bundle is the easier artifact to
 forward.
+
+**The export reads one canonical snapshot**, a single connection and transaction
+over the active state, and every row, relation and body in a bundle comes from
+that one read. The invariant in decision 2 does not reach this: it bounds what a
+byte may be a *function of*, and says nothing about a withdrawal landing between
+the twentieth row and the fortieth. Without the rule, a `migrate apply` running
+during a long export could leave a bundle straddling two states — a withdrawn
+row present as a concept, absent from the index file, and pointed at by a
+relation whose other end was gated under the newer state. That is the state and
+lifecycle family, and it is the family a published index build already answers
+with a pointer swap ([ADR-0024](0024-a-purge-is-a-build.md)); the export answers
+it by reading once. S2 owes the pin.
 
 ### 4. Relations export twice — as prose links, and as one namespaced typed key
 
@@ -641,11 +691,15 @@ other — a proposal a human reviews.
    mechanism lands, alongside the T-3 entry S3 owes for the import; *Compliance*
    carries both.
 
-   Three things bound the residual and none removes it: the bundle is
+   Four things bound the residual and none removes it. **Three are
+   operator-side, where the distributed copy is not**: the bundle is
    Index-class, so deleting a copy loses nothing; `theurian_bundle_digest` makes
    staleness detectable by regenerating and comparing; and the guidance the
-   export ships with is to regenerate rather than to edit. An operator choosing
-   to distribute a bundle is choosing this residual, which is the reason it is
+   export ships with is to regenerate rather than to edit. **One travels with the
+   artifact** — the manifest's holder notice (decision 2), which is why that
+   notice is a mandatory obligation on S2 rather than a nicety: it is the only
+   thing that reaches the person holding the copy. An operator choosing to
+   distribute a bundle is choosing this residual, which is the reason it is
    written here in those words rather than as a note about freshness.
 2. **Round-trip is not identity.** Export followed by import produces a
    *proposal*, never a restoration: new revision ids, a trust ceiling of
@@ -733,7 +787,9 @@ Still owed, with the slice that will satisfy it:
   battery cannot see, per the alternatives table's first new row. With it, a pin
   that **an approved row whose media type is outside `_EXTENSIONS` exports as a
   sidecar rather than refusing**, since that is where the first draft's refusal
-  would have fired.
+  would have fired. And a pin that **the export reads one canonical snapshot** —
+  a withdrawal landing mid-walk leaves the bundle wholly on one side of it, never
+  straddling both (decision 3).
 - **Slice S3 (import):** that a bundle carrying only bare Markdown links yields a
   drafted migration with **no** `addRelation` operation (decision 5); that an
   import lands only under a proposal directory and reaches no approved state
