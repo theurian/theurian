@@ -68,17 +68,19 @@ The two are not interchangeable, which is why the prepared tree reports no
 verdict at all: it prints a path, never a KILLED or a SURVIVED. What you see
 inside a prepared tree is a lead. Turn it into a verdict on the verdict path.
 
-**Add ``--with-git`` to either mode when the question touches the five rules
+**Add ``--with-git`` to either mode when the question touches the seven rules
 that need the source's object store** -- the corpus byte-identity pin, the
 root-corpus applicability test, two rules in ``test_git_trailer_source.py``,
-and the port-count row's own re-derivation (the full, dated list is in
-``_lend_git_objects``'s docstring; only two of the five actually read a
-blob, two more need ``ls-files``/refs, and the fifth's own guard fails
-rather than skips). Without the flag every copy skips the first four, so a
-mutation whose only killer is one of them reports SURVIVED with no sign the
-harness never ran the test that would have caught it -- and the fifth
-instead turns the control red (#679). The cost is per-tree, not per-batch,
-and the durable figure is
+the two ``premise_check`` ``test_name`` verification pins, and the port-count
+row's own re-derivation (the full, dated list is in ``_lend_git_objects``'s
+docstring; two of the seven actually read a blob, two more need
+``ls-files``/refs, two ask ``git rev-parse --is-inside-work-tree`` for the
+premise_check pins, and the seventh's own guard fails rather than skips).
+Without the flag six of the seven skip, so a mutation whose only killer is
+one of them reports SURVIVED with no sign the harness never ran the test
+that would have caught it -- and the seventh (the port-count row) instead
+turns the control red (#679). The cost is per-tree, not per-batch, and the
+durable figure is
 machine-independent -- ~104 KB of copied ``.git`` bytes (measured
 2026-08-31). The working copy itself is not: ~13 MB on a clean checkout,
 measured up to ~124 MB on a developer machine carrying other agents'
@@ -527,11 +529,12 @@ def _lend_git_objects(destination: Path) -> None:
     **Why a copy needs one at all.** ``_COPY_IGNORE`` drops ``.git`` and
     :func:`_record_population` hands the suite a path list instead, which is
     enough for every rule that reads a *path* or the bytes in the working tree.
-    It is not enough for a rule that reads a **blob**, and this suite has five
-    of them -- measured 2026-08-31 at f1b6711, ``pytest -rs`` inside a copy with
-    and without this flag, diffing which SKIPs disappear (the fifth added
-    #679, whose control does not appear in that diff because it fails rather
-    than skips -- see below):
+    It is not enough for a rule that needs to ask git something a path list
+    cannot answer, and this suite has seven of them -- the first four measured
+    2026-08-31 at f1b6711, ``pytest -rs`` inside a copy with and without this
+    flag, diffing which SKIPs disappear; the fifth, sixth and seventh measured
+    2026-09-25 by running all seven directly in one gitless ``--prepare-tree``
+    copy (#788, #679): six skip, and the seventh fails instead.
 
     - ``test_dogfood_corpus_governance.py::test_every_pinned_body_is_byte_identical
       _to_its_source_anchor_commit`` -- a committed body against
@@ -548,6 +551,11 @@ def _lend_git_objects(destination: Path) -> None:
       availability inside a copy therefore depends on the *source*'s own fetch
       state, not on this flag alone: a source with no ``origin`` remote-tracking
       ref still skips it under ``--with-git``.
+    - ``test_premise_check_verification.py::test_an_async_def_test_under_the
+      _core_package_tree_is_found`` and ``::test_a_test_name_committed_nowhere
+      _is_dangling_via_the_real_seam`` -- both ask ``git rev-parse
+      --is-inside-work-tree`` via :func:`premise_verify.git_repository_present`
+      before running a `git grep` these two tests otherwise drive directly (#788).
     - ``test_port_count_row_claims.py::test_the_port_count_row_inventories
       _the_population_its_own_key_returns`` -- ``git grep``/``git ls-files
       --cached`` recomputing a roadmap row's own published counts (#679).
@@ -555,16 +563,17 @@ def _lend_git_objects(destination: Path) -> None:
       git-shaped SKIP, so a gitless copy does not skip this one: it
       **fails**, turning the control red rather than reporting SURVIVED.
 
-    In a copy without this flag, the first four reach their own git-shaped
+    In a copy without this flag, the first six reach their own git-shaped
     guard, see the population came from the manifest (or find no ``.git`` at
-    all), and **skip**. So a mutation whose only killer is one of those four --
+    all), and **skip**. So a mutation whose only killer is one of those six --
     an anchor repointed at another commit, a body re-pinned consistently in both
     places, a frozen-corpus trailer count perturbed, a live-tip accounting
-    break -- comes back SURVIVED from a harness that never ran the test that
-    holds it, and the reader has no way to tell that verdict from a real one.
-    The fifth has no such guard and fails outright, so its absence shows up as
-    a red control instead -- correctly voiding the batch, but only once
-    someone reads that flag rather than the KILLED verdicts it produced.
+    break, a test-name citation dispatched to the wrong verdict -- comes back
+    SURVIVED from a harness that never ran the test that holds it, and the
+    reader has no way to tell that verdict from a real one. The seventh has no
+    such guard and fails outright, so its absence shows up as a red control
+    instead -- correctly voiding the batch, but only once someone reads that
+    flag rather than the KILLED verdicts it produced.
 
     **Why objects are lent rather than copied.** Measured 2026-08-31, on two
     machines: a scratch clone and this machine's own checkout root both copy
@@ -599,14 +608,13 @@ def _lend_git_objects(destination: Path) -> None:
     if not git_dir.is_dir():
         raise HarnessError(
             f"--with-git needs a plain repository at {git_dir}; a linked worktree or a "
-            "bare checkout does not carry the index this lends. Drop --with-git and "
-            "accept that the five rules it unblocks (see this function's docstring; "
-            "one fails rather than skips) do not run, or run the batch from the plain "
-            "checkout this worktree belongs to "
-            "-- its own committed history and its own working tree, not this "
-            "worktree's uncommitted or untracked changes. A fresh clone loses those "
-            "the same way `git worktree add HEAD` does (see this module's docstring), "
-            "so it is not offered here."
+            "bare checkout does not carry the index this lends. Two options: drop "
+            "--with-git and accept that the seven rules it unblocks (see this "
+            "function's docstring; one fails rather than skips) do not run; or run the "
+            "batch from the plain checkout this worktree belongs to -- its own "
+            "committed history and working tree, not a fresh clone or another "
+            "worktree, both of which lose whatever is uncommitted or untracked here "
+            "(see this module's docstring), so neither is offered as a substitute."
         )
 
     version_probe = _git_in_source("config", "--get", "core.repositoryformatversion")
@@ -624,7 +632,7 @@ def _lend_git_objects(destination: Path) -> None:
             "different object hash algorithm) and a reftable refs backend (plain SHA-1 "
             "objects, but refs stored outside refs/ and packed-refs) both do, and this "
             "hardcoded config would handle neither correctly. Drop --with-git and accept "
-            "that the five rules it unblocks (see this function's docstring; one fails "
+            "that the seven rules it unblocks (see this function's docstring; one fails "
             "rather than skips) do not run, or run the batch against a "
             "repositoryformatversion=0 clone of this source instead."
         )
@@ -964,9 +972,10 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         "--with-git",
         action="store_true",
         help=(
-            "give each copy a .git that borrows the source's objects, so the five rules "
-            "that need the source's object store (corpus byte-identity, root-corpus "
-            "apply, two test_git_trailer_source.py rules, and the port-count row's own "
+            "give each copy a .git that borrows the source's objects, so the seven "
+            "rules that need the source's object store (corpus byte-identity, "
+            "root-corpus apply, two test_git_trailer_source.py rules, the two "
+            "premise_check test_name pins, and the port-count row's own "
             "re-derivation) run instead of skipping -- or, for the last one, failing"
         ),
     )

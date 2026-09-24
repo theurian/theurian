@@ -118,10 +118,11 @@ WORKERS: Final = 2
 #: verdict. #527 is closed as a recorded quirk, not as a fix -- neither of its
 #: two options was taken, so the flag is the whole remedy.
 #:
-#: It also buys what it was built for: without it the four rules that read a
-#: *blob* skip, so a mutation whose only killer is one of them comes back
-#: SURVIVED from a run that never executed the test holding it. For an
-#: unattended job that files what it finds, that is a fabricated finding.
+#: It also buys what it was built for: without it, six of the seven rules
+#: `tools/mutate.py`'s `_lend_git_objects` docstring names skip, so a mutation
+#: whose only killer is one of them comes back SURVIVED from a run that never
+#: executed the test holding it. For an unattended job that files what it
+#: finds, that is a fabricated finding.
 #:
 #: The flag needs a plain repository at the checkout's ``.git``. A CI checkout is
 #: one; a linked worktree is not, so running this driver's default harness from a
