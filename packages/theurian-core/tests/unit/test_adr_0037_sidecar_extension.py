@@ -1,18 +1,25 @@
-"""ADR-0037 decision 7's sidecar extension rule, walked over the types it ranges on.
+"""ADR-0037 decision 7's sidecar rule: the extension it derives, and where that name may go.
 
-The Compliance section promises this walk by name: *the sidecar extension rule,
-walked over the media types it ranges on*. What it protects is a filename. A
-non-markdown body is written beside its concept document, and the extension it
+The Compliance section promises the first walk by name: *the sidecar extension
+rule, walked over the media types it ranges on*. What it protects is a filename.
+A non-markdown body is written beside its concept document, and the extension it
 gets is a total function of ``contentType`` alone -- so a structured body spelled
 ``.txt`` is a bundle member a consumer's tooling will not parse, and no exporter
 exists yet to notice. S2 builds that exporter from the ADR's prose, which makes
 the prose the thing under test.
 
-Bidirectional, as in ``test_adr_0037_claims.py``: the fact half reddens when
-``domain/values.py::_STRUCTURED_MEDIA_TYPES`` moves under the rule, the prose
-half when the ADR stops stating the rule the fact half reimplements. The three
-arms are copied here rather than imported because the code they will live in is
-S2's; a pin over a copy is worth nothing unless the original is pinned too.
+Bidirectional where a live half exists, as in ``test_adr_0037_claims.py``: the
+fact half reddens when ``domain/values.py::_STRUCTURED_MEDIA_TYPES`` moves under
+the rule, the prose half when the ADR stops stating the rule the fact half
+reimplements. The three arms are copied here rather than imported because the
+code they will live in is S2's; a pin over a copy is worth nothing unless the
+original is pinned too.
+
+The last two pins have **no live half and say so**: they bound bytes no code
+writes until S2, whose bytes battery the Compliance section assigns them to. A
+prose pin standing alone earns its place exactly when the sentence it holds was
+refuted once and could be restored in silence -- which is what round 3's closure
+verification measured of both.
 
 Held here:
 
@@ -27,6 +34,9 @@ Held here:
   *arm*, and five of the seven match neither).
 - **What the refusing rule the alternatives table rejects would have cost**,
   measured through ``body_extension`` itself.
+- **The concept body's bound** (decision 2's family 3) and **the link-text
+  exclusion** (decision 7's sidecar bullet) -- the two sentences that say where
+  the derived filename appears, and what may never stand in for it.
 
 Pure: one Markdown file read, and shipped domain values built in memory. No
 database, no socket, no temporary directory.
@@ -311,6 +321,82 @@ def test_the_rejected_refusing_rule_would_have_refused_five_of_the_seven_and_tex
     assert _body_extension_refuses(PLAIN_TEXT.value), (
         "`body_extension` now maps `text/plain`, and the alternatives row counts it "
         "beside the five as part of what the refusing rule would have cost."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Where the derived filename may appear: decision 2's family 3, and decision
+# 7's sidecar bullet. Prose-only, for the reason the module docstring gives.
+# ---------------------------------------------------------------------------
+
+
+def test_the_adr_still_bounds_the_concept_body_by_the_content_type_split() -> None:
+    """Family 3's bound, in the two halves a restoration of the refuted row would drop.
+
+    Decision 2 closes its every-byte invariant by enumeration, so each family's
+    *bound* cell is the closure for that family's bytes -- and family 3's bytes
+    are a concept document's body, which is either the canonical body or a link
+    to a sidecar. Round 3 refuted the row that read *The canonical body, plus the
+    generated* ``## Relations`` *section*: it names no split, so the sidecar-link
+    paragraph is bytes no family bounds, and a body that is not markdown has its
+    filename emitted by a rule the closure does not cover. Round 3's closure
+    verification restored that wording and measured the suite green; this is the
+    pin that reddens on it.
+
+    Two fragments, because they fail for different reasons. The first is the
+    split itself -- without it the row describes only the markdown case, which is
+    exactly the refuted shape. The second is the derivation bound, whose *and not
+    a second one* is what bars the sidecar link from being spelled from anything
+    but the two served inputs; the round-2 regression reached for the canonical
+    body file's author-written suffix as that second derivation.
+    """
+    assert_the_adr_states(
+        "When `contentType` is `text/markdown`, the canonical body; otherwise the "
+        "generated sidecar-link paragraph",
+        because=(
+            "It is the split that puts the sidecar-link paragraph inside a family's "
+            "bound at all. The refuted wording named only the canonical body, leaving "
+            "the bytes of every non-markdown row's concept document unclosed while "
+            "decision 2's enumeration still claimed to cover every byte."
+        ),
+    )
+    assert_the_adr_states(
+        "whose link text *and* target are both the sidecar's own derived filename — "
+        "`theurian_body_file`'s derivation and not a second one, the stem from the item "
+        "id and the extension from `contentType`, both served (decision 7)",
+        because=(
+            "`and not a second one` is the clause that keeps the link inside the "
+            "disclosure bound: one derivation, from two served inputs. A row that "
+            "bounds the paragraph without it admits a second rule for the same name, "
+            "which is how an author-written suffix reached a bundle path in round 2."
+        ),
+    )
+
+
+def test_the_adr_still_bars_the_author_written_name_from_the_sidecar_link_text() -> None:
+    """The exclusion half of decision 7's link sentence, which is the half that was lost.
+
+    The positive claim -- the link text is the derived filename -- reads as
+    complete on its own, which is why deleting the clause after it costs nothing
+    a reader notices. What it costs is the refusal: without *never the canonical
+    body file's author-written name* the sentence no longer rules out the one
+    substitution the ADR's alternatives table rejects in three ways, and the
+    author-written name is a string no served payload publishes. Round 3's
+    closure verification deleted that clause and measured the suite green.
+
+    Pinned as one fragment spanning both halves, so the exclusion cannot be
+    dropped while the claim it qualifies stays quoted: the positive half alone
+    is what the falsified draft already said.
+    """
+    assert_the_adr_states(
+        "**its link text is that same derived filename**, never the canonical body "
+        "file's author-written name",
+        because=(
+            "The derived filename is served end to end; the canonical body file's own "
+            "name is not, and `theurian_body_file` carried it into a bundle path for a "
+            "round. This clause is where decision 7 refuses that substitution in the "
+            "link text, which every reader of the bundle sees."
+        ),
     )
 
 
