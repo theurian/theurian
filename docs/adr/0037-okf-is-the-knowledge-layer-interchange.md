@@ -377,10 +377,25 @@ Everything downstream is unchanged and is the point of choosing this terminus:
 - **INV-8 holds by construction.** The bundle's own identity is always recorded
   as a source anchor, so a proposal from an import is never unattributed
   (`domain/knowledge.py` lines 208–215). An OKF `sources[]` entry becomes an
-  additional anchor when its `resource` is a followable URI or path; §5.1 allows
-  `resource` to be a *scope descriptor* instead ("all queries in BigQuery project
-  X"), and a scope descriptor is not a `sourceUri` — the schema would accept the
-  string, and recording it as a source URI would misstate what it is.
+  additional anchor when its `resource` is **syntactically a URI or a relative
+  path**; §5.1 allows `resource` to be a *scope descriptor* instead ("all queries
+  in BigQuery project X"), and a scope descriptor is not a `sourceUri` — the
+  schema would accept the string, and recording it as a source URI would misstate
+  what it is. The test is syntactic and nothing more: **the importer does not
+  follow the reference, and performs no reachability check on it** — that would
+  be the fetch the boundary above forbids, and §6.1 in any case tells consumers
+  to tolerate a reference that resolves to nothing.
+
+**Every path a bundle names is resolved and contained before it is read.**
+`theurian_body_file`, and any §6.2 or §10.2 file reference the importer chooses
+to read, must resolve **under the bundle root after symlink resolution**, or that
+reference is refused — the reference, not the import, so a bundle with one bad
+path still yields a proposal for everything else. The bundle is untrusted input
+that arrived as a directory someone unpacked, which makes it exactly the shape
+SEC-7 and T-4/T-5 already name: a `../` in a front-matter value, or a symlink
+inside the tree pointing at `~/.ssh/id_rsa`, would otherwise read a file outside
+the bundle and land its contents in a proposal a human is about to approve. S3
+owes both pins — the escape and the symlink.
 
 T-3 — an agent acting on instructions injected into indexed content — is the live
 threat on this direction, and it is guarded by exactly the controls ADR-0035
@@ -434,6 +449,29 @@ spellable value in a field nothing treats as a path, while an `ItemId` is dotted
 lowercase kebab-case and cannot express a traversal at all. A bundle is a
 directory tree, so this is the difference between a contained export and one that
 writes outside its own root.
+
+**Three filenames are reserved against derived concept paths, and a collision
+takes a documented escape rather than a refusal or a silent overwrite.**
+`index.md` and `log.md` are OKF's (§3.1, at any level of the hierarchy) and
+`theurian-bundle.md` is this ADR's, at the bundle root. Nothing stops an item id
+from deriving onto one: `ItemId('index')`, `ItemId('log')`,
+`ItemId('theurian-bundle')` and `ItemId('architecture.index')` are all valid —
+the id grammar is lowercase alphanumerics with hyphens and dotted namespaces, and
+none of those names is special to it. Left unhandled, a concept would displace
+the directory listing or the manifest, or be dropped in favour of them. **It is a
+function of the row's own id, so the two-corpora battery cannot see it**: both
+corpora hold that row, so both bundles are equally wrong.
+
+The rule: a derived leaf equal to a reserved name is written with an `_item`
+suffix on its stem — `index.md` → `index_item.md`, and its sidecar follows the
+same stem. **The escape cannot collide with anything**, and that is a property of
+the grammar rather than a hope: `ItemId('index_item')` raises
+`InvalidIdentifierError`, because the underscore is outside the id alphabet
+entirely, so no item id can derive onto an escaped name. `theurian_item_id` on
+the concept still names the unescaped id, so nothing is lost in the projection.
+A refusal was the alternative and is rejected for the reason the sidecar rule
+rejects it: a gate-cleared row is never refused, and one item called `index`
+would otherwise deny the whole corpus its bundle. S2 owes the pin.
 
 **A markdown body embeds in its concept document; a non-markdown body is written
 as a sidecar file beside it, byte for byte.** `contentType` is a free media type
@@ -787,15 +825,20 @@ Still owed, with the slice that will satisfy it:
   battery cannot see, per the alternatives table's first new row. With it, a pin
   that **an approved row whose media type is outside `_EXTENSIONS` exports as a
   sidecar rather than refusing**, since that is where the first draft's refusal
-  would have fired. And a pin that **the export reads one canonical snapshot** —
+  would have fired. A pin that **the export reads one canonical snapshot** —
   a withdrawal landing mid-walk leaves the bundle wholly on one side of it, never
-  straddling both (decision 3).
+  straddling both (decision 3). And a pin that **an approved item literally named
+  `index`, `log` or `theurian-bundle` exports under its escaped stem**, with
+  neither the concept nor the file it would have displaced going missing.
 - **Slice S3 (import):** that a bundle carrying only bare Markdown links yields a
   drafted migration with **no** `addRelation` operation (decision 5); that an
   import lands only under a proposal directory and reaches no approved state
   (decision 6, the same shape ADR-0032 and ADR-0035 owe); that the proposed trust
-  level is capped at `INFERRED`; and that a bundle with no usable `sources[]`
-  still produces a proposal satisfying INV-8 through the bundle's own anchor.
+  level is capped at `INFERRED`; that a bundle with no usable `sources[]`
+  still produces a proposal satisfying INV-8 through the bundle's own anchor; and
+  the two containment pins of decision 6 — a `theurian_body_file` of `../` form,
+  and one reached through a symlink out of the tree, are each refused as
+  references while the rest of the bundle still drafts.
 - **Slice S2, prose:** a threat-model entry for the distributed-bundle residual
   — a withdrawal, secret removal included, does not propagate to already
   distributed copies. No existing entry covers that shape (*What this does not
