@@ -211,10 +211,16 @@ to concept documents, which is where they go.
 it today — no export command exists — so it is S2's to pin, and *Compliance*
 carries it as owed:**
 
-> **Every byte of the bundle is a function of the exported population and the
-> exporter's own version, and of nothing else.** Nothing in it varies with a
-> canonical row the bundle does not contain, and nothing in it varies with when
-> the export ran.
+> **Every byte the export writes is a function of the exported population and
+> the exporter's own version, and of nothing else.** No byte varies with a
+> canonical row the bundle does not contain, and none varies with when the
+> export ran.
+
+The subject is the *bytes of the files*. Filesystem metadata — mtimes, directory
+enumeration order, permissions — is outside it and deliberately so: a copy, a
+tarball or a clone rewrites all three, and a battery that compared them would
+fail for reasons that have nothing to do with the projection. The batteries
+compare file contents.
 
 Both of the properties this ADR is asked for fall out of that one sentence
 rather than out of a checklist of excluded fields: the two-corpora equality of
@@ -297,16 +303,24 @@ bundle** — a property of the gate, not of a link check.
 
 The rule already has an application-layer twin, which is the layer an export
 command sits in: `application/index_builder.py::_both_ends_visible` asks it of
-the set the build's own walk produced. S2 has a shape to follow rather than a
-predicate to invent.
+the set the build's own walk produced. **What makes that form safe is where its
+set comes from** — the walk's own visible set, built from rows read by the id
+each literally names — so it inherits the alias property rather than restating
+it. An export that rebuilt the same shape over an *alias-resolving* lookup would
+reintroduce T-21 while looking identical on the page, which is why the source of
+the set is stated here and not left for S2 to infer.
 
-**The relation `note` is included.** It is already SEC-11-scanned by both
-controls — `propose accept` scans each operation's free text before a migration
-lands, and the index build scans the notes this deployment would publish
-(`application/index_builder.py::_relation_secrets`) — and, as that function's own
-docstring records, `knowledge.get` already serves it verbatim to this same
-population. Withholding it from the bundle would protect nothing that is not
-already published, while dropping the sentence that says *why* the edge exists.
+**The relation `note` is included.** Two SEC-11 controls already read it, and
+they are not the same kind of thing: `propose accept` **enforces** — it scans
+each operation's free text before a migration lands and refuses under the default
+`block` policy — while the index build **detects**, scanning the notes this
+deployment would publish (`application/index_builder.py::_relation_secrets`) and
+reporting rather than refusing, because by then the content is already served.
+The enforcement is the accept gate; the index build is the second look. And, as
+that function's own docstring records, `knowledge.get` already serves the note
+verbatim to this same population. Withholding it from the bundle would protect
+nothing that is not already published, while dropping the sentence that says
+*why* the edge exists.
 
 ### 5. The import never manufactures a typed relation
 
