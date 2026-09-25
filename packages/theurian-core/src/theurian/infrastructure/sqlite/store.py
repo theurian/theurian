@@ -300,13 +300,17 @@ class SqliteCanonicalStore:
 
         **Opt-in, and the default read path is unchanged.** Outside this context
         the connection stays in autocommit, where each statement takes its own
-        snapshot and a multi-statement walk interleaves with a writer -- measured
-        on SQLite 3.47.1 against a real state database: an autocommit reader
-        counted 2 ``knowledge_items`` before a ``migrate apply``-shaped write and
-        3 after, while a reader inside this context counted 1 either side of it.
+        snapshot and a multi-statement walk interleaves with a writer. Both
+        directions are driven over one item and a ``migrate apply``-shaped write
+        that lands between two reads: the autocommit reader answers one item and
+        then two (``test_the_default_read_path_sees_a_commit_that_lands_between_
+        two_reads``), a reader inside this context answers one either side
+        (``test_a_commit_inside_a_read_snapshot_is_invisible_to_it``).
 
-        Three measurements decide the implementation, all taken the same way
-        (``tests/integration/test_canonical_read_snapshot.py`` drives each):
+        Three measurements decide the implementation. The module those two tests
+        live in, ``tests/integration/test_canonical_read_snapshot.py``, drives the
+        first two below; the third is the reason the refusal exists, and the
+        refusal is what keeps anything from reaching it:
 
         * **The state database runs ``journal_mode = WAL``** -- the pragma
           ``CONNECTION_PRAGMAS`` sets, reported as ``wal`` by this connection --
