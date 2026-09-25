@@ -22,13 +22,14 @@ Four things, each independent of the others:
 from __future__ import annotations
 
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 import yaml
 from fakes.clock import FrozenClock
 from fakes.ids import SeededIdGenerator
 
+from theurian.application import okf_import
 from theurian.application.draft_only_proposals import DraftOnlyProposals
 from theurian.application.okf_import import OkfImportError, OkfImportRequest, OkfImportService
 from theurian.application.project_service import ProjectPaths, initialize_project
@@ -42,6 +43,7 @@ from theurian.infrastructure.filesystem.migration_loader import (
     load_migrations,
     validate_migration_document,
 )
+from theurian.security.paths import read_source_file
 
 pytestmark = pytest.mark.integration
 
@@ -130,6 +132,12 @@ def test_a_uri_and_a_relative_path_become_anchors_a_scope_descriptor_does_not(
     `_is_uri_or_relative_path` never follows, fetches or checks reachability
     -- this drives its three branches through the public `import_bundle`
     surface rather than by calling the private function directly.
+
+    Two scope-descriptor phrasings are planted, not one: the plain-prose
+    original, and a colon-prefixed one. "BigQuery" alone satisfies RFC 3986's
+    scheme grammar, and the round found this fixture's own original phrasing
+    -- which opens with no colon at all -- was the one shape that could never
+    exercise the branch a colon-prefixed descriptor takes.
     """
     bundle = tmp_path / "bundle"
     concept = """---
@@ -140,6 +148,7 @@ sources:
   - resource: https://example.com/doc.pdf
   - resource: docs/architecture.md
   - resource: "all queries in BigQuery project X"
+  - resource: "BigQuery: all queries in project X"
 ---
 
 body
@@ -157,7 +166,7 @@ body
     assert "https://example.com/doc.pdf" in uris
     assert "docs/architecture.md" in uris
     assert not any("BigQuery" in uri for uri in uris), (
-        f"the scope descriptor became a source anchor: {uris}. A scope "
+        f"a scope descriptor became a source anchor: {uris}. A scope "
         f"descriptor carries whitespace no URI or relative path needs, and "
         f"decision 6 requires it be excluded rather than followed."
     )
@@ -204,6 +213,57 @@ body
     assert "https://example.com/doc.pdf" in uris
     assert len(anchors) == 2, (
         f"expected the bundle-identity anchor plus the real URI, got {anchors}"
+    )
+
+
+# -- The descriptor grammar's whole admitted/excluded population (round-1 pin) --------------
+
+
+@pytest.mark.parametrize(
+    ("resource", "admitted"),
+    [
+        pytest.param("BigQuery: all queries in project X", False, id="colon-prefixed"),
+        pytest.param("Confluence: the space named Platform", False, id="colon-prefixed-2"),
+        pytest.param("all queries in BigQuery project X", False, id="no-colon"),
+        pytest.param("BigQuery:\tall queries in project X", False, id="tab-separated"),
+        pytest.param("https://example.com/a b", False, id="uri-shaped-internal-space"),
+        pytest.param("https://example.com/doc.pdf", True, id="https-uri"),
+        pytest.param("docs/architecture.md", True, id="relative-path"),
+        pytest.param("s3://data-bucket/path/to/object", True, id="scheme-uri-no-whitespace"),
+    ],
+)
+def test_the_descriptor_grammar_admits_or_excludes_on_whitespace_alone(
+    tmp_path: Path, paths: ProjectPaths, resource: str, admitted: bool
+) -> None:
+    """Review-Finding: adversarial HIGH -- a colon-prefixed scope descriptor
+    passes the syntactic anchor test its docstring excludes.
+
+    The fixed predicate excludes on whitespace before it ever checks the
+    scheme grammar; this enumerates the grammar the fix has to hold across,
+    not only the one phrasing the finding happened to name. The internal-space
+    URI case is graded on what the code actually does, not on what a URI
+    "should" be: whitespace excludes it too, since no legitimate URI or
+    relative path carries any.
+    """
+    bundle = tmp_path / "bundle"
+    front_matter = yaml.safe_dump(
+        {
+            "type": "decision",
+            "title": "Descriptor grammar",
+            "status": "stable",
+            "sources": [{"resource": resource}],
+        },
+        sort_keys=False,
+    )
+    _write(bundle, "descriptor.md", f"---\n{front_matter}---\n\nbody\n")
+
+    result = _service(paths).import_bundle(_request(bundle))
+
+    assert not result.refusals
+    anchors = _source_anchors_of(result.concepts_admitted[0].proposal.directory)
+    uris = [str(a["sourceUri"]) for a in anchors]
+    assert (resource in uris) is admitted, (
+        f"{resource!r} admitted={resource in uris}, expected {admitted}"
     )
 
 
@@ -377,3 +437,36 @@ def test_a_300_concept_bundle_refuses_fast_rather_than_drafting_unboundedly(
     assert "600" not in str(excinfo.value), "the walk must stop at the crossing, not read all 300"
     assert elapsed < 5.0, f"a 300-concept bundle took {elapsed:.3f}s to refuse, expected < 5s"
     assert not [p for p in paths.proposals.glob("*") if p.is_dir()]
+
+
+def test_the_incremental_cap_stops_reading_before_the_rest_of_the_bundle(
+    tmp_path: Path, paths: ProjectPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M-f, proved by a counting hook rather than inferred from the refusal's
+    own arithmetic, as the test above does: a bundle far past the cap must
+    never open the files past the crossing point. 126 concepts at 2
+    operations each is 252, the first total over `MAX_UPSERT_OPERATIONS`
+    (250), so exactly 126 of the 300 files are ever read.
+    """
+    bundle = tmp_path / "bundle"
+    for index in range(300):
+        _write(
+            bundle,
+            f"concept-{index}.md",
+            f"---\ntype: decision\ntitle: Concept {index}\nstatus: stable\n---\n\nbody\n",
+        )
+
+    reads: list[str | PurePosixPath] = []
+
+    def counting_read(root: Path, relative: str | PurePosixPath) -> bytes:
+        reads.append(relative)
+        return read_source_file(root, relative)
+
+    monkeypatch.setattr(okf_import, "read_source_file", counting_read)
+
+    with pytest.raises(OkfImportError):
+        _service(paths).import_bundle(_request(bundle))
+
+    assert len(reads) == 126, (
+        f"expected exactly 126 concepts read before the cap fired, got {len(reads)}"
+    )

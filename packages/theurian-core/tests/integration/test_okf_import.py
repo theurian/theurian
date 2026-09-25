@@ -616,6 +616,118 @@ def test_a_concept_inside_an_unreadable_directory_is_refused_not_dropped(
 
 
 # ---------------------------------------------------------------------------
+# Round-1 closure pin (HIGH-1): every demonstrated crash face from
+# security HIGH -- "the refusal boundary enumerated the callee's docstring,
+# not its exception surface" -- planted together. Only three of the seven
+# shapes 28f107ac's commit message names got their own individual test.
+# ---------------------------------------------------------------------------
+
+
+def _yaml_concept(
+    *, title: str, status: str = "stable", kind: str = "decision", **extra: object
+) -> str:
+    mapping: dict[str, object] = {"type": kind, "title": title, "status": status, **extra}
+    return f"---\n{yaml.safe_dump(mapping, sort_keys=False, allow_unicode=True)}---\n\nbody\n"
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_every_demonstrated_crash_face_refuses_rather_than_raising_and_leaks_no_path(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    """`import_bundle` must return a result, never raise, for every one of
+    these -- and neither a refusal nor the untouched sibling's own drafted
+    migration may carry the bundle's or the project's absolute path (T-25).
+    """
+    bundle = tmp_path / "bundle"
+    name_max = os.pathconf(str(tmp_path), "PC_NAME_MAX") if hasattr(os, "pathconf") else 255
+    long_name = "x" * (name_max + 245) + ".txt"  # comfortably past NAME_MAX on any filesystem
+
+    (bundle / "a-directory.md").mkdir(parents=True)
+    (bundle / "sidecar-dir").mkdir(parents=True)
+    _write(bundle, "plainfile.txt", "not a directory")
+    locked_sidecar = bundle / "locked-sidecar.bin"
+    locked_sidecar.write_text("secret")
+    locked_sidecar.chmod(0o000)
+    locked_concept = bundle / "mode000-concept.md"
+    locked_concept.write_text(_yaml_concept(title="Locked concept"), encoding="utf-8")
+    locked_concept.chmod(0o000)
+
+    _write(
+        bundle,
+        "body-directory.md",
+        _yaml_concept(title="Body is a directory", theurian_body_file="sidecar-dir"),
+    )
+    _write(bundle, "body-empty.md", _yaml_concept(title="Body is empty", theurian_body_file=""))
+    _write(bundle, "body-dot.md", _yaml_concept(title="Body is dot", theurian_body_file="."))
+    _write(
+        bundle,
+        "body-nul.md",
+        _yaml_concept(title="Body has a NUL", theurian_body_file="abc\x00def"),
+    )
+    _write(
+        bundle,
+        "body-locked.md",
+        _yaml_concept(title="Body is unreadable", theurian_body_file="locked-sidecar.bin"),
+    )
+    _write(
+        bundle,
+        "body-through-file.md",
+        _yaml_concept(
+            title="Body reached through a file", theurian_body_file="plainfile.txt/sub.txt"
+        ),
+    )
+    _write(
+        bundle,
+        "body-too-long.md",
+        _yaml_concept(title="Body name too long", theurian_body_file=long_name),
+    )
+    oversized_label = "x" * (5 * 1024 * 1024)
+    _write(
+        bundle,
+        "oversized.md",
+        f"---\ntype: decision\ntitle: T\nstatus: stable\ntags: ['{oversized_label}']\n---\nbody\n",
+    )
+    _write(bundle, "vanilla.md", _VANILLA_CONCEPT)
+
+    try:
+        result = _service(paths).import_bundle(_request(bundle))
+    finally:
+        locked_sidecar.chmod(0o644)
+        locked_concept.chmod(0o644)
+
+    assert {p.item_id.value for p in result.concepts_admitted} == {"vanilla"}
+    assert len(result.refusals) == 10, result.refusals
+    assert all(refusal.kind for refusal in result.refusals), "every refusal names its kind"
+
+    by_literal = {(refusal.kind, refusal.literal) for refusal in result.refusals}
+    assert ("concept", "a directory, not a file") in by_literal
+    assert ("concept", "not readable") in by_literal
+    assert any(kind == "concept" and "exceeded" in literal for kind, literal in by_literal)
+    for reference in (
+        "sidecar-dir",
+        "",
+        ".",
+        "abc\x00def",
+        "locked-sidecar.bin",
+        "plainfile.txt/sub.txt",
+        long_name,
+    ):
+        assert ("reference", reference) in by_literal
+
+    haystacks = [
+        *(
+            field
+            for refusal in result.refusals
+            for field in (refusal.kind, refusal.key, refusal.literal)
+        ),
+        _migration_text(result.concepts_admitted[0].proposal.directory),
+    ]
+    for prefix in (str(tmp_path), str(bundle.resolve())):
+        for haystack in haystacks:
+            assert prefix not in haystack, f"{prefix!r} leaked into {haystack!r}"
+
+
+# ---------------------------------------------------------------------------
 # M-c: two concepts collapsing on one item id must not both draft.
 # ---------------------------------------------------------------------------
 

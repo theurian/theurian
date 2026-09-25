@@ -121,7 +121,11 @@ def test_okf_import_reports_a_refusal_by_kind_key_and_literal_never_a_resolved_p
         "key": "theurian_body_file",
         "literal": "../../../../etc/passwd",
     }
-    assert str(project) not in json.dumps(payload)
+    dumped = json.dumps(payload)
+    assert str(project) not in dumped
+    # `bundle` sits beside `project`, not under it (`project.parent / "bundle"`):
+    # sweeping only `project` never exercised the bundle's own resolved prefix.
+    assert str(bundle.resolve()) not in dumped
 
 
 def test_okf_import_text_output_renders_each_refusal_as_its_own_line(project: Path) -> None:
@@ -150,6 +154,70 @@ def test_okf_import_text_output_renders_each_refusal_as_its_own_line(project: Pa
     assert result.exit_code == 0, result.stdout
     assert "  - reference theurian_body_file: ../../../../etc/passwd" in result.stdout
     assert "{'kind'" not in result.stdout
+
+
+def test_okf_import_over_a_directory_shaped_concept_still_emits_json_not_a_traceback(
+    project: Path,
+) -> None:
+    """Review-Finding: security HIGH -- seven read-failure shapes previously
+    aborted the whole bundle with a Rich traceback, an empty stdout under
+    `--json`. A directory named `*.md` is one of them; this pins the fix at
+    the CLI's own `--json` boundary, not only at the service layer
+    `test_okf_import.py`'s battery already covers.
+    """
+    bundle = project.parent / "bundle"
+    (bundle / "a-directory.md").mkdir(parents=True)
+    _write(bundle, "vanilla.md", _VANILLA_CONCEPT)
+
+    code, payload = _invoke("okf", "import", str(bundle), *_BUNDLE_OPTIONS)
+
+    assert code == 0, payload
+    assert payload["conceptsAdmitted"] == 1
+    assert payload["refusalsByKind"] == {"concept": 1}
+    dumped = json.dumps(payload)
+    assert str(project) not in dumped
+    assert str(bundle.resolve()) not in dumped
+
+
+def test_okf_import_refusals_by_kind_counts_each_kind_separately(project: Path) -> None:
+    """Review-Finding: code-review MEDIUM -- ImportRefusal.key spans four
+    undiscriminated namespaces and the payload count conflates them. One run
+    producing three distinct kinds proves the counts do not collapse into
+    each other -- the single-kind test above cannot tell a fixed aggregator
+    from one that always reports a single bucket.
+    """
+    bundle = project.parent / "bundle"
+    _write(bundle, "vanilla.md", _VANILLA_CONCEPT)
+    _write(bundle, "malformed.md", "---\ntitle: Missing type and status\n---\n\nbody\n")
+    _write(
+        bundle,
+        "bad-body.md",
+        "---\n"
+        "type: decision\n"
+        "title: Bad body file\n"
+        "status: stable\n"
+        "theurian_content_type: application/json\n"
+        "theurian_body_file: ../../../../etc/passwd\n"
+        "---\n\nbody\n",
+    )
+    _write(
+        bundle,
+        "bad-relation.md",
+        "---\n"
+        "type: decision\n"
+        "title: Bad relation\n"
+        "status: stable\n"
+        "theurian_relations:\n"
+        "  - type: made_up_relation_type\n"
+        "    target: other.concept\n"
+        "---\n\nbody\n",
+    )
+
+    code, payload = _invoke("okf", "import", str(bundle), *_BUNDLE_OPTIONS)
+
+    assert code == 0, payload
+    assert payload["refusalsByKind"] == {"concept": 1, "reference": 1, "relations": 1}
+    assert sum(payload["refusalsByKind"].values()) == len(payload["refusals"])
 
 
 def test_okf_import_item_filter_admits_only_the_named_concept(project: Path) -> None:
