@@ -17,6 +17,7 @@ document rather than a traceback. The bundle's own bytes are
 from __future__ import annotations
 
 import json
+import sqlite3
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
@@ -27,11 +28,19 @@ from git_harness import commit_migrations
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
+from theurian.cli.commands import EXIT_STATE_ERROR
 from theurian.cli.main import app
 
 pytestmark = pytest.mark.integration
 
 runner = CliRunner()
+
+#: The cell the damaged-state case writes. Nothing in it is a word this codebase
+#: uses, so a fragment appearing in a published document came out of the database
+#: file -- ``test_canonical_store_corruption.py``'s own sentinel and window, so the
+#: two files are measuring disclosure on one scale.
+SENTINEL: Final = "ROTATE-ME sk-live-9f2a7c41d8e3 payroll band L7 = 240000"
+LEAK_WINDOW: Final = 12
 
 MIGRATION_ID: Final = "01K1AAAAAA01234567890ABCDE"
 REVISION_ID: Final = "01K1AAAREV01234567890ABCDE"
@@ -330,6 +339,43 @@ def test_an_unloadable_migration_is_reported_as_a_document(project: Path) -> Non
     assert payload["error"]
     assert payload["remedy"]
     assert not (project.parent / "bundle").exists()
+
+
+def test_a_damaged_cell_is_reported_as_a_document_and_quoted_nowhere(project: Path) -> None:
+    """The command `test_canonical_store_corruption.py` excludes, at its own file.
+
+    That sweep corrupts one cell and drives every command it can safely run a few
+    hundred times; `okf export` is excluded from it because it needs a fresh target
+    directory per invocation and its `_invoke` passes no arguments. The exclusion is
+    the right call there and leaves this command unswept, so the one case is driven
+    here: a `knowledge_items` cell the store must interpret, damaged the sweep's own
+    way, reaching a `--json` caller as `{error, remedy}` at `EXIT_STATE_ERROR`
+    rather than as a traceback carrying the cell.
+
+    Windows of the sentinel are checked rather than the whole string, the sweep's
+    own technique: an implementation that echoed half the cell would satisfy
+    `SENTINEL not in published`.
+    """
+    _applied(project)
+    database = next((project / ".theurian/state").glob("theurian-state-*.sqlite"))
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute("UPDATE knowledge_items SET valid_from = ?", (SENTINEL,))
+        connection.commit()
+    finally:
+        connection.close()
+    target = project.parent / "bundle"
+
+    code, payload = _invoke("okf", "export", str(target))
+
+    assert code == EXIT_STATE_ERROR
+    assert payload["error"]
+    assert payload["remedy"]
+    published = json.dumps(payload)
+    windows = [SENTINEL[at : at + LEAK_WINDOW] for at in range(len(SENTINEL) - LEAK_WINDOW + 1)]
+    assert [window for window in windows if window in published] == []
+    assert not target.exists(), "a refused walk left a partial bundle behind"
 
 
 def test_state_this_installation_did_not_build_is_refused(

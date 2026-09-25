@@ -345,17 +345,47 @@ class SqliteCanonicalStore:
         with _reading():
             connection = self._conn()
             connection.execute("BEGIN")
-            connection.execute(_PIN_THE_SNAPSHOT).fetchone()
+            try:
+                connection.execute(_PIN_THE_SNAPSHOT).fetchone()
+            except BaseException:
+                # The ``BEGIN`` landed, so a failure here would otherwise leave a
+                # transaction open on a connection nobody thinks is in one:
+                # ``_snapshot_open`` is still False, so the *next* call passes the
+                # re-entry check and its ``BEGIN`` fails with "cannot start a
+                # transaction within a transaction" -- reported through
+                # :func:`_reading` as a damaged state database, which it is not.
+                # ``BaseException`` because an interrupt between the two statements
+                # leaves the same transaction open as an error does.
+                self._end_the_transaction(connection)
+                raise
         self._snapshot_open = True
         try:
             yield
         finally:
             self._snapshot_open = False
-            # ``ROLLBACK`` rather than ``COMMIT``: the connection is ``mode=ro``
-            # and has nothing to commit, and this is the spelling
-            # ``connection.py::_open_transaction`` already uses to end a
-            # transaction it is abandoning.
+            self._end_the_transaction(connection)
+
+    def _end_the_transaction(self, connection: sqlite3.Connection) -> None:
+        """``ROLLBACK``, and drop the connection if even that will not run.
+
+        ``ROLLBACK`` rather than ``COMMIT``: the connection is ``mode=ro`` and has
+        nothing to commit, and this is the spelling
+        ``connection.py::_open_transaction`` already uses to end a transaction it
+        is abandoning.
+
+        **The failure arm exists so this cannot become the caller's answer.** It
+        runs in a ``finally``, so a ``sqlite3.Error`` raised here would replace
+        whatever the walk was failing with -- an unmapped ``OperationalError``
+        reaching an operator in place of their own error, and a wrong claim if it
+        were mapped instead. Closing is what makes swallowing it safe rather than
+        merely quiet: the transaction cannot outlive the connection, and
+        :meth:`_conn` opens a fresh one on the next read, so the store stays
+        usable and no later ``BEGIN`` meets an inherited transaction.
+        """
+        try:
             connection.execute("ROLLBACK")
+        except sqlite3.Error:
+            self.close()
 
     # -- Reading ----------------------------------------------------------
 

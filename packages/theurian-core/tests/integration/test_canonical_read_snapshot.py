@@ -22,6 +22,7 @@ path does with the same interleaving.
 
 from __future__ import annotations
 
+import sqlite3
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -41,11 +42,16 @@ from theurian.domain.knowledge import (
 from theurian.domain.project import Project
 from theurian.domain.values import MARKDOWN, ValidityPeriod
 from theurian.infrastructure.sqlite.connection import (
+    StateDatabaseUnreadableError,
     create_database,
     open_read_connection,
     write_transaction,
 )
-from theurian.infrastructure.sqlite.store import SqliteCanonicalStore, SqliteWriter
+from theurian.infrastructure.sqlite.store import (
+    _PIN_THE_SNAPSHOT,
+    SqliteCanonicalStore,
+    SqliteWriter,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -322,6 +328,91 @@ def test_the_snapshot_holds_across_every_read_the_export_makes(database: Path, l
         "a revision committed inside the snapshot was readable through it, so a "
         "relation or a body could come from the newer state"
     )
+
+
+class OneFailingStatement:
+    """The store's own connection, with one statement made to fail.
+
+    Installed over ``_connection`` because there is no seam here to inject
+    through: the failures below are not reachable from a corpus -- the pin names
+    no application table and decodes no cell, and a ``ROLLBACK`` on a
+    ``mode=ro`` connection has nothing to refuse. What can still produce them is
+    an I/O error on the file, and that is not something a test can arrange
+    reliably. So the statement is failed directly, and every other one is
+    delegated to the real connection, which is what keeps the rest of the walk
+    real.
+    """
+
+    def __init__(self, inner: sqlite3.Connection, *, failing: str) -> None:
+        self.inner = inner
+        self.failing = failing
+        self.statements: list[str] = []
+
+    def execute(self, sql: str, parameters: tuple[str, ...] = ()) -> sqlite3.Cursor:
+        self.statements.append(sql)
+        if sql == self.failing:
+            raise sqlite3.OperationalError(f"disk I/O error on {sql}")
+        return self.inner.execute(sql, parameters)
+
+    def close(self) -> None:
+        """``SqliteCanonicalStore.close`` calls this, so the delegation has to cover it."""
+        self.inner.close()
+
+
+def test_a_pin_that_fails_after_the_begin_leaves_no_transaction_open(
+    database: Path, lock: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ``BEGIN`` has landed by then, and nothing else knows it.
+
+    ``_snapshot_open`` is set only once both statements have run, so a pin failure
+    leaves a transaction open on a connection the store believes is idle: the next
+    ``read_snapshot`` passes the re-entry check and its ``BEGIN`` fails with
+    "cannot start a transaction within a transaction", which :func:`_reading`
+    reports as a damaged state database -- telling an operator to delete derived
+    state over a failure that was nothing of the kind (round one, code review).
+
+    Both halves are asserted: the ``ROLLBACK`` ran before the error propagated,
+    and a later snapshot on the same store answers rather than refusing.
+    """
+    with SqliteCanonicalStore(database) as store:
+        failing = OneFailingStatement(store._conn(), failing=_PIN_THE_SNAPSHOT)
+        monkeypatch.setattr(store, "_connection", failing)
+
+        with pytest.raises(StateDatabaseUnreadableError), store.read_snapshot():
+            pass  # pragma: no cover - the refusal lands at the `with`
+
+        assert failing.statements == ["BEGIN", _PIN_THE_SNAPSHOT, "ROLLBACK"]
+        assert not failing.inner.in_transaction
+        # The store is usable: a snapshot over the same connection now opens, which
+        # is what the inherited transaction made impossible.
+        monkeypatch.setattr(store, "_connection", failing.inner)
+        _land_a_second_item(database, lock)
+        with store.read_snapshot():
+            assert [item.item_id.value for item in store.list_items(CONTEXT)] == ["a", "b"]
+
+
+def test_a_rollback_that_cannot_run_does_not_replace_the_walks_own_failure(
+    database: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The transaction is ended in a ``finally``, so its own failure would win.
+
+    An ``OperationalError`` from the ``ROLLBACK`` would reach the caller in place
+    of the error their walk raised -- unmapped, and naming a statement no caller
+    issued. It is swallowed, and the connection is closed so that swallowing it
+    changes nothing a later read can see: the transaction cannot outlive the
+    connection, and the next read opens a fresh one.
+    """
+    with SqliteCanonicalStore(database) as store:
+        failing = OneFailingStatement(store._conn(), failing="ROLLBACK")
+        monkeypatch.setattr(store, "_connection", failing)
+
+        with pytest.raises(RuntimeError, match="the walk failed"), store.read_snapshot():
+            msg = "the walk failed"
+            raise RuntimeError(msg)
+
+        assert failing.statements == ["BEGIN", _PIN_THE_SNAPSHOT, "ROLLBACK"]
+        assert store._connection is None, "the unusable connection was kept"
+        assert [item.item_id.value for item in store.list_items(CONTEXT)] == ["a"]
 
 
 def test_a_snapshot_over_a_missing_database_reports_the_missing_file(tmp_path: Path) -> None:
