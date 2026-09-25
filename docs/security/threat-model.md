@@ -3919,9 +3919,10 @@ the disk is outside Theurian.
 Only a `theurian_relations` key ever becomes an `addRelation` operation
 (ADR-0037 decision 5).
 `tests/integration/test_okf_import.py::test_a_bare_markdown_link_never_synthesizes_a_relation`
-imports a concept whose body carries `See also [another
-concept](/architecture/other.md).` and asserts that no relations proposal is
-drafted at all, and
+imports a concept whose body carries a bare Markdown link — link text `another
+concept`, target the bundle-absolute `/architecture/other.md`, the leading-`/`
+form decision 4 fixes — and asserts that no relations proposal is drafted at all,
+and
 `tests/integration/test_okf_import_deepening.py::test_an_out_of_enum_relation_type_is_refused_by_the_schema_while_the_concept_still_drafts`
 asserts that a `theurian_relations` entry naming `made_up_relation_type` is
 refused while its concept still drafts.
