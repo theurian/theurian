@@ -194,19 +194,12 @@ class OkfExporter:
         """The exported population and its edges, read inside one snapshot."""
         context = RequestContext(project_id=ProjectId(request.project_id))
         rows: list[tuple[KnowledgeItem, KnowledgeRevision]] = []
-        # Every item that cleared both gates, whether or not it has a revision to
-        # project. It is the relation gate's population, not the bundle's: an
-        # approved, in-ceiling item with no current revision is still a
-        # legitimate far end of an edge published from one that has -- the line
-        # `index_builder` and `mcp.tools._relation_is_visible` both draw.
-        visible: set[str] = set()
         with self._store_factory(request.database) as store, store.read_snapshot():
             for item in store.list_items(context):
                 if not may_surface(item.status, include_unapproved=False):
                     continue
                 if not may_disclose(item.sensitivity, visible=request.visible_sensitivities):
                     continue
-                visible.add(item.item_id.value)
                 if item.current_revision_id is None:
                     continue
                 revision = store.get_revision(context, item.current_revision_id)
@@ -214,13 +207,28 @@ class OkfExporter:
                     continue
                 _refuse_a_foreign_pointer(item, revision)
                 rows.append((item, revision))
+            # **The relation gate's population is the concepts this walk produced,
+            # and it is derived from `rows` rather than accumulated beside them so
+            # the two cannot drift.** `index_builder` and
+            # `mcp.tools._relation_is_visible` gate on the set that cleared both
+            # authority filters -- correct for them, because `knowledge.get`
+            # publishes an edge to an approved in-ceiling item whether or not that
+            # item has a current revision to serve. A bundle cannot: it *renders a
+            # link* to the far end's concept document, and an item with no current
+            # revision produces no such file. Gated on the wider set, a bundle
+            # shipped `/<namespace>/<id>.md` in both channels and wrote no such
+            # member -- reachable through documented operations alone (createItem,
+            # restoreItem, addRelation) and exactly what decision 4's "no exported
+            # link is broken within the bundle" denies (round one, code review and
+            # adversarial HIGH).
+            exported = {item.item_id.value for item, _ in rows}
             # A second pass, because an edge's visibility depends on *both* ends
             # and the far one may not have been walked yet.
             return tuple(
                 Concept(
                     item=item,
                     revision=revision,
-                    relations=_visible_relations(store, context, item.item_id, visible=visible),
+                    relations=_visible_relations(store, context, item.item_id, exported=exported),
                 )
                 for item, revision in rows
             )
@@ -250,7 +258,7 @@ def _visible_relations(
     context: RequestContext,
     item_id: ItemId,
     *,
-    visible: Container[str],
+    exported: Container[str],
 ) -> tuple[KnowledgeRelation, ...]:
     """The edges ``item_id``'s own concept document renders, in decision 2's order.
 
@@ -267,9 +275,11 @@ def _visible_relations(
 
     **The query key and the gate set are two independent halves, and both must
     be the literally named id.** The gate set has always been literal -- the
-    walk's own ids, read from ``list_items`` and never resolved -- so it
-    inherits ``mcp.tools._relation_is_visible``'s alias property rather than
-    restating it (T-21). The *query* was not: ``list_relations`` resolves an
+    walk's own ids, read from ``list_items`` and never resolved (``exported``
+    narrows that set to the rows that became concepts, which is
+    :meth:`OkfExporter._walk`'s own question, not this one's) -- so it inherits
+    ``mcp.tools._relation_is_visible``'s alias property rather than restating it
+    (T-21). The *query* was not: ``list_relations`` resolves an
     alias first, and an approved in-ceiling item whose id is also an ``addAlias``
     key is answered from the target's edges, every row carrying the target as
     its source -- so the source filter above discarded all of them and the item
@@ -282,14 +292,14 @@ def _visible_relations(
     ``_anchor_secrets`` imports ``AUTHORED_ANCHOR_FIELDS``: a security rule
     enumerated twice acquires an end on one side and not the other. An endpoint
     the corpus does not hold is absent from the set, so a dangling edge fails
-    closed.
+    closed -- and so is one the corpus holds but the bundle does not write.
     """
     return tuple(
         sorted(
             (
                 relation
                 for relation in store.list_relations_by_literal_id(context, item_id)
-                if relation.source_item_id == item_id and both_ends_visible(relation, visible)
+                if relation.source_item_id == item_id and both_ends_visible(relation, exported)
             ),
             key=relation_order,
         )

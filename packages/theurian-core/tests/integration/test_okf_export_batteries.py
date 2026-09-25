@@ -147,6 +147,11 @@ class Row:
     scope_paths: tuple[str, ...] = ()
     structured: dict[str, object] | None = None
     source_commit: str | None = None
+    #: Whether the **item** points at its revision. ``False`` is what
+    #: ``createItem`` followed by ``restoreItem`` leaves behind: an approved,
+    #: in-ceiling item with a `NULL` `current_revision_id`, which produces no
+    #: concept document and so can be no relation target inside a bundle.
+    has_current_revision: bool = True
 
     @property
     def revision_id(self) -> RevisionId:
@@ -297,7 +302,10 @@ def corpus(
         for row in rows:
             revision = _revision(row)
             writer.append_revision(revision)
-            writer.put_item(_item(row, revision))
+            item = _item(row, revision)
+            writer.put_item(
+                item if row.has_current_revision else replace(item, current_revision_id=None)
+            )
         for edge in edges or []:
             writer.add_relation(
                 KnowledgeRelation(
@@ -1720,6 +1728,14 @@ def test_every_link_target_in_the_bundle_resolves_inside_the_bundle(tmp_path: Pa
     any of them would put `../../../etc/passwd` in a document rather than in a
     filename -- where a check over the written file set cannot see it. The row
     below carries a crafted namespace and sits at both ends of an edge.
+
+    **A target need not be crafted to be broken.** The corpus also holds an
+    approved, in-ceiling item with no current revision at the far end of an edge:
+    it is a legal relation endpoint in canonical state and produces no concept
+    document, so a relation gate keyed on the rows that *cleared the gate* rather
+    than on the rows that *became concepts* rendered `/api/pointerless.md` in both
+    channels of a bundle that wrote no such file (round one, code review and
+    adversarial HIGH).
     """
     crafted = "../../../etc/passwd"
     bundle = bundle_of(
@@ -1728,10 +1744,18 @@ def test_every_link_target_in_the_bundle_resolves_inside_the_bundle(tmp_path: Pa
             Row("architecture.auth.policy", 1, title="Policy", namespace=crafted),
             Row("api.orders", 2, title="Orders", namespace=crafted),
             Row("api.schema", 3, body="{}", content_type=YAML_TYPE, namespace=crafted),
+            Row(
+                "api.pointerless",
+                4,
+                title="Pointerless",
+                namespace=crafted,
+                has_current_revision=False,
+            ),
         ],
         [
             Edge("architecture.auth.policy", "api.orders", RelationType.DEPENDS_ON),
             Edge("api.orders", "architecture.auth.policy", RelationType.IMPLEMENTS),
+            Edge("architecture.auth.policy", "api.pointerless", RelationType.DEPENDS_ON),
         ],
     )
 

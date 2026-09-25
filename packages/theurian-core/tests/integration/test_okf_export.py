@@ -312,8 +312,24 @@ def test_the_gate_reads_the_item_and_never_the_revisions_metadata(tmp_path: Path
     assert bundle.front_matter("lowered-since.md")["theurian_sensitivity"] == "internal"
 
 
-def test_an_item_with_no_current_revision_projects_nothing(tmp_path: Path) -> None:
-    """It is still in the relation gate's population, but there is no body to write."""
+def test_an_item_with_no_current_revision_is_no_concept_and_no_relation_target(
+    tmp_path: Path,
+) -> None:
+    """The relation gate's population is what *became a concept* (decision 4).
+
+    An approved, in-ceiling item with a `NULL` `current_revision_id` is what
+    `createItem` plus `restoreItem` leaves behind, and it is a legal relation
+    endpoint in canonical state: `knowledge.get` publishes an edge to it, which is
+    why `index_builder` and `mcp.tools._relation_is_visible` gate on the set that
+    cleared both authority filters. A bundle cannot follow them there -- it
+    *renders a link* to the far end's concept document, and this item produces no
+    such file -- so gating on that wider set put `/has-none.md` in both channels
+    of a bundle that wrote no such member (round one, code review and adversarial
+    HIGH).
+
+    Both channels and the file set, because the link is rendered twice from one
+    tuple and the whole claim is that no rendered target is missing from the tree.
+    """
     database = corpus(tmp_path, [Row("has-one", 1)])
     lock = tmp_path / "runtime" / "write.lock"
     pointerless = Row("has-none", 2)
@@ -325,11 +341,24 @@ def test_an_item_with_no_current_revision_projects_nothing(tmp_path: Path) -> No
                 current_revision_id=None,
             )
         )
+        writer.add_relation(
+            KnowledgeRelation(
+                project_id=PROJECT,
+                source_item_id=ItemId("has-one"),
+                target_item_id=ItemId("has-none"),
+                relation_type=RelationType.DEPENDS_ON,
+                created_at=NOW,
+                note="an edge to a member no bundle can hold",
+            )
+        )
 
     bundle = export(database, tmp_path / "bundle")
 
     assert "has-none.md" not in bundle.files
     assert bundle.report["concepts"] == 1
+    assert bundle.relations("has-one.md") == []
+    assert "/has-none.md" not in bundle.files["has-one.md"]
+    assert "an edge to a member no bundle can hold" not in "".join(bundle.files.values())
 
 
 # -- Paths, reserved names and sidecars (decision 7) -----------------------
