@@ -20,11 +20,14 @@ writes every terminator as an *escape sequence* rather than as a byte -- so a
 row terminator opens no key and renders no column-0 `---` a consumer splitting
 on fences could truncate at. PyYAML still breaks a long value across physical
 lines at ``width=100``, and that fold is why the property is stated this way and
-not as *one physical line*: each continuation it writes is indented to the block
-indent behind a trailing backslash, so no line a value occupies begins at
-column 0, where a key or a fence would have to start. Key:
-`test_a_forged_terminator_stays_inside_its_own_value_at_every_position`, whose
-payloads include one long enough to fold
+not as *one physical line*: what carries the no-column-0 property, on every
+style PyYAML picks, is the indent alone -- each continuation lands at the block
+indent whichever style wrote it. Only the double-quoted style also trails each
+continuation with a backslash; a single-quoted or plain fold has none, and the
+property holds there too
+(`test_a_terminator_free_forgery_folds_with_no_backslash_and_stays_off_column_zero`).
+Key: `test_a_forged_terminator_stays_inside_its_own_value_at_every_position`,
+whose payloads include one long enough to fold
 (`test_the_folding_payload_folds_at_every_position`).
 
 At the two Markdown-syntax sites -- an index entry's link text and a relation
@@ -606,26 +609,47 @@ def _escape_inline(text: str) -> str:
     return escaped
 
 
-#: The characters a CommonMark leaf block (spec §4) opens with -- what the
-#: list-line site has and the link-text site does not:
+#: What the list-line site has and the link-text site does not: CommonMark's
+#: §4 *leaf* block openers this codec's inline pass does not already reach --
+#: thematic break (4.1), ATX heading (4.2), setext heading (4.3), fenced code
+#: (4.5) -- together with its §5 *container* block openers, block quote and
+#: list item, which open a structure *around* the note rather than a leaf
+#: inside it.
 #:
-#: * `#` -- an ATX heading, which splits the enclosing `## Relations` section.
-#: * a backtick, `~` -- a fenced code block.
-#: * `>` -- a block quote.
-#: * `-`, `+`, `*` -- a list marker, so a forged relation row; `-`, `*` and `_`
-#:   also a thematic break, which is not a list item at all and so deletes the
-#:   note's own row from the rendered list.
-#: * `=` -- a setext heading underline for the line before it. Escaped wherever
-#:   it opens the line, which is broader than the construct (that needs the
-#:   whole line), because the line the note is rendered behind is the exporter's.
+#: * `#` -- an ATX heading (4.2), which splits the enclosing `## Relations`
+#:   section.
+#: * a backtick, `~` -- a fenced code block (4.5).
+#: * `>` -- a block quote (5.1).
+#: * `-`, `+`, `*` -- a list marker (5.2), so a forged relation row; `-`, `*`
+#:   and `_` also a thematic break (4.1), which is not a list item at all and
+#:   so deletes the note's own row from the rendered list.
+#: * `=` -- a setext heading underline (4.3) for the line before it. Escaped
+#:   wherever it opens the line, which is broader than the construct (that
+#:   needs the whole line), because the line the note is rendered behind is
+#:   the exporter's.
 #:
-#: The three §4 blocks not in this tuple: the HTML block, which opens with `<`
-#: and is escaped by :data:`_INLINE` before this rule runs (a backtick and `>`
-#: are in both populations for that reason, and stay in this one because it
-#: states the site's grammar rather than the other pass's leftovers); the
-#: indented code block, which is an indentation and not a character, and which
-#: :func:`_normalized` plus the every-indent rule below cover; and the
-#: paragraph, which is what a line that opens none of these is.
+#: Five §4 subsections have no character here, not three:
+#:
+#: * indented code (4.4) -- an indentation, not a character; the block still
+#:   *forms*, inside the note's own list item -- the adversarial review
+#:   measured it: the item's own `li` count never moves and it gains one
+#:   `code_block` -- so :func:`_normalized` plus the every-indent rule below
+#:   leave it inert rather than cover it.
+#: * the HTML block (4.6) -- opens with `<`, escaped by :data:`_INLINE` before
+#:   this rule runs.
+#: * the link reference definition (4.7) -- opens with `[`, escaped by
+#:   :data:`_INLINE` before this rule runs, exactly the HTML block's pattern
+#:   (`test_a_link_reference_definition_note_keeps_its_own_row`).
+#: * the paragraph (4.8) -- what a line opening none of these is.
+#: * the blank line (4.9) -- impossible after :func:`_normalized`: no
+#:   terminator survives.
+#:
+#: A backtick and `>` are stated here a second time for that reason (already
+#: escaped by :data:`_INLINE`, so unreachable through this tuple): this one
+#: states the list-line site's own grammar rather than the other pass's
+#: leftovers -- `test_the_recorded_block_starter_population_is_the_codecs_own_tuple`
+#: is what holds the two spellings to that vocabulary rather than letting
+#: either drift.
 _BLOCK_STARTERS: Final[tuple[str, ...]] = ("#", "`", "~", ">", "-", "+", "*", "=", "_")
 
 #: Group 1 of each is the character a backslash goes in front of, which is what

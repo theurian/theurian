@@ -59,6 +59,7 @@ import pytest
 import yaml
 from adr_0037_support import assert_the_adr_states
 
+from theurian.application import okf_codec
 from theurian.application.okf_codec import (
     CONCEPT_FRONT_MATTER_KEY_ORDER,
     LINE_TERMINATORS,
@@ -121,6 +122,17 @@ _FORGED_LONG = "padding " * 12 + _FORGED + " padding" * 12
 #: Both payloads, so every forge scan runs at a length that folds and one that
 #: does not.
 _FORGED_PAYLOADS: Final[tuple[str, ...]] = (_FORGED, _FORGED_LONG)
+
+#: :data:`_FORGED_LONG` with its terminator positions filled by an ordinary
+#: space instead. Every case in :data:`_FORGED_PAYLOADS` carries a terminator,
+#: so :func:`_represent_str` forces double-quoted style on all of them --
+#: the only fold the column-0 scan below has ever driven. A value with no
+#: terminator goes through PyYAML's own style choice instead, and this
+#: payload's ``theurian_sensitivity: `` -- colon then space -- rules out plain
+#: (unquoted) style too, so what PyYAML resolves it to is single-quoted:
+#: still a fold, still no trailing backslash on a continuation line, and so
+#: still a style the scan had never exercised.
+_FORGED_PLAIN: Final = _FORGED_LONG.format(t=" ")
 
 _FENCE_LINE = re.compile(r"^(---|\.\.\.)\s*$")
 
@@ -738,6 +750,18 @@ def test_the_recorded_terminator_population_is_the_five_single_characters() -> N
     assert set(_TERMINATOR_CASES) - {"\r\n"} == LINE_TERMINATORS
 
 
+def test_the_recorded_block_starter_population_is_the_codecs_own_tuple() -> None:
+    """The one place :data:`_BLOCK_STARTER_MEMBERS` and the codec's constant are compared.
+
+    Every block-starter check below drives the literal, so shrinking
+    ``_BLOCK_STARTERS`` -- dropping the backtick and `>`, both unreachable
+    through it anyway because :data:`_INLINE` escapes them first -- cannot
+    quietly shrink what those checks range over; it reddens here instead,
+    naming the two sides.
+    """
+    assert _BLOCK_STARTER_MEMBERS == okf_codec._BLOCK_STARTERS
+
+
 @pytest.mark.parametrize("terminator", _TERMINATOR_CASES)
 def test_the_block_scans_see_a_forgery_behind_every_terminator(terminator: str) -> None:
     """The instruments' positive control: a clean report has to be a measurement.
@@ -844,6 +868,37 @@ def test_a_forged_terminator_stays_inside_the_manifest_digest(
     _assert_no_value_line_reaches_column_zero(block, order=manifest_keys, sequence_items=0)
 
     assert _front_matter_mapping(block)["theurian_bundle_digest"] == forged
+
+
+@pytest.mark.parametrize("position", sorted(_FORGE_BUILDERS))
+def test_a_terminator_free_forgery_folds_with_no_backslash_and_stays_off_column_zero(
+    position: str,
+) -> None:
+    """The style branch every terminator-driven scan above never exercises.
+
+    Every :data:`_FORGED_PAYLOADS` case is forced double-quoted by
+    :func:`_represent_str` because it carries a terminator; :data:`_FORGED_PLAIN`
+    carries none, so PyYAML picks the style itself -- single-quoted here,
+    because ``theurian_sensitivity: `` rules out plain too -- and folds with no
+    trailing backslash on a continuation line. The column-0 property has to
+    hold on that fold as well, not only on the double-quoted one.
+    """
+    front_matter = _FORGE_BUILDERS[position](_FORGED_PLAIN)
+    block = encode_concept_front_matter(front_matter)
+
+    assert len(_physical_lines(block)) > 1, f"nothing folded, so this pins nothing:\n{block}"
+    assert "\\" not in block, f"a backslash means this is not the style being pinned:\n{block}"
+
+    _assert_no_value_line_reaches_column_zero(
+        block,
+        order=CONCEPT_FRONT_MATTER_KEY_ORDER,
+        sequence_items=(
+            len(front_matter.labels)
+            + len(front_matter.sources)
+            + len(front_matter.theurian_relations)
+        ),
+    )
+    assert _FORGED_PLAIN in set(_string_values(_front_matter_mapping(block))), block
 
 
 def test_a_title_carrying_a_forged_sensitivity_line_stays_one_title_and_one_key() -> None:
@@ -1255,6 +1310,24 @@ def test_every_escaped_delimiter_leaves_an_odd_backslash_run_before_it() -> None
     _assert_every_inline_member_is_escaped(escape_markdown_link_text(hostile))
 
 
+@pytest.mark.parametrize("run_length", (0, 1, 2, 3))
+@pytest.mark.parametrize("member", _INLINE_MEMBERS)
+def test_a_callers_backslash_run_of_any_length_leaves_an_odd_run_before_the_escape(
+    member: str, run_length: int
+) -> None:
+    """The doubling line's own battery, not only the one hostile string above.
+
+    :func:`_escape_inline` doubles a caller's own backslashes before inserting
+    an escape, so an even caller run pairs off entirely and a fresh odd run is
+    left behind the escape, while an odd caller run leaves one caller
+    backslash behind the doubled pairs plus that same fresh run -- both land
+    on odd, at every length the hostile string above did not happen to cover.
+    """
+    escaped = escape_markdown_link_text("\\" * run_length + member)
+
+    _assert_every_inline_member_is_escaped(escaped)
+
+
 @pytest.mark.parametrize("starter", _BLOCK_STARTER_MEMBERS)
 @pytest.mark.parametrize("repeat", (1, 3), ids=("once", "thrice"))
 @pytest.mark.parametrize("leading", _LEADING_WHITESPACE, ids=repr)
@@ -1310,6 +1383,21 @@ def test_a_note_of_a_thematic_break_keeps_its_own_row() -> None:
     """
     for note in ("---", "***", "___"):
         assert escape_markdown_list_line(note) == f"\\{note}"
+
+
+def test_a_link_reference_definition_note_keeps_its_own_row() -> None:
+    """`[foo]: https://evil.example/f` (§4.7) opens the way an HTML block does.
+
+    Unescaped, CommonMark consumes the whole line into a link reference
+    definition and renders it as nothing at all -- the row disappears from the
+    rendered list the way the thematic break above does. It is
+    :data:`_INLINE`'s own `[`, not :data:`_BLOCK_STARTERS`, that keeps this row
+    live; every `[` in the output stays behind an odd backslash run.
+    """
+    escaped = escape_markdown_list_line("[foo]: https://evil.example/f")
+
+    assert escaped == "\\[foo\\]: https://evil.example/f"
+    _assert_every_inline_member_is_escaped(escaped)
 
 
 def test_a_relation_note_renders_no_live_link_autolink_or_raw_html() -> None:
