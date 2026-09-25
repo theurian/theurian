@@ -25,6 +25,7 @@ from theurian.cli import (
     commands,
     findings_commands,
     index_commands,
+    okf_commands,
     propose_commands,
     review_commands,
     setup_commands,
@@ -70,6 +71,7 @@ app.add_typer(index_commands.index_app, name="index")
 app.add_typer(findings_commands.findings_app, name="findings")
 app.add_typer(propose_commands.propose_app, name="propose")
 app.add_typer(review_commands.review_app, name="review")
+app.add_typer(okf_commands.okf_app, name="okf")
 app.command("setup")(setup_commands.setup_command)
 app.command("doctor")(setup_commands.doctor_command)
 app.command("uninstall")(setup_commands.uninstall_command)
