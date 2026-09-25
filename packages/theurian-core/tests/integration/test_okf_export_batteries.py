@@ -948,11 +948,11 @@ def test_a_reserved_leafs_sidecar_follows_the_escaped_stem(tmp_path: Path) -> No
 def test_no_item_id_can_be_spelled_as_an_escaped_name() -> None:
     """Why the escape cannot itself collide -- a property of the id grammar.
 
-    ADR-0037 decision 7 and ``okf_bundle._stem``'s docstring both rest the
-    no-collision claim on this refusal rather than on a check in the exporter. An
-    id alphabet that later admitted the underscore would make the escape
-    reachable by a second row, silently, with no test between here and a bundle
-    where one concept overwrote another.
+    ADR-0037 decision 7 and ``okf_bundle._ESCAPE_SUFFIX``'s own comment both rest
+    the no-collision claim on this refusal rather than on a check in the
+    exporter. An id alphabet that later admitted the underscore would make the
+    escape reachable by a second row, silently, with no test between here and a
+    bundle where one concept overwrote another.
     """
     for escaped in ("index_item", "log_item", "theurian-bundle_item", "architecture.index_item"):
         with pytest.raises(InvalidIdentifierError):
