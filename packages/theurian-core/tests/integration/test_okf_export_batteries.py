@@ -1990,8 +1990,9 @@ def test_the_export_command_registers_exactly_one_argument_and_one_option() -> N
     and the two instruments are not the same: a ``typer.Option(hidden=True)``
     appears in neither the options list nor the usage line, while a caller can
     still pass it. This one reads the command object, so a hidden flag is in
-    scope. It also holds the group to one subcommand -- a second command under
-    ``okf`` would be a second population with its own disclosure question.
+    scope. The boundary is ``export``'s own params -- ``okf`` also carries
+    ``import`` (ADR-0037 decision 5), a second population with its own
+    disclosure question, so this test asks only about the one it names.
 
     Reached through ``getattr`` rather than ``isinstance(node, click.Group)``:
     Typer vendors Click as ``typer._click.core``, so a ``TyperGroup`` is not an
@@ -2001,8 +2002,7 @@ def test_the_export_command_registers_exactly_one_argument_and_one_option() -> N
     okf = typer.main.get_command(app).commands["okf"]  # type: ignore[attr-defined]
     command = okf.commands["export"]
 
-    assert sorted(okf.commands) == ["export"]
-    assert [info.name for info in okf_app.registered_commands] == ["export"]
+    assert "export" in [info.name for info in okf_app.registered_commands]
     assert [(param.name, tuple(param.opts), param.param_type_name) for param in command.params] == [
         ("directory", ("directory",), "argument"),
         ("as_json", ("--json",), "option"),
