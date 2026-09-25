@@ -76,8 +76,12 @@ from theurian.domain.errors import (
     InvariantViolationError,
     IrregularSourceFileError,
     MigrationError,
+    PathDepthExceededError,
     PathEscapeError,
+    SymlinkBudgetExceededError,
     TheurianError,
+    UnanchoredLinkTargetError,
+    UnreadableLinkError,
 )
 from theurian.domain.identifiers import ItemId
 from theurian.domain.knowledge import SourceAnchor
@@ -273,12 +277,24 @@ def _resolve_kind(concept: DecodedConcept) -> KnowledgeKind | None:
         return None
 
 
-#: Every read-failure shape this module classifies, checked in order (a
-#: `FileNotFoundError` is also an `OSError`, but never the other way round, so
-#: order only matters where a subclass relationship exists at all -- none of
-#: these six do). The fallback below covers the rest: a bare `OSError` (an
-#: over-length name, `ENAMETOOLONG`) and a `ValueError` (an embedded NUL byte).
+#: Every read-failure shape this module classifies, checked in order: a
+#: subclass must precede its own base or its more specific reason is never
+#: reached. `PathDepthExceededError`, `SymlinkBudgetExceededError`,
+#: `UnreadableLinkError` and `UnanchoredLinkTargetError` all extend
+#: `PathEscapeError`, and none of them is an escape -- each has its own
+#: reason for the same one issue #233 gave `PathEscapeError` an `entry` to
+#: name a location without claiming the path left the root: a link chain can
+#: cross the depth or hop budget, or fail to read, or land on an unanchored
+#: absolute target, while never once resolving outside it. `FileNotFoundError`
+#: is also an `OSError`, but never the other way round; no other pair here
+#: shares a subclass relationship, so their relative order does not matter.
+#: The fallback below covers the rest: a bare `OSError` (an over-length name,
+#: `ENAMETOOLONG`) and a `ValueError` (an embedded NUL byte).
 _READ_FAILURE_REASONS: Final[tuple[tuple[type[Exception], str], ...]] = (
+    (PathDepthExceededError, "nests too deep below the bundle root"),
+    (SymlinkBudgetExceededError, "reached through too many symbolic links"),
+    (UnreadableLinkError, "a symbolic link on the path could not be read"),
+    (UnanchoredLinkTargetError, "a symbolic link's target could not be anchored inside the root"),
     (PathEscapeError, "escapes the bundle root"),
     (IrregularSourceFileError, "not a regular file"),
     (InputTooLargeError, "too large"),

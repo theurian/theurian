@@ -23,10 +23,17 @@ from fakes.clock import FrozenClock
 from fakes.ids import SeededIdGenerator
 
 from theurian.application.draft_only_proposals import DraftOnlyProposals
-from theurian.application.okf_import import OkfImportRequest, OkfImportService
+from theurian.application.okf_import import OkfImportRequest, OkfImportService, _read_failure_reason
 from theurian.application.project_service import ProjectPaths, initialize_project
 from theurian.application.proposal_service import ProposalService
 from theurian.cli.migration_pipeline import rehearse_migration_set
+from theurian.domain.errors import (
+    PathDepthExceededError,
+    PathEscapeError,
+    SymlinkBudgetExceededError,
+    UnanchoredLinkTargetError,
+    UnreadableLinkError,
+)
 from theurian.domain.identifiers import AgentId, ItemId, MigrationId, ProjectId, RevisionId, TaskId
 from theurian.domain.migration import current_revision_in
 from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY
@@ -180,8 +187,46 @@ def test_a_symlinked_concept_file_inside_the_bundle_is_refused_by_its_own_path(
 
     assert len(result.refusals) == 1
     assert result.refusals[0].key == "linked.md"
+    assert result.refusals[0].literal == "escapes the bundle root"
     assert {p.item_id.value for p in result.concepts_admitted} == {"vanilla"}
     assert b"SYMLINK-MD-SENTINEL" not in _all_written_bytes(paths)
+
+
+# -- The reason-map pin: a PathEscapeError subclass is not always an escape -----------------
+
+
+@pytest.mark.parametrize(
+    ("exc", "reason"),
+    [
+        (
+            PathDepthExceededError("deep.md", "/root", limit=32),
+            "nests too deep below the bundle root",
+        ),
+        (
+            SymlinkBudgetExceededError("chain.md", "/root", limit=40),
+            "reached through too many symbolic links",
+        ),
+        (UnreadableLinkError("link.md", "/root"), "a symbolic link on the path could not be read"),
+        (
+            UnanchoredLinkTargetError("link.md", "/root"),
+            "a symbolic link's target could not be anchored inside the root",
+        ),
+        (PathEscapeError("../etc/passwd", "/root"), "escapes the bundle root"),
+    ],
+)
+def test_each_path_escape_error_subclass_gets_its_own_reason(
+    exc: PathEscapeError, reason: str
+) -> None:
+    """Issue #233's inaccuracy, one layer up: every subclass used to report
+    "escapes the bundle root" too, false for the first four -- a link chain
+    can cross the depth or hop budget, fail to read, or land on an
+    unanchored target without ever resolving outside the root. Driven
+    directly against `_read_failure_reason` rather than through a real
+    symlink chain: `test_path_security.py` already proves each subclass
+    fires for its own real construction, so this pins only the mapping
+    `okf_import.py` owns.
+    """
+    assert _read_failure_reason(exc) == reason
 
 
 def test_a_theurian_body_file_reached_through_a_symlink_is_refused(
