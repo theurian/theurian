@@ -1,0 +1,439 @@
+"""OKF bundle import (ADR-0037 decisions 5, 6): the gated on-ramp.
+
+**Decision 6 in the ADR's own words**: *"The import's whole output is a
+proposal draft through the existing `ProposalService` -- `draft` for a
+concept's body and revision, `draft_from_document` for the operations
+decision 5 admits."* Decision 5 is entirely about `addRelation`. So one
+admitted concept becomes one proposal through :meth:`.draft()
+<theurian.application.proposal_service.ProposalService.draft>` -- the same
+content path `knowledge.proposeChange` and
+:mod:`theurian.application.candidate_generation` already use -- and every
+`theurian_relations` entry across the whole bundle becomes one `addRelation`
+operation in at most one additional proposal through
+:meth:`.draft_from_document()
+<theurian.application.proposal_service.ProposalService.draft_from_document>`.
+`draft_from_document` cannot carry the first kind at all:
+`ProposalService._refuse_operations_outside_the_v1_set` refuses
+`createItem`/`upsertRevision` unconditionally, redirecting a caller to
+`.draft()` -- the control ADR-0027's two-procedures-disagree defect exists to
+enforce, and this import is bound by it like every other caller.
+
+**Nothing here reads OKF front matter as governance** (decision 1): `status`,
+`theurian_owner`, `theurian_namespace`, `theurian_trust_level` and
+`theurian_sensitivity` are never copied onto a drafted proposal.
+`ProposalRequest.namespace` stays unset (derived from the item id, never from
+`theurian_namespace`'s free text -- `domain/proposal.py::body_relative_path`'s
+own reason). `trust_level` is always :attr:`TrustLevel.INFERRED
+<theurian.domain.enums.TrustLevel.INFERRED>`, the `KnowledgeCandidate`
+precedent (`domain/review.py`) applied to a second on-ramp: no field on
+:class:`ImportedConcept` can carry any other value, so no later code path can
+raise it.
+
+**Every path a bundle names is resolved and contained before it is read**
+(decision 6): the bundle root first (`root.resolve()`, so a bundle unpacked
+under a symlinked `/tmp` still passes containment for in-bundle references),
+then each discovered concept file and each `theurian_body_file` sidecar
+through :func:`theurian.security.paths.read_source_file`. A failing reference
+refuses that reference alone -- the bundle's own front-matter key and the
+literal string it wrote, never the path it resolved to (T-25) -- and the
+import continues with everything else the bundle admits.
+
+**A `sources[]` entry is never followed, fetched, or reachability-checked.**
+Whether it becomes an additional :class:`SourceAnchor` is a syntactic test
+alone (decision 6): a URI or a relative path, never a scope descriptor
+("all queries in BigQuery project X").
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from pathlib import Path, PurePosixPath
+from typing import Final, final
+
+from theurian.application.draft_only_proposals import DraftOnlyProposals
+from theurian.application.okf_codec import (
+    THEURIAN_BODY_FILE,
+    ConceptDecodeRefusal,
+    DecodedConcept,
+    DecodedConceptDocument,
+    RelationEntry,
+    decode_concept_document,
+)
+from theurian.application.proposal_service import (
+    MAX_UPSERT_OPERATIONS,
+    DraftedMigration,
+    DraftedProposal,
+    ProposalRequest,
+)
+from theurian.domain.enums import KnowledgeKind, TrustLevel
+from theurian.domain.errors import (
+    DomainError,
+    InputTooLargeError,
+    InvalidIdentifierError,
+    IrregularSourceFileError,
+    PathEscapeError,
+    TheurianError,
+)
+from theurian.domain.identifiers import ItemId
+from theurian.domain.knowledge import SourceAnchor
+from theurian.domain.proposal import Evidence
+from theurian.domain.values import MARKDOWN, MediaType
+from theurian.security.paths import read_source_file
+
+#: `index.md`/`log.md` are OKF's reserved names, at every level (§3.1).
+_RESERVED_AT_EVERY_LEVEL: Final = frozenset({"index.md", "log.md"})
+
+#: The manifest's reserved name, at the bundle root only (ADR-0037 decision
+#: 2's positional reservation): a nested `architecture/theurian-bundle.md` is
+#: an ordinary concept.
+_MANIFEST_FILENAME: Final = "theurian-bundle.md"
+
+#: RFC 3986's scheme grammar, prefix only: `scheme = ALPHA *( ALPHA / DIGIT /
+#: "+" / "-" / "." )` followed by `:`.
+_URI_SCHEME_PATTERN: Final = re.compile(r"\A[A-Za-z][A-Za-z0-9+.\-]*:")
+
+
+class OkfImportError(TheurianError):
+    """The import as a whole could not proceed. Individual refusals are not this."""
+
+    def __init__(self, message: str, *, remedy: str) -> None:
+        self.remedy = remedy
+        super().__init__(message)
+
+
+@dataclass(frozen=True, slots=True)
+class ImportRefusal:
+    """One thing the import declined to admit (ADR-0037 decision 6).
+
+    `key` is the front-matter key for a containment refusal, or the concept's
+    own bundle-relative path when the concept itself could not be mapped.
+    `literal` is the bundle's own written value for a containment refusal --
+    literal, never the path it resolved to (T-25) -- or a short, Theurian-
+    written reason otherwise.
+    """
+
+    key: str
+    literal: str
+
+
+@dataclass(frozen=True, slots=True)
+class ImportedConcept:
+    """One OKF concept mapped onto a proposal request, before drafting.
+
+    `trust_level` is always `INFERRED`: an import is untrusted front matter,
+    and a human reviewer is what would raise it -- the `KnowledgeCandidate`
+    precedent (`domain/review.py`), applied to this on-ramp. No caller can
+    pass a different value; there is no field for one.
+    """
+
+    item_id: ItemId
+    title: str
+    kind: KnowledgeKind
+    body: str
+    content_type: MediaType
+    labels: tuple[str, ...]
+    source_anchors: tuple[SourceAnchor, ...]
+    relations: tuple[RelationEntry, ...]
+    trust_level: TrustLevel = field(default=TrustLevel.INFERRED, init=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ImportedProposal:
+    """One admitted concept's drafted proposal."""
+
+    item_id: ItemId
+    proposal: DraftedProposal
+
+
+@dataclass(frozen=True, slots=True)
+class OkfImportRequest:
+    """One import run's inputs: the bundle, and the values every drafted proposal shares."""
+
+    root: Path
+    owner: str
+    author: str
+    evidence: Evidence
+    item_filter: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
+class OkfImportResult:
+    """What one bundle import produced."""
+
+    concepts_admitted: tuple[ImportedProposal, ...]
+    relations_proposal: DraftedMigration | None
+    refusals: tuple[ImportRefusal, ...]
+
+
+def _walk_concept_paths(root: Path) -> tuple[PurePosixPath, ...]:
+    """Every candidate concept file's bundle-relative path, sorted bytewise.
+
+    Reserved names are excluded here (decision 2): `index.md`/`log.md` at any
+    level, and the manifest at the bundle root only. This only lists names;
+    :func:`_map_concept` is what proves each one is contained before its bytes
+    are read, so a symlinked `.md` planted inside the bundle and pointing
+    outside it is refused there, however it was discovered.
+    """
+    candidates = []
+    for path in root.rglob("*.md"):
+        relative = PurePosixPath(path.relative_to(root).as_posix())
+        if relative.name in _RESERVED_AT_EVERY_LEVEL:
+            continue
+        if relative == PurePosixPath(_MANIFEST_FILENAME):
+            continue
+        candidates.append(relative)
+    return tuple(sorted(candidates, key=lambda item: item.as_posix()))
+
+
+def _item_id_from_path(relative: PurePosixPath) -> str:
+    """`architecture/auth/policy.md` -> `architecture.auth.policy`.
+
+    OKF's own concept-id convention (§2): a vanilla bundle carries no
+    `theurian_item_id`, so the concept's own bundle path is its identity.
+    """
+    return ".".join((*relative.parts[:-1], relative.stem))
+
+
+def _resolve_item_id(concept: DecodedConcept, relative: PurePosixPath) -> ItemId | None:
+    candidate = concept.theurian_item_id or _item_id_from_path(relative)
+    try:
+        return ItemId(candidate)
+    except InvalidIdentifierError:
+        return None
+
+
+def _resolve_kind(concept: DecodedConcept) -> KnowledgeKind | None:
+    try:
+        return KnowledgeKind(concept.kind)
+    except ValueError:
+        return None
+
+
+def _resolve_body(
+    root: Path, concept: DecodedConcept, inline_body: str
+) -> tuple[str, MediaType] | ImportRefusal:
+    """The concept's body, and its media type.
+
+    A markdown body embeds in the concept document (the common case); a
+    non-markdown body lives in the sidecar `theurian_body_file` names,
+    preserved byte for byte on export, so it is read the same way here.
+    """
+    if concept.theurian_body_file is None:
+        return inline_body, MARKDOWN
+    try:
+        sidecar_bytes = read_source_file(root, concept.theurian_body_file)
+    except (PathEscapeError, IrregularSourceFileError, InputTooLargeError, FileNotFoundError):
+        return ImportRefusal(key=THEURIAN_BODY_FILE, literal=concept.theurian_body_file)
+    try:
+        sidecar_text = sidecar_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        return ImportRefusal(key=THEURIAN_BODY_FILE, literal=concept.theurian_body_file)
+    if not concept.theurian_content_type:
+        return ImportRefusal(key="theurian_content_type", literal="")
+    try:
+        content_type = MediaType(concept.theurian_content_type)
+    except DomainError:
+        return ImportRefusal(key="theurian_content_type", literal=concept.theurian_content_type)
+    return sidecar_text, content_type
+
+
+def _is_uri_or_relative_path(resource: str) -> bool:
+    """Decision 6's syntactic test, and nothing more: no follow, no fetch, no
+    reachability check. A scope descriptor ("all queries in BigQuery project
+    X") has whitespace no URI or relative path needs.
+    """
+    if _URI_SCHEME_PATTERN.match(resource):
+        return True
+    return (
+        bool(resource) and not resource.startswith("/") and not any(c.isspace() for c in resource)
+    )
+
+
+def _bundle_identity_anchor(relative: PurePosixPath) -> SourceAnchor:
+    """INV-8's always-present anchor: the bundle's own identity.
+
+    Named by the concept's path *within* the bundle, never the operator's
+    absolute bundle-root path -- the same T-25 reason a refusal never names a
+    resolved path either.
+    """
+    return SourceAnchor(
+        provider="okf-bundle",
+        source_uri=f"okf-bundle:{relative.as_posix()}",
+        file_path=relative.as_posix(),
+    )
+
+
+def _source_anchors(relative: PurePosixPath, concept: DecodedConcept) -> tuple[SourceAnchor, ...]:
+    anchors = [_bundle_identity_anchor(relative)]
+    anchors.extend(
+        SourceAnchor(provider="okf-source", source_uri=entry.resource)
+        for entry in concept.sources
+        if _is_uri_or_relative_path(entry.resource)
+    )
+    return tuple(anchors)
+
+
+def _decode_concept_file(
+    root: Path, relative: PurePosixPath
+) -> DecodedConceptDocument | ImportRefusal:
+    try:
+        raw = read_source_file(root, relative)
+    except (PathEscapeError, IrregularSourceFileError, InputTooLargeError, FileNotFoundError):
+        path_text = relative.as_posix()
+        return ImportRefusal(key=path_text, literal=path_text)
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return ImportRefusal(key=relative.as_posix(), literal="not valid UTF-8")
+
+    decoded = decode_concept_document(text)
+    if isinstance(decoded, ConceptDecodeRefusal):
+        return ImportRefusal(key=relative.as_posix(), literal=decoded.reason)
+    return decoded
+
+
+def _map_concept(root: Path, relative: PurePosixPath) -> ImportedConcept | ImportRefusal:
+    decoded = _decode_concept_file(root, relative)
+    if isinstance(decoded, ImportRefusal):
+        return decoded
+    concept = decoded.front_matter
+
+    item_id = _resolve_item_id(concept, relative)
+    if item_id is None:
+        literal = concept.theurian_item_id or _item_id_from_path(relative)
+        return ImportRefusal(key=relative.as_posix(), literal=f"not a valid item id: {literal!r}")
+
+    kind = _resolve_kind(concept)
+    if kind is None:
+        return ImportRefusal(
+            key=relative.as_posix(), literal=f"unrecognized type: {concept.kind!r}"
+        )
+
+    body_outcome = _resolve_body(root, concept, decoded.body)
+    if isinstance(body_outcome, ImportRefusal):
+        return body_outcome
+    body, content_type = body_outcome
+
+    return ImportedConcept(
+        item_id=item_id,
+        title=concept.title,
+        kind=kind,
+        body=body,
+        content_type=content_type,
+        labels=concept.labels,
+        source_anchors=_source_anchors(relative, concept),
+        relations=concept.theurian_relations,
+    )
+
+
+def _proposal_request(request: OkfImportRequest, concept: ImportedConcept) -> ProposalRequest:
+    return ProposalRequest(
+        item_id=concept.item_id,
+        title=concept.title,
+        kind=concept.kind,
+        owner=request.owner,
+        author=request.author,
+        description=f"Imported from OKF bundle concept {concept.item_id.value}.",
+        body=concept.body,
+        content_type=concept.content_type,
+        evidence=request.evidence,
+        source_anchors=concept.source_anchors,
+        labels=concept.labels,
+        trust_level=concept.trust_level,
+    )
+
+
+def _relation_operation(source_item_id: ItemId, entry: RelationEntry) -> dict[str, object]:
+    operation: dict[str, object] = {
+        "op": "addRelation",
+        "sourceItemId": source_item_id.value,
+        "relationType": entry.type,
+        "targetItemId": entry.target,
+    }
+    if entry.note is not None:
+        operation["note"] = entry.note
+    return operation
+
+
+def _operation_cap_exceeded(count: int) -> OkfImportError:
+    return OkfImportError(
+        f"This bundle admits {count} operations, more than the {MAX_UPSERT_OPERATIONS} a "
+        f"single import will draft.",
+        remedy=(
+            f"Split the import with `--item <id>`, selecting {MAX_UPSERT_OPERATIONS} "
+            f"operations' worth of concepts or fewer per run."
+        ),
+    )
+
+
+@final
+class OkfImportService:
+    """The gated OKF import: decode, contain, draft. See the module docstring."""
+
+    def __init__(self, *, drafts: DraftOnlyProposals) -> None:
+        self._drafts = drafts
+
+    def import_bundle(self, request: OkfImportRequest) -> OkfImportResult:
+        root = request.root.resolve()
+        if not root.is_dir():
+            raise OkfImportError(
+                f"{request.root} is not a directory.",
+                remedy="Pass the path to an unpacked OKF bundle directory.",
+            )
+
+        refusals: list[ImportRefusal] = []
+        admitted: list[ImportedConcept] = []
+        for relative in _walk_concept_paths(root):
+            outcome = _map_concept(root, relative)
+            if isinstance(outcome, ImportRefusal):
+                refusals.append(outcome)
+                continue
+            if request.item_filter and outcome.item_id.value not in request.item_filter:
+                continue
+            admitted.append(outcome)
+
+        relation_operations = [
+            _relation_operation(concept.item_id, entry)
+            for concept in admitted
+            for entry in concept.relations
+        ]
+        total_operations = 2 * len(admitted) + len(relation_operations)
+        if total_operations > MAX_UPSERT_OPERATIONS:
+            raise _operation_cap_exceeded(total_operations)
+
+        proposals: list[ImportedProposal] = []
+        for concept in admitted:
+            try:
+                drafted = self._drafts.draft(_proposal_request(request, concept), local=False)
+            except TheurianError as exc:
+                refusals.append(ImportRefusal(key=concept.item_id.value, literal=str(exc)))
+                continue
+            proposals.append(ImportedProposal(item_id=concept.item_id, proposal=drafted))
+
+        relations_proposal: DraftedMigration | None = None
+        if relation_operations:
+            document = {"author": request.author, "operations": relation_operations}
+            try:
+                relations_proposal = self._drafts.draft_from_document(
+                    document, evidence=request.evidence, local=False
+                )
+            except TheurianError as exc:
+                refusals.append(ImportRefusal(key="addRelation", literal=str(exc)))
+
+        return OkfImportResult(
+            concepts_admitted=tuple(proposals),
+            relations_proposal=relations_proposal,
+            refusals=tuple(refusals),
+        )
+
+
+__all__ = [
+    "ImportRefusal",
+    "ImportedConcept",
+    "ImportedProposal",
+    "OkfImportError",
+    "OkfImportRequest",
+    "OkfImportResult",
+    "OkfImportService",
+]

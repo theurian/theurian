@@ -362,8 +362,18 @@ _APPLICATION_NON_SERVING_MODULES: frozenset[str] = frozenset(
         "migration_alias_guards.py",
         "migration_body_guards.py",
         "migration_engine.py",
-        # The shared OKF front-matter codec (ADR-0037): pure helpers, no store, nothing served.
+        # The shared OKF front-matter codec (ADR-0037): pure encode/decode
+        # helpers for the export's derived Index-class artifact and the
+        # import's decode step. No I/O, no store, and nothing here answers a
+        # caller -- the export path is index_builder's shape, a maintenance
+        # rebuild, and the import path is a proposal-drafting one, neither a
+        # serving one.
         "okf_codec.py",
+        # The gated OKF import (ADR-0037 decisions 5, 6): decodes a bundle and
+        # hands the result to the draft-only facade. It names no store at all
+        # and answers no caller with knowledge content -- its whole output is
+        # a proposal directory, not a served response.
+        "okf_import.py",
         "project_service.py",
         "proposal_service.py",
         # One review-ingestion run (ADR-0030 decisions 3 and 4): it fetches
