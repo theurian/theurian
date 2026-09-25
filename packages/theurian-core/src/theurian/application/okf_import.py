@@ -514,10 +514,17 @@ def _collect_relation_operations(
     return operations, dropped
 
 
-def _operation_cap_exceeded(count: int) -> OkfImportError:
+def _operation_cap_exceeded(count: int, concepts: int) -> OkfImportError:
+    """`count` is the running total at the crossing, not the bundle's total.
+
+    The walk stops there (see `_admit_concepts`'s docstring), so nothing here
+    has read the rest of the bundle to know what it would have admitted --
+    the message says what was actually computed: this many operations within
+    this many concepts, not "this bundle admits".
+    """
     return OkfImportError(
-        f"This bundle admits {count} operations, more than the {MAX_UPSERT_OPERATIONS} a "
-        f"single import will draft.",
+        f"This bundle passes {count} operations within its first {concepts} concepts, "
+        f"more than the {MAX_UPSERT_OPERATIONS} a single import will draft.",
         remedy=(
             f"Split the import with `--item <id>`, selecting {MAX_UPSERT_OPERATIONS} "
             f"operations' worth of concepts or fewer per run."
@@ -619,7 +626,7 @@ def _admit_concepts(
             continue
         total_operations += 2 + len(outcome.relations)
         if total_operations > MAX_UPSERT_OPERATIONS:
-            raise _operation_cap_exceeded(total_operations)
+            raise _operation_cap_exceeded(total_operations, len(admitted) + 1)
         admitted_ids.add(outcome.item_id.value)
         admitted.append(outcome)
     refusals.extend(_unmatched_item_filter_refusals(item_filter, frozenset(matched_ids)))

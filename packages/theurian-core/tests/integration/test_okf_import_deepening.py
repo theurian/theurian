@@ -445,8 +445,10 @@ def test_251_relations_on_one_concept_refuse_the_whole_import_not_only_the_relat
     with pytest.raises(OkfImportError) as excinfo:
         _service(paths).import_bundle(_request(bundle))
 
-    assert "253" in str(excinfo.value)
-    assert str(MAX_UPSERT_OPERATIONS) in str(excinfo.value)
+    assert str(excinfo.value) == (
+        "This bundle passes 253 operations within its first 1 concepts, "
+        f"more than the {MAX_UPSERT_OPERATIONS} a single import will draft."
+    ), "253 is the running total at the crossing, computed within the first concept alone"
     assert not [p for p in paths.proposals.glob("*") if p.is_dir()], (
         "the whole-import cap fires before any proposal directory is written"
     )
@@ -483,7 +485,10 @@ def test_a_300_concept_bundle_refuses_fast_rather_than_drafting_unboundedly(
         _service(paths).import_bundle(_request(bundle))
     elapsed = time.monotonic() - started
 
-    assert "252" in str(excinfo.value)
+    assert str(excinfo.value) == (
+        "This bundle passes 252 operations within its first 126 concepts, "
+        f"more than the {MAX_UPSERT_OPERATIONS} a single import will draft."
+    ), "252 within 126 is the running total at the crossing, not the bundle's own 600"
     assert "600" not in str(excinfo.value), "the walk must stop at the crossing, not read all 300"
     assert elapsed < 5.0, f"a 300-concept bundle took {elapsed:.3f}s to refuse, expected < 5s"
     assert not [p for p in paths.proposals.glob("*") if p.is_dir()]
