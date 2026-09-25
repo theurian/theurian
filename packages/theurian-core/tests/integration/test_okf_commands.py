@@ -341,6 +341,30 @@ def test_an_unloadable_migration_is_reported_as_a_document(project: Path) -> Non
     assert not (project.parent / "bundle").exists()
 
 
+def test_a_write_that_never_created_the_target_does_not_send_ls_at_it(project: Path) -> None:
+    """A cure names a listing only where there is something to list.
+
+    The target's parent is a regular file here, so the first ``mkdir`` refuses with
+    ENOTDIR and nothing is created: `ls -la <target>` would answer the operator
+    with a second error about a path that does not exist and say nothing about the
+    first. The arm still names the runnable part of the cure -- export again into
+    an empty or new directory.
+    """
+    _applied(project)
+    blocking = project.parent / "a-file"
+    blocking.write_text("not a directory", encoding="utf-8")
+    target = blocking / "bundle"
+
+    code, payload = _invoke("okf", "export", str(target))
+
+    assert code == 1
+    assert "could not be written" in payload["error"]
+    assert f"nothing was left at {target}" in payload["remedy"]
+    assert f"ls -la {target}" not in payload["remedy"]
+    assert "export again into an empty or new directory" in payload["remedy"]
+    assert not target.exists()
+
+
 def test_a_damaged_cell_is_reported_as_a_document_and_quoted_nowhere(project: Path) -> None:
     """The command `test_canonical_store_corruption.py` excludes, at its own file.
 

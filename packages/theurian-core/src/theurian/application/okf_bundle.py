@@ -28,8 +28,9 @@ import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from itertools import groupby
+from itertools import dropwhile, groupby
 from pathlib import PurePosixPath
+from types import MappingProxyType
 from typing import Final
 
 from theurian import __version__
@@ -137,7 +138,12 @@ class Concept:
 
 @dataclass(frozen=True, slots=True)
 class Bundle:
-    """Every file the export will write, with the counts and digest it reports."""
+    """Every file the export will write, with the counts and digest it reports.
+
+    ``files`` is handed over as a read-only view: the digest below is taken over
+    exactly these entries, so a caller that could add or replace one would hold a
+    bundle whose own manifest does not describe it.
+    """
 
     files: Mapping[str, str]
     #: A digest over every file above **except** the manifest, which is where it
@@ -221,16 +227,23 @@ def _sidecar_path(concept: Concept) -> PurePosixPath:
 
 
 def _document(*blocks: str) -> str:
-    """Blocks separated by one blank line, with exactly one trailing newline.
+    """Blocks joined by one blank line, with exactly one trailing newline.
+
+    **Joined, not "separated by one blank line": an empty block contributes its
+    own separator.** ``_document("front: matter", "", "## Relations")`` measures
+    ``'front: matter\\n\\n\\n\\n## Relations\\n'`` -- three blank lines, which is
+    what a markdown row with an empty body renders. Deliberate rather than
+    special-cased: the join is a total function of the blocks, so the frame stays
+    a constant of the exporter version, and a rule that dropped empty blocks
+    would make the number of blank lines a bit about the body.
 
     **The embedded markdown body keeps every byte but its surrounding blank
     lines, which these separators replace.** A recorded decision rather than an
-    oversight: the document's frame is then a constant of the exporter version,
-    which is what decision 2's determinism pin holds, instead of varying with
-    how many newlines an author left at the end of a file. Byte-for-byte
-    preservation is claimed for a *sidecar* (decision 7) and is what makes a
-    structured body still parse; a round trip is not identity in any case
-    (ADR-0037, *What this does not close* item 2).
+    oversight, for the same reason: the frame does not vary with how many
+    newlines an author left at the end of a file. Byte-for-byte preservation is
+    claimed for a *sidecar* (decision 7) and is what makes a structured body
+    still parse; a round trip is not identity in any case (ADR-0037, *What this
+    does not close* item 2).
     """
     return "\n\n".join(block.strip("\n") for block in blocks) + "\n"
 
@@ -292,10 +305,25 @@ def _note_lines(note: str | None) -> tuple[str, ...]:
     escape is applied per line rather than to the value. The terminators this
     split does *not* cover -- `\\r` and YAML's three -- the escape folds to a
     space itself.
+
+    **A note that opens with a newline gets no empty bullet.** Its first line is
+    the empty string, which rendered as the list marker and a trailing space: an
+    empty list item in a generated file, carrying nothing. The leading empties are
+    dropped and the first line with content takes the marker -- and nothing is
+    lost, because ``theurian_relations`` publishes the note's own bytes in the
+    same document. A note that is only newlines renders no line at all, as
+    ``None`` does.
     """
     if note is None:
         return ()
-    escaped = [escape_markdown_list_line(line) for line in note.split("\n")]
+    escaped = list(
+        dropwhile(
+            lambda line: not line,
+            (escape_markdown_list_line(line) for line in note.split("\n")),
+        )
+    )
+    if not escaped:
+        return ()
     continuation = tuple(f"    {line}" if line else "" for line in escaped[1:])
     return (f"  * {escaped[0]}", *continuation)
 
@@ -484,7 +512,7 @@ def render(concepts: Sequence[Concept]) -> Bundle:
         MANIFEST_NOTICE,
     )
     return Bundle(
-        files=files,
+        files=MappingProxyType(files),
         digest=digest,
         concepts=len(concepts),
         sidecars=sum(1 for concept in concepts if concept.revision.content_type != MARKDOWN),

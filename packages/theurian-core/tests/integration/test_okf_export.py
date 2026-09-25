@@ -658,6 +658,51 @@ def test_a_note_cannot_forge_a_heading_on_any_of_its_lines(tmp_path: Path) -> No
     ]
 
 
+def test_a_note_that_opens_with_a_newline_renders_no_empty_bullet(tmp_path: Path) -> None:
+    """An empty first line took the list marker and a trailing space.
+
+    The value's own bytes are published in `theurian_relations` either way, so
+    dropping the leading empties from the *rendered* list costs nothing and keeps
+    a generated file free of an item that carries nothing.
+    """
+    bundle = bundle_of(
+        tmp_path,
+        [Row("subject", 1), Row("other", 2)],
+        [Edge("subject", "other", note="\n\nthe reason, after two blank lines")],
+    )
+
+    section = bundle.body("subject.md").split("## Relations\n")[1]
+    assert section == (
+        "\n### related_to\n\n* [other](/other.md)\n  * the reason, after two blank lines\n"
+    )
+    assert "  * \n" not in section
+    assert bundle.relations("subject.md") == [
+        {
+            "type": "related_to",
+            "target": "other",
+            "note": "\n\nthe reason, after two blank lines",
+        }
+    ]
+
+
+def test_the_rendered_bundle_hands_out_no_mapping_a_caller_can_edit(tmp_path: Path) -> None:
+    """The digest covers exactly the entries `files` holds, so it is a read-only view."""
+    database = corpus(tmp_path, [Row("keeper", 1)])
+    concepts = OkfExporter(store_factory=SqliteCanonicalStore)._walk(
+        OkfExportRequest(
+            database=database,
+            output_directory=tmp_path / "never-written",
+            project_id=PROJECT.value,
+            visible_sensitivities=VISIBLE,
+        )
+    )
+
+    bundle = okf_bundle.render(concepts)
+
+    with pytest.raises(TypeError):
+        bundle.files["planted.md"] = "not covered by the digest"  # type: ignore[index]
+
+
 def test_a_title_cannot_close_an_index_entrys_link_early(tmp_path: Path) -> None:
     """The other structural site decision 2 names, over the codec's whole inline set.
 
