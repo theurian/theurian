@@ -17,7 +17,7 @@ assignment's, per ``security/paths.py``'s own battery.
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from pathlib import Path
 
 import pytest
@@ -32,8 +32,17 @@ from theurian.application.okf_import import (
     OkfImportRequest,
     OkfImportService,
 )
-from theurian.application.project_service import ProjectPaths, initialize_project
-from theurian.application.proposal_service import ProposalService
+from theurian.application.project_service import (
+    ProjectPathEscapeError,
+    ProjectPaths,
+    initialize_project,
+)
+from theurian.application.proposal_service import (
+    DraftedMigration,
+    DraftedProposal,
+    ProposalRequest,
+    ProposalService,
+)
 from theurian.cli.migration_pipeline import rehearse_migration_set
 from theurian.domain.identifiers import AgentId, ItemId, MigrationId, ProjectId, RevisionId, TaskId
 from theurian.domain.migration import Migration, current_revision_in
@@ -303,3 +312,38 @@ def test_a_malformed_concept_refuses_that_file_and_the_rest_still_drafts(
     assert {p.item_id.value for p in result.concepts_admitted} == {"vanilla"}
     assert any(isinstance(refusal, ImportRefusal) for refusal in result.refusals)
     assert result.refusals[0].key == "broken.md"
+
+
+class _EscapingDrafts:
+    """A `DraftSurface` whose calls fail the way a `.theurian/proposals` symlink
+    escape does (#237-class), to prove that failure propagates rather than
+    being recorded as a refusal of the concept or relation being drafted.
+    """
+
+    def draft(
+        self,
+        request: ProposalRequest,  # noqa: ARG002 - port shape; unused is exactly the point
+        *,
+        local: bool = False,  # noqa: ARG002 - ditto
+    ) -> DraftedProposal:
+        raise ProjectPathEscapeError("`.theurian/proposals` escapes the working tree")
+
+    def draft_from_document(
+        self,
+        document: Mapping[str, object],  # noqa: ARG002 - port shape; unused is exactly the point
+        *,
+        evidence: Evidence,  # noqa: ARG002 - ditto
+        local: bool = False,  # noqa: ARG002 - ditto
+    ) -> DraftedMigration:
+        raise ProjectPathEscapeError("`.theurian/proposals` escapes the working tree")
+
+
+def test_a_project_level_path_escape_propagates_rather_than_becoming_a_refusal(
+    tmp_path: Path,
+) -> None:
+    bundle = tmp_path / "bundle"
+    _write(bundle, "vanilla.md", _VANILLA_CONCEPT)
+    service = OkfImportService(drafts=DraftOnlyProposals(_EscapingDrafts()))
+
+    with pytest.raises(ProjectPathEscapeError):
+        service.import_bundle(_request(bundle))

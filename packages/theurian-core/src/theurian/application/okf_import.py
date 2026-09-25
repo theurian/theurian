@@ -64,6 +64,7 @@ from theurian.application.proposal_service import (
     MAX_UPSERT_OPERATIONS,
     DraftedMigration,
     DraftedProposal,
+    ProposalError,
     ProposalRequest,
 )
 from theurian.domain.enums import KnowledgeKind, TrustLevel
@@ -71,7 +72,9 @@ from theurian.domain.errors import (
     DomainError,
     InputTooLargeError,
     InvalidIdentifierError,
+    InvariantViolationError,
     IrregularSourceFileError,
+    MigrationError,
     PathEscapeError,
     TheurianError,
 )
@@ -92,6 +95,15 @@ _MANIFEST_FILENAME: Final = "theurian-bundle.md"
 #: RFC 3986's scheme grammar, prefix only: `scheme = ALPHA *( ALPHA / DIGIT /
 #: "+" / "-" / "." )` followed by `:`.
 _URI_SCHEME_PATTERN: Final = re.compile(r"\A[A-Za-z][A-Za-z0-9+.\-]*:")
+
+#: What a per-draft refusal is: the documented failure surface of `.draft()`
+#: and `.draft_from_document()` alike (a packaging refusal, a schema
+#: violation, evidence that evidences nothing). Deliberately **not**
+#: `TheurianError`: a `ProjectPathEscapeError` from `.theurian/proposals`
+#: itself is a whole-command failure, not a fact about one concept or one
+#: relation, and must propagate to the CLI's own handler for it rather than
+#: being recorded as if the bundle's content were at fault.
+_DRAFT_REFUSAL: Final = (ProposalError, MigrationError, InvariantViolationError)
 
 
 class OkfImportError(TheurianError):
@@ -406,7 +418,7 @@ class OkfImportService:
         for concept in admitted:
             try:
                 drafted = self._drafts.draft(_proposal_request(request, concept), local=False)
-            except TheurianError as exc:
+            except _DRAFT_REFUSAL as exc:
                 refusals.append(ImportRefusal(key=concept.item_id.value, literal=str(exc)))
                 continue
             proposals.append(ImportedProposal(item_id=concept.item_id, proposal=drafted))
@@ -418,7 +430,7 @@ class OkfImportService:
                 relations_proposal = self._drafts.draft_from_document(
                     document, evidence=request.evidence, local=False
                 )
-            except TheurianError as exc:
+            except _DRAFT_REFUSAL as exc:
                 refusals.append(ImportRefusal(key="addRelation", literal=str(exc)))
 
         return OkfImportResult(
