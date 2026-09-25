@@ -21,10 +21,10 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
   that is already on disk — whoever cloned, unpacked or copied it put it there.
   Each concept the import admits becomes its own proposal under
-  `.theurian/proposals/`, and every `theurian_relations` entry in the bundle
-  becomes one further proposal of `addRelation` operations. Nothing lands
-  approved: `theurian propose accept`, a pull request and a human merge are the
-  only route, exactly as for a proposal you wrote yourself.
+  `.theurian/proposals/`, and the `theurian_relations` entries of the concepts
+  that actually drafted become one further proposal of `addRelation` operations.
+  Nothing lands approved: `theurian propose accept`, a pull request and a human
+  merge are the only route, exactly as for a proposal you wrote yourself.
 
   **A bundle's front matter is data, never governance.** Its `status`, `owner`,
   namespace, sensitivity and trust level are read past rather than copied onto the
@@ -37,15 +37,32 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   reachability. A path *inside* the bundle — a `theurian_body_file`, or a `.md`
   file that turns out to be a symlink — is resolved and contained under the bundle
   root before its bytes are read; one that escapes refuses that concept alone, and
-  the rest of the bundle still drafts. A refusal names the front-matter key and
+  the rest of the bundle still drafts. That refusal names the front-matter key and
   the literal string the bundle wrote, never the path it resolved to, so a draft
   committed for review carries no filesystem layout with it.
 
+  **Nothing is dropped quietly: every refusal is reported, and `--json` buckets
+  them.** Each carries a `kind` — `reference` for a front-matter reference a
+  concept made, `concept` for a file that could not be mapped to one, `draft` for
+  a proposal the write path refused, `relations` for an edge — beside its `key`
+  and its `literal` reason, with the tallies in `refusalsByKind`; text output
+  prints one line per refusal instead of a Python repr. Three cases that used to
+  pass in silence now say so: two concepts resolving to one item id admit the
+  first in bundle-path order and refuse the second, rather than both drafting; an
+  edge whose own concept did not draft is dropped rather than landing as an
+  `addRelation` no proposal accompanies; and an `--item` value no concept was
+  reachable by is reported rather than ignored. `--item` matches a concept's
+  bundle path first, so a value naming only a `theurian_item_id` override does
+  not reach it — which is what that last report says in its own words.
+
   Two limits, both by design. A whole import is capped at 250 operations — two
-  per concept, one per relation — so more than 125 plain concepts refuses before
-  anything is drafted, with `--item <id>` named as the way to split the run. And
-  this is the import direction only: there is no `okf export` verb yet, and
-  fetching a bundle from a URL or a registry is deliberately out of scope.
+  per concept, one per relation — counted as the walk goes, so it stops at the
+  concept that crosses the cap instead of reading the rest of the bundle, and the
+  refusal says how many operations it reached within how many concepts; more than
+  125 plain concepts refuses before anything is drafted, with `--item <id>` named
+  as the way to split the run. And this is the import direction only: there is no
+  `okf export` verb yet, and fetching a bundle from a URL or a registry is
+  deliberately out of scope.
 
 ## [0.4.0] - 2026-09-19
 
