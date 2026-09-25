@@ -525,6 +525,14 @@ def _operation_cap_exceeded(count: int) -> OkfImportError:
     )
 
 
+def _duplicate_item_id_refusal(relative: PurePosixPath, item_id: str) -> ImportRefusal:
+    return ImportRefusal(
+        kind=KIND_CONCEPT,
+        key=relative.as_posix(),
+        literal=f"duplicate item id {item_id!r}: another concept already claimed it",
+    )
+
+
 def _unmatched_item_filter_refusals(
     item_filter: frozenset[str], matched_ids: frozenset[str]
 ) -> list[ImportRefusal]:
@@ -557,10 +565,19 @@ def _admit_concepts(
 
     Every `--item` value that matched no concept at all -- not even one that
     later failed to decode or map -- becomes its own refusal.
+
+    Two concepts resolving to one item id -- one `theurian_item_id`
+    overriding its path to collide with another's, most concretely --
+    would otherwise both draft: `.draft()`'s own `_check_expected_revision`
+    sees only the *landed* migration set, which neither proposal is yet, so
+    it refuses neither. `concept_paths` is already sorted bytewise, so
+    walking it in order and keeping the first admission per id is what makes
+    the refusal land on the second sighting deterministically.
     """
     refusals: list[ImportRefusal] = []
     admitted: list[ImportedConcept] = []
     matched_ids: set[str] = set()
+    admitted_ids: set[str] = set()
     for relative in concept_paths:
         if item_filter and _item_id_from_path(relative) not in item_filter:
             continue
@@ -571,6 +588,10 @@ def _admit_concepts(
         if item_filter and outcome.item_id.value not in item_filter:
             continue
         matched_ids.add(outcome.item_id.value)
+        if outcome.item_id.value in admitted_ids:
+            refusals.append(_duplicate_item_id_refusal(relative, outcome.item_id.value))
+            continue
+        admitted_ids.add(outcome.item_id.value)
         admitted.append(outcome)
     refusals.extend(_unmatched_item_filter_refusals(item_filter, frozenset(matched_ids)))
     return admitted, refusals

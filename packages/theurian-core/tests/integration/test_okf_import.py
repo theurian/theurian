@@ -613,3 +613,32 @@ def test_a_concept_inside_an_unreadable_directory_is_refused_not_dropped(
     [refusal] = result.refusals
     assert refusal.key == "locked"
     assert refusal.literal == "not readable"
+
+
+# ---------------------------------------------------------------------------
+# M-c: two concepts collapsing on one item id must not both draft.
+# ---------------------------------------------------------------------------
+
+
+def test_two_concepts_colliding_on_one_item_id_admit_only_the_first_in_walk_order(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    """`.draft()`'s own guard cannot see this: neither proposal is yet a
+    landed migration, so `_check_expected_revision` refuses neither. The
+    import service is the only place both concepts are visible at once.
+    """
+    bundle = tmp_path / "bundle"
+    collision = (
+        "---\ntype: decision\ntitle: {title}\nstatus: stable\n"
+        "theurian_item_id: architecture.duplicate\n---\n\nbody\n"
+    )
+    _write(bundle, "concept-a.md", collision.format(title="First"))
+    _write(bundle, "concept-b.md", collision.format(title="Second"))
+
+    result = _service(paths).import_bundle(_request(bundle))
+
+    assert {p.item_id.value for p in result.concepts_admitted} == {"architecture.duplicate"}
+    assert len(result.concepts_admitted) == 1
+    [refusal] = result.refusals
+    assert refusal.key == "concept-b.md", "the second sighting in bytewise walk order refuses"
+    assert "architecture.duplicate" in refusal.literal
