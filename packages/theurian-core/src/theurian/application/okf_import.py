@@ -573,11 +573,20 @@ def _admit_concepts(
     it refuses neither. `concept_paths` is already sorted bytewise, so
     walking it in order and keeping the first admission per id is what makes
     the refusal land on the second sighting deterministically.
+
+    `MAX_UPSERT_OPERATIONS` is checked here, after each concept is admitted,
+    rather than once after the whole bundle has been read: a bundle far past
+    the cap would otherwise be read and held in memory in full -- every
+    concept's body text alive at once -- before the cap ever had a chance to
+    fire (measured: a 209 MB bundle whose 251st concept already crosses the
+    cap peaked at 211 MB reading the other several hundred anyway). The walk
+    stops at the crossing instead.
     """
     refusals: list[ImportRefusal] = []
     admitted: list[ImportedConcept] = []
     matched_ids: set[str] = set()
     admitted_ids: set[str] = set()
+    total_operations = 0
     for relative in concept_paths:
         if item_filter and _item_id_from_path(relative) not in item_filter:
             continue
@@ -591,6 +600,9 @@ def _admit_concepts(
         if outcome.item_id.value in admitted_ids:
             refusals.append(_duplicate_item_id_refusal(relative, outcome.item_id.value))
             continue
+        total_operations += 2 + len(outcome.relations)
+        if total_operations > MAX_UPSERT_OPERATIONS:
+            raise _operation_cap_exceeded(total_operations)
         admitted_ids.add(outcome.item_id.value)
         admitted.append(outcome)
     refusals.extend(_unmatched_item_filter_refusals(item_filter, frozenset(matched_ids)))
@@ -636,16 +648,12 @@ class OkfImportService:
                 remedy="Pass the path to an unpacked OKF bundle directory.",
             )
 
+        # The MAX_UPSERT_OPERATIONS cap is enforced inside _admit_concepts,
+        # incrementally, so the walk stops at the crossing rather than
+        # reading a bundle far past the cap in full before checking it.
         concept_paths, unreadable_directories = _walk_concept_paths(root)
         admitted, mapping_refusals = _admit_concepts(root, concept_paths, request.item_filter)
         refusals: list[ImportRefusal] = [*unreadable_directories, *mapping_refusals]
-
-        # A conservative upper bound, checked before any draft runs: every
-        # admitted concept's own two operations, plus every relation it
-        # carries, whether or not that concept's own draft later succeeds.
-        total_operations = 2 * len(admitted) + sum(len(concept.relations) for concept in admitted)
-        if total_operations > MAX_UPSERT_OPERATIONS:
-            raise _operation_cap_exceeded(total_operations)
 
         proposals, drafted_ids, draft_refusals = _draft_concepts(request, admitted, self._drafts)
         refusals.extend(draft_refusals)

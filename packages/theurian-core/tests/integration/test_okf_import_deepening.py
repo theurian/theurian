@@ -345,10 +345,14 @@ def test_a_300_concept_bundle_refuses_fast_rather_than_drafting_unboundedly(
     `MAX_UPSERT_OPERATIONS` (250) with no relations at all -- so the cap that
     protects the relations document (above) is, incidentally, also a
     per-bundle concept-count cap: no bundle above 125 plain concepts can
-    complete an import in one run regardless of content. Measured on this
-    machine at commit 774b4728: under 2 seconds to walk, decode and refuse 300
-    files: recorded here as a floor generous enough to catch a regression to
-    unbounded or quadratic behaviour without being a tight timing assertion.
+    complete an import in one run regardless of content. The cap is checked
+    incrementally as each concept is admitted (M-f), so the walk stops the
+    moment the running total crosses 250 rather than reading all 300 first --
+    the refusal names 252 (the 126th concept's own two operations are what
+    cross it), never 600. Measured on this machine at commit 774b4728: under
+    2 seconds to walk, decode and refuse 300 files: recorded here as a floor
+    generous enough to catch a regression to unbounded or quadratic behaviour
+    without being a tight timing assertion.
     """
     bundle = tmp_path / "bundle"
     for index in range(300):
@@ -363,6 +367,7 @@ def test_a_300_concept_bundle_refuses_fast_rather_than_drafting_unboundedly(
         _service(paths).import_bundle(_request(bundle))
     elapsed = time.monotonic() - started
 
-    assert "600" in str(excinfo.value)
+    assert "252" in str(excinfo.value)
+    assert "600" not in str(excinfo.value), "the walk must stop at the crossing, not read all 300"
     assert elapsed < 5.0, f"a 300-concept bundle took {elapsed:.3f}s to refuse, expected < 5s"
     assert not [p for p in paths.proposals.glob("*") if p.is_dir()]
