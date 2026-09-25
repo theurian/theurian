@@ -267,10 +267,14 @@ jobs:
     name: Full suite with no network
     runs-on: ubuntu-latest
     # #104: observed p95 ~4.5 min over 30 runs, which alone would suggest
-    # ~18 min (4x). Set higher instead: the three steps below already carry
-    # a combined step-level budget of 35 min (10 + 20 + 5), added for the
+    # ~18 min (4x) (2026-09-05-era calibration; the suite has since roughly
+    # tripled -- the step comment below carries the current series). Set
+    # higher instead: the three steps below already carry a combined
+    # step-level budget of 35 min (10 + 20 + 5), added for the
     # network-sandbox invariant this job proves, + checkout/setup overhead
-    # (measured max 0.12 min). A job-level timeout tighter than the steps it
+    # (measured max 0.35 min on runs 36056084152 / 36041023166 /
+    # 36030358674, 2026-09-24; the fetch-depth: 0 checkout dominates it). A
+    # job-level timeout tighter than the steps it
     # wraps would fire before those steps ever could -- and a future step
     # added to this job cannot be sized as if 35 + its own minutes were the
     # whole budget; the overhead is real and already spoken for.
