@@ -40,8 +40,8 @@ from __future__ import annotations
 from collections.abc import Callable, Container, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Protocol, final, override
+from pathlib import Path, PurePosixPath
+from typing import Literal, Protocol, final, override
 
 from theurian.application.index_builder import both_ends_visible
 from theurian.application.okf_bundle import Concept, relation_order, render
@@ -53,43 +53,74 @@ from theurian.domain.knowledge import KnowledgeItem, KnowledgeRelation, Knowledg
 from theurian.domain.ports.canonical_store import IndexBuildSession
 from theurian.security.no_follow import write_text_without_following_a_link
 
+#: Why an export target was refused. Three arms, each with its own message and
+#: its own cure, dispatched by ``match`` so a fourth cannot be added without
+#: being written.
+TargetRefusal = Literal["not-empty", "not-a-directory", "symbolic-link"]
+
 
 class OkfExportError(TheurianError):
-    """The export target cannot hold a bundle.
+    """The export target, or a directory inside it, cannot hold a bundle.
 
-    Raised before the walk, so nothing has been read and nothing written. Both
-    arms carry their own cure, and neither cure deletes anything: the target is
-    the operator's own directory, and what is already in it may be the copy
-    somebody was handed.
+    The first two arms are raised before the walk, so nothing has been read and
+    nothing written. The ``symbolic-link`` arm fires either there or while the
+    tree is being created -- before any bundle file is written, because
+    :func:`_write` creates and checks every directory first -- so its cure can
+    still promise a target that holds no partial bundle.
+
+    **No cure here deletes anything, and none of them urges a removal.** The
+    target is a path the operator named on the command line rather than a derived
+    one, so what is at it may be authored: a directory holds names and a file
+    holds bytes, and even the link arm names the listing rather than an ``rm``,
+    because the operator may have pointed it somewhere on purpose.
     """
 
-    def __init__(self, directory: Path, *, not_a_directory: bool = False) -> None:
-        if not_a_directory:
-            # The cure moves rather than deletes, and names the listing that says
-            # what would be lost: whatever is at the path holds bytes or names,
-            # and this is an operator-chosen path rather than a derived one.
-            self.remedy = (
-                f"Move or rename whatever is at {directory}, then run `theurian okf export "
-                f"{directory}` again -- or export into a different directory. "
-                f"`ls -l {directory}` shows what is there now."
-            )
-            super().__init__(
-                f"The export target {directory} exists and is not a directory, so no bundle "
-                f"tree can be written there. Theurian will not write over it."
-            )
-            return
-        self.remedy = (
-            f"Export into an empty or new directory: `theurian okf export "
-            f"{directory / 'okf-bundle'}` puts one beside what is already there, and "
-            f"`ls -la {directory}` shows what that is. Nothing is deleted here -- a bundle "
-            f"is regenerated rather than edited, so merging a new one into an old tree "
-            f"would leave members of the old export behind and make its digest wrong."
-        )
-        super().__init__(
-            f"The export target {directory} is not empty. A bundle is a whole tree whose "
-            f"digest covers every file in it, so it is written into an empty directory and "
-            f"never merged into an existing one."
-        )
+    def __init__(self, directory: Path, *, reason: TargetRefusal = "not-empty") -> None:
+        match reason:
+            case "not-a-directory":
+                # The cure moves rather than deletes, and names the listing that
+                # says what would be lost: whatever is at the path holds bytes or
+                # names, and this is an operator-chosen path.
+                self.remedy = (
+                    f"Move or rename whatever is at {directory}, then run `theurian okf export "
+                    f"{directory}` again -- or export into a different directory. "
+                    f"`ls -l {directory}` shows what is there now."
+                )
+                message = (
+                    f"The export target {directory} exists and is not a directory, so no bundle "
+                    f"tree can be written there. Theurian will not write over it."
+                )
+            case "symbolic-link":
+                # Names the link *and* where it points, because that is the whole
+                # of what the refusal is about, and offers a different target
+                # rather than a removal: the link may be the operator's own.
+                self.remedy = (
+                    f"Export into a directory that is not a symbolic link -- `theurian okf "
+                    f"export {directory.parent / 'okf-bundle'}`, say. `ls -l {directory}` shows "
+                    f"where this one points. Nothing was written through it and nothing is "
+                    f"deleted here; remove or repoint the link yourself if it is meant to be "
+                    f"the target."
+                )
+                message = (
+                    f"A bundle directory would be written through the symbolic link at "
+                    f"{directory}, so the tree would land outside the target this export was "
+                    f"given. Theurian will not follow it."
+                )
+            case "not-empty":
+                self.remedy = (
+                    f"Export into an empty or new directory: `theurian okf export "
+                    f"{directory / 'okf-bundle'}` puts one beside what is already there, and "
+                    f"`ls -la {directory}` shows what that is. Nothing is deleted here -- a "
+                    f"bundle is regenerated rather than edited, so merging a new one into an "
+                    f"old tree would leave members of the old export behind and make its "
+                    f"digest wrong."
+                )
+                message = (
+                    f"The export target {directory} is not empty. A bundle is a whole tree "
+                    f"whose digest covers every file in it, so it is written into an empty "
+                    f"directory and never merged into an existing one."
+                )
+        super().__init__(message)
 
 
 class OkfExportSession(IndexBuildSession, Protocol):
@@ -313,34 +344,107 @@ def _refuse_an_unusable_target(directory: Path) -> None:
     behind -- a concept whose row has since been withdrawn is not overwritten by
     anything -- and the new manifest's digest, computed over what this run
     rendered, would not describe the tree on disk.
+
+    **The link check is first, because every other probe here follows one.**
+    ``exists`` and ``is_dir`` answer about the link's *target*, so a link to an
+    empty directory passed all three and the whole bundle landed wherever it
+    pointed -- outside the target this command was given, with `bundlePath`
+    naming the link (round one, adversarial; graded HIGH as a containment write
+    escape). The leaf is this check's whole reach; the components above it are
+    :func:`_make_one_directory`'s.
     """
+    if directory.is_symlink():
+        raise OkfExportError(directory, reason="symbolic-link")
     if not directory.exists():
         return
     if not directory.is_dir():
-        raise OkfExportError(directory, not_a_directory=True)
+        raise OkfExportError(directory, reason="not-a-directory")
     if any(directory.iterdir()):
         raise OkfExportError(directory)
 
 
 def _write(root: Path, files: Mapping[str, str]) -> None:
-    """The one place this module writes, so every member takes the same guard.
+    """The one place this module writes, so every member takes the same guards.
 
-    Every path is built from item-id segments and the bundle module's own
-    constants, so none can escape ``root``; the check is kept because "no member
-    can traverse" is a property of the *derivation*, and a future member derived
-    some other way would inherit a guard here and escape one at the seam.
+    Three passes, in this order, and the order is what the guarantees rest on:
+    every member's key is checked, then every directory is created and checked,
+    then the files are written. A refusal in either of the first two therefore
+    leaves no partial bundle, which is what lets the refusals' cures say so.
 
-    ``write_text_without_following_a_link`` rather than ``Path.write_text``: the
-    target is a directory the operator named, and a symbolic link planted in it
-    between the ``mkdir`` and the write would otherwise be written through.
+    **What is guarded, exactly.** The *leaf* of each member takes
+    ``O_NOFOLLOW`` (:func:`~theurian.security.no_follow.write_text_without_following_a_link`),
+    which refuses a symbolic link at the final component and nowhere else. The
+    *prefix* is guarded by :func:`_make_one_directory`, one component at a time,
+    because ``mkdir(parents=True)`` walks a planted directory link without
+    complaint -- measured, in the real export window, writing the tree outside
+    the bundle root. Neither guard closes the race between the check and the use
+    of a component: that needs an ``openat`` walk against directory descriptors,
+    which is [#577](https://github.com/theurian/theurian/issues/577) and is not
+    closed here.
     """
+    for relative in files:
+        _refuse_a_member_outside_the_root(root, relative)
+    _make_the_tree(root, files)
     for relative, contents in files.items():
-        path = root / relative
-        if not path.is_relative_to(root):  # pragma: no cover - the grammar forbids it
-            msg = f"A bundle member resolved outside the bundle root: {relative!r}"
-            raise InvariantViolationError(msg)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        write_text_without_following_a_link(path, contents)
+        write_text_without_following_a_link(root / relative, contents)
+
+
+def _refuse_a_member_outside_the_root(root: Path, relative: str) -> None:
+    """Refuse a member key that does not stay under ``root``.
+
+    Every key is built from item-id segments and the bundle module's own
+    constants, so none can traverse; the check is kept because "no member can
+    traverse" is a property of the *derivation*, and a future member derived some
+    other way would inherit a guard here and escape one at the seam.
+
+    **Keyed on the segments, not on ``is_relative_to`` alone**, which is a lexical
+    comparison of path parts: ``Path('/a/b/../c').is_relative_to('/a/b')`` is
+    ``True`` (measured on 3.13), so the traversal this guard exists to catch is
+    exactly what it passed (round one, code review). A ``..`` segment is refused
+    before any directory is created, so it cannot reach
+    :func:`_make_the_tree` either.
+    """
+    parts = PurePosixPath(relative).parts
+    if ".." in parts or not (root / relative).is_relative_to(root):
+        msg = f"A bundle member resolved outside the bundle root: {relative!r}"
+        raise InvariantViolationError(msg)
+
+
+def _make_the_tree(root: Path, files: Mapping[str, str]) -> None:
+    """Create ``root`` and every directory the members need, shallowest first.
+
+    Built from ``parents`` so no ancestor can be missed, and sorted by depth --
+    with the path as the tie-break, so the order is total and a refusal names the
+    same component on every run.
+    """
+    directories = sorted(
+        {parent for relative in files for parent in PurePosixPath(relative).parents},
+        key=lambda each: (len(each.parts), each.as_posix()),
+    )
+    for directory in directories:
+        _make_one_directory(root / directory)
+
+
+def _make_one_directory(path: Path) -> None:
+    """``mkdir`` one component, and refuse a symbolic link standing in for it.
+
+    ``exist_ok`` is spelled as a caught ``FileExistsError`` rather than passed,
+    because the two differ on exactly the case this function is for: ``mkdir``
+    with ``exist_ok=True`` accepts a *symbolic link to a directory* as "already
+    there" and walks on through it, while the raise-and-check form gets to ask
+    ``lstat`` what the name really is.
+
+    ``is_symlink`` after the ``mkdir`` and not before it: a probe taken first
+    describes a name that can be re-pointed before the next call. Taken after,
+    the window is smaller and not closed -- #577's ``openat`` walk is what closes
+    it -- and the ordinary case (we created the directory ourselves) has no
+    window at all.
+    """
+    try:
+        path.mkdir()
+    except FileExistsError:
+        if path.is_symlink():
+            raise OkfExportError(path, reason="symbolic-link") from None
 
 
 __all__ = [

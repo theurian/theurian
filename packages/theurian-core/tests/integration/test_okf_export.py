@@ -948,6 +948,86 @@ def test_a_target_that_is_not_a_directory_is_refused_without_writing_over_it(
     assert target.read_text(encoding="utf-8") == "bytes that are not a bundle"
 
 
+def test_a_target_that_is_a_symbolic_link_is_refused_rather_than_followed(
+    tmp_path: Path,
+) -> None:
+    """`exists` and `is_dir` answer about the link's target, so both cleared it.
+
+    A link to an empty directory satisfied every probe the refusal made, and the
+    whole bundle was written wherever it pointed -- outside the directory the
+    command was given, with `bundlePath` naming the link (round one, adversarial;
+    graded HIGH as a containment write escape). The destination is asserted still
+    empty, which is the claim: not that a refusal happened, but that nothing
+    landed through the link.
+    """
+    database = corpus(tmp_path, [Row("keeper", 1)])
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    target = tmp_path / "bundle"
+    target.symlink_to(elsewhere, target_is_directory=True)
+
+    with pytest.raises(OkfExportError) as caught:
+        export(database, target)
+
+    assert "symbolic link" in str(caught.value)
+    assert "theurian okf export" in caught.value.remedy
+    assert f"ls -l {target}" in caught.value.remedy
+    assert "rm " not in caught.value.remedy
+    assert list(elsewhere.iterdir()) == [], "the bundle was written through the link"
+    assert target.is_symlink(), "the refusal removed the operator's own link"
+
+
+def test_a_symbolic_link_standing_in_for_a_directory_inside_the_bundle_is_refused(
+    tmp_path: Path,
+) -> None:
+    """`mkdir(parents=True)` walks a planted directory link without complaint.
+
+    ``O_NOFOLLOW`` covers the final component only, so the leaf guard says nothing
+    about `<root>/architecture` being a link: the concept document was then created
+    inside whatever that named. Driven at ``_write`` rather than through
+    :meth:`OkfExporter.export`, because a target holding the plant is already
+    refused as non-empty one guard earlier -- and it is ``_write`` that owns this
+    one. Planting during the window between the two is the residual recorded
+    against #577.
+    """
+    root = tmp_path / "bundle"
+    root.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (root / "architecture").symlink_to(elsewhere, target_is_directory=True)
+
+    with pytest.raises(OkfExportError) as caught:
+        okf_export._write(root, {"architecture/policy.md": "would have landed outside"})
+
+    assert "symbolic link" in str(caught.value)
+    assert str(root / "architecture") in str(caught.value)
+    assert list(elsewhere.iterdir()) == [], "a bundle member was written through the link"
+    assert [path.name for path in root.iterdir()] == ["architecture"]
+
+
+def test_a_member_key_with_a_parent_segment_is_refused_before_anything_is_created(
+    tmp_path: Path,
+) -> None:
+    """The containment check is keyed on the segments, not on `is_relative_to`.
+
+    `Path('/a/b/../c').is_relative_to('/a/b')` is `True` -- the comparison is
+    lexical over path parts -- so the traversal the guard exists to catch was
+    exactly what it passed (round one, code review). No such key is derivable
+    today, which is why the crafted mapping is handed to ``_write`` directly: the
+    guard is for the member somebody derives *some other way* later, and a test
+    that could only reach it through the current derivation would not be testing
+    it at all.
+    """
+    root = tmp_path / "bundle"
+
+    with pytest.raises(InvariantViolationError) as caught:
+        okf_export._write(root, {"../escape.md": "outside the bundle root"})
+
+    assert "outside the bundle root" in str(caught.value)
+    assert not (tmp_path / "escape.md").exists()
+    assert not root.exists(), "a refused member left a directory behind"
+
+
 class Recording:
     """An ``OkfExportSession`` that delegates to the real store and records the order.
 

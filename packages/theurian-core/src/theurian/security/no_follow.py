@@ -55,14 +55,26 @@ inside the tree -- and closing them needs ``openat`` against a directory
 descriptor at every level, which nothing in this codebase does. Recorded as
 [#577](https://github.com/theurian/theurian/issues/577).
 
+One caller narrows that bound on its own, and only for its own paths:
+``okf_export._write`` creates each component of a bundle tree with a bare
+``mkdir`` and refuses one that turns out to be a link (``_make_one_directory``).
+It is a *check*, not an ``openat`` walk, so the window between the check and the
+next component's use is still #577's; what it buys is that a link planted in the
+prefix **before** the export cannot be written through.
+
 **Why an ``ELOOP`` from one of these opens is the final component's. The write
 side and the read side are answered by different mechanisms, and an earlier
 version of this paragraph gave the write side's answer for both** (security round
 two, H-B).
 
-*Writes.* Every write caller ``mkdir(parents=True, exist_ok=True)``s the parent
-before the open, so the prefix has already been walked by the time the open runs
--- but that ``mkdir`` does not always *return*: with a self-referential prefix
+*Writes.* Every write caller creates the parent before the open, so the prefix
+has already been walked by the time the open runs. Most spell it
+``mkdir(parents=True, exist_ok=True)``; ``okf_export._write`` walks the
+components itself with a bare ``mkdir`` per level and an ``lstat`` after each,
+because ``parents=True`` follows a planted directory link in the prefix and that
+target is a path an operator named on a command line rather than a derived one
+-- the argument below holds for both, since it needs only that the prefix
+resolved. That ``mkdir`` does not always *return*: with a self-referential prefix
 (``.theurian/state -> state``) it raises ``FileExistsError`` (errno 17, measured),
 not ``ELOOP``, and the open never happens at all. The conclusion survives that
 correction because it needs only the weaker premise: the open runs **when the
