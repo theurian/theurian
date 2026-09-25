@@ -17,19 +17,24 @@ is how an export would publish a row by the label it was authored under.
 
 from __future__ import annotations
 
+import ast
 import hashlib
-from contextlib import closing
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
+from types import ModuleType
 from typing import Final
 
 import pytest
 import yaml
 
+from theurian.application import okf_bundle, okf_export
 from theurian.application.okf_bundle import GENERATED_BY, MANIFEST_NAME
 from theurian.application.okf_codec import EXPORT_VERSION
 from theurian.application.okf_export import OkfExporter, OkfExportError, OkfExportRequest
+from theurian.domain.context import RequestContext
 from theurian.domain.enums import (
     KnowledgeKind,
     KnowledgeStatus,
@@ -825,6 +830,127 @@ def test_a_target_that_is_not_a_directory_is_refused_without_writing_over_it(
     assert "not a directory" in str(caught.value)
     assert "Move or rename" in caught.value.remedy
     assert target.read_text(encoding="utf-8") == "bytes that are not a bundle"
+
+
+class Recording:
+    """An ``OkfExportSession`` that delegates to the real store and records the order.
+
+    A delegating wrapper rather than a subclass, because ``SqliteCanonicalStore``
+    is ``@final``, and a better double for it: satisfying the Protocol
+    structurally is what proves the export is typed against a contract rather
+    than against that class.
+
+    The four reads the export makes record; the four
+    ``get_item``/``get_item_exact``/``get_item_metadata``/
+    ``get_item_exact_metadata`` below only delegate. They are here because
+    ``OkfExportSession`` extends ``IndexBuildSession``, which declares them -- so
+    this class is also the measurement of what that base demands and this use
+    case does not ask for.
+    """
+
+    def __init__(self, database: Path) -> None:
+        self.inner = SqliteCanonicalStore(database)
+        self.order: list[str] = []
+
+    def __enter__(self) -> Recording:
+        self.inner.__enter__()
+        return self
+
+    def __exit__(self, *details: object) -> None:
+        self.inner.__exit__(*details)
+
+    @contextmanager
+    def read_snapshot(self) -> Iterator[None]:
+        self.order.append("snapshot-opened")
+        with self.inner.read_snapshot():
+            yield
+        self.order.append("snapshot-closed")
+
+    def list_items(self, context: RequestContext) -> tuple[KnowledgeItem, ...]:
+        self.order.append("list_items")
+        return self.inner.list_items(context)
+
+    def get_revision(
+        self, context: RequestContext, revision_id: RevisionId
+    ) -> KnowledgeRevision | None:
+        self.order.append("get_revision")
+        return self.inner.get_revision(context, revision_id)
+
+    def list_relations(
+        self, context: RequestContext, item_id: ItemId
+    ) -> tuple[KnowledgeRelation, ...]:
+        self.order.append("list_relations")
+        return self.inner.list_relations(context, item_id)
+
+    def get_item(self, context: RequestContext, item_id: ItemId) -> KnowledgeItem | None:
+        return self.inner.get_item(context, item_id)
+
+    def get_item_exact(self, context: RequestContext, item_id: ItemId) -> KnowledgeItem | None:
+        return self.inner.get_item_exact(context, item_id)
+
+    def get_item_metadata(self, context: RequestContext, item_id: ItemId) -> KnowledgeItem | None:
+        return self.inner.get_item_metadata(context, item_id)
+
+    def get_item_exact_metadata(
+        self, context: RequestContext, item_id: ItemId
+    ) -> KnowledgeItem | None:
+        return self.inner.get_item_exact_metadata(context, item_id)
+
+
+def test_every_read_the_walk_makes_is_inside_the_snapshot(tmp_path: Path) -> None:
+    """The key for the module docstring's "every read is one snapshot".
+
+    ADR-0037 decision 3's own pin -- a withdrawal landing mid-walk leaving the
+    bundle wholly on one side of it -- is the owed battery beside this file, and
+    it is not this test. This is the narrower claim that battery rests on, and the
+    one a refactor breaks silently: that the reads happen *inside* the context at
+    all. Recorded around the real session, so the order asserted is the order
+    SQLite saw.
+    """
+    database = corpus(tmp_path, [Row("keeper", 1), Row("other", 2)], [Edge("keeper", "other")])
+    sessions: list[Recording] = []
+
+    def recording(path: Path) -> Recording:
+        session = Recording(path)
+        sessions.append(session)
+        return session
+
+    OkfExporter(store_factory=recording).export(
+        OkfExportRequest(
+            database=database,
+            output_directory=tmp_path / "bundle",
+            project_id=PROJECT.value,
+            visible_sensitivities=VISIBLE,
+        )
+    )
+
+    assert len(sessions) == 1, "the export opened more than one session"
+    order = sessions[0].order
+    assert order[0] == "snapshot-opened"
+    assert order[-1] == "snapshot-closed"
+    assert set(order[1:-1]) == {"list_items", "get_revision", "list_relations"}
+
+
+@pytest.mark.parametrize("module", [okf_bundle, okf_export])
+def test_neither_export_module_reads_a_clock(module: ModuleType) -> None:
+    """The key for "no byte varies with when the export ran" (decision 2).
+
+    Structural rather than behavioural, and the two are different claims:
+    ``test_no_byte_of_the_bundle_carries_the_moment_it_was_exported`` holds it for
+    the corpus that test builds, while this holds it for every corpus by saying
+    the modules cannot ask. ``datetime`` is imported by
+    ``application/okf_bundle.py`` for a type annotation, which is why the key is
+    the *call* and not the import.
+    """
+    source = Path(module.__file__ or "").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    reached = {
+        ast.unparse(node.func)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute | ast.Name)
+    }
+
+    assert not {name for name in reached if "now" in name or "time" in name}, sorted(reached)
 
 
 def test_an_item_pointing_at_another_items_revision_refuses_the_whole_export(
