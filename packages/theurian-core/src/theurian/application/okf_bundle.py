@@ -257,8 +257,12 @@ def _relations_section(relations: Sequence[KnowledgeRelation]) -> str:
     which is what §6.1 asks for. Links are bundle-absolute, §6.1's recommended
     form.
 
-    Emitted even when there are no relations, so the document's shape is a
-    constant of the exporter rather than a bit about the graph.
+    Emitted even when there are no relations, so *this heading's presence* is a
+    constant of the exporter rather than a bit about the graph. The document's
+    shape as a whole is not: the block between the front matter and this section
+    is the authored body, preserved byte for byte (ADR-0010 rule 5), and only the
+    frame around it -- the fences, the key order, this heading, the sidecar
+    paragraph's fixed wording -- is decision 2's constant family.
 
     ``groupby`` rather than a sort of its own: the tuple arrives in
     :func:`relation_order`, so the groups are the types in order.

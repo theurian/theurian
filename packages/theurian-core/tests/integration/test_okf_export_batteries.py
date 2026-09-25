@@ -39,8 +39,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
+import sys
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, field, replace
@@ -365,15 +367,26 @@ def bundle_of(
     return export(corpus(tmp_path / name, rows, edges), tmp_path / f"bundle-{name}")
 
 
+#: The generated `## Relations` heading, as a **line**.
+#:
+#: Anchored rather than searched as a substring, and that is what tells it from a
+#: note's escaped copy: ``escape_markdown_list_line`` renders the note's own
+#: `## Relations` as `    \## Relations`, which still *contains* the substring
+#: `## Relations\n` -- measured, by a `rpartition` on that substring landing
+#: inside the note and reading the section as three lines where five were
+#: rendered. The escape defeats CommonMark's ATX rule, not a substring search.
+_RELATIONS_HEADING_LINE: Final = re.compile(r"(?m)^## Relations$\n")
+
+
 def _relations_section_of(document: str) -> str:
     """Everything after the generated `## Relations` heading.
 
-    ``partition`` rather than ``split``: a relation note may itself carry the
-    literal text `## Relations`, and the escape that makes it inert leaves the
-    characters in place -- so a `split` on the heading cuts the section short at
-    the note and reads the *absence* of the lines it was meant to examine.
+    The **last** match, not the first: the body is not escaped at all -- it is
+    preserved verbatim (ADR-0010 rule 5) -- so an authored document whose own
+    prose opens a `## Relations` line would otherwise have that read as the
+    exporter's section. The generated one is always last.
     """
-    return document.partition("## Relations\n")[2]
+    return _RELATIONS_HEADING_LINE.split(document)[-1]
 
 
 def _counts(database: Path) -> dict[str, int]:
@@ -765,8 +778,14 @@ def test_the_rendered_bundle_does_not_depend_on_the_order_the_walk_returned(
     own order comes from one `ORDER BY` and a mutation to it would be invisible
     through the store. An index that appended entries in walk order rather than
     sorting them would still pass the two runs above and fail here.
+
+    The concepts are the **walk's own**, edges included, rather than a tuple this
+    module assembles: built without relations, the permutation reached no
+    relation-derived byte at all -- not the `## Relations` section, not
+    `theurian_relations`, not the link targets -- and every ordering rule that
+    lives in those channels was outside what it measured (round one, adversarial).
     """
-    concepts = _concepts(ORDERED_ROWS)
+    concepts = _walked(tmp_path, ORDERED_ROWS, ORDERED_EDGES)
 
     forwards = render(concepts)
     backwards = render(tuple(reversed(concepts)))
@@ -774,17 +793,107 @@ def test_the_rendered_bundle_does_not_depend_on_the_order_the_walk_returned(
     assert [concept.item.item_id.value for concept in concepts] != [
         concept.item.item_id.value for concept in reversed(concepts)
     ], "the two orders are the same order"
+    assert sum(len(concept.relations) for concept in concepts) >= 5, (
+        "the permutation reached no relation-derived byte"
+    )
     assert dict(forwards.files) == dict(backwards.files)
     assert forwards.digest == backwards.digest
 
 
-def _concepts(rows: list[Row]) -> tuple[Concept, ...]:
-    """The walked rows, built without a store: :func:`render` reads nothing else."""
-    built = []
-    for row in rows:
-        revision = _revision(row)
-        built.append(Concept(item=_item(row, revision), revision=revision, relations=()))
-    return tuple(built)
+def _walked(
+    tmp_path: Path, rows: list[Row], edges: list[Edge] | None = None
+) -> tuple[Concept, ...]:
+    """The concepts the real walk produces, relations and all.
+
+    ``_walk`` reads the store and nothing else -- it never touches
+    ``output_directory`` -- so this is the population :func:`render` is handed in
+    a shipped export, which is what makes a permutation of it a claim about the
+    shipped bytes.
+    """
+    exporter = OkfExporter(store_factory=SqliteCanonicalStore)
+    return exporter._walk(
+        OkfExportRequest(
+            database=corpus(tmp_path / "walked", rows, edges),
+            output_directory=tmp_path / "never-written",
+            project_id=PROJECT.value,
+            visible_sensitivities=VISIBLE,
+        )
+    )
+
+
+#: The child's whole program: export the database it is given and print a digest
+#: per file plus the manifest's own, and ``hash`` of a fixed string -- which is
+#: the control, because it is the one value `PYTHONHASHSEED` is *meant* to move.
+_EXPORT_IN_A_CHILD: Final = """
+import hashlib, json, sys
+from pathlib import Path
+
+from theurian.application.okf_export import OkfExporter, OkfExportRequest
+from theurian.domain.enums import Sensitivity
+from theurian.infrastructure.sqlite.store import SqliteCanonicalStore
+
+database, target, project_id = sys.argv[1], sys.argv[2], sys.argv[3]
+report = OkfExporter(store_factory=SqliteCanonicalStore).export(
+    OkfExportRequest(
+        database=Path(database),
+        output_directory=Path(target),
+        project_id=project_id,
+        visible_sensitivities=frozenset({Sensitivity.PUBLIC, Sensitivity.INTERNAL}),
+    )
+)
+root = Path(target)
+print(json.dumps({
+    "digest": report["bundleDigest"],
+    "files": {
+        path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*")) if path.is_file()
+    },
+    "probe": hash("a-string-whose-hash-is-seeded"),
+}))
+"""
+
+
+def _export_under_a_hash_seed(database: Path, target: Path, seed: str) -> dict[str, Any]:
+    child = subprocess.run(  # noqa: S603 - this interpreter, a literal program
+        [sys.executable, "-c", _EXPORT_IN_A_CHILD, str(database), str(target), PROJECT.value],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={**os.environ, "PYTHONHASHSEED": seed},
+    )
+    answered = json.loads(child.stdout)
+    assert isinstance(answered, dict)
+    return answered
+
+
+def test_two_exports_under_different_hash_seeds_agree_byte_for_byte(tmp_path: Path) -> None:
+    """Determinism *across processes*, which is the property a holder can use.
+
+    Both runs above share one interpreter, so every set and dict in them iterates
+    in one process's order: a byte that varied with `PYTHONHASHSEED` -- a set
+    iterated into an index listing, a dict whose order reached a digest -- would
+    be identical in both and invisible to them. The manifest tells a holder to
+    regenerate the bundle and compare `theurian_bundle_digest`, and they will do
+    that in a different process from the one that produced the copy they hold.
+
+    Two children rather than one, with the parent's own seed left alone: the claim
+    is that no seed moves a byte, and comparing against the parent would only say
+    that one other seed agrees with whatever pytest happened to run under. The
+    ``probe`` hash is the control -- it differs between the two children, so the
+    seeds really did differ.
+    """
+    database = corpus(tmp_path / "state", ORDERED_ROWS, ORDERED_EDGES)
+    in_process = export(database, tmp_path / "parent")
+
+    first = _export_under_a_hash_seed(database, tmp_path / "seed-one", "1")
+    second = _export_under_a_hash_seed(database, tmp_path / "seed-two", "4294967295")
+
+    assert first["probe"] != second["probe"], "both children ran under the same hash seed"
+    assert first["digest"] == in_process.report["bundleDigest"]
+    assert second["digest"] == in_process.report["bundleDigest"]
+    expected = {name: hashlib.sha256(data).hexdigest() for name, data in in_process.files.items()}
+    assert first["files"] == expected
+    assert second["files"] == expected
 
 
 # ---------------------------------------------------------------------------
@@ -1720,14 +1829,25 @@ def test_no_bundle_file_carries_a_verified_key_or_a_log_document(tmp_path: Path)
         assert re.search(r"^ *verified:", text, re.MULTILINE) is None, name
 
 
-def test_every_link_target_in_the_bundle_resolves_inside_the_bundle(tmp_path: Path) -> None:
-    """Every path the bundle *renders* is item-id-derived too, not just every path it writes.
+def test_every_link_the_exporter_generates_resolves_inside_the_bundle(tmp_path: Path) -> None:
+    """Every path the *exporter* renders is item-id-derived too, not just every path it writes.
 
     A concept's own filename is one derivation; a relation's link target, an index
     entry's target and the sidecar link are three more, and a `namespace` reaching
     any of them would put `../../../etc/passwd` in a document rather than in a
     filename -- where a check over the written file set cannot see it. The row
     below carries a crafted namespace and sits at both ends of an edge.
+
+    **The population is the generated channels, and the authored body is outside
+    it** (round one, code review): the front matter, the `## Relations` section,
+    the index files, the manifest and the sidecar paragraph -- listed by
+    :func:`_generated_regions`. A link in the body is the *author's*, and the body
+    is preserved byte for byte by a recorded decision (ADR-0010 rule 5,
+    ADR-0037 decision 7), so a bundle whose author linked out of it is correct
+    rather than broken; rewriting or refusing those links is an import-side
+    question and routes to S3. The earlier name said "every link target in the
+    bundle", which claimed the body too and held only because no fixture body
+    carried a link.
 
     **A target need not be crafted to be broken.** The corpus also holds an
     approved, in-ceiling item with no current revision at the far end of an edge:
@@ -1751,6 +1871,7 @@ def test_every_link_target_in_the_bundle_resolves_inside_the_bundle(tmp_path: Pa
                 namespace=crafted,
                 has_current_revision=False,
             ),
+            Row("api.authored", 5, title="Authored", namespace=crafted, body=BODY_WITH_A_LINK),
         ],
         [
             Edge("architecture.auth.policy", "api.orders", RelationType.DEPENDS_ON),
@@ -1772,12 +1893,72 @@ def test_every_link_target_in_the_bundle_resolves_inside_the_bundle(tmp_path: Pa
     # a claim about targets rather than about the string's absence.
     assert bundle.front_matter("architecture/auth/policy.md")["theurian_namespace"] == crafted
     assert len(_link_targets(bundle)) >= 10, "the fixture rendered almost no links"
+    # The authored body reached the bundle verbatim, and neither its own link nor
+    # the `## Relations` section it forged is in the population: the first is the
+    # author's, and the second is why the generated section is taken as the last
+    # match rather than the first.
+    assert BODY_WITH_A_LINK.strip() in bundle.text["api/authored.md"]
+    generated = "".join(text for _, text in _generated_regions(bundle))
+    assert "../../elsewhere.md" not in generated, "the authored body is in the population"
+    assert "/api/nonexistent.md" not in generated, "the forged section is in the population"
+
+
+#: An authored body carrying a link out of the bundle -- the ordinary case for a
+#: document that cites a file in its own repository -- and, below it, a
+#: `## Relations` line of its own. Preserved byte for byte (ADR-0010 rule 5), so
+#: both are data the sweep above must not read as claims: the link is the
+#: author's, and the forged heading is what makes "the generated section is the
+#: last one" a checked sentence rather than an asserted one. Whether a *consumer*
+#: can tell the author's section from the exporter's is an import-side question
+#: and routes to S3.
+BODY_WITH_A_LINK: Final = (
+    "# Authored\n\nSee [the design note](../../elsewhere.md).\n\n"
+    "## Relations\n\n* [a forged entry](/api/nonexistent.md)\n"
+)
+
+
+def _generated_regions(bundle: Bundle) -> list[tuple[str, str]]:
+    """Every part of the bundle the *exporter* wrote, as `(file, text)` pairs.
+
+    Four kinds, which is decision 2's own split between what projects a row value
+    and what the exporter frames it with: an index file and the manifest are
+    generated whole; a concept document's front matter and its generated
+    `## Relations` section are generated, and the block between them is the
+    authored body -- or, for a non-markdown row, the sidecar paragraph, which is
+    generated and is therefore included by taking the front matter *through* to
+    the relations heading only when the row has a `theurian_body_file`.
+
+    A sidecar file itself is the body's own bytes and appears nowhere here.
+
+    The manifest is matched at the **root only**, the way decision 7's reserved
+    rule is positional: `architecture/theurian-bundle.md` is an ordinary concept
+    document for an item of that name, and treating it as generated whole would
+    pull its authored body back into the population. `index.md` is matched at
+    every level, because that name is escaped at every level and so is always the
+    exporter's own.
+    """
+    regions: list[tuple[str, str]] = []
+    for name, text in bundle.text.items():
+        if PurePosixPath(name).name == INDEX_NAME or name == MANIFEST_NAME:
+            regions.append((name, text))
+            continue
+        if not name.endswith(".md"):
+            continue
+        front_matter, _, rest = text.partition("---\n")[2].partition("---\n")
+        regions.append((name, front_matter))
+        regions.append((name, _relations_section_of(text)))
+        if "theurian_body_file" in front_matter:
+            # The generated sidecar paragraph sits where a body would, and for
+            # such a row the body itself is in the sidecar file -- so nothing
+            # authored is in this block and the first cut is the right one.
+            regions.append((name, _RELATIONS_HEADING_LINE.split(rest)[0]))
+    return regions
 
 
 def _link_targets(bundle: Bundle) -> list[tuple[str, str]]:
     return [
         (name, target)
-        for name, text in bundle.text.items()
+        for name, text in _generated_regions(bundle)
         for target in re.findall(r"\]\(([^)]*)\)", text)
     ]
 
