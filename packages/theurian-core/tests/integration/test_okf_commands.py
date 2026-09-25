@@ -255,6 +255,23 @@ def test_the_export_writes_a_bundle_and_reports_what_it_holds(project: Path) -> 
     assert payload["bundleDigest"] in (target / "theurian-bundle.md").read_text(encoding="utf-8")
 
 
+def test_a_target_with_two_absent_parent_levels_is_created_and_filled(project: Path) -> None:
+    """`--help` promises "Created if absent" for the whole path, not just the leaf.
+
+    The round-one symlink fix only creates components at or under the bundle
+    root, so a target naming two missing parent levels -- `exports/2026-09-26`,
+    neither of which exists yet -- raised `FileNotFoundError` instead of
+    building the tree (round two, adversarial HIGH).
+    """
+    _applied(project)
+    target = project.parent / "exports" / "2026-09-26" / "bundle"
+
+    code, payload = _invoke("okf", "export", str(target))
+
+    assert code == 0, payload
+    assert (target / "theurian-bundle.md").exists()
+
+
 def test_the_payload_carries_no_knowledge_content(project: Path) -> None:
     """A path, three counts and a digest over the bundle's own files.
 
@@ -399,7 +416,10 @@ def test_a_damaged_cell_is_reported_as_a_document_and_quoted_nowhere(project: Pa
     published = json.dumps(payload)
     windows = [SENTINEL[at : at + LEAK_WINDOW] for at in range(len(SENTINEL) - LEAK_WINDOW + 1)]
     assert [window for window in windows if window in published] == []
+    # `exists()` alone follows a link and answers about its target; a dangling
+    # or self-referential one is still at the path and still `is_symlink()`.
     assert not target.exists(), "a refused walk left a partial bundle behind"
+    assert not target.is_symlink(), "a refused walk left a link standing in for the target"
 
 
 def test_state_this_installation_did_not_build_is_refused(

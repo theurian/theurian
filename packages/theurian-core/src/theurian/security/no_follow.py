@@ -59,8 +59,11 @@ One caller narrows that bound on its own, and only for its own paths:
 ``okf_export._write`` creates each component of a bundle tree with a bare
 ``mkdir`` and refuses one that turns out to be a link (``_make_one_directory``).
 It is a *check*, not an ``openat`` walk, so the window between the check and the
-next component's use is still #577's; what it buys is that a link planted in the
-prefix **before** the export cannot be written through.
+next component's use is still #577's; what it buys is that a link planted **at**
+the named target, or at any component **under** it, cannot be written through --
+components **above** the named target are the operator's own path, followed
+exactly as every other tool follows them (round two, security HIGH: the earlier
+wording claimed the whole prefix, which a pre-planted ancestor link disproves).
 
 **Why an ``ELOOP`` from one of these opens is the final component's. The write
 side and the read side are answered by different mechanisms, and an earlier

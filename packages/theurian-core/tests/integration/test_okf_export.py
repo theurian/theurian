@@ -1022,6 +1022,40 @@ def test_a_target_that_is_a_symbolic_link_is_refused_rather_than_followed(
     assert target.is_symlink(), "the refusal removed the operator's own link"
 
 
+def test_a_symbolic_link_to_a_nonempty_directory_is_still_refused_by_its_own_guard(
+    tmp_path: Path,
+) -> None:
+    """Two guards can both refuse a link target, and only one names a safe cure.
+
+    An *empty*-directory link, above, falls through `_refuse_an_unusable_target`
+    under `if directory.is_symlink(): -> if False:` and is still refused --
+    correctly, but by `_make_one_directory`'s separate check during `_write`, not
+    by this one -- so that pin proves nothing about which guard fired and the
+    mutation survived 111 tests (adversarial MEDIUM). A link to a *non-empty*
+    directory tells the two guards apart: mutated away, `is_symlink()` is skipped
+    and `iterdir()` -- which follows the link -- finds what is inside it, so the
+    "not-empty" arm raises first and `_write` is never reached. Its cure offers
+    `directory / 'okf-bundle'`, which resolves *through* the link into what it
+    points at, while the symbolic-link arm's cure offers `directory.parent /
+    'okf-bundle'`, beside the link. Following the wrong one would write the next
+    attempt through the same link this refusal exists to stop.
+    """
+    database = corpus(tmp_path, [Row("keeper", 1)])
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "something-of-mine.md").write_text("mine", encoding="utf-8")
+    target = tmp_path / "bundle"
+    target.symlink_to(elsewhere, target_is_directory=True)
+
+    with pytest.raises(OkfExportError) as caught:
+        export(database, target)
+
+    assert "symbolic link" in str(caught.value)
+    assert str(target.parent / "okf-bundle") in caught.value.remedy
+    assert str(target / "okf-bundle") not in caught.value.remedy
+    assert sorted(path.name for path in elsewhere.iterdir()) == ["something-of-mine.md"]
+
+
 def test_a_symbolic_link_standing_in_for_a_directory_inside_the_bundle_is_refused(
     tmp_path: Path,
 ) -> None:
@@ -1071,6 +1105,30 @@ def test_a_member_key_with_a_parent_segment_is_refused_before_anything_is_create
     assert "outside the bundle root" in str(caught.value)
     assert not (tmp_path / "escape.md").exists()
     assert not root.exists(), "a refused member left a directory behind"
+
+
+# -- The target's own ancestors -----------------------------------------------
+
+
+def test_a_target_with_two_absent_parent_levels_is_created_and_filled(tmp_path: Path) -> None:
+    """`--help` promises "Created if absent" for the whole path, not just the leaf.
+
+    The round-one symlink fix walks directories one component at a time from
+    each member's own relative path, which only reaches components at or under
+    the bundle root -- the root's own missing ancestors were never created, so
+    `okf export ~/exports/2026-09-26` against an absent `exports/` raised
+    `FileNotFoundError` (round two, adversarial HIGH). Compared against a flat
+    target rather than merely asserting success: the earlier bug's own symptom
+    was a raised exception, and a weaker assertion would not catch a regression
+    that instead wrote an incomplete tree.
+    """
+    database = corpus(tmp_path, [Row("keeper", 1)])
+
+    flat = export(database, tmp_path / "flat-bundle")
+    nested = export(database, tmp_path / "two" / "absent" / "levels" / "bundle")
+
+    assert nested.files == flat.files
+    assert nested.report["bundleDigest"] == flat.report["bundleDigest"]
 
 
 class Recording:

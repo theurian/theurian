@@ -371,17 +371,23 @@ def _write(root: Path, files: Mapping[str, str]) -> None:
     then the files are written. A refusal in either of the first two therefore
     leaves no partial bundle, which is what lets the refusals' cures say so.
 
-    **What is guarded, exactly.** The *leaf* of each member takes
-    ``O_NOFOLLOW`` (:func:`~theurian.security.no_follow.write_text_without_following_a_link`),
+    **What is guarded, exactly, is at or under ``root``.** The *leaf* of each
+    member takes ``O_NOFOLLOW``
+    (:func:`~theurian.security.no_follow.write_text_without_following_a_link`),
     which refuses a symbolic link at the final component and nowhere else. The
-    *prefix* is guarded by :func:`_make_one_directory`, one component at a time,
-    because ``mkdir(parents=True)`` walks a planted directory link without
-    complaint -- measured, in the real export window, writing the tree outside
-    the bundle root. Neither guard closes the race between the check and the use
-    of a component: that needs an ``openat`` walk against directory descriptors,
-    which is [#577](https://github.com/theurian/theurian/issues/577) and is not
-    closed here.
+    *prefix under root* is guarded by :func:`_make_one_directory`, one component
+    at a time, because ``mkdir(parents=True)`` walks a planted directory link
+    without complaint -- measured, in the real export window, writing the tree
+    outside the bundle root. Neither guard closes the race between the check and
+    the use of a component: that needs an ``openat`` walk against directory
+    descriptors, which is [#577](https://github.com/theurian/theurian/issues/577)
+    and is not closed here. ``root``'s own ancestors are created by a plain
+    ``mkdir(parents=True, exist_ok=True)`` below, exactly as ``cp -r`` or ``git
+    init`` would create them: they are the operator's own path, named on the
+    command line rather than derived, and the containment claim above starts at
+    ``root`` and never claims them.
     """
+    root.parent.mkdir(parents=True, exist_ok=True)
     for relative in files:
         _refuse_a_member_outside_the_root(root, relative)
     _make_the_tree(root, files)

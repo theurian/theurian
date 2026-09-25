@@ -381,6 +381,13 @@ class SqliteCanonicalStore:
         merely quiet: the transaction cannot outlive the connection, and
         :meth:`_conn` opens a fresh one on the next read, so the store stays
         usable and no later ``BEGIN`` meets an inherited transaction.
+
+        **On a walk that raised nothing, this arm still runs and its failure is
+        still swallowed -- silent to the caller, not to a debugger.**
+        ``self._connection is None`` afterward is that record: the success case
+        leaves the connection open, so only a ``ROLLBACK`` that actually failed
+        closes it, and the two outcomes stay distinguishable from outside without
+        a raise (round two, code review LOW).
         """
         try:
             connection.execute("ROLLBACK")
