@@ -3,8 +3,8 @@
 The adapter's own tests: that the option surface reaches the service, that a
 refusal arrives as JSON with a remedy rather than a traceback, and that the
 JSON payload names what a caller needs -- the drafted proposal ids, the
-counts, and each refusal's key and literal string. The service's own
-acceptance criteria are ``test_okf_import.py``'s.
+per-kind refusal counts, and each refusal's kind, key and literal string. The
+service's own acceptance criteria are ``test_okf_import.py``'s.
 """
 
 from __future__ import annotations
@@ -88,12 +88,12 @@ def test_okf_import_reports_the_drafted_proposal_and_the_counts(project: Path) -
 
     assert code == 0, payload
     assert payload["conceptsAdmitted"] == 1
-    assert payload["referencesRefused"] == 0
+    assert payload["refusalsByKind"] == {}
     assert payload["refusals"] == []
     assert len(payload["proposalIds"]) == 1
 
 
-def test_okf_import_reports_a_refusal_by_key_and_literal_never_a_resolved_path(
+def test_okf_import_reports_a_refusal_by_kind_key_and_literal_never_a_resolved_path(
     project: Path,
 ) -> None:
     bundle = project.parent / "bundle"
@@ -114,10 +114,42 @@ def test_okf_import_reports_a_refusal_by_key_and_literal_never_a_resolved_path(
 
     assert code == 0, payload
     assert payload["conceptsAdmitted"] == 1
-    assert payload["referencesRefused"] == 1
+    assert payload["refusalsByKind"] == {"reference": 1}
     [refusal] = payload["refusals"]
-    assert refusal == {"key": "theurian_body_file", "literal": "../../../../etc/passwd"}
+    assert refusal == {
+        "kind": "reference",
+        "key": "theurian_body_file",
+        "literal": "../../../../etc/passwd",
+    }
     assert str(project) not in json.dumps(payload)
+
+
+def test_okf_import_text_output_renders_each_refusal_as_its_own_line(project: Path) -> None:
+    """`_emit`'s text renderer prints an untouched list entry with `str()`,
+    which would read as a Python dict repr for a refusal; the command formats
+    each one into a line first.
+    """
+    bundle = project.parent / "bundle"
+    _write(
+        bundle,
+        "bad.md",
+        "---\n"
+        "type: decision\n"
+        "title: Bad body file\n"
+        "status: stable\n"
+        "theurian_content_type: application/json\n"
+        "theurian_body_file: ../../../../etc/passwd\n"
+        "---\n\nbody\n",
+    )
+    _write(bundle, "vanilla.md", _VANILLA_CONCEPT)
+
+    result = runner.invoke(
+        app, ["okf", "import", str(bundle), *_BUNDLE_OPTIONS], catch_exceptions=False
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "  - reference theurian_body_file: ../../../../etc/passwd" in result.stdout
+    assert "{'kind'" not in result.stdout
 
 
 def test_okf_import_item_filter_admits_only_the_named_concept(project: Path) -> None:

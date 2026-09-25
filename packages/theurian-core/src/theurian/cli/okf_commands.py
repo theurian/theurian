@@ -148,7 +148,14 @@ def okf_import(  # noqa: PLR0913 -- one option per drafted field, all keyword-on
         )
         return
 
-    _emit(_result_payload(result), as_json=as_json)
+    payload = _result_payload(result)
+    if not as_json:
+        # `_emit`'s text renderer prints a list entry with `str()`, which
+        # reads as a Python dict repr for a refusal; a formatted line is what
+        # a terminal reader wants instead. The JSON payload keeps the
+        # structured form.
+        payload["refusals"] = [_refusal_line(refusal) for refusal in result.refusals]
+    _emit(payload, as_json=as_json)
 
 
 def _service(context: CommandContext) -> OkfImportService:
@@ -191,7 +198,18 @@ def _request(inputs: _Inputs) -> OkfImportRequest:
 
 
 def _refusal_payload(refusal: ImportRefusal) -> dict[str, object]:
-    return {"key": refusal.key, "literal": refusal.literal}
+    return {"kind": refusal.kind, "key": refusal.key, "literal": refusal.literal}
+
+
+def _refusal_line(refusal: ImportRefusal) -> str:
+    return f"{refusal.kind} {refusal.key}: {refusal.literal}"
+
+
+def _refusals_by_kind(refusals: tuple[ImportRefusal, ...]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for refusal in refusals:
+        counts[refusal.kind] = counts.get(refusal.kind, 0) + 1
+    return counts
 
 
 def _result_payload(result: OkfImportResult) -> dict[str, object]:
@@ -201,7 +219,7 @@ def _result_payload(result: OkfImportResult) -> dict[str, object]:
     return {
         "proposalIds": proposal_ids,
         "conceptsAdmitted": len(result.concepts_admitted),
-        "referencesRefused": len(result.refusals),
+        "refusalsByKind": _refusals_by_kind(result.refusals),
         "refusals": [_refusal_payload(refusal) for refusal in result.refusals],
     }
 

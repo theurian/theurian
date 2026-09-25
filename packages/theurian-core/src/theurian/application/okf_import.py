@@ -609,6 +609,22 @@ def _admit_concepts(
     return admitted, refusals
 
 
+def _draft_refusal_literal(exc: BaseException) -> str:
+    """Never `str(exc)`: closes three risks at once.
+
+    `MigrationError`'s message comes from the injected schema validator's own
+    formatting, which can embed the offending value verbatim and with no
+    length bound -- an unproven T-25 channel (nothing here shows it can carry
+    a resolved path, but nothing bounds it either) and, separately, an
+    unbounded echo of untrusted bundle text into a record a human reviews and
+    the CLI publishes. Free-form exception text is also a shape a bundle
+    could try to forge to resemble a different refusal. The exception's own
+    class name is bounded, entirely Theurian's to choose from, and still says
+    which of `.draft()`'s three failure kinds happened.
+    """
+    return f"the proposal service refused it: {type(exc).__name__}"
+
+
 def _draft_concepts(
     request: OkfImportRequest, admitted: list[ImportedConcept], drafts: DraftOnlyProposals
 ) -> tuple[list[ImportedProposal], frozenset[str], list[ImportRefusal]]:
@@ -625,7 +641,11 @@ def _draft_concepts(
             drafted = drafts.draft(_proposal_request(request, concept), local=False)
         except _DRAFT_REFUSAL as exc:
             refusals.append(
-                ImportRefusal(kind=KIND_DRAFT, key=concept.item_id.value, literal=str(exc))
+                ImportRefusal(
+                    kind=KIND_DRAFT,
+                    key=concept.item_id.value,
+                    literal=_draft_refusal_literal(exc),
+                )
             )
             continue
         proposals.append(ImportedProposal(item_id=concept.item_id, proposal=drafted))
@@ -683,7 +703,16 @@ class OkfImportService:
                 document, evidence=request.evidence, local=False
             )
         except _DRAFT_REFUSAL as exc:
-            refusals.append(ImportRefusal(kind=KIND_RELATIONS, key="addRelation", literal=str(exc)))
+            # "addRelation" is not a spellable ItemId (the grammar is
+            # lowercase-only; the capital R disqualifies it), so this key can
+            # never collide with a real concept's own item id -- a bundle
+            # cannot forge a concept whose kind=draft refusal reads as the
+            # relations document's own kind=relations one.
+            refusals.append(
+                ImportRefusal(
+                    kind=KIND_RELATIONS, key="addRelation", literal=_draft_refusal_literal(exc)
+                )
+            )
             return None
 
 

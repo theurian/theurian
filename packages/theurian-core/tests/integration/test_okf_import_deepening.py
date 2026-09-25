@@ -249,21 +249,23 @@ body
 def test_the_refusal_key_and_literal_pair_carries_three_distinct_meanings(
     tmp_path: Path, paths: ProjectPaths
 ) -> None:
-    """`ImportRefusal`'s docstring names two meanings; a third exists too.
+    """`ImportRefusal`'s docstring names two `key` meanings; a third exists too.
 
-    Not a claim that the overload should be unified -- ADR-0037 does not ask
-    for that, and this test's whole job is to pin what the three shapes
-    *are* so a future change to any one of them is a decision rather than an
-    accident:
+    `kind` now names which of the three a given refusal is, so this is no
+    longer a claim that the overload is ambiguous -- it pins what each `kind`
+    means for `key` and `literal`, so a future change to any one of them is a
+    decision rather than an accident:
 
-    - **containment**: `key` is the front-matter key that named a bad
+    - **kind=reference**: `key` is the front-matter key that named a bad
       reference, `literal` is the bundle's own written value.
-    - **malformed concept**: `key` is the concept's own bundle-relative path,
+    - **kind=concept**: `key` is the concept's own bundle-relative path,
       `literal` is a short reason Theurian wrote.
-    - **draft refusal**: `key` is the concept's item id (or the literal
-      `"addRelation"` for the relations document), `literal` is
-      `str(exception)` from the schema validator or `ProposalService` --
-      free text, not one of the first two shapes.
+    - **kind=draft** (or **kind=relations** for the relations document,
+      keyed `"addRelation"` -- not a spellable `ItemId`, whose grammar is
+      lowercase-only, so this key can never collide with a real concept's):
+      `literal` is a Theurian-written reason plus the refusing exception's
+      class name, never `str(exception)` -- a schema validator's own message
+      can embed the bundle's offending value verbatim and unbounded.
     """
     bundle = tmp_path / "bundle"
     _write(
@@ -285,15 +287,19 @@ def test_the_refusal_key_and_literal_pair_carries_three_distinct_meanings(
     result = _service(paths).import_bundle(_request(bundle))
 
     by_key = {refusal.key: refusal for refusal in result.refusals}
+    assert by_key["theurian_body_file"].kind == "reference"
     assert by_key["theurian_body_file"].literal == "../../../../etc/passwd", (
-        "containment: key is the front-matter key, literal is the bundle's own written value"
+        "kind=reference: key is the front-matter key, literal is the bundle's own written value"
     )
+    assert by_key["malformed.md"].kind == "concept"
     assert by_key["malformed.md"].literal == "missing or empty required key(s): type, status", (
-        "malformed concept: key is the concept's own bundle-relative path"
+        "kind=concept: key is the concept's own bundle-relative path"
     )
-    assert "addRelation" in by_key, "draft refusal: key is the literal string 'addRelation'"
-    assert "made_up_relation_type" in by_key["addRelation"].literal, (
-        "draft refusal: literal is str(exception), free text rather than either prior shape"
+    assert "addRelation" in by_key, "kind=relations: key is the literal string 'addRelation'"
+    assert by_key["addRelation"].kind == "relations"
+    assert by_key["addRelation"].literal == "the proposal service refused it: MigrationError", (
+        "kind=relations: literal is a Theurian-written reason plus the exception's class name, "
+        "never str(exception)"
     )
 
 
