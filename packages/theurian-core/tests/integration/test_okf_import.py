@@ -27,6 +27,7 @@ from fakes.ids import SeededIdGenerator
 
 from theurian.application.draft_only_proposals import DraftOnlyProposals
 from theurian.application.okf_import import (
+    KIND_RELATIONS,
     ImportRefusal,
     OkfImportError,
     OkfImportRequest,
@@ -48,6 +49,7 @@ from theurian.domain.identifiers import AgentId, ItemId, MigrationId, ProjectId,
 from theurian.domain.migration import Migration, current_revision_in
 from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY
 from theurian.domain.proposal import Evidence
+from theurian.domain.values import ContentHash
 from theurian.infrastructure.filesystem.migration_loader import (
     load_migrations,
     validate_migration_document,
@@ -141,6 +143,53 @@ def _write(bundle: Path, relative: str, text: str) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text, encoding="utf-8")
     return target
+
+
+def _seed_existing_item(paths: ProjectPaths, item_id: str) -> None:
+    """Land a real migration so `item_id` is already approved canonical state.
+
+    A re-import of the same id then has no `--expected-revision` to offer,
+    so `.draft()`'s own `_check_expected_revision` refuses it -- the shape
+    HIGH-2's regression test needs, produced without a second fake service.
+    """
+    body = "Pre-existing body.\n"
+    relative_body = f"{item_id}.01K0000000000000000000REV1.md"
+    body_file = paths.knowledge / relative_body
+    body_file.parent.mkdir(parents=True, exist_ok=True)
+    body_file.write_text(body, encoding="utf-8")
+    document = {
+        "apiVersion": "theurian.dev/v1",
+        "id": "01K0000000000000000000EXST",
+        "createdAt": "2026-01-01T00:00:00+00:00",
+        "author": "seed@example.com",
+        "operations": [
+            {
+                "op": "createItem",
+                "itemId": item_id,
+                "kind": "architecture",
+                "namespace": "",
+                "owner": "team",
+            },
+            {
+                "op": "upsertRevision",
+                "itemId": item_id,
+                "revisionId": "01K0000000000000000000REV1",
+                "contentFile": f"../knowledge/{relative_body}",
+                "contentSha256": ContentHash.of_text(body).value,
+                "metadata": {
+                    "title": "Pre-existing",
+                    "contentType": "text/markdown",
+                    "kind": "architecture",
+                    "namespace": "",
+                    "status": "approved",
+                    "owner": "team",
+                    "sourceAnchors": [{"provider": "seed", "sourceUri": "seed:existing"}],
+                },
+            },
+        ],
+    }
+    migration_file = paths.migrations / "01K0000000000000000000EXST-seed.yaml"
+    migration_file.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
 
 
 def _request(bundle: Path, **overrides: object) -> OkfImportRequest:
@@ -420,3 +469,81 @@ def test_front_matter_past_the_yaml_cap_refuses_the_concept_rather_than_raising(
     [refusal] = result.refusals
     assert refusal.key == "oversized.md"
     assert "exceeded" in refusal.literal
+
+
+# ---------------------------------------------------------------------------
+# Review-Finding: adversarial HIGH -- a draft-refused concept still
+# contributes its addRelation edges and cap charge.
+# ---------------------------------------------------------------------------
+
+
+def test_a_relation_from_a_concept_that_refused_at_draft_never_lands(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    """The reproduced shape: `architecture.auth-policy` already exists, so its
+    own re-import refuses at `.draft()` -- and its `theurian_relations` entry
+    must not become a dangling `addRelation` with no accompanying proposal.
+    """
+    _seed_existing_item(paths, "architecture.auth-policy")
+    bundle = tmp_path / "bundle"
+    concept = _EXPORTED_CONCEPT.replace(
+        "theurian_content_type: text/markdown",
+        "theurian_content_type: text/markdown\n"
+        "theurian_relations:\n"
+        "  - type: related_to\n"
+        "    target: architecture.session-store\n",
+    )
+    _write(bundle, "auth-policy.md", concept)
+    _write(bundle, "vanilla.md", _VANILLA_CONCEPT)
+
+    result = _service(paths).import_bundle(_request(bundle))
+
+    assert {p.item_id.value for p in result.concepts_admitted} == {"vanilla"}
+    assert result.relations_proposal is None
+    kinds_and_keys = {(r.kind, r.key) for r in result.refusals}
+    assert ("draft", "architecture.auth-policy") in kinds_and_keys
+    assert (KIND_RELATIONS, "architecture.auth-policy") in kinds_and_keys
+    # No `.theurian/proposals/` directory carries the orphaned edge anywhere.
+    for migration_file in paths.proposals.glob("*/*.yaml"):
+        assert "session-store" not in migration_file.read_text(encoding="utf-8")
+
+
+def test_a_relation_beside_one_that_refuses_still_lands_for_the_drafted_concept(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    """Two concepts, each naming a relation; only one drafts. The cap charge
+    and the relations document both reflect the one that actually did.
+    """
+    _seed_existing_item(paths, "architecture.auth-policy")
+    bundle = tmp_path / "bundle"
+    refusing = _EXPORTED_CONCEPT.replace(
+        "theurian_content_type: text/markdown",
+        "theurian_content_type: text/markdown\n"
+        "theurian_relations:\n"
+        "  - type: related_to\n"
+        "    target: architecture.session-store\n",
+    )
+    drafting = _VANILLA_CONCEPT.replace(
+        "status: stable\n---",
+        "status: stable\n"
+        "theurian_relations:\n"
+        "  - type: related_to\n"
+        "    target: architecture.other\n"
+        "---",
+    )
+    _write(bundle, "auth-policy.md", refusing)
+    _write(bundle, "vanilla.md", drafting)
+
+    result = _service(paths).import_bundle(_request(bundle))
+
+    assert {p.item_id.value for p in result.concepts_admitted} == {"vanilla"}
+    assert result.relations_proposal is not None
+    document = yaml.safe_load(result.relations_proposal.migration_file.read_text(encoding="utf-8"))
+    assert document["operations"] == [
+        {
+            "op": "addRelation",
+            "sourceItemId": "vanilla",
+            "relationType": "related_to",
+            "targetItemId": "architecture.other",
+        }
+    ]

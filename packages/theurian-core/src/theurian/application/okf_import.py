@@ -8,9 +8,9 @@ admitted concept becomes one proposal through :meth:`.draft()
 <theurian.application.proposal_service.ProposalService.draft>` -- the same
 content path `knowledge.proposeChange` and
 :mod:`theurian.application.candidate_generation` already use -- and every
-`theurian_relations` entry across the whole bundle becomes one `addRelation`
-operation in at most one additional proposal through
-:meth:`.draft_from_document()
+`theurian_relations` entry belonging to a concept that **actually drafted**
+becomes one `addRelation` operation in at most one additional proposal
+through :meth:`.draft_from_document()
 <theurian.application.proposal_service.ProposalService.draft_from_document>`.
 `draft_from_document` cannot carry the first kind at all:
 `ProposalService._refuse_operations_outside_the_v1_set` refuses
@@ -114,17 +114,30 @@ class OkfImportError(TheurianError):
         super().__init__(message)
 
 
+#: What one :class:`ImportRefusal` is about. `REFERENCE` names a
+#: `theurian_body_file`-shaped containment or content-type refusal; `CONCEPT`
+#: names a concept that could not be decoded or mapped at all; `DRAFT` names a
+#: concept whose own `.draft()` call refused; `RELATIONS` names the aggregated
+#: relations document, whether its own draft refused or one edge was dropped
+#: because the concept it named as `sourceItemId` never drafted.
+KIND_REFERENCE: Final = "reference"
+KIND_CONCEPT: Final = "concept"
+KIND_DRAFT: Final = "draft"
+KIND_RELATIONS: Final = "relations"
+
+
 @dataclass(frozen=True, slots=True)
 class ImportRefusal:
     """One thing the import declined to admit (ADR-0037 decision 6).
 
-    `key` is the front-matter key for a containment refusal, or the concept's
-    own bundle-relative path when the concept itself could not be mapped.
-    `literal` is the bundle's own written value for a containment refusal --
-    literal, never the path it resolved to (T-25) -- or a short, Theurian-
-    written reason otherwise.
+    `kind` is one of the `KIND_*` constants above. `key` is the front-matter
+    key for a containment refusal, or the concept's own bundle-relative path
+    or item id otherwise. `literal` is the bundle's own written value for a
+    containment refusal -- literal, never the path it resolved to (T-25) --
+    or a short, Theurian-written reason otherwise.
     """
 
+    kind: str
     key: str
     literal: str
 
@@ -248,7 +261,7 @@ def _read_failure_reason(exc: Exception) -> str:
     the bundle's content never controls.
     """
     return next(
-        (reason for kind, reason in _READ_FAILURE_REASONS if isinstance(exc, kind)),
+        (reason for exc_type, reason in _READ_FAILURE_REASONS if isinstance(exc, exc_type)),
         "not a valid path",
     )
 
@@ -267,17 +280,25 @@ def _resolve_body(
     try:
         sidecar_bytes = read_source_file(root, concept.theurian_body_file)
     except (TheurianError, OSError, ValueError):
-        return ImportRefusal(key=THEURIAN_BODY_FILE, literal=concept.theurian_body_file)
+        return ImportRefusal(
+            kind=KIND_REFERENCE, key=THEURIAN_BODY_FILE, literal=concept.theurian_body_file
+        )
     try:
         sidecar_text = sidecar_bytes.decode("utf-8")
     except UnicodeDecodeError:
-        return ImportRefusal(key=THEURIAN_BODY_FILE, literal=concept.theurian_body_file)
+        return ImportRefusal(
+            kind=KIND_REFERENCE, key=THEURIAN_BODY_FILE, literal=concept.theurian_body_file
+        )
     if not concept.theurian_content_type:
-        return ImportRefusal(key="theurian_content_type", literal="")
+        return ImportRefusal(kind=KIND_REFERENCE, key="theurian_content_type", literal="")
     try:
         content_type = MediaType(concept.theurian_content_type)
     except DomainError:
-        return ImportRefusal(key="theurian_content_type", literal=concept.theurian_content_type)
+        return ImportRefusal(
+            kind=KIND_REFERENCE,
+            key="theurian_content_type",
+            literal=concept.theurian_content_type,
+        )
     return sidecar_text, content_type
 
 
@@ -324,15 +345,15 @@ def _decode_concept_file(
     try:
         raw = read_source_file(root, relative)
     except (TheurianError, OSError, ValueError) as exc:
-        return ImportRefusal(key=path_text, literal=_read_failure_reason(exc))
+        return ImportRefusal(kind=KIND_CONCEPT, key=path_text, literal=_read_failure_reason(exc))
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
-        return ImportRefusal(key=path_text, literal="not valid UTF-8")
+        return ImportRefusal(kind=KIND_CONCEPT, key=path_text, literal="not valid UTF-8")
 
     decoded = decode_concept_document(text)
     if isinstance(decoded, ConceptDecodeRefusal):
-        return ImportRefusal(key=path_text, literal=decoded.reason)
+        return ImportRefusal(kind=KIND_CONCEPT, key=path_text, literal=decoded.reason)
     return decoded
 
 
@@ -345,12 +366,18 @@ def _map_concept(root: Path, relative: PurePosixPath) -> ImportedConcept | Impor
     item_id = _resolve_item_id(concept, relative)
     if item_id is None:
         literal = concept.theurian_item_id or _item_id_from_path(relative)
-        return ImportRefusal(key=relative.as_posix(), literal=f"not a valid item id: {literal!r}")
+        return ImportRefusal(
+            kind=KIND_CONCEPT,
+            key=relative.as_posix(),
+            literal=f"not a valid item id: {literal!r}",
+        )
 
     kind = _resolve_kind(concept)
     if kind is None:
         return ImportRefusal(
-            key=relative.as_posix(), literal=f"unrecognized type: {concept.kind!r}"
+            kind=KIND_CONCEPT,
+            key=relative.as_posix(),
+            literal=f"unrecognized type: {concept.kind!r}",
         )
 
     body_outcome = _resolve_body(root, concept, decoded.body)
@@ -399,6 +426,38 @@ def _relation_operation(source_item_id: ItemId, entry: RelationEntry) -> dict[st
     return operation
 
 
+def _dropped_relation_refusal(concept: ImportedConcept, entry: RelationEntry) -> ImportRefusal:
+    return ImportRefusal(
+        kind=KIND_RELATIONS,
+        key=concept.item_id.value,
+        literal=f"{entry.type} -> {entry.target}: its own concept did not draft",
+    )
+
+
+def _collect_relation_operations(
+    admitted: list[ImportedConcept], drafted_ids: frozenset[str]
+) -> tuple[list[dict[str, object]], list[ImportRefusal]]:
+    """Every `addRelation` operation a concept that actually drafted contributes.
+
+    A concept whose own `.draft()` refused never reaches here with its edges:
+    an edge naming a `sourceItemId` nobody proposed is unreviewable provenance
+    -- the reviewer sees a relation with no accompanying content proposal, and
+    the concept's own refusal is invisible from the relations document alone.
+    Each dropped edge gets its own refusal record rather than one per concept,
+    since "an edge" is decision 5's own unit.
+    """
+    operations: list[dict[str, object]] = []
+    dropped: list[ImportRefusal] = []
+    for concept in admitted:
+        if concept.item_id.value not in drafted_ids:
+            dropped.extend(_dropped_relation_refusal(concept, entry) for entry in concept.relations)
+            continue
+        operations.extend(
+            _relation_operation(concept.item_id, entry) for entry in concept.relations
+        )
+    return operations, dropped
+
+
 def _operation_cap_exceeded(count: int) -> OkfImportError:
     return OkfImportError(
         f"This bundle admits {count} operations, more than the {MAX_UPSERT_OPERATIONS} a "
@@ -408,6 +467,30 @@ def _operation_cap_exceeded(count: int) -> OkfImportError:
             f"operations' worth of concepts or fewer per run."
         ),
     )
+
+
+def _draft_concepts(
+    request: OkfImportRequest, admitted: list[ImportedConcept], drafts: DraftOnlyProposals
+) -> tuple[list[ImportedProposal], frozenset[str], list[ImportRefusal]]:
+    """Draft every admitted concept, and say which item ids actually landed.
+
+    The returned id set is what :func:`_collect_relation_operations` filters
+    against: a concept's relations travel only with concepts that drafted.
+    """
+    proposals: list[ImportedProposal] = []
+    drafted_ids: set[str] = set()
+    refusals: list[ImportRefusal] = []
+    for concept in admitted:
+        try:
+            drafted = drafts.draft(_proposal_request(request, concept), local=False)
+        except _DRAFT_REFUSAL as exc:
+            refusals.append(
+                ImportRefusal(kind=KIND_DRAFT, key=concept.item_id.value, literal=str(exc))
+            )
+            continue
+        proposals.append(ImportedProposal(item_id=concept.item_id, proposal=drafted))
+        drafted_ids.add(concept.item_id.value)
+    return proposals, frozenset(drafted_ids), refusals
 
 
 @final
@@ -436,39 +519,43 @@ class OkfImportService:
                 continue
             admitted.append(outcome)
 
-        relation_operations = [
-            _relation_operation(concept.item_id, entry)
-            for concept in admitted
-            for entry in concept.relations
-        ]
-        total_operations = 2 * len(admitted) + len(relation_operations)
+        # A conservative upper bound, checked before any draft runs: every
+        # admitted concept's own two operations, plus every relation it
+        # carries, whether or not that concept's own draft later succeeds.
+        total_operations = 2 * len(admitted) + sum(len(concept.relations) for concept in admitted)
         if total_operations > MAX_UPSERT_OPERATIONS:
             raise _operation_cap_exceeded(total_operations)
 
-        proposals: list[ImportedProposal] = []
-        for concept in admitted:
-            try:
-                drafted = self._drafts.draft(_proposal_request(request, concept), local=False)
-            except _DRAFT_REFUSAL as exc:
-                refusals.append(ImportRefusal(key=concept.item_id.value, literal=str(exc)))
-                continue
-            proposals.append(ImportedProposal(item_id=concept.item_id, proposal=drafted))
+        proposals, drafted_ids, draft_refusals = _draft_concepts(request, admitted, self._drafts)
+        refusals.extend(draft_refusals)
 
-        relations_proposal: DraftedMigration | None = None
-        if relation_operations:
-            document = {"author": request.author, "operations": relation_operations}
-            try:
-                relations_proposal = self._drafts.draft_from_document(
-                    document, evidence=request.evidence, local=False
-                )
-            except _DRAFT_REFUSAL as exc:
-                refusals.append(ImportRefusal(key="addRelation", literal=str(exc)))
+        relation_operations, dropped_relations = _collect_relation_operations(admitted, drafted_ids)
+        refusals.extend(dropped_relations)
+
+        relations_proposal = self._draft_relations(request, relation_operations, refusals)
 
         return OkfImportResult(
             concepts_admitted=tuple(proposals),
             relations_proposal=relations_proposal,
             refusals=tuple(refusals),
         )
+
+    def _draft_relations(
+        self,
+        request: OkfImportRequest,
+        operations: list[dict[str, object]],
+        refusals: list[ImportRefusal],
+    ) -> DraftedMigration | None:
+        if not operations:
+            return None
+        document = {"author": request.author, "operations": operations}
+        try:
+            return self._drafts.draft_from_document(
+                document, evidence=request.evidence, local=False
+            )
+        except _DRAFT_REFUSAL as exc:
+            refusals.append(ImportRefusal(kind=KIND_RELATIONS, key="addRelation", literal=str(exc)))
+            return None
 
 
 __all__ = [
