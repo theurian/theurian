@@ -326,6 +326,34 @@ def test_a_second_export_into_the_same_directory_is_refused_as_a_document(
     assert (target / "theurian-bundle.md").exists()
 
 
+def test_a_dotdot_target_past_an_absent_component_is_refused_rather_than_merged(
+    project: Path,
+) -> None:
+    """`absent/../out` names `out` once `absent` exists, and not before.
+
+    Every guard `lstat`s the exact path it is given, so a not-yet-existing
+    component made all three read as absent regardless of what the same
+    relative path names once that component is real -- and the ancestor
+    `mkdir` that used to run afterward, inside the write, then materialised the
+    missing component and made the walk merge into `out`, a separately
+    populated prior bundle, without ever refusing (round three, adversarial
+    HIGH). Materialising ancestors before every guard is what makes this
+    refuse instead.
+    """
+    _applied(project)
+    out = project.parent / "out"
+    assert _invoke("okf", "export", str(out))[0] == 0
+    (out / "withdrawn.md").write_text("a stale member from an earlier export", encoding="utf-8")
+    before = sorted(str(path.relative_to(out)) for path in out.rglob("*"))
+
+    code, payload = _invoke("okf", "export", str(project.parent / "absent" / ".." / "out"))
+
+    assert code == 1
+    assert "not empty" in payload["error"]
+    after = sorted(str(path.relative_to(out)) for path in out.rglob("*"))
+    assert after == before, "the second export merged into the populated prior bundle"
+
+
 def test_an_unbuilt_project_is_refused_with_the_cure_that_builds_it(project: Path) -> None:
     assert _invoke("init")[0] == 0
 
@@ -358,14 +386,17 @@ def test_an_unloadable_migration_is_reported_as_a_document(project: Path) -> Non
     assert not (project.parent / "bundle").exists()
 
 
-def test_a_write_that_never_created_the_target_does_not_send_ls_at_it(project: Path) -> None:
+def test_an_ancestor_that_is_a_regular_file_is_refused_as_a_document(project: Path) -> None:
     """A cure names a listing only where there is something to list.
 
-    The target's parent is a regular file here, so the first ``mkdir`` refuses with
-    ENOTDIR and nothing is created: `ls -la <target>` would answer the operator
-    with a second error about a path that does not exist and say nothing about the
-    first. The arm still names the runnable part of the cure -- export again into
-    an empty or new directory.
+    Before the materialise-then-guard reorder, this scenario's ancestor `mkdir`
+    ran inside the write, after the walk, and its bare `OSError` reached the
+    CLI's generic catch-all -- "nothing was left at {target}" was that arm's own
+    cure. This round's fix moves the same `mkdir` ahead of every guard and wraps
+    it in a typed `OkfExportError` that walks up from the target to name the
+    file actually blocking it, so the reorder changes which arm fires here: the
+    generic `OSError` catch never runs, and the cure now points `ls -l` at
+    `blocking`, a path that exists, rather than at `target`, which never will.
     """
     _applied(project)
     blocking = project.parent / "a-file"
@@ -375,10 +406,11 @@ def test_a_write_that_never_created_the_target_does_not_send_ls_at_it(project: P
     code, payload = _invoke("okf", "export", str(target))
 
     assert code == 1
-    assert "could not be written" in payload["error"]
-    assert f"nothing was left at {target}" in payload["remedy"]
+    assert str(blocking) in payload["error"]
+    assert "Move or rename" in payload["remedy"]
+    assert f"ls -l {blocking}" in payload["remedy"]
     assert f"ls -la {target}" not in payload["remedy"]
-    assert "export again into an empty or new directory" in payload["remedy"]
+    assert blocking.read_text(encoding="utf-8") == "not a directory"
     assert not target.exists()
 
 

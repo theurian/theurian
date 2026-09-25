@@ -1154,6 +1154,163 @@ def test_an_ancestor_that_is_a_symbolic_link_to_a_real_directory_is_followed(
     assert nested.report["bundleDigest"] == flat.report["bundleDigest"]
 
 
+def test_a_target_reached_through_an_absent_then_dotdot_component_is_still_refused_as_not_empty(
+    tmp_path: Path,
+) -> None:
+    """``absent/../out`` names ``out`` once ``absent`` exists, and only then.
+
+    Every probe in ``_refuse_an_unusable_target`` ``lstat``s the exact path it is
+    given, and a not-yet-existing component makes all three read as absent --
+    ``exists()`` is ``False``, so the not-empty arm never ran -- regardless of
+    what the same relative path names once that component is real. The ancestor
+    ``mkdir`` used to run afterward, inside ``_write``, past every guard: it
+    materialised ``absent``, and the identical relative path then resolved into
+    ``out``, a separately populated prior bundle, which the walk merged into
+    without ever refusing (round three, adversarial HIGH). Materialising the
+    ancestor *first*, before any guard, is what makes this refuse instead: the
+    guard now lstats the directory the walk will actually use.
+    """
+    database = corpus(tmp_path, [Row("keeper", 1)])
+    out = tmp_path / "out"
+    export(database, out)
+    (out / "withdrawn.md").write_text("a stale member from an earlier export", encoding="utf-8")
+    before = sorted(str(path.relative_to(out)) for path in out.rglob("*"))
+
+    with pytest.raises(OkfExportError) as caught:
+        export(database, tmp_path / "absent" / ".." / "out")
+
+    assert "not empty" in str(caught.value)
+    after = sorted(str(path.relative_to(out)) for path in out.rglob("*"))
+    assert after == before, "the second export merged into the populated prior bundle"
+    debris = tmp_path / "absent"
+    if debris.exists():
+        assert list(debris.iterdir()) == [], (
+            "materialising the ancestor left more than an empty directory"
+        )
+
+
+def test_a_trailing_dotdot_target_past_an_absent_component_is_still_refused_as_not_empty(
+    tmp_path: Path,
+) -> None:
+    """The same shape with the ``..`` as the target's own last segment.
+
+    ``inner/absent/..`` names ``inner`` once ``absent`` exists, the same way
+    ``absent/../out`` names ``out`` above. Here the materialised ancestor is a
+    *child* of the populated directory rather than its sibling, so it is
+    compared by file content rather than by listing: an empty ``absent/``
+    debris directory is expected to land inside ``inner``, the same way
+    :func:`_materialise_the_targets_ancestors` leaves debris beside ``out``
+    above, and neither is a bundle member.
+    """
+    database = corpus(tmp_path, [Row("keeper", 1)])
+    inner = tmp_path / "inner"
+    export(database, inner)
+    (inner / "withdrawn.md").write_text("a stale member from an earlier export", encoding="utf-8")
+    before = _read(inner)
+
+    with pytest.raises(OkfExportError) as caught:
+        export(database, tmp_path / "inner" / "absent" / "..")
+
+    assert "not empty" in str(caught.value)
+    assert _read(inner) == before, "the second export merged into the populated prior bundle"
+    debris = inner / "absent"
+    assert debris.is_dir()
+    assert list(debris.iterdir()) == [], (
+        "materialising the ancestor left more than an empty directory"
+    )
+
+
+def test_an_ancestor_that_is_a_regular_file_is_refused_with_a_named_cure(tmp_path: Path) -> None:
+    """A file standing in for a directory ancestor blocks the whole path, not just its own name.
+
+    ``directory.parent.mkdir(parents=True, exist_ok=True)`` raises
+    ``FileExistsError`` when the blocking file *is* the immediate parent --
+    measured on 3.13 -- naming that file correctly on its own, which is the
+    shape this pin drives; the child-of-a-file shape one level further is
+    :func:`test_an_ancestor_two_levels_above_the_target_that_is_a_regular_file_is_refused`'s,
+    because the exception there names a different path.
+    """
+    blocking = tmp_path / "a-file"
+    blocking.write_text("not a directory", encoding="utf-8")
+    database = corpus(tmp_path, [Row("keeper", 1)])
+
+    with pytest.raises(OkfExportError) as caught:
+        export(database, blocking / "bundle")
+
+    assert str(blocking) in str(caught.value)
+    assert "Move or rename" in caught.value.remedy
+    assert f"ls -l {blocking}" in caught.value.remedy
+    assert "rm " not in caught.value.remedy
+    assert blocking.read_text(encoding="utf-8") == "not a directory"
+    assert not (blocking / "bundle").exists()
+
+
+def test_an_ancestor_two_levels_above_the_target_that_is_a_regular_file_is_refused(
+    tmp_path: Path,
+) -> None:
+    """The blocking file is not the path ``mkdir`` itself reports.
+
+    ``os.mkdir`` raises ``NotADirectoryError`` naming the *attempted child*
+    (``a-file/sub``), not the file that blocks it (``a-file``) -- measured on
+    3.13, because ``mkdir(parents=True)`` only recurses through
+    ``FileNotFoundError``, and a blocking file raises something else one level
+    higher than the true cause instead. A refusal built from the raised
+    exception's own path would send an operator to ``ls -l`` a path that has
+    never existed.
+    """
+    blocking = tmp_path / "a-file"
+    blocking.write_text("not a directory", encoding="utf-8")
+    database = corpus(tmp_path, [Row("keeper", 1)])
+
+    with pytest.raises(OkfExportError) as caught:
+        export(database, blocking / "sub" / "bundle")
+
+    assert str(blocking) in str(caught.value)
+    assert f"ls -l {blocking}" in caught.value.remedy
+    assert not (blocking / "sub").exists()
+
+
+def test_an_ancestor_that_is_a_dangling_symbolic_link_is_refused_with_a_named_cure(
+    tmp_path: Path,
+) -> None:
+    """A dangling link cannot become a directory either, and ``is_dir`` alone would miss it.
+
+    ``exists()`` follows a link and reads a dangling one as absent; ``is_symlink()``
+    is what still finds it there, which is why the ancestor walk checks both.
+    """
+    link = tmp_path / "danglink"
+    link.symlink_to(tmp_path / "does-not-exist")
+    database = corpus(tmp_path, [Row("keeper", 1)])
+
+    with pytest.raises(OkfExportError) as caught:
+        export(database, link / "bundle")
+
+    assert str(link) in str(caught.value)
+    assert "Move or rename" in caught.value.remedy
+    assert "repoint" in caught.value.remedy
+    assert "rm " not in caught.value.remedy
+    assert link.is_symlink(), "the refusal removed the operator's own link"
+    assert not link.exists(), "the link was not repointed by the refusal"
+
+
+def test_a_relative_target_is_created_where_the_working_directory_puts_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A relative target is as legitimate as ``../bundle`` shell usage (the ruling).
+
+    Nothing in the materialise-then-guard reorder resolves a target against
+    anything but the process's own working directory -- no ``resolve()``, which
+    would also undo the round-one leaf-symlink refusal by following it.
+    """
+    database = corpus(tmp_path, [Row("keeper", 1)])
+    monkeypatch.chdir(tmp_path)
+
+    result = export(database, Path("rel") / "deep" / "bundle")
+
+    assert result.root == Path("rel") / "deep" / "bundle"
+    assert (tmp_path / "rel" / "deep" / "bundle" / "theurian-bundle.md").exists()
+
+
 class Recording:
     """An ``OkfExportSession`` that delegates to the real store and records the order.
 
