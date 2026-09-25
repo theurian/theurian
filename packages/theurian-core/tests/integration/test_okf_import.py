@@ -347,3 +347,76 @@ def test_a_project_level_path_escape_propagates_rather_than_becoming_a_refusal(
 
     with pytest.raises(ProjectPathEscapeError):
         service.import_bundle(_request(bundle))
+
+
+# ---------------------------------------------------------------------------
+# Review-Finding: security HIGH -- the refusal boundary enumerated the
+# callee's docstring, not its exception surface; seven shapes abort the
+# bundle and leak resolved paths.
+# ---------------------------------------------------------------------------
+
+
+def test_a_directory_named_dot_md_refuses_that_entry_and_the_rest_still_drafts(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    """A directory matching the `*.md` glob is a real shape `unbounded_shape`
+    admits (it names only FIFOs, sockets and devices, never a directory), so
+    `read_bytes()` on it raises `IsADirectoryError` -- previously uncaught.
+    """
+    bundle = tmp_path / "bundle"
+    (bundle / "a-directory.md").mkdir(parents=True)
+    _write(bundle, "vanilla.md", _VANILLA_CONCEPT)
+
+    result = _service(paths).import_bundle(_request(bundle))
+
+    assert {p.item_id.value for p in result.concepts_admitted} == {"vanilla"}
+    [refusal] = result.refusals
+    assert refusal.key == "a-directory.md"
+    assert refusal.literal == "a directory, not a file"
+
+
+def test_a_body_file_naming_a_directory_refuses_that_reference_only(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    bundle = tmp_path / "bundle"
+    (bundle / "sidecar-dir").mkdir(parents=True)
+    _write(
+        bundle,
+        "auth-policy.md",
+        _EXPORTED_CONCEPT.replace(
+            "theurian_content_type: text/markdown",
+            "theurian_content_type: application/json\ntheurian_body_file: sidecar-dir",
+        ),
+    )
+    _write(bundle, "vanilla.md", _VANILLA_CONCEPT)
+
+    result = _service(paths).import_bundle(_request(bundle))
+
+    assert {p.item_id.value for p in result.concepts_admitted} == {"vanilla"}
+    [refusal] = result.refusals
+    assert refusal.key == "theurian_body_file"
+    assert refusal.literal == "sidecar-dir"
+
+
+def test_front_matter_past_the_yaml_cap_refuses_the_concept_rather_than_raising(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    """`load_yaml_mapping`'s 4 MiB cap is smaller than `read_source_file`'s
+    8 MiB file cap: a file comfortably under the file cap can still overrun
+    the YAML one, and `decode_concept_document` must not let that escape.
+    """
+    bundle = tmp_path / "bundle"
+    oversized_label = "x" * (5 * 1024 * 1024)
+    _write(
+        bundle,
+        "oversized.md",
+        f"---\ntype: decision\ntitle: T\nstatus: stable\ntags: ['{oversized_label}']\n---\nbody\n",
+    )
+    _write(bundle, "vanilla.md", _VANILLA_CONCEPT)
+
+    result = _service(paths).import_bundle(_request(bundle))
+
+    assert {p.item_id.value for p in result.concepts_admitted} == {"vanilla"}
+    [refusal] = result.refusals
+    assert refusal.key == "oversized.md"
+    assert "exceeded" in refusal.literal

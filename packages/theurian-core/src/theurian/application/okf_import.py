@@ -222,6 +222,37 @@ def _resolve_kind(concept: DecodedConcept) -> KnowledgeKind | None:
         return None
 
 
+#: Every read-failure shape this module classifies, checked in order (a
+#: `FileNotFoundError` is also an `OSError`, but never the other way round, so
+#: order only matters where a subclass relationship exists at all -- none of
+#: these six do). The fallback below covers the rest: a bare `OSError` (an
+#: over-length name, `ENAMETOOLONG`) and a `ValueError` (an embedded NUL byte).
+_READ_FAILURE_REASONS: Final[tuple[tuple[type[Exception], str], ...]] = (
+    (PathEscapeError, "escapes the bundle root"),
+    (IrregularSourceFileError, "not a regular file"),
+    (InputTooLargeError, "too large"),
+    (IsADirectoryError, "a directory, not a file"),
+    (NotADirectoryError, "reached through a path segment that is a file, not a directory"),
+    (PermissionError, "not readable"),
+    (FileNotFoundError, "does not exist"),
+)
+
+
+def _read_failure_reason(exc: Exception) -> str:
+    """A Theurian-written classification of a failed read -- never `str(exc)`.
+
+    `OSError.__str__` carries the path it failed on, resolved (T-25): a bundle
+    crafted to fail in a chosen way could otherwise walk the operator's own
+    filesystem layout into a refusal record that lands in a proposal a human
+    reviews on a public pull request. Named by the exception's class, which
+    the bundle's content never controls.
+    """
+    return next(
+        (reason for kind, reason in _READ_FAILURE_REASONS if isinstance(exc, kind)),
+        "not a valid path",
+    )
+
+
 def _resolve_body(
     root: Path, concept: DecodedConcept, inline_body: str
 ) -> tuple[str, MediaType] | ImportRefusal:
@@ -235,7 +266,7 @@ def _resolve_body(
         return inline_body, MARKDOWN
     try:
         sidecar_bytes = read_source_file(root, concept.theurian_body_file)
-    except (PathEscapeError, IrregularSourceFileError, InputTooLargeError, FileNotFoundError):
+    except (TheurianError, OSError, ValueError):
         return ImportRefusal(key=THEURIAN_BODY_FILE, literal=concept.theurian_body_file)
     try:
         sidecar_text = sidecar_bytes.decode("utf-8")
@@ -289,19 +320,19 @@ def _source_anchors(relative: PurePosixPath, concept: DecodedConcept) -> tuple[S
 def _decode_concept_file(
     root: Path, relative: PurePosixPath
 ) -> DecodedConceptDocument | ImportRefusal:
+    path_text = relative.as_posix()
     try:
         raw = read_source_file(root, relative)
-    except (PathEscapeError, IrregularSourceFileError, InputTooLargeError, FileNotFoundError):
-        path_text = relative.as_posix()
-        return ImportRefusal(key=path_text, literal=path_text)
+    except (TheurianError, OSError, ValueError) as exc:
+        return ImportRefusal(key=path_text, literal=_read_failure_reason(exc))
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
-        return ImportRefusal(key=relative.as_posix(), literal="not valid UTF-8")
+        return ImportRefusal(key=path_text, literal="not valid UTF-8")
 
     decoded = decode_concept_document(text)
     if isinstance(decoded, ConceptDecodeRefusal):
-        return ImportRefusal(key=relative.as_posix(), literal=decoded.reason)
+        return ImportRefusal(key=path_text, literal=decoded.reason)
     return decoded
 
 

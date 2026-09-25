@@ -441,10 +441,18 @@ def unbounded_shape(mode: int) -> str | None:
     which is why the two now share this function rather than only agreeing.
 
     A directory is not named, and so is not refused here: ``open()`` rejects one
-    with ``EISDIR`` before a byte is read, which can neither block nor stream,
-    and ``_read_failure_remedy``'s ``EISDIR`` branch already answers it with a
-    remedy naming that exact fault. Widening this function to cover directories
-    would take that refusal away from the branch that says it best.
+    with ``EISDIR`` before a byte is read, which can neither block nor stream.
+    **This function raises nothing for it, and neither does** :func:`read_source_file`
+    **below** -- a directory named where a file is expected reaches a caller as a
+    bare ``IsADirectoryError``. The remedy some callers give it is theirs, not
+    this module's: ``migration_loader.py::_parse_upsert`` wraps the raw error into
+    :class:`~theurian.domain.errors.MigrationContentUnreadableError`, whose
+    ``_read_failure_remedy``'s ``EISDIR`` branch answers with a remedy naming
+    that exact fault -- but a caller that does not perform that translation gets
+    the raw ``OSError`` and must handle it on its own (adversarial review,
+    round 1: :func:`read_source_file` itself calls no such helper). Widening
+    this function to cover directories would take the choice of remedy away
+    from the callers that already make one.
 
     The residual branch is what keeps the check total: a type this build has
     never met -- a Solaris door, a whiteout entry -- is refused rather than
@@ -490,6 +498,17 @@ def read_source_file(root: Path, relative: str | PurePosixPath) -> bytes:
             not bound -- a FIFO, a socket, a device (issue #215).
         InputTooLargeError: If the file exceeds :data:`MAX_SOURCE_FILE_BYTES`.
         FileNotFoundError: If the file does not exist.
+        OSError: For every other way the underlying ``stat``/``read_bytes`` call
+            can fail and this function does not translate: ``IsADirectoryError``
+            (``unbounded_shape`` admits a directory, so ``resolved.read_bytes()``
+            is what actually refuses one), ``NotADirectoryError`` (a path
+            component that should be a directory is a plain file),
+            ``PermissionError``, or a name/path exceeding the platform's own
+            length limit (``ENAMETOOLONG``). ``FileNotFoundError`` is named on
+            its own above only because it was already a documented member; it is
+            an ``OSError`` subclass like the rest of this arm.
+        ValueError: If ``relative`` contains an embedded NUL byte -- rejected by
+            the underlying ``os.path`` call before any syscall runs.
     """
     resolved = resolve_within_root(root, relative)
     # `relative`, not `resolved`: the guard's whole subject is the components the

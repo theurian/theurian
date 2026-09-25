@@ -79,7 +79,7 @@ from typing import Final
 
 import yaml
 
-from theurian.domain.errors import InvariantViolationError
+from theurian.domain.errors import InputTooLargeError, InvariantViolationError
 from theurian.domain.values import MediaType
 from theurian.security.yaml_loading import load_yaml_mapping
 
@@ -961,9 +961,12 @@ def decode_concept_document(text: str) -> DecodedConceptDocument | ConceptDecode
     """Decode one concept file's front matter and body.
 
     Never raises: a fence that will not parse, front matter that is not a
-    mapping, or a mapping missing `type`/`title`/`status` each come back as a
-    :class:`ConceptDecodeRefusal` naming why, so a caller walking many files
-    can record one and move on rather than aborting the bundle.
+    mapping, front matter past `load_yaml_mapping`'s own 4 MiB cap (smaller
+    than `read_source_file`'s 8 MiB file-level cap, so a file under the file
+    cap can still overrun this one), or a mapping missing
+    `type`/`title`/`status` each come back as a :class:`ConceptDecodeRefusal`
+    naming why, so a caller walking many files can record one and move on
+    rather than aborting the bundle.
     """
     split = _split_front_matter(text)
     if split is None:
@@ -971,6 +974,10 @@ def decode_concept_document(text: str) -> DecodedConceptDocument | ConceptDecode
     raw, body = split
     try:
         loaded = load_yaml_mapping(raw)
+    except InputTooLargeError as exc:
+        # Safe to echo: the message is `str`/`int` limits and counts, never a
+        # path or bundle text (`domain/errors.py::InputTooLargeError`).
+        return ConceptDecodeRefusal(reason=str(exc))
     except (ValueError, yaml.YAMLError) as exc:
         return ConceptDecodeRefusal(reason=f"front matter is not valid YAML: {exc}")
     decoded = _decode_concept_mapping(loaded)
