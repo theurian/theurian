@@ -525,6 +525,57 @@ def _operation_cap_exceeded(count: int) -> OkfImportError:
     )
 
 
+def _unmatched_item_filter_refusals(
+    item_filter: frozenset[str], matched_ids: frozenset[str]
+) -> list[ImportRefusal]:
+    """One refusal per `--item` value nothing in the bundle ever carried.
+
+    Sorted, so the report is deterministic regardless of set iteration order.
+    """
+    return [
+        ImportRefusal(
+            kind=KIND_CONCEPT, key=item_id, literal="no concept in this bundle has this item id"
+        )
+        for item_id in sorted(item_filter - matched_ids)
+    ]
+
+
+def _admit_concepts(
+    root: Path, concept_paths: tuple[PurePosixPath, ...], item_filter: frozenset[str]
+) -> tuple[list[ImportedConcept], list[ImportRefusal]]:
+    """Map every walked path to a concept, filtering by item id as early as possible.
+
+    `--item` is checked twice: first against the path-derived candidate id,
+    before anything is read, so a concept outside the filter costs nothing
+    and emits no refusal; then again against the concept's own decoded id,
+    since `theurian_item_id` can override what the path alone would derive.
+    A Theurian-exported bundle's two never disagree -- the exporter derives
+    the path from the item id in the first place (decision 7) -- so the
+    early filter only risks a false skip for a hand-authored bundle whose
+    front matter overrides its own path-derived id to something the operator
+    named with `--item` but the path does not spell.
+
+    Every `--item` value that matched no concept at all -- not even one that
+    later failed to decode or map -- becomes its own refusal.
+    """
+    refusals: list[ImportRefusal] = []
+    admitted: list[ImportedConcept] = []
+    matched_ids: set[str] = set()
+    for relative in concept_paths:
+        if item_filter and _item_id_from_path(relative) not in item_filter:
+            continue
+        outcome = _map_concept(root, relative)
+        if isinstance(outcome, ImportRefusal):
+            refusals.append(outcome)
+            continue
+        if item_filter and outcome.item_id.value not in item_filter:
+            continue
+        matched_ids.add(outcome.item_id.value)
+        admitted.append(outcome)
+    refusals.extend(_unmatched_item_filter_refusals(item_filter, frozenset(matched_ids)))
+    return admitted, refusals
+
+
 def _draft_concepts(
     request: OkfImportRequest, admitted: list[ImportedConcept], drafts: DraftOnlyProposals
 ) -> tuple[list[ImportedProposal], frozenset[str], list[ImportRefusal]]:
@@ -565,16 +616,8 @@ class OkfImportService:
             )
 
         concept_paths, unreadable_directories = _walk_concept_paths(root)
-        refusals: list[ImportRefusal] = list(unreadable_directories)
-        admitted: list[ImportedConcept] = []
-        for relative in concept_paths:
-            outcome = _map_concept(root, relative)
-            if isinstance(outcome, ImportRefusal):
-                refusals.append(outcome)
-                continue
-            if request.item_filter and outcome.item_id.value not in request.item_filter:
-                continue
-            admitted.append(outcome)
+        admitted, mapping_refusals = _admit_concepts(root, concept_paths, request.item_filter)
+        refusals: list[ImportRefusal] = [*unreadable_directories, *mapping_refusals]
 
         # A conservative upper bound, checked before any draft runs: every
         # admitted concept's own two operations, plus every relation it

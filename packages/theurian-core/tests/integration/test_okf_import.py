@@ -318,6 +318,40 @@ def test_the_item_filter_admits_only_the_named_concept(tmp_path: Path, paths: Pr
     assert {p.item_id.value for p in result.concepts_admitted} == {"vanilla"}
 
 
+def test_an_unselected_malformed_concept_is_never_read_and_emits_no_refusal(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    """M-a: a concept the `--item` filter excludes costs nothing to reach that
+    conclusion -- it is filtered by its path-derived id before anything is
+    read, so a malformed concept outside the filter is not even opened.
+    """
+    bundle = tmp_path / "bundle"
+    _write(bundle, "broken.md", "---\ntitle: Missing type and status\n---\n\nbody\n")
+    _write(bundle, "vanilla.md", _VANILLA_CONCEPT)
+
+    result = _service(paths).import_bundle(_request(bundle, item_filter=frozenset({"vanilla"})))
+
+    assert {p.item_id.value for p in result.concepts_admitted} == {"vanilla"}
+    assert not result.refusals, "the excluded, malformed concept must cost nothing at all"
+
+
+def test_an_item_filter_value_matching_nothing_is_reported(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    """M-b: a typo'd or absent `--item` id no longer succeeds silently."""
+    bundle = tmp_path / "bundle"
+    _write(bundle, "vanilla.md", _VANILLA_CONCEPT)
+
+    result = _service(paths).import_bundle(
+        _request(bundle, item_filter=frozenset({"vanilla", "does-not-exist"}))
+    )
+
+    assert {p.item_id.value for p in result.concepts_admitted} == {"vanilla"}
+    [refusal] = result.refusals
+    assert refusal.key == "does-not-exist"
+    assert refusal.literal == "no concept in this bundle has this item id"
+
+
 def test_the_reserved_names_are_skipped_rather_than_treated_as_concepts(
     tmp_path: Path, paths: ProjectPaths
 ) -> None:
