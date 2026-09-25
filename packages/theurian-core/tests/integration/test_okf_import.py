@@ -17,6 +17,8 @@ assignment's, per ``security/paths.py``'s own battery.
 
 from __future__ import annotations
 
+import os
+import sys
 from collections.abc import Collection, Mapping
 from pathlib import Path
 
@@ -547,3 +549,33 @@ def test_a_relation_beside_one_that_refuses_still_lands_for_the_drafted_concept(
             "targetItemId": "architecture.other",
         }
     ]
+
+
+# ---------------------------------------------------------------------------
+# M-e: a concept inside an unreadable directory must not vanish.
+# ---------------------------------------------------------------------------
+
+_CANNOT_BE_REFUSED_BY_A_MODE = sys.platform == "win32" or os.geteuid() == 0
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_a_concept_inside_an_unreadable_directory_is_refused_not_dropped(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    """`Path.rglob`'s own directory scan drops a `PermissionError` silently,
+    so a concept inside a mode-000 directory vanished with no refusal at all.
+    """
+    bundle = tmp_path / "bundle"
+    locked = bundle / "locked"
+    _write(bundle, "locked/hidden.md", _VANILLA_CONCEPT)
+    _write(bundle, "vanilla.md", _VANILLA_CONCEPT)
+    locked.chmod(0o000)
+    try:
+        result = _service(paths).import_bundle(_request(bundle))
+    finally:
+        locked.chmod(0o755)
+
+    assert {p.item_id.value for p in result.concepts_admitted} == {"vanilla"}
+    [refusal] = result.refusals
+    assert refusal.key == "locked"
+    assert refusal.literal == "not readable"

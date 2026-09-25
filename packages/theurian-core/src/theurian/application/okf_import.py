@@ -46,6 +46,7 @@ alone (decision 6): a URI or a relative path, never a scope descriptor
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -191,24 +192,61 @@ class OkfImportResult:
     refusals: tuple[ImportRefusal, ...]
 
 
-def _walk_concept_paths(root: Path) -> tuple[PurePosixPath, ...]:
-    """Every candidate concept file's bundle-relative path, sorted bytewise.
+def _unreadable_directory_refusal(root: Path, exc: OSError) -> ImportRefusal:
+    """A directory `os.walk` could not list, named by its own bundle-relative path.
+
+    `exc.filename` is the directory `os.walk` was trying to read when it
+    failed, which is an absolute, resolved path -- never rendered (T-25); only
+    its position relative to the bundle root is.
+    """
+    directory = Path(exc.filename) if exc.filename else root
+    try:
+        relative = directory.relative_to(root).as_posix()
+    except ValueError:
+        relative = "."
+    return ImportRefusal(kind=KIND_CONCEPT, key=relative, literal=_read_failure_reason(exc))
+
+
+def _walk_concept_paths(root: Path) -> tuple[tuple[PurePosixPath, ...], tuple[ImportRefusal, ...]]:
+    """Every candidate concept file's bundle-relative path, sorted bytewise,
+    and a refusal for each subtree `os.walk` could not list.
+
+    `Path.rglob` is not what does the walking here, because its own directory
+    scan silently drops a `PermissionError`: a concept sitting inside a
+    mode-000 directory simply vanished from the walk, with no refusal and no
+    trace. `os.walk`'s `onerror` callback is what closes that gap -- it is
+    called for the directory the walk could not list, and the walk continues
+    with whatever else it can see.
 
     Reserved names are excluded here (decision 2): `index.md`/`log.md` at any
     level, and the manifest at the bundle root only. This only lists names;
     :func:`_map_concept` is what proves each one is contained before its bytes
     are read, so a symlinked `.md` planted inside the bundle and pointing
     outside it is refused there, however it was discovered.
+
+    A directory whose own name ends `.md` is a candidate too, matched from
+    `dirnames` alongside `filenames` -- `Path.rglob("*.md")`'s glob is
+    name-only, blind to entry type, and `read_source_file` is what turns such
+    a directory into a refusal (`unbounded_shape` never excludes one).
+    `os.walk` still recurses into it regardless, the same as any other
+    subdirectory.
     """
-    candidates = []
-    for path in root.rglob("*.md"):
-        relative = PurePosixPath(path.relative_to(root).as_posix())
-        if relative.name in _RESERVED_AT_EVERY_LEVEL:
-            continue
-        if relative == PurePosixPath(_MANIFEST_FILENAME):
-            continue
-        candidates.append(relative)
-    return tuple(sorted(candidates, key=lambda item: item.as_posix()))
+    candidates: list[PurePosixPath] = []
+    unreadable: list[ImportRefusal] = []
+    for dirpath, dirnames, filenames in os.walk(
+        root, onerror=lambda exc: unreadable.append(_unreadable_directory_refusal(root, exc))
+    ):
+        directory = Path(dirpath)
+        for name in (*filenames, *dirnames):
+            if not name.endswith(".md"):
+                continue
+            relative = PurePosixPath((directory / name).relative_to(root).as_posix())
+            if relative.name in _RESERVED_AT_EVERY_LEVEL:
+                continue
+            if relative == PurePosixPath(_MANIFEST_FILENAME):
+                continue
+            candidates.append(relative)
+    return tuple(sorted(candidates, key=lambda item: item.as_posix())), tuple(unreadable)
 
 
 def _item_id_from_path(relative: PurePosixPath) -> str:
@@ -526,9 +564,10 @@ class OkfImportService:
                 remedy="Pass the path to an unpacked OKF bundle directory.",
             )
 
-        refusals: list[ImportRefusal] = []
+        concept_paths, unreadable_directories = _walk_concept_paths(root)
+        refusals: list[ImportRefusal] = list(unreadable_directories)
         admitted: list[ImportedConcept] = []
-        for relative in _walk_concept_paths(root):
+        for relative in concept_paths:
             outcome = _map_concept(root, relative)
             if isinstance(outcome, ImportRefusal):
                 refusals.append(outcome)
