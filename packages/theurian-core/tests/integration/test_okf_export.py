@@ -1131,6 +1131,29 @@ def test_a_target_with_two_absent_parent_levels_is_created_and_filled(tmp_path: 
     assert nested.report["bundleDigest"] == flat.report["bundleDigest"]
 
 
+def test_an_ancestor_that_is_a_symbolic_link_to_a_real_directory_is_followed(
+    tmp_path: Path,
+) -> None:
+    """An ancestor of the named target is the operator's own path (the ruling): it is
+    walked exactly as ``no_follow``'s narrowed scope sentence says -- refused ``at
+    the named target, or at any component under it``, never above. macOS proves
+    this is not academic: ``/tmp`` is itself a symlink to ``/private/tmp``, so a
+    future hardening that ``lstat``-refuses an ancestor must turn this pin red and
+    confront that recorded reason.
+    """
+    database = corpus(tmp_path, [Row("keeper", 1)])
+    real_directory = tmp_path / "real-directory"
+    real_directory.mkdir()
+    parent_link = tmp_path / "parentlink"
+    parent_link.symlink_to(real_directory, target_is_directory=True)
+
+    flat = export(database, tmp_path / "flat-bundle")
+    nested = export(database, parent_link / "bundle")
+
+    assert nested.files == flat.files
+    assert nested.report["bundleDigest"] == flat.report["bundleDigest"]
+
+
 class Recording:
     """An ``OkfExportSession`` that delegates to the real store and records the order.
 
