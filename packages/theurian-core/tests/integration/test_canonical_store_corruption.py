@@ -607,6 +607,10 @@ CLI_NOT_SWEPT: Final = {
     "public ref this corpus has no reason to carry",
     "ingest": "writes migration files, which moves the state hash and so the database",
     "init": "writes .theurian/ and appends to .gitignore in the working directory",
+    "okf export": "does open the canonical store, unlike `findings build` -- what keeps it out "
+    "is its argument: it writes a bundle tree into a directory named on the command line and "
+    "refuses one that already holds anything (ADR-0037), so every corruption would need a "
+    "fresh target and `_invoke` passes no arguments at all",
     "okf import": "writes a fresh proposal directory per bundle concept on every "
     "invocation, the same reason as `propose`, and needs a bundle directory and six "
     "required options this corpus has no reason to carry",

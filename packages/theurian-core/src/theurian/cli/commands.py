@@ -3588,9 +3588,10 @@ def _require_project(as_json: bool) -> tuple[CommandContext, Path]:
     # `EXIT_STATE_ERROR` exactly as this function does, kept identical by
     # `test_every_cli_resolver_grades_the_same_escape_types`. An unreadable
     # migration is a knowledge-state problem the user must fix in
-    # `_require_project`'s callers -- eleven since `review ingest` joined them,
-    # counted 2026-09-07 by the command below and not by reading; re-count with
-    # `grep -rn '_require_project(as_json)$' packages/theurian-core/src/theurian/cli/`
+    # `_require_project`'s call sites -- thirteen since `okf export` joined them,
+    # counted 2026-09-25 by the command below and not by reading; re-count with
+    # `grep -rcn '_require_project(as_json)$' packages/theurian-core/src/theurian/cli/*.py`
+    # summed, or the same grep without `-c` piped through `wc -l`
     # rather than trusting this number -- the same family as a checksum
     # mismatch or a dependency cycle above -- what varies between commands is
     # the exit code their own contract already assigns to a *non-escape* failure

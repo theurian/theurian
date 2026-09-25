@@ -1,18 +1,29 @@
 """``theurian okf`` -- the Open Knowledge Format interchange (ADR-0037).
 
-A composition root: where the gated import meets ``ProposalService`` and the
-published JSON Schemas, the same wiring ``propose_commands.py`` uses
-(ADR-0003). Nothing below this module names a concrete adapter beyond these.
+A composition root: where the abstract exporter meets the SQLite canonical
+store and the operator's own serving profile, and where the gated import
+meets ``ProposalService`` and the published JSON Schemas -- the same wiring
+``propose_commands.py`` uses (ADR-0003). Nothing below this module names a
+concrete adapter beyond these.
 
 **A write/maintenance path, like ``index build`` and ``findings build``, and
-it serves nothing.** ``import`` is a gated on-ramp to the same write path
-``theurian propose`` uses -- every drafted proposal lands under
-``.theurian/proposals/`` and reaches approved state only through ``theurian
-propose accept``, a pull request, and a human merge (ADR-0013), unchanged.
+it serves nothing.** What ``export`` publishes on stdout is a path, three
+counts and a digest over the bundle's own files -- no title, no body, no
+relation note and no item id. What it *writes* is a bundle, and that is a
+distributable copy of approved knowledge: the population is
+``application/okf_export.py``'s, gated on the same two predicates the serve
+path uses, and no option here widens it. ``import`` is a gated on-ramp to the
+same write path ``theurian propose`` uses -- every drafted proposal lands
+under ``.theurian/proposals/`` and reaches approved state only through
+``theurian propose accept``, a pull request, and a human merge (ADR-0013),
+unchanged.
 
-Shared with the export verb: the sub-app is intentionally minimal and
-generic, so an ``export`` command joins ``okf`` here rather than starting a
-second module.
+The sub-app is intentionally minimal and generic, so both verbs join ``okf``
+here rather than splitting into two modules.
+
+Help text is printed, not interpreted: ``cli/main.py`` passes
+``rich_markup_mode=None``, so a square bracket in a docstring reaches the
+screen instead of being read as a Rich style tag.
 """
 
 from __future__ import annotations
@@ -23,7 +34,13 @@ from typing import Annotated, Final
 
 import typer
 
+from theurian.application.authorization import (
+    AuthorizationGrant,
+    StaticAuthorizationProvider,
+    load_serving_profile,
+)
 from theurian.application.draft_only_proposals import DraftOnlyProposals
+from theurian.application.okf_export import OkfExporter, OkfExportError, OkfExportRequest
 from theurian.application.okf_import import (
     ImportRefusal,
     OkfImportError,
@@ -31,7 +48,12 @@ from theurian.application.okf_import import (
     OkfImportResult,
     OkfImportService,
 )
-from theurian.application.project_service import ProjectPathEscapeError
+from theurian.application.project_service import (
+    UNBUILT_STATE_REMEDY,
+    BuildProvenance,
+    ProjectPathEscapeError,
+    ProjectPaths,
+)
 from theurian.application.proposal_service import ProposalService
 from theurian.cli.context import CommandContext, schema_root
 from theurian.cli.migration_pipeline import rehearse_migration_set
@@ -39,7 +61,10 @@ from theurian.domain.errors import TheurianError
 from theurian.domain.identifiers import AgentId, TaskId
 from theurian.domain.migration import current_revision_in
 from theurian.domain.proposal import Evidence
+from theurian.domain.state import ActiveState
 from theurian.infrastructure.filesystem.migration_loader import validate_migration_document
+from theurian.infrastructure.secrets.file_store import default_data_dir
+from theurian.infrastructure.sqlite.store import SqliteCanonicalStore
 
 #: Exit code for an invocation that cannot be used as given, matching
 #: ``propose_commands.py``'s own (the group shape that motivates it there does
@@ -163,6 +188,143 @@ def okf_import(  # noqa: PLR0913 -- one option per drafted field, all keyword-on
     _emit(payload, as_json=as_json)
 
 
+@okf_app.command("export")
+def okf_export(  # noqa: PLR0911 -- one early return per distinguishable failure shape, the
+    # precedent `index_build` sets: an unbuilt project, state this install did not build, an
+    # unreadable serving profile, a pointer naming a database outside the tree, and the three
+    # ways the export itself refuses. Folding them into one `try` would publish the target's
+    # cure for a damaged database (#525's shape).
+    directory: Annotated[
+        Path,
+        typer.Argument(
+            help=(
+                "Where to write the bundle. Created if absent; refused if it already "
+                "holds anything."
+            )
+        ),
+    ],
+    as_json: JsonOption = False,
+) -> None:
+    """Export this project's approved knowledge as an OKF bundle (ADR-0037).
+
+    The bundle is Open Knowledge Format v0.2: a directory tree of Markdown files
+    with YAML front matter, one concept document per knowledge item, an `index.md`
+    in every directory, and a `theurian-bundle.md` manifest at the root carrying a
+    digest over every other file in the tree.
+
+    It holds exactly what this deployment serves by default — `approved` items at
+    or below the sensitivity ceiling in your serving profile — and no option
+    widens that. A bundle is the easiest artifact to forward, so a reader who may
+    not see a row through `knowledge.search` may not see it here either.
+
+    A bundle is a point-in-time copy that no later change reaches. A withdrawal, a
+    correction or the removal of a secret applies to this deployment and to the
+    indexes built here; it does not propagate to a copy someone already holds, and
+    nothing in a bundle can be updated in place. The manifest says so to whoever
+    holds it. Regenerate and compare `theurian_bundle_digest` rather than trusting
+    an old bundle: two exports of one unchanged state produce byte-identical trees.
+
+    The target directory must be empty or absent. Merging a new bundle into an old
+    one would leave members of that export behind — including concepts whose rows
+    have since been withdrawn — and make the digest describe a tree that is not
+    there, so a target holding anything is refused rather than merged.
+    """
+    from theurian.cli.commands import (  # noqa: PLC0415 - cycle
+        EXIT_STATE_ERROR,
+        _emit,
+        _fail,
+        _read_active,
+        _require_project,
+    )
+
+    context, _ = _require_project(as_json)
+    paths = context.paths
+    active = _read_active(paths, as_json)
+    if active is None:
+        _fail(
+            "This project has no built knowledge state, so there is nothing to export.",
+            remedy="Run `theurian migrate apply` first.",
+            as_json=as_json,
+            code=1,
+        )
+        return
+    # Refuse to export *from* canonical state this installation did not build
+    # (ADR-0004, SEC-7), which is the precondition `index build` takes for the
+    # same reason one artifact over: a doctored `.theurian/state/` shipped in a
+    # repository would otherwise be projected into a bundle that names Theurian
+    # as its producer and is handed to somebody else.
+    if not BuildProvenance.default().has_state(paths.root, str(active.state_hash)):
+        _fail(
+            "This project's canonical state was not built by this Theurian installation, so "
+            "a bundle exported from it cannot be trusted. It was delivered with the project "
+            "rather than rebuilt here from the Git-tracked migrations (ADR-0004).",
+            remedy=UNBUILT_STATE_REMEDY,
+            as_json=as_json,
+            code=1,
+        )
+        return
+    grant = _deployment_grant(as_json)
+    if grant is None:
+        return
+    database = _the_state_database(paths, active, as_json=as_json)
+    if database is None:
+        return
+
+    request = OkfExportRequest(
+        database=database,
+        output_directory=directory,
+        project_id=context.project_id.value,
+        visible_sensitivities=grant.sensitivities,
+    )
+    try:
+        report = OkfExporter(store_factory=SqliteCanonicalStore).export(request)
+    except OkfExportError as exc:
+        _fail(str(exc), remedy=exc.remedy, as_json=as_json, code=1)
+        return
+    except TheurianError as exc:
+        # The damaged-state family: an unreadable cell, a contended database, an
+        # item pointing at another item's revision. Each carries its own cure
+        # where it has one, and `EXIT_STATE_ERROR` is what this CLI means by "a
+        # knowledge-state problem the user must repair".
+        _fail(
+            str(exc),
+            remedy=exc.remedy or "Run `theurian doctor`.",
+            as_json=as_json,
+            code=EXIT_STATE_ERROR,
+        )
+        return
+    except OSError as exc:
+        # The type name and never the message: an `OSError`'s `str` appends the
+        # filename, and the remedy below already names the directory once.
+        #
+        # `ls -la` is offered only where there is something to list. The write can
+        # fail before the target is created at all -- a parent that is a regular
+        # file refuses the first `mkdir` with ENOTDIR -- and a cure that sent an
+        # operator to list a path that does not exist would answer them with a
+        # second error and say nothing about the first. `is_symlink` as well as
+        # `exists`, because a dangling link is at the path while `exists` follows
+        # it and answers False.
+        left = (
+            f"`ls -la {directory}` shows what this run left behind"
+            if directory.exists() or directory.is_symlink()
+            else f"nothing was left at {directory}"
+        )
+        _fail(
+            f"The bundle could not be written ({type(exc).__name__}), so it is incomplete "
+            f"or absent.",
+            remedy=(
+                f"Make sure {directory} is writable and has room, then export again into an "
+                f"empty or new directory -- {left}. A bundle is regenerated rather than "
+                f"repaired."
+            ),
+            as_json=as_json,
+            code=1,
+        )
+        return
+
+    _emit(report, as_json=as_json)
+
+
 def _service(context: CommandContext) -> OkfImportService:
     """Wire the service. The schema check is an adapter, injected (ADR-0003).
 
@@ -229,4 +391,48 @@ def _result_payload(result: OkfImportResult) -> dict[str, object]:
     }
 
 
-__all__ = ["okf_app"]
+def _the_state_database(paths: ProjectPaths, active: ActiveState, *, as_json: bool) -> Path | None:
+    """The canonical store this pointer names, or ``None`` once the refusal is published.
+
+    ``cli/index_commands.py``'s helper of the same name, for the same reason: the
+    filename comes out of a derived, git-ignored pointer, so the join goes through
+    the containment chokepoint rather than being built here (round two,
+    security H-1 on that command).
+    """
+    from theurian.cli.commands import _fail, _fail_a_path_escape  # noqa: PLC0415 - cycle
+
+    try:
+        return paths.state_database_named(active.database_filename)
+    except ProjectPathEscapeError as exc:
+        _fail_a_path_escape(exc, as_json=as_json)
+        return None
+    except TheurianError as exc:
+        _fail(str(exc), remedy=exc.remedy or UNBUILT_STATE_REMEDY, as_json=as_json, code=1)
+        return None
+
+
+def _deployment_grant(as_json: bool) -> AuthorizationGrant | None:
+    """What this deployment serves, or ``None`` once the refusal has been reported.
+
+    Resolved through the same :class:`StaticAuthorizationProvider` the daemon
+    composes and out of the same operator-owned data directory, so a bundle and
+    the deployment that produced it cannot expand one declared ceiling two
+    different ways -- ``cli/index_commands.py::_deployment_grant``'s reason, and
+    sharper here: an index row's text is in a file on this machine, while a
+    bundle's is in a file somebody else holds.
+
+    An unreadable profile refuses the export rather than defaulting, for the same
+    reason: a malformed ceiling that fell back to a default would put *more* into
+    a distributable copy than its operator asked for.
+    """
+    from theurian.cli.commands import _fail  # noqa: PLC0415 - cycle
+
+    try:
+        profile = load_serving_profile(default_data_dir())
+    except TheurianError as exc:
+        _fail(str(exc), remedy=exc.remedy or "Run `theurian doctor`.", as_json=as_json, code=1)
+        return None
+    return StaticAuthorizationProvider(profile).deployment_grant()
+
+
+__all__ = ["okf_app", "okf_export"]

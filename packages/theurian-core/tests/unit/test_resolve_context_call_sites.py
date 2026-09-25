@@ -188,6 +188,11 @@ RESOLVE_CONTEXT_CALL_SITES = {
     # function to `review build` and drives the doctored-tree refusal through the
     # real command.
     ("cli/review_commands.py", "review_build", "_require_project"),
+    # ADR-0037 slice S2, and the same shape as the two lines above it: `okf
+    # export` reaches `resolve_context` only through `_require_project`, so
+    # obligation 1 is the parametrised scan's. Obligation 2 is
+    # `test_okf_commands.py::test_an_unloadable_migration_is_reported_as_a_document`.
+    ("cli/okf_commands.py", "okf_export", "_require_project"),
     # ADR-0037 slice S3, the same shape as the two lines above it: `okf import`
     # reaches `resolve_context` only through `_require_project`, so obligation 1
     # is the parametrised scan's. Obligation 2 is

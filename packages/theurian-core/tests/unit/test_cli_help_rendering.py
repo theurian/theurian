@@ -105,10 +105,11 @@ _BOX: Final = re.compile(r"[─-╿]")
 #: 32 until ADR-0030 slice 2 added the ``review`` group and ``review ingest``,
 #: which are two paths and not one: the walk counts a group as a path of its own.
 #: 34 until slice 3 added ``review build``, which is one path -- the group it
-#: joins was already counted.
-#: 35 until ADR-0037 slice S3 added the ``okf`` group and ``okf import``, two
-#: paths for the same reason ``review``/``review ingest`` were.
-COMMAND_COUNT: Final = 37
+#: joins was already counted. 35 until ADR-0037 added the ``okf`` group with
+#: ``okf export`` (S2) and ``okf import`` (S3), three paths for the ``review``
+#: group's reason -- the group counts once, and each verb joining it counts on
+#: its own.
+COMMAND_COUNT: Final = 38
 
 #: Labels the walk must produce, one per branch it has. ``short_help`` and
 #: ``epilog`` are set by no command in the tree, so their branches are pinned by

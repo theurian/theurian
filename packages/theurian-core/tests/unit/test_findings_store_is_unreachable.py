@@ -427,10 +427,13 @@ _CLI_NON_SERVING_MODULES: frozenset[str] = frozenset(
         "index_commands.py",
         "index_status_report.py",
         "migration_pipeline.py",
-        # The gated OKF import (ADR-0037): drafts a proposal per bundle
-        # concept and hands off to the draft-only facade. It names no store
-        # and answers no caller with content -- its whole output is a
-        # proposal directory a human later reviews.
+        # `theurian okf export` and `theurian okf import` (ADR-0037). Export is
+        # `index_commands`' shape -- it publishes a path, three counts and a
+        # digest over the bundle's own files, never knowledge content -- and
+        # names no store but the canonical one it exports from. Import drafts a
+        # proposal per bundle concept and hands off to the draft-only facade;
+        # it names no store and answers no caller with content -- its whole
+        # output is a proposal directory a human later reviews.
         "okf_commands.py",
         "output.py",
         "propose_commands.py",
