@@ -1,0 +1,855 @@
+"""The OKF bundle export, over a real state database (ADR-0037 decisions 2, 3, 4, 7).
+
+Scoped rather than exhaustive: the two-corpora equality, the determinism battery
+and the mid-walk withdrawal pin are ADR-0037's owed S2 batteries and land beside
+this file. What is here is the shape of each rule -- the population, the relation
+gate, the sidecar split, the reserved-name escape, the index and manifest
+shapes, the digest, and the two refusals -- each driven through
+``SqliteCanonicalStore`` against a database ``write_transaction`` wrote, because
+every one of them is a property of what the store actually returns.
+
+The corpus is built row by row, and each row can set the **item**'s status and
+sensitivity independently of the ones its revision's metadata carries. That is
+not a test convenience: it is exactly what ``deprecateItem`` and
+``changeSensitivity`` leave behind, and reading the revision instead of the item
+is how an export would publish a row by the label it was authored under.
+"""
+
+from __future__ import annotations
+
+import hashlib
+from contextlib import closing
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
+from pathlib import Path, PurePosixPath
+from typing import Final
+
+import pytest
+import yaml
+
+from theurian.application.okf_bundle import GENERATED_BY, MANIFEST_NAME
+from theurian.application.okf_codec import EXPORT_VERSION
+from theurian.application.okf_export import OkfExporter, OkfExportError, OkfExportRequest
+from theurian.domain.enums import (
+    KnowledgeKind,
+    KnowledgeStatus,
+    RelationType,
+    Sensitivity,
+    TrustLevel,
+)
+from theurian.domain.errors import InvariantViolationError
+from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId
+from theurian.domain.knowledge import (
+    KnowledgeItem,
+    KnowledgeRelation,
+    KnowledgeRevision,
+    RevisionMetadata,
+    SourceAnchor,
+)
+from theurian.domain.project import Project
+from theurian.domain.values import MARKDOWN, MediaType, ValidityPeriod
+from theurian.infrastructure.sqlite.connection import (
+    create_database,
+    open_read_connection,
+    write_transaction,
+)
+from theurian.infrastructure.sqlite.store import SqliteCanonicalStore, SqliteWriter
+
+pytestmark = pytest.mark.integration
+
+PROJECT: Final = ProjectId("demo")
+NOW: Final = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
+ANCHOR: Final = SourceAnchor(
+    provider="git",
+    source_uri="git://demo/.theurian/knowledge/a.md",
+    repository="acme/demo",
+    commit_sha="a1b2c3d4" * 5,
+    file_path=".theurian/knowledge/a.md",
+    line_start=1,
+    line_end=10,
+)
+#: An anchor with no repository, commit, path or line range -- the shape an
+#: external source takes, and the one that proves the five optional anchor
+#: fields are omitted from `theurian_anchor` rather than emitted null.
+EXTERNAL_ANCHOR: Final = SourceAnchor(provider="confluence", source_uri="https://wiki/x")
+
+#: What the deployment in these tests serves.
+VISIBLE: Final = frozenset({Sensitivity.PUBLIC, Sensitivity.INTERNAL})
+
+OPENAPI_JSON: Final = MediaType("application/vnd.oai.openapi+json")
+#: A structured type `domain.proposal.body_extension` refuses and decision 7's
+#: rule sends to `.txt` -- the arm the first draft of that rule would have
+#: refused the whole corpus over.
+OPENAPI: Final = MediaType("application/vnd.oai.openapi")
+
+
+@dataclass(frozen=True, slots=True)
+class Row:
+    """One knowledge row, with the item's authority separable from its revision's."""
+
+    item_id: str
+    n: int
+    title: str = "A title"
+    body: str = "A body.\n"
+    content_type: MediaType = MARKDOWN
+    #: The **item**'s status and sensitivity: what the gate reads.
+    status: KnowledgeStatus = KnowledgeStatus.APPROVED
+    sensitivity: Sensitivity = Sensitivity.INTERNAL
+    #: What the *revision's metadata* carries, when it has moved apart from the
+    #: item's. ``None`` means the two agree.
+    revision_status: KnowledgeStatus | None = None
+    revision_sensitivity: Sensitivity | None = None
+    namespace: str = "backend"
+    labels: tuple[str, ...] = ()
+    valid_to: datetime | None = None
+    anchors: tuple[SourceAnchor, ...] = (ANCHOR,)
+
+    @property
+    def revision_id(self) -> RevisionId:
+        return RevisionId(f"01K1REV{self.n:03d}01234567890ABCDE")
+
+
+@dataclass(frozen=True, slots=True)
+class Edge:
+    """One relation to write."""
+
+    source: str
+    target: str
+    relation_type: RelationType = RelationType.RELATED_TO
+    note: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Bundle:
+    """A written bundle, read back off disk."""
+
+    root: Path
+    report: dict[str, object]
+    files: dict[str, str] = field(default_factory=dict)
+
+    def front_matter(self, name: str) -> dict[str, object]:
+        block = self.files[name].split("---\n")[1]
+        parsed = yaml.safe_load(block)
+        assert isinstance(parsed, dict)
+        return parsed
+
+    def body(self, name: str) -> str:
+        return self.files[name].split("---\n", 2)[2]
+
+    def relations(self, name: str) -> list[dict[str, object]]:
+        entries = self.front_matter(name)["theurian_relations"]
+        assert isinstance(entries, list)
+        return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def _project() -> Project:
+    return Project(
+        project_id=PROJECT,
+        root_path="/nonexistent/demo",  # a value, never opened
+        repository_url="https://example.com/demo",
+        default_branch="main",
+        knowledge_directory=PurePosixPath(".theurian"),
+        registered_at=NOW,
+    )
+
+
+def _revision(row: Row) -> KnowledgeRevision:
+    return KnowledgeRevision.create(
+        revision_id=row.revision_id,
+        item_id=ItemId(row.item_id),
+        project_id=PROJECT,
+        migration_id=MigrationId("01K1AAAAAA01234567890ABCDE"),
+        title=row.title,
+        body=row.body,
+        content_type=row.content_type,
+        metadata=RevisionMetadata(
+            kind=KnowledgeKind.ARCHITECTURE,
+            namespace=row.namespace,
+            status=row.revision_status or row.status,
+            trust_level=TrustLevel.REVIEWED,
+            sensitivity=row.revision_sensitivity or row.sensitivity,
+            owner="platform-team",
+            labels=row.labels,
+        ),
+        validity=ValidityPeriod(valid_from=NOW, valid_to=row.valid_to),
+        author="engineer@example.com",
+        # One second per row, so `generated.at` is distinguishable per concept
+        # and cannot accidentally equal an export-time instant.
+        created_at=NOW + timedelta(seconds=row.n),
+        source_anchors=row.anchors,
+    )
+
+
+def _item(row: Row, revision: KnowledgeRevision) -> KnowledgeItem:
+    pointing = KnowledgeItem(
+        item_id=ItemId(row.item_id),
+        project_id=PROJECT,
+        namespace=row.namespace,
+        kind=KnowledgeKind.ARCHITECTURE,
+        status=KnowledgeStatus.DRAFT,
+        current_revision_id=None,
+        owner="platform-team",
+        trust_level=TrustLevel.UNVERIFIED,
+        sensitivity=row.sensitivity,
+        validity=ValidityPeriod(valid_from=NOW),
+    ).with_revision(revision)
+    # `with_revision` adopts the revision's status; a `deprecateItem` or a
+    # `changeSensitivity` moves the item's own without writing a revision, which
+    # is what these two fields reproduce.
+    return replace(pointing, status=row.status, sensitivity=row.sensitivity)
+
+
+def corpus(tmp_path: Path, rows: list[Row], edges: list[Edge] | None = None) -> Path:
+    """A state database holding ``rows`` and ``edges``, written the real way."""
+    database = tmp_path / "state" / "theurian-state-okf.sqlite"
+    lock = tmp_path / "runtime" / "write.lock"
+    create_database(database, state_hash="a" * 64, engine_version=1)
+    with write_transaction(database, lock) as connection:
+        writer = SqliteWriter(connection)
+        writer.register_project(_project())
+        for row in rows:
+            revision = _revision(row)
+            writer.append_revision(revision)
+            writer.put_item(_item(row, revision))
+        for edge in edges or []:
+            writer.add_relation(
+                KnowledgeRelation(
+                    project_id=PROJECT,
+                    source_item_id=ItemId(edge.source),
+                    target_item_id=ItemId(edge.target),
+                    relation_type=edge.relation_type,
+                    created_at=NOW,
+                    note=edge.note,
+                )
+            )
+    return database
+
+
+def export(
+    database: Path,
+    target: Path,
+    *,
+    visible: frozenset[Sensitivity] = VISIBLE,
+) -> Bundle:
+    report = OkfExporter(store_factory=SqliteCanonicalStore).export(
+        OkfExportRequest(
+            database=database,
+            output_directory=target,
+            project_id=PROJECT.value,
+            visible_sensitivities=visible,
+        )
+    )
+    return Bundle(root=target, report=report, files=_read(target))
+
+
+def _read(root: Path) -> dict[str, str]:
+    return {
+        str(path.relative_to(root)): path.read_text(encoding="utf-8")
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def bundle_of(tmp_path: Path, rows: list[Row], edges: list[Edge] | None = None) -> Bundle:
+    return export(corpus(tmp_path, rows, edges), tmp_path / "bundle")
+
+
+# -- The population (decision 3) --------------------------------------------
+
+
+def test_only_approved_in_ceiling_rows_become_concepts(tmp_path: Path) -> None:
+    bundle = bundle_of(
+        tmp_path,
+        [
+            Row("keeper", 1),
+            Row("a-draft", 2, status=KnowledgeStatus.DRAFT),
+            Row("retired", 3, status=KnowledgeStatus.DEPRECATED),
+            Row("rejected-one", 4, status=KnowledgeStatus.REJECTED),
+            Row("too-secret", 5, sensitivity=Sensitivity.CONFIDENTIAL),
+        ],
+    )
+
+    assert sorted(name for name in bundle.files if name.endswith(".md")) == [
+        "index.md",
+        "keeper.md",
+        MANIFEST_NAME,
+    ]
+    assert bundle.report["concepts"] == 1
+
+
+def test_the_gate_reads_the_item_and_never_the_revisions_metadata(tmp_path: Path) -> None:
+    """`deprecateItem` and `changeSensitivity` move the item alone (ADR-0005).
+
+    Both directions, because reading the wrong one fails both ways: a row
+    retired or reclassified after its last revision would be exported on the
+    label it was authored under, and a row *approved* after a draft revision
+    would be left out of a bundle that claims to hold what the deployment
+    serves.
+    """
+    bundle = bundle_of(
+        tmp_path,
+        [
+            Row("retired-since", 1, status=KnowledgeStatus.DEPRECATED),
+            Row("raised-since", 2, sensitivity=Sensitivity.CONFIDENTIAL),
+            Row("approved-since", 3, revision_status=KnowledgeStatus.DRAFT),
+            Row("lowered-since", 4, revision_sensitivity=Sensitivity.CONFIDENTIAL),
+        ],
+    )
+
+    assert sorted(name for name in bundle.files if name.endswith(".md")) == [
+        "approved-since.md",
+        "index.md",
+        "lowered-since.md",
+        MANIFEST_NAME,
+    ]
+    # And the published labels are the item's, not the revision's.
+    assert bundle.front_matter("approved-since.md")["theurian_status"] == "approved"
+    assert bundle.front_matter("lowered-since.md")["theurian_sensitivity"] == "internal"
+
+
+def test_an_item_with_no_current_revision_projects_nothing(tmp_path: Path) -> None:
+    """It is still in the relation gate's population, but there is no body to write."""
+    database = corpus(tmp_path, [Row("has-one", 1)])
+    lock = tmp_path / "runtime" / "write.lock"
+    pointerless = Row("has-none", 2)
+    with write_transaction(database, lock) as connection:
+        writer = SqliteWriter(connection)
+        writer.put_item(
+            replace(
+                _item(pointerless, _revision(pointerless)),
+                current_revision_id=None,
+            )
+        )
+
+    bundle = export(database, tmp_path / "bundle")
+
+    assert "has-none.md" not in bundle.files
+    assert bundle.report["concepts"] == 1
+
+
+# -- Paths, reserved names and sidecars (decision 7) -----------------------
+
+
+def test_the_path_comes_from_the_item_id_and_never_from_the_namespace(tmp_path: Path) -> None:
+    """`namespace` is free text where `../` is spellable; an `ItemId` is not.
+
+    The pin ADR-0037's Compliance section asks for: a crafted `namespace` must
+    not reach a path component, which is why the derivation reads the id's own
+    dotted segments (``domain.proposal.body_relative_path``'s reason, one
+    artifact over).
+    """
+    bundle = bundle_of(
+        tmp_path,
+        [Row("architecture.auth.policy", 1, namespace="../../../etc/passwd")],
+    )
+
+    assert "architecture/auth/policy.md" in bundle.files
+    assert bundle.front_matter("architecture/auth/policy.md")["theurian_namespace"] == (
+        "../../../etc/passwd"
+    )
+    assert [name for name in bundle.files if "etc" in name] == []
+
+
+@pytest.mark.parametrize(
+    ("item_id", "expected"),
+    [
+        ("index", "index_item.md"),
+        ("log", "log_item.md"),
+        ("theurian-bundle", "theurian-bundle_item.md"),
+        ("architecture.index", "architecture/index_item.md"),
+        ("architecture.log", "architecture/log_item.md"),
+        # Reserved at the bundle root only: there is no manifest at this level
+        # for it to displace, so renaming it would be a rename with no collision
+        # behind it (decision 7's positional rule).
+        ("architecture.theurian-bundle", "architecture/theurian-bundle.md"),
+    ],
+)
+def test_a_reserved_leaf_escapes_exactly_where_the_name_means_something(
+    tmp_path: Path, item_id: str, expected: str
+) -> None:
+    bundle = bundle_of(tmp_path, [Row(item_id, 1)])
+
+    assert expected in bundle.files
+    # Nothing the escape displaced went missing, and the id is unchanged.
+    assert "index.md" in bundle.files
+    assert MANIFEST_NAME in bundle.files
+    assert bundle.front_matter(expected)["theurian_item_id"] == item_id
+
+
+@pytest.mark.parametrize(
+    ("content_type", "extension"),
+    [
+        (MediaType("application/json"), ".json"),
+        (MediaType("application/schema+json"), ".json"),
+        (MediaType("application/yaml"), ".yaml"),
+        (MediaType("text/x-yaml"), ".yaml"),
+        (OPENAPI, ".txt"),
+        (MediaType("text/plain"), ".txt"),
+    ],
+)
+def test_a_non_markdown_body_becomes_a_sidecar_rather_than_a_refusal(
+    tmp_path: Path, content_type: MediaType, extension: str
+) -> None:
+    """A gate-cleared row is never refused, whatever its media type (decision 7).
+
+    ``OPENAPI`` is the arm that matters: ``domain.proposal.body_extension``
+    refuses it, and the first draft of this rule would have denied the whole
+    corpus its bundle over one hand-authored row.
+    """
+    body = '{"not": "markdown"}'
+    bundle = bundle_of(tmp_path, [Row("structured", 1, body=body, content_type=content_type)])
+
+    sidecar = f"structured{extension}"
+    front_matter = bundle.front_matter("structured.md")
+    assert bundle.files[sidecar] == body, "the sidecar is not the snapshot's body"
+    assert front_matter["theurian_body_file"] == sidecar
+    assert front_matter["theurian_content_type"] == content_type.value
+    # The link's text *and* its target are the same derived filename, which is
+    # `theurian_body_file`'s own derivation and not a second one.
+    assert f"[{sidecar}]({sidecar})" in bundle.body("structured.md")
+    assert bundle.report["sidecars"] == 1
+
+
+def test_a_sidecar_holds_the_body_column_byte_for_byte(tmp_path: Path) -> None:
+    """No added newline, no normalisation -- the bytes the revision row holds.
+
+    Compared against the column itself rather than against the literal above,
+    so the claim is about the snapshot and not about the fixture.
+    """
+    body = '{"trailing": "no newline"}'
+    database = corpus(tmp_path, [Row("structured", 1, body=body, content_type=OPENAPI_JSON)])
+    bundle = export(database, tmp_path / "bundle")
+
+    with closing(open_read_connection(database)) as probe:
+        stored = probe.execute("SELECT body FROM knowledge_revisions").fetchone()["body"]
+
+    assert (bundle.root / "structured.json").read_bytes() == stored.encode("utf-8")
+
+
+def test_a_markdown_body_is_embedded_and_no_sidecar_is_written(tmp_path: Path) -> None:
+    bundle = bundle_of(tmp_path, [Row("prose", 1, body="# Heading\n\nText.\n")])
+
+    assert [name for name in bundle.files if not name.endswith(".md")] == []
+    assert "# Heading\n\nText." in bundle.body("prose.md")
+    assert "theurian_body_file" not in bundle.front_matter("prose.md")
+
+
+# -- Relations (decision 4) ------------------------------------------------
+
+
+def test_a_relation_is_exported_only_when_both_endpoints_cleared_the_gate(
+    tmp_path: Path,
+) -> None:
+    """The both-endpoints gate, in both orientations and with a dangling edge.
+
+    The outgoing edge to a withheld item and the incoming edge from one are the
+    same disclosure: an edge's target id and its `note` are published whether or
+    not the body is, and ``list_relations`` answers in the stored orientation for
+    a non-invertible type -- so a gate on the target alone would publish the
+    incoming one.
+    """
+    bundle = bundle_of(
+        tmp_path,
+        [
+            Row("visible-one", 1),
+            Row("visible-two", 2),
+            Row("hidden", 3, sensitivity=Sensitivity.CONFIDENTIAL),
+        ],
+        [
+            Edge("visible-one", "visible-two", note="a published reason"),
+            Edge("visible-one", "hidden", note="REJECTED BECAUSE hidden holds sk-live-9f2a"),
+            Edge("hidden", "visible-two", note="an incoming reason"),
+            Edge("visible-one", "never-existed", note="a dangling reason"),
+        ],
+    )
+
+    for name in ("visible-one.md", "visible-two.md"):
+        targets = [entry["target"] for entry in bundle.relations(name)]
+        assert "hidden" not in targets
+        assert "never-existed" not in targets
+    whole = "".join(bundle.files.values())
+    assert "sk-live-9f2a" not in whole
+    assert "an incoming reason" not in whole
+    assert "a dangling reason" not in whole
+    assert "a published reason" in whole
+
+
+def test_the_relations_section_renders_the_served_triple_in_order(tmp_path: Path) -> None:
+    """Grouped by type, ordered by `(type, target)`, linked bundle-absolutely.
+
+    The link text is the target's **item id** -- the triple's own `target` --
+    so the section draws on no second row's fields, and the type is conveyed by
+    the heading it sits under (§6.1).
+    """
+    bundle = bundle_of(
+        tmp_path,
+        [Row("subject", 1), Row("zeta", 2), Row("alpha", 3), Row("architecture.index", 4)],
+        [
+            Edge("subject", "zeta", RelationType.DEPENDS_ON),
+            Edge("subject", "alpha", RelationType.DEPENDS_ON),
+            Edge("subject", "architecture.index", RelationType.SUPERSEDES),
+        ],
+    )
+
+    body = bundle.body("subject.md")
+    assert body.split("## Relations\n")[1] == (
+        "\n### depends_on\n\n"
+        "* [alpha](/alpha.md)\n"
+        "* [zeta](/zeta.md)\n"
+        "\n### supersedes\n\n"
+        # The far end's path is the escaped one the bundle actually wrote, which
+        # is why one derivation answers for both ends of an edge.
+        "* [architecture.index](/architecture/index_item.md)\n"
+    )
+    assert [(entry["type"], entry["target"]) for entry in bundle.relations("subject.md")] == [
+        ("depends_on", "alpha"),
+        ("depends_on", "zeta"),
+        ("supersedes", "architecture.index"),
+    ]
+
+
+def test_a_note_cannot_forge_a_heading_on_any_of_its_lines(tmp_path: Path) -> None:
+    """Decision 2's Markdown half, over the whole value rather than its first line.
+
+    The schema bounds a `note` by length alone, so a newline is spellable in it,
+    and the renderer gives each of the note's lines a line start of its own. A
+    run of `#` opening one of them is an ATX heading inside that list item -- a
+    section the note invented, in a document whose headings a consumer reads as
+    the exporter's own.
+    """
+    bundle = bundle_of(
+        tmp_path,
+        [Row("subject", 1), Row("other", 2)],
+        [Edge("subject", "other", note="## Forged\n\n### Second\ntail")],
+    )
+
+    body = bundle.body("subject.md")
+    assert body.count("## Relations") == 1
+    assert "\n## Forged" not in body
+    assert "\n### Second" not in body
+    assert "\\## Forged" in body
+    assert "\\### Second" in body
+    # The heading structure a consumer reads is the exporter's own, whatever the
+    # note said: one section heading, one type heading.
+    assert [line for line in body.splitlines() if line.startswith("#")] == [
+        "## Relations",
+        "### related_to",
+    ]
+
+
+def test_a_title_cannot_close_an_index_entrys_link_early(tmp_path: Path) -> None:
+    """The other structural site decision 2 names, over the codec's whole inline set.
+
+    `]` followed by `(` closes the label early and opens an attacker-chosen
+    destination; `<` opens an autolink or raw inline HTML, and a backtick opens a
+    code span that runs to the next one and swallows the entry's own
+    `](destination)`. Every member is escaped at this site, so the link a
+    consumer follows is the one the exporter wrote.
+    """
+    hostile = "Policy [see](http://evil) ]( oops <img src=x> `code`"
+    bundle = bundle_of(tmp_path, [Row("subject", 1, title=hostile)])
+
+    entries = [line for line in bundle.files["index.md"].splitlines() if line.startswith("* ")]
+    assert entries == [
+        "* [Policy \\[see\\](http://evil) \\]( oops \\<img src=x\\> \\`code\\`](/subject.md)",
+        "* [Theurian Bundle](/theurian-bundle.md)",
+    ]
+
+
+# -- Index files and the manifest (decision 2) -----------------------------
+
+
+def test_every_directory_gets_an_index_even_with_no_concept_of_its_own(
+    tmp_path: Path,
+) -> None:
+    """The narrower rule breaks the walk it exists to support (decision 2).
+
+    `architecture/` holds nothing but a subdirectory here, and skipping its
+    index would leave everything beneath it unreachable by following indexes.
+    """
+    bundle = bundle_of(tmp_path, [Row("architecture.auth.session.policy", 1)])
+
+    assert sorted(name for name in bundle.files if name.endswith("index.md")) == [
+        "architecture/auth/index.md",
+        "architecture/auth/session/index.md",
+        "architecture/index.md",
+        "index.md",
+    ]
+    assert bundle.report["indexes"] == 4
+    assert bundle.files["architecture/index.md"].splitlines()[:3] == [
+        "# architecture",
+        "",
+        "* [auth](/architecture/auth/)",
+    ]
+
+
+def test_the_root_index_lists_its_own_files_the_manifest_and_its_subdirectories(
+    tmp_path: Path,
+) -> None:
+    """One section, one list, path-ordered bytewise, no descriptions.
+
+    One total order over concept documents and subdirectories alike, which is
+    what decision 2's determinism pin needs -- and `/alpha.md` ahead of
+    `/architecture/` is that order rather than files-then-directories: the fifth
+    byte decides it, `l` before `r`.
+    """
+    bundle = bundle_of(
+        tmp_path,
+        [Row("zeta", 1, title="Zeta"), Row("architecture.policy", 2), Row("alpha", 3, title="Al")],
+    )
+
+    assert bundle.files["index.md"] == (
+        "---\nokf_version: '0.2'\n---\n"
+        "\n"
+        "# Theurian Bundle\n"
+        "\n"
+        "* [Al](/alpha.md)\n"
+        "* [architecture](/architecture/)\n"
+        "* [Theurian Bundle](/theurian-bundle.md)\n"
+        "* [Zeta](/zeta.md)\n"
+    )
+
+
+def test_a_non_root_index_carries_no_front_matter(tmp_path: Path) -> None:
+    """§8 permits an index no front matter, with the root's `okf_version` the one
+    exception (decision 2)."""
+    bundle = bundle_of(tmp_path, [Row("architecture.policy", 1)])
+
+    assert bundle.files["architecture/index.md"].startswith("# architecture\n")
+    assert "okf_version" not in bundle.files["architecture/index.md"]
+
+
+def test_a_sidecar_is_not_an_index_entry(tmp_path: Path) -> None:
+    """A sidecar is not a concept document (§3.1), so no index lists one."""
+    bundle = bundle_of(tmp_path, [Row("structured", 1, content_type=OPENAPI_JSON, body="{}")])
+
+    assert "structured.json" in bundle.files
+    assert "structured.json" not in bundle.files["index.md"]
+
+
+def test_the_manifest_carries_the_holder_notice_and_two_constants(tmp_path: Path) -> None:
+    """The one control in the purge residual that travels with the artifact.
+
+    Its three obligations are what the notice is mandatory *for*, so each is
+    asserted rather than the paragraph being compared whole: a point-in-time
+    Index-class copy, no later withdrawal reaching it, and regeneration rather
+    than trust.
+    """
+    bundle = bundle_of(tmp_path, [Row("keeper", 1)])
+
+    front_matter = bundle.front_matter(MANIFEST_NAME)
+    assert front_matter == {
+        "type": "Theurian Bundle",
+        "theurian_export_version": EXPORT_VERSION,
+        "theurian_bundle_digest": bundle.report["bundleDigest"],
+    }
+    body = bundle.body(MANIFEST_NAME)
+    assert "point-in-time" in body
+    assert "Index-class" in body
+    assert "withdrawal" in body
+    assert "secret" in body
+    assert "Regenerate" in body
+    # No deployment is named, and no `generated` block exists to carry an instant
+    # the manifest does not have.
+    assert "demo" not in body
+    assert "generated" not in front_matter
+
+
+def test_the_bundle_digest_covers_every_file_but_the_manifest(tmp_path: Path) -> None:
+    """Recomputed from the tree on disk, in decision 2's stated construction."""
+    bundle = bundle_of(
+        tmp_path,
+        [Row("architecture.policy", 1), Row("structured", 2, content_type=OPENAPI_JSON, body="{}")],
+    )
+
+    covered = {name: text for name, text in bundle.files.items() if name != MANIFEST_NAME}
+    digest = hashlib.sha256()
+    for name in sorted(covered, key=lambda each: each.encode("utf-8")):
+        digest.update(f"{name}\n{hashlib.sha256(covered[name].encode()).hexdigest()}\n".encode())
+
+    assert bundle.report["bundleDigest"] == digest.hexdigest()
+    assert len(covered) == 5, sorted(covered)
+
+
+def test_no_byte_of_the_bundle_carries_the_moment_it_was_exported(tmp_path: Path) -> None:
+    """`generated.at` is the revision's own instant (decision 2).
+
+    Asserted against the revision's `created_at` *and* against the absence of
+    the current year-month-day-hour, so a clock reaching any other byte fails
+    here too rather than only the one field being checked.
+    """
+    row = Row("keeper", 1)
+    bundle = bundle_of(tmp_path, [row])
+
+    generated = bundle.front_matter("keeper.md")["generated"]
+    assert generated == {
+        "by": GENERATED_BY,
+        "at": (NOW + timedelta(seconds=1)).isoformat(),
+    }
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    assert today not in "".join(bundle.files.values()) or today == NOW.strftime("%Y-%m-%d")
+
+
+def test_the_report_names_the_bundle_its_counts_and_its_digest(tmp_path: Path) -> None:
+    bundle = bundle_of(
+        tmp_path,
+        [Row("architecture.policy", 1), Row("structured", 2, content_type=OPENAPI_JSON, body="{}")],
+    )
+
+    assert bundle.report == {
+        "bundlePath": str(bundle.root),
+        "concepts": 2,
+        "sidecars": 1,
+        "indexes": 2,
+        "bundleDigest": bundle.front_matter(MANIFEST_NAME)["theurian_bundle_digest"],
+    }
+
+
+# -- Front matter (decision 7) ---------------------------------------------
+
+
+def test_the_projection_emits_decision_sevens_keys_for_one_row(tmp_path: Path) -> None:
+    """One whole front-matter block, so a key appearing or vanishing is caught.
+
+    Two anchors, because the optional five are omitted rather than emitted null:
+    the external one's `theurian_anchor` is its `provider` alone, and asserting
+    the block whole is what catches a null creeping back in.
+    """
+    bundle = bundle_of(
+        tmp_path,
+        [
+            Row(
+                "architecture.policy",
+                1,
+                title="Policy",
+                labels=("security", "auth"),
+                valid_to=NOW + timedelta(days=30),
+                anchors=(ANCHOR, EXTERNAL_ANCHOR),
+            )
+        ],
+    )
+
+    assert bundle.front_matter("architecture/policy.md") == {
+        "type": "architecture",
+        "title": "Policy",
+        "tags": ["security", "auth"],
+        "status": "stable",
+        "stale_after": (NOW + timedelta(days=30)).isoformat(),
+        "generated": {"by": GENERATED_BY, "at": (NOW + timedelta(seconds=1)).isoformat()},
+        "sources": [
+            {
+                "resource": ANCHOR.source_uri,
+                "theurian_anchor": {
+                    "provider": "git",
+                    "repository": "acme/demo",
+                    "commit_sha": ANCHOR.commit_sha,
+                    "file_path": ANCHOR.file_path,
+                    "line_start": 1,
+                    "line_end": 10,
+                },
+            },
+            {
+                "resource": EXTERNAL_ANCHOR.source_uri,
+                "theurian_anchor": {"provider": "confluence"},
+            },
+        ],
+        "theurian_export_version": EXPORT_VERSION,
+        "theurian_item_id": "architecture.policy",
+        "theurian_revision_id": "01K1REV00101234567890ABCDE",
+        "theurian_status": "approved",
+        "theurian_namespace": "backend",
+        "theurian_owner": "platform-team",
+        "theurian_trust_level": "reviewed",
+        "theurian_sensitivity": "internal",
+        "theurian_content_type": "text/markdown",
+        "theurian_relations": [],
+    }
+
+
+def test_stale_after_is_absent_when_the_revision_records_no_valid_to(tmp_path: Path) -> None:
+    bundle = bundle_of(tmp_path, [Row("keeper", 1)])
+
+    assert "stale_after" not in bundle.front_matter("keeper.md")
+
+
+def test_a_title_carrying_a_newline_forges_no_front_matter_key(tmp_path: Path) -> None:
+    """Decision 2's YAML half: the one with a governance consequence.
+
+    A title ending in a line break followed by `theurian_sensitivity: public`
+    would otherwise assert its own sensitivity label to every consumer that
+    reads front matter.
+    """
+    hostile = "Policy\ntheurian_sensitivity: public"
+    bundle = bundle_of(tmp_path, [Row("keeper", 1, title=hostile)])
+
+    front_matter = bundle.front_matter("keeper.md")
+    assert front_matter["title"] == hostile
+    assert front_matter["theurian_sensitivity"] == "internal"
+
+
+# -- Refusals --------------------------------------------------------------
+
+
+def test_a_target_that_already_holds_something_is_refused_with_a_cure(tmp_path: Path) -> None:
+    """A silent merge would leave members of the old export behind.
+
+    The cure names a runnable command and the listing that says what is there,
+    and it urges no deletion: the target is the operator's own directory.
+    """
+    database = corpus(tmp_path, [Row("keeper", 1)])
+    target = tmp_path / "bundle"
+    target.mkdir()
+    (target / "something-of-mine.md").write_text("mine", encoding="utf-8")
+
+    with pytest.raises(OkfExportError) as caught:
+        export(database, target)
+
+    assert "not empty" in str(caught.value)
+    assert "theurian okf export" in caught.value.remedy
+    assert f"ls -la {target}" in caught.value.remedy
+    assert "rm " not in caught.value.remedy
+    # Nothing was written, and what was there is untouched.
+    assert sorted(path.name for path in target.iterdir()) == ["something-of-mine.md"]
+
+
+def test_a_target_that_is_not_a_directory_is_refused_without_writing_over_it(
+    tmp_path: Path,
+) -> None:
+    database = corpus(tmp_path, [Row("keeper", 1)])
+    target = tmp_path / "a-file"
+    target.write_text("bytes that are not a bundle", encoding="utf-8")
+
+    with pytest.raises(OkfExportError) as caught:
+        export(database, target)
+
+    assert "not a directory" in str(caught.value)
+    assert "Move or rename" in caught.value.remedy
+    assert target.read_text(encoding="utf-8") == "bytes that are not a bundle"
+
+
+def test_an_item_pointing_at_another_items_revision_refuses_the_whole_export(
+    tmp_path: Path,
+) -> None:
+    """Refused rather than skipped, as `IndexBuilder._build` refuses it.
+
+    The pointer is type-valid, satisfies the composite foreign key and moves
+    neither #30 integrity count, so nothing upstream catches it -- and followed
+    here it writes one row's title and body into another row's concept document,
+    under that row's approved status and sensitivity. The message names no id:
+    the id it would carry is the withheld row's.
+    """
+    rows = [Row("keeper", 1), Row("other", 2)]
+    database = corpus(tmp_path, rows)
+    lock = tmp_path / "runtime" / "write.lock"
+    with write_transaction(database, lock) as connection:
+        connection.execute(
+            "UPDATE knowledge_items SET current_revision_id = ? WHERE item_id = ?",
+            (rows[1].revision_id.value, "keeper"),
+        )
+
+    with pytest.raises(InvariantViolationError) as caught:
+        export(database, tmp_path / "bundle")
+
+    assert "belongs to a different item" in str(caught.value)
+    assert "keeper" not in str(caught.value)
+    assert not (tmp_path / "bundle").exists(), "a refused walk wrote part of a bundle"

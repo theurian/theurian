@@ -631,8 +631,14 @@ def _anchor_secrets(
     return tuple(findings)
 
 
-def _both_ends_visible(relation: KnowledgeRelation, visible: Container[str]) -> bool:
+def both_ends_visible(relation: KnowledgeRelation, visible: Container[str]) -> bool:
     """Whether this deployment would publish ``relation`` at all.
+
+    Public since ADR-0037's export asks the same question of its own walk
+    (``application/okf_export.py``), so the two derived-artifact builders share
+    one spelling of the gate rather than each keeping a copy -- the reason
+    :func:`_anchor_secrets` imports ``AUTHORED_ANCHOR_FIELDS`` instead of
+    restating the field set.
 
     The rule ``mcp.tools._relation_is_visible`` enforces on the serve side, asked
     of the set the build's own walk produced rather than of a second read: an
@@ -705,7 +711,7 @@ def _relation_secrets(
         published = [
             relation
             for relation in store.list_relations(context, ItemId(item_id))
-            if _both_ends_visible(relation, visible)
+            if both_ends_visible(relation, visible)
         ]
         for index, relation in enumerate(published):
             if relation.note is None:
@@ -724,4 +730,10 @@ def _relation_secrets(
     return tuple(findings)
 
 
-__all__ = ["EMBED_BATCH", "IndexBuilder", "IndexRequest", "IndexedSecretFinding"]
+__all__ = [
+    "EMBED_BATCH",
+    "IndexBuilder",
+    "IndexRequest",
+    "IndexedSecretFinding",
+    "both_ends_visible",
+]

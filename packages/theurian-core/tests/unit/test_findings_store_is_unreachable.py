@@ -362,6 +362,10 @@ _APPLICATION_NON_SERVING_MODULES: frozenset[str] = frozenset(
         "migration_alias_guards.py",
         "migration_body_guards.py",
         "migration_engine.py",
+        # Every byte of an exported OKF bundle (ADR-0037 decision 2). Pure: it
+        # takes walked rows and returns path-to-contents, reaching no store, no
+        # clock and no filesystem.
+        "okf_bundle.py",
         # The shared OKF front-matter codec (ADR-0037): pure encode/decode
         # helpers for the export's derived Index-class artifact and the
         # import's decode step. No I/O, no store, and nothing here answers a
@@ -369,6 +373,13 @@ _APPLICATION_NON_SERVING_MODULES: frozenset[str] = frozenset(
         # rebuild, and the import path is a proposal-drafting one, neither a
         # serving one.
         "okf_codec.py",
+        # The OKF export (ADR-0037): it reads canonical state through an injected
+        # session and writes a derived Index-class bundle, which is
+        # `index_builder`'s shape -- a maintenance rebuild of a derived artifact,
+        # not a serving path. It names no store at all, and the findings one is a
+        # different arm entirely (`Review-Finding:` trailers out of local git
+        # history, ADR-0029), which nothing here reads.
+        "okf_export.py",
         # The gated OKF import (ADR-0037 decisions 5, 6): decodes a bundle and
         # hands the result to the draft-only facade. It names no store at all
         # and answers no caller with knowledge content -- its whole output is
