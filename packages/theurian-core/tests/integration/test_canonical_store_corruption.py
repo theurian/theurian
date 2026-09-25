@@ -607,6 +607,9 @@ CLI_NOT_SWEPT: Final = {
     "public ref this corpus has no reason to carry",
     "ingest": "writes migration files, which moves the state hash and so the database",
     "init": "writes .theurian/ and appends to .gitignore in the working directory",
+    "okf import": "writes a fresh proposal directory per bundle concept on every "
+    "invocation, the same reason as `propose`, and needs a bundle directory and six "
+    "required options this corpus has no reason to carry",
     "project register": "rewrites the registry the corpus was built from",
     "project unregister": "deletes the registration every other command resolves",
     "propose": "writes a fresh proposal directory on every invocation, and needs eleven "

@@ -544,6 +544,7 @@ REACHED_BY: Final = {
     "cli.propose_commands::_draft": "propose",
     "cli.review_commands::review_ingest": "review ingest",
     "cli.review_commands::review_build": "review build",
+    "cli.okf_commands::okf_import": "okf import",
 }
 
 #: A valid `ProposalId` naming nothing, so `propose accept` gets past its own
@@ -579,6 +580,21 @@ EXTRA_ARGS: Final[dict[str, tuple[str, ...]]] = {
         "--body-file",
         "BODY.md",
         "--authored-here",
+        "--agent-id",
+        "agent",
+        "--task-id",
+        "task",
+        "--model",
+        "model",
+        "--reasoning",
+        "because",
+    ),
+    "okf import": (
+        "BUNDLE",
+        "--owner",
+        "team",
+        "--author",
+        "author@example.com",
         "--agent-id",
         "agent",
         "--task-id",

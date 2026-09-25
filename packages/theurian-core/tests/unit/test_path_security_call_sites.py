@@ -71,8 +71,8 @@ class _CallSite(NamedTuple):
 
 
 #: Every ``read_source_file`` call in the shipped package, with the category its
-#: argument puts it in. Eight as of 2026-09-04; the test below re-derives the
-#: population rather than trusting that number.
+#: argument puts it in. Ten as of 2026-09-25 (ADR-0037 slice S3 added two); the
+#: test below re-derives the population rather than trusting that number.
 _CALL_SITES: Final = (
     _CallSite(
         module="application/ingestion_service.py",
@@ -83,6 +83,28 @@ _CALL_SITES: Final = (
             "the relative path is `path.relative_to(project_root)` over an `rglob` of "
             "the knowledge tree, so its components are the tree's own and a link among "
             "them is still there to be seen"
+        ),
+    ),
+    _CallSite(
+        module="application/okf_import.py",
+        function="_decode_concept_file",
+        form=REQUESTED,
+        guarded_at="",
+        why=(
+            "the relative path is `path.relative_to(root).as_posix()` over an `rglob` of "
+            "the bundle, `_ingest_one`'s shape: its components are the tree's own and a "
+            "link among them is still there to be seen"
+        ),
+    ),
+    _CallSite(
+        module="application/okf_import.py",
+        function="_resolve_body",
+        form=REQUESTED,
+        guarded_at="",
+        why=(
+            "the relative path is `concept.theurian_body_file`, the literal string a "
+            "bundle's front matter wrote and never resolved before this call -- the "
+            "route walk is exactly what proves it stays inside the bundle root"
         ),
     ),
     _CallSite(

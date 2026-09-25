@@ -188,6 +188,13 @@ RESOLVE_CONTEXT_CALL_SITES = {
     # function to `review build` and drives the doctored-tree refusal through the
     # real command.
     ("cli/review_commands.py", "review_build", "_require_project"),
+    # ADR-0037 slice S3, the same shape as the two lines above it: `okf import`
+    # reaches `resolve_context` only through `_require_project`, so obligation 1
+    # is the parametrised scan's. Obligation 2 is
+    # `test_escaping_knowledge_dir_grading.py`, whose `REACHED_BY` now maps this
+    # function to `okf import` and drives the doctored-tree refusal through the
+    # real command.
+    ("cli/okf_commands.py", "okf_import", "_require_project"),
 }
 
 #: The live scan, computed once at collection time rather than pinned by

@@ -9,8 +9,8 @@ through ``theurian propose accept``, a pull request, and a human merge
 (ADR-0013), unchanged.
 
 Shared with a later slice's export verb: the sub-app is intentionally minimal
-and generic, so ``theurian okf export`` adds a sibling command here rather
-than a second module.
+and generic, so an ``export`` command joins ``okf`` here rather than starting
+a second module.
 """
 
 from __future__ import annotations
