@@ -1577,6 +1577,21 @@ def test_a_vanilla_okf_concept_with_no_theurian_keys_decodes_okf_fields_and_noth
     assert decoded.theurian_relations == ()
 
 
+def test_a_boolean_export_version_decodes_as_absent_not_as_the_integer_it_coerces_to() -> None:
+    """`_optional_int`'s own guard: `bool` is an `int` subclass in Python, so
+    `theurian_export_version: true` must decode as absent, not as `1` --
+    and the concept still decodes rather than refusing.
+    """
+    document = (
+        "---\ntype: architecture\ntitle: T\nstatus: stable\ntheurian_export_version: true\n---\n"
+        + _BODY
+    )
+
+    decoded = _decoded(document).front_matter
+
+    assert decoded.theurian_export_version is None
+
+
 def test_a_vanilla_concepts_body_decodes_unchanged() -> None:
     document = "---\ntype: architecture\ntitle: A vanilla concept\nstatus: stable\n---\n" + _BODY
 

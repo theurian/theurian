@@ -216,6 +216,31 @@ body
     )
 
 
+# -- INV-8's identity anchor carries its own concept path (round-1 pin) ----------------------
+
+
+def test_the_bundle_identity_anchors_file_path_is_the_concepts_own_bundle_relative_path(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    """`_bundle_identity_anchor` sets `file_path`, not just `source_uri` --
+    read from the drafted migration's own bytes, since that is what a
+    reviewer and a future consumer actually see, not the in-memory
+    `SourceAnchor`.
+    """
+    bundle = tmp_path / "bundle"
+    _write(
+        bundle,
+        "architecture/auth-policy.md",
+        "---\ntype: decision\ntitle: T\nstatus: stable\n---\n\nbody\n",
+    )
+
+    result = _service(paths).import_bundle(_request(bundle))
+
+    anchors = _source_anchors_of(result.concepts_admitted[0].proposal.directory)
+    identity_anchor = next(a for a in anchors if a["provider"] == "okf-bundle")
+    assert identity_anchor["filePath"] == "architecture/auth-policy.md"
+
+
 # -- The descriptor grammar's whole admitted/excluded population (round-1 pin) --------------
 
 

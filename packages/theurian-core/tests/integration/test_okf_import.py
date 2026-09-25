@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import os
 import sys
-from collections.abc import Collection, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping
 from pathlib import Path
 
 import pytest
@@ -754,3 +754,65 @@ def test_two_concepts_colliding_on_one_item_id_admit_only_the_first_in_walk_orde
     [refusal] = result.refusals
     assert refusal.key == "concept-b.md", "the second sighting in bytewise walk order refuses"
     assert "architecture.duplicate" in refusal.literal
+
+
+def test_the_walk_order_never_decides_which_duplicate_wins(
+    tmp_path: Path, paths: ProjectPaths, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_walk_concept_paths` sorts every candidate bytewise before
+    `_admit_concepts` ever sees it, so the test above's outcome cannot be
+    coincidence with a real directory's own listing order: this forces
+    `os.walk`'s own traversal backwards, through its own seam, and the
+    bytewise-first path must still be the one that wins.
+    """
+    bundle = tmp_path / "bundle"
+    collision = (
+        "---\ntype: decision\ntitle: {title}\nstatus: stable\n"
+        "theurian_item_id: architecture.duplicate\n---\n\nbody\n"
+    )
+    _write(bundle, "concept-a.md", collision.format(title="First"))
+    _write(bundle, "concept-b.md", collision.format(title="Second"))
+
+    real_walk = os.walk
+
+    def reversed_walk(
+        top: str | os.PathLike[str], onerror: Callable[[OSError], object] | None = None
+    ) -> Iterator[tuple[str, list[str], list[str]]]:
+        if Path(top).resolve() != bundle.resolve():
+            yield from real_walk(top, onerror=onerror)
+            return
+        for dirpath, dirnames, filenames in real_walk(top, onerror=onerror):
+            yield dirpath, sorted(dirnames, reverse=True), sorted(filenames, reverse=True)
+
+    monkeypatch.setattr(os, "walk", reversed_walk)
+
+    result = _service(paths).import_bundle(_request(bundle))
+
+    assert {p.item_id.value for p in result.concepts_admitted} == {"architecture.duplicate"}
+    [refusal] = result.refusals
+    assert refusal.key == "concept-b.md", (
+        "the bytewise-first path must win even when the walk visits it last"
+    )
+
+
+# ---------------------------------------------------------------------------
+# M10: the manifest reservation is positional (ADR-0037 decision 2), not
+# name-wide -- unlike index.md/log.md, reserved at the bundle root only.
+# ---------------------------------------------------------------------------
+
+
+def test_the_manifest_reservation_is_positional_not_name_wide(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    bundle = tmp_path / "bundle"
+    _write(bundle, "theurian-bundle.md", "---\ntype: Theurian Bundle\n---\n")
+    _write(
+        bundle,
+        "architecture/theurian-bundle.md",
+        "---\ntype: decision\ntitle: Nested manifest-named concept\nstatus: stable\n---\n\nbody\n",
+    )
+
+    result = _service(paths).import_bundle(_request(bundle))
+
+    assert not result.refusals
+    assert {p.item_id.value for p in result.concepts_admitted} == {"architecture.theurian-bundle"}
