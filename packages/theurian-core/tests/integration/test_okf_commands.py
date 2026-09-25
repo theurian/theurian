@@ -67,6 +67,52 @@ operations:
 """
 
 
+#: A second item, `confidential` and above the default `internal` ceiling, plus an
+#: edge to it from the approved one. Every string it owns is a marker: an export
+#: that expanded the operator's ceiling instead of reading it would put these in a
+#: file somebody else holds.
+CONFIDENTIAL_ID: Final = "architecture.payroll-bands"
+CONFIDENTIAL_REVISION: Final = "01K1CNFREV01234567890ABCDE"
+CONFIDENTIAL_TITLE: Final = "withheld-payroll-title-6a2f"
+CONFIDENTIAL_BODY: Final = "# Bands\n\nwithheld-payroll-body-4c8e\n"
+CONFIDENTIAL_NOTE: Final = "withheld-payroll-note-1d7b"
+CONFIDENTIAL_MIGRATION_ID: Final = "01K1BBBBBB01234567890ABCDE"
+
+CONFIDENTIAL_MIGRATION: Final = f"""apiVersion: theurian.dev/v1
+id: {CONFIDENTIAL_MIGRATION_ID}
+createdAt: 2026-08-02T11:00:00+09:00
+author: engineer@example.com
+operations:
+  - op: createItem
+    itemId: {CONFIDENTIAL_ID}
+    kind: architecture
+    namespace: backend
+    owner: platform-team
+  - op: upsertRevision
+    itemId: {CONFIDENTIAL_ID}
+    revisionId: {CONFIDENTIAL_REVISION}
+    contentFile: ../knowledge/architecture/payroll-bands.md
+    contentSha256: {body_pin(CONFIDENTIAL_BODY)}
+    metadata:
+      title: {CONFIDENTIAL_TITLE}
+      contentType: text/markdown
+      kind: architecture
+      namespace: backend
+      status: approved
+      sensitivity: confidential
+      owner: platform-team
+      trustLevel: reviewed
+      sourceAnchors:
+        - provider: git
+          sourceUri: git://demo/payroll-bands.md
+  - op: addRelation
+    sourceItemId: architecture.auth-policy
+    relationType: depends_on
+    targetItemId: {CONFIDENTIAL_ID}
+    note: {CONFIDENTIAL_NOTE}
+"""
+
+
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """A git working tree with an isolated data directory, as the CWD."""
@@ -107,6 +153,68 @@ def _applied(root: Path) -> None:
         MIGRATION, encoding="utf-8"
     )
     assert _invoke("migrate", "apply")[0] == 0
+
+
+def _applied_with_a_confidential_row(root: Path) -> None:
+    """The corpus above, plus one `confidential` row and an edge to it.
+
+    Written as a second migration through the real ``migrate apply``, so the
+    ceiling the export reads is the one ``load_serving_profile`` resolves from the
+    operator's data directory rather than a value a test passed in.
+    """
+    _applied(root)
+    (root / ".theurian/knowledge/architecture/payroll-bands.md").write_text(
+        CONFIDENTIAL_BODY, encoding="utf-8"
+    )
+    (root / f".theurian/migrations/{CONFIDENTIAL_MIGRATION_ID}-add-payroll.yaml").write_text(
+        CONFIDENTIAL_MIGRATION, encoding="utf-8"
+    )
+    assert _invoke("migrate", "apply")[0] == 0
+
+
+def test_the_default_ceiling_keeps_a_confidential_row_and_its_edge_out_of_the_bundle(
+    project: Path,
+) -> None:
+    """The deployment's declared ceiling decides the bundle, at the command (ADR-0037 decision 3).
+
+    ``test_okf_export.py`` drives the sensitivity axis by passing
+    ``visible_sensitivities`` directly; nothing above it measured the value the
+    *command* resolves. So an exporter handed every :class:`Sensitivity` instead of
+    ``grant.sensitivities`` produced a byte-identical bundle for every corpus this
+    file held -- none of them varied a row's sensitivity -- and the substitution
+    survived. Here it cannot: the corpus holds one `confidential` row above the
+    default `internal` ceiling and one edge into it, and both the counts and the
+    bytes are asserted.
+
+    The edge matters as much as the row: a relation publishes the far end's id and
+    its `note` whether or not the body goes with it, which is the pair T-21 and
+    #119 were both measured leaking.
+    """
+    _applied_with_a_confidential_row(project)
+    target = project.parent / "bundle"
+
+    code, payload = _invoke("okf", "export", str(target))
+
+    assert code == 0, payload
+    assert payload["concepts"] == 1
+    written = sorted(str(path.relative_to(target)) for path in target.rglob("*") if path.is_file())
+    assert written == [
+        "architecture/auth-policy.md",
+        "architecture/index.md",
+        "index.md",
+        "theurian-bundle.md",
+    ]
+    whole = b"".join(path.read_bytes() for path in sorted(target.rglob("*")) if path.is_file())
+    for marker in (
+        CONFIDENTIAL_ID,
+        CONFIDENTIAL_TITLE,
+        "withheld-payroll-body-4c8e",
+        CONFIDENTIAL_NOTE,
+    ):
+        assert marker.encode("utf-8") not in whole, marker
+    # The corpus really holds the withheld row, so the sweep above ran over a
+    # bundle that had something to leak.
+    assert BODY.strip() in (target / "architecture/auth-policy.md").read_text(encoding="utf-8")
 
 
 def test_the_export_writes_a_bundle_and_reports_what_it_holds(project: Path) -> None:
