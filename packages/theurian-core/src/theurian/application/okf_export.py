@@ -237,7 +237,19 @@ def _visible_relations(
     *,
     visible: Container[str],
 ) -> tuple[KnowledgeRelation, ...]:
-    """The edges this deployment would publish for ``item_id``, in decision 2's order.
+    """The edges ``item_id``'s own concept document renders, in decision 2's order.
+
+    ``list_relations`` answers in either direction: of ``RelationType``'s 14
+    members, ``INVERSE_RELATIONS`` maps only the 4 that form the two invertible
+    pairs (``implements``/``implemented_by``, ``supersedes``/``superseded_by``),
+    so a relation of one of the other 10 types queried from its **target** comes
+    back unchanged -- source and target exactly as stored, neither one this
+    item. Rendered on that document regardless, it reads as a triple whose
+    ``target`` is the document's own item: a false self-edge. So an edge is kept
+    only when ``item_id`` is its **source** after ``list_relations``'s own
+    mapping -- the far end of a non-invertible edge then carries no entry for
+    it, while an inverse-mapped pair still renders once on each end, under its
+    own type.
 
     ``both_ends_visible`` is imported rather than restated, for the reason
     ``_anchor_secrets`` imports ``AUTHORED_ANCHOR_FIELDS``: a security rule
@@ -253,7 +265,7 @@ def _visible_relations(
             (
                 relation
                 for relation in store.list_relations(context, item_id)
-                if both_ends_visible(relation, visible)
+                if relation.source_item_id == item_id and both_ends_visible(relation, visible)
             ),
             key=relation_order,
         )

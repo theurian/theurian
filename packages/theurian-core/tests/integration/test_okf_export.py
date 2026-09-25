@@ -479,6 +479,56 @@ def test_a_relation_is_exported_only_when_both_endpoints_cleared_the_gate(
     assert "a published reason" in whole
 
 
+def test_a_non_invertible_edge_renders_only_on_its_source_document(tmp_path: Path) -> None:
+    """The far end of a `depends_on` edge is not itself a `depends_on` source.
+
+    `depends_on` is one of the ten `RelationType` members `INVERSE_RELATIONS`
+    does not map, so `list_relations` answers it in the stored orientation when
+    queried from its **target**: the edge arrives with the target's own item as
+    `target`, and rendering it there would assert `api.orders depends_on
+    api.orders` -- a false self-edge, in both channels. The edge renders once,
+    on its source, and carries no entry at all on the far end.
+    """
+    bundle = bundle_of(
+        tmp_path,
+        [Row("architecture.auth-policy", 1), Row("api.orders", 2)],
+        [Edge("architecture.auth-policy", "api.orders", RelationType.DEPENDS_ON)],
+    )
+
+    assert bundle.relations("api/orders.md") == []
+    assert "[api.orders](/api/orders.md)" not in bundle.body("api/orders.md")
+    assert bundle.body("api/orders.md").count("## Relations") == 1
+    assert bundle.relations("architecture/auth-policy.md") == [
+        {"type": "depends_on", "target": "api.orders"}
+    ]
+    # Bundle-wide: only one of the two concept documents carries the edge.
+    carriers = [
+        name
+        for name in ("api/orders.md", "architecture/auth-policy.md")
+        if any(entry["target"] == "api.orders" for entry in bundle.relations(name))
+    ]
+    assert carriers == ["architecture/auth-policy.md"]
+
+
+def test_an_invertible_edge_renders_once_on_each_end_under_its_own_type(tmp_path: Path) -> None:
+    """`implements`/`implemented_by`: the two pairs `INVERSE_RELATIONS` maps.
+
+    `list_relations` synthesises the inverse for these, so each end's own query
+    already returns `item_id` as the edge's source -- the source filter passes
+    both, unlike the ten non-invertible types above.
+    """
+    bundle = bundle_of(
+        tmp_path,
+        [Row("api.orders", 1), Row("spec.orders", 2)],
+        [Edge("api.orders", "spec.orders", RelationType.IMPLEMENTS)],
+    )
+
+    assert bundle.relations("api/orders.md") == [{"type": "implements", "target": "spec.orders"}]
+    assert bundle.relations("spec/orders.md") == [
+        {"type": "implemented_by", "target": "api.orders"}
+    ]
+
+
 def test_the_relations_section_renders_the_served_triple_in_order(tmp_path: Path) -> None:
     """Grouped by type, ordered by `(type, target)`, linked bundle-absolutely.
 
