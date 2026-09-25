@@ -927,12 +927,14 @@ class Recording:
     structurally is what proves the export is typed against a contract rather
     than against that class.
 
-    The four reads the export makes record; the four
+    The four reads the export makes record. The five below only delegate: the
     ``get_item``/``get_item_exact``/``get_item_metadata``/
-    ``get_item_exact_metadata`` below only delegate. They are here because
-    ``OkfExportSession`` extends ``IndexBuildSession``, which declares them -- so
-    this class is also the measurement of what that base demands and this use
-    case does not ask for.
+    ``get_item_exact_metadata`` family, and ``list_relations`` -- all declared by
+    ``IndexBuildSession``, which ``OkfExportSession`` extends, so this class is
+    also the measurement of what that base demands and this use case does not ask
+    for. ``list_relations`` records anyway, and is asserted *absent* below: the
+    alias-resolving read answers an aliased item's query from another item's
+    edges, so a walk that reached for it again would be caught by name (T-21).
     """
 
     def __init__(self, database: Path) -> None:
@@ -968,6 +970,12 @@ class Recording:
     ) -> tuple[KnowledgeRelation, ...]:
         self.order.append("list_relations")
         return self.inner.list_relations(context, item_id)
+
+    def list_relations_by_literal_id(
+        self, context: RequestContext, item_id: ItemId
+    ) -> tuple[KnowledgeRelation, ...]:
+        self.order.append("list_relations_by_literal_id")
+        return self.inner.list_relations_by_literal_id(context, item_id)
 
     def get_item(self, context: RequestContext, item_id: ItemId) -> KnowledgeItem | None:
         return self.inner.get_item(context, item_id)
@@ -1015,7 +1023,8 @@ def test_every_read_the_walk_makes_is_inside_the_snapshot(tmp_path: Path) -> Non
     order = sessions[0].order
     assert order[0] == "snapshot-opened"
     assert order[-1] == "snapshot-closed"
-    assert set(order[1:-1]) == {"list_items", "get_revision", "list_relations"}
+    assert set(order[1:-1]) == {"list_items", "get_revision", "list_relations_by_literal_id"}
+    assert "list_relations" not in order, "the walk read edges through the alias-resolving query"
 
 
 @pytest.mark.parametrize("module", [okf_bundle, okf_export])

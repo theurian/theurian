@@ -75,6 +75,7 @@ from theurian.domain.enums import (
 from theurian.domain.errors import InvalidIdentifierError
 from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId
 from theurian.domain.knowledge import (
+    KnowledgeAlias,
     KnowledgeItem,
     KnowledgeRelation,
     KnowledgeRevision,
@@ -160,6 +161,19 @@ class Edge:
     target: str
     relation_type: RelationType = RelationType.RELATED_TO
     note: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Alias:
+    """One ``addAlias`` row: a retired key and the item it resolves to.
+
+    The corpus fixtures held none until PR #809 round one, which is what let the
+    export's relation read resolve an alias unnoticed -- the key is an
+    author-chosen string, so an item's own id can be one (T-21).
+    """
+
+    key: str
+    item_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,8 +285,9 @@ def corpus(
     directory: Path,
     rows: list[Row],
     edges: list[Edge] | None = None,
+    aliases: list[Alias] | None = None,
 ) -> Path:
-    """A state database holding ``rows`` and ``edges``, written the real way."""
+    """A state database holding ``rows``, ``edges`` and ``aliases``, written the real way."""
     database = directory / "state" / "theurian-state-okf.sqlite"
     lock = directory / "runtime" / "write.lock"
     create_database(database, state_hash=state_hash_of(rows), engine_version=1)
@@ -292,6 +307,15 @@ def corpus(
                     relation_type=edge.relation_type,
                     created_at=NOW,
                     note=edge.note,
+                )
+            )
+        for alias in aliases or []:
+            writer.add_alias(
+                KnowledgeAlias(
+                    alias=ItemId(alias.key),
+                    item_id=ItemId(alias.item_id),
+                    project_id=PROJECT,
+                    created_at=NOW,
                 )
             )
     return database
@@ -515,6 +539,121 @@ def test_the_marker_sweep_finds_a_withheld_row_once_the_gate_admits_it(tmp_path:
         "withheld-incoming-note-0c7a",
     ):
         assert marker.encode("utf-8") in whole, marker
+
+
+# ---------------------------------------------------------------------------
+# Battery 1b: an alias key equal to a served item's own id (T-21).
+# ---------------------------------------------------------------------------
+
+#: The served item whose id is *also* an ``addAlias`` key. An alias key is an
+#: author-chosen string, so nothing stops it naming a live item (T-21).
+ALIASED: Final = Row("aliased", 1, title="The aliased item", body="Aliased prose.\n")
+PARTNER: Final = Row("partner", 2, title="The partner", body="Partner prose.\n")
+#: What the alias points at, held above this deployment's ceiling: every string it
+#: owns is a marker, so a read redirected to it is visible as a leak and not only
+#: as an omission.
+ALIAS_TARGET: Final = Row(
+    "alias-target",
+    3,
+    title="withheld-alias-target-title-7d3e",
+    body="withheld-alias-target-body-2c9f\n",
+    sensitivity=Sensitivity.CONFIDENTIAL,
+)
+
+ALIAS_ROWS: Final = [ALIASED, PARTNER, ALIAS_TARGET]
+ALIAS_EDGES: Final = [
+    Edge("aliased", "partner", RelationType.DEPENDS_ON, note="the aliased item's own edge"),
+    # Incoming and invertible, so it renders on `aliased` only if the inverse
+    # mapping is keyed on the id the walk named rather than on a resolved one.
+    Edge("partner", "aliased", RelationType.IMPLEMENTS, note="an edge into the aliased item"),
+    Edge(
+        "alias-target",
+        "partner",
+        RelationType.DEPENDS_ON,
+        note="withheld-alias-target-note-5b1a",
+    ),
+]
+ALIAS_MARKERS: Final = (
+    ALIAS_TARGET.item_id,
+    ALIAS_TARGET.title,
+    ALIAS_TARGET.body.strip(),
+    "withheld-alias-target-note-5b1a",
+)
+
+
+def test_an_aliased_items_own_edges_reach_both_channels_and_its_target_reaches_neither(
+    tmp_path: Path,
+) -> None:
+    """T-21's precondition, at the export's relation read (round one, security HIGH).
+
+    ``list_relations`` resolves an alias before it queries, so an approved
+    in-ceiling item whose id is also an ``addAlias`` key was answered from the
+    *target*'s edges -- every row carrying the target as its source, so the
+    walk's source filter discarded all of them and the item shipped
+    ``theurian_relations: []`` with an empty ``## Relations`` while
+    ``knowledge.get`` published the edge. Both channels are asserted, because the
+    front matter and the section are two renderings of one tuple and a fix that
+    reached only one of them would be a bundle that contradicts itself.
+
+    The far half is asserted too: nothing the redirected read *could* have
+    returned reaches the bundle. Reading by the literal id is what makes both
+    true at once, and a read keyed on the resolved id fails whichever half the
+    corpus happens to arrange.
+    """
+    database = corpus(
+        tmp_path / "state", ALIAS_ROWS, ALIAS_EDGES, [Alias("aliased", "alias-target")]
+    )
+    bundle = export(database, tmp_path / "bundle")
+
+    assert [
+        (entry["type"], entry["target"], entry["note"])
+        for entry in bundle.entries("aliased.md", "theurian_relations")
+    ] == [
+        ("depends_on", "partner", "the aliased item's own edge"),
+        ("implemented_by", "partner", "an edge into the aliased item"),
+    ]
+    assert _relations_section_of(bundle.text["aliased.md"]) == (
+        "\n### depends_on\n\n"
+        "* [partner](/partner.md)\n"
+        "  * the aliased item's own edge\n"
+        "\n### implemented_by\n\n"
+        "* [partner](/partner.md)\n"
+        "  * an edge into the aliased item\n"
+    )
+    assert [marker for marker in ALIAS_MARKERS if marker.encode("utf-8") in bundle.every_byte] == []
+
+
+def test_the_alias_row_really_redirects_the_read_the_export_no_longer_makes(
+    tmp_path: Path,
+) -> None:
+    """The positive control for the pin above: the corpus reaches T-21's precondition.
+
+    Without an alias row in the database the pin asserts an ordinary export and
+    says nothing about aliases. Asked of the store directly, because the property
+    is the difference between its two reads: the resolving one answers the
+    aliased item's query with the *target*'s edge and none of its own, while the
+    literal one -- the export's -- answers with its own.
+    """
+    database = corpus(
+        tmp_path / "state", ALIAS_ROWS, ALIAS_EDGES, [Alias("aliased", "alias-target")]
+    )
+    context = RequestContext(project_id=PROJECT)
+
+    with SqliteCanonicalStore(database) as store:
+        aliases = store.list_aliases(context)
+        resolving = store.list_relations(context, ItemId("aliased"))
+        literal = store.list_relations_by_literal_id(context, ItemId("aliased"))
+
+    assert [(alias.alias.value, alias.item_id.value) for alias in aliases] == [
+        ("aliased", "alias-target")
+    ]
+    assert [(relation.source_item_id.value, relation.note) for relation in resolving] == [
+        ("alias-target", "withheld-alias-target-note-5b1a")
+    ]
+    assert sorted(relation.note or "" for relation in literal) == [
+        "an edge into the aliased item",
+        "the aliased item's own edge",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -753,6 +892,12 @@ class Withdrawing:
         self.order.append("list_relations")
         return self.inner.list_relations(context, item_id)
 
+    def list_relations_by_literal_id(
+        self, context: RequestContext, item_id: ItemId
+    ) -> tuple[KnowledgeRelation, ...]:
+        self.order.append("list_relations_by_literal_id")
+        return self.inner.list_relations_by_literal_id(context, item_id)
+
     def get_item(self, context: RequestContext, item_id: ItemId) -> KnowledgeItem | None:
         return self.inner.get_item(context, item_id)
 
@@ -795,7 +940,9 @@ def test_a_withdrawal_landing_mid_walk_leaves_the_bundle_wholly_before_it(tmp_pa
         "the second connection's write never committed, so nothing was interleaved"
     )
     landed = sessions[0].order.index("withdrawal-committed")
-    assert "list_relations" in sessions[0].order[landed:], "no read followed the write"
+    assert "list_relations_by_literal_id" in sessions[0].order[landed:], (
+        "no read followed the write"
+    )
     assert during.files == before.files
     assert during.named("x") == before.named("x")
     assert LATE_EDGE_NOTE.encode("utf-8") not in during.every_byte

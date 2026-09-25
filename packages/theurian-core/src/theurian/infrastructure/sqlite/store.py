@@ -884,13 +884,55 @@ class SqliteCanonicalStore:
 
         Only one direction is stored; the inverse is synthesised so a caller
         never has to know which way an author happened to write it.
+
+        Resolves aliases, so a query by a retired id reaches the renamed item's
+        edges -- and the inverse mapping is then keyed on the *resolved* id, which
+        is why a caller deciding what a **literally named** item publishes reads
+        :meth:`list_relations_by_literal_id` instead.
         """
         resolved = self._resolve_alias(context.project_id, item_id)
+        return self._relations_keyed_on(context, resolved)
+
+    def list_relations_by_literal_id(
+        self, context: RequestContext, item_id: ItemId
+    ) -> tuple[KnowledgeRelation, ...]:
+        """:meth:`list_relations` with no `_resolve_alias` (T-21).
+
+        The relation-shaped member of the family `get_item_exact` and
+        `get_item_exact_metadata` record: **reachability may resolve an alias;
+        authority -- and, here, authorship -- must read the row the id literally
+        names.** An `addAlias` key is a string an author chooses freely, so an
+        item's own id can also be a key pointing somewhere else. Asked through
+        `list_relations`, such an item's query is answered from the *target*'s
+        edges, and every returned row carries the target as its `source_item_id`
+        -- so a caller that keeps the rows whose source is the id it asked for
+        keeps none of them, and the item's own edges vanish from a derived
+        artifact while `knowledge.get` still publishes them (ADR-0037 decision 4,
+        measured on an OKF bundle in PR #809 round one).
+
+        The inverse mapping is keyed on ``item_id`` for the same reason the query
+        is: an incoming invertible edge must come back as *this* item's outgoing
+        one, and comparing against a resolved id would leave it in the stored
+        orientation.
+        """
+        return self._relations_keyed_on(context, item_id)
+
+    def _relations_keyed_on(
+        self, context: RequestContext, item_id: ItemId
+    ) -> tuple[KnowledgeRelation, ...]:
+        """Both directions and the inverse mapping, for whichever id was chosen.
+
+        One spelling for the two public reads above, which differ in exactly one
+        step -- whether an alias was resolved first. Written once because the
+        query key and the mapping key have to be *the same* id: keyed on
+        different ids, a non-invertible incoming edge comes back naming neither
+        of them and reads as a false self-edge on whoever renders it.
+        """
         stored = self._read_all(
             "SELECT * FROM knowledge_relations WHERE project_id = ? "
             "AND (source_item_id = ? OR target_item_id = ?) "
             "ORDER BY source_item_id, relation_type, target_item_id",
-            (context.project_id.value, resolved.value, resolved.value),
+            (context.project_id.value, item_id.value, item_id.value),
             _relation_from_row,
         )
 
@@ -899,7 +941,7 @@ class SqliteCanonicalStore:
         # here would be a domain bug and must not be reported as a damaged file.
         relations: list[KnowledgeRelation] = []
         for relation in stored:
-            if relation.source_item_id == resolved:
+            if relation.source_item_id == item_id:
                 relations.append(relation)
             elif (inverse := relation.inverse) is not None:
                 relations.append(inverse)

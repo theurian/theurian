@@ -107,6 +107,21 @@ class OkfExportSession(IndexBuildSession, Protocol):
         """Every read in the body against one snapshot of the state (decision 3)."""
         ...
 
+    def list_relations_by_literal_id(
+        self, context: RequestContext, item_id: ItemId
+    ) -> tuple[KnowledgeRelation, ...]:
+        """``list_relations`` for the row ``item_id`` literally names (T-21).
+
+        Declared here rather than on :class:`IndexBuildSession`, and that is the
+        same decision the snapshot above records: the index build asks its
+        relation question of ids it read from the corpus, while this export asks
+        what one *named* item authored -- and ADR-0003's amendment table keeps a
+        port from growing a method one use case needs. An alias-resolving read
+        answers this question from another item's edges (see
+        :func:`_visible_relations`).
+        """
+        ...
+
     @override
     def __enter__(self) -> OkfExportSession:
         """Acquire the handle here, for :class:`CanonicalReadSession`'s reason.
@@ -239,32 +254,41 @@ def _visible_relations(
 ) -> tuple[KnowledgeRelation, ...]:
     """The edges ``item_id``'s own concept document renders, in decision 2's order.
 
-    ``list_relations`` answers in either direction: of ``RelationType``'s 14
-    members, ``INVERSE_RELATIONS`` maps only the 4 that form the two invertible
-    pairs (``implements``/``implemented_by``, ``supersedes``/``superseded_by``),
-    so a relation of one of the other 10 types queried from its **target** comes
-    back unchanged -- source and target exactly as stored, neither one this
-    item. Rendered on that document regardless, it reads as a triple whose
-    ``target`` is the document's own item: a false self-edge. So an edge is kept
-    only when ``item_id`` is its **source** after ``list_relations``'s own
-    mapping -- the far end of a non-invertible edge then carries no entry for
-    it, while an inverse-mapped pair still renders once on each end, under its
-    own type.
+    The read answers in either direction: of ``RelationType``'s 14 members,
+    ``INVERSE_RELATIONS`` maps only the 4 that form the two invertible pairs
+    (``implements``/``implemented_by``, ``supersedes``/``superseded_by``), so a
+    relation of one of the other 10 types queried from its **target** comes back
+    unchanged -- source and target exactly as stored, neither one this item.
+    Rendered on that document regardless, it reads as a triple whose ``target``
+    is the document's own item: a false self-edge. So an edge is kept only when
+    ``item_id`` is its **source** after the read's own mapping -- the far end of
+    a non-invertible edge then carries no entry for it, while an inverse-mapped
+    pair still renders once on each end, under its own type.
+
+    **The query key and the gate set are two independent halves, and both must
+    be the literally named id.** The gate set has always been literal -- the
+    walk's own ids, read from ``list_items`` and never resolved -- so it
+    inherits ``mcp.tools._relation_is_visible``'s alias property rather than
+    restating it (T-21). The *query* was not: ``list_relations`` resolves an
+    alias first, and an approved in-ceiling item whose id is also an ``addAlias``
+    key is answered from the target's edges, every row carrying the target as
+    its source -- so the source filter above discarded all of them and the item
+    shipped ``theurian_relations: []`` and an empty ``## Relations`` while
+    ``knowledge.get`` published the edge (PR #809 round one, security HIGH).
+    :meth:`OkfExportSession.list_relations_by_literal_id` is the non-resolving
+    read that closes it.
 
     ``both_ends_visible`` is imported rather than restated, for the reason
     ``_anchor_secrets`` imports ``AUTHORED_ANCHOR_FIELDS``: a security rule
-    enumerated twice acquires an end on one side and not the other. What makes
-    the application-layer form safe is where its set comes from -- the walk's own
-    visible ids, each read by the id it literally names -- so it inherits the
-    alias property of ``mcp.tools._relation_is_visible`` rather than restating it
-    (T-21). An endpoint the corpus does not hold is absent from the set, so a
-    dangling edge fails closed.
+    enumerated twice acquires an end on one side and not the other. An endpoint
+    the corpus does not hold is absent from the set, so a dangling edge fails
+    closed.
     """
     return tuple(
         sorted(
             (
                 relation
-                for relation in store.list_relations(context, item_id)
+                for relation in store.list_relations_by_literal_id(context, item_id)
                 if relation.source_item_id == item_id and both_ends_visible(relation, visible)
             ),
             key=relation_order,
