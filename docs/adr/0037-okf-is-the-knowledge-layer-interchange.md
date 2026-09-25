@@ -1104,6 +1104,51 @@ its name or its docstring reads:
   builds one concept with 251 entries and asserts the refusal names 253 — the
   whole-import total — and `MAX_UPSERT_OPERATIONS` itself, and that no proposal
   directory was written.
+
+  > **Amended in slice S3, review round two: the cap is checked incrementally,
+  > and the number in the refusal is a running total.** The row above reads the
+  > pinned `253` as *the whole-import total*, which is what the check computed
+  > while it ran once after the whole bundle had been read. It now runs **after
+  > each concept is admitted**, inside `_admit_concepts`, so the walk stops at
+  > the crossing and never reads the rest of the bundle. The recorded reason is
+  > memory rather than time, and `_admit_concepts`'s docstring carries the
+  > measurement it rests on: *a 209 MB bundle whose 251st concept already
+  > crosses the cap peaked at 211 MB reading the other several hundred anyway*.
+  >
+  > **So the refusal names the running total at the crossing and the concepts it
+  > was computed within**, never what the bundle holds: *This bundle passes
+  > {count} operations within its first {n} concepts, more than the 250 a single
+  > import will draft.* Both cap tests now assert that whole message by string
+  > equality rather than by substring — the test named above on `253` within its
+  > first `1` concepts, where one concept is the whole bundle and the two
+  > readings of 253 coincide, and
+  > `::test_a_300_concept_bundle_refuses_fast_rather_than_drafting_unboundedly`
+  > on `252` within its first `126`, which additionally asserts that `600`, the
+  > bundle's own total, appears nowhere in the message.
+  >
+  > **The stop is pinned by a read counter, not inferred from that arithmetic.**
+  > `tests/integration/test_okf_import_deepening.py::test_the_incremental_cap_stops_reading_before_the_rest_of_the_bundle`
+  > replaces `read_source_file` in `okf_import`'s own namespace with a recording
+  > wrapper, builds 300 concepts, and asserts the recorded call list has length
+  > exactly 126 — the 126th concept's own two operations are what cross 250. The
+  > boundary's other side is
+  > `::test_a_bundle_computing_exactly_the_cap_admits_and_drafts_every_concept`,
+  > which builds `MAX_UPSERT_OPERATIONS // 2` concepts and asserts every one is
+  > admitted with no refusal, so the comparison is `>` and not `>=`.
+  >
+  > **One narrowing to the sentence above the amendment.** *Every
+  > `theurian_relations` entry in the bundle* is now every entry of a concept
+  > that actually drafted: `_collect_relation_operations` drops the edges of a
+  > concept whose own `.draft()` refused, each with its own refusal record,
+  > because an `addRelation` naming a `sourceItemId` no proposal accompanies is
+  > unreviewable. Driven by
+  > `tests/integration/test_okf_import.py::test_a_relation_from_a_concept_that_refused_at_draft_never_lands`,
+  > which seeds the item first so its re-import refuses at `.draft()`, then
+  > asserts `relations_proposal` is `None`, that the refusals carry both a
+  > `draft` and a `relations` kind keyed on that item id, and that no migration
+  > file under `.theurian/proposals/` mentions the dropped edge's target. The
+  > charge against the cap is unchanged and deliberately so: it is counted at
+  > admission, before any draft runs.
 - **A bundle carrying only bare Markdown links yields a drafted migration with
   no `addRelation` operation** (decision 5).
   `tests/integration/test_okf_import.py::test_a_bare_markdown_link_never_synthesizes_a_relation`
