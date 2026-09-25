@@ -10,6 +10,43 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
+## [Unreleased]
+
+### Added
+
+- **`theurian okf import <bundle>`, so a knowledge bundle someone shared becomes
+  reviewable proposals instead of a copy-paste job**
+  ([ADR-0037](../../docs/adr/0037-okf-is-the-knowledge-layer-interchange.md),
+  decisions 5 and 6). The bundle is a local directory in
+  [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
+  that is already on disk — whoever cloned, unpacked or copied it put it there.
+  Each concept the import admits becomes its own proposal under
+  `.theurian/proposals/`, and every `theurian_relations` entry in the bundle
+  becomes one further proposal of `addRelation` operations. Nothing lands
+  approved: `theurian propose accept`, a pull request and a human merge are the
+  only route, exactly as for a proposal you wrote yourself.
+
+  **A bundle's front matter is data, never governance.** Its `status`, `owner`,
+  namespace, sensitivity and trust level are read past rather than copied onto the
+  proposal, and every imported concept is proposed at trust level `inferred` —
+  there is no option, no flag and no front-matter key that raises it, because the
+  reviewer who merges the pull request is what raises trust.
+
+  **It never fetches.** No URL, no registry, no credential, and an OKF `sources[]`
+  reference is classified by syntax alone and never followed or checked for
+  reachability. A path *inside* the bundle — a `theurian_body_file`, or a `.md`
+  file that turns out to be a symlink — is resolved and contained under the bundle
+  root before its bytes are read; one that escapes refuses that concept alone, and
+  the rest of the bundle still drafts. A refusal names the front-matter key and
+  the literal string the bundle wrote, never the path it resolved to, so a draft
+  committed for review carries no filesystem layout with it.
+
+  Two limits, both by design. A whole import is capped at 250 operations — two
+  per concept, one per relation — so more than 125 plain concepts refuses before
+  anything is drafted, with `--item <id>` named as the way to split the run. And
+  this is the import direction only: there is no `okf export` verb yet, and
+  fetching a bundle from a URL or a registry is deliberately out of scope.
+
 ## [0.4.0] - 2026-09-19
 
 ### Added
@@ -10609,6 +10646,7 @@ error is the one reading the release notes to decide whether to upgrade.
 - Migration `contentFile` paths are rejected at both schema and runtime level if
   they escape the project root.
 
+[Unreleased]: https://github.com/theurian/theurian/compare/core-v0.4.0...main
 [0.4.0]: https://github.com/theurian/theurian/compare/core-v0.3.0...core-v0.4.0
 [0.3.0]: https://github.com/theurian/theurian/compare/core-v0.2.3...core-v0.3.0
 [0.2.3]: https://github.com/theurian/theurian/compare/core-v0.2.2...core-v0.2.3
