@@ -17,8 +17,9 @@ can vary with a corpus or with a run.
 
 The orderings are decision 2's four, and they are what make "a function of a set"
 into a sequence: the digest's paths and the index entries' paths bytewise,
-`(relation type, target)` for both relation channels, and in-row order for
-`sources[]` and `tags`.
+`(relation type, target)` for the relation channels (see :func:`relation_order`
+for where the front matter's key goes further), and in-row order for `sources[]`
+and `tags`.
 """
 
 from __future__ import annotations
@@ -148,12 +149,17 @@ class Bundle:
 
 
 def relation_order(relation: KnowledgeRelation) -> tuple[str, str]:
-    """Decision 2's ordering for both relation channels: `(type, target)`.
+    """Decision 2's ordering for the body's relation channel: `(type, target)`.
 
-    Neither is a stored order -- ``list_relations`` answers a query, and the body
-    section groups by type in any case. Applied by the walk, so the tuple a
-    :class:`Concept` carries is already in it and both channels render from one
-    sequence.
+    Not a stored order -- ``list_relations`` answers a query -- and applied by
+    the walk, so the tuple a :class:`Concept` carries is already in it.
+
+    The front-matter channel re-sorts by the codec's own key, this one extended
+    with the note. The two agree wherever `(type, target)` tells two edges apart;
+    where it does not -- an invertible pair stored in both directions arrives as
+    two entries of one type and target, each with its own note -- the codec's key
+    is the total one and this channel falls back to ``list_relations``'s
+    `ORDER BY`. Both are deterministic; they are not the same order.
     """
     return (relation.relation_type.value, relation.target_item_id.value)
 
@@ -255,8 +261,7 @@ def _relations_section(relations: Sequence[KnowledgeRelation]) -> str:
     constant of the exporter rather than a bit about the graph.
 
     ``groupby`` rather than a sort of its own: the tuple arrives in
-    :func:`relation_order`, so the groups are the types in order and one
-    ordering rule answers for the front-matter channel and this one alike.
+    :func:`relation_order`, so the groups are the types in order.
     """
     lines = [_RELATIONS_HEADING]
     for relation_type, group in groupby(relations, key=lambda each: each.relation_type.value):

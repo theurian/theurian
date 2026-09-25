@@ -529,6 +529,43 @@ def test_an_invertible_edge_renders_once_on_each_end_under_its_own_type(tmp_path
     ]
 
 
+def test_an_invertible_pair_stored_both_ways_orders_each_channel_by_its_own_key(
+    tmp_path: Path,
+) -> None:
+    """The key for `relation_order`'s "they are not the same order".
+
+    `(type, target)` tells every other pair of edges apart -- the primary key on
+    `knowledge_relations` is `(project, source, type, target)` -- but not this
+    one: `list_relations` maps the incoming `implemented_by` to an outgoing
+    `implements`, so `alpha` receives two entries of one type and target carrying
+    two different notes. The front matter orders them by note, because the
+    codec's key is total over the entry; the body keeps the order
+    `list_relations`'s own `ORDER BY source_item_id, relation_type,
+    target_item_id` handed the walk. Each order is fixed, and they are not the
+    same order.
+    """
+    bundle = bundle_of(
+        tmp_path,
+        [Row("alpha", 1), Row("beta", 2)],
+        [
+            Edge("alpha", "beta", RelationType.IMPLEMENTS, note="the stored direction"),
+            Edge("beta", "alpha", RelationType.IMPLEMENTED_BY, note="an inverse of the same"),
+        ],
+    )
+
+    assert [entry["note"] for entry in bundle.relations("alpha.md")] == [
+        "an inverse of the same",
+        "the stored direction",
+    ]
+    assert bundle.body("alpha.md").split("## Relations\n")[1] == (
+        "\n### implements\n\n"
+        "* [beta](/beta.md)\n"
+        "  * the stored direction\n"
+        "* [beta](/beta.md)\n"
+        "  * an inverse of the same\n"
+    )
+
+
 def test_the_relations_section_renders_the_served_triple_in_order(tmp_path: Path) -> None:
     """Grouped by type, ordered by `(type, target)`, linked bundle-absolutely.
 
