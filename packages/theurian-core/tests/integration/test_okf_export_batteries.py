@@ -663,6 +663,38 @@ SNAPSHOT_ROWS: Final = [
 SNAPSHOT_EDGES: Final = [
     Edge("architecture.auth-policy", DOOMED, RelationType.DEPENDS_ON, note="an edge to the doomed")
 ]
+#: The note on the edge the interleaved write adds. It is the byte that makes the
+#: pin able to fail: a status flip alone is read only by ``list_items``, which the
+#: walk has already made, so a bundle built without the snapshot would be
+#: byte-identical anyway and the pin would be measuring nothing.
+LATE_EDGE_NOTE: Final = "an edge added after the walk began"
+
+
+def land_the_interleaved_writes(database: Path, lock: Path) -> None:
+    """The mid-walk write, issued the way ``migrate apply`` issues one.
+
+    Two statements in one transaction, and the pair is deliberate. The
+    **withdrawal** is what decision 3 names; the **new edge** is what any read
+    after ``list_items`` can still see, so it is what a walk without the snapshot
+    would publish -- and it publishes it *gated against the pre-write visible
+    set*, which is the straddle: an edge to a row that is withdrawn at the moment
+    the edge is read.
+    """
+    with write_transaction(database, lock) as connection:
+        connection.execute(
+            "UPDATE knowledge_items SET status = ? WHERE item_id = ?",
+            (KnowledgeStatus.DEPRECATED.value, DOOMED),
+        )
+        SqliteWriter(connection).add_relation(
+            KnowledgeRelation(
+                project_id=PROJECT,
+                source_item_id=ItemId("architecture.auth-policy"),
+                target_item_id=ItemId(DOOMED),
+                relation_type=RelationType.RELATED_TO,
+                created_at=NOW,
+                note=LATE_EDGE_NOTE,
+            )
+        )
 
 
 class Withdrawing:
@@ -670,14 +702,14 @@ class Withdrawing:
 
     A delegating wrapper rather than a subclass, because ``SqliteCanonicalStore``
     is ``@final``; satisfying ``OkfExportSession`` structurally is also what
-    proves the export is typed against the Protocol. The withdrawal fires once,
+    proves the export is typed against the Protocol. The write fires once,
     immediately after the walk's first read returns, and is committed by
-    ``write_transaction`` -- ``BEGIN IMMEDIATE``, the statement, ``COMMIT`` --
+    ``write_transaction`` -- ``BEGIN IMMEDIATE``, the statements, ``COMMIT`` --
     which is how ``migrate apply`` writes.
 
     ``committed_mid_walk`` is the control: a *fresh* reader is opened straight
-    after the commit and asked what the row's status is. If the write had not
-    landed, the whole pin would be measuring an interleaving that never happened.
+    after the commit and asked what it can see. If the write had not landed, the
+    whole pin would be measuring an interleaving that never happened.
     """
 
     def __init__(self, database: Path, lock: Path) -> None:
@@ -685,7 +717,7 @@ class Withdrawing:
         self.database = database
         self.lock = lock
         self.order: list[str] = []
-        self.committed_mid_walk: str | None = None
+        self.committed_mid_walk: tuple[str, int] | None = None
 
     def __enter__(self) -> Withdrawing:
         self.inner.__enter__()
@@ -702,16 +734,16 @@ class Withdrawing:
         self.order.append("snapshot-closed")
 
     def _withdraw(self) -> None:
-        with write_transaction(self.database, self.lock) as connection:
-            connection.execute(
-                "UPDATE knowledge_items SET status = ? WHERE item_id = ?",
-                (KnowledgeStatus.DEPRECATED.value, DOOMED),
-            )
+        land_the_interleaved_writes(self.database, self.lock)
         self.order.append("withdrawal-committed")
         with closing(open_read_connection(self.database)) as fresh:
-            self.committed_mid_walk = fresh.execute(
+            status = fresh.execute(
                 "SELECT status FROM knowledge_items WHERE item_id = ?", (DOOMED,)
             ).fetchone()["status"]
+            edges = fresh.execute(
+                "SELECT COUNT(*) AS n FROM knowledge_relations WHERE note = ?", (LATE_EDGE_NOTE,)
+            ).fetchone()["n"]
+        self.committed_mid_walk = (status, edges)
 
     def list_items(self, context: RequestContext) -> tuple[KnowledgeItem, ...]:
         self.order.append("list_items")
@@ -750,11 +782,13 @@ class Withdrawing:
 def test_a_withdrawal_landing_mid_walk_leaves_the_bundle_wholly_before_it(tmp_path: Path) -> None:
     """Decision 3's own pin: the bundle is on one side of a mid-walk write, never both.
 
-    Without the snapshot the walk straddles two states -- the withdrawn row
-    present as a concept, absent from the index file that lists it, and still
-    pointed at by a relation the newer state gates. That bundle is internally
-    inconsistent in a way no consumer can detect, and its digest names files
-    describing a state that never existed.
+    Without the snapshot the walk straddles two states. The relation reads happen
+    after ``list_items``, and the gate they pass through is the *pre-write*
+    visible set -- so an edge committed mid-walk to a row withdrawn in the same
+    transaction is published on a served concept, pointing at a row the newer
+    state no longer serves. That bundle is internally inconsistent in a way no
+    consumer can detect, and its digest names files describing a state that never
+    existed.
     """
     before = export(corpus(tmp_path / "quiet", SNAPSHOT_ROWS, SNAPSHOT_EDGES), tmp_path / "before")
     contended = corpus(tmp_path / "contended", SNAPSHOT_ROWS, SNAPSHOT_EDGES)
@@ -768,37 +802,46 @@ def test_a_withdrawal_landing_mid_walk_leaves_the_bundle_wholly_before_it(tmp_pa
 
     during = export(contended, tmp_path / "during", store_factory=withdrawing)
 
-    assert sessions[0].committed_mid_walk == KnowledgeStatus.DEPRECATED.value, (
+    assert sessions[0].committed_mid_walk == (KnowledgeStatus.DEPRECATED.value, 1), (
         "the second connection's write never committed, so nothing was interleaved"
     )
     landed = sessions[0].order.index("withdrawal-committed")
-    assert "get_revision" in sessions[0].order[landed:], "the write landed after the walk's reads"
+    assert "list_relations" in sessions[0].order[landed:], "no read followed the write"
     assert during.files == before.files
     assert during.named("x") == before.named("x")
+    assert LATE_EDGE_NOTE.encode("utf-8") not in during.every_byte
 
 
-def test_the_same_withdrawal_does_change_a_later_export(tmp_path: Path) -> None:
+def test_the_same_interleaved_write_does_change_a_later_export(tmp_path: Path) -> None:
     """The positive control for the pin above: the write it ignored is a real one.
 
-    Exported after the withdrawal has landed, the doomed row is gone from the
-    bundle -- so ``during == before`` was the snapshot holding, not a withdrawal
-    that would have changed nothing.
+    Exported after the transaction has landed, the doomed row is gone and the new
+    edge is gated -- and an export of the *same* state with the withdrawal
+    reverted publishes that edge, so each statement in the interleaved write
+    changes a bundle on its own. ``during == before`` above is therefore the
+    snapshot holding rather than a write that would have changed nothing.
     """
     database = corpus(tmp_path / "state", SNAPSHOT_ROWS, SNAPSHOT_EDGES)
+    lock = tmp_path / "state" / "runtime" / "write.lock"
     before = export(database, tmp_path / "before")
-    with write_transaction(database, tmp_path / "state" / "runtime" / "write.lock") as connection:
-        connection.execute(
-            "UPDATE knowledge_items SET status = ? WHERE item_id = ?",
-            (KnowledgeStatus.DEPRECATED.value, DOOMED),
-        )
+    land_the_interleaved_writes(database, lock)
 
     after = export(database, tmp_path / "after")
+    with write_transaction(database, lock) as connection:
+        connection.execute(
+            "UPDATE knowledge_items SET status = ? WHERE item_id = ?",
+            (KnowledgeStatus.APPROVED.value, DOOMED),
+        )
+    restored = export(database, tmp_path / "restored")
 
     assert after.files != before.files
     assert "architecture/doomed.md" in before.files
     assert "architecture/doomed.md" not in after.files
     assert b"still-served-body-3f1a" not in after.every_byte
     assert b"an edge to the doomed" not in after.every_byte
+    assert LATE_EDGE_NOTE.encode("utf-8") not in after.every_byte
+    # The edge alone, with both ends served again: the byte the snapshot suppressed.
+    assert LATE_EDGE_NOTE.encode("utf-8") in restored.every_byte
 
 
 # ---------------------------------------------------------------------------
