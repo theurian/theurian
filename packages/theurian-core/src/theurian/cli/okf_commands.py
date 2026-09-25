@@ -1,16 +1,18 @@
-"""``theurian okf`` -- move knowledge across OKF's boundary (ADR-0037).
+"""``theurian okf`` -- the Open Knowledge Format interchange (ADR-0037).
 
-A composition root, like ``propose_commands.py`` (ADR-0003): where
-:class:`~theurian.application.okf_import.OkfImportService` meets the project's
-``ProposalService`` and the published JSON Schemas. ``import`` is a gated
-on-ramp to the same write path ``theurian propose`` uses -- every drafted
-proposal lands under ``.theurian/proposals/`` and reaches approved state only
-through ``theurian propose accept``, a pull request, and a human merge
-(ADR-0013), unchanged.
+A composition root: where the gated import meets ``ProposalService`` and the
+published JSON Schemas, the same wiring ``propose_commands.py`` uses
+(ADR-0003). Nothing below this module names a concrete adapter beyond these.
 
-Shared with a later slice's export verb: the sub-app is intentionally minimal
-and generic, so an ``export`` command joins ``okf`` here rather than starting
-a second module.
+**A write/maintenance path, like ``index build`` and ``findings build``, and
+it serves nothing.** ``import`` is a gated on-ramp to the same write path
+``theurian propose`` uses -- every drafted proposal lands under
+``.theurian/proposals/`` and reaches approved state only through ``theurian
+propose accept``, a pull request, and a human merge (ADR-0013), unchanged.
+
+Shared with the export verb: the sub-app is intentionally minimal and
+generic, so an ``export`` command joins ``okf`` here rather than starting a
+second module.
 """
 
 from __future__ import annotations
@@ -46,7 +48,7 @@ from theurian.infrastructure.filesystem.migration_loader import validate_migrati
 EXIT_INVALID_INPUT: Final = 2
 
 okf_app = typer.Typer(
-    help="Move knowledge across OKF's boundary: import a bundle as a reviewable proposal.",
+    help="Export or import this project's knowledge in Open Knowledge Format.",
     no_args_is_help=True,
 )
 
