@@ -216,6 +216,15 @@ def _reading() -> Iterator[None]:
         raise StateDatabaseUnreadableError(type(exc).__name__) from exc
 
 
+#: The read :meth:`SqliteCanonicalStore.read_snapshot` issues to pin its snapshot.
+#:
+#: Any read of the database file would do; this one interprets nothing. It names
+#: no application table, so a schema this build cannot otherwise read still gets
+#: the same refusal from ``_prepare`` rather than a different one from here, and
+#: it decodes no cell, so the pin cannot itself be what fails to be a value.
+_PIN_THE_SNAPSHOT: Final = "SELECT 1 FROM sqlite_master LIMIT 1"
+
+
 def _dt(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
@@ -242,6 +251,7 @@ class SqliteCanonicalStore:
     def __init__(self, database_path: Path) -> None:
         self._path = database_path
         self._connection: sqlite3.Connection | None = None
+        self._snapshot_open = False
 
     def _conn(self) -> sqlite3.Connection:
         if self._connection is None:
@@ -283,6 +293,65 @@ class SqliteCanonicalStore:
 
     def __exit__(self, *_: object) -> None:
         self.close()
+
+    @contextmanager
+    def read_snapshot(self) -> Iterator[None]:
+        """Every read in the body against one snapshot of the state (ADR-0037 decision 3).
+
+        **Opt-in, and the default read path is unchanged.** Outside this context
+        the connection stays in autocommit, where each statement takes its own
+        snapshot and a multi-statement walk interleaves with a writer -- measured
+        on SQLite 3.47.1 against a real state database: an autocommit reader
+        counted 2 ``knowledge_items`` before a ``migrate apply``-shaped write and
+        3 after, while a reader inside this context counted 1 either side of it.
+
+        Three measurements decide the implementation, all taken the same way
+        (``tests/integration/test_canonical_read_snapshot.py`` drives each):
+
+        * **The state database runs ``journal_mode = WAL``** -- the pragma
+          ``CONNECTION_PRAGMAS`` sets, reported as ``wal`` by this connection --
+          so a reader holding a snapshot is *isolated* rather than blocking:
+          the writer's ``BEGIN IMMEDIATE`` is accepted while this context is
+          open and its ``COMMIT`` returns, and the rows it wrote are invisible
+          here until the body ends. An export therefore delays no writer, and
+          nothing here can time out waiting for one.
+        * **The ``BEGIN`` is deferred, so it takes no snapshot on its own.** With
+          ``BEGIN`` alone the *first* read is what pins one, and a writer that
+          commits in between is visible to it (measured: 2 items rather than 1).
+          :data:`_PIN_THE_SNAPSHOT` is the read that moves the snapshot instant
+          to the entry of this context, which is what lets the docstring above
+          say "one snapshot" without naming a first statement.
+        * **A nested ``BEGIN`` is an error** (``cannot start a transaction within
+          a transaction``), and inside :func:`_reading` it would reach the caller
+          as a damaged state database. So re-entry is refused by name instead.
+
+        ``ValueError`` for the re-entry, the precedent
+        :meth:`~theurian.application.index_builder.IndexBuilder._derive_forest`
+        sets: no ``theurian`` command can produce it, so there is no operator to
+        carry a remedy to.
+        """
+        if self._snapshot_open:
+            msg = (
+                "SqliteCanonicalStore.read_snapshot() is already open on this store. "
+                "One snapshot spans the whole walk; call it once, at the top of the read."
+            )
+            raise ValueError(msg)
+        # Inside the guard for the reason :meth:`__enter__` is: acquiring the
+        # connection interprets this file, and so does the pin -- deliberately.
+        with _reading():
+            connection = self._conn()
+            connection.execute("BEGIN")
+            connection.execute(_PIN_THE_SNAPSHOT).fetchone()
+        self._snapshot_open = True
+        try:
+            yield
+        finally:
+            self._snapshot_open = False
+            # ``ROLLBACK`` rather than ``COMMIT``: the connection is ``mode=ro``
+            # and has nothing to commit, and this is the spelling
+            # ``connection.py::_open_transaction`` already uses to end a
+            # transaction it is abandoning.
+            connection.execute("ROLLBACK")
 
     # -- Reading ----------------------------------------------------------
 
