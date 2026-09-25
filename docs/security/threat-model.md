@@ -3859,6 +3859,93 @@ FR-V4's human. The grade does not move, because the harm is the one already
 stated — an agent influenced by content it should have read as data — and the
 route adds a human approval rather than removing a control.
 
+**The OKF import is the third route into this entry, added in the OKF campaign's
+slice S3** ([ADR-0037](../adr/0037-okf-is-the-knowledge-layer-interchange.md),
+decisions 5 and 6). A bundle is untrusted content that arrived as a directory
+somebody unpacked — front matter, bodies and relation notes a stranger wrote —
+and `theurian okf import` turns each admitted concept into a drafted proposal a
+human or an agent then reads. It is the arrival path ADR-0037's *What this does
+not close* item 4 records as due here. **No new control is added for it**; what
+follows is where the existing ones stand on this path, each named with the test
+that drives it.
+
+*Nothing the bundle writes sets governance.* ADR-0019 read at the import
+boundary (ADR-0037 decision 1): `status`, `theurian_owner`,
+`theurian_namespace`, `theurian_trust_level` and `theurian_sensitivity` are
+never copied onto the drafted proposal, and `ImportedConcept.trust_level` is
+`field(default=TrustLevel.INFERRED, init=False)` — the `KnowledgeCandidate`
+precedent above, one on-ramp later.
+`tests/unit/test_okf_import_trust_ceiling.py::test_no_caller_can_pass_a_trust_level_to_an_imported_concept`
+constructs that type with `trust_level=TrustLevel.REVIEWED` and asserts
+`TypeError`;
+`tests/integration/test_okf_import.py::test_a_theurian_exported_and_a_vanilla_concept_both_draft_at_inferred_trust`
+imports a bundle whose concept front matter says `theurian_trust_level:
+reviewed`, reads `trustLevel` out of each *written* migration and asserts
+`inferred` — the ceiling on the artifact, not only on the type.
+
+*A path the bundle names is contained before its bytes are read, and a bad one
+costs its own concept rather than the bundle.* Both of `okf_import.py`'s reads go
+through `security/paths.py::read_source_file`, so SEC-7's containment and T-4 and
+T-5's symlink refusal cover the two shapes a bundle supplies a path in: a
+`theurian_body_file` string, and a `.md` file the walk discovered.
+`tests/integration/test_okf_import_path_containment.py` builds each on a real
+disk — an absolute `theurian_body_file`, a symlinked concept file inside the
+bundle, and a sidecar reached through an in-bundle symlink — and asserts for each
+that the run produces exactly one refusal, that the bundle's other concept is
+still admitted, and that the outside file's sentinel bytes appear nowhere under
+`.theurian/proposals/`. A fourth case puts the bundle root under a symlinked
+parent and asserts it is *not* refused, which is the macOS `/tmp` shape.
+
+*A refusal records the reference as written, never as resolved* — T-25's
+disclosure met one producer later, because the draft is committed and pushed for
+review. `::test_no_refusal_or_drafted_file_carries_the_operator_filesystem_layout`
+sweeps every refusal's `literal` **and** every byte written under
+`.theurian/proposals/` for the test's own `tmp_path` string.
+
+*The importer fetches nothing.* The input is a local directory, and an OKF
+`sources[]` entry is classified by syntax alone — `_is_uri_or_relative_path`,
+with no reachability check and nothing followed.
+`tests/unit/test_okf_import_no_fetch.py::test_the_okf_import_services_own_closure_reaches_no_network_client`
+walks the theurian-internal import closure of `application/okf_import.py` over
+whole syntax trees and asserts that no module in it names a member of the
+network-client vocabulary `test_network_call_sites.py` uses for T-7;
+`::test_the_okf_cli_entrypoint_reaches_network_only_through_the_recorded_health_probe`
+asserts the CLI entry point's closure reaches exactly one recorded network
+module, `daemon/instance.py`'s loopback health probe, so an addition reddens it.
+T-7's fetch controls are therefore not owed on this route: how a bundle reached
+the disk is outside Theurian.
+
+*No relation is invented, so an injected sentence cannot become a typed edge.*
+Only a `theurian_relations` key ever becomes an `addRelation` operation
+(ADR-0037 decision 5).
+`tests/integration/test_okf_import.py::test_a_bare_markdown_link_never_synthesizes_a_relation`
+imports a concept whose body carries `See also [another
+concept](/architecture/other.md).` and asserts that no relations proposal is
+drafted at all, and
+`tests/integration/test_okf_import_deepening.py::test_an_out_of_enum_relation_type_is_refused_by_the_schema_while_the_concept_still_drafts`
+asserts that a `theurian_relations` entry naming `made_up_relation_type` is
+refused while its concept still drafts.
+
+*Nothing an import writes is approved knowledge, and SEC-11 stands where it
+already stood.* The whole output is a proposal directory reached through the same
+draft-only facade the ADR-0032 tools and the candidate generator hold, so
+ADR-0013's gate is the only route to a landed revision: `theurian propose
+accept`, a pull request, a human merge. SEC-11's six-input scan runs at that
+`accept` and not at import, so every string the bundle contributed is scanned
+before a migration lands and the draft on disk is unscanned until then — the
+position T-15 already records for every other proposal. Beside that, the two
+controls ADR-0035 decision 5 gives a human deciding whether a draft is a fair
+reading of its input: the bundle's own identity is a source anchor on every
+drafted concept, and the raw bundle stays on disk beside the draft.
+
+**The residual is this entry's own again, met by a second reader.** A bundle that
+says "ignore previous instructions" drafts a proposal that says it, and Theurian
+cannot tell a hostile bundle from a faithful projection of a real one: whether an
+imported concept is a fair reading of its bundle is what ADR-0037's *What this
+does not close* item 5 assigns to FR-V4's human at the pull request. The grade
+does not move, for the reason the candidate route's does not — the harm is the
+stated one, and the route adds a human approval rather than removing a control.
+
 **Residual risk:** **Theurian labels; it does not enforce.** An agent that
 ignores the label will be influenced. This is a shared responsibility with the
 calling agent, and no MCP server can resolve it alone. It is stated in
