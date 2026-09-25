@@ -89,7 +89,12 @@ def okf_import(  # noqa: PLR0913 -- one option per drafted field, all keyword-on
     ],
     item: Annotated[
         list[str] | None,
-        typer.Option("--item", help="Import only this concept's item id. Repeatable."),
+        typer.Option(
+            "--item",
+            help=(
+                "Import only this concept's item id, matched by its bundle path first. Repeatable."
+            ),
+        ),
     ] = None,
     as_json: JsonOption = False,
 ) -> None:

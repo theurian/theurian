@@ -536,13 +536,23 @@ def _duplicate_item_id_refusal(relative: PurePosixPath, item_id: str) -> ImportR
 def _unmatched_item_filter_refusals(
     item_filter: frozenset[str], matched_ids: frozenset[str]
 ) -> list[ImportRefusal]:
-    """One refusal per `--item` value nothing in the bundle ever carried.
+    """One refusal per `--item` value no concept was ever matched to.
+
+    "Matched to" is narrower than "carried by": a concept whose own
+    `theurian_item_id` overrides its path-derived id is only ever read when
+    *that path* is one of the requested values (`_admit_concepts`'s early
+    filter), so a value naming only the override, never any path in the
+    bundle, is reported unmatched here even though the concept exists --
+    the honest claim is that this spelling did not reach it, not that no
+    concept anywhere carries it.
 
     Sorted, so the report is deterministic regardless of set iteration order.
     """
     return [
         ImportRefusal(
-            kind=KIND_CONCEPT, key=item_id, literal="no concept in this bundle has this item id"
+            kind=KIND_CONCEPT,
+            key=item_id,
+            literal="no concept in this bundle is reachable by this item id",
         )
         for item_id in sorted(item_filter - matched_ids)
     ]
@@ -553,18 +563,25 @@ def _admit_concepts(
 ) -> tuple[list[ImportedConcept], list[ImportRefusal]]:
     """Map every walked path to a concept, filtering by item id as early as possible.
 
-    `--item` is checked twice: first against the path-derived candidate id,
-    before anything is read, so a concept outside the filter costs nothing
-    and emits no refusal; then again against the concept's own decoded id,
-    since `theurian_item_id` can override what the path alone would derive.
-    A Theurian-exported bundle's two never disagree -- the exporter derives
-    the path from the item id in the first place (decision 7) -- so the
-    early filter only risks a false skip for a hand-authored bundle whose
-    front matter overrides its own path-derived id to something the operator
-    named with `--item` but the path does not spell.
+    `--item` gates *reads*, not admission: a concept is read only when its
+    path-derived id is one of the requested values, before anything is read,
+    so a concept outside the filter costs nothing and emits no refusal. A
+    concept that clears that gate is never re-excluded by comparing its own
+    decoded id back against the filter -- `theurian_item_id` can override
+    what the path alone would derive, and the gate having already matched is
+    what the operator asked for, regardless of which id the concept turns
+    out to declare. Previously, a divergent override made such a concept
+    unreachable by *either* spelling -- refused via the path id here, and
+    again via the decoded id -- while the requested-but-absent report falsely
+    claimed no concept in the bundle carried it at all. Both the path-derived
+    id and the decoded id are recorded as matched, so passing both spellings
+    together reports neither as unmatched even though only one triggered the
+    read.
 
-    Every `--item` value that matched no concept at all -- not even one that
-    later failed to decode or map -- becomes its own refusal.
+    Every `--item` value no concept was ever matched to -- by path or by a
+    decoded id a path match happened to surface -- becomes its own refusal;
+    see `_unmatched_item_filter_refusals` for what that does and does not
+    claim.
 
     Two concepts resolving to one item id -- one `theurian_item_id`
     overriding its path to collide with another's, most concretely --
@@ -588,13 +605,13 @@ def _admit_concepts(
     admitted_ids: set[str] = set()
     total_operations = 0
     for relative in concept_paths:
-        if item_filter and _item_id_from_path(relative) not in item_filter:
+        path_id = _item_id_from_path(relative)
+        if item_filter and path_id not in item_filter:
             continue
+        matched_ids.add(path_id)
         outcome = _map_concept(root, relative)
         if isinstance(outcome, ImportRefusal):
             refusals.append(outcome)
-            continue
-        if item_filter and outcome.item_id.value not in item_filter:
             continue
         matched_ids.add(outcome.item_id.value)
         if outcome.item_id.value in admitted_ids:

@@ -349,7 +349,78 @@ def test_an_item_filter_value_matching_nothing_is_reported(
     assert {p.item_id.value for p in result.concepts_admitted} == {"vanilla"}
     [refusal] = result.refusals
     assert refusal.key == "does-not-exist"
-    assert refusal.literal == "no concept in this bundle has this item id"
+    assert refusal.literal == "no concept in this bundle is reachable by this item id"
+
+
+# ---------------------------------------------------------------------------
+# Review-Finding: code-review HIGH -- a divergent theurian_item_id was
+# unreachable by either --item spelling, and the refusal literal falsely
+# claimed no concept in the bundle carried the requested id.
+# ---------------------------------------------------------------------------
+
+_DIVERGENT_ID_CONCEPT = """---
+type: decision
+title: Divergent id
+status: stable
+theurian_item_id: chosen.one
+---
+
+body
+"""
+
+
+def test_the_path_derived_spelling_admits_a_concept_whose_id_diverges(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    """`--item zz-file` (the path `zz-file.md` derives) used to decode the
+    concept and then exclude it anyway, because only the *decoded* id
+    (`chosen.one`) was checked against the filter at that point.
+    """
+    bundle = tmp_path / "bundle"
+    _write(bundle, "zz-file.md", _DIVERGENT_ID_CONCEPT)
+
+    result = _service(paths).import_bundle(_request(bundle, item_filter=frozenset({"zz-file"})))
+
+    assert {p.item_id.value for p in result.concepts_admitted} == {"chosen.one"}
+    assert not result.refusals
+
+
+def test_the_decoded_spelling_alone_still_cannot_reach_a_divergent_concept(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    """`--item chosen.one` never reads `zz-file.md` at all -- its path-derived
+    id does not spell the filter, so the early gate skips it before decoding
+    could reveal the override. Still reported, but honestly: not that no
+    concept in the bundle carries this id, only that this spelling never
+    reached one.
+    """
+    bundle = tmp_path / "bundle"
+    _write(bundle, "zz-file.md", _DIVERGENT_ID_CONCEPT)
+
+    result = _service(paths).import_bundle(_request(bundle, item_filter=frozenset({"chosen.one"})))
+
+    assert not result.concepts_admitted
+    [refusal] = result.refusals
+    assert refusal.key == "chosen.one"
+    assert refusal.literal == "no concept in this bundle is reachable by this item id"
+
+
+def test_both_spellings_together_admit_the_concept_and_neither_reports_absent(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    """The path spelling triggers the read; the decoded spelling is recorded
+    as matched too, so supplying both leaves neither as a false "unmatched"
+    refusal sitting next to a successful admission.
+    """
+    bundle = tmp_path / "bundle"
+    _write(bundle, "zz-file.md", _DIVERGENT_ID_CONCEPT)
+
+    result = _service(paths).import_bundle(
+        _request(bundle, item_filter=frozenset({"zz-file", "chosen.one"}))
+    )
+
+    assert {p.item_id.value for p in result.concepts_admitted} == {"chosen.one"}
+    assert not result.refusals
 
 
 def test_the_reserved_names_are_skipped_rather_than_treated_as_concepts(
