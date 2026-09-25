@@ -13,15 +13,27 @@ type unusable for decoding an arbitrary bundle. One field is narrower than that:
 (see :class:`GeneratedBy`).
 
 Row text reaches structure through three sites, and :data:`LINE_TERMINATORS` is
-what each of them is written against. In a YAML front-matter block, a value
+the population all three are written against -- the two Markdown sites over that
+set and the tab besides. In a YAML front-matter block, a value
 carrying any terminator is emitted double-quoted (:func:`_represent_str`), which
-writes each terminator as an escape: the value occupies one physical line, so it
-terminates no YAML value, opens no key, and renders no column-0 `---` a consumer
-splitting on fences could truncate at. At the two Markdown-syntax sites -- an
-index entry's link text and a relation note rendered as a list line -- the text
-is folded to one line first and then escaped for that one line's own grammar.
-Rendering those two sites into bytes is the exporter's job (a later assignment);
-this module only ships the escapes.
+writes every terminator as an *escape sequence* rather than as a byte -- so a
+row terminator opens no key and renders no column-0 `---` a consumer splitting
+on fences could truncate at. PyYAML still breaks a long value across physical
+lines at ``width=100``, and that fold is why the property is stated this way and
+not as *one physical line*: each continuation it writes is indented to the block
+indent behind a trailing backslash, so no line a value occupies begins at
+column 0, where a key or a fence would have to start. Key:
+`test_a_forged_terminator_stays_inside_its_own_value_at_every_position`, whose
+payloads include one long enough to fold
+(`test_the_folding_payload_folds_at_every_position`).
+
+At the two Markdown-syntax sites -- an index entry's link text and a relation
+note rendered as a list line -- whitespace is normalized first
+(:func:`_normalized`: every terminator and every tab to one space) and then that
+site's whole grammar is escaped: :data:`_INLINE` at both, and at the list line,
+which owns a line start, the line-start constructs of :data:`_BLOCK_STARTERS`
+too. Rendering those two sites into bytes is the exporter's job (a later
+assignment); this module only ships the escapes.
 
 Key order in every emitted block is fixed here as a constant of the exporter
 version, never a function of the row (decision 2, byte-source family
@@ -35,7 +47,7 @@ Pure throughout: no filesystem I/O, no clock, no randomness.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Final
 
 import yaml
@@ -119,28 +131,26 @@ MANIFEST_TYPE: Final = "Theurian Bundle"
 #: break: CommonMark's `\n` and `\r`, plus YAML 1.1's NEL, LINE SEPARATOR and
 #: PARAGRAPH SEPARATOR. Row text is handled over this whole set at the YAML
 #: block, at :func:`escape_markdown_link_text` and at
-#: :func:`escape_markdown_list_line` -- never over `\n` alone: the two escapes
-#: are single-line rules anchored at the start of a string, and a second
-#: physical line inside one row value carries its own leading construct past
-#: them.
+#: :func:`escape_markdown_list_line` -- never over `\n` alone: the list-line
+#: rule is anchored at the start of a string, and a second physical line inside
+#: one row value carries its own leading construct past it.
 LINE_TERMINATORS: Final[frozenset[str]] = frozenset("\n\r\x85\u2028\u2029")
 
-#: `\r\n` first, so the pair folds to one space rather than two. The character
-#: class is built from :data:`LINE_TERMINATORS`, so a member added there is
-#: folded and quoted here without a second edit.
-_LINE_TERMINATOR_RUN: Final = re.compile(
-    "\r\n|[" + "".join(re.escape(character) for character in sorted(LINE_TERMINATORS)) + "]"
-)
 
+def _run_pattern(characters: frozenset[str]) -> re.Pattern[str]:
+    r"""One alternation over *characters*, with `\r\n` first so the pair is one run.
 
-def _single_line(text: str) -> str:
-    """*text* with every :data:`LINE_TERMINATORS` member folded to one space.
-
-    Never refuses, for the reason :func:`sidecar_extension` has a fallback arm
-    instead of a raise: a gate-cleared row is never refused, so hostile text is
-    made inert rather than rejected.
+    Without that alternative first, a `\r\n` pair matches twice and folds to two
+    spaces rather than one.
     """
-    return _LINE_TERMINATOR_RUN.sub(" ", text)
+    return re.compile(
+        "\r\n|[" + "".join(re.escape(character) for character in sorted(characters)) + "]"
+    )
+
+
+#: Built from :data:`LINE_TERMINATORS`, so a member added there is quoted by
+#: :func:`_represent_str` without a second edit.
+_LINE_TERMINATOR_RUN: Final = _run_pattern(LINE_TERMINATORS)
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +160,11 @@ def _single_line(text: str) -> str:
 #: `generated.by`'s tool form (§7). Matched with :meth:`re.Pattern.fullmatch`
 #: and not `^...$`: `$` also matches before a trailing newline, so
 #: `^theurian/\S+$` accepts `theurian/0.4.0\n` -- a line terminator inside the
-#: value §7 fixes as a constant, which is then not that constant.
+#: value §7 fixes as a constant, which is then not that constant. `\S` bounds
+#: whitespace and nothing else: a NUL, a zero-width space and a path-shaped
+#: `theurian/../x` all still match, which is a decoder's and a path builder's
+#: concern rather than this value's -- nothing here builds a path, and the value
+#: lands in a YAML scalar like any other.
 _TOOL_ACTOR: Final = re.compile(r"theurian/\S+")
 
 
@@ -175,6 +189,9 @@ class GeneratedBy:
 
     def __post_init__(self) -> None:
         if not _TOOL_ACTOR.fullmatch(self.by):
+            # Echoing the rejected value is safe here: `by` comes from the
+            # exporter's own constant, so a value reaching this branch is a
+            # programming mistake rather than row text.
             raise InvariantViolationError(
                 f"GeneratedBy.by is {self.by!r}; the export actor is the tool form "
                 f"`theurian/<version>`, with no whitespace (ADR-0037 §7). Pass "
@@ -346,11 +363,19 @@ class _FrontMatterDumper(yaml.SafeDumper):
 def _represent_str(dumper: _FrontMatterDumper, value: str) -> yaml.ScalarNode:
     r"""Double-quoted style whenever *value* carries a line terminator.
 
-    Double-quoted style writes each terminator as an escape (`\r`, `\n`, `\N`,
-    `\L`, `\P`), which keeps the whole value on one physical line and
-    round-trips it byte-for-byte. PyYAML's own style choice does neither for
-    U+0085: it emits the character raw inside single quotes, and `safe_load`
-    reads it back as a space. Key to both halves:
+    Double-quoted style writes each terminator as an escape sequence (`\r`, `\n`,
+    `\N`, `\L`, `\P`) rather than as the byte itself, so no row terminator
+    becomes a line break, and it round-trips the value byte-for-byte. PyYAML's
+    own style choice does neither for U+0085: it emits the character raw inside
+    single quotes, and `safe_load` reads it back as a space.
+
+    It does **not** keep the value on one physical line: PyYAML folds a value
+    past ``width=100``
+    (`test_a_long_value_folds_at_the_width_dump_yaml_is_given`). What the fold
+    preserves is the property the front matter needs -- each continuation line
+    is indented to the block indent, behind a predecessor ending in a
+    backslash, so no line a value occupies begins at column 0, where a key or a
+    `---` fence would have to start. Key to all three:
     `test_a_forged_terminator_stays_inside_its_own_value_at_every_position`.
     """
     style = '"' if _LINE_TERMINATOR_RUN.search(value) else None
@@ -382,29 +407,47 @@ def _front_matter_block(mapping: dict[str, object]) -> str:
     return f"{_FRONT_MATTER_FENCE}{_dump_yaml(mapping)}{_FRONT_MATTER_FENCE}"
 
 
-def _present(values: dict[str, object], order: tuple[str, ...]) -> dict[str, object]:
+def _present(
+    values: dict[str, object], order: tuple[str, ...], *, constant: str
+) -> dict[str, object]:
     """*values* re-read through *order*, dropping the absent ones.
 
     Absence is `None` and is emitted as omission, never as null -- this
     module's one absence convention. An empty list is not an absence: decision 7
     treats `tags`, `sources` and `theurian_relations` as always-present
     projections of a field the revision always carries, sometimes empty.
+
+    *order* decides which keys appear as well as their order, so the two sides
+    must be one population: a key built here and unnamed there would be dropped
+    from the block without a word. *constant* is *order*'s own name, so the
+    refusal can say which one to amend.
     """
+    if set(values) != set(order):
+        raise InvariantViolationError(
+            f"{constant} and the mapping the encoder built are different populations: "
+            f"built but unnamed (so dropped from the block) {sorted(set(values) - set(order))}; "
+            f"named but unbuilt (so nothing fills it) {sorted(set(order) - set(values))}. "
+            f"Amend {constant} in `application/okf_codec.py` to name every key the encoder "
+            f"builds, in the order decision 2 fixes, then run `uv run pytest "
+            f"packages/theurian-core/tests/unit/test_okf_codec.py`."
+        )
     return {key: value for key in order if (value := values[key]) is not None}
 
 
 def _anchor_mapping(anchor: SourceAnchorProjection) -> dict[str, object]:
-    return _present(
-        {
-            "provider": anchor.provider,
-            "repository": anchor.repository,
-            "commit_sha": anchor.commit_sha,
-            "file_path": anchor.file_path,
-            "line_start": anchor.line_start,
-            "line_end": anchor.line_end,
-        },
-        SOURCE_ANCHOR_KEY_ORDER,
-    )
+    """Every field of *anchor*, emitted through :data:`SOURCE_ANCHOR_KEY_ORDER`.
+
+    Reflected rather than listed so each key string is spelled once, in the
+    constant -- and so the population is the projection's own fields: a field
+    added to :class:`SourceAnchorProjection` and not named in the constant
+    refuses here, instead of being silently unemitted, and a constant member
+    that is not a field refuses too. Key:
+    `test_the_anchor_key_order_names_exactly_the_projections_own_fields`.
+    """
+    values: dict[str, object] = {
+        field.name: getattr(anchor, field.name) for field in fields(anchor)
+    }
+    return _present(values, SOURCE_ANCHOR_KEY_ORDER, constant="SOURCE_ANCHOR_KEY_ORDER")
 
 
 def _source_entry_mapping(entry: SourceEntry) -> dict[str, object]:
@@ -418,6 +461,7 @@ def _relation_entry_mapping(entry: RelationEntry) -> dict[str, object]:
     return _present(
         {"type": entry.type, "target": entry.target, "note": entry.note},
         _RELATION_KEY_ORDER,
+        constant="_RELATION_KEY_ORDER",
     )
 
 
@@ -450,7 +494,9 @@ def encode_concept_front_matter(front_matter: ConceptFrontMatter) -> str:
             _relation_entry_mapping(entry) for entry in front_matter.theurian_relations
         ],
     }
-    return _front_matter_block(_present(values, CONCEPT_FRONT_MATTER_KEY_ORDER))
+    return _front_matter_block(
+        _present(values, CONCEPT_FRONT_MATTER_KEY_ORDER, constant="CONCEPT_FRONT_MATTER_KEY_ORDER")
+    )
 
 
 def encode_root_index_front_matter() -> str:
@@ -501,62 +547,136 @@ def sidecar_extension(content_type: MediaType) -> str:
 
 # ---------------------------------------------------------------------------
 # Markdown-syntax escapes (decision 2): the two structural sites outside YAML.
+#
+# Each site's escape is that site's *whole* grammar: whitespace normalized
+# ahead of both, then the shared inline set at both, then -- only at the list
+# line, which owns a line start -- the constructs a line start opens.
 # ---------------------------------------------------------------------------
 
-#: The inline constructs a label can reopen, escaped after the backslash run is
-#: doubled. `]` immediately followed by `(` closes the link early and opens a
-#: second, attacker-chosen one -- the failure decision 2 names. `<` is that same
-#: failure through a different door: `<https://...>` is a CommonMark autolink
-#: and nests a second anchor inside the entry's own, and `<img ...>` is raw
-#: inline HTML. `(` on its own, with no preceding unescaped `]`, carries no
-#: special meaning here and is left alone.
-_LINK_TEXT_ESCAPED: Final = ("[", "]", "<", ">")
+#: Folded to one space ahead of both escapes: every :data:`LINE_TERMINATORS`
+#: member, and the tab.
+_MARKDOWN_WHITESPACE_RUN: Final = _run_pattern(LINE_TERMINATORS | frozenset("\t"))
+
+
+def _normalized(text: str) -> str:
+    """*text* with every line terminator and every tab folded to one space.
+
+    The terminators because both escapes are single-line rules: a second
+    physical line inside one row value carries its own leading construct past a
+    rule that only ever looked at the first. The tab because CommonMark counts
+    indentation in columns after tab expansion, so `\\t#` is an indented ATX
+    heading that a rule written in literal spaces cannot see at all -- and after
+    this fold there are no tabs left for such a rule to miss.
+
+    Never refuses, for the reason :func:`sidecar_extension` has a fallback arm
+    instead of a raise: a gate-cleared row is never refused, so hostile text is
+    made inert rather than rejected.
+    """
+    return _MARKDOWN_WHITESPACE_RUN.sub(" ", text)
+
+
+#: The inline constructs escaped at **both** Markdown sites, each member named
+#: by what it opens:
+#:
+#: * `[` -- a link label, which nests a second link inside the entry's own.
+#: * `]` -- closes a label early; followed by `(` it opens an attacker-chosen
+#:   destination, the failure decision 2 names.
+#: * `<` -- a CommonMark autolink (`<https://evil>`) and raw inline HTML
+#:   (`<img src=x>`); at a line start the same character opens an HTML *block*,
+#:   so escaping it here shuts that door for the list line too.
+#: * `>` -- closes both of those.
+#: * a backtick -- a code span, which runs to the next backtick on the rendered
+#:   line and swallows everything between, an index entry's own
+#:   `](destination)` included.
+#:
+#: `(` is not a member: with every `]` escaped it opens no link destination.
+_INLINE: Final[tuple[str, ...]] = ("[", "]", "<", ">", "`")
+
+
+def _escape_inline(text: str) -> str:
+    """Every :data:`_INLINE` member backslash-escaped, backslash runs doubled first.
+
+    The doubling is what stops a caller's own backslash from pairing with an
+    escape inserted here and cancelling it -- which would resurrect the very
+    construct being closed.
+    """
+    escaped = text.replace("\\", "\\\\")
+    for character in _INLINE:
+        escaped = escaped.replace(character, f"\\{character}")
+    return escaped
+
+
+#: The characters a CommonMark leaf block (spec §4) opens with -- what the
+#: list-line site has and the link-text site does not:
+#:
+#: * `#` -- an ATX heading, which splits the enclosing `## Relations` section.
+#: * a backtick, `~` -- a fenced code block.
+#: * `>` -- a block quote.
+#: * `-`, `+`, `*` -- a list marker, so a forged relation row; `-`, `*` and `_`
+#:   also a thematic break, which is not a list item at all and so deletes the
+#:   note's own row from the rendered list.
+#: * `=` -- a setext heading underline for the line before it. Escaped wherever
+#:   it opens the line, which is broader than the construct (that needs the
+#:   whole line), because the line the note is rendered behind is the exporter's.
+#:
+#: The three §4 blocks not in this tuple: the HTML block, which opens with `<`
+#: and is escaped by :data:`_INLINE` before this rule runs (a backtick and `>`
+#: are in both populations for that reason, and stay in this one because it
+#: states the site's grammar rather than the other pass's leftovers); the
+#: indented code block, which is an indentation and not a character, and which
+#: :func:`_normalized` plus the every-indent rule below cover; and the
+#: paragraph, which is what a line that opens none of these is.
+_BLOCK_STARTERS: Final[tuple[str, ...]] = ("#", "`", "~", ">", "-", "+", "*", "=", "_")
+
+#: Group 1 of each is the character a backslash goes in front of, which is what
+#: lets :func:`escape_markdown_list_line` try them in turn. The leading run is
+#: ` *` rather than ` {0,3}`: how many columns of indentation put the note inside
+#: an indented code block instead depends on the list prefix the *exporter*
+#: renders it behind, so no column window is exact here and the rule fires at
+#: every indent.
+_LINE_START_BLOCK: Final = re.compile("^ *([" + re.escape("".join(_BLOCK_STARTERS)) + "])")
+
+#: An ordered-list marker: a run of digits closed by `.` or `)`. The escape goes
+#: in front of the closing character and not the digits, because CommonMark
+#: escapes punctuation only -- `\1` is a literal backslash and still leaves `1.`
+#: opening a list.
+_LINE_START_ORDERED: Final = re.compile(r"^ *[0-9]+([.)])")
 
 
 def escape_markdown_link_text(text: str) -> str:
     """Escape *text* for a Markdown link's bracketed label (index entries).
 
-    Folded to one line first, which is the precondition the rest of this rule is
-    valid under: every construct it escapes is an inline one, and a second
-    physical line inside a label ends the paragraph the link sits in -- which
-    orphans the real link and lets the next line open any block construct at
-    all.
-
-    On that one line the escaped set is :data:`_LINK_TEXT_ESCAPED`, preceded by
-    doubling the caller's own backslashes so that none of them can pair with an
-    escape this function inserts and cancel it out.
+    Whitespace is normalized first, which is the precondition the rest is valid
+    under: every construct escaped here is an inline one, and a second physical
+    line inside a label ends the paragraph the link sits in -- which orphans the
+    real link and lets the next line open any block construct at all. This site
+    has no line start of its own, so :data:`_INLINE` is the whole of its rule.
     """
-    escaped = _single_line(text).replace("\\", "\\\\")
-    for character in _LINK_TEXT_ESCAPED:
-        escaped = escaped.replace(character, f"\\{character}")
-    return escaped
-
-
-#: CommonMark's ATX-heading rule allows up to three leading spaces before `#`.
-_ATX_HEADING_PREFIX: Final = re.compile(r"^( {0,3})(#+)")
+    return _escape_inline(_normalized(text))
 
 
 def escape_markdown_list_line(text: str) -> str:
     """Escape *text* for a relation note rendered as its own list line.
 
-    Folded to one line first: the rule below is anchored at the start of the
-    string, so it is valid only where the string *is* the line. A note carrying
-    a terminator otherwise renders its second line as a block of its own -- a
-    `## Relations` sub-heading, an index-shaped list entry, a fence -- past an
-    escape that only ever looked at the first.
+    This site owns a line start, so it takes :data:`_INLINE` *and* the line-start
+    rule: after the normalized line's leading spaces, a :data:`_BLOCK_STARTERS`
+    member is escaped, or an ordered-list marker is escaped at its `.` or `)`.
+    One backslash defeats the whole construct, since the line no longer opens
+    with it -- a `#` run stops splitting the section, and a `---` stops being a
+    thematic break, which is not a list item at all and would take this row out
+    of the rendered list.
 
-    On that one line the escaped construct is a leading run of `#`, optionally
-    indented as CommonMark's ATX-heading rule allows: unescaped, it reads as a
-    heading and splits the enclosing `## Relations` section (decision 2). One
-    inserted backslash defeats the whole run, since the line no longer opens
-    with `#` at all.
+    The cost of firing at every indent is one visible backslash in front of a
+    note that was indented four spaces or more *and* began with one of those
+    characters; the alternative is a column window whose exactness would depend
+    on the exporter's list prefix.
     """
-    line = _single_line(text)
-    match = _ATX_HEADING_PREFIX.match(line)
-    if match is None:
+    line = _escape_inline(_normalized(text))
+    opener = _LINE_START_BLOCK.match(line) or _LINE_START_ORDERED.match(line)
+    if opener is None:
         return line
-    indent, hashes = match.group(1), match.group(2)
-    return f"{indent}\\{hashes}{line[match.end() :]}"
+    point = opener.start(1)
+    return f"{line[:point]}\\{line[point:]}"
 
 
 __all__ = [
