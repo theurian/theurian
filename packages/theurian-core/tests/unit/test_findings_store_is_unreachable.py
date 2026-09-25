@@ -362,10 +362,7 @@ _APPLICATION_NON_SERVING_MODULES: frozenset[str] = frozenset(
         "migration_alias_guards.py",
         "migration_body_guards.py",
         "migration_engine.py",
-        # The shared OKF front-matter codec (ADR-0037): pure encode helpers for
-        # the export's derived Index-class artifact. No I/O, no store, and
-        # nothing here answers a caller -- the export path is index_builder's
-        # shape, a maintenance rebuild, not a serving one.
+        # The shared OKF front-matter codec (ADR-0037): pure helpers, no store, nothing served.
         "okf_codec.py",
         "project_service.py",
         "proposal_service.py",
