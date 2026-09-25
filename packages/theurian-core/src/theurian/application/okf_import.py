@@ -304,14 +304,32 @@ def _resolve_body(
 
 def _is_uri_or_relative_path(resource: str) -> bool:
     """Decision 6's syntactic test, and nothing more: no follow, no fetch, no
-    reachability check. A scope descriptor ("all queries in BigQuery project
-    X") has whitespace no URI or relative path needs.
+    reachability check.
+
+    The whitespace check runs *before* the scheme check and dominates it: a
+    scope descriptor can itself open with a colon-terminated word that
+    satisfies RFC 3986's scheme grammar ("BigQuery: all queries in project
+    X" -- "BigQuery" is all letters, a legal scheme), so testing the scheme
+    first admitted any such descriptor as if it were a URI. No legitimate URI
+    or relative path carries whitespace, so checking for it first is never a
+    false exclusion.
+
+    **The scheme grammar admits `javascript:`, `data:` and `file:`, and this
+    function does not narrow it.** That is deliberate, not an oversight: this
+    module never follows, fetches or renders a `sources[]` resource -- it
+    becomes a `SourceAnchor.source_uri` string on a migration a human reviews
+    as text, and nothing here treats it as a link. Narrowing the grammar would
+    protect against a rendering context this pipeline does not have; a future
+    consumer that *does* render these as clickable links owns that
+    allowlisting itself, the same way it would for any other free-text field
+    reaching it (`no_fetch` is pinned for this whole module by
+    `test_okf_import_no_fetch.py`).
     """
+    if not resource or any(c.isspace() for c in resource):
+        return False
     if _URI_SCHEME_PATTERN.match(resource):
         return True
-    return (
-        bool(resource) and not resource.startswith("/") and not any(c.isspace() for c in resource)
-    )
+    return not resource.startswith("/")
 
 
 def _bundle_identity_anchor(relative: PurePosixPath) -> SourceAnchor:

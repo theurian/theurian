@@ -166,6 +166,47 @@ body
     )
 
 
+def test_a_colon_prefixed_scope_descriptor_is_excluded_a_real_uri_still_admitted(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    """Review-Finding: adversarial HIGH -- a colon-prefixed scope descriptor
+    passes the syntactic anchor test its docstring excludes.
+
+    "BigQuery" alone satisfies RFC 3986's scheme grammar (letters only), so a
+    scope descriptor opening with a colon-terminated word -- unlike the plain
+    prose example in the test above -- reached the scheme check first and was
+    admitted as if it were a URI. The whitespace test now runs first and
+    dominates, whichever a leading word looks like.
+    """
+    bundle = tmp_path / "bundle"
+    concept = """---
+type: decision
+title: Colon-prefixed descriptor
+status: stable
+sources:
+  - resource: "BigQuery: all queries in project X"
+  - resource: https://example.com/doc.pdf
+---
+
+body
+"""
+    _write(bundle, "colon-descriptor.md", concept)
+
+    result = _service(paths).import_bundle(_request(bundle))
+
+    assert not result.refusals
+    anchors = _source_anchors_of(result.concepts_admitted[0].proposal.directory)
+    uris = [str(a["sourceUri"]) for a in anchors]
+
+    assert not any("BigQuery" in uri for uri in uris), (
+        f"the colon-prefixed scope descriptor became a source anchor: {uris}"
+    )
+    assert "https://example.com/doc.pdf" in uris
+    assert len(anchors) == 2, (
+        f"expected the bundle-identity anchor plus the real URI, got {anchors}"
+    )
+
+
 # -- An out-of-enum relation type is refused by the schema, not synthesized ------------------
 
 
