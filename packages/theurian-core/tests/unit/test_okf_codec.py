@@ -1,4 +1,4 @@
-"""The OKF front-matter codec's encoder half (ADR-0037 decisions 2, 4, 7).
+"""The OKF front-matter codec, encoder and decoder (ADR-0037 decisions 2, 4, 6, 7).
 
 Scoped to this module's own functions and types. The bundle-level properties --
 the two-corpora battery, cross-run determinism over a whole export, the
@@ -45,6 +45,11 @@ same grep answers two lines -- the package's own stanza, and ``rich``'s
 ``dependencies`` -- so a pin resting on it would rest on a package nothing here
 declares. Every Markdown claim below is therefore structural: what the escape
 returns, not what a renderer makes of it.
+
+**The decoder's own tests are scoped narrower**, at the tail of this module:
+that it round-trips a Theurian-exported concept and accepts a vanilla one
+carrying none of the `theurian_*` extensions, without touching the properties
+above.
 """
 
 from __future__ import annotations
@@ -62,6 +67,7 @@ from adr_0037_support import assert_the_adr_states
 from theurian.application import okf_codec
 from theurian.application.okf_codec import (
     CONCEPT_FRONT_MATTER_KEY_ORDER,
+    EXPORT_VERSION,
     LINE_TERMINATORS,
     OKF_KEYS,
     OKF_SOURCES,
@@ -69,13 +75,17 @@ from theurian.application.okf_codec import (
     OKF_VERSION,
     SOURCE_ANCHOR_KEY_ORDER,
     THEURIAN_KEYS,
+    ConceptDecodeRefusal,
     ConceptFrontMatter,
+    DecodedConceptDocument,
     GeneratedBy,
     ManifestFrontMatter,
     RelationEntry,
     SourceAnchorProjection,
     SourceEntry,
     _present,
+    decode_concept_document,
+    decode_manifest_front_matter,
     encode_concept_front_matter,
     encode_manifest_front_matter,
     encode_root_index_front_matter,
@@ -1441,3 +1451,166 @@ def test_encoding_is_a_pure_function_of_its_input() -> None:
 
     assert encode_concept_front_matter(front_matter) == encode_concept_front_matter(front_matter)
     assert encode_root_index_front_matter() == encode_root_index_front_matter()
+
+
+# ---------------------------------------------------------------------------
+# The decoder (S3, ADR-0037 decision 6): round trip, and a vanilla bundle.
+# ---------------------------------------------------------------------------
+
+_BODY = "\n# Authentication and authorization policy\n\nBody prose.\n"
+
+
+def _decoded(document: str) -> DecodedConceptDocument:
+    decoded = decode_concept_document(document)
+    assert isinstance(decoded, DecodedConceptDocument), decoded
+    return decoded
+
+
+def test_a_theurian_exported_concept_round_trips_every_theurian_value() -> None:
+    """Given a Theurian-exported concept, decoding round-trips every `theurian_*` value."""
+    front_matter = _concept(
+        stale_after="2027-01-01",
+        theurian_body_file="auth-policy.json",
+        theurian_relations=(RelationEntry(type="relates_to", target="x.y", note="n"),),
+    )
+    document = encode_concept_front_matter(front_matter) + _BODY
+
+    decoded = _decoded(document).front_matter
+
+    assert decoded.kind == front_matter.kind
+    assert decoded.title == front_matter.title
+    assert decoded.status == front_matter.status
+    assert decoded.stale_after == front_matter.stale_after
+    assert decoded.generated is not None
+    assert decoded.generated.by == front_matter.generated.by
+    assert decoded.generated.at == front_matter.generated.at
+    assert decoded.theurian_export_version == EXPORT_VERSION
+    assert decoded.theurian_item_id == front_matter.theurian_item_id
+    assert decoded.theurian_revision_id == front_matter.theurian_revision_id
+    assert decoded.theurian_status == front_matter.theurian_status
+    assert decoded.theurian_namespace == front_matter.theurian_namespace
+    assert decoded.theurian_owner == front_matter.theurian_owner
+    assert decoded.theurian_trust_level == front_matter.theurian_trust_level
+    assert decoded.theurian_sensitivity == front_matter.theurian_sensitivity
+    assert decoded.theurian_content_type == front_matter.theurian_content_type
+    assert decoded.theurian_body_file == front_matter.theurian_body_file
+    assert [(entry.type, entry.target, entry.note) for entry in decoded.theurian_relations] == [
+        (entry.type, entry.target, entry.note) for entry in front_matter.theurian_relations
+    ]
+
+
+def test_a_theurian_exported_concepts_sources_round_trip_with_their_anchor() -> None:
+    front_matter = _concept(
+        sources=(
+            SourceEntry(
+                resource="https://example.invalid/doc",
+                anchor=SourceAnchorProjection(
+                    provider="git",
+                    repository="acme/repo",
+                    commit_sha="a" * 40,
+                    file_path="README.md",
+                    line_start=1,
+                    line_end=2,
+                ),
+            ),
+        ),
+    )
+    document = encode_concept_front_matter(front_matter) + _BODY
+
+    decoded = _decoded(document).front_matter
+
+    assert len(decoded.sources) == 1
+    assert decoded.sources[0].resource == "https://example.invalid/doc"
+    assert decoded.sources[0].anchor == front_matter.sources[0].anchor
+
+
+def test_a_sources_anchor_with_only_provider_present_decodes_the_rest_as_none() -> None:
+    """A vanilla or hand-authored `theurian_anchor` may omit every optional field."""
+    document = (
+        "---\n"
+        "type: architecture\n"
+        "title: A concept with a bare anchor\n"
+        "status: stable\n"
+        "sources:\n"
+        "  - resource: https://example.invalid/doc\n"
+        "    theurian_anchor:\n"
+        "      provider: git\n"
+        "---\n" + _BODY
+    )
+
+    decoded = _decoded(document).front_matter
+
+    assert len(decoded.sources) == 1
+    anchor = decoded.sources[0].anchor
+    assert anchor is not None
+    assert anchor.provider == "git"
+    assert anchor.repository is None
+    assert anchor.commit_sha is None
+    assert anchor.file_path is None
+    assert anchor.line_start is None
+    assert anchor.line_end is None
+
+
+def test_a_vanilla_okf_concept_with_no_theurian_keys_decodes_okf_fields_and_nothing_else() -> None:
+    """Given a vanilla OKF concept with zero `theurian_*` keys, every extension is None/empty."""
+    document = "---\ntype: architecture\ntitle: A vanilla concept\nstatus: stable\n---\n" + _BODY
+
+    decoded = _decoded(document).front_matter
+
+    assert decoded.kind == "architecture"
+    assert decoded.title == "A vanilla concept"
+    assert decoded.status == "stable"
+    assert decoded.labels == ()
+    assert decoded.stale_after is None
+    assert decoded.generated is None
+    assert decoded.sources == ()
+    assert decoded.theurian_export_version is None
+    assert decoded.theurian_item_id is None
+    assert decoded.theurian_revision_id is None
+    assert decoded.theurian_status is None
+    assert decoded.theurian_namespace is None
+    assert decoded.theurian_owner is None
+    assert decoded.theurian_trust_level is None
+    assert decoded.theurian_sensitivity is None
+    assert decoded.theurian_content_type is None
+    assert decoded.theurian_body_file is None
+    assert decoded.theurian_relations == ()
+
+
+def test_a_vanilla_concepts_body_decodes_unchanged() -> None:
+    document = "---\ntype: architecture\ntitle: A vanilla concept\nstatus: stable\n---\n" + _BODY
+
+    assert _decoded(document).body == _BODY
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        pytest.param("# No front matter at all\n", id="no-fence"),
+        pytest.param("---\ntitle: Missing type and status\n---\nbody\n", id="missing-type"),
+        pytest.param("---\ntype: architecture\nstatus: stable\n---\nbody\n", id="missing-title"),
+        pytest.param("---\ntype: architecture\ntitle: T\n---\nbody\n", id="missing-status"),
+        pytest.param("---\ntype: [\n---\nbody\n", id="invalid-yaml"),
+        pytest.param("---\n- a\n- b\n---\nbody\n", id="not-a-mapping"),
+    ],
+)
+def test_a_malformed_concept_refuses_rather_than_raising(document: str) -> None:
+    decoded = decode_concept_document(document)
+
+    assert isinstance(decoded, ConceptDecodeRefusal)
+    assert decoded.reason
+
+
+def test_the_manifest_round_trips_its_two_constants() -> None:
+    manifest = ManifestFrontMatter(theurian_bundle_digest="sha256:abc")
+    document = encode_manifest_front_matter(manifest) + _BODY
+
+    decoded = decode_manifest_front_matter(document)
+
+    assert decoded is not None
+    assert decoded.theurian_export_version == EXPORT_VERSION
+    assert decoded.theurian_bundle_digest == manifest.theurian_bundle_digest
+
+
+def test_a_manifest_with_no_front_matter_decodes_to_none() -> None:
+    assert decode_manifest_front_matter("no fence here\n") is None

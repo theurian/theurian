@@ -1,16 +1,17 @@
-"""OKF front-matter codec (ADR-0037 decisions 2, 4, 7): the encoder half.
+"""OKF front-matter codec (ADR-0037 decisions 2, 4, 7): the encoder and decoder.
 
-Shared between S2's exporter and S3's importer (a later slice, a different
-session): the types below are the seam. This module ships the encoder --
-:func:`encode_concept_front_matter`, :func:`encode_root_index_front_matter`,
-:func:`encode_manifest_front_matter` and :func:`sidecar_extension` -- and S3
-appends the decoder against these dataclasses. Every field is a plain string,
-int or nested value, never a domain enum or a Theurian entity: OKF `type` values
-are not centrally registered (§4.1) and a decoded bundle's `status` need not be
+Shared between the exporter and the importer: the types below are the seam.
+This module ships the encoder -- :func:`encode_concept_front_matter`,
+:func:`encode_root_index_front_matter`, :func:`encode_manifest_front_matter`
+and :func:`sidecar_extension` -- and the decoder, :func:`decode_concept_document`
+and :func:`decode_manifest_front_matter`. Every field is a plain string, int or
+nested value, never a domain enum or a Theurian entity: OKF `type` values are
+not centrally registered (§4.1) and a decoded bundle's `status` need not be
 Theurian's own vocabulary, so baking either in as an enum would make the shared
-type unusable for decoding an arbitrary bundle. One field is narrower than that:
-`generated.by` carries the export tool's own actor form, checked at construction
-(see :class:`GeneratedBy`).
+type unusable for decoding an arbitrary bundle. One field is narrower than
+that: `generated.by` carries the export tool's own actor form, checked at
+construction (see :class:`GeneratedBy`) -- which is exactly why the decoder
+never reuses it for `generated` (see :class:`DecodedGeneratedBy` below).
 
 Row text reaches structure through three sites, and :data:`LINE_TERMINATORS` is
 the population all three are written against -- the two Markdown sites over that
@@ -44,6 +45,29 @@ version, never a function of the row (decision 2, byte-source family
 field to carry it: :data:`EXPORT_VERSION`, :data:`MANIFEST_TYPE` and
 :data:`OKF_SPEC_VERSION`.
 
+**The decoder never reuses :class:`ConceptFrontMatter`.** That type is the
+export *projection*: every `theurian_*` field is required, because the
+exporter always writes all thirteen. A bundle the importer reads may be
+vanilla OKF carrying none of them (decision 1: import never reads OKF front
+matter as governance, so nothing here treats a decoded value as anything but
+untrusted data for a caller to map, at its own layer, onto a proposal).
+:class:`DecodedConcept` is the importer's own type, with every `theurian_*`
+field optional. It reuses :class:`RelationEntry` and :class:`SourceAnchorProjection`
+as-is -- both already optional in the right places for a vanilla bundle -- and
+adds :class:`DecodedGeneratedBy`, since :class:`GeneratedBy` constrains `by` to
+the export tool's own actor form, and :class:`DecodedSourceEntry`, since
+:class:`SourceEntry` requires an anchor no vanilla `sources[]` entry carries.
+
+A malformed concept decodes to :class:`ConceptDecodeRefusal` rather than
+raising: one bad file must never abort a bundle a caller is walking (ADR-0037
+decision 6's "one bad path still yields a proposal for everything else",
+applied one level up to a whole concept).
+
+Untrusted front matter is parsed through
+:func:`theurian.security.yaml_loading.load_yaml_mapping` (SEC-8): a safe
+loader, size-bounded, with no implicit timestamp coercion -- a bundle's
+`stale_after` stays the string it was written as.
+
 Pure throughout: no filesystem I/O, no clock, no randomness.
 """
 
@@ -57,6 +81,7 @@ import yaml
 
 from theurian.domain.errors import InvariantViolationError
 from theurian.domain.values import MediaType
+from theurian.security.yaml_loading import load_yaml_mapping
 
 # ---------------------------------------------------------------------------
 # Key vocabulary (ADR-0037 *Neutral*, third bullet; decision 7's table).
@@ -703,6 +728,278 @@ def escape_markdown_list_line(text: str) -> str:
     return f"{line[:point]}\\{line[point:]}"
 
 
+# ---------------------------------------------------------------------------
+# The decoder (S3): every theurian_* field optional, a malformed concept
+# refuses without raising.
+# ---------------------------------------------------------------------------
+
+_FRONT_MATTER_FENCE_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"\A---[ \t]*\r?\n(.*?)\r?\n---[ \t]*\r?\n?", re.DOTALL
+)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DecodedGeneratedBy:
+    """OKF `generated`, decoded (§5.2, §7): unconstrained, unlike :class:`GeneratedBy`.
+
+    That type's `by` is checked at construction against the export tool's own
+    actor form (`theurian/<version>`) -- a rule about what *this exporter*
+    writes, not about what a decoded bundle may contain. A vanilla bundle's
+    `generated.by` can be `human:<id>`, `process:<id>`, or another producer's
+    tool form entirely (§7): nothing says another producer's actor looks like
+    Theurian's, so the decoder never raises on it.
+    """
+
+    by: str
+    at: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DecodedSourceEntry:
+    """One decoded OKF `sources[]` entry.
+
+    `anchor` is `None` for a vanilla bundle's entry, which carries no
+    `theurian_anchor` -- unlike :class:`SourceEntry`, whose anchor the exporter
+    always sets.
+    """
+
+    resource: str
+    anchor: SourceAnchorProjection | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DecodedConcept:
+    """One concept document's front matter, decoded (ADR-0037 decision 6).
+
+    `kind`, `title` and `status` are OKF's own required fields for a concept
+    this importer can act on; every other OKF field and every `theurian_*`
+    extension is optional, since a vanilla bundle carries none of the latter.
+    Values here are untrusted data, never governance (decision 1): nothing in
+    this module reads one to decide anything.
+    """
+
+    kind: str
+    title: str
+    status: str
+    labels: tuple[str, ...] = ()
+    stale_after: str | None = None
+    generated: DecodedGeneratedBy | None = None
+    sources: tuple[DecodedSourceEntry, ...] = ()
+    theurian_export_version: int | None = None
+    theurian_item_id: str | None = None
+    theurian_revision_id: str | None = None
+    theurian_status: str | None = None
+    theurian_namespace: str | None = None
+    theurian_owner: str | None = None
+    theurian_trust_level: str | None = None
+    theurian_sensitivity: str | None = None
+    theurian_content_type: str | None = None
+    theurian_body_file: str | None = None
+    theurian_relations: tuple[RelationEntry, ...] = ()
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DecodedConceptDocument:
+    """One concept file, decoded: its front matter and the body text that follows."""
+
+    front_matter: DecodedConcept
+    body: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DecodedManifest:
+    """`theurian-bundle.md`'s front matter, decoded. Both fields optional.
+
+    A vanilla OKF bundle carries no manifest at all; even a Theurian-exported
+    one is read as untrusted data like every other concept (decision 1).
+    """
+
+    theurian_export_version: int | None = None
+    theurian_bundle_digest: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ConceptDecodeRefusal:
+    """Why one concept file could not be decoded. Never raised -- returned.
+
+    A malformed file is one bad member of a bundle, not a reason to abort the
+    walk: the caller records this and moves to the next file.
+    """
+
+    reason: str
+
+
+def _split_front_matter(text: str) -> tuple[str, str] | None:
+    """The front-matter block's raw YAML and the body after it, or `None`.
+
+    `None` when *text* opens with no `---` fence: OKF requires no front matter
+    at all beyond a concept's own `type` (§4.1), so a fenceless file is not
+    itself malformed -- it is simply not one this importer's stricter
+    requirement (`kind`/`title`/`status`) can act on, which
+    :func:`decode_concept_document` reports as a refusal.
+    """
+    match = _FRONT_MATTER_FENCE_PATTERN.match(text)
+    if match is None:
+        return None
+    return match.group(1), text[match.end() :]
+
+
+def _decode_list(value: object) -> list[object]:
+    return value if isinstance(value, list) else []
+
+
+def _optional_str(mapping: dict[str, object], key: str) -> str | None:
+    value = mapping.get(key)
+    return value if isinstance(value, str) else None
+
+
+def _optional_int(mapping: dict[str, object], key: str) -> int | None:
+    value = mapping.get(key)
+    # `bool` is an `int` subclass; a front-matter `theurian_export_version:
+    # true` is not a version number and must not decode as one.
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _string_tuple(value: object) -> tuple[str, ...]:
+    return tuple(item for item in _decode_list(value) if isinstance(item, str))
+
+
+def _decode_generated(value: object) -> DecodedGeneratedBy | None:
+    if not isinstance(value, dict):
+        return None
+    by, at = value.get("by"), value.get("at")
+    return DecodedGeneratedBy(by=by, at=at) if isinstance(by, str) and isinstance(at, str) else None
+
+
+def _decode_anchor(value: object) -> SourceAnchorProjection | None:
+    """`provider` required; the other five fields optional and independent.
+
+    Matches the encoder's own convention: an unset field is omitted from
+    `theurian_anchor` rather than emitted null, so a vanilla or hand-authored
+    bundle's anchor may carry `provider` alone. A malformed optional field
+    decodes to `None` rather than refusing the whole anchor, the same rule
+    every other optional front-matter field in this module follows.
+    """
+    if not isinstance(value, dict):
+        return None
+    provider = value.get("provider")
+    if not isinstance(provider, str):
+        return None
+    return SourceAnchorProjection(
+        provider=provider,
+        repository=_optional_str(value, "repository"),
+        commit_sha=_optional_str(value, "commit_sha"),
+        file_path=_optional_str(value, "file_path"),
+        line_start=_optional_int(value, "line_start"),
+        line_end=_optional_int(value, "line_end"),
+    )
+
+
+def _decode_source_entry(value: object) -> DecodedSourceEntry | None:
+    if not isinstance(value, dict):
+        return None
+    resource = value.get("resource")
+    if not isinstance(resource, str):
+        return None
+    return DecodedSourceEntry(resource=resource, anchor=_decode_anchor(value.get(THEURIAN_ANCHOR)))
+
+
+def _decode_relation_entry(value: object) -> RelationEntry | None:
+    if not isinstance(value, dict):
+        return None
+    type_, target = value.get("type"), value.get("target")
+    if not isinstance(type_, str) or not isinstance(target, str):
+        return None
+    note = value.get("note")
+    return RelationEntry(type=type_, target=target, note=note if isinstance(note, str) else None)
+
+
+def _decode_concept_mapping(mapping: dict[str, object]) -> DecodedConcept | ConceptDecodeRefusal:
+    kind = _optional_str(mapping, OKF_TYPE)
+    title = _optional_str(mapping, OKF_TITLE)
+    status = _optional_str(mapping, OKF_STATUS)
+    if not kind or not title or not status:
+        missing = [
+            name
+            for name, value in ((OKF_TYPE, kind), (OKF_TITLE, title), (OKF_STATUS, status))
+            if not value
+        ]
+        return ConceptDecodeRefusal(
+            reason=f"missing or empty required key(s): {', '.join(missing)}"
+        )
+    return DecodedConcept(
+        kind=kind,
+        title=title,
+        status=status,
+        labels=_string_tuple(mapping.get(OKF_TAGS)),
+        stale_after=_optional_str(mapping, OKF_STALE_AFTER),
+        generated=_decode_generated(mapping.get(OKF_GENERATED)),
+        sources=tuple(
+            source_entry
+            for raw in _decode_list(mapping.get(OKF_SOURCES))
+            if (source_entry := _decode_source_entry(raw)) is not None
+        ),
+        theurian_export_version=_optional_int(mapping, THEURIAN_EXPORT_VERSION),
+        theurian_item_id=_optional_str(mapping, THEURIAN_ITEM_ID),
+        theurian_revision_id=_optional_str(mapping, THEURIAN_REVISION_ID),
+        theurian_status=_optional_str(mapping, THEURIAN_STATUS),
+        theurian_namespace=_optional_str(mapping, THEURIAN_NAMESPACE),
+        theurian_owner=_optional_str(mapping, THEURIAN_OWNER),
+        theurian_trust_level=_optional_str(mapping, THEURIAN_TRUST_LEVEL),
+        theurian_sensitivity=_optional_str(mapping, THEURIAN_SENSITIVITY),
+        theurian_content_type=_optional_str(mapping, THEURIAN_CONTENT_TYPE),
+        theurian_body_file=_optional_str(mapping, THEURIAN_BODY_FILE),
+        theurian_relations=tuple(
+            relation_entry
+            for raw in _decode_list(mapping.get(THEURIAN_RELATIONS))
+            if (relation_entry := _decode_relation_entry(raw)) is not None
+        ),
+    )
+
+
+def decode_concept_document(text: str) -> DecodedConceptDocument | ConceptDecodeRefusal:
+    """Decode one concept file's front matter and body.
+
+    Never raises: a fence that will not parse, front matter that is not a
+    mapping, or a mapping missing `type`/`title`/`status` each come back as a
+    :class:`ConceptDecodeRefusal` naming why, so a caller walking many files
+    can record one and move on rather than aborting the bundle.
+    """
+    split = _split_front_matter(text)
+    if split is None:
+        return ConceptDecodeRefusal(reason="carries no front-matter block")
+    raw, body = split
+    try:
+        loaded = load_yaml_mapping(raw)
+    except (ValueError, yaml.YAMLError) as exc:
+        return ConceptDecodeRefusal(reason=f"front matter is not valid YAML: {exc}")
+    decoded = _decode_concept_mapping(loaded)
+    if isinstance(decoded, ConceptDecodeRefusal):
+        return decoded
+    return DecodedConceptDocument(front_matter=decoded, body=body)
+
+
+def decode_manifest_front_matter(text: str) -> DecodedManifest | None:
+    """Decode `theurian-bundle.md`'s front matter, or `None` if it will not parse.
+
+    Both fields are optional (decision 2's manifest carries no other key), so
+    this never reports *why* a decode failed -- there is nothing beyond the two
+    constants for a caller to act on either way.
+    """
+    split = _split_front_matter(text)
+    if split is None:
+        return None
+    raw, _ = split
+    try:
+        loaded = load_yaml_mapping(raw)
+    except (ValueError, yaml.YAMLError):
+        return None
+    return DecodedManifest(
+        theurian_export_version=_optional_int(loaded, THEURIAN_EXPORT_VERSION),
+        theurian_bundle_digest=_optional_str(loaded, THEURIAN_BUNDLE_DIGEST),
+    )
+
+
 __all__ = [
     "CONCEPT_FRONT_MATTER_KEY_ORDER",
     "EXPORT_VERSION",
@@ -733,12 +1030,20 @@ __all__ = [
     "THEURIAN_SENSITIVITY",
     "THEURIAN_STATUS",
     "THEURIAN_TRUST_LEVEL",
+    "ConceptDecodeRefusal",
     "ConceptFrontMatter",
+    "DecodedConcept",
+    "DecodedConceptDocument",
+    "DecodedGeneratedBy",
+    "DecodedManifest",
+    "DecodedSourceEntry",
     "GeneratedBy",
     "ManifestFrontMatter",
     "RelationEntry",
     "SourceAnchorProjection",
     "SourceEntry",
+    "decode_concept_document",
+    "decode_manifest_front_matter",
     "encode_concept_front_matter",
     "encode_manifest_front_matter",
     "encode_root_index_front_matter",
