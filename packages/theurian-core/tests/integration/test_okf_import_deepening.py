@@ -252,6 +252,7 @@ def test_the_bundle_identity_anchors_file_path_is_the_concepts_own_bundle_relati
         pytest.param("all queries in BigQuery project X", False, id="no-colon"),
         pytest.param("BigQuery:\tall queries in project X", False, id="tab-separated"),
         pytest.param("https://example.com/a b", False, id="uri-shaped-internal-space"),
+        pytest.param("/etc/passwd", False, id="absolute-path"),
         pytest.param("https://example.com/doc.pdf", True, id="https-uri"),
         pytest.param("docs/architecture.md", True, id="relative-path"),
         pytest.param("s3://data-bucket/path/to/object", True, id="scheme-uri-no-whitespace"),
@@ -389,6 +390,30 @@ def test_the_refusal_key_and_literal_pair_carries_three_distinct_meanings(
 
 
 # -- MAX_UPSERT_OPERATIONS is a whole-import cap, measured rather than assumed ---------------
+
+
+def test_a_bundle_computing_exactly_the_cap_admits_and_drafts_every_concept(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    """M6: the cap boundary's positive direction. The check in
+    `_admit_concepts` is `total_operations > MAX_UPSERT_OPERATIONS`: a bundle
+    landing exactly on the cap, never over it, must draft cleanly. A `>=`
+    boundary would refuse this legal bundle instead of only the next one.
+    """
+    concept_count = MAX_UPSERT_OPERATIONS // 2
+    bundle = tmp_path / "bundle"
+    for index in range(concept_count):
+        _write(
+            bundle,
+            f"concept-{index}.md",
+            f"---\ntype: decision\ntitle: Concept {index}\nstatus: stable\n---\n\nbody\n",
+        )
+
+    result = _service(paths).import_bundle(_request(bundle))
+
+    assert len(result.concepts_admitted) == concept_count
+    assert not result.refusals
+    assert result.relations_proposal is None
 
 
 def test_251_relations_on_one_concept_refuse_the_whole_import_not_only_the_relations_document(

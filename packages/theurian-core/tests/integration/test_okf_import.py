@@ -586,6 +586,42 @@ def test_a_relation_beside_one_that_refuses_still_lands_for_the_drafted_concept(
 
 
 # ---------------------------------------------------------------------------
+# M13: `_DRAFT_REFUSAL` names three exception types; the existing battery
+# only reaches two of them (ProposalError, MigrationError).
+# ---------------------------------------------------------------------------
+
+
+def test_a_content_type_with_no_body_extension_refuses_at_draft_not_the_whole_import(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    """`domain/proposal.py::body_extension` raises `InvariantViolationError`
+    for a content type outside Markdown/JSON/YAML -- reachable here because
+    `MediaType` accepts any `type/subtype` string while `_EXTENSIONS` maps
+    only three of them. Dropping this member from `_DRAFT_REFUSAL` would let
+    it escape `.draft()` uncaught, aborting the whole import rather than
+    refusing this one concept -- HIGH-1's crash shape, from the draft side
+    the read-failure battery cannot reach.
+    """
+    bundle = tmp_path / "bundle"
+    _write(bundle, "sidecar.txt", "plain text body")
+    _write(
+        bundle,
+        "plain-body.md",
+        "---\ntype: decision\ntitle: Plain text body\nstatus: stable\n"
+        "theurian_content_type: text/plain\ntheurian_body_file: sidecar.txt\n---\n\nbody\n",
+    )
+    _write(bundle, "vanilla.md", _VANILLA_CONCEPT)
+
+    result = _service(paths).import_bundle(_request(bundle))
+
+    assert {p.item_id.value for p in result.concepts_admitted} == {"vanilla"}
+    [refusal] = result.refusals
+    assert refusal.kind == "draft"
+    assert refusal.key == "plain-body"
+    assert refusal.literal == "the proposal service refused it: InvariantViolationError"
+
+
+# ---------------------------------------------------------------------------
 # M-e: a concept inside an unreadable directory must not vanish.
 # ---------------------------------------------------------------------------
 
