@@ -497,7 +497,7 @@ decided here.
 [ADR-0035](0035-interactive-source-curation-is-agent-mediated.md) decision 2's
 invariant applied to a second on-ramp, and nothing about it enters the source
 layer. How many proposals one bundle becomes is slice S3's question, not this
-ADR's.
+ADR's — **answered in slice S3, and recorded under *Compliance*.**
 
 **The input is a local directory the operator names, and the importer fetches
 nothing.** No URL, no network call, no credential: the bundle is already on disk
@@ -562,7 +562,8 @@ unpacked, which makes it exactly the shape SEC-7 and T-4/T-5 already name: a
 `../` in a front-matter value, or a symlink inside the tree pointing at
 `~/.ssh/id_rsa`, would otherwise read a file outside the bundle and land its
 contents in a proposal a human is about to approve. S3 owes both pins — the
-escape and the symlink.
+escape and the symlink. **Both landed in slice S3; *Compliance* names the
+tests.**
 
 **A refused reference is recorded as it was written** — the front-matter key and
 the literal string the bundle carried — and **never as the path it resolved
@@ -571,7 +572,8 @@ and the record of a refusal ends up in a proposal draft that is committed and
 pushed for review: printing the target would carry the operator's filesystem
 layout into a public pull request, which is the disclosure T-25 closed on the
 MCP surface and which has no reason to reopen here. S3 owes this pin beside the
-other two.
+other two. **Landed in slice S3; *Compliance* names the tests, and the sweep is
+over every byte the run writes rather than over one field.**
 
 T-3 — an agent acting on instructions injected into indexed content — is the live
 threat on this direction, and it is guarded by exactly the controls ADR-0035
@@ -982,6 +984,28 @@ other — a proposal a human reviews.
    mechanism lands, alongside ADR-0033's and ADR-0035's owed entries. A prose
    obligation with no test today, recorded here rather than dressed as
    discharged.
+
+   > **Amended in slice S3 (2026-09-25): written, and one clause above was
+   > already wrong.** The mechanism landed, so the entry is written — as T-3's
+   > **third** arrival route, after the retrieval route and ADR-0033's candidate
+   > route, rather than as a new numbered entry: the root cause is T-3's own,
+   > which decision 6 states, and naming a class by the shape of what it emits is
+   > what this repository forbids. Each control is named with the test that drives
+   > it, the grade stays High, and the threat summary row does not move.
+   > *Compliance* carries it under *Landed in slice S3*.
+   >
+   > The wrong clause is *"alongside ADR-0033's and ADR-0035's owed entries"*:
+   > **ADR-0033's entry was not owed when this ADR was written.** It landed in
+   > Phase B slice B5 on 2026-09-19 and ADR-0033's own *Compliance* records it as
+   > written; the candidate path is T-3's second route, which is why the import is
+   > its third rather than its second. ADR-0035's entry is genuinely still owed —
+   > it comes due when the interactive-curation mechanism lands, and that
+   > mechanism has not — so the only mention of ADR-0035 in
+   > `docs/security/threat-model.md` is the one this slice's own T-3 route makes
+   > of its decision-5 controls (`git grep -n 0035 --
+   > docs/security/threat-model.md`, one hit, 2026-09-25). The sentence is left
+   > standing above rather than edited, because what it got wrong is the record it
+   > read, not the obligation it recorded.
 5. **Whether an imported concept is a fair reading of its bundle.** That is
    FR-V4's human at the pull request, the same authority ADR-0033 and ADR-0035
    give the question. Nothing here proposes a machine that would replace them.
@@ -1056,6 +1080,101 @@ Landing with this pull request:
   when the paragraph's five-of-seven measurement — the members matching neither
   `endswith` arm — stops being five.
 
+Landed in slice S3 (the gated import). Each item's reach is stated as its body
+holds it — the fixtures it builds and the assertions it makes — rather than as
+its name or its docstring reads:
+
+- **How many proposals one bundle becomes, the value decision 6 left to this
+  slice: one per admitted concept, plus at most one relations document, with the
+  whole import capped at `MAX_UPSERT_OPERATIONS` operations across both kinds.**
+  A concept goes through `ProposalService.draft`, contributing two operations
+  (create and revise); every `theurian_relations` entry in the bundle goes into
+  one `draft_from_document` migration, contributing one each. **One document for
+  the whole import is not a rejected preference but an impossibility**:
+  `_REFUSED_TO_CONTENT_PATH` refuses `createItem` and `upsertRevision` inside
+  `draft_from_document` unconditionally — ADR-0027's two-procedures-disagree
+  control — so no content operation can ride a hand-authored document.
+  `tests/integration/test_okf_import.py::test_theurian_relations_land_as_one_additional_proposal`
+  asserts the relations document's `operations` list equals exactly one
+  `addRelation` mapping, and
+  `::test_a_bundle_with_no_relations_drafts_no_relations_proposal` that
+  `relations_proposal` is `None` when no concept carries the key. The cap's scope
+  is driven rather than asserted:
+  `tests/integration/test_okf_import_deepening.py::test_251_relations_on_one_concept_refuse_the_whole_import_not_only_the_relations_document`
+  builds one concept with 251 entries and asserts the refusal names 253 — the
+  whole-import total — and `MAX_UPSERT_OPERATIONS` itself, and that no proposal
+  directory was written.
+- **A bundle carrying only bare Markdown links yields a drafted migration with
+  no `addRelation` operation** (decision 5).
+  `tests/integration/test_okf_import.py::test_a_bare_markdown_link_never_synthesizes_a_relation`
+  imports a concept whose body carries one bundle-absolute Markdown link and
+  asserts that no relations proposal is drafted at all, which is stronger than
+  the absence of an operation inside one. Decision 5's other half — that a bundle
+  cannot widen the enum by asserting a value — is driven by
+  `tests/integration/test_okf_import_deepening.py::test_an_out_of_enum_relation_type_is_refused_by_the_schema_while_the_concept_still_drafts`:
+  a `theurian_relations` entry naming `made_up_relation_type` leaves the concept
+  admitted, `relations_proposal` `None`, and one refusal keyed `addRelation`.
+- **The proposed trust level is capped at `INFERRED`**, and the two halves are
+  pinned separately because they can fail separately.
+  `tests/unit/test_okf_import_trust_ceiling.py::test_no_caller_can_pass_a_trust_level_to_an_imported_concept`
+  constructs `ImportedConcept` with `trust_level=TrustLevel.REVIEWED` and asserts
+  `TypeError`, with `::test_an_imported_concept_defaults_to_inferred_trust`
+  asserting the constructed default; both are assertions about the *type*.
+  `tests/integration/test_okf_import.py::test_a_theurian_exported_and_a_vanilla_concept_both_draft_at_inferred_trust`
+  is the one about the *artifact*: it imports a bundle whose concept front matter
+  says `theurian_trust_level: reviewed`, reads `trustLevel` out of each written
+  migration's second operation, and asserts `inferred`.
+- **An import lands under a proposal directory and reaches no approved state**
+  (decision 6). `OkfImportService` is constructed with a `DraftOnlyProposals` and
+  calls only its two draft entries; `cli/okf_commands.py::_service` is where that
+  facade is built. The facade itself is pinned by
+  `tests/unit/test_draft_only_proposals.py::test_no_reachable_attribute_of_the_facade_is_named_for_an_approved_state_mover`,
+  which asserts a facade's non-dunder attributes equal
+  `{_draft, _draft_from_document, draft, draft_from_document}`, and by
+  `::test_the_facade_does_not_expose_an_approved_state_mover`, parametrized over
+  `accept`, `_commit` and `_service`. **Both build the facade over a spy service,
+  so their subject is the facade's surface rather than this import's writes.** The
+  import side is held where the proposal directories are read: every assertion
+  above reads a migration out of the drafted proposal's own directory, and
+  `tests/integration/test_okf_import.py::test_too_many_admitted_operations_refuses_the_whole_import_before_drafting`
+  asserts `paths.proposals` holds no directory at all after a cap refusal. The
+  residue is named under *Still owed* rather than counted here.
+- **INV-8's floor is the bundle's own identity anchor**, present whatever the
+  bundle's `sources[]` says: `_source_anchors` puts
+  `okf-bundle:<bundle-relative path>` first and appends an entry only when
+  `_is_uri_or_relative_path` admits its `resource`.
+  `tests/integration/test_okf_import_deepening.py::test_a_uri_and_a_relative_path_become_anchors_a_scope_descriptor_does_not`
+  builds one concept with three `sources` entries — a URL, a relative path and
+  the scope descriptor `all queries in BigQuery project X` — and asserts the
+  written migration carries exactly three `sourceAnchors`, the first
+  `okf-bundle:sources-test.md`, with none naming `BigQuery`. **What no fixture
+  builds is a bundle whose only entry is a scope descriptor**; the
+  concepts carrying no `sources` key at all are admitted and drafted throughout
+  these files, which is the same zero-usable-entries case arriving by absence
+  instead of by exclusion.
+- **The three containment pins of decision 6.**
+  `tests/integration/test_okf_import_path_containment.py` drives an absolute
+  `theurian_body_file`, a symlinked concept file inside the bundle, and a sidecar
+  reached through an in-bundle symlink; each case asserts exactly one refusal, the
+  bundle's other concept still admitted, and the outside file's sentinel bytes
+  absent from every byte written under `.theurian/proposals/`. The `../` form is
+  `tests/integration/test_okf_import.py::test_a_bad_body_file_reference_is_refused_without_the_resolved_path_or_the_bundle`,
+  which asserts the refusal's `literal` is `../../../../etc/passwd` verbatim. The
+  third pin — a refusal records the reference as written, never the resolved
+  target — is
+  `::test_no_refusal_or_drafted_file_carries_the_operator_filesystem_layout`,
+  which sweeps every refusal's `literal` *and* every byte under
+  `.theurian/proposals/` for the run's own temporary-directory string, and
+  `tests/integration/test_okf_cli.py::test_okf_import_reports_a_refusal_by_key_and_literal_never_a_resolved_path`,
+  which asserts the same over the CLI's whole JSON payload. Beside them,
+  `tests/integration/test_okf_import_path_containment.py::test_a_bundle_root_under_a_symlinked_parent_directory_still_admits_in_bundle_references`
+  holds the other direction: a bundle under a symlinked parent is not refused.
+- **The T-3 threat-model entry for the import path**, named in *What this does not
+  close* item 4. It is written as the third arrival route inside
+  [T-3](../security/threat-model.md) rather than as a new entry, because the root
+  cause is T-3's own and decision 6 says so; the grade stays High and no control
+  is added, so the threat summary row does not move.
+
 Still owed, with the slice that will satisfy it:
 
 - **Slice S2 (export):** the two-corpora equality of decision 3 — one export run
@@ -1089,21 +1208,24 @@ Still owed, with the slice that will satisfy it:
   `## Relations` section with the shape they had without it. The YAML half is
   the one with a governance consequence, and the schema bounds all four of these
   strings by length alone.
-- **Slice S3 (import):** that a bundle carrying only bare Markdown links yields a
-  drafted migration with **no** `addRelation` operation (decision 5); that an
-  import lands only under a proposal directory and reaches no approved state
-  (decision 6, the same shape ADR-0032 and ADR-0035 owe); that the proposed trust
-  level is capped at `INFERRED`; that a bundle with no usable `sources[]`
-  still produces a proposal satisfying INV-8 through the bundle's own anchor; and
-  the two containment pins of decision 6 — a `theurian_body_file` of `../` form,
-  and one reached through a symlink out of the tree, are each refused as
-  references while the rest of the bundle still drafts. Beside those two, the
-  third pin decision 6 assigns: **a refusal records the reference as written,
-  never the resolved target**, so the operator's filesystem layout does not ride
-  a proposal draft into a public pull request (T-25's disclosure).
+- **Slice S3's residue: a structural pin that the import's own composition root
+  is handed the draft-only facade**, which is what the discharged item above
+  stops short of. `application/okf_import.py` names `accept` nowhere — `git grep
+  -n accept -- packages/theurian-core/src/theurian/application/okf_import.py`
+  exits 1 with no output — and `OkfImportService.__init__` annotates its
+  collaborator as `DraftOnlyProposals`, so what carries the property today is
+  mypy plus the facade's own in-isolation pins, neither of which reads
+  `cli/okf_commands.py::_service`. The shape to copy is ADR-0032's, which has
+  landed for the MCP server:
+  `tests/integration/test_mcp_tools.py::test_the_object_a_write_intent_tool_is_handed_is_the_draft_only_facade`
+  builds the server, reaches the object each write-intent tool closes over, and
+  asserts its type is `DraftOnlyProposals`, that it is not a `ProposalService`,
+  and that it exposes no approved-state mover. **Still owed, and no milestone
+  currently owns it.** The owed-item cross-reference this bullet replaces read
+  *the same shape ADR-0032 and ADR-0035 owe*; ADR-0032's half is the landed test
+  just named, and ADR-0035's items come due when its interactive-curation
+  mechanism lands.
 - **Slice S2, prose:** a threat-model entry for the distributed-bundle residual
   — a withdrawal, secret removal included, does not propagate to already
   distributed copies. No existing entry covers that shape (*What this does not
   close* item 1 records the grep), so it is an addition rather than an amendment.
-- **Slice S3, prose:** the T-3 threat-model entry for the import path, named in
-  *What this does not close* item 4.
