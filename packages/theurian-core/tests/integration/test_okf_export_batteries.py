@@ -333,17 +333,6 @@ def bundle_of(
     return export(corpus(tmp_path / name, rows, edges), tmp_path / f"bundle-{name}")
 
 
-def _canonical_bytes(database: Path) -> bytes:
-    """The database file and its write-ahead log, concatenated.
-
-    What proves a swept value really *is* in the canonical state the bundle was
-    built from. The `-wal` half is not optional: the pragmas put the state
-    database in WAL mode, so a committed row may live entirely in that file.
-    """
-    wal = database.with_name(f"{database.name}-wal")
-    return database.read_bytes() + (wal.read_bytes() if wal.exists() else b"")
-
-
 def _relations_section_of(document: str) -> str:
     """Everything after the generated `## Relations` heading.
 
@@ -1399,50 +1388,81 @@ DROPPED: Final = Row(
 )
 
 
+#: What :data:`DROPPED` plants, by the name ADR-0037's *Dropped without a slot*
+#: table gives it. `stateHash` is the one member no revision carries -- it is
+#: `schema_metadata`'s, and
+#: ``test_the_state_hash_the_bundle_must_not_carry_is_the_one_the_database_records``
+#: is where its provenance is checked.
+PLANTED: Final[dict[str, str]] = {
+    "stateHash": state_hash_of([DROPPED]),
+    "blobSha": "b10b" * 16,
+    "externalId": "external-id-marker-5c2f",
+    "contentSha256": hashlib.sha256(DROPPED.body.encode("utf-8")).hexdigest(),
+    "validFrom": DROPPED.valid_from.isoformat(),
+    "author": DROPPED.author,
+    "tenantId": DROPPED.tenant_id,
+    "aclGroup": DROPPED.acl_group,
+    "scope.paths": DROPPED.scope_paths[0],
+    "structured": "structured-marker-8e4d",
+    "sourceCommit": DROPPED.source_commit or "",
+    "migrationId": "01K1AAAAAA01234567890ABCDE",
+}
+
+
 def dropped_values(database: Path) -> dict[str, str]:
-    """Each dropped value, by the name ADR-0037's table gives it."""
-    with closing(open_read_connection(database)) as probe:
-        content_sha256 = probe.execute(
-            "SELECT content_sha256 FROM knowledge_revisions WHERE item_id = ?", (DROPPED.item_id,)
-        ).fetchone()["content_sha256"]
+    """Each dropped value, read off the revision the exporter's own snapshot returns.
+
+    Read through the store rather than off the :data:`DROPPED` fixture, so a value
+    is swept for only if the read path really hands it to the exporter. A member
+    the query never selected would be absent from a bundle for a reason that has
+    nothing to do with decision 7's projection, and the sweep would be reporting a
+    property it does not have.
+    """
+    with SqliteCanonicalStore(database) as store, store.read_snapshot():
+        revision = store.get_revision(RequestContext(project_id=PROJECT), DROPPED.revision_id)
+    assert revision is not None
+    anchor = revision.source_anchors[0]
+    assert anchor.blob_sha is not None
+    assert anchor.external_id is not None
+    assert revision.structured is not None
     return {
         "stateHash": state_hash_of([DROPPED]),
-        "blobSha": "b10b" * 16,
-        "externalId": "external-id-marker-5c2f",
-        "contentSha256": content_sha256,
-        "validFrom": DROPPED.valid_from.isoformat(),
-        "author": DROPPED.author,
-        "tenantId": DROPPED.tenant_id,
-        "aclGroup": DROPPED.acl_group,
-        "scope.paths": DROPPED.scope_paths[0],
-        "structured": "structured-marker-8e4d",
-        "sourceCommit": DROPPED.source_commit or "",
-        "migrationId": "01K1AAAAAA01234567890ABCDE",
+        "blobSha": anchor.blob_sha,
+        "externalId": anchor.external_id,
+        "contentSha256": revision.content_sha256.value,
+        "validFrom": revision.validity.valid_from.isoformat(),
+        "author": revision.author,
+        "tenantId": revision.metadata.tenant_id.value,
+        "aclGroup": revision.metadata.acl_group.value,
+        "scope.paths": revision.metadata.scope_paths[0],
+        "structured": str(revision.structured["marker"]),
+        "sourceCommit": revision.source_commit or "",
+        "migrationId": revision.migration_id.value,
     }
 
 
-def test_every_value_the_projection_drops_is_in_the_state_and_in_no_bundle_byte(
+def test_every_value_the_projection_drops_reaches_the_exporter_and_no_bundle_byte(
     tmp_path: Path,
 ) -> None:
     """ADR-0037's *Dropped without a slot* table, swept over every byte of the bundle.
 
     A belt over the emission walk rather than a restatement of it: the walk
     enumerates what the exporter emits, and this asks the finished artifact
-    whether any dropped value arrived by a route nobody enumerated. Each value is
-    first shown to be *in the canonical state*, so an absence here is a bundle
-    that does not carry it rather than a fixture that never held it.
+    whether any dropped value arrived by a route nobody enumerated.
+
+    The control is that the swept values are the ones the exporter's **own read**
+    returns and the ones the fixture planted -- both, because either alone is
+    hollow. Off the fixture only, a value the read path never selects would sweep
+    clean for a reason that is not the projection; off the read only, a value the
+    fixture left unset would sweep clean because there was nothing to find.
     """
     database = corpus(tmp_path / "state", [DROPPED])
     bundle = export(database, tmp_path / "bundle")
     values = dropped_values(database)
-    canonical = _canonical_bytes(database)
 
-    unstored = [name for name, value in values.items() if value.encode("utf-8") not in canonical]
     leaked = [name for name, value in values.items() if value.encode("utf-8") in bundle.every_byte]
 
-    assert unstored == [], (
-        "a swept value is not in the canonical state, so its absence proves nothing"
-    )
+    assert values == PLANTED, "the exporter's read is not the row the fixture planted"
     assert leaked == []
     # The row itself did reach the bundle, so the sweep ran over a populated one.
     assert b"published-label" in bundle.every_byte
