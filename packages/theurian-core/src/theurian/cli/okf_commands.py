@@ -232,9 +232,7 @@ def okf_export(  # noqa: PLR0911 -- one early return per distinguishable failure
     The target directory must be empty or absent. Merging a new bundle into an old
     one would leave members of that export behind — including concepts whose rows
     have since been withdrawn — and make the digest describe a tree that is not
-    there, so a target holding anything is refused rather than merged. Concurrent
-    exports into one target are not serialized; if in doubt, re-export and compare
-    the digest.
+    there, so a target holding anything is refused rather than merged.
     """
     from theurian.cli.commands import (  # noqa: PLC0415 - cycle
         EXIT_STATE_ERROR,

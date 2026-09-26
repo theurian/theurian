@@ -29,7 +29,10 @@ consistency rule to state.
 **The bundle is rendered whole before the first byte is written.** A walk that
 raises therefore writes nothing at all, which is why the target is checked for
 emptiness before the walk rather than cleaned up after it: a partial bundle looks
-complete, and its digest would name files that are not there.
+complete, and its digest would name files that are not there. **And the tree is
+built beside the target, then moved onto it in one rename** (:func:`_publish`),
+so nothing partial is ever *at* the target and two concurrent exports refuse
+rather than merge.
 
 Takes its session factory by injection, so nothing here names an adapter
 (ADR-0003).
@@ -37,12 +40,14 @@ Takes its session factory by injection, so nothing here names an adapter
 
 from __future__ import annotations
 
-import contextlib
+import errno
+import secrets
+import shutil
 from collections.abc import Callable, Container, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Literal, NoReturn, Protocol, final, override
+from typing import Final, Literal, NoReturn, Protocol, final, override
 
 from theurian.application.index_builder import both_ends_visible
 from theurian.application.okf_bundle import Concept, relation_order, render
@@ -67,6 +72,16 @@ TargetRefusal = Literal[
     "tree-not-created",
 ]
 
+#: What :func:`_the_staging_directory` names the directory an export builds in.
+#: Spelled with a leading ``_`` because no ``ItemId`` can be: ``_DOTTED_PATTERN``
+#: in ``domain/identifiers.py`` admits ``[a-z0-9]`` and ``-`` only
+#: (``test_no_item_id_can_be_spelled_as_a_staging_directory``), so a staging
+#: directory a crashed run left beside a target carries a name no concept's own
+#: directory can. A leading dot would hide it from nobody -- ``os.walk``, which
+#: ``okf_import`` walks a bundle with, and ``Path.glob`` both answer dotted names,
+#: and ADR-0037 reserves no such spelling.
+_STAGING_PREFIX: Final = "_okf-export-"
+
 
 class OkfExportError(TheurianError):
     """The export target, or a directory inside it, cannot hold a bundle.
@@ -77,21 +92,27 @@ class OkfExportError(TheurianError):
     with nothing standing in the way, and it carries ``detail`` -- what the
     filesystem answered -- because permissions, free space and a name too long for
     the filesystem need three different cures and only that answer tells them
-    apart. The next two, ``not-empty`` and ``not-a-directory``, are raised before
-    the walk, so nothing has been read and nothing written. The ``symbolic-link``
-    arm fires either there or while the tree is being created -- before any bundle
-    file is written, because :func:`_write` creates and checks every directory
-    first -- so its cure can still promise a target that holds no partial bundle.
+    apart. The next three, ``not-empty``, ``not-a-directory`` and
+    ``symbolic-link``, each have two sites: :func:`_refuse_an_unusable_target`
+    before the walk, and the publishing rename, which is what a target somebody
+    took the name of *during* the walk meets -- ``ENOTEMPTY`` for the first and
+    ``ENOTDIR`` for the other two, told apart by one ``lstat`` (measured on
+    Darwin; see :func:`_publish`).
     ``target-not-probable`` is what :func:`_refuse_an_unusable_target` raises when
     one of its own probes cannot even answer -- a name too long for the filesystem
     at the target's own leaf, unlike ``ancestors-not-created``'s reach, which is the
     directories *above* it. ``tree-not-created`` is the same shape one layer
-    later: a directory the tree needs, at or under the target, that
-    :func:`_make_one_directory` could not create for a reason other than a
-    symbolic link standing in for it -- always after the walk, since every
-    directory but the root is discovered by it, and always before any bundle file
-    is written, since :func:`_make_the_tree` runs whole before :func:`_write`'s
-    third pass.
+    later: a directory the tree needs that :func:`_make_one_directory` could not
+    create for a reason other than a symbolic link standing in for it, the
+    staging directory itself, or a publishing rename that failed for a reason
+    none of the arms above names -- always after the walk, since every directory
+    but the root is discovered by it.
+
+    **No arm leaves a partial bundle at the target, and none of them has to clean
+    one up.** Every byte is written into a staging directory beside the target and
+    reaches the target only through :func:`_publish`'s single rename, so a refusal
+    at any of these seven sites leaves the target exactly as it was found
+    (``test_a_tree_pass_failure_leaves_the_target_exactly_as_it_was_found``).
 
     **No cure here deletes anything, and none of them urges a removal.** The
     target is a path the operator named on the command line rather than a derived
@@ -290,23 +311,24 @@ class OkfExporter:
             OkfExportError: If the directories above the target cannot be created
                 or cannot even be probed, if the target is not a directory, if it
                 already holds something, or if a symbolic link stands at the
-                target or at a directory the tree needs to create. Every arm but
-                the symbolic-link one is raised before the walk; that one can
-                also fire while the tree is being created, which is still before
-                any bundle file is written (see :func:`_write`).
+                target or at a directory the tree needs to create. Raised either
+                before the walk, by the guard, or at publish time, by the rename
+                -- and in both cases with the target holding nothing this run
+                wrote (:func:`_publish`).
             InvariantViolationError: If an item points at a revision belonging to
                 another item. Refused for the whole export rather than skipped,
                 the way ``IndexBuilder._build`` refuses it: the alternative is a
                 concept document carrying another row's content -- possibly a
                 withheld row's -- under this item's approved identity.
             OSError: If a file cannot be written. The tree is rendered whole
-                first, so a refusal here is the filesystem and never the walk.
+                first, so a refusal here is the filesystem and never the walk,
+                and it lands in the staging directory: the target is untouched.
         """
         target = _the_canonical_target(request.output_directory)
         _create_the_canonical_ancestors(target)
         _refuse_an_unusable_target(target)
         bundle = render(self._walk(request))
-        _write(target, bundle.files)
+        _publish(target, bundle.files)
         return {
             "bundlePath": str(target),
             "concepts": bundle.concepts,
@@ -563,12 +585,15 @@ def _refuse_an_unusable_target(directory: Path) -> None:
     five, adversarial MEDIUM). :func:`_refuse_an_unusable_ancestor`'s lineage walk
     already wraps the same shape one level up; this is the target's own.
 
-    **This is a check, not a lock.** Two concurrent exports into the same target
-    can both clear every probe here and then merge their trees in ``_write`` --
-    a same-operator race the ``--help`` text now names, recorded against the
-    distributed-bundle threat-model entry rather than closed here: a lock file
-    would trade it for a crashed run's retry finding the lock still held, which
-    is the worse face (round five, adversarial HIGH, converted).
+    **This is the early refusal; the atomic publish is the guarantee.** Two
+    concurrent exports can both clear every probe here. What stops the second
+    merging into the first is that neither writes into ``directory`` at all: each
+    builds its tree in a staging directory beside it and publishes with one
+    rename, so the loser meets a non-empty target and is refused by the same
+    ``not-empty`` arm above (:func:`_publish`,
+    ``test_two_concurrent_exports_into_one_target_publish_one_whole_bundle``).
+    What this guard buys is the *early* refusal -- before the corpus is read, with
+    a cure keyed on what is actually at the path (round five, adversarial HIGH).
     """
     try:
         if directory.is_symlink():
@@ -585,25 +610,123 @@ def _refuse_an_unusable_target(directory: Path) -> None:
         ) from exc
 
 
-def _write(root: Path, files: Mapping[str, str]) -> None:
+def _publish(target: Path, files: Mapping[str, str]) -> None:
+    """Build the whole tree beside ``target``, then move it onto ``target``.
+
+    **The target is written by exactly one operation, the final rename**, and that
+    is what makes two concurrent exports into one target refuse rather than merge:
+    both clear :func:`_refuse_an_unusable_target`, both build their own staging
+    tree, and the second rename meets a non-empty directory and takes the same
+    ``not-empty`` arm the guard publishes
+    (``test_two_concurrent_exports_into_one_target_publish_one_whole_bundle``).
+    The same one operation is why no failure can leave a partial bundle at the
+    target: whatever fails, fails inside the staging directory, which is then
+    removed whole.
+
+    **An atomic directory rename is POSIX.** Measured on Darwin: an absent target
+    takes the tree, an *empty* directory at the target is replaced, a non-empty one
+    answers ``ENOTEMPTY``, and anything that is not a directory -- a regular file,
+    a symbolic link, a named pipe -- answers ``ENOTDIR``. Linux is ``rename(2)``'s
+    own specification of the same. Windows has no atomic directory-replace call,
+    and this project neither ships nor tests there.
+
+    The staging directory is a sibling under ``target.parent``, so the rename never
+    crosses a filesystem and ``EXDEV`` needs no arm.
+
+    **Publishing this way needs write permission on ``target.parent``**, which a
+    target the operator pre-created inside a parent they cannot write does not
+    give: that export is refused now, where it used to write into the directory
+    already there. Recorded rather than special-cased -- falling back to writing
+    straight into the target is exactly the merge this closes.
+    """
+    staging = _the_staging_directory(target)
+    try:
+        _write(staging, files, named=target)
+        try:
+            staging.replace(target)
+        except OSError as exc:
+            _refuse_the_target_the_rename_met(target, exc)
+    finally:
+        # Best-effort, and only ever the staging directory: this runs with an
+        # exception already on its way out and must not replace it with a second
+        # one. After a successful rename there is nothing left here to remove.
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def _the_staging_directory(target: Path) -> Path:
+    """Create the directory the bundle is built in, beside ``target``.
+
+    A bare ``mkdir`` rather than :func:`tempfile.mkdtemp`, for the mode: this
+    directory *becomes* the bundle root, and ``mkdtemp`` creates at ``0o700``
+    (measured), which would publish a bundle root tighter than the
+    ``0o777 & ~umask`` every export has written until now
+    (``test_the_published_bundle_root_keeps_the_mode_a_plain_mkdir_gives``).
+    ``exist_ok`` is left off for :func:`_make_one_directory`'s reason: a name that
+    already exists, a symbolic link included, must be refused rather than built
+    into -- and a 16-hex-character name colliding is somebody who guessed 64 bits
+    of :func:`secrets.token_hex`, not an accident.
+
+    The refusal names ``target`` and never the staging path, which exists nowhere
+    an operator could list: every way this ``mkdir`` can fail -- a denying parent,
+    no space, a name the filesystem will not take -- is a way
+    ``_make_one_directory(target)`` used to fail, and carries the same document.
+    """
+    staging = target.parent / f"{_STAGING_PREFIX}{secrets.token_hex(8)}"
+    try:
+        staging.mkdir()
+    except OSError as exc:
+        raise OkfExportError(
+            target, reason="tree-not-created", detail=exc.strerror or type(exc).__name__
+        ) from exc
+    return staging
+
+
+def _refuse_the_target_the_rename_met(target: Path, cause: OSError) -> NoReturn:
+    """Name what held ``target``'s name when the publishing rename reached it.
+
+    :func:`_refuse_an_unusable_target` answers the same question earlier and from
+    a probe; this answers it from the failure of the publishing call itself, which
+    nothing can race. The errno arms are measured on Darwin (see :func:`_publish`),
+    and the ``ENOTDIR`` one asks ``lstat`` which shape it met because a symbolic
+    link and a regular file answer with the same errno and need different cures.
+    ``EEXIST`` is here because POSIX permits it where Darwin and Linux both answer
+    ``ENOTEMPTY``.
+    """
+    match cause.errno:
+        case errno.ENOTEMPTY | errno.EEXIST:
+            raise OkfExportError(target) from cause
+        case errno.ENOTDIR:
+            shape: TargetRefusal = "symbolic-link" if target.is_symlink() else "not-a-directory"
+            raise OkfExportError(target, reason=shape) from cause
+        case _:
+            raise OkfExportError(
+                target, reason="tree-not-created", detail=cause.strerror or type(cause).__name__
+            ) from cause
+
+
+def _write(root: Path, files: Mapping[str, str], *, named: Path) -> None:
     """The one place this module writes, so every member takes the same guards.
 
     Three passes, in this order: every member's key is checked, then every
     directory is created and checked, then the files are written.
 
-    **A failure in either of the first two passes leaves ``root`` exactly as it
-    was found.** Pass 1 raises before anything is created. Pass 2 used to create
-    directories one at a time with nothing to unwind: a failure partway --
-    ``ENAMETOOLONG`` from a deep member path, ``ENOSPC``, a denying parent --
-    left every directory already made sitting inside the target, and the retry
-    then refused that debris as not-empty, blaming the operator for what the
-    export itself had written (round five, adversarial HIGH). :func:`_make_the_tree`
-    now tracks which directories it created and, on any exception, removes
-    exactly those in reverse order before re-raising; a directory pass 2 found
-    already there is never touched. **Pass 3 makes no such promise** -- a file
-    write can fail after some files are already on disk, and those stay, which is
-    why the CLI's own cure for a pass-3 ``OSError`` offers ``ls -la`` rather than
-    claiming an empty target.
+    ``root`` is :func:`_publish`'s staging directory and ``named`` is where the
+    tree will be published from it. Every refusal here names ``named``, because
+    the staging path is removed before an operator can read the message and a cure
+    built from it would send them to list nothing. The two differ in their root
+    component alone; each member's own relative key is shared.
+
+    **Nothing here has to unwind.** A failure in any of the three passes leaves a
+    half-built tree in the staging directory, which :func:`_publish` removes whole,
+    and leaves the published target exactly as it was found, because nothing has
+    touched it (``test_a_tree_pass_failure_leaves_the_target_exactly_as_it_was_found``).
+    The reverse-``rmdir`` unwind an earlier cut of this function carried went with
+    the debris class it was written for: a partway pass-2 failure --
+    ``ENAMETOOLONG`` from a deep member path, ``ENOSPC``, a denying parent -- used
+    to leave every directory already made sitting inside the target, and the retry
+    then refused that debris as not-empty, blaming the operator for what the export
+    itself had written (round five, adversarial HIGH). Pass 3 is now covered by the
+    same structure rather than by a promise of its own.
 
     **What is guarded, exactly, is at or under ``root``.** The *leaf* of each
     member takes ``O_NOFOLLOW``
@@ -626,7 +749,7 @@ def _write(root: Path, files: Mapping[str, str]) -> None:
     """
     for relative in files:
         _refuse_a_member_outside_the_root(root, relative)
-    _make_the_tree(root, files)
+    _make_the_tree(root, files, named=named)
     for relative, contents in files.items():
         write_text_without_following_a_link(root / relative, contents)
 
@@ -652,53 +775,26 @@ def _refuse_a_member_outside_the_root(root: Path, relative: str) -> None:
         raise InvariantViolationError(msg)
 
 
-def _make_the_tree(root: Path, files: Mapping[str, str]) -> None:
+def _make_the_tree(root: Path, files: Mapping[str, str], *, named: Path) -> None:
     """Create ``root`` and every directory the members need, shallowest first.
 
     Built from ``parents`` so no ancestor can be missed, and sorted by depth --
     with the path as the tie-break, so the order is total and a refusal names the
     same component on every run.
-
-    **Tracks what it created, and undoes exactly that on any failure.** A
-    directory this pass finds already there is never in ``created`` and is never
-    touched; one this pass makes is undone, deepest first, if a later component
-    in the same pass fails (round five, adversarial HIGH -- see :func:`_write`).
     """
     directories = sorted(
         {parent for relative in files for parent in PurePosixPath(relative).parents},
         key=lambda each: (len(each.parts), each.as_posix()),
     )
-    created: list[Path] = []
-    try:
-        for directory in directories:
-            path = root / directory
-            if _make_one_directory(path):
-                created.append(path)
-    except BaseException:
-        _unwind_the_directories_this_pass_created(created)
-        raise
+    for directory in directories:
+        _make_one_directory(root / directory, named=named / directory)
 
 
-def _unwind_the_directories_this_pass_created(created: list[Path]) -> None:
-    """Best-effort ``rmdir`` of exactly what :func:`_make_the_tree` just made.
-
-    Deepest first (``created`` is shallowest-first, so this reverses it), because
-    a shallower directory cannot come off while one it contains still exists.
-    Each ``rmdir`` is independent and its own failure is swallowed: this is
-    already unwinding after one error, and it must never replace that error with
-    a second one, or leave half the chain removed and call it done.
-    """
-    for path in reversed(created):
-        with contextlib.suppress(OSError):
-            path.rmdir()
-
-
-def _make_one_directory(path: Path) -> bool:
+def _make_one_directory(path: Path, *, named: Path) -> None:
     """``mkdir`` one component, and refuse a symbolic link standing in for it.
 
-    Returns whether this call created ``path``, which is what lets
-    :func:`_make_the_tree` undo exactly what it made and nothing a prior run left
-    behind.
+    ``named`` is the same component under the path the tree will be *published*
+    at, and it is what a refusal here names (see :func:`_write`).
 
     ``exist_ok`` is spelled as a caught ``FileExistsError`` rather than passed,
     because the two differ on exactly the case this function is for: ``mkdir``
@@ -722,13 +818,11 @@ def _make_one_directory(path: Path) -> bool:
         path.mkdir()
     except FileExistsError:
         if path.is_symlink():
-            raise OkfExportError(path, reason="symbolic-link") from None
-        return False
+            raise OkfExportError(named, reason="symbolic-link") from None
     except OSError as exc:
         raise OkfExportError(
-            path, reason="tree-not-created", detail=exc.strerror or type(exc).__name__
+            named, reason="tree-not-created", detail=exc.strerror or type(exc).__name__
         ) from exc
-    return True
 
 
 __all__ = [

@@ -20,8 +20,11 @@ from __future__ import annotations
 import ast
 import hashlib
 import os
+import stat
 import sys
+import threading
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -44,7 +47,7 @@ from theurian.domain.enums import (
     Sensitivity,
     TrustLevel,
 )
-from theurian.domain.errors import InvariantViolationError
+from theurian.domain.errors import InvalidIdentifierError, InvariantViolationError
 from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId
 from theurian.domain.knowledge import (
     KnowledgeItem,
@@ -1097,7 +1100,7 @@ def test_a_symbolic_link_standing_in_for_a_directory_inside_the_bundle_is_refuse
     (root / "architecture").symlink_to(elsewhere, target_is_directory=True)
 
     with pytest.raises(OkfExportError) as caught:
-        okf_export._write(root, {"architecture/policy.md": "would have landed outside"})
+        okf_export._write(root, {"architecture/policy.md": "would have landed outside"}, named=root)
 
     assert "symbolic link" in str(caught.value)
     assert str(root / "architecture") in str(caught.value)
@@ -1121,7 +1124,7 @@ def test_a_member_key_with_a_parent_segment_is_refused_before_anything_is_create
     root = tmp_path / "bundle"
 
     with pytest.raises(InvariantViolationError) as caught:
-        okf_export._write(root, {"../escape.md": "outside the bundle root"})
+        okf_export._write(root, {"../escape.md": "outside the bundle root"}, named=root)
 
     assert "outside the bundle root" in str(caught.value)
     assert not (tmp_path / "escape.md").exists()
@@ -1533,6 +1536,14 @@ def test_a_relative_target_is_created_where_the_working_directory_puts_it(
 # -- The tree pass's own failures (round five) ------------------------------
 
 
+#: What :func:`okf_export._the_staging_directory` adds beside the target: the
+#: prefix plus the 16 characters of ``secrets.token_hex(8)``. The tree is built
+#: there rather than at the target, so a ``PATH_MAX`` fixture has to leave room
+#: for it -- read off the constant rather than assumed, so a longer prefix cannot
+#: quietly move a member path back under the limit and make the pass succeed.
+_STAGING_NAME_LENGTH: Final = len(okf_export._STAGING_PREFIX) + 16
+
+
 def _root_near_the_path_limit(base: Path, length: int) -> Path:
     """A directory under ``base`` whose absolute path is ``length`` characters.
 
@@ -1553,26 +1564,38 @@ def _root_near_the_path_limit(base: Path, length: int) -> Path:
 def test_a_tree_pass_failure_leaves_the_target_exactly_as_it_was_found(
     tmp_path: Path,
 ) -> None:
-    """``_make_the_tree`` used to create directories one at a time and unwind
+    """A mid-pass failure leaves the target as it was found, now by construction.
+
+    ``_make_the_tree`` used to create directories one at a time and unwind
     nothing: a component crossing this filesystem's ``PATH_MAX`` failed the pass
     partway through, and every directory already made -- the target itself
     included -- was left inside it, so a retry into the same place was refused
     as not-empty over debris the export itself had written (round five,
-    adversarial HIGH). Falsifies the earlier ``_write`` docstring's "a refusal in
-    either of the first two [passes] leaves no partial bundle".
+    adversarial HIGH). The reverse-``rmdir`` unwind that first closed that is
+    gone with it: the tree is built in a staging directory beside the target and
+    reaches the target only through one rename, so a failure partway cannot have
+    touched the target at all. What is asserted is still the property and not the
+    mechanism -- plus one thing more, that the staging directory itself is not
+    left behind either.
 
-    Two namespace segments, so the target and the first fit under ``PATH_MAX``
-    and the second does not: the tree pass creates the target and the first
-    segment, then fails on the second, with the whole corpus already read.
+    Two namespace segments, so the staging root and the first fit under
+    ``PATH_MAX`` and the second does not: the pass creates the staging root and
+    the first segment, then fails on the second, with the whole corpus already
+    read. The fixture is sized against the *parent*, so that the staging
+    directory -- not the target -- is the one near the limit.
     """
     segment = "s" * 90
     database = corpus(tmp_path, [Row(f"{segment}.{segment}.leaf", 1)])
-    target = _root_near_the_path_limit(tmp_path, os.pathconf(str(tmp_path), "PC_PATH_MAX") - 100)
+    limit = os.pathconf(str(tmp_path), "PC_PATH_MAX")
+    target = _root_near_the_path_limit(tmp_path, limit - 100 - _STAGING_NAME_LENGTH - 1) / "bundle"
 
     with pytest.raises((OkfExportError, OSError)):
         export(database, target)
 
     assert not target.exists(), "the failed tree pass left debris inside the target"
+    assert list(target.parent.glob(f"{okf_export._STAGING_PREFIX}*")) == [], (
+        "the failed pass left its staging directory beside the target"
+    )
 
     retry = export(corpus(tmp_path / "second-corpus", [Row("keeper", 1)]), target)
     assert retry.report["concepts"] == 1, "the retry was poisoned by the failed pass's debris"
@@ -1653,6 +1676,139 @@ def test_a_leaf_name_the_filesystem_will_not_take_is_refused_as_a_document(
         export(database, target)
 
     assert "File name too long" in str(caught.value)
+
+
+# -- The publish (round five) -----------------------------------------------
+
+
+def test_two_concurrent_exports_into_one_target_publish_one_whole_bundle(
+    tmp_path: Path,
+) -> None:
+    """One target, two exports released together: one whole bundle, one refusal.
+
+    ``_refuse_an_unusable_target`` is a probe, so both of these clear it -- the
+    target is absent when each of them looks. Before the atomic publish both then
+    wrote their trees into that same target and **merged**: every directory the
+    second found was already there and taken as usable, every colliding file was
+    truncated and rewritten, and what was left was one tree holding members of two
+    corpora under whichever manifest landed last -- a digest describing a tree that
+    is not there, at exit 0, twice (round five, adversarial HIGH).
+
+    Two *different* corpora is what makes that visible: with one corpus both runs
+    write the same bytes and a merge is indistinguishable from a single export. The
+    assertions are symmetric in which export wins, because the rename decides that
+    and nothing here should pin it.
+    """
+    alpha = corpus(tmp_path / "alpha-corpus", [Row("alpha", 1)])
+    beta = corpus(tmp_path / "beta-corpus", [Row("beta", 2), Row("gamma", 3)])
+    whole = {
+        str(reference.report["bundleDigest"]): reference
+        for reference in (
+            export(alpha, tmp_path / "reference-alpha"),
+            export(beta, tmp_path / "reference-beta"),
+        )
+    }
+    target = tmp_path / "out" / "bundle"
+    released = threading.Barrier(2)
+
+    def run(database: Path) -> dict[str, object] | OkfExportError:
+        released.wait(timeout=30)
+        try:
+            return _report(database, target)
+        except OkfExportError as exc:
+            return exc
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(run, alpha), pool.submit(run, beta)]
+        outcomes = [future.result() for future in futures]
+
+    published = [each for each in outcomes if isinstance(each, dict)]
+    refused = [each for each in outcomes if isinstance(each, OkfExportError)]
+    assert len(published) == 1, f"both exports published into one target: {outcomes}"
+    assert "not empty" in str(refused[0])
+    digest = str(published[0]["bundleDigest"])
+    assert digest in whole, "the winner published a digest neither corpus produces"
+    assert _read(target) == whole[digest].files, "the target holds a merge of two exports"
+    assert [path.name for path in target.parent.iterdir()] == ["bundle"], (
+        "a staging directory survived the run"
+    )
+
+
+def test_a_pre_created_empty_target_is_replaced_by_the_published_tree(tmp_path: Path) -> None:
+    """``rename(2)`` replaces an *empty* directory atomically (measured on Darwin).
+
+    That is what keeps ``--help``'s "created if absent" and "must be empty" both
+    true once the tree is published by a rename rather than written in place: an
+    operator who made the directory first, or a tool that did, gets the bundle in
+    it rather than a refusal it has no way to read as one.
+    """
+    database = corpus(tmp_path, [Row("keeper", 1)])
+    flat = export(database, tmp_path / "flat-bundle")
+    target = tmp_path / "bundle"
+    target.mkdir()
+
+    bundle = export(database, target)
+
+    assert bundle.files == flat.files
+    assert bundle.report["bundleDigest"] == flat.report["bundleDigest"]
+
+
+def test_a_stale_staging_directory_beside_the_target_is_neither_read_nor_removed(
+    tmp_path: Path,
+) -> None:
+    """A crashed export's staging directory does not poison the next export.
+
+    It is *outside* the target, which is the whole reason the reverse-``rmdir``
+    unwind could go: debris a killed run leaves behind is somewhere the emptiness
+    guard never looks and the walk never writes. It is also not this export's to
+    delete -- it holds bytes somebody may want, and no cure here removes anything
+    (``OkfExportError``'s own no-removal claim) -- so cleaning it up is the
+    operator's, which is what the ``_okf-export-`` name is for.
+    """
+    database = corpus(tmp_path, [Row("keeper", 1)])
+    stale = tmp_path / f"{okf_export._STAGING_PREFIX}deadbeefdeadbeef"
+    stale.mkdir()
+    (stale / "index.md").write_text("a killed run's half-built tree", encoding="utf-8")
+    flat = export(database, tmp_path / "flat-bundle")
+
+    bundle = export(database, tmp_path / "bundle")
+
+    assert bundle.files == flat.files
+    assert (stale / "index.md").read_text(encoding="utf-8") == "a killed run's half-built tree"
+
+
+def test_the_published_bundle_root_keeps_the_mode_a_plain_mkdir_gives(tmp_path: Path) -> None:
+    """The staging directory *becomes* the bundle root, so its mode is the bundle's.
+
+    ``tempfile.mkdtemp`` is the shorter spelling of
+    :func:`okf_export._the_staging_directory` and creates at ``0o700`` (measured),
+    which would publish a distributable bundle root narrower than every export
+    before this one wrote -- silently, since nothing else in this suite reads a
+    mode. Compared against a directory made the way the export has always made
+    one, rather than against a literal: the umask decides both.
+    """
+    database = corpus(tmp_path, [Row("keeper", 1)])
+    reference = tmp_path / "a-plain-directory"
+    reference.mkdir()
+
+    bundle = export(database, tmp_path / "bundle")
+
+    assert stat.S_IMODE(bundle.root.stat().st_mode) == stat.S_IMODE(reference.stat().st_mode)
+
+
+def test_no_item_id_can_be_spelled_as_a_staging_directory() -> None:
+    """Why a staging directory is never confusable with a concept's own directory.
+
+    ``_STAGING_PREFIX``'s comment rests that on the id grammar rather than on a
+    check in the exporter, the way ``okf_bundle._ESCAPE_SUFFIX`` rests its own
+    no-collision claim (``test_no_item_id_can_be_spelled_as_an_escaped_name``). An
+    alphabet that later admitted the underscore would make the name reachable by a
+    row, and nothing between here and an operator -- or an ``okf import`` walk --
+    reading a killed run's debris as part of a bundle would say so.
+    """
+    for spelled in (f"{okf_export._STAGING_PREFIX}0123456789abcdef", "_okf-export", "_"):
+        with pytest.raises(InvalidIdentifierError):
+            ItemId(spelled)
 
 
 class Recording:
