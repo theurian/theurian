@@ -1058,8 +1058,9 @@ Still owed, with the issue that will satisfy it:
   scan would have redacted to four characters was printed whole by the refusal
   that beat it there. Every author-controlled string
   `application/proposal_service.py` interpolates into a message now passes
-  `_bounded`, which cuts it to what may be printed and scans exactly that cut
-  text. The population is proved rather than enumerated:
+  `_bounded`, which cuts it to what may be printed and scans both the whole
+  string and the cut, withholding if either reports. The population is proved
+  rather than enumerated:
   `tests/integration/test_proposal_refusal_names.py::test_every_interpolation_in_a_message_is_gated_or_recorded`
   reflects over the module's own syntax tree and reddens on a new raw
   interpolation that is neither routed through a gate nor recorded in the
@@ -1067,7 +1068,7 @@ Still owed, with the issue that will satisfy it:
   `::test_the_reflection_finds_the_interpolations_it_claims_to_range_over` as the
   positive control that the walk reaches anything at all. The gate itself is held
   by `::test_a_name_the_detector_reports_is_withheld_whole_and_not_in_part`,
-  `::test_the_scan_reads_exactly_the_string_that_will_be_printed` and
+  `::test_the_scan_reads_the_whole_string_and_the_cut_happens_after_it` and
   `::test_a_name_past_the_bound_is_cut_and_says_so_without_publishing_its_length`;
   representative members are driven through the real `ProposalService` by
   `::test_a_migration_the_parser_refuses_withholds_the_name_and_the_quoted_token`

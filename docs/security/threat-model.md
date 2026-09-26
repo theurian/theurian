@@ -278,7 +278,7 @@ written, and that has not been characterised.
 | the `/health` body | `packages/theurian-core/tests/integration/test_daemon.py::test_health_does_not_leak_the_token` |
 | the 401 body | `…test_daemon.py::test_the_401_names_the_fix_without_revealing_the_token`, and over a real socket in `tests/e2e/test_daemon_single_instance.py::test_mcp_without_a_token_is_refused` |
 | `theurian auth rotate` output | `…tests/integration/test_auth_rotate.py::test_the_new_token_never_appears_in_the_output` — also excludes the first eight characters |
-| the generated MCP configuration and env file | `…tests/integration/test_setup_service.py::test_the_mcp_entry_is_installed_without_the_literal_token` and `::test_the_env_file_references_the_token_rather_than_embedding_it` (T-8, SEC-5) |
+| the generated MCP configuration and env file | `…tests/integration/test_setup_service.py::test_the_mcp_entry_is_installed_without_the_literal_token` and `test_setup_service.py::test_the_env_file_references_the_token_rather_than_embedding_it` (T-8, SEC-5) |
 | `doctor --report`, against a token Theurian did not write | `…tests/integration/test_setup_report_withholding.py::test_a_bearer_token_in_the_installed_entry_never_reaches_a_report`, `::test_a_token_in_the_installed_plist_never_reaches_a_report`, and — through the *other* service manager, which is the one the defect was found in — `::test_a_token_on_a_unit_continuation_line_never_reaches_a_report` |
 | every step at once, rather than the routes known to be broken | `…test_setup_report_withholding.py::test_no_step_publishes_a_value_it_only_read` seeds a sentinel into every source a step reads and does not own — the `seeds` dict in `_seed_every_external_source`, ten sources at `06de58a`, of which `_OBSERVED_SEEDS` names the six that carry a positive control — and sweeps the whole payload; `::test_the_sweep_rings_for_a_step_that_forgets_to_withhold` is its alarm's own test |
 | the setup journal, `~/.theurian/setup-journal.jsonl` — written beside the token by the run that mints it | `packages/theurian-core/tests/integration/test_setup_journal.py::test_the_journal_never_records_the_token_it_watched_being_minted`, which asserts the minting *is* recorded before asserting the value is not, so the prohibition cannot pass on an empty file |
@@ -642,10 +642,10 @@ is why this is not `repr`. Proposal-derived *names in error messages* are
 additionally quoted with `repr` and capped at five with a count, in
 `application.proposal_service._names`, for readability, not for the escape.
 `--json` was never affected, because `json.dumps` escapes control characters.
-Tested: `test_propose_cli::test_a_success_payload_cannot_forge_output_through_a_body_path`,
+Tested: `test_propose_cli.py::test_a_success_payload_cannot_forge_output_through_a_body_path`,
 `::test_the_render_sink_escapes_every_control_and_keeps_printable_unicode`,
 `::test_the_fail_sink_escapes_controls_on_the_error_path`, and
-`test_proposal_service::test_a_content_file_cannot_forge_this_command_s_own_error_output`.
+`test_proposal_service.py::test_a_content_file_cannot_forge_this_command_s_own_error_output`.
 **Residual:** the sink is the closure; the constrained interpolations behind it
 (a migration filename, a validated identifier) and two library strings measured
 on 2026-08-20 — `OSError.__str__` reprs its own filename, PyYAML refuses `ESC`
@@ -3898,7 +3898,8 @@ parent and asserts it is *not* refused, which is the macOS `/tmp` shape.
 
 *A refusal records the reference as written, never as resolved* — T-25's
 disclosure met one producer later, because the draft is committed and pushed for
-review. `::test_no_refusal_or_drafted_file_carries_the_operator_filesystem_layout`
+review.
+`tests/integration/test_okf_import_path_containment.py::test_no_refusal_or_drafted_file_carries_the_operator_filesystem_layout`
 sweeps every refusal's `literal` **and** every byte written under
 `.theurian/proposals/` for the test's own `tmp_path` string.
 
@@ -7563,7 +7564,7 @@ Theurian supports:
 | Defense | Why no test can fail without it |
 | :-- | :-- |
 | `newline=""` on the *write* side of both writers | Writing with `newline=None` translates `\n` to `os.linesep`, which is `\n` on POSIX — measured on darwin: both forms produce identical bytes. It is the read side that carries the property here, and it *is* pinned. The write-side flag is the half that would matter to a Windows port, where the same code would otherwise rewrite every line ending it touched. |
-| the `0600` creation mode on the `open`'s `opener` | The `chmod(0o600)` after the write is unconditional and runs last, so a mode read afterwards cannot tell the two apart. What the opener alone buys is that the file never *exists* with a wider mode — a window between create and chmod, which nothing here observes. The complementary arm is pinned, because the creation mode does not reach a file that already exists: `…/test_setup_env_file.py::test_an_env_file_left_group_readable_by_an_older_version_is_tightened` is the `chmod` on its own, and `::test_the_env_file_is_private_however_permissive_the_umask_is` fixes the umask at `0o000` so the verdict is about the code. |
+| the `0600` creation mode on the `open`'s `opener` | The `chmod(0o600)` after the write is unconditional and runs last, so a mode read afterwards cannot tell the two apart. What the opener alone buys is that the file never *exists* with a wider mode — a window between create and chmod, which nothing here observes. The complementary arm is pinned, because the creation mode does not reach a file that already exists: `…/test_setup_env_file.py::test_an_env_file_left_group_readable_by_an_older_version_is_tightened` is the `chmod` on its own, and `test_setup_env_file.py::test_the_env_file_is_private_however_permissive_the_umask_is` fixes the umask at `0o000` so the verdict is about the code. |
 
 **Controls, the repository's `.gitignore`:** written by `theurian init` rather
 than by setup — setup's row-13 probe only reads it — and in scope here because it

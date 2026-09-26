@@ -1595,7 +1595,7 @@ name.)*
   added:
   `unit/test_review_ingestion_flag_claims.py::test_the_four_sites_spell_the_never_meant_sentences_one_way`
   holds the four sites' shared sentences against each other, and
-  `::test_each_record_narrates_the_flag_the_capability_dict_publishes` holds each
+  `unit/test_review_ingestion_flag_claims.py::test_each_record_narrates_the_flag_the_capability_dict_publishes` holds each
   narrating record to the era the live flag value selects, with
   `::test_the_docstring_checker_demands_the_other_era_when_the_flag_moves` as its
   control. Its population is **enumerated, not derived**: a ninth narrating record
@@ -1635,7 +1635,7 @@ named in place below. Paths are `packages/theurian-core/tests/`.
   (`::test_the_counter_would_have_seen_a_scan_under_the_default_policy`) so that
   "never called" is not satisfied by a detector nothing reaches. The CLI's exit
   codes are `integration/test_review_ingest_cli.py::test_warn_exits_zero_and_still_reports_the_finding`
-  and `::test_off_scans_nothing_and_lands_everything`.
+  and `integration/test_review_ingest_cli.py::test_off_scans_nothing_and_lands_everything`.
 - **Landed in slice 2 — the scan reads exactly the author-controlled fields** of
   decision 3's table.
   `unit/test_review_landing_gate.py::test_a_secret_planted_in_any_author_controlled_field_refuses_the_record`
@@ -1760,7 +1760,7 @@ and `::test_the_build_records_the_decision_its_guard_makes`.
   as the generated-input arm. At the tool, which is the layer a caller actually
   reaches:
   `integration/test_review_search_tool_absence_proof.py::test_every_query_in_the_battery_answers_identically_over_the_two_corpora`,
-  with `::test_the_battery_really_reaches_the_withheld_records` and
+  with `integration/test_review_search_tool_absence_proof.py::test_the_battery_really_reaches_the_withheld_records` and
   `::test_the_control_serves_the_withheld_records_through_the_very_same_tool`
   keeping the equality from being satisfied by a battery that reaches nothing, and
   `::test_no_generated_request_separates_the_two_corpora_at_the_tool`. Three

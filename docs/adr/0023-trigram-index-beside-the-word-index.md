@@ -481,7 +481,7 @@ Landed in Milestone 5:
   now: it was stale before the round of fixes that prompted this pass.
   `tests/integration/test_index_fallback.py::test_a_fallback_names_the_reason_it_could_not_use_the_index[written-by-another-schema]`,
   `test_a_broken_index_is_never_reported_as_a_healthy_one[written-by-another-schema]`,
-  and `tests/integration/test_index_store.py::test_a_missing_table_raises_instead_of_answering_nothing`.
+  and `tests/integration/test_index_fallback.py::test_a_missing_table_raises_instead_of_answering_nothing`.
   The parameter id names the *scenario* that produces the mismatch; the reason
   code it asserts is `index-schema-mismatch`. This section cited the reason code
   as the id until the scenarios were parametrised separately from the codes.

@@ -1005,7 +1005,7 @@ def test_the_slice_3_note_states_that_staleness_speaks_only_through_the_refusal(
     by telling the causes apart.
 
     The behaviour is
-    ``test_review_findings_tool.py::test_every_unservable_store_gives_the_same_constant_refusal``
+    ``test_review_findings_tool.py::test_every_unservable_state_answers_with_one_identical_message``
     and ``::test_the_unservable_refusal_does_not_vary_with_what_the_store_holds``;
     what is held here is that the record still says it.
     """
