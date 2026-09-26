@@ -14,6 +14,46 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ### Added
 
+- **`theurian okf export <directory>`, so this project's approved knowledge
+  becomes a bundle another team — or another tool — can read**
+  ([ADR-0037](../../docs/adr/0037-okf-is-the-knowledge-layer-interchange.md),
+  decisions 2, 3, 4 and 7). The output is an
+  [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
+  v0.2 bundle: a directory tree of Markdown files with YAML front matter, one
+  concept document per knowledge item, an `index.md` in every directory, and a
+  `theurian-bundle.md` manifest at the root. `--json` reports `bundlePath`, the
+  `concepts`, `sidecars` and `indexes` counts, and `bundleDigest` — no title, no
+  body, no relation note and no item id.
+
+  **It holds exactly what this deployment serves by default** — `approved` items
+  at or below the sensitivity ceiling in your serving profile — decided by the
+  same two predicates the serve path uses, and **no option widens it**: there is
+  no `--include-unapproved` bundle. A reader who may not see a row through
+  `knowledge.search` may not see it in a bundle either, and a bundle is the
+  easiest artifact to forward. Every read comes from one canonical snapshot, so a
+  `migrate apply` landing mid-export leaves the bundle wholly on one side of it
+  rather than straddling two states.
+
+  **Two exports of one unchanged state produce byte-identical trees**, digest
+  included, and across processes — which is what makes the manifest's remedy a
+  real one: regenerate the bundle and compare `theurian_bundle_digest` rather
+  than trusting the copy you hold.
+
+  **The bundle is published by one rename.** Every byte is built in a staging
+  directory beside the target and moved onto it at the end, so a failure part way
+  through leaves the target exactly as it was found, and two concurrent exports
+  into one directory cannot merge — one publishes a whole bundle and the other is
+  refused. The target must be empty or absent: merging into an old bundle would
+  leave behind concepts whose rows have since been withdrawn and make the digest
+  describe a tree that is not there.
+
+  **A bundle is Index-class, and it says so to whoever holds it** (ADR-0010,
+  ADR-0037 decision 2): never a record of truth, never to be cited as team
+  knowledge, losable without loss. The manifest carries a mandatory, fixed holder
+  notice — no later withdrawal, correction or removal of a secret reaches a copy
+  already distributed, and no part of a bundle can be updated in place. That
+  residual is graded and recorded as
+  [T-27](../../docs/security/threat-model.md) in the threat model.
 - **`theurian okf import <bundle>`, so a knowledge bundle someone shared becomes
   reviewable proposals instead of a copy-paste job**
   ([ADR-0037](../../docs/adr/0037-okf-is-the-knowledge-layer-interchange.md),
@@ -60,8 +100,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   concept that crosses the cap instead of reading the rest of the bundle, and the
   refusal says how many operations it reached within how many concepts; more than
   125 plain concepts refuses before anything is drafted, with `--item <id>` named
-  as the way to split the run. And this is the import direction only: there is no
-  `okf export` verb yet, and fetching a bundle from a URL or a registry is
+  as the way to split the run. And this is the import direction only: the export
+  half is the entry above, and fetching a bundle from a URL or a registry is
   deliberately out of scope.
 
 ## [0.4.0] - 2026-09-19
