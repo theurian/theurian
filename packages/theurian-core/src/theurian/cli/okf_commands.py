@@ -232,7 +232,11 @@ def okf_export(  # noqa: PLR0911 -- one early return per distinguishable failure
     The target directory must be empty or absent. Merging a new bundle into an old
     one would leave members of that export behind — including concepts whose rows
     have since been withdrawn — and make the digest describe a tree that is not
-    there, so a target holding anything is refused rather than merged.
+    there, so a target holding anything is refused rather than merged. The path you
+    give is resolved before anything is written — a `..` segment collapses, a
+    relative path is taken from the working directory, and a symbolic link above
+    the target is followed — so `bundlePath` names where the bundle actually
+    landed rather than what you typed.
     """
     from theurian.cli.commands import (  # noqa: PLC0415 - cycle
         EXIT_STATE_ERROR,

@@ -1164,6 +1164,12 @@ def test_an_ancestor_that_is_a_symbolic_link_to_a_real_directory_is_followed(
     this is not academic: ``/tmp`` is itself a symlink to ``/private/tmp``, so a
     future hardening that ``lstat``-refuses an ancestor must turn this pin red and
     confront that recorded reason.
+
+    The reason is a citable record rather than only a docstring: **T-27** in
+    ``docs/security/threat-model.md`` carries the containment-scope residual, names
+    the at-or-under-the-canonical-target bound, and gives the ``/tmp`` measurement
+    as the reason ancestors are followed. The rule itself is ADR-0037 decision 2's
+    amendment B.
     """
     database = corpus(tmp_path, [Row("keeper", 1)])
     real_directory = tmp_path / "real-directory"
