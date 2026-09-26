@@ -505,6 +505,30 @@ def test_818s_stale_by_key_spelling_is_reported_as_a_violation(tmp_path: Path) -
     )
 
 
+def test_an_occurrence_beyond_the_ledgers_count_is_still_reported(tmp_path: Path) -> None:
+    """M-3's spending remedy has to actually decrement the budget.
+
+    Reverting ``violations``'s budget branch to plain set-membership semantics
+    (checking only ``remaining > 0``, never spending it) would let a ledger row
+    licensing one occurrence silently cover any number of them -- the exact
+    recurrence path HIGH-1 walked in practice. Two occurrences of the same
+    dangling name against a row recorded for one: the first is spent, the
+    second is not covered and must still be reported.
+    """
+    scratch_docs = tmp_path / "docs"
+    scratch_docs.mkdir()
+    doc = scratch_docs / "example.md"
+    doc.write_text(
+        "`somefile.py::test_that_nobody_wrote` once.\n"
+        "`somefile.py::test_that_nobody_wrote` twice.\n"
+    )
+    known = {("docs/example.md", "test_that_nobody_wrote"): 1}
+
+    found = violations(scratch_docs, _FAKE_COLLECTED, known=known)
+
+    assert len(found) == 1
+
+
 def test_an_unperturbed_scratch_doc_with_a_real_citation_is_not_a_violation(tmp_path: Path) -> None:
     scratch_docs = tmp_path / "docs"
     scratch_docs.mkdir()
