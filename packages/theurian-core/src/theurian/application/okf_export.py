@@ -54,8 +54,8 @@ from theurian.domain.knowledge import KnowledgeItem, KnowledgeRelation, Knowledg
 from theurian.domain.ports.canonical_store import IndexBuildSession
 from theurian.security.no_follow import write_text_without_following_a_link
 
-#: Why an export target was refused. Six arms, each with its own message and
-#: its own cure, dispatched by ``match`` so a seventh cannot be added without
+#: Why an export target was refused. Seven arms, each with its own message and
+#: its own cure, dispatched by ``match`` so an eighth cannot be added without
 #: being written.
 TargetRefusal = Literal[
     "not-empty",
@@ -63,6 +63,7 @@ TargetRefusal = Literal[
     "symbolic-link",
     "unusable-ancestor",
     "ancestors-not-created",
+    "target-not-probable",
     "tree-not-created",
 ]
 
@@ -81,12 +82,16 @@ class OkfExportError(TheurianError):
     arm fires either there or while the tree is being created -- before any bundle
     file is written, because :func:`_write` creates and checks every directory
     first -- so its cure can still promise a target that holds no partial bundle.
-    ``tree-not-created`` is the same timing, for a directory the tree needs, at or
-    under the target, that :func:`_make_one_directory` could not create for a
-    reason other than a symbolic link standing in for it -- always after the walk,
-    since every directory but the root is discovered by it, and always before any
-    bundle file is written, since :func:`_make_the_tree` runs whole before
-    :func:`_write`'s third pass.
+    ``target-not-probable`` is what :func:`_refuse_an_unusable_target` raises when
+    one of its own probes cannot even answer -- a name too long for the filesystem
+    at the target's own leaf, unlike ``ancestors-not-created``'s reach, which is the
+    directories *above* it. ``tree-not-created`` is the same shape one layer
+    later: a directory the tree needs, at or under the target, that
+    :func:`_make_one_directory` could not create for a reason other than a
+    symbolic link standing in for it -- always after the walk, since every
+    directory but the root is discovered by it, and always before any bundle file
+    is written, since :func:`_make_the_tree` runs whole before :func:`_write`'s
+    third pass.
 
     **No cure here deletes anything, and none of them urges a removal.** The
     target is a path the operator named on the command line rather than a derived
@@ -172,6 +177,16 @@ class OkfExportError(TheurianError):
                     f"The export target {directory} is not empty. A bundle is a whole tree "
                     f"whose digest covers every file in it, so it is written into an empty "
                     f"directory and never merged into an existing one."
+                )
+            case "target-not-probable":
+                self.remedy = (
+                    f"Export into a target with a shorter name: {directory} could not be "
+                    f"checked -- the filesystem answered: {detail}. `ls -ld {directory.parent}` "
+                    f"shows what is under it now."
+                )
+                message = (
+                    f"The export target {directory} could not even be checked for emptiness -- "
+                    f"the filesystem answered: {detail}."
                 )
             case "tree-not-created":
                 # Fires after the walk has already read the whole corpus, so the
@@ -272,9 +287,13 @@ class OkfExporter:
         code review LOW).
 
         Raises:
-            OkfExportError: If the directories above the target cannot be created,
-                if the target is not a directory, or if it already holds
-                something. Raised before the walk.
+            OkfExportError: If the directories above the target cannot be created
+                or cannot even be probed, if the target is not a directory, if it
+                already holds something, or if a symbolic link stands at the
+                target or at a directory the tree needs to create. Every arm but
+                the symbolic-link one is raised before the walk; that one can
+                also fire while the tree is being created, which is still before
+                any bundle file is written (see :func:`_write`).
             InvariantViolationError: If an item points at a revision belonging to
                 another item. Refused for the whole export rather than skipped,
                 the way ``IndexBuilder._build`` refuses it: the alternative is a
@@ -443,6 +462,18 @@ def _the_canonical_target(directory: Path) -> Path:
     return directory.parent.resolve(strict=False) / directory.name
 
 
+def canonical_export_target(directory: Path) -> Path:
+    """Public alias of :func:`_the_canonical_target`.
+
+    ``cli/okf_commands.py``'s recovery from a pass-3 write failure needs the same
+    computation :meth:`OkfExporter.export` already ran, so its cure can name where
+    the bundle actually lands rather than the operator-typed path -- which, through
+    an ancestor link, names somewhere else entirely (round five, adversarial
+    MEDIUM, L-3).
+    """
+    return _the_canonical_target(directory)
+
+
 def _create_the_canonical_ancestors(target: Path) -> None:
     """Create every directory above ``target``, before any guard probes it.
 
@@ -525,15 +556,26 @@ def _refuse_an_unusable_target(directory: Path) -> None:
     one directory lexically and another on disk, and
     :func:`_create_the_canonical_ancestors` has already made every component above
     it real.
+
+    **Every probe is wrapped, not just ``lstat``.** ``pathlib``'s ignored-errno set
+    is ``ENOENT``/``ENOTDIR``/``EBADF``/``ELOOP`` -- ``ENAMETOOLONG`` is not in it,
+    so a 300-character leaf raised straight out of ``is_symlink()`` untyped (round
+    five, adversarial MEDIUM). :func:`_refuse_an_unusable_ancestor`'s lineage walk
+    already wraps the same shape one level up; this is the target's own.
     """
-    if directory.is_symlink():
-        raise OkfExportError(directory, reason="symbolic-link")
-    if not directory.exists():
-        return
-    if not directory.is_dir():
-        raise OkfExportError(directory, reason="not-a-directory")
-    if any(directory.iterdir()):
-        raise OkfExportError(directory)
+    try:
+        if directory.is_symlink():
+            raise OkfExportError(directory, reason="symbolic-link")
+        if not directory.exists():
+            return
+        if not directory.is_dir():
+            raise OkfExportError(directory, reason="not-a-directory")
+        if any(directory.iterdir()):
+            raise OkfExportError(directory)
+    except OSError as exc:
+        raise OkfExportError(
+            directory, reason="target-not-probable", detail=exc.strerror or type(exc).__name__
+        ) from exc
 
 
 def _write(root: Path, files: Mapping[str, str]) -> None:
@@ -687,4 +729,5 @@ __all__ = [
     "OkfExportRequest",
     "OkfExportSession",
     "OkfExporter",
+    "canonical_export_target",
 ]

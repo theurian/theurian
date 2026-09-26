@@ -40,7 +40,12 @@ from theurian.application.authorization import (
     load_serving_profile,
 )
 from theurian.application.draft_only_proposals import DraftOnlyProposals
-from theurian.application.okf_export import OkfExporter, OkfExportError, OkfExportRequest
+from theurian.application.okf_export import (
+    OkfExporter,
+    OkfExportError,
+    OkfExportRequest,
+    canonical_export_target,
+)
 from theurian.application.okf_import import (
     ImportRefusal,
     OkfImportError,
@@ -297,6 +302,11 @@ def okf_export(  # noqa: PLR0911 -- one early return per distinguishable failure
         # The type name and never the message: an `OSError`'s `str` appends the
         # filename, and the remedy below already names the directory once.
         #
+        # `canonical_export_target`, not `directory`: every guard already ran
+        # against the canonical path, so a target reached through an ancestor
+        # link would otherwise get a cure naming the link rather than where the
+        # bundle actually landed (round five, adversarial MEDIUM, L-3).
+        #
         # `ls -la` is offered only where there is something to list. The write can
         # fail before the target is created at all -- a parent that is a regular
         # file refuses the first `mkdir` with ENOTDIR -- and a cure that sent an
@@ -304,16 +314,17 @@ def okf_export(  # noqa: PLR0911 -- one early return per distinguishable failure
         # second error and say nothing about the first. `is_symlink` as well as
         # `exists`, because a dangling link is at the path while `exists` follows
         # it and answers False.
+        target = canonical_export_target(directory)
         left = (
-            f"`ls -la {directory}` shows what this run left behind"
-            if directory.exists() or directory.is_symlink()
-            else f"nothing was left at {directory}"
+            f"`ls -la {target}` shows what this run left behind"
+            if _exists_or_is_a_symbolic_link(target)
+            else f"nothing was left at {target}"
         )
         _fail(
             f"The bundle could not be written ({type(exc).__name__}), so it is incomplete "
             f"or absent.",
             remedy=(
-                f"Make sure {directory} is writable and has room, then export again into an "
+                f"Make sure {target} is writable and has room, then export again into an "
                 f"empty or new directory -- {left}. A bundle is regenerated rather than "
                 f"repaired."
             ),
@@ -389,6 +400,21 @@ def _result_payload(result: OkfImportResult) -> dict[str, object]:
         "refusalsByKind": _refusals_by_kind(result.refusals),
         "refusals": [_refusal_payload(refusal) for refusal in result.refusals],
     }
+
+
+def _exists_or_is_a_symbolic_link(path: Path) -> bool:
+    """``path.exists() or path.is_symlink()``, answering ``False`` rather than raising.
+
+    Both calls are already inside an ``except OSError`` handler that is choosing
+    the export's own recovery wording; a name the filesystem cannot even answer
+    about -- ``ENAMETOOLONG``, which neither ``exists()`` nor ``is_symlink()``
+    swallows -- used to raise the same error a second time, from inside the
+    handler meant to recover from the first (round five, adversarial MEDIUM).
+    """
+    try:
+        return path.exists() or path.is_symlink()
+    except OSError:
+        return False
 
 
 def _the_state_database(paths: ProjectPaths, active: ActiveState, *, as_json: bool) -> Path | None:

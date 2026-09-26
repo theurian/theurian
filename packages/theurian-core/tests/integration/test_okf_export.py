@@ -1593,6 +1593,26 @@ def test_a_parent_that_denies_writes_at_the_targets_own_level_is_refused_as_a_do
     assert not target.exists()
 
 
+def test_a_leaf_name_the_filesystem_will_not_take_is_refused_as_a_document(
+    tmp_path: Path,
+) -> None:
+    """``_refuse_an_unusable_target``'s own probes raised ``ENAMETOOLONG`` untyped
+    for a leaf this long -- ``pathlib``'s ignored-errno set is
+    ``ENOENT``/``ENOTDIR``/``EBADF``/``ELOOP``, and ``ENAMETOOLONG`` is not in it
+    (round five, adversarial MEDIUM). Unlike the ancestor's own version of this
+    failure, this one never reaches ``_create_the_canonical_ancestors`` at all:
+    the target's parent exists already, so the leaf itself is what the guard
+    cannot probe.
+    """
+    database = corpus(tmp_path, [Row("keeper", 1)])
+    target = tmp_path / ("o" * 300)
+
+    with pytest.raises(OkfExportError) as caught:
+        export(database, target)
+
+    assert "File name too long" in str(caught.value)
+
+
 class Recording:
     """An ``OkfExportSession`` that delegates to the real store and records the order.
 

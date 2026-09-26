@@ -16,7 +16,9 @@ document rather than a traceback. The bundle's own bytes are
 
 from __future__ import annotations
 
+import errno
 import json
+import os
 import sqlite3
 import subprocess
 from collections.abc import Iterator
@@ -28,6 +30,7 @@ from git_harness import commit_migrations
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
+from theurian.application import okf_export
 from theurian.cli.commands import EXIT_STATE_ERROR
 from theurian.cli.main import app
 
@@ -401,6 +404,66 @@ def test_a_target_component_the_filesystem_will_not_take_is_reported_as_a_docume
     assert f"ls -ld {project.parent}" in payload["remedy"]
     assert "x" * 400 not in payload["remedy"], "the cure lists a path that cannot exist"
     assert sorted(path.name for path in project.parent.iterdir()) == before
+
+
+def test_a_leaf_name_the_filesystem_will_not_take_is_reported_as_a_document(
+    project: Path,
+) -> None:
+    """The leaf-position twin of the ancestor `ENAMETOOLONG` above.
+
+    Here the target's own probe (`_refuse_an_unusable_target`) is what used to
+    raise untyped, for the same reason: `pathlib`'s ignored-errno set does not
+    include `ENAMETOOLONG` (round five, adversarial MEDIUM). The remedy names
+    the target itself, since nothing here goes through a link -- the canonical
+    and the typed path agree.
+    """
+    _applied(project)
+    target = project.parent / ("o" * 300)
+
+    code, payload = _invoke("okf", "export", str(target))
+
+    assert code == 1
+    assert "File name too long" in payload["error"]
+    assert str(target) in payload["remedy"]
+
+
+def test_the_oserror_recovery_does_not_raise_inside_its_own_probe(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The CLI's `except OSError` handler re-evaluates `directory.exists()` to
+    word its cure, and that probe must never itself raise: a pass-3 write
+    failure paired with a target whose own existence check also raises
+    `ENAMETOOLONG` used to escape as a second traceback from inside the
+    handler meant to recover from the first (round five, adversarial MEDIUM).
+    `catch_exceptions=False` is what makes this pin the no-traceback claim.
+    """
+    _applied(project)
+    target = project.parent / "bundle"
+    # The guard's own `directory.exists()` call, before the walk, must see the
+    # real filesystem -- only the *second* call, from the CLI's own recovery
+    # after the write below has already failed, is the one under test.
+    armed = {"go": False}
+
+    def _failing_write(path: Path, text: str, **kwargs: object) -> None:
+        armed["go"] = True
+        raise OSError(errno.ENAMETOOLONG, os.strerror(errno.ENAMETOOLONG), str(path))
+
+    monkeypatch.setattr(okf_export, "write_text_without_following_a_link", _failing_write)
+
+    real_exists = Path.exists
+
+    def _raising_exists(self: Path, *, follow_symlinks: bool = True) -> bool:
+        if self == target and armed["go"]:
+            raise OSError(errno.ENAMETOOLONG, os.strerror(errno.ENAMETOOLONG))
+        return real_exists(self, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "exists", _raising_exists)
+
+    code, payload = _invoke("okf", "export", str(target))
+
+    assert code == 1
+    assert payload["error"]
+    assert "nothing was left" in payload["remedy"] or "ls -la" in payload["remedy"]
 
 
 def test_an_unbuilt_project_is_refused_with_the_cure_that_builds_it(project: Path) -> None:
