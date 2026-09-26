@@ -2056,7 +2056,7 @@ the decision it belongs to states a property that is otherwise only an argument:
 
   > **Amended in Milestone 6, by the schema-v4 CL. A narrow first instance
   > landed; the item stays owed for the full form.**
-  > `tests/integration/test_index_store.py::test_a_node_row_does_not_move_a_leaf_chunks_bm25_score`
+  > `tests/integration/test_index_schema_v4.py::test_a_node_row_does_not_move_a_leaf_chunks_bm25_score`
   > pins one corpus, one inserted node and one query: a leaf chunk's bm25 score,
   > read through the real `search_lexical` path, must be identical across the
   > insert of a node whose text is almost entirely that query's own terms. It

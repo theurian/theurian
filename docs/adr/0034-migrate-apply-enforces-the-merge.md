@@ -667,7 +667,7 @@ test that discharges it:
   fixed.** `tests/unit/test_network_call_sites.py`'s `PROCESS_SPAWN_SITES` now
   holds **five** entries — `infrastructure/git/committed_check.py` is the new one
   — asserted by equality against the whole set, and
-  `tests/integration/test_committed_migration_check_adapter.py::test_the_git_vector_is_fixed_and_carries_a_timeout`
+  `tests/integration/test_committed_migration_check_adapter.py::test_the_git_vectors_are_fixed_and_carry_a_timeout`
   holds that the vector is fixed by the adapter, cannot be handed a URL or a
   remote, and carries a timeout.
 - **The T-7 spawn bullet moved in the same commit as the set.**

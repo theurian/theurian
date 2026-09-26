@@ -1010,7 +1010,7 @@ registered tool serves a finding, and that it is this one
   interpolates nothing, not the project, not the filters, not the file, so which
   of those causes fired is not a published value (`FINDINGS_UNAVAILABLE_REFUSAL`
   in `mcp/tools.py`;
-  `test_review_findings_tool.py::test_every_unservable_store_gives_the_same_constant_refusal`
+  `test_review_findings_tool.py::test_every_unservable_state_answers_with_one_identical_message`
   and `::test_the_unservable_refusal_does_not_vary_with_what_the_store_holds`).
   **That sentence is narrower than what now holds, and the widening is
   deliberate rather than incidental** (#504 round 1, R1-2 face iv): *value*

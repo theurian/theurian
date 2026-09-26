@@ -1330,7 +1330,7 @@ Still owed, with the milestone that will satisfy it:
   > holds that two calls to the *same* deployment differ raw and agree once
   > masked — which is what makes the substitution exactly sufficient rather than
   > a mask over a real difference. The reach controls are
-  > `::test_the_battery_really_reaches_the_withheld_records`,
+  > `test_candidate_generation_absence_proof.py::test_the_battery_really_reaches_the_withheld_records`,
   > `::test_the_battery_carries_both_shapes_a_caller_can_receive` and
   > `::test_the_control_generates_a_candidate_from_the_withheld_thread_through_the_same_tool`.
   >

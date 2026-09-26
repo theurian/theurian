@@ -385,7 +385,7 @@ Landed after Milestone 6, discharging point 10 as amended
   code. `::test_a_marker_that_is_not_the_whole_line_does_not_open_a_block` covers
   the four ways marker text appears inside a line somebody wrote, and
   `::test_an_end_marker_with_no_start_delimits_nothing_and_is_no_reason_to_refuse`
-  and `::test_an_end_marker_above_the_block_does_not_become_the_blocks_own_end`
+  and `test_env_file_merge.py::test_an_end_marker_above_the_block_does_not_become_the_blocks_own_end`
   hold the other half — the arrangements that are *not* a refusal.
 - The CRLF pair, on both sides of the same claim:
   `…/test_setup_env_file.py::test_a_crlf_file_keeps_every_byte_outside_the_block`
