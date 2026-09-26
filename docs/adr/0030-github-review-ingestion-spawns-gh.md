@@ -1760,7 +1760,7 @@ and `::test_the_build_records_the_decision_its_guard_makes`.
   as the generated-input arm. At the tool, which is the layer a caller actually
   reaches:
   `integration/test_review_search_tool_absence_proof.py::test_every_query_in_the_battery_answers_identically_over_the_two_corpora`,
-  with `test_review_search_tool_absence_proof.py::test_the_battery_really_reaches_the_withheld_records` and
+  with `integration/test_review_search_tool_absence_proof.py::test_the_battery_really_reaches_the_withheld_records` and
   `::test_the_control_serves_the_withheld_records_through_the_very_same_tool`
   keeping the equality from being satisfied by a battery that reaches nothing, and
   `::test_no_generated_request_separates_the_two_corpora_at_the_tool`. Three
