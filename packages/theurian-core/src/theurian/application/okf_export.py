@@ -620,8 +620,9 @@ def _publish(target: Path, files: Mapping[str, str]) -> None:
     ``not-empty`` arm the guard publishes
     (``test_two_concurrent_exports_into_one_target_publish_one_whole_bundle``).
     The same one operation is why no failure can leave a partial bundle at the
-    target: whatever fails, fails inside the staging directory, which is then
-    removed whole.
+    target: everything before the rename fails inside the staging directory, which
+    is then removed whole, and the rename itself either lands the tree or does not
+    happen.
 
     **An atomic directory rename is POSIX.** Measured on Darwin: an absent target
     takes the tree, an *empty* directory at the target is replaced, a non-empty one
@@ -711,10 +712,12 @@ def _write(root: Path, files: Mapping[str, str], *, named: Path) -> None:
     directory is created and checked, then the files are written.
 
     ``root`` is :func:`_publish`'s staging directory and ``named`` is where the
-    tree will be published from it. Every refusal here names ``named``, because
-    the staging path is removed before an operator can read the message and a cure
-    built from it would send them to list nothing. The two differ in their root
-    component alone; each member's own relative key is shared.
+    tree will be published from it. Every :class:`OkfExportError` raised under here
+    names ``named`` rather than ``root``, because the staging path is removed before
+    an operator can read the message and a cure built from it would send them to
+    list nothing. The two differ in their root component alone; each member's own
+    relative key is shared. (Pass 1's refusal names a member *key* and no path at
+    all, and pass 3's ``OSError`` is the CLI's to word, from the canonical target.)
 
     **Nothing here has to unwind.** A failure in any of the three passes leaves a
     half-built tree in the staging directory, which :func:`_publish` removes whole,
