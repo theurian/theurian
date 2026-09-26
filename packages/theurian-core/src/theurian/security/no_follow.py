@@ -58,12 +58,14 @@ descriptor at every level, which nothing in this codebase does. Recorded as
 One caller narrows that bound on its own, and only for its own paths:
 ``okf_export._write`` creates each component of a bundle tree with a bare
 ``mkdir`` and refuses one that turns out to be a link (``_make_one_directory``).
-It is a *check*, not an ``openat`` walk: what it buys is that a link planted
-**at** the named target, or at any component **under** it, cannot be written
-through outside the check-to-use race, which is #577's -- components **above**
-the named target are the operator's own path (round two, security HIGH: the
-earlier wording claimed the whole prefix, which a pre-planted ancestor link
-disproves). Those the export *canonicalizes*:
+It is a *check*, not an ``openat`` walk: what it buys is that a link planted at
+any component **under** the bundle root cannot be written through outside the
+check-to-use race, which is #577's. The named target's own name is not this
+walk's to hold -- ``okf_export._publish`` builds the tree beside it and moves it
+there with one rename, which refuses a link at that name with ``ENOTDIR`` -- and
+components **above** the named target are the operator's own path (round two,
+security HIGH: the earlier wording claimed the whole prefix, which a pre-planted
+ancestor link disproves). Those the export *canonicalizes*:
 ``okf_export._the_canonical_target`` widens through an ancestor link and collapses
 a ``..`` above the leaf, while the leaf itself is never resolved -- which is what
 keeps the refusal at the named target reachable at all. For an ancestor link whose

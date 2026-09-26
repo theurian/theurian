@@ -1159,8 +1159,8 @@ def test_an_ancestor_that_is_a_symbolic_link_to_a_real_directory_is_followed(
     tmp_path: Path,
 ) -> None:
     """An ancestor of the named target is the operator's own path (the ruling): it is
-    walked exactly as ``no_follow``'s narrowed scope sentence says -- refused ``at
-    the named target, or at any component under it``, never above. macOS proves
+    walked exactly as ``no_follow``'s narrowed scope sentence says -- refused at the
+    named target and ``at any component under the bundle root``, never above. macOS proves
     this is not academic: ``/tmp`` is itself a symlink to ``/private/tmp``, so a
     future hardening that ``lstat``-refuses an ancestor must turn this pin red and
     confront that recorded reason.

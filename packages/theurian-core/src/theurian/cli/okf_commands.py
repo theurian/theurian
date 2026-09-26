@@ -307,22 +307,22 @@ def okf_export(  # noqa: PLR0911 -- one early return per distinguishable failure
         # link would otherwise get a cure naming the link rather than where the
         # bundle actually landed (round five, adversarial MEDIUM, L-3).
         #
-        # `ls -la` is offered only where there is something to list. The write can
-        # fail before the target is created at all -- a parent that is a regular
-        # file refuses the first `mkdir` with ENOTDIR -- and a cure that sent an
-        # operator to list a path that does not exist would answer them with a
-        # second error and say nothing about the first. `is_symlink` as well as
-        # `exists`, because a dangling link is at the path while `exists` follows
-        # it and answers False.
+        # `ls -la` is offered only where there is something to list, and after the
+        # atomic publish what it lists is never this run's: every byte goes into a
+        # staging directory and reaches the target through one rename, so an
+        # `OSError` here failed before that rename and whatever the listing shows
+        # was already at the path. A cure that sent an operator to list a path that
+        # does not exist would answer them with a second error and say nothing
+        # about the first. `is_symlink` as well as `exists`, because a dangling
+        # link is at the path while `exists` follows it and answers False.
         target = canonical_export_target(directory)
         left = (
-            f"`ls -la {target}` shows what this run left behind"
+            f"`ls -la {target}` shows what is at it now"
             if _exists_or_is_a_symbolic_link(target)
             else f"nothing was left at {target}"
         )
         _fail(
-            f"The bundle could not be written ({type(exc).__name__}), so it is incomplete "
-            f"or absent.",
+            f"The bundle could not be written ({type(exc).__name__}), so none was published.",
             remedy=(
                 f"Make sure {target} is writable and has room, then export again into an "
                 f"empty or new directory -- {left}. A bundle is regenerated rather than "
