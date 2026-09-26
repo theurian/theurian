@@ -1207,10 +1207,10 @@ its name or its docstring reads:
   which asserts the refusal's `literal` is `../../../../etc/passwd` verbatim. The
   third pin — a refusal records the reference as written, never the resolved
   target — is
-  `::test_no_refusal_or_drafted_file_carries_the_operator_filesystem_layout`,
+  `tests/integration/test_okf_import_path_containment.py::test_no_refusal_or_drafted_file_carries_the_operator_filesystem_layout`,
   which sweeps every refusal's `literal` *and* every byte under
   `.theurian/proposals/` for the run's own temporary-directory string, and
-  `tests/integration/test_okf_cli.py::test_okf_import_reports_a_refusal_by_key_and_literal_never_a_resolved_path`,
+  `tests/integration/test_okf_cli.py::test_okf_import_reports_a_refusal_by_kind_key_and_literal_never_a_resolved_path`,
   which asserts the same over the CLI's whole JSON payload. Beside them,
   `tests/integration/test_okf_import_path_containment.py::test_a_bundle_root_under_a_symlinked_parent_directory_still_admits_in_bundle_references`
   holds the other direction: a bundle under a symlinked parent is not refused.
