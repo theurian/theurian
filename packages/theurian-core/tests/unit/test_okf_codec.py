@@ -95,6 +95,7 @@ from theurian.application.okf_codec import (
 )
 from theurian.domain.errors import InvariantViolationError
 from theurian.domain.values import MediaType
+from theurian.mcp.results import SAFETY
 
 if TYPE_CHECKING:
     from _typeshed import DataclassInstance
@@ -384,6 +385,45 @@ def test_the_okf_key_vocabulary_is_the_eight_keys_the_export_emits() -> None:
             "value in decision 2's byte-source table. Key and value are both derived from "
             "the code, so bumping the spec version reddens until the table moves with it."
         ),
+    )
+
+
+def test_the_safety_triple_key_names_are_disjoint_from_every_bundle_key() -> None:
+    """RED means T-27's "no bundle file carries any of the three" needs to move.
+
+    ``mcp/results.SAFETY`` is the SEC-15 safety triple every served result
+    carries -- ``contentClassification``, ``mayContainInstructions``,
+    ``executable``. The threat model's T-27 records that no bundle file carries
+    any of them and calls the gap unowned rather than deferred, and this is the
+    contract that sentence rests on: the day a producer-extension decision adds
+    one of the triple's own key names to ``THEURIAN_KEYS`` or ``OKF_KEYS``, this
+    reddens and names exactly which one.
+
+    Both sides are read from their live constants rather than copied, so a
+    rename on either side moves this test rather than silently widening or
+    narrowing what it checks.
+
+    **Reach.** This catches the triple's key *names* colliding with a bundle
+    key. It does not prove the codec never emits one of the triple's *values*
+    under some other key name, and it does not prove nothing outside
+    ``okf_export.py``/``okf_codec.py``/``okf_bundle.py``/``okf_commands.py``
+    writes the triple into a bundle -- that is T-27's own ``git grep``, quoted in
+    the threat model and pinned by
+    ``test_threat_model_t27_claims.py`` from the prose side.
+    """
+    triple = frozenset(SAFETY)
+    bundle_keys = frozenset(THEURIAN_KEYS) | frozenset(OKF_KEYS)
+
+    assert triple, (
+        "`mcp.results.SAFETY` is empty, so the disjointness below would pass "
+        "vacuously -- this reads no triple to check bundle keys against."
+    )
+    assert triple.isdisjoint(bundle_keys), (
+        f"the SEC-15 safety triple {sorted(triple)} shares a key name with the "
+        f"bundle vocabulary {sorted(triple & bundle_keys)}. T-27 states 'no "
+        f"bundle file carries any of the three' as an unowned gap; a producer "
+        f"extension that adds one of these names to `THEURIAN_KEYS` or "
+        f"`OKF_KEYS` is exactly the change that sentence has to move for."
     )
 
 

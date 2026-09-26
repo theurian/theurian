@@ -2012,3 +2012,48 @@ def test_the_export_command_registers_exactly_one_argument_and_one_option() -> N
     assert option.is_flag
     assert not option.default
     assert [param.name for param in command.params if param.hidden] == []
+
+
+#: The core changelog, read for the prose half of decision 3's own verb below.
+CORE_CHANGELOG: Final = Path(__file__).resolve().parents[2] / "CHANGELOG.md"
+
+
+def _unreleased_section(changelog: str) -> str:
+    """*changelog*'s `[Unreleased]` section, up to the next release heading."""
+    start = changelog.index("## [Unreleased]")
+    rest = changelog[start:]
+    following = rest.find("## [", 1)
+    return rest if following == -1 else rest[:following]
+
+
+def test_the_changelog_states_the_export_verb_exists_and_drops_the_retired_denial() -> None:
+    """RED means the changelog reverted to describing a verb that does not exist.
+
+    Before this slice, `[Unreleased]`'s import entry read "there is no `okf
+    export` verb yet" -- true when it was written, false the moment slice S2
+    registered `export` beside `import` under `okf`.
+    :func:`test_the_export_command_registers_exactly_one_argument_and_one_option`
+    just above is the fact half of that claim: the CLI already answers "does the
+    verb exist". This is the prose half, over the changelog rather than the CLI.
+
+    **Reach.** This holds only the one retired fragment and the one entry the
+    correction owes; it is not a general detector for a denial reworded into new
+    prose elsewhere in the document (`test_roadmap_claims.py`'s marker machinery
+    is what that costs to build).
+    """
+    changelog = " ".join(CORE_CHANGELOG.read_text(encoding="utf-8").split())
+    unreleased = _unreleased_section(changelog)
+
+    assert "`theurian okf export <directory>`" in unreleased, (
+        "packages/theurian-core/CHANGELOG.md's [Unreleased] section no longer "
+        "carries an entry for `theurian okf export <directory>`. Decision 3's own "
+        "verb is what makes 'there is no okf export verb yet' a retired sentence "
+        "rather than a true one; without this entry the retired sentence's "
+        "absence below says nothing about whether the command shipped."
+    )
+    assert "no `okf export` verb" not in changelog, (
+        "packages/theurian-core/CHANGELOG.md states again that there is 'no `okf "
+        "export` verb'. That sentence was true only until slice S2 registered the "
+        "command; it is dead prose in a changelog whose own entry, a few lines "
+        "above, describes that command shipping."
+    )
