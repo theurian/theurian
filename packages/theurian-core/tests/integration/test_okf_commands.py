@@ -329,16 +329,16 @@ def test_a_second_export_into_the_same_directory_is_refused_as_a_document(
 def test_a_dotdot_target_past_an_absent_component_is_refused_rather_than_merged(
     project: Path,
 ) -> None:
-    """`absent/../out` names `out` once `absent` exists, and not before.
+    """`absent/../out` is the operator naming `out`, and the command refuses `out`.
 
     Every guard `lstat`s the exact path it is given, so a not-yet-existing
     component made all three read as absent regardless of what the same
-    relative path names once that component is real -- and the ancestor
-    `mkdir` that used to run afterward, inside the write, then materialised the
-    missing component and made the walk merge into `out`, a separately
-    populated prior bundle, without ever refusing (round three, adversarial
-    HIGH). Materialising ancestors before every guard is what makes this
-    refuse instead.
+    path names once that component is real -- and the ancestor `mkdir` that used
+    to run afterward, inside the write, then materialised the missing component
+    and made the walk merge into `out`, a separately populated prior bundle,
+    without ever refusing (round three, adversarial HIGH). Canonicalizing the
+    target before any guard is what makes this refuse instead, and it creates
+    nothing on the way: `absent` does not exist afterward either.
     """
     _applied(project)
     out = project.parent / "out"
@@ -350,8 +350,57 @@ def test_a_dotdot_target_past_an_absent_component_is_refused_rather_than_merged(
 
     assert code == 1
     assert "not empty" in payload["error"]
+    assert str(out) in payload["error"], "the refusal named the typed path, not the target"
     after = sorted(str(path.relative_to(out)) for path in out.rglob("*"))
     assert after == before, "the second export merged into the populated prior bundle"
+    assert not (project.parent / "absent").exists(), "the refusal created a component of its own"
+
+
+def test_a_trailing_dotdot_target_is_written_where_it_traverses_to(project: Path) -> None:
+    """The report names the traversed-to directory, through the real command.
+
+    `inner/absent/..` is the operator naming `inner` by traversal, so the bundle
+    lands there and `bundlePath` says so -- the payload is the only place a caller
+    reads the landing place, and `test_okf_export.py` drives the same shape
+    against the exporter.
+    """
+    _applied(project)
+    inner = project.parent / "inner"
+
+    code, payload = _invoke("okf", "export", str(inner / "absent" / ".."))
+
+    assert code == 0, payload
+    assert payload["bundlePath"] == str(inner)
+    assert (inner / "theurian-bundle.md").is_file()
+    assert not (inner / "absent").exists(), "the export created a component of its own"
+
+
+def test_a_target_component_the_filesystem_will_not_take_is_reported_as_a_document(
+    project: Path,
+) -> None:
+    """An `ENAMETOOLONG` escaped the ancestor handler untyped (round four, adversarial MEDIUM).
+
+    A 400-character component refuses the ancestor `mkdir` with `ENAMETOOLONG`,
+    and the lineage walk that was meant to name the blocker raised the same errno
+    from its own probe: `Path.exists` re-raises everything outside
+    `ENOENT`/`ENOTDIR`/`EBADF`/`ELOOP`. So the refusal reached the CLI as a bare
+    `OSError`. `catch_exceptions=False` is what makes this pin the no-traceback
+    claim: an escaping exception fails the test rather than being graded.
+
+    "Nothing was created" is asserted as the parent's own listing, because
+    `Path.exists()` on the too-long path raises the very errno under test.
+    """
+    _applied(project)
+    target = project.parent / ("x" * 400) / "bundle"
+    before = sorted(path.name for path in project.parent.iterdir())
+
+    code, payload = _invoke("okf", "export", str(target))
+
+    assert code == 1
+    assert "File name too long" in payload["error"]
+    assert f"ls -ld {project.parent}" in payload["remedy"]
+    assert "x" * 400 not in payload["remedy"], "the cure lists a path that cannot exist"
+    assert sorted(path.name for path in project.parent.iterdir()) == before
 
 
 def test_an_unbuilt_project_is_refused_with_the_cure_that_builds_it(project: Path) -> None:

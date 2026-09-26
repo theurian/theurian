@@ -41,7 +41,7 @@ from collections.abc import Callable, Container, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Literal, Protocol, final, override
+from typing import Literal, NoReturn, Protocol, final, override
 
 from theurian.application.index_builder import both_ends_visible
 from theurian.application.okf_bundle import Concept, relation_order, render
@@ -53,23 +53,32 @@ from theurian.domain.knowledge import KnowledgeItem, KnowledgeRelation, Knowledg
 from theurian.domain.ports.canonical_store import IndexBuildSession
 from theurian.security.no_follow import write_text_without_following_a_link
 
-#: Why an export target was refused. Four arms, each with its own message and
-#: its own cure, dispatched by ``match`` so a fifth cannot be added without
+#: Why an export target was refused. Five arms, each with its own message and
+#: its own cure, dispatched by ``match`` so a sixth cannot be added without
 #: being written.
-TargetRefusal = Literal["not-empty", "not-a-directory", "symbolic-link", "unusable-ancestor"]
+TargetRefusal = Literal[
+    "not-empty",
+    "not-a-directory",
+    "symbolic-link",
+    "unusable-ancestor",
+    "ancestors-not-created",
+]
 
 
 class OkfExportError(TheurianError):
     """The export target, or a directory inside it, cannot hold a bundle.
 
-    ``unusable-ancestor`` fires earliest of the four, before the target itself
-    is even probed: it names a directory *above* the target that stops the
-    path to it from being built at all. The next two, ``not-empty`` and
-    ``not-a-directory``, are raised before the walk, so nothing has been read
-    and nothing written. The ``symbolic-link`` arm fires either there or while
-    the tree is being created -- before any bundle file is written, because
-    :func:`_write` creates and checks every directory first -- so its cure can
-    still promise a target that holds no partial bundle.
+    The two ancestor arms fire earliest, before the target itself is even probed.
+    ``unusable-ancestor`` names a directory *above* the target that stops the path
+    to it from being built at all; ``ancestors-not-created`` is the same failure
+    with nothing standing in the way, and it carries ``detail`` -- what the
+    filesystem answered -- because permissions, free space and a name too long for
+    the filesystem need three different cures and only that answer tells them
+    apart. The next two, ``not-empty`` and ``not-a-directory``, are raised before
+    the walk, so nothing has been read and nothing written. The ``symbolic-link``
+    arm fires either there or while the tree is being created -- before any bundle
+    file is written, because :func:`_write` creates and checks every directory
+    first -- so its cure can still promise a target that holds no partial bundle.
 
     **No cure here deletes anything, and none of them urges a removal.** The
     target is a path the operator named on the command line rather than a derived
@@ -78,7 +87,9 @@ class OkfExportError(TheurianError):
     because the operator may have pointed it somewhere on purpose.
     """
 
-    def __init__(self, directory: Path, *, reason: TargetRefusal = "not-empty") -> None:
+    def __init__(
+        self, directory: Path, *, reason: TargetRefusal = "not-empty", detail: str = ""
+    ) -> None:
         match reason:
             case "unusable-ancestor":
                 # "Move or rename" rather than "remove": the class docstring's
@@ -93,6 +104,23 @@ class OkfExportError(TheurianError):
                     f"An ancestor of the export target, {directory}, already exists and is not "
                     f"a usable directory, so the path to the bundle cannot be created. Theurian "
                     f"will not write through it."
+                )
+            case "ancestors-not-created":
+                # Names the deepest directory that *does* exist rather than the one
+                # the `mkdir` could not create: an `ls` of a path that has never
+                # existed answers the operator with a second error and says nothing
+                # about the first.
+                self.remedy = (
+                    f"Check that you can write under {directory}, the deepest directory on the "
+                    f"way to the target that exists: `ls -ld {directory}` shows its mode and "
+                    f"owner, `df -h {directory}` its free space. Then run `theurian okf export` "
+                    f"again, with a target Theurian can create under it."
+                )
+                message = (
+                    f"The directories above the export target could not be created, and nothing "
+                    f"standing in the way of them explains it -- the filesystem answered: "
+                    f"{detail}. The deepest directory on the way to the target that exists is "
+                    f"{directory}."
                 )
             case "not-a-directory":
                 # The cure moves rather than deletes, and names the listing that
@@ -216,10 +244,16 @@ class OkfExporter:
         shape. The digest is the manifest's own value rather than a second
         computation beside it.
 
+        ``bundlePath`` is the **canonical** target, not the string the operator
+        typed: :func:`_the_canonical_target` collapses their ``..`` segments and
+        widens through their ancestor links, so a path typed through a link
+        published the link while the bundle was somewhere else (PR #809 round two,
+        code review LOW).
+
         Raises:
-            OkfExportError: If an ancestor of the target cannot be turned into a
-                directory, if the target is not a directory, or if it already
-                holds something. Raised before the walk.
+            OkfExportError: If the directories above the target cannot be created,
+                if the target is not a directory, or if it already holds
+                something. Raised before the walk.
             InvariantViolationError: If an item points at a revision belonging to
                 another item. Refused for the whole export rather than skipped,
                 the way ``IndexBuilder._build`` refuses it: the alternative is a
@@ -228,12 +262,13 @@ class OkfExporter:
             OSError: If a file cannot be written. The tree is rendered whole
                 first, so a refusal here is the filesystem and never the walk.
         """
-        _materialise_the_targets_ancestors(request.output_directory)
-        _refuse_an_unusable_target(request.output_directory)
+        target = _the_canonical_target(request.output_directory)
+        _create_the_canonical_ancestors(target)
+        _refuse_an_unusable_target(target)
         bundle = render(self._walk(request))
-        _write(request.output_directory, bundle.files)
+        _write(target, bundle.files)
         return {
-            "bundlePath": str(request.output_directory),
+            "bundlePath": str(target),
             "concepts": bundle.concepts,
             "sidecars": bundle.sidecars,
             "indexes": bundle.indexes,
@@ -356,42 +391,96 @@ def _visible_relations(
     )
 
 
-def _materialise_the_targets_ancestors(directory: Path) -> None:
-    """Create every directory above ``directory``, before any guard probes it.
+def _the_canonical_target(directory: Path) -> Path:
+    """Where the bundle really lands, with the operator's own leaf never resolved.
 
-    Must run first, ahead of :func:`_refuse_an_unusable_target` and of the walk:
-    every probe there ``lstat``s ``directory``, and a not-yet-existing component
-    makes every one of them read as absent -- ``<target>/absent/../out`` passed
-    all three arms untouched with ``absent`` missing, and the ancestor ``mkdir``
-    that used to run afterward, inside :func:`_write`, then materialised
-    ``absent`` and made that very same relative path resolve to ``out``, a
-    separately populated prior bundle: the walk merged into it without ever
-    refusing (round three, adversarial HIGH). Run here, first, every guard below
-    acts on the directories the walk will actually use.
+    Two cases, dispatched on the raw path's final part. ``pathlib`` collapses a
+    trailing ``.`` and a trailing ``/`` while parsing and keeps ``..``, so
+    ``directory.name`` is already the leaf the operator meant:
+
+    * a final ``..`` names a directory *by traversal*. There is no leaf name for a
+      planted link to sit on, so the whole path resolves.
+    * anything else is a real leaf name, and only the **parent** resolves: the raw
+      name is joined back on unresolved, because resolving it would follow a link
+      planted at the target and write the bundle wherever that points (round one,
+      adversarial HIGH -- graded as a containment write escape).
+
+    The result is absolute and holds no ``..``: ``resolve`` output is canonical and
+    the join adds one plain name. That is what every probe below rests on --
+    ``lstat`` on a path still holding a ``..`` answers about the directory it names
+    lexically today rather than the one the walk will use once the component in
+    front of the ``..`` exists, and ``absent/../out`` passed all three arms of
+    :func:`_refuse_an_unusable_target` on exactly that difference (round three,
+    adversarial HIGH).
+
+    Ancestors are widened through, which is the recorded at-or-under scope: a
+    component above the named target is the operator's own path (``no_follow``'s
+    narrowed prefix sentence, round two security HIGH).
+    """
+    if directory.name == "..":
+        return directory.resolve(strict=False)
+    return directory.parent.resolve(strict=False) / directory.name
+
+
+def _create_the_canonical_ancestors(target: Path) -> None:
+    """Create every directory above ``target``, before any guard probes it.
+
+    Must run ahead of :func:`_refuse_an_unusable_target` and of the walk: every
+    probe there ``lstat``s ``target``, and a not-yet-existing component makes every
+    one of them read as absent, so a target below one is accepted untouched (round
+    three, adversarial HIGH).
+
+    ``target`` is canonical, so what this creates is always *above* it. Debris
+    inside the target -- which the next run would then refuse as non-empty, having
+    written it itself -- is inexpressible here, because ``target.parent`` cannot
+    lie inside ``target`` (round four, adversarial HIGH). Ancestors above it do
+    survive a refusal below.
     """
     try:
-        directory.parent.mkdir(parents=True, exist_ok=True)
+        target.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        _refuse_an_unusable_ancestor(directory, exc)
+        _refuse_an_unusable_ancestor(target, exc)
 
 
-def _refuse_an_unusable_ancestor(directory: Path, cause: OSError) -> None:
-    """Name the real blocker for a failed ancestor ``mkdir``, not ``mkdir``'s own path.
+def _refuse_an_unusable_ancestor(target: Path, cause: OSError) -> NoReturn:
+    """Name what stopped the ancestors being created, never ``mkdir``'s own path.
 
-    A blocking regular file two levels up raises ``NotADirectoryError`` naming
-    the *attempted child* (``a-file/sub``), not the file that blocks it
-    (``a-file``) -- measured on 3.13, because ``mkdir(parents=True)`` only
-    recurses on ``FileNotFoundError``, and a blocking file raises something else
-    at the first ``os.mkdir`` instead, one level higher than the true cause. A
-    dangling symlink at the immediate or a higher parent raises
-    ``FileExistsError`` naming itself correctly. Walked root-first over both
-    shapes so the ancestor named is always the real path a cure's ``ls -l`` can
-    show something for.
+    A blocking regular file two levels up raises ``NotADirectoryError`` naming the
+    *attempted child* (``a-file/sub``), not the file that blocks it (``a-file``) --
+    measured on 3.13, because ``mkdir(parents=True)`` only recurses on
+    ``FileNotFoundError``, and a blocking file raises something else at the first
+    ``os.mkdir`` instead, one level higher than the true cause. So the lineage is
+    walked instead, and one ``lstat`` per ancestor asks the whole question --
+    something is there and it is not a directory -- whatever shape that something
+    has. It is ``exists(follow_symlinks=False)`` because ``exists()`` follows a
+    link and reads a looping one as absent, and a loop is the one ancestor shape
+    :func:`_the_canonical_target` cannot widen through.
+
+    Direction cannot change which blocker is found -- nothing exists *under* a
+    non-directory, so at most one ancestor can be one. Root-first is for the
+    fallback: the last usable ancestor it sees is the deepest one that exists, and
+    that is the path its cure offers a listing of.
     """
-    for ancestor in reversed(directory.parents):
-        if (ancestor.exists() or ancestor.is_symlink()) and not ancestor.is_dir():
+    deepest = Path(target.anchor)
+    for ancestor in reversed(target.parents):
+        try:
+            here = ancestor.exists(follow_symlinks=False)
+            usable = ancestor.is_dir()
+        except OSError:
+            # A component the filesystem will not even answer about -- a name too
+            # long for it, measured as errno ENAMETOOLONG from `exists` itself.
+            # Nothing deeper is answerable either, so the fallback below reports
+            # what the `mkdir` said rather than a guess about this component.
+            break
+        if here and not usable:
             raise OkfExportError(ancestor, reason="unusable-ancestor") from cause
-    raise OkfExportError(directory.parent, reason="unusable-ancestor") from cause
+        if usable:
+            deepest = ancestor
+    raise OkfExportError(
+        deepest,
+        reason="ancestors-not-created",
+        detail=cause.strerror or type(cause).__name__,
+    ) from cause
 
 
 def _refuse_an_unusable_target(directory: Path) -> None:
@@ -408,9 +497,13 @@ def _refuse_an_unusable_target(directory: Path) -> None:
     pointed -- outside the target this command was given, with `bundlePath`
     naming the link (round one, adversarial; graded HIGH as a containment write
     escape). The leaf is this check's whole reach; the components above it are
-    :func:`_make_one_directory`'s, and the target's own ancestors are
-    :func:`_materialise_the_targets_ancestors`'s, run before this function so
-    every probe below sees the real filesystem the walk will use.
+    :func:`_make_one_directory`'s.
+
+    **No probe here is vacuous.** ``directory`` is
+    :func:`_the_canonical_target`'s output, so it holds no ``..`` that could name
+    one directory lexically and another on disk, and
+    :func:`_create_the_canonical_ancestors` has already made every component above
+    it real.
     """
     if directory.is_symlink():
         raise OkfExportError(directory, reason="symbolic-link")
@@ -441,15 +534,13 @@ def _write(root: Path, files: Mapping[str, str]) -> None:
     the use of a component: that needs an ``openat`` walk against directory
     descriptors, which is [#577](https://github.com/theurian/theurian/issues/577)
     and is not closed here. ``root``'s own ancestors are created by
-    :func:`_materialise_the_targets_ancestors`, before this function runs and
-    before every guard in :func:`_refuse_an_unusable_target` does too -- not
-    here, and not with a raw ``mkdir``, because a guard that ``lstat``s a
-    not-yet-existing ancestor reads it as absent regardless of what the same
-    relative path names once that ancestor is real, so the ancestor is made
-    real *first* (round three, adversarial HIGH). They are still the operator's
-    own path, named on the command line rather than derived like every member
-    key is, and the containment claim above starts at ``root`` and never claims
-    them.
+    :func:`_create_the_canonical_ancestors`, before this function runs and before
+    every guard in :func:`_refuse_an_unusable_target` does too -- not here, because
+    a guard that ``lstat``s a not-yet-existing ancestor reads it as absent
+    regardless of what the same path names once that ancestor is real (round
+    three, adversarial HIGH). They are still the operator's own path, named on the
+    command line rather than derived like every member key is, and the containment
+    claim above starts at ``root`` and never claims them.
     """
     for relative in files:
         _refuse_a_member_outside_the_root(root, relative)

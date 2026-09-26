@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import os
+import sys
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, field, replace
@@ -61,6 +63,12 @@ from theurian.infrastructure.sqlite.connection import (
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore, SqliteWriter
 
 pytestmark = pytest.mark.integration
+
+#: Where a POSIX mode decides nothing, so a test that turns on one must not run:
+#: Windows has none to deny with, and root is exempt from the ones it has -- the
+#: offline CI image runs as root, where a directory at 0500 takes a ``mkdir`` as
+#: readily as one at 0700. The suite's standing idiom.
+_CANNOT_BE_REFUSED_BY_A_MODE = sys.platform == "win32" or os.geteuid() == 0
 
 PROJECT: Final = ProjectId("demo")
 NOW: Final = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
@@ -236,7 +244,21 @@ def export(
     *,
     visible: frozenset[Sensitivity] = VISIBLE,
 ) -> Bundle:
-    report = OkfExporter(store_factory=SqliteCanonicalStore).export(
+    return Bundle(
+        root=target, report=_report(database, target, visible=visible), files=_read(target)
+    )
+
+
+def _report(
+    database: Path, target: Path, *, visible: frozenset[Sensitivity] = VISIBLE
+) -> dict[str, object]:
+    """The export's own report, for a target whose bytes the caller reads back itself.
+
+    ``export`` above reads the bundle through the path it passed, which a target
+    that names its directory by traversal (``inner/absent/..``) or through a link
+    cannot do: those land at the canonical path the report publishes.
+    """
+    return OkfExporter(store_factory=SqliteCanonicalStore).export(
         OkfExportRequest(
             database=database,
             output_directory=target,
@@ -244,7 +266,6 @@ def export(
             visible_sensitivities=visible,
         )
     )
-    return Bundle(root=target, report=report, files=_read(target))
 
 
 def _read(root: Path) -> dict[str, str]:
@@ -1157,50 +1178,71 @@ def test_an_ancestor_that_is_a_symbolic_link_to_a_real_directory_is_followed(
 def test_a_target_reached_through_an_absent_then_dotdot_component_is_still_refused_as_not_empty(
     tmp_path: Path,
 ) -> None:
-    """``absent/../out`` names ``out`` once ``absent`` exists, and only then.
+    """``absent/../out`` is the operator naming ``out``, and it is refused as ``out``.
 
     Every probe in ``_refuse_an_unusable_target`` ``lstat``s the exact path it is
     given, and a not-yet-existing component makes all three read as absent --
     ``exists()`` is ``False``, so the not-empty arm never ran -- regardless of
-    what the same relative path names once that component is real. The ancestor
-    ``mkdir`` used to run afterward, inside ``_write``, past every guard: it
-    materialised ``absent``, and the identical relative path then resolved into
-    ``out``, a separately populated prior bundle, which the walk merged into
-    without ever refusing (round three, adversarial HIGH). Materialising the
-    ancestor *first*, before any guard, is what makes this refuse instead: the
-    guard now lstats the directory the walk will actually use.
+    what the same path names once that component is real. The ancestor ``mkdir``
+    used to run afterward, inside ``_write``, past every guard: it materialised
+    ``absent``, and the identical path then resolved into ``out``, a separately
+    populated prior bundle, which the walk merged into without ever refusing
+    (round three, adversarial HIGH). Canonicalizing the target first is what
+    makes this refuse instead, and it refuses the *real* target: nothing is
+    created to make the path resolve, so ``absent`` does not exist afterward
+    either.
     """
     database = corpus(tmp_path, [Row("keeper", 1)])
     out = tmp_path / "out"
     export(database, out)
     (out / "withdrawn.md").write_text("a stale member from an earlier export", encoding="utf-8")
-    before = sorted(str(path.relative_to(out)) for path in out.rglob("*"))
+    before = _read(out)
 
     with pytest.raises(OkfExportError) as caught:
-        export(database, tmp_path / "absent" / ".." / "out")
+        _report(database, tmp_path / "absent" / ".." / "out")
 
     assert "not empty" in str(caught.value)
-    after = sorted(str(path.relative_to(out)) for path in out.rglob("*"))
-    assert after == before, "the second export merged into the populated prior bundle"
-    debris = tmp_path / "absent"
-    if debris.exists():
-        assert list(debris.iterdir()) == [], (
-            "materialising the ancestor left more than an empty directory"
-        )
+    assert str(out) in str(caught.value), "the refusal named the typed path, not the target"
+    assert _read(out) == before, "the second export merged into the populated prior bundle"
+    assert list(tmp_path.rglob("absent")) == [], "the refusal created a component of its own"
 
 
-def test_a_trailing_dotdot_target_past_an_absent_component_is_still_refused_as_not_empty(
+def test_a_trailing_dotdot_target_lands_in_the_directory_it_traverses_to(tmp_path: Path) -> None:
+    """``inner/absent/..`` names ``inner``, and nothing named ``absent`` is created.
+
+    A final ``..`` names a directory by traversal, so there is no leaf for a
+    planted link to sit on and the whole path canonicalizes (Case 2 of
+    ``_the_canonical_target``). The cut before this one instead created the
+    missing ``absent`` component *first*, so that its guards would not ``lstat``
+    a path holding a ``..`` -- which put an empty directory of the export's own
+    making inside the very target it then refused as non-empty, poisoning every
+    retry (round four, adversarial HIGH). Here the export succeeds, and it is the
+    *second* one, named plainly, that is refused: what is in the way then is the
+    first one's bundle.
+    """
+    database = corpus(tmp_path, [Row("keeper", 1)])
+    flat = export(database, tmp_path / "flat-bundle")
+    inner = tmp_path / "inner"
+
+    report = _report(database, inner / "absent" / "..")
+
+    assert report["bundlePath"] == str(inner)
+    assert _read(inner) == flat.files
+    assert list(tmp_path.rglob("absent")) == [], "the export created a component of its own"
+    with pytest.raises(OkfExportError) as caught:
+        export(database, inner)
+    assert "not empty" in str(caught.value)
+
+
+def test_a_trailing_dotdot_target_into_a_populated_directory_is_refused_with_no_debris(
     tmp_path: Path,
 ) -> None:
-    """The same shape with the ``..`` as the target's own last segment.
+    """The refusal is the traversed-to directory's own state, and it writes nothing.
 
-    ``inner/absent/..`` names ``inner`` once ``absent`` exists, the same way
-    ``absent/../out`` names ``out`` above. Here the materialised ancestor is a
-    *child* of the populated directory rather than its sibling, so it is
-    compared by file content rather than by listing: an empty ``absent/``
-    debris directory is expected to land inside ``inner``, the same way
-    :func:`_materialise_the_targets_ancestors` leaves debris beside ``out``
-    above, and neither is a bundle member.
+    The materialise-first cut refused this too, and only after creating
+    ``inner/absent`` -- a directory inside the target it was refusing (round four,
+    adversarial HIGH). Both halves are asserted: the prior bundle is unchanged
+    byte for byte, and nothing named ``absent`` exists anywhere afterward.
     """
     database = corpus(tmp_path, [Row("keeper", 1)])
     inner = tmp_path / "inner"
@@ -1209,15 +1251,102 @@ def test_a_trailing_dotdot_target_past_an_absent_component_is_still_refused_as_n
     before = _read(inner)
 
     with pytest.raises(OkfExportError) as caught:
-        export(database, tmp_path / "inner" / "absent" / "..")
+        _report(database, inner / "absent" / "..")
 
     assert "not empty" in str(caught.value)
     assert _read(inner) == before, "the second export merged into the populated prior bundle"
-    debris = inner / "absent"
-    assert debris.is_dir()
-    assert list(debris.iterdir()) == [], (
-        "materialising the ancestor left more than an empty directory"
-    )
+    assert list(tmp_path.rglob("absent")) == [], "the refusal created a component of its own"
+
+
+@pytest.mark.parametrize("populated", [False, True])
+def test_a_multi_dotdot_target_lands_in_the_directory_it_climbs_back_to(
+    tmp_path: Path, *, populated: bool
+) -> None:
+    """``out/a/b/../..`` climbs to ``out``, and two ``..`` are not a special case of one.
+
+    The final part is still ``..``, so the path canonicalizes once and no
+    intermediate component is created to make it resolve -- neither ``a`` nor
+    ``b`` exists on either side of this, whichever way ``out`` itself decides the
+    outcome.
+    """
+    database = corpus(tmp_path, [Row("keeper", 1)])
+    out = tmp_path / "out"
+    flat = export(database, tmp_path / "flat-bundle")
+
+    if populated:
+        before = export(database, out).files
+        with pytest.raises(OkfExportError) as caught:
+            _report(database, out / "a" / "b" / ".." / "..")
+        assert "not empty" in str(caught.value)
+        assert _read(out) == before
+    else:
+        report = _report(database, out / "a" / "b" / ".." / "..")
+        assert report["bundlePath"] == str(out)
+        assert _read(out) == flat.files
+    assert list(tmp_path.rglob("a")) == [], "a component was created to make the path resolve"
+
+
+@pytest.mark.parametrize("suffix", ["", "/", "/.", "/./"])
+def test_a_target_written_with_a_trailing_dot_or_slash_is_its_collapsed_leaf(
+    tmp_path: Path, suffix: str
+) -> None:
+    """``pathlib`` collapses both while parsing, so neither reaches the dispatch.
+
+    All four spellings are one target: ``Path`` drops a trailing ``.`` and a
+    trailing ``/`` at construction and keeps a trailing ``..``, which is why the
+    dispatch reads the final *part* rather than the string. So each of these is
+    Case 1, where the leaf is the operator's own name and is never resolved --
+    what keeps a link planted at the target refused.
+    """
+    database = corpus(tmp_path, [Row("keeper", 1)])
+    flat = export(database, tmp_path / "flat-bundle")
+    target = tmp_path / "bundle"
+
+    report = _report(database, Path(f"{target}{suffix}"))
+
+    assert report["bundlePath"] == str(target)
+    assert _read(target) == flat.files
+
+
+def test_a_mid_path_dotdot_with_every_component_present_names_its_sibling(tmp_path: Path) -> None:
+    """``a/../bundle`` is Case 1: the final part is a name, so only the parent resolves.
+
+    The ``..`` sits above the leaf and is collapsed by that resolve rather than by
+    anything the guards do, and ``a`` -- which exists here, so the kernel would
+    walk the path too -- is left untouched.
+    """
+    database = corpus(tmp_path, [Row("keeper", 1)])
+    (tmp_path / "a").mkdir()
+    flat = export(database, tmp_path / "flat-bundle")
+
+    report = _report(database, tmp_path / "a" / ".." / "bundle")
+
+    assert report["bundlePath"] == str(tmp_path / "bundle")
+    assert _read(tmp_path / "bundle") == flat.files
+    assert list((tmp_path / "a").iterdir()) == []
+
+
+def test_the_report_names_where_the_bundle_is_and_not_the_path_that_was_typed(
+    tmp_path: Path,
+) -> None:
+    """``bundlePath`` is the canonical target (PR #809 round two, code review LOW).
+
+    A target through an ancestor link is written where the link points -- the
+    recorded at-or-under scope, pinned above -- while the report published the
+    typed path, which named the link rather than the place the bundle is at. The
+    value is the export's own record of where it wrote, so it is the canonical
+    one.
+    """
+    database = corpus(tmp_path, [Row("keeper", 1)])
+    real_directory = tmp_path / "real-directory"
+    real_directory.mkdir()
+    parent_link = tmp_path / "parentlink"
+    parent_link.symlink_to(real_directory, target_is_directory=True)
+
+    report = _report(database, parent_link / "bundle")
+
+    assert report["bundlePath"] == str(real_directory / "bundle")
+    assert (real_directory / "bundle" / MANIFEST_NAME).is_file()
 
 
 def test_an_ancestor_that_is_a_regular_file_is_refused_with_a_named_cure(tmp_path: Path) -> None:
@@ -1270,27 +1399,100 @@ def test_an_ancestor_two_levels_above_the_target_that_is_a_regular_file_is_refus
     assert not (blocking / "sub").exists()
 
 
-def test_an_ancestor_that_is_a_dangling_symbolic_link_is_refused_with_a_named_cure(
+def test_an_ancestor_that_is_a_dangling_symbolic_link_is_followed_and_its_target_created(
     tmp_path: Path,
 ) -> None:
-    """A dangling link cannot become a directory either, and ``is_dir`` alone would miss it.
+    """An ancestor link is followed whether or not its target exists yet (the ruling).
 
-    ``exists()`` follows a link and reads a dangling one as absent; ``is_symlink()``
-    is what still finds it there, which is why the ancestor walk checks both.
+    ``resolve`` widens through every component above the leaf, and a dangling link
+    is one of those components: the bundle lands at the path it names, created on
+    the way there. Its twin one pin up -- a link to a directory that already
+    exists -- has been followed since that ruling, and an attacker's plant chooses
+    the same destination in both, so refusing only the dangling one was a
+    distinction ``mkdir(parents=True)``'s errno drew rather than one this export
+    decided (the cut before this one refused it as ``unusable-ancestor``).
+
+    It goes further than the shell here, and that is the part to weigh: ``mkdir -p
+    danglink/bundle`` refuses with "No such file or directory" and creates nothing
+    (measured, BSD ``mkdir``, macOS 26.6), while this creates the link's target.
+    ``bundlePath`` is what says so -- it names the place, not the link. A
+    hardening that refuses an ancestor link whose target is absent must turn this
+    pin red and confront the twin above it.
     """
-    link = tmp_path / "danglink"
-    link.symlink_to(tmp_path / "does-not-exist")
     database = corpus(tmp_path, [Row("keeper", 1)])
+    pointed_at = tmp_path / "does-not-exist"
+    link = tmp_path / "danglink"
+    link.symlink_to(pointed_at)
+    flat = export(database, tmp_path / "flat-bundle")
+
+    report = _report(database, link / "bundle")
+
+    assert report["bundlePath"] == str(pointed_at / "bundle")
+    assert _read(pointed_at / "bundle") == flat.files
+    assert link.is_symlink(), "the export replaced the operator's own link"
+
+
+def test_an_ancestor_that_is_a_looping_symbolic_link_is_refused_with_a_named_cure(
+    tmp_path: Path,
+) -> None:
+    """The one ancestor shape ``resolve`` cannot widen through, so the ``lstat`` probe shows.
+
+    ``resolve(strict=False)`` expands every ancestor link it can and leaves a loop
+    as it found it -- measured on 3.13: ``loop -> loop`` stays in the canonical
+    path -- so the ancestor ``mkdir`` meets the link itself, raises
+    ``FileExistsError``, and the lineage walk is what names it. That walk probes
+    with ``exists(follow_symlinks=False)`` because ``exists()`` follows the link
+    and reads a loop as absent; keyed on ``exists()`` alone, this refusal falls
+    through to the no-blocker arm and blames the parent's mode. It is also the
+    only ancestor still *being* a symbolic link once the parent has resolved,
+    which is what the cure's "repoint it" clause is for.
+    """
+    database = corpus(tmp_path, [Row("keeper", 1)])
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)
 
     with pytest.raises(OkfExportError) as caught:
-        export(database, link / "bundle")
+        export(database, loop / "bundle")
 
-    assert str(link) in str(caught.value)
+    assert str(loop) in str(caught.value)
     assert "Move or rename" in caught.value.remedy
     assert "repoint" in caught.value.remedy
     assert "rm " not in caught.value.remedy
-    assert link.is_symlink(), "the refusal removed the operator's own link"
-    assert not link.exists(), "the link was not repointed by the refusal"
+    assert loop.is_symlink(), "the refusal removed the operator's own link"
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_a_parent_that_denies_writes_is_refused_without_blaming_a_path_that_never_existed(
+    tmp_path: Path,
+) -> None:
+    """The ancestor walk finds no blocker here, and must not invent one.
+
+    Every directory on the way to this target that exists *is* a usable
+    directory; what stops the ``mkdir`` is the mode on ``read-only/``. The walk's
+    fallback used to raise ``unusable-ancestor`` against the target's own parent,
+    publishing "already exists and is not a usable directory" about a path that
+    has never existed and sending ``ls -l`` at it (round four, adversarial
+    MEDIUM). The cure names the deepest directory that does exist, and the message
+    carries what the filesystem answered, because permissions and free space need
+    different cures and only that answer tells them apart.
+    """
+    database = corpus(tmp_path, [Row("keeper", 1)])
+    read_only = tmp_path / "read-only"
+    read_only.mkdir()
+    target = read_only / "absent" / "bundle"
+    read_only.chmod(0o500)
+    try:
+        with pytest.raises(OkfExportError) as caught:
+            export(database, target)
+    finally:
+        read_only.chmod(0o700)
+
+    assert "Permission denied" in str(caught.value)
+    assert str(read_only) in str(caught.value)
+    assert f"ls -ld {read_only}" in caught.value.remedy
+    assert str(target.parent) not in caught.value.remedy, "the cure lists a path that never existed"
+    assert "rm " not in caught.value.remedy
+    assert not target.parent.exists()
 
 
 def test_a_relative_target_is_created_where_the_working_directory_puts_it(
@@ -1298,17 +1500,20 @@ def test_a_relative_target_is_created_where_the_working_directory_puts_it(
 ) -> None:
     """A relative target is as legitimate as ``../bundle`` shell usage (the ruling).
 
-    Nothing in the materialise-then-guard reorder resolves a target against
-    anything but the process's own working directory -- no ``resolve()``, which
-    would also undo the round-one leaf-symlink refusal by following it.
+    The only thing a relative target is resolved against is the process's own
+    working directory: ``resolve`` reaches the *parent* and the leaf is joined
+    back on as typed, which is what keeps the round-one leaf-symlink refusal from
+    being undone by following it. The report then names the absolute path, because
+    that is where the bundle is whatever the process's working directory becomes
+    next.
     """
     database = corpus(tmp_path, [Row("keeper", 1)])
     monkeypatch.chdir(tmp_path)
 
     result = export(database, Path("rel") / "deep" / "bundle")
 
-    assert result.root == Path("rel") / "deep" / "bundle"
-    assert (tmp_path / "rel" / "deep" / "bundle" / "theurian-bundle.md").exists()
+    assert result.report["bundlePath"] == str(tmp_path / "rel" / "deep" / "bundle")
+    assert (tmp_path / "rel" / "deep" / "bundle" / MANIFEST_NAME).is_file()
 
 
 class Recording:
