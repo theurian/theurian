@@ -642,10 +642,10 @@ is why this is not `repr`. Proposal-derived *names in error messages* are
 additionally quoted with `repr` and capped at five with a count, in
 `application.proposal_service._names`, for readability, not for the escape.
 `--json` was never affected, because `json.dumps` escapes control characters.
-Tested: `test_propose_cli::test_a_success_payload_cannot_forge_output_through_a_body_path`,
+Tested: `test_propose_cli.py::test_a_success_payload_cannot_forge_output_through_a_body_path`,
 `::test_the_render_sink_escapes_every_control_and_keeps_printable_unicode`,
 `::test_the_fail_sink_escapes_controls_on_the_error_path`, and
-`test_proposal_service::test_a_content_file_cannot_forge_this_command_s_own_error_output`.
+`test_proposal_service.py::test_a_content_file_cannot_forge_this_command_s_own_error_output`.
 **Residual:** the sink is the closure; the constrained interpolations behind it
 (a migration filename, a validated identifier) and two library strings measured
 on 2026-08-20 — `OSError.__str__` reprs its own filename, PyYAML refuses `ESC`

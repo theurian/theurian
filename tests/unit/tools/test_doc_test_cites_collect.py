@@ -62,24 +62,34 @@ citation grammar below:
     docs/work-logs/2026-09-01-472-purged-build-re-measurement.md
     docs/work-logs/2026-09-16-t26-timing.md
 
-**One deliberate exclusion: ``docs/work-logs/``.** A work-log is a point-in-time
-record of what a session found -- it is amended, never trimmed (CLAUDE.md,
-*Standing conventions*), and a test it names may legitimately no longer exist by
-the time the record is read. Every other hit is checked, including the
-architecture, contributing, integrations, roadmap and non-threat-model security
-docs above: none of those is a filing-time snapshot, so none earns the same
-exemption.
+**Two deliberate exclusions.** ``docs/work-logs/`` is a point-in-time record of
+what a session found -- it is amended, never trimmed (CLAUDE.md, *Standing
+conventions*), and a test it names may legitimately no longer exist by the time
+the record is read. ``packages/theurian-core/CHANGELOG.md``'s *released*
+sections carry the same argument for the same reason -- a released entry is a
+statement about what shipped at that cut, not a claim this ratchet should hold
+live -- so only its ``[Unreleased]`` section is checked (:func:`_extra_texts`);
+zero citations live there today, so this exclusion changes nothing this PR
+needs to fix, only what a later ``[Unreleased]`` entry will be held to.
+``schemas/README.md`` carries the grammar too and has no snapshot argument --
+it is a living description of the schemas directory, checked whole. Every other
+hit is checked, including the architecture, contributing, integrations,
+roadmap and non-threat-model security docs listed above: none of those is a
+filing-time snapshot, so none earns the work-log exemption.
 
 **The citation grammar requires a literal ``::``.** A plain `` `test_x` `` with
-no colon at all (``docs/contributing/development.md``'s style-guide example
-``test_resolve_2``, deliberately a name nobody should write, and
-``docs/contributing/orchestration.md``'s possessive `` `test_bare_install`'s ``
-naming a *file* rather than a function) is informal prose, not a citation, and
-is outside this grammar for that reason -- matching the two grep patterns above,
-neither of which matches a colon-less mention. An ellipsis-elided path (`` `…/
-test_x.py::test_name` ``, a handful of threat-model table cells) also falls
-outside it: ``…`` is not a path character, so the citation is simply uncounted
-rather than falsely matched -- an omission, never a false pass.
+no colon at all names a test by inference alone, indistinguishable from prose
+that merely mentions the name -- ``docs/contributing/development.md``'s
+style-guide example ``test_resolve_2``, deliberately a name nobody should write,
+and ``docs/contributing/orchestration.md``'s possessive `` `test_bare_install`'s
+`` naming a *file* rather than a function, are both this shape. The ``::`` is
+what turns a mention into a citation asserting a specific node id, which is why
+the population grep above requires it too. An elided path (`` `…/test_x.py::
+test_name` `` or `` `…test_x.py::test_name` ``, a couple of dozen threat-model
+and ADR-0011 table/prose cells) **is** admitted: ``…`` carries no path
+information of its own, so it is stripped and whatever real path text follows
+it is asserted as a path suffix like any other (:func:`_stated_suffix`) --
+never silently uncounted.
 
 **A bare citation must resolve to exactly one collected test.** Zero matches is
 the dangling shape this file exists for. More than one is the shape #818's bare
@@ -89,15 +99,26 @@ anywhere in the tree can point a reader at the wrong test without anything
 turning red. Both need the same fix, an explicit path.
 
 **Mechanism reused, not reinvented**, from ``test_adr36_ratchet.py``'s own
-citation-collect instrument: one ``pytest --collect-only`` pass, and a citation
-resolves by exact ``(path, name)`` match or by basename (the ``…/x.py`` and
-bare-filename-without-directory house styles this corpus already writes in).
+citation-collect instrument: one ``pytest --collect-only`` pass, and a
+path-qualified citation resolves by **suffix** -- the stated path, once an
+elision is stripped, must equal a collected path or be preceded there by a
+``/``. A stated directory is therefore load-bearing (a wrong one no longer
+passes by filename alone), while the corpus's bare-filename and elided-prefix
+house styles keep resolving, because a bare filename is trivially a suffix of
+its own real path.
 
-**``KNOWN_EXCEPTIONS`` is a debt ledger, exact in both directions** -- the same
-discipline ``tools/audit/controls_discharge.py``'s ``PROSE_ONLY`` holds itself
-to. Every row names a citation that will never collect on purpose, because the
-prose around it explicitly retires it as part of an "Amended ..." governed
-record (CLAUDE.md: amendment blocks are amended, never trimmed):
+**``KNOWN_EXCEPTIONS`` maps ``(doc, name)`` to an exact occurrence count, not a
+set membership test.** A set would let one retired mention license every future
+citation of that name in the same doc -- including a *live* re-citation that
+happens to reuse a retired name, which is exactly how this ledger's own
+``test_a_non_utf8_disk_path_never_verifies_a_utf8_anchor`` row was wrong
+(Review-Finding: code-review HIGH). The count is spent one occurrence at a
+time, in the order :func:`_all_citations` reports them, so an ``(N+1)``th
+occurrence beyond what a row licenses is never exempted -- it is a fresh
+citation the check must still catch. Each row names a citation that will never
+collect on purpose because the prose around it explicitly retires it as part of
+an "Amended ..." governed record (CLAUDE.md: amendment blocks are amended,
+never trimmed):
 
 - ADR-0013's and ADR-0032's Milestone-3/4 tool-set names, each superseded in the
   same sentence that cites them ("it became ...", "(it was ...)"), landing at
@@ -105,16 +126,15 @@ record (CLAUDE.md: amendment blocks are amended, never trimmed):
 - ADR-0033's "not files that exist today" B5 residue
   (``test_nothing_in_the_shipped_package_constructs_a_knowledge_candidate``,
   discharged by slice B5 into
-  ``test_the_only_construction_site_of_a_knowledge_candidate_is_the_candidate_generator``)
-  and its 0.4.0-cut fixture correction (the ``errors="replace"`` fixture that
-  could not produce the surrogate shape its own name claimed, this project's own
-  burned-in lesson).
+  ``test_the_only_construction_site_of_a_knowledge_candidate_is_the_candidate_generator``).
 - The threat model's T-17a correction note: "Nothing in the suite stood behind
   the deleted prose."
 
-A row that stops being a genuine violation (the prose was edited to drop the
-stale name) is stale and must be deleted --
-:func:`test_the_known_exception_ledger_has_no_stale_rows` holds that direction.
+A row whose recorded count no longer matches the tree -- fewer occurrences (the
+prose was edited to drop the stale name, or the name resolves again) or more
+(a new, unaccounted-for occurrence appeared) -- is stale and must be corrected;
+:func:`test_the_known_exception_ledger_has_no_stale_rows` holds both
+directions.
 """
 
 from __future__ import annotations
@@ -132,18 +152,20 @@ pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DOCS_ROOT = REPO_ROOT / "docs"
+CHANGELOG = REPO_ROOT / "packages" / "theurian-core" / "CHANGELOG.md"
+SCHEMAS_README = REPO_ROOT / "schemas" / "README.md"
 _EXCLUDED_DIR_NAME = "work-logs"
 
 #: `` `path.py::test_name` `` (group 1 non-empty) or `` `::test_name` `` (group 1
 #: empty) -- the literal ``::`` is mandatory in both, matching the two grep
-#: patterns the population above was measured with. ``[\w./-]`` is the path
+#: patterns the population above was measured with. ``[\w./-…]`` is the path
 #: alphabet this corpus's citations actually use: word characters, dots,
-#: slashes and hyphens.
-_CITE = re.compile(r"`([\w./-]*)::(test_[A-Za-z0-9_]+)`")
+#: slashes, hyphens and an elided ``…`` (:func:`_stated_suffix` strips it).
+_CITE = re.compile(r"`([\w./-…]*)::(test_[A-Za-z0-9_]+)`")
 
-#: A prefix carrying no path character at all -- an elided ``...`` -- is not a
-#: path; it is treated as bare.
-_NO_PATH_CHAR = re.compile(r"[A-Za-z0-9_]")
+#: A prefix carrying no real path character at all -- pure punctuation, or an
+#: elision with nothing else -- is not a path; it is treated as bare.
+_REAL_PATH_CHARACTER = re.compile(r"[A-Za-z0-9_]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,50 +191,90 @@ def population(root: Path = DOCS_ROOT) -> list[Path]:
     ]
 
 
-def citations_in(path: Path, doc: str) -> list[Citation]:
-    """Every citation ``path`` carries, with its 1-based line number.
+def _changelog_unreleased_slice() -> tuple[str, int]:
+    """``CHANGELOG.md``'s ``[Unreleased]`` section, and the line count before it.
 
-    ``doc`` is the caller-supplied label (a path relative to whatever root
-    ``population`` was called with) -- never re-derived from ``path`` itself,
-    so a scratch tree under ``tmp_path`` labels its citations without needing
-    to sit inside :data:`REPO_ROOT`.
+    A released section is a point-in-time statement about what shipped at that
+    cut -- the same work-log argument, restated (CLAUDE.md, *Standing
+    conventions*) -- so only the mutable, still-being-written section is
+    checked.
     """
-    text = path.read_text(encoding="utf-8")
+    text = CHANGELOG.read_text(encoding="utf-8")
+    start = text.index("\n## [Unreleased]") + 1
+    end = text.find("\n## [", start)
+    body = text[start:end] if end != -1 else text[start:]
+    return body, text[:start].count("\n")
+
+
+def _extra_texts(root: Path) -> list[tuple[str, str, int]]:
+    """Fixed, non-``docs/`` governed files this population also covers, as
+    ``(text, doc label, line offset)`` -- only for the real repository
+    (``root == DOCS_ROOT``), never for a scratch tree a teeth exercise builds.
+    """
+    if root != DOCS_ROOT:
+        return []
+    changelog_body, changelog_offset = _changelog_unreleased_slice()
+    return [
+        (SCHEMAS_README.read_text(encoding="utf-8"), "schemas/README.md", 0),
+        (changelog_body, "packages/theurian-core/CHANGELOG.md", changelog_offset),
+    ]
+
+
+def citations_in_text(text: str, doc: str, line_offset: int = 0) -> list[Citation]:
+    """Every citation ``text`` carries, with its 1-based line number.
+
+    ``doc`` is the caller-supplied label -- never re-derived from a path, so a
+    scratch tree under ``tmp_path`` or a slice of a larger file (the
+    CHANGELOG's ``[Unreleased]`` section) labels its citations correctly.
+    ``line_offset`` is added so a sliced text reports the line number in its
+    *original* file, not the line number within the slice.
+    """
     line_starts = [0]
     for line in text.splitlines(keepends=True):
         line_starts.append(line_starts[-1] + len(line))
     found = []
     for match in _CITE.finditer(text):
-        line_number = bisect.bisect_right(line_starts, match.start())
+        line_number = bisect.bisect_right(line_starts, match.start()) + line_offset
         found.append(Citation(doc, line_number, match.group(1), match.group(2)))
     return found
 
 
-def _stem(path: str) -> str:
-    if path.endswith(".py"):
-        path = path[:-3]
-    return path.rsplit("/", 1)[-1]
+def citations_in(path: Path, doc: str) -> list[Citation]:
+    return citations_in_text(path.read_text(encoding="utf-8"), doc)
+
+
+def _stated_suffix(prefix: str) -> str:
+    """The checkable portion of a stated path.
+
+    An elided ``…`` and everything before it carry no path information, so
+    only what follows it is kept; a leading ``/`` left behind by the ``…/x.py``
+    spelling is stripped so ``…/x.py`` and ``…x.py`` agree.
+    """
+    return prefix.rsplit("…", 1)[-1].lstrip("/")
 
 
 def _has_real_path(prefix: str) -> bool:
-    return bool(_NO_PATH_CHAR.search(prefix))
+    return bool(_REAL_PATH_CHARACTER.search(prefix))
 
 
 def resolves(citation: Citation, collected: list[tuple[str, str]]) -> bool:
     """Whether ``citation`` names a real, collected test.
 
-    A path-qualified citation resolves by an exact ``(path, name)`` match or by
-    basename -- the ``…/x.py`` and bare-filename-without-directory house styles
-    already in this corpus, the same tolerance ``controls_discharge.py``
-    documents for exactly this ambiguity. A bare citation resolves only when the
-    name matches **exactly one** collected test; zero or several is unresolvable
-    as a node id either way.
+    A path-qualified citation resolves by **suffix**: the stated path (an
+    elision stripped first) must equal a collected path or be preceded there by
+    a ``/``. This is what makes a stated directory load-bearing -- a wrong one
+    is no longer a suffix of the real path -- while still tolerating the
+    corpus's bare-filename and ``…/x.py`` house styles, since a bare filename
+    is trivially a suffix of its own real path. A bare citation resolves only
+    when the name matches **exactly one** collected test; zero or several is
+    unresolvable as a node id either way.
     """
     if citation.prefix and _has_real_path(citation.prefix):
-        if (citation.prefix, citation.name) in collected:
-            return True
-        stem = _stem(citation.prefix)
-        return any(name == citation.name and _stem(path) == stem for path, name in collected)
+        stated = _stated_suffix(citation.prefix)
+        return any(
+            name == citation.name and (path == stated or path.endswith("/" + stated))
+            for path, name in collected
+        )
     matches = {path for path, name in collected if name == citation.name}
     return len(matches) == 1
 
@@ -265,58 +327,66 @@ def collected_pairs() -> list[tuple[str, str]]:
     return collected
 
 
-#: (doc path relative to the repo root, cited test name) -- see the module
-#: docstring for why each row will never collect.
-KNOWN_EXCEPTIONS: frozenset[tuple[str, str]] = frozenset(
-    {
-        ("docs/adr/0013-ai-writes-produce-proposals.md", "test_the_tool_set_is_read_only"),
-        (
-            "docs/adr/0013-ai-writes-produce-proposals.md",
-            "test_the_tool_set_is_exactly_the_published_nine",
-        ),
-        (
-            "docs/adr/0032-the-write-intent-mcp-tool-surface.md",
-            "test_capabilities_report_no_write_tools",
-        ),
-        (
-            "docs/adr/0032-the-write-intent-mcp-tool-surface.md",
-            "test_the_tool_set_is_exactly_the_published_nine",
-        ),
-        ("docs/adr/0032-the-write-intent-mcp-tool-surface.md", "test_the_tool_set_is_read_only"),
-        (
-            "docs/adr/0033-knowledge-candidate-generation.md",
-            "test_nothing_in_the_shipped_package_constructs_a_knowledge_candidate",
-        ),
-        (
-            "docs/adr/0033-knowledge-candidate-generation.md",
-            "test_a_non_utf8_disk_path_never_verifies_a_utf8_anchor",
-        ),
-        (
-            "docs/security/threat-model.md",
-            "test_the_visibility_asks_about_every_row_not_only_the_first_fifty",
-        ),
-    }
-)
+#: (doc path relative to the repo root, cited test name) -> the exact number of
+#: occurrences of that citation the doc carries -- a count, not a set, so an
+#: occurrence beyond it is never exempted (see the module docstring).
+KNOWN_EXCEPTIONS: dict[tuple[str, str], int] = {
+    ("docs/adr/0013-ai-writes-produce-proposals.md", "test_the_tool_set_is_read_only"): 2,
+    (
+        "docs/adr/0013-ai-writes-produce-proposals.md",
+        "test_the_tool_set_is_exactly_the_published_nine",
+    ): 1,
+    (
+        "docs/adr/0032-the-write-intent-mcp-tool-surface.md",
+        "test_capabilities_report_no_write_tools",
+    ): 1,
+    (
+        "docs/adr/0032-the-write-intent-mcp-tool-surface.md",
+        "test_the_tool_set_is_exactly_the_published_nine",
+    ): 1,
+    ("docs/adr/0032-the-write-intent-mcp-tool-surface.md", "test_the_tool_set_is_read_only"): 1,
+    (
+        "docs/adr/0033-knowledge-candidate-generation.md",
+        "test_nothing_in_the_shipped_package_constructs_a_knowledge_candidate",
+    ): 3,
+    (
+        "docs/security/threat-model.md",
+        "test_the_visibility_asks_about_every_row_not_only_the_first_fifty",
+    ): 1,
+}
 
 
 def _all_citations(root: Path) -> list[Citation]:
-    return [
+    found = [
         citation
         for path in population(root)
         for citation in citations_in(path, path.relative_to(root.parent).as_posix())
     ]
+    for text, doc, offset in _extra_texts(root):
+        found.extend(citations_in_text(text, doc, offset))
+    return found
 
 
 def violations(
     root: Path,
     collected: list[tuple[str, str]],
-    known: frozenset[tuple[str, str]] = KNOWN_EXCEPTIONS,
+    known: dict[tuple[str, str], int] = KNOWN_EXCEPTIONS,
 ) -> list[Citation]:
-    return [
-        citation
-        for citation in _all_citations(root)
-        if not resolves(citation, collected) and (citation.doc, citation.name) not in known
-    ]
+    """Every citation that neither collects nor is covered by a live row in
+    ``known`` -- an occurrence beyond a row's recorded count is not covered.
+    """
+    budget = dict(known)
+    found = []
+    for citation in _all_citations(root):
+        if resolves(citation, collected):
+            continue
+        key = (citation.doc, citation.name)
+        remaining = budget.get(key, 0)
+        if remaining > 0:
+            budget[key] = remaining - 1
+            continue
+        found.append(citation)
+    return found
 
 
 def test_every_governed_test_cite_collects(collected_pairs: list[tuple[str, str]]) -> None:
@@ -330,18 +400,27 @@ def test_every_governed_test_cite_collects(collected_pairs: list[tuple[str, str]
 def test_the_known_exception_ledger_has_no_stale_rows(
     collected_pairs: list[tuple[str, str]],
 ) -> None:
-    """A ledger row whose citation now resolves (the prose was corrected, or the
-    test came back under that name) has paid its debt and must be deleted --
-    the same "exact in both directions" discipline
+    """A ledger row whose recorded count no longer matches the tree -- the
+    citation resolves again, an occurrence was removed, or a new one appeared
+    that the row does not account for -- has drifted and must be corrected.
+    Exact in both directions, the same discipline
     ``controls_discharge.py.PROSE_ONLY`` holds itself to.
     """
-    by_key = {(citation.doc, citation.name): citation for citation in _all_citations(DOCS_ROOT)}
-    stale = [
-        row
-        for row in KNOWN_EXCEPTIONS
-        if row not in by_key or resolves(by_key[row], collected_pairs)
-    ]
-    assert stale == [], f"KNOWN_EXCEPTIONS rows no longer needed: {stale}"
+    unresolved_counts: dict[tuple[str, str], int] = {}
+    for citation in _all_citations(DOCS_ROOT):
+        if not resolves(citation, collected_pairs):
+            key = (citation.doc, citation.name)
+            unresolved_counts[key] = unresolved_counts.get(key, 0) + 1
+
+    drifted = sorted(
+        (row, unresolved_counts.get(row, 0), expected)
+        for row, expected in KNOWN_EXCEPTIONS.items()
+        if unresolved_counts.get(row, 0) != expected
+    )
+    assert drifted == [], (
+        "KNOWN_EXCEPTIONS rows drifted from the tree, as (row, actual count, "
+        f"recorded count): {drifted}"
+    )
 
 
 # -- positive controls: the matching logic itself, over fabricated input ------
@@ -358,10 +437,17 @@ _FAKE_COLLECTED = [
 @pytest.mark.parametrize(
     ("prefix", "name", "expected"),
     (
-        ("tests/unit/test_widget.py", "test_the_widget_spins", True),  # any dir, real basename
+        ("tests/unit/test_widget.py", "test_the_widget_spins", True),  # correct dir, suffix match
+        (
+            "tests/integration/test_widget.py",
+            "test_the_widget_spins",
+            False,
+        ),  # WRONG dir stated -- no longer a suffix, M-2's own RED direction
         ("test_widget.py", "test_the_widget_spins", True),  # bare-filename house style
         ("tests/unit/test_thing.py", "test_a_thing_holds", True),  # exact match
-        ("...", "test_a_thing_holds", False),  # elided path, but the name is ambiguous
+        ("…/test_widget.py", "test_the_widget_spins", True),  # elided path, admitted (M-1)
+        ("…test_widget.py", "test_the_widget_spins", True),  # elided with no `/`, same
+        ("...", "test_a_thing_holds", False),  # three literal dots carry no path char, so bare
         ("", "test_the_widget_spins", True),  # bare, resolves uniquely
         ("", "test_a_thing_holds", False),  # bare, ambiguous -- two files define it
         ("", "test_nobody_wrote_this", False),  # bare, dangling

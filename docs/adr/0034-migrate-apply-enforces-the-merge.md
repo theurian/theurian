@@ -663,13 +663,13 @@ test that discharges it:
   diffs the tree after a refused apply — the property #63 and #210 established
   for the refusals already in that band, extended to this one rather than assumed
   to carry.
-- **The new spawn site joins `PROCESS_SPAWN_SITES`, and its argument vector is
+- **The new spawn site joins `PROCESS_SPAWN_SITES`, and its argument vectors are
   fixed.** `tests/unit/test_network_call_sites.py`'s `PROCESS_SPAWN_SITES` now
   holds **five** entries — `infrastructure/git/committed_check.py` is the new one
   — asserted by equality against the whole set, and
   `tests/integration/test_committed_migration_check_adapter.py::test_the_git_vectors_are_fixed_and_carry_a_timeout`
-  holds that the vector is fixed by the adapter, cannot be handed a URL or a
-  remote, and carries a timeout.
+  holds that both vectors are fixed by the adapter, cannot be handed a URL or a
+  remote, and carry a timeout.
 - **The T-7 spawn bullet moved in the same commit as the set.**
   `docs/security/threat-model.md`'s bullet now spells **five** and names
   `infrastructure/git/committed_check.py`;
