@@ -562,6 +562,13 @@ def _refuse_an_unusable_target(directory: Path) -> None:
     so a 300-character leaf raised straight out of ``is_symlink()`` untyped (round
     five, adversarial MEDIUM). :func:`_refuse_an_unusable_ancestor`'s lineage walk
     already wraps the same shape one level up; this is the target's own.
+
+    **This is a check, not a lock.** Two concurrent exports into the same target
+    can both clear every probe here and then merge their trees in ``_write`` --
+    a same-operator race the ``--help`` text now names, recorded against the
+    distributed-bundle threat-model entry rather than closed here: a lock file
+    would trade it for a crashed run's retry finding the lock still held, which
+    is the worse face (round five, adversarial HIGH, converted).
     """
     try:
         if directory.is_symlink():
