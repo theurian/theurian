@@ -1516,6 +1516,83 @@ def test_a_relative_target_is_created_where_the_working_directory_puts_it(
     assert (tmp_path / "rel" / "deep" / "bundle" / MANIFEST_NAME).is_file()
 
 
+# -- The tree pass's own failures (round five) ------------------------------
+
+
+def _root_near_the_path_limit(base: Path, length: int) -> Path:
+    """A directory under ``base`` whose absolute path is ``length`` characters.
+
+    Built from a chain of near-``NAME_MAX`` components rather than one long
+    name, so the limit crossed is this filesystem's own ``PATH_MAX`` -- queried
+    rather than assumed, since the two platforms this suite runs on disagree
+    about its value.
+    """
+    deep = base
+    while len(str(deep)) < length - 200:
+        deep = deep / ("d" * 200)
+    remaining = length - len(str(deep)) - 1
+    if remaining > 0:
+        deep = deep / ("z" * remaining)
+    return deep
+
+
+def test_a_tree_pass_failure_leaves_the_target_exactly_as_it_was_found(
+    tmp_path: Path,
+) -> None:
+    """``_make_the_tree`` used to create directories one at a time and unwind
+    nothing: a component crossing this filesystem's ``PATH_MAX`` failed the pass
+    partway through, and every directory already made -- the target itself
+    included -- was left inside it, so a retry into the same place was refused
+    as not-empty over debris the export itself had written (round five,
+    adversarial HIGH). Falsifies the earlier ``_write`` docstring's "a refusal in
+    either of the first two [passes] leaves no partial bundle".
+
+    Two namespace segments, so the target and the first fit under ``PATH_MAX``
+    and the second does not: the tree pass creates the target and the first
+    segment, then fails on the second, with the whole corpus already read.
+    """
+    segment = "s" * 90
+    database = corpus(tmp_path, [Row(f"{segment}.{segment}.leaf", 1)])
+    target = _root_near_the_path_limit(tmp_path, os.pathconf(str(tmp_path), "PC_PATH_MAX") - 100)
+
+    with pytest.raises((OkfExportError, OSError)):
+        export(database, target)
+
+    assert not target.exists(), "the failed tree pass left debris inside the target"
+
+    retry = export(corpus(tmp_path / "second-corpus", [Row("keeper", 1)]), target)
+    assert retry.report["concepts"] == 1, "the retry was poisoned by the failed pass's debris"
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_a_parent_that_denies_writes_at_the_targets_own_level_is_refused_as_a_document(
+    tmp_path: Path,
+) -> None:
+    """The sibling, one level shallower, of
+    :func:`test_a_parent_that_denies_writes_is_refused_without_blaming_a_path_that_never_existed`.
+
+    There the denying directory is the target's *grandparent*, so the ancestor
+    walk finds it. Here it **is** the target's own parent: nothing is missing for
+    :func:`_create_the_canonical_ancestors` to create, every probe in
+    :func:`_refuse_an_unusable_target` passes because the target does not exist
+    yet, and the whole corpus is read before ``_make_one_directory(root)`` used
+    to raise a raw, untyped ``PermissionError`` (round five, adversarial MEDIUM).
+    """
+    database = corpus(tmp_path, [Row("keeper", 1)])
+    read_only = tmp_path / "read-only"
+    read_only.mkdir()
+    target = read_only / "bundle"
+    read_only.chmod(0o500)
+    try:
+        with pytest.raises(OkfExportError) as caught:
+            export(database, target)
+    finally:
+        read_only.chmod(0o700)
+
+    assert "Permission denied" in str(caught.value)
+    assert not target.exists()
+
+
 class Recording:
     """An ``OkfExportSession`` that delegates to the real store and records the order.
 

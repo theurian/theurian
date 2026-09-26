@@ -37,6 +37,7 @@ Takes its session factory by injection, so nothing here names an adapter
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable, Container, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
@@ -53,8 +54,8 @@ from theurian.domain.knowledge import KnowledgeItem, KnowledgeRelation, Knowledg
 from theurian.domain.ports.canonical_store import IndexBuildSession
 from theurian.security.no_follow import write_text_without_following_a_link
 
-#: Why an export target was refused. Five arms, each with its own message and
-#: its own cure, dispatched by ``match`` so a sixth cannot be added without
+#: Why an export target was refused. Six arms, each with its own message and
+#: its own cure, dispatched by ``match`` so a seventh cannot be added without
 #: being written.
 TargetRefusal = Literal[
     "not-empty",
@@ -62,6 +63,7 @@ TargetRefusal = Literal[
     "symbolic-link",
     "unusable-ancestor",
     "ancestors-not-created",
+    "tree-not-created",
 ]
 
 
@@ -79,6 +81,12 @@ class OkfExportError(TheurianError):
     arm fires either there or while the tree is being created -- before any bundle
     file is written, because :func:`_write` creates and checks every directory
     first -- so its cure can still promise a target that holds no partial bundle.
+    ``tree-not-created`` is the same timing, for a directory the tree needs, at or
+    under the target, that :func:`_make_one_directory` could not create for a
+    reason other than a symbolic link standing in for it -- always after the walk,
+    since every directory but the root is discovered by it, and always before any
+    bundle file is written, since :func:`_make_the_tree` runs whole before
+    :func:`_write`'s third pass.
 
     **No cure here deletes anything, and none of them urges a removal.** The
     target is a path the operator named on the command line rather than a derived
@@ -164,6 +172,19 @@ class OkfExportError(TheurianError):
                     f"The export target {directory} is not empty. A bundle is a whole tree "
                     f"whose digest covers every file in it, so it is written into an empty "
                     f"directory and never merged into an existing one."
+                )
+            case "tree-not-created":
+                # Fires after the walk has already read the whole corpus, so the
+                # cure names the parent that needs to take the write rather than
+                # sending an `ls` at a target that may not exist either.
+                self.remedy = (
+                    f"Check that you can write under {directory.parent}: `ls -ld "
+                    f"{directory.parent}` shows its mode and owner, `df -h {directory.parent}` "
+                    f"its free space. Then run `theurian okf export` again."
+                )
+                message = (
+                    f"A directory the bundle needs, {directory}, could not be created -- the "
+                    f"filesystem answered: {detail}."
                 )
         super().__init__(message)
 
@@ -518,10 +539,22 @@ def _refuse_an_unusable_target(directory: Path) -> None:
 def _write(root: Path, files: Mapping[str, str]) -> None:
     """The one place this module writes, so every member takes the same guards.
 
-    Three passes, in this order, and the order is what the guarantees rest on:
-    every member's key is checked, then every directory is created and checked,
-    then the files are written. A refusal in either of the first two therefore
-    leaves no partial bundle, which is what lets the refusals' cures say so.
+    Three passes, in this order: every member's key is checked, then every
+    directory is created and checked, then the files are written.
+
+    **A failure in either of the first two passes leaves ``root`` exactly as it
+    was found.** Pass 1 raises before anything is created. Pass 2 used to create
+    directories one at a time with nothing to unwind: a failure partway --
+    ``ENAMETOOLONG`` from a deep member path, ``ENOSPC``, a denying parent --
+    left every directory already made sitting inside the target, and the retry
+    then refused that debris as not-empty, blaming the operator for what the
+    export itself had written (round five, adversarial HIGH). :func:`_make_the_tree`
+    now tracks which directories it created and, on any exception, removes
+    exactly those in reverse order before re-raising; a directory pass 2 found
+    already there is never touched. **Pass 3 makes no such promise** -- a file
+    write can fail after some files are already on disk, and those stay, which is
+    why the CLI's own cure for a pass-3 ``OSError`` offers ``ls -la`` rather than
+    claiming an empty target.
 
     **What is guarded, exactly, is at or under ``root``.** The *leaf* of each
     member takes ``O_NOFOLLOW``
@@ -576,17 +609,47 @@ def _make_the_tree(root: Path, files: Mapping[str, str]) -> None:
     Built from ``parents`` so no ancestor can be missed, and sorted by depth --
     with the path as the tie-break, so the order is total and a refusal names the
     same component on every run.
+
+    **Tracks what it created, and undoes exactly that on any failure.** A
+    directory this pass finds already there is never in ``created`` and is never
+    touched; one this pass makes is undone, deepest first, if a later component
+    in the same pass fails (round five, adversarial HIGH -- see :func:`_write`).
     """
     directories = sorted(
         {parent for relative in files for parent in PurePosixPath(relative).parents},
         key=lambda each: (len(each.parts), each.as_posix()),
     )
-    for directory in directories:
-        _make_one_directory(root / directory)
+    created: list[Path] = []
+    try:
+        for directory in directories:
+            path = root / directory
+            if _make_one_directory(path):
+                created.append(path)
+    except BaseException:
+        _unwind_the_directories_this_pass_created(created)
+        raise
 
 
-def _make_one_directory(path: Path) -> None:
+def _unwind_the_directories_this_pass_created(created: list[Path]) -> None:
+    """Best-effort ``rmdir`` of exactly what :func:`_make_the_tree` just made.
+
+    Deepest first (``created`` is shallowest-first, so this reverses it), because
+    a shallower directory cannot come off while one it contains still exists.
+    Each ``rmdir`` is independent and its own failure is swallowed: this is
+    already unwinding after one error, and it must never replace that error with
+    a second one, or leave half the chain removed and call it done.
+    """
+    for path in reversed(created):
+        with contextlib.suppress(OSError):
+            path.rmdir()
+
+
+def _make_one_directory(path: Path) -> bool:
     """``mkdir`` one component, and refuse a symbolic link standing in for it.
+
+    Returns whether this call created ``path``, which is what lets
+    :func:`_make_the_tree` undo exactly what it made and nothing a prior run left
+    behind.
 
     ``exist_ok`` is spelled as a caught ``FileExistsError`` rather than passed,
     because the two differ on exactly the case this function is for: ``mkdir``
@@ -599,12 +662,24 @@ def _make_one_directory(path: Path) -> None:
     the window is smaller and not closed -- #577's ``openat`` walk is what closes
     it -- and the ordinary case (we created the directory ourselves) has no
     window at all.
+
+    Any other ``OSError`` -- a denying parent, a name the filesystem refuses --
+    used to escape untyped, from a call the walk had already run past (round
+    five, adversarial MEDIUM). It is now the one case ``exist_ok`` was never
+    going to help with, and is converted to the same typed refusal every other
+    unusable directory here gets.
     """
     try:
         path.mkdir()
     except FileExistsError:
         if path.is_symlink():
             raise OkfExportError(path, reason="symbolic-link") from None
+        return False
+    except OSError as exc:
+        raise OkfExportError(
+            path, reason="tree-not-created", detail=exc.strerror or type(exc).__name__
+        ) from exc
+    return True
 
 
 __all__ = [
