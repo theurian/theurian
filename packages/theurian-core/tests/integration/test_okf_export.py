@@ -1286,23 +1286,28 @@ def test_a_multi_dotdot_target_lands_in_the_directory_it_climbs_back_to(
     assert list(tmp_path.rglob("a")) == [], "a component was created to make the path resolve"
 
 
-@pytest.mark.parametrize("suffix", ["", "/", "/.", "/./"])
 def test_a_target_written_with_a_trailing_dot_or_slash_is_its_collapsed_leaf(
-    tmp_path: Path, suffix: str
+    tmp_path: Path,
 ) -> None:
     """``pathlib`` collapses both while parsing, so neither reaches the dispatch.
 
-    All four spellings are one target: ``Path`` drops a trailing ``.`` and a
-    trailing ``/`` at construction and keeps a trailing ``..``, which is why the
-    dispatch reads the final *part* rather than the string. So each of these is
-    Case 1, where the leaf is the operator's own name and is never resolved --
-    what keeps a link planted at the target refused.
+    ``""``, ``"/"``, ``"/."`` and ``"/./"`` are not four cases: ``Path`` drops a
+    trailing ``.`` and a trailing ``/`` at *construction*, so all four already
+    construct the byte-identical ``Path`` before the export ever runs --
+    parametrizing them suggested four distinct code paths through the dispatch
+    where there is exactly one (round five, adversarial LOW). That equivalence
+    is asserted directly, and the export runs once, against Case 1: the leaf is
+    the operator's own name and is never resolved, which is what keeps a link
+    planted at the target refused.
     """
     database = corpus(tmp_path, [Row("keeper", 1)])
     flat = export(database, tmp_path / "flat-bundle")
     target = tmp_path / "bundle"
 
-    report = _report(database, Path(f"{target}{suffix}"))
+    identical = {Path(f"{target}{suffix}") for suffix in ("", "/", "/.", "/./")}
+    assert identical == {target}
+
+    report = _report(database, target)
 
     assert report["bundlePath"] == str(target)
     assert _read(target) == flat.files
@@ -1418,6 +1423,15 @@ def test_an_ancestor_that_is_a_dangling_symbolic_link_is_followed_and_its_target
     ``bundlePath`` is what says so -- it names the place, not the link. A
     hardening that refuses an ancestor link whose target is absent must turn this
     pin red and confront the twin above it.
+
+    **What this hands the planter is bounded.** They choose not only where the
+    bundle lands but the *names* Theurian creates getting there -- every
+    component on the way becomes a real directory -- so the capability is
+    name-occupation denial of service, visible in the published ``bundlePath``:
+    no disclosure, no overwrite of anything that already existed. Under a
+    permissive umask (``0002``/``0000``) the chain ``mkdir`` creates is group- or
+    world-writable (measured: ``0755``/``0775``/``0777`` under ``0022``/``0002``/
+    ``0000``); under the common ``0022`` umask it is not attacker-writable.
     """
     database = corpus(tmp_path, [Row("keeper", 1)])
     pointed_at = tmp_path / "does-not-exist"

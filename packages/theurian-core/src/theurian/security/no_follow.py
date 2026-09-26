@@ -58,18 +58,20 @@ descriptor at every level, which nothing in this codebase does. Recorded as
 One caller narrows that bound on its own, and only for its own paths:
 ``okf_export._write`` creates each component of a bundle tree with a bare
 ``mkdir`` and refuses one that turns out to be a link (``_make_one_directory``).
-It is a *check*, not an ``openat`` walk, so the window between the check and the
-next component's use is still #577's; what it buys is that a link planted **at**
-the named target, or at any component **under** it, cannot be written through --
-components **above** the named target are the operator's own path (round two,
-security HIGH: the earlier wording claimed the whole prefix, which a pre-planted
-ancestor link disproves). Those the export *canonicalizes*:
+It is a *check*, not an ``openat`` walk: what it buys is that a link planted
+**at** the named target, or at any component **under** it, cannot be written
+through outside the check-to-use race, which is #577's -- components **above**
+the named target are the operator's own path (round two, security HIGH: the
+earlier wording claimed the whole prefix, which a pre-planted ancestor link
+disproves). Those the export *canonicalizes*:
 ``okf_export._the_canonical_target`` widens through an ancestor link and collapses
 a ``..`` above the leaf, while the leaf itself is never resolved -- which is what
 keeps the refusal at the named target reachable at all. For an ancestor link whose
 target is absent that goes one step further than the shell: ``mkdir -p`` refuses
-it and creates nothing, while the export creates what the link names and reports
-that as the landing place
+it and creates nothing -- true whether the link sits in the *ancestor* position
+(``link/bundle``) or the *leaf* position (``link/..``, where the canonical path
+lands in the link target's own parent) -- while the export creates what the link
+names and reports that as the landing place
 (``test_an_ancestor_that_is_a_dangling_symbolic_link_is_followed_and_its_target_created``).
 
 **Why an ``ELOOP`` from one of these opens is the final component's. The write
