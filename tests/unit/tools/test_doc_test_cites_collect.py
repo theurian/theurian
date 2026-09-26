@@ -158,10 +158,14 @@ _EXCLUDED_DIR_NAME = "work-logs"
 
 #: `` `path.py::test_name` `` (group 1 non-empty) or `` `::test_name` `` (group 1
 #: empty) -- the literal ``::`` is mandatory in both, matching the two grep
-#: patterns the population above was measured with. ``[\w./-…]`` is the path
+#: patterns the population above was measured with. ``[\w./…-]`` is the path
 #: alphabet this corpus's citations actually use: word characters, dots,
-#: slashes, hyphens and an elided ``…`` (:func:`_stated_suffix` strips it).
-_CITE = re.compile(r"`([\w./-…]*)::(test_[A-Za-z0-9_]+)`")
+#: slashes, an elided ``…`` (:func:`_stated_suffix` strips it) and a hyphen --
+#: last in the class so it reads as a literal, not a range endpoint. Placed
+#: between ``/`` and ``…`` it silently spanned ``/``-``…`` (U+002F-U+2026, ~8000
+#: codepoints including ``:``), admitting colons, brackets, backticks and
+#: control characters as "path characters" (Review-Finding: security MEDIUM).
+_CITE = re.compile(r"`([\w./…-]*)::(test_[A-Za-z0-9_]+)`")
 
 #: A prefix carrying no real path character at all -- pure punctuation, or an
 #: elision with nothing else -- is not a path; it is treated as bare.
@@ -421,6 +425,19 @@ def test_the_known_exception_ledger_has_no_stale_rows(
         "KNOWN_EXCEPTIONS rows drifted from the tree, as (row, actual count, "
         f"recorded count): {drifted}"
     )
+
+
+def test_a_colon_in_the_prefix_never_parses_as_a_full_form_cite() -> None:
+    """``:`` (U+003A) sits inside ``/``-``…`` (U+002F-U+2026), the accidental
+    range a misplaced hyphen carved out of the path alphabet (CodeQL,
+    Review-Finding: security MEDIUM). The alphabet excludes ``:``, so the
+    greedy prefix match stops before it and the mandatory ``::`` never lines
+    up -- the whole citation fails to match, rather than reading ``a:b.py`` as
+    a stated path.
+    """
+    found = citations_in_text("`a:b.py::test_x` cites nothing.", "scratch.md")
+
+    assert found == []
 
 
 # -- positive controls: the matching logic itself, over fabricated input ------
