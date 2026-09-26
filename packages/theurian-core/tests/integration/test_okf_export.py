@@ -1565,6 +1565,34 @@ def test_a_tree_pass_failure_leaves_the_target_exactly_as_it_was_found(
 
 
 @pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
+def test_a_leaf_link_under_an_unsearchable_directory_is_refused_as_a_symbolic_link(
+    tmp_path: Path,
+) -> None:
+    """The link check runs first, so it never has to resolve through the link.
+
+    Moving it after ``exists()``/``is_dir()`` survives every other shape in the
+    suite (mutation ``guard-link-check-last``), because both of those *follow*
+    the link -- and ``Path.exists()`` does not swallow ``EACCES``, so a leaf
+    link pointing *under* a directory the process cannot search would raise an
+    untyped ``PermissionError`` in place of this typed refusal (round five,
+    adversarial MEDIUM).
+    """
+    database = corpus(tmp_path, [Row("keeper", 1)])
+    closed = tmp_path / "closed"
+    (closed / "real").mkdir(parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(closed / "real")
+    closed.chmod(0o000)
+    try:
+        with pytest.raises(OkfExportError) as caught:
+            export(database, link)
+    finally:
+        closed.chmod(0o700)
+
+    assert "symbolic link" in str(caught.value)
+
+
+@pytest.mark.skipif(_CANNOT_BE_REFUSED_BY_A_MODE, reason="POSIX permission bits, and not as root")
 def test_a_parent_that_denies_writes_at_the_targets_own_level_is_refused_as_a_document(
     tmp_path: Path,
 ) -> None:
