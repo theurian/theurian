@@ -1176,7 +1176,7 @@ Still owed, with the milestone that will satisfy it:
   > drives an ASCII, a CJK, a double-quoted, a backslashed, an embedded-newline and
   > a tab filename, asserting each verifies its own commit and refuses a foreign one;
   > `::test_an_honest_whitespace_only_anchor_verifies` is the single-space face the
-  > `.strip()` would drop; `::test_a_non_utf8_disk_path_never_verifies_a_utf8_anchor`
+  > `.strip()` would drop; `::test_a_non_utf8_disk_path_stored_as_a_surrogate_anchor_fails_closed`
   > pins the fail-closed encoding verdict against a change to the comparison; and the
   > captured-vector arm
   > `::test_the_git_vector_is_one_process_fixed_and_forecloses_an_option_a_path_and_magic`
