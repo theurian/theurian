@@ -216,6 +216,15 @@ def _reading() -> Iterator[None]:
         raise StateDatabaseUnreadableError(type(exc).__name__) from exc
 
 
+#: The read :meth:`SqliteCanonicalStore.read_snapshot` issues to pin its snapshot.
+#:
+#: Any read of the database file would do; this one interprets nothing. It names
+#: no application table, so a schema this build cannot otherwise read still gets
+#: the same refusal from ``_prepare`` rather than a different one from here, and
+#: it decodes no cell, so the pin cannot itself be what fails to be a value.
+_PIN_THE_SNAPSHOT: Final = "SELECT 1 FROM sqlite_master LIMIT 1"
+
+
 def _dt(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
@@ -242,6 +251,7 @@ class SqliteCanonicalStore:
     def __init__(self, database_path: Path) -> None:
         self._path = database_path
         self._connection: sqlite3.Connection | None = None
+        self._snapshot_open = False
 
     def _conn(self) -> sqlite3.Connection:
         if self._connection is None:
@@ -283,6 +293,106 @@ class SqliteCanonicalStore:
 
     def __exit__(self, *_: object) -> None:
         self.close()
+
+    @contextmanager
+    def read_snapshot(self) -> Iterator[None]:
+        """Every read in the body against one snapshot of the state (ADR-0037 decision 3).
+
+        **Opt-in, and the default read path is unchanged.** Outside this context
+        the connection stays in autocommit, where each statement takes its own
+        snapshot and a multi-statement walk interleaves with a writer. Both
+        directions are driven over one item and a ``migrate apply``-shaped write
+        that lands between two reads: the autocommit reader answers one item and
+        then two (``test_the_default_read_path_sees_a_commit_that_lands_between_
+        two_reads``), a reader inside this context answers one either side
+        (``test_a_commit_inside_a_read_snapshot_is_invisible_to_it``).
+
+        Three measurements decide the implementation. The module those two tests
+        live in, ``tests/integration/test_canonical_read_snapshot.py``, drives the
+        first two below; the third is the reason the refusal exists, and the
+        refusal is what keeps anything from reaching it:
+
+        * **The state database runs ``journal_mode = WAL``** -- the pragma
+          ``CONNECTION_PRAGMAS`` sets, reported as ``wal`` by this connection --
+          so a reader holding a snapshot is *isolated* rather than blocking:
+          the writer's ``BEGIN IMMEDIATE`` is accepted while this context is
+          open and its ``COMMIT`` returns, and the rows it wrote are invisible
+          here until the body ends. An export therefore delays no writer, and
+          nothing here can time out waiting for one.
+        * **The ``BEGIN`` is deferred, so it takes no snapshot on its own.** With
+          ``BEGIN`` alone the *first* read is what pins one, and a writer that
+          commits in between is visible to it (measured: 2 items rather than 1).
+          :data:`_PIN_THE_SNAPSHOT` is the read that moves the snapshot instant
+          to the entry of this context, which is what lets the docstring above
+          say "one snapshot" without naming a first statement.
+        * **A nested ``BEGIN`` is an error** (``cannot start a transaction within
+          a transaction``), and inside :func:`_reading` it would reach the caller
+          as a damaged state database. So re-entry is refused by name instead.
+
+        ``ValueError`` for the re-entry, the precedent
+        :meth:`~theurian.application.index_builder.IndexBuilder._derive_forest`
+        sets: no ``theurian`` command can produce it, so there is no operator to
+        carry a remedy to.
+        """
+        if self._snapshot_open:
+            msg = (
+                "SqliteCanonicalStore.read_snapshot() is already open on this store. "
+                "One snapshot spans the whole walk; call it once, at the top of the read."
+            )
+            raise ValueError(msg)
+        # Inside the guard for the reason :meth:`__enter__` is: acquiring the
+        # connection interprets this file, and so does the pin -- deliberately.
+        with _reading():
+            connection = self._conn()
+            connection.execute("BEGIN")
+            try:
+                connection.execute(_PIN_THE_SNAPSHOT).fetchone()
+            except BaseException:
+                # The ``BEGIN`` landed, so a failure here would otherwise leave a
+                # transaction open on a connection nobody thinks is in one:
+                # ``_snapshot_open`` is still False, so the *next* call passes the
+                # re-entry check and its ``BEGIN`` fails with "cannot start a
+                # transaction within a transaction" -- reported through
+                # :func:`_reading` as a damaged state database, which it is not.
+                # ``BaseException`` because an interrupt between the two statements
+                # leaves the same transaction open as an error does.
+                self._end_the_transaction(connection)
+                raise
+        self._snapshot_open = True
+        try:
+            yield
+        finally:
+            self._snapshot_open = False
+            self._end_the_transaction(connection)
+
+    def _end_the_transaction(self, connection: sqlite3.Connection) -> None:
+        """``ROLLBACK``, and drop the connection if even that will not run.
+
+        ``ROLLBACK`` rather than ``COMMIT``: the connection is ``mode=ro`` and has
+        nothing to commit, and this is the spelling
+        ``connection.py::_open_transaction`` already uses to end a transaction it
+        is abandoning.
+
+        **The failure arm exists so this cannot become the caller's answer.** It
+        runs in a ``finally``, so a ``sqlite3.Error`` raised here would replace
+        whatever the walk was failing with -- an unmapped ``OperationalError``
+        reaching an operator in place of their own error, and a wrong claim if it
+        were mapped instead. Closing is what makes swallowing it safe rather than
+        merely quiet: the transaction cannot outlive the connection, and
+        :meth:`_conn` opens a fresh one on the next read, so the store stays
+        usable and no later ``BEGIN`` meets an inherited transaction.
+
+        **On a walk that raised nothing, this arm still runs and its failure is
+        still swallowed -- silent to the caller, not to a debugger.**
+        ``self._connection is None`` afterward is that record: the success case
+        leaves the connection open, so only a ``ROLLBACK`` that actually failed
+        closes it, and the two outcomes stay distinguishable from outside without
+        a raise (round two, code review LOW).
+        """
+        try:
+            connection.execute("ROLLBACK")
+        except sqlite3.Error:
+            self.close()
 
     # -- Reading ----------------------------------------------------------
 
@@ -811,13 +921,55 @@ class SqliteCanonicalStore:
 
         Only one direction is stored; the inverse is synthesised so a caller
         never has to know which way an author happened to write it.
+
+        Resolves aliases, so a query by a retired id reaches the renamed item's
+        edges -- and the inverse mapping is then keyed on the *resolved* id, which
+        is why a caller deciding what a **literally named** item publishes reads
+        :meth:`list_relations_by_literal_id` instead.
         """
         resolved = self._resolve_alias(context.project_id, item_id)
+        return self._relations_keyed_on(context, resolved)
+
+    def list_relations_by_literal_id(
+        self, context: RequestContext, item_id: ItemId
+    ) -> tuple[KnowledgeRelation, ...]:
+        """:meth:`list_relations` with no `_resolve_alias` (T-21).
+
+        The relation-shaped member of the family `get_item_exact` and
+        `get_item_exact_metadata` record: **reachability may resolve an alias;
+        authority -- and, here, authorship -- must read the row the id literally
+        names.** An `addAlias` key is a string an author chooses freely, so an
+        item's own id can also be a key pointing somewhere else. Asked through
+        `list_relations`, such an item's query is answered from the *target*'s
+        edges, and every returned row carries the target as its `source_item_id`
+        -- so a caller that keeps the rows whose source is the id it asked for
+        keeps none of them, and the item's own edges vanish from a derived
+        artifact while `knowledge.get` still publishes them (ADR-0037 decision 4,
+        measured on an OKF bundle in PR #809 round one).
+
+        The inverse mapping is keyed on ``item_id`` for the same reason the query
+        is: an incoming invertible edge must come back as *this* item's outgoing
+        one, and comparing against a resolved id would leave it in the stored
+        orientation.
+        """
+        return self._relations_keyed_on(context, item_id)
+
+    def _relations_keyed_on(
+        self, context: RequestContext, item_id: ItemId
+    ) -> tuple[KnowledgeRelation, ...]:
+        """Both directions and the inverse mapping, for whichever id was chosen.
+
+        One spelling for the two public reads above, which differ in exactly one
+        step -- whether an alias was resolved first. Written once because the
+        query key and the mapping key have to be *the same* id: keyed on
+        different ids, a non-invertible incoming edge comes back naming neither
+        of them and reads as a false self-edge on whoever renders it.
+        """
         stored = self._read_all(
             "SELECT * FROM knowledge_relations WHERE project_id = ? "
             "AND (source_item_id = ? OR target_item_id = ?) "
             "ORDER BY source_item_id, relation_type, target_item_id",
-            (context.project_id.value, resolved.value, resolved.value),
+            (context.project_id.value, item_id.value, item_id.value),
             _relation_from_row,
         )
 
@@ -826,7 +978,7 @@ class SqliteCanonicalStore:
         # here would be a domain bug and must not be reported as a damaged file.
         relations: list[KnowledgeRelation] = []
         for relation in stored:
-            if relation.source_item_id == resolved:
+            if relation.source_item_id == item_id:
                 relations.append(relation)
             elif (inverse := relation.inverse) is not None:
                 relations.append(inverse)

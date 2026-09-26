@@ -544,6 +544,7 @@ REACHED_BY: Final = {
     "cli.propose_commands::_draft": "propose",
     "cli.review_commands::review_ingest": "review ingest",
     "cli.review_commands::review_build": "review build",
+    "cli.okf_commands::okf_export": "okf export",
     "cli.okf_commands::okf_import": "okf import",
 }
 
@@ -564,6 +565,11 @@ UNLISTED_REPOSITORY: Final = "acme/order-service"
 EXTRA_ARGS: Final[dict[str, tuple[str, ...]]] = {
     "propose accept": (ABSENT_PROPOSAL,),
     "review ingest": (UNLISTED_REPOSITORY,),
+    # A relative path, so it lands inside this command's own corpus slot, and one
+    # that does not exist yet: `okf export` refuses a target holding anything
+    # (ADR-0037), and a refusal there would measure the target rather than the
+    # resolve. The control matrix writes a real bundle at it.
+    "okf export": ("okf-bundle",),
     "propose": (
         "--item-id",
         "architecture.demo",

@@ -7296,6 +7296,160 @@ already on disk. Recording it as unowned is deliberate: an owed item whose owner
 is "a follow-up" is the owner-position defect ADR-0030 diagnoses, and naming a
 milestone nothing has scheduled would be the same defect with a number on it.
 
+#### T-27 — A distributed bundle holds knowledge this deployment has since withdrawn (Information disclosure, High — accepted residual, recorded; one control travels with the artifact)
+
+**Threat.** `theurian okf export` writes an OKF bundle: a point-in-time,
+Index-class copy of the rows this deployment serves by default
+([ADR-0037](../adr/0037-okf-is-the-knowledge-layer-interchange.md), decisions 2
+and 3). An operator then hands it to somebody. A withdrawal afterwards reaches
+every index build on this machine — `application/withdrawal_purge.py`
+republishes a purged build and swaps the pointer
+([ADR-0024](../adr/0024-a-purge-is-a-build.md)) — and reaches **no distributed
+copy**. Redistribution is outside Theurian's reach entirely: there is no list of
+who holds a bundle, and no mechanism that could reach them if there were.
+
+It sits on this boundary rather than on TB-4 because what crosses is served
+content leaving for a reader, which is T-3's and T-17a's boundary; the filesystem
+write is the vehicle, and its own bound is recorded further down.
+
+The case that fixes the grade is the one the purge machinery exists for: a
+**secret-removal withdrawal**. A credential withdrawn from every index build
+here survives in every distributed bundle until that bundle is regenerated *and*
+redistributed. So does a row withdrawn because it should never have been
+approved at all.
+
+**No entry above is this shape.** T-17, T-17a and T-15's remediation clause are
+all about the *locally published index build*; T-24 is a repository shipping its
+own `.theurian/review/`, which travels inward rather than outward. This is the
+distributed-artifact shape — an artifact in somebody else's hands holds records
+the live state has since withdrawn — and ADR-0037's *What this does not close*
+item 1 is where it was recorded as owed by the export slice.
+
+**Severity.** High, and **accepted** rather than owed. Every byte in the bundle
+cleared the same two predicates the serve path applies — `domain/enums.py`'s
+`may_surface` with `include_unapproved=False`, and `may_disclose` against the
+ceiling `application/authorization.py` expands — at the moment the copy was
+made, so nothing here crosses the disclosure gate. What is lost is the
+*reach* of remediation, which T-15 names among its own controls. That is why the
+grade follows the secret-removal case rather than reading as a freshness caveat.
+An operator who distributes a bundle is choosing this residual.
+
+**Controls.** Four bound it, three of them where the copy is not, and no
+combination of the four removes the residual. The one that travels is the
+manifest's holder notice — `application/okf_bundle.py::MANIFEST_NOTICE`, pinned
+by
+`tests/integration/test_okf_export_batteries.py::test_the_holder_notice_is_the_same_fixed_text_for_every_corpus`
+— and the table below names what drives each of the other three.
+
+| Control | Acts | What drives it |
+| :-- | :-- | :-- |
+| The bundle is **Index-class** — never a record of truth, never cited as team knowledge, losable without loss ([ADR-0010](../adr/0010-three-layer-knowledge-model.md)) — so deleting a copy loses nothing | operator's side | Prose: ADR-0037 decision 2, and the manifest's own notice — the last row here — which says it to the holder |
+| **`theurian_bundle_digest` makes staleness detectable** by regenerating and comparing | operator's side; the holder's too, once they can regenerate | `tests/integration/test_okf_export_batteries.py::test_the_bundle_digest_recomputes_from_the_bytes_on_disk` recomputes the digest from the bytes on disk in decision 2's stated path order and asserts both the manifest's own front-matter value and the report's `bundleDigest` equal it. The comparison is only usable because two exports of one state agree: `::test_two_exports_of_one_canonical_state_write_byte_identical_trees`, over a corpus a sibling test holds to reaching all four of ADR-0037 decision 2's ordering rules, and `::test_two_exports_under_different_hash_seeds_agree_byte_for_byte`, which runs two child processes under `PYTHONHASHSEED` `1` and `4294967295` and asserts each child's per-file digests equal the parent's |
+| The shipped guidance is **regenerate, never edit** | operator's side | Prose: `theurian okf export --help`'s own paragraph, and the manifest's third paragraph, which the next row's pin holds byte for byte |
+| **The manifest's holder notice** — mandatory fixed text: this is a point-in-time Index-class copy; a withdrawal, a correction or the removal of a secret applies in the deployment and does not propagate here; regenerate and compare `theurian_bundle_digest` rather than trusting what is written | **travels with the artifact** | `…test_okf_export_batteries.py::test_the_holder_notice_is_the_same_fixed_text_for_every_corpus` compares the manifest body's paragraphs against a committed four-element constant (a heading and three paragraphs) and asserts the same body bytes across three corpora — a populated one, a reserved-name one, and the empty one, where the whole bundle is the root `index.md` and the manifest |
+
+**What the artifact does not carry: SEC-15's safety triple.** A served row
+reaches an MCP caller labelled `contentClassification: untrusted-knowledge`,
+`mayContainInstructions: true`, `executable: false`. **No bundle file carries any
+of the three.** Measured 2026-09-26:
+
+```sh
+git grep -nE 'contentClassification|mayContainInstructions|content_classification|may_contain_instructions' -- \
+  packages/theurian-core/src/theurian/application/okf_export.py \
+  packages/theurian-core/src/theurian/application/okf_bundle.py \
+  packages/theurian-core/src/theurian/application/okf_codec.py \
+  packages/theurian-core/src/theurian/cli/okf_commands.py
+```
+
+exits 1 with no output, and the thirteen `theurian_*` keys `okf_codec.py`
+enumerates hold no member of the triple. What travels instead is
+`theurian_trust_level` on every concept document and the holder notice on the
+manifest alone — so an agent that opens `architecture/policy.md` out of a bundle
+gets a trust level and no labelling. That is the boundary SEC-15's own wording
+draws, since its subject is *every retrieval result* and a file on somebody
+else's disk is not one; it is recorded here because the consumer of a bundle is
+exactly the agent SEC-15 exists to warn, and assumption 4 of this document is
+about labels a client can read. **Unowned rather than deferred to a named
+milestone:** carrying the triple would be a producer-extension decision
+ADR-0037's decision 7 projection does not take, and no issue owns it today.
+
+**A bundle's rendered sections are not authenticated against its front matter**
+([#814](https://github.com/theurian/theurian/issues/814)). A concept document's
+body is preserved byte for byte (ADR-0010 rule 5, ADR-0037 decision 7), so an
+authored body can spell its own `## Relations` section and a consumer reading
+prose cannot tell it from the exporter's. The machine-readable truth is the
+front matter: `theurian_relations` is the typed channel, and row text rendered
+into it cannot forge a second key, because every value goes through a YAML
+serializer that quotes and escapes (ADR-0037 decision 2; the codec-level
+primitives closed in [#810](https://github.com/theurian/theurian/pull/810), the
+assembler-level pin is
+`…test_okf_export_batteries.py::test_one_row_cannot_forge_structure_at_either_site_of_the_full_export`).
+The consumer side — an importer that reads the front matter and not the prose —
+is where this is hardened, and it lives on #814.
+
+**The export target's containment scope, and what it accepts.** The bundle is
+written where the operator said, so the write path has a boundary of its own and
+it is recorded here rather than only in a docstring. **Containment is at or
+under the canonical export target.**
+`application/okf_export.py::_the_canonical_target` resolves the *parent* and
+joins the operator's leaf back on unresolved, so a symbolic link planted at the
+target is refused rather than followed
+(`tests/integration/test_okf_export.py::test_a_target_that_is_a_symbolic_link_is_refused_rather_than_followed`
+asserts the refusal, that the link's destination is still empty, and that the
+operator's link survives), and so is one standing in for a directory the tree
+needs inside the bundle
+(`::test_a_symbolic_link_standing_in_for_a_directory_inside_the_bundle_is_refused`,
+driven at `_write` because a target holding the plant is already refused as
+non-empty one guard earlier).
+
+**Above the target, links are followed, and that is the recorded decision.**
+`resolve` widens through every ancestor. It is the same shape T-3's import route
+records one entry up: macOS `/tmp` is itself a symbolic link to `/private/tmp`,
+so an ancestor `lstat`-refusal would refuse every export under `/tmp`.
+`::test_an_ancestor_that_is_a_symbolic_link_to_a_real_directory_is_followed` is
+the pin a future hardening has to turn red — it asserts a bundle exported
+through such a link is byte-identical, digest included, to one exported into a
+plain directory — and its docstring cites this entry. Two things are accepted
+with it:
+
+- **A dangling ancestor link is followed and its chain created.** The bundle
+  lands at the path the link names and every absent component on the way becomes
+  a real directory. What that hands whoever planted the link is bounded:
+  **name occupation only** — no disclosure, no overwrite of anything that
+  already existed — and the published `bundlePath` names the real landing rather
+  than the link, so an operator can see where the bundle went.
+  `::test_an_ancestor_that_is_a_dangling_symbolic_link_is_followed_and_its_target_created`
+  asserts `bundlePath` is the link's target joined with the leaf, that the tree
+  written there equals a flat export's, and that the operator's link is still a
+  link. Recorded with it: under a permissive umask the created chain is group- or
+  world-writable — measured `0755`/`0775`/`0777` under `0022`/`0002`/`0000` — and
+  under the common `0022` it is not attacker-writable.
+- **The check-to-use race on a component is
+  [#577](https://github.com/theurian/theurian/issues/577)'s, unchanged here.**
+  Every guard is a probe; a component swapped between the probe and the write is
+  that entry's territory rather than a second one.
+
+**What is not a residual: two concurrent exports merging.** It was real — both
+runs cleared the empty-target probe, both wrote into the target, and what was
+left was one tree holding members of two corpora under whichever manifest landed
+last, at exit 0, twice. It is closed by construction rather than by a lock: every
+byte goes into a staging directory beside the target and reaches the target
+through **one rename**, so the loser meets a non-empty directory and takes the
+same `not-empty` refusal the probe publishes.
+`::test_two_concurrent_exports_into_one_target_publish_one_whole_bundle` releases
+two exports of two *different* corpora through a `threading.Barrier` and asserts
+exactly one published a report while one raised `not empty`, that the winner's
+digest is one of the two reference bundles' digests, that the target's bytes
+equal that reference bundle's, and that no staging directory survived the run.
+
+**What would raise this entry, so the grade is falsifiable rather than a label.**
+An export population wider than the two serve-path predicates; any bundle byte
+that varies with a row the recipient may not read (decision 3's two-corpora
+equality is what holds that, and its own battery is named under ADR-0037's
+*Compliance*); a mechanism that could reach a distributed copy, which would make
+the non-propagation a defect rather than a bound; or a write that lands outside
+the canonical target.
+
 ### TB-4: the filesystem and setup
 
 #### T-25 — An MCP error response names the operator's resolved filesystem layout (Information disclosure, High — closed in 0.2.0)
@@ -7461,6 +7615,7 @@ fix.
 | T-24 | A repository ships its own `.theurian/review/` and a local build serves it as review history | T | Medium | Accepted residual, recorded. SEC-15's triple on every row, and the promotion path out of the untrusted plane — ADR-0033's candidate generator, since slice B5 — ends at an unapproved proposal a human reads; the tool description and response schema state that the T-19 check is on the *store* and never on who wrote the records. Verifying evidence provenance is unowned, adjacent to [#575](https://github.com/theurian/theurian/issues/575) |
 | T-25 | An MCP error response names the operator's resolved filesystem layout | I | High | Closed in 0.2.0 — GHSA-923w-f36f-jcfq. Constant refusals interpolating nothing across both tool boundaries, executable cures from fixed vocabulary; pinned by the raise-site population test, the no-resolved-form response sweep and the executable-cure ratchet |
 | T-26 | A canonical read materialises a withheld item's body before the gate, so a refusal's timing carries the body's size | I | High | Closed in 0.2.3 — bodyless `get_item_metadata`/`get_item_exact_metadata` gate the three read paths (`knowledge.get`, `_relation_is_visible`, `_may_surface`) on the pointer row, the body read only once a row is surfaceable (GHSA-3f65 preserved). ADR-0032's write-intent surface adds a fourth consumer — `proposeChange`'s caller-scoped `current_revision` lookup — also body-free (`get_item_metadata`), closed on the write path at slice B4 (0.3.0) with a content-independent ~9 µs existence residual ~155× below the same floor. Size-independent **by construction**: `_ITEM_METADATA_SQL` projects only `knowledge_items` columns and materialises no body, pinned bidirectionally by the zero-body-read counters (`test_pre_gate_body_materialization.py`) and the explicit-column projection fact test (`test_gate_call_sites.py`, RED on a `SELECT *` or a revisions join — closing the counters' method-name-keyed blind spot). Corroborated out of band: refusal identical at 256 B and 8 MiB, ~175× below TB-1's 1.40 ms floor (work log 2026-09-16-t26-timing). A canonical-store body-materialisation channel, distinct from T-17a (derived-index statistics) and T-22 (a per-row count term, #338) |
+| T-27 | A distributed OKF bundle holds knowledge this deployment has since withdrawn | I | High | Accepted residual, recorded ([ADR-0037](../adr/0037-okf-is-the-knowledge-layer-interchange.md) *What this does not close* item 1). Four controls, three of them operator-side — the bundle is Index-class, `theurian_bundle_digest` makes staleness detectable by regenerate-and-compare, and the shipped guidance is regenerate-never-edit — and **one that travels**: the manifest's mandatory fixed-text holder notice. Export-side surface recorded in the entry: no bundle file carries SEC-15's safety triple (unowned); a body's rendered sections are not authenticated against the front matter ([#814](https://github.com/theurian/theurian/issues/814)); containment is at or under the canonical export target, with ancestor links followed and a dangling one's chain created — bounded to name occupation — and the check-to-use component race left with [#577](https://github.com/theurian/theurian/issues/577). The concurrent-merge face is closed by the atomic publish, not accepted |
 
 ## Explicitly out of scope
 

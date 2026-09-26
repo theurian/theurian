@@ -293,6 +293,28 @@ criterion names. It also settles a value the roadmap's Phase F ② row and
 other way — the *stamp the whole-tree `stateHash`* row of the alternatives table
 carries the reasoning and the measurement.
 
+> **Amended in slice S2 (2026-09-26): the export target is decision 2's other
+> half, and this ADR said nothing about it.** The invariant above bounds what the
+> bytes may be a function of; implementing it needed a second rule about *where
+> they land*, and four rounds of findings is what it took to state. **The target
+> is canonicalized in two phases and the operator's leaf never enters `resolve`:**
+> the parent resolves, the raw leaf is joined back on, so a link planted at the
+> target is refused instead of followed, while a final `..` — which names a
+> directory by traversal and has no leaf for a plant to sit on — resolves whole.
+> **Containment is then at or under that canonical target**, and ancestors above
+> it are the operator's own path, followed as the filesystem resolves them; a
+> dangling ancestor link is followed and its chain created, which is accepted and
+> bounded to name occupation. **And the bundle reaches the target by exactly one
+> rename** — every byte is built in a staging directory beside it — so no failure
+> leaves a partial bundle at the target and two concurrent exports cannot merge:
+> the loser meets a non-empty directory and takes the same refusal the probe
+> publishes, which
+> `tests/integration/test_okf_export.py::test_two_concurrent_exports_into_one_target_publish_one_whole_bundle`
+> holds by releasing two exports of two different corpora through a
+> `threading.Barrier`. The residuals and the reasoning for each choice are
+> [T-27](../security/threat-model.md); what is recorded here is that the rule
+> belongs to this decision rather than to an implementation note.
+
 #### The bundle's byte sources, enumerated
 
 **A universal is only as good as the enumeration under it, and twice now this
@@ -456,6 +478,52 @@ each literally names — so it inherits the alias property rather than restating
 it. An export that rebuilt the same shape over an *alias-resolving* lookup would
 reintroduce T-21 while looking identical on the page, which is why the source of
 the set is stated here and not left for S2 to infer.
+
+> **Amended in slice S2 (2026-09-26): that paragraph told half the truth, and the
+> missing half was a live defect.** It names *where the set comes from* as what
+> makes the application-layer form safe, and the set was never the problem: the
+> gate set is the walk's own literal-id set, exactly as written.
+>
+> **One name in the sentence above has moved**, and correcting it here rather than
+> in place is what an accepted ADR allows: the function is
+> `application/index_builder.py::both_ends_visible`, public since this slice
+> because `okf_export.py` imports it rather than restating it
+> (`git grep -n 'def both_ends_visible' -- packages/theurian-core/src` names one
+> definition, 2026-09-26). The paragraph above spells it `_both_ends_visible`,
+> which was its name when this ADR was written and is a name nothing defines now.
+>
+> **The alias reached the export through the query key instead.**
+> `store.list_relations` resolves an alias *before* it queries
+> (`_resolve_alias`), and the export was the first consumer to hand it an id it
+> had read literally out of a row. An approved, in-ceiling item whose own id is
+> also an `addAlias` key was therefore answered from the *target*'s edges — every
+> returned row naming the target as its `source_item_id`, so the walk's own source
+> filter discarded all of them and the item shipped `theurian_relations: []` and
+> an empty `## Relations` while `knowledge.get` published the edge (PR #809 round
+> one, security HIGH).
+>
+> **So the rule is the store's own T-21 precedent, one read wider.** The export
+> calls `list_relations_by_literal_id`, the relation-shaped member of the family
+> `get_item_exact` and `get_item_exact_metadata` already record: *reachability may
+> resolve an alias; authority — and, here, authorship — must read the row the id
+> literally names.* The inverse mapping is keyed on the same literal id, or an
+> incoming invertible edge comes back in the stored orientation. Two pins hold it,
+> in `tests/integration/test_okf_export_batteries.py`:
+> `::test_an_aliased_items_own_edges_reach_both_channels_and_its_target_reaches_neither`
+> builds an `addAlias` whose key equals a served item's id and whose target is a
+> `confidential` row, then asserts the aliased item's `theurian_relations`
+> entries and its whole rendered `## Relations` section by equality — both
+> channels, because they are two renderings of one tuple — and that none of the
+> alias target's four marker strings appears in any byte of the bundle;
+> `::test_the_alias_row_really_redirects_the_read_the_export_no_longer_makes`
+> is the control, asking the store directly and asserting that the resolving read
+> answers with the target's edge while the literal read answers with the item's
+> own two.
+>
+> What the original paragraph got wrong is the population of "the same shape": it
+> checked the *set* and not the *key*, so it read as closed while one caller could
+> still reintroduce T-21 by asking the wrong question. The sentence stands above
+> because it is still true of the set.
 
 **The relation `note` is included.** Two SEC-11 controls already read it, and
 they are not the same kind of thing: `propose accept` **enforces** — it scans
@@ -971,6 +1039,28 @@ other — a proposal a human reviews.
    thing that reaches the person holding the copy. An operator choosing to
    distribute a bundle is choosing this residual, which is the reason it is
    written here in those words rather than as a note about freshness.
+
+   > **Amended in slice S2 (2026-09-26): written, and the clause about S3's half
+   > is discharged too.** The export mechanism landed, so the entry is written —
+   > as a **new numbered entry**, [T-27](../security/threat-model.md), because no
+   > entry above covers the distributed-artifact shape and the grep recorded
+   > above is the measurement that says so. It is graded **High, accepted**: the
+   > recipient cleared the serve gate for every byte at the moment the copy was
+   > made, so what is lost is the *reach* of remediation rather than the gate,
+   > and the secret-removal case is what sets the grade. The four bounds above
+   > are its controls table, each named with what drives it, and the entry
+   > carries three further export-side surfaces this item did not anticipate: no
+   > bundle file carries SEC-15's safety triple, a body's rendered sections are
+   > not authenticated against its front matter
+   > ([#814](https://github.com/theurian/theurian/issues/814)), and the export
+   > target's containment scope has its own accepted residual (decision 2's
+   > amendment B).
+   >
+   > *"alongside the T-3 entry S3 owes"* is discharged on that side as well:
+   > S3's half landed as T-3's **third arrival route** in
+   > [#811](https://github.com/theurian/theurian/pull/811), merged at
+   > `8d659e9b`, and item 4 below carries its own amendment saying so.
+   > *Compliance* carries T-27 under *Landed in slice S2*.
 2. **Round-trip is not identity.** Export followed by import produces a
    *proposal*, never a restoration: new revision ids, a trust ceiling of
    `INFERRED`, and a human merge in between. Anyone reading the two directions as
@@ -1220,39 +1310,175 @@ its name or its docstring reads:
   cause is T-3's own and decision 6 says so; the grade stays High and no control
   is added, so the threat summary row does not move.
 
+Landed in slice S2 (the export). It merged *after* slice S3 and is written below
+it for that reason rather than by slice number. Each item's reach is stated as its
+body holds it — the fixtures it builds and the assertions it makes. Three files
+carry them: `tests/integration/test_okf_export_batteries.py` holds the four
+batteries and the assembler-side pins beside them, each zero-assertion with its
+own positive control; `tests/integration/test_okf_export.py` holds the shape of
+each rule, one rule per test; `tests/integration/test_okf_commands.py` holds the
+command's own surface through the real CLI.
+
+- **Decision 3's two-corpora equality.**
+  `test_okf_export_batteries.py::test_a_corpus_holding_withheld_rows_exports_the_bundle_of_one_that_never_did`
+  builds two state databases — one holding two served rows plus a `draft`, a
+  `rejected`, a `deprecated` and a `confidential` row with five edges into them,
+  one holding the served rows and their one served edge — exports both, and
+  asserts the file *names* and then the file *contents* are equal and that the
+  two reports are equal with `bundlePath` replaced. Its own controls are in the
+  same body: the two databases' row counts differ, and so do the two state
+  hashes. The belt beside it is
+  `::test_no_byte_of_the_bundle_carries_a_withheld_rows_id_title_body_or_note`,
+  which sweeps every id, title, body and relation note those four rows and five
+  edges own against the concatenated bytes of every bundle file and asserts none
+  is found, with the served edge's note asserted present; and its positive
+  control `::test_the_marker_sweep_finds_a_withheld_row_once_the_gate_admits_it`
+  lowers one row's sensitivity into the served ceiling, nothing else changed, and
+  asserts that row's id, title, body and both of its edge notes then do appear.
+- **Decision 2's determinism, which is Phase F ②'s exit criterion.**
+  `::test_two_exports_of_one_canonical_state_write_byte_identical_trees` exports
+  one database twice and asserts the file contents, the `bundleDigest` values and
+  the reports are equal. The corpus is held to reaching all four ordering rules by
+  `::test_the_determinism_corpus_reaches_every_ordering_rule_it_claims_to`, which
+  asserts `tags` and `sources[]` in row order; an invertible pair stored both ways,
+  whose two entries share a type and a target and differ only by their notes,
+  rendering in the exact order each channel produces — the front matter's
+  normalised order and the body's `list_relations` order, which is where the two
+  stop agreeing; the five `index.md` paths a nested namespace produces; a sidecar;
+  and a reserved leaf escaped.
+  `::test_two_exports_under_different_hash_seeds_agree_byte_for_byte` runs the
+  export in two child processes under `PYTHONHASHSEED` `1` and `4294967295` and
+  asserts each child's digest and per-file `sha256` map equal the in-process run's,
+  with a `hash()` probe differing between the children as the control that the
+  seeds took. And `::test_the_rendered_bundle_does_not_depend_on_the_order_the_walk_returned`
+  renders the walk's own concepts forwards and reversed and asserts equal files
+  and equal digests, having first asserted the two orders differ and that the
+  concepts carry at least five relations — so the permutation reaches the
+  relation-derived bytes.
+- **The bundle path is derived from the item id, so a crafted `namespace` reaches
+  no path component.**
+  `test_okf_export.py::test_the_path_comes_from_the_item_id_and_never_from_the_namespace`
+  exports one row whose `namespace` is `../../../etc/passwd` and asserts the
+  concept is at `architecture/auth/policy.md`, that the crafted string is
+  published as `theurian_namespace` *data*, and that no bundle filename contains
+  `etc`. The rendered channels are held separately, because a filename check
+  cannot see them:
+  `test_okf_export_batteries.py::test_every_link_the_exporter_generates_resolves_inside_the_bundle`
+  asserts every link target the *exporter* writes — front matter, the generated
+  `## Relations` section, the index files, the manifest and the sidecar
+  paragraph — resolves to a bundle member, over a corpus whose every row carries
+  that same crafted namespace, with the authored body excluded from the
+  population by a recorded decision (ADR-0010 rule 5).
+- **A non-markdown row exports as a sidecar, and the row is present either way.**
+  `test_okf_export.py::test_a_non_markdown_body_becomes_a_sidecar_rather_than_a_refusal`
+  is parametrized over `application/json`, `application/schema+json`,
+  `application/yaml`, `text/x-yaml`, `application/vnd.oai.openapi` and
+  `text/plain`, asserting per case the sidecar's contents, `theurian_body_file`,
+  `theurian_content_type`, that the generated link's text *and* target are both
+  the derived filename, and `sidecars == 1`.
+  `::test_a_sidecar_holds_the_body_column_byte_for_byte` reads the `body` column
+  out of the database and asserts the sidecar's bytes equal it encoded — the
+  bytes-equal half — and
+  `::test_a_markdown_body_is_embedded_and_no_sidecar_is_written` is the
+  complementary arm.
+- **A media type outside `_EXTENSIONS` exports rather than refusing**, which is
+  where the rejected first draft would have denied the whole corpus its bundle.
+  `test_okf_export_batteries.py::test_a_media_type_outside_the_proposal_map_exports_rather_than_refusing`
+  builds one served markdown row beside an `application/vnd.oai.openapi` row and
+  asserts the whole file set is exactly five names, that the sidecar holds the
+  body's bytes, and `sidecars == 1` — the whole set, so the row is present *and*
+  nothing else was dropped to accommodate it.
+- **The suffix rule's collision face, closed at two layers.**
+  `::test_a_sidecar_and_its_concept_document_are_two_files_neither_overwriting_the_other`
+  asserts the sidecar's bytes, `theurian_body_file`, `theurian_item_id`, that the
+  concept document does not also carry the body, and that the sidecar carries no
+  front matter. **The `contentFile`-ending-`.md` case is driven through the real
+  CLI**, because a `contentFile` exists only in a migration:
+  `::test_a_yaml_row_whose_body_file_ends_md_still_exports_two_distinct_files`
+  runs `theurian init`, writes a migration whose `contentFile` ends `.md` under
+  `contentType: application/yaml`, runs `theurian migrate apply`, then
+  `theurian okf export`, and asserts the exported file set is exactly five names
+  — `api/orders-spec.md` and `api/orders-spec.yaml` among them — that the
+  sidecar's bytes are the body's, and that the concept carries its item id. The
+  third reason decision 7 takes `contentType` alone is held against the schema by
+  `::test_the_snapshot_holds_no_body_file_path_for_a_suffix_rule_to_read`, which
+  asks `PRAGMA table_info(knowledge_revisions)` and asserts no path-shaped column
+  is there while `content_type` is.
+- **The export reads one canonical snapshot** (decision 3).
+  `::test_a_withdrawal_landing_mid_walk_leaves_the_bundle_wholly_before_it` wraps
+  the store in a session that, immediately after the walk's first `list_items`
+  returns, lands a real withdrawal **and** a new edge through a *second*
+  connection in one `write_transaction` — the way `migrate apply` writes. It
+  asserts a fresh reader sees both statements committed, that a relation read
+  followed the write, that the contended export's files and report equal a quiet
+  export's, and that the late edge's note is in no bundle byte. Its control
+  `::test_the_same_interleaved_write_does_change_a_later_export` asserts each
+  statement changes a *later* bundle on its own, so the equality above is the
+  snapshot holding rather than a write that would have changed nothing.
+- **The reserved-name rule is positional, in all six of its faces.**
+  `test_okf_export.py::test_a_reserved_leaf_escapes_exactly_where_the_name_means_something`
+  is parametrized over the six ids and asserts per case the escaped path, that
+  `index.md` and the manifest both survive, and that the id round-trips into
+  `theurian_item_id`.
+  `test_okf_export_batteries.py::test_every_reserved_name_escapes_where_it_means_something_and_nowhere_else`
+  puts all six in one corpus and asserts the **exact** file set of nine names —
+  including `architecture/theurian-bundle.md` *unescaped*, which is the root-only
+  rule — plus that the nested manifest-named concept carries no
+  `theurian_bundle_digest` and the real manifest carries no `theurian_item_id`.
+  Beside them: `::test_the_index_at_each_level_lists_the_escaped_concept_beside_itself`
+  for the nested index entries the parametrisation cannot see,
+  `::test_a_reserved_leafs_sidecar_follows_the_escaped_stem`, and
+  `::test_no_item_id_can_be_spelled_as_an_escaped_name`, which rests the
+  no-collision claim on `ItemId` refusing the escaped spellings.
+- **The escaping rule of decision 2, at both site kinds and at the export level.**
+  `::test_one_row_cannot_forge_structure_at_either_site_of_the_full_export` is the
+  assembler-level discharge — the codec's own primitives closed in
+  [#810](https://github.com/theurian/theurian/pull/810), and what a bundle's
+  safety rests on is that the exporter applies each escape at the site whose
+  grammar it was written for. One row's `title` carries a newline followed by
+  `theurian_sensitivity: public`, a label-closing `](/x)` with an attacker-chosen
+  destination, raw inline HTML and a code span; one edge's `note` carries a
+  `## Relations` line, a forged relation row, a second link and a `### forged`
+  heading. It asserts exactly one `title:` and one `theurian_sensitivity:` line in
+  the concept, that the published sensitivity is the item's own while the title
+  round-trips whole, that the root index holds three `* ` entries with the
+  subject's target genuine and no live inline construct in its label, that the
+  concept's only `#`-opening lines are `## Relations` and `### related_to`, and
+  that every rendered line of the note opens no block construct and holds no live
+  inline member. Its control
+  `::test_the_hostile_row_would_forge_structure_if_it_were_not_escaped` asserts the
+  raw payloads *do* open those constructs and that both values reach the bundle
+  intact, so the escapes are what made them inert.
+- **The manifest's holder notice and its digest.**
+  `::test_the_holder_notice_is_the_same_fixed_text_for_every_corpus` compares the
+  manifest body's paragraphs against a committed four-element constant and asserts
+  the same body bytes across a populated corpus, a reserved-name corpus and the
+  empty one, where the whole bundle is the root `index.md` and the manifest.
+  `::test_the_manifest_names_no_deployment_no_target_and_no_state` asserts the
+  project id, the target path, the database path and its filename, and the state
+  hash the database records, are each absent from the manifest.
+  `::test_the_bundle_digest_recomputes_from_the_bytes_on_disk` rebuilds the digest
+  from the bytes on disk in the stated path order and asserts the manifest's own
+  front-matter value and the report's `bundleDigest` both equal it.
+- **No option widens the population** (decision 3), asked twice because the two
+  instruments differ.
+  `test_okf_commands.py::test_the_export_takes_no_option_that_widens_the_population`
+  reads the rendered `--help` and asserts the options are `--help` and `--json`
+  alone, with the usage line ending `[OPTIONS] {directory}`;
+  `test_okf_export_batteries.py::test_the_export_command_registers_exactly_one_argument_and_one_option`
+  reads the registered command object instead — so a `hidden=True` option, which
+  appears in neither the options list nor the usage line, is in scope — and
+  asserts the param list equals the required `directory` argument and the
+  `--json` flag, with no hidden param.
+- **The threat-model entry for the distributed-bundle residual**, named in *What
+  this does not close* item 1 and owed by this slice. Written as a new numbered
+  entry, [T-27](../security/threat-model.md), graded High and accepted, with the
+  item's four bounds as its controls table and three further export-side surfaces
+  recorded beside them. The threat summary gains its row; item 1 carries the
+  amendment that says so.
+
 Still owed, with the slice that will satisfy it:
 
-- **Slice S2 (export):** the two-corpora equality of decision 3 — one export run
-  against two corpora, one holding the withheld rows and one that never did,
-  asserted to produce the byte-identical bundle; the determinism of decision 2 —
-  two runs against one canonical state producing byte-identical output, which is
-  Phase F ②'s exit criterion and which now has the four ordering rules of
-  decision 2 to hold rather than a property with no sequence in it; a pin that
-  the bundle path is derived from the item id, so a crafted `namespace` cannot
-  reach a path component; and a pin that
-  a non-markdown row exports as a sidecar whose bytes equal the canonical body,
-  with the row present in the bundle either way — the property the two-corpora
-  battery cannot see, per the alternatives table's first new row. With it, a pin
-  that **an approved row whose media type is outside `_EXTENSIONS` exports as a
-  sidecar rather than refusing**, since that is where the first draft's refusal
-  would have fired — and beside it the collision case that closes the suffix
-  rule's second face: **an approved row with `contentType:
-  application/vnd.oai.openapi` and a `contentFile` ending `.md` exports a concept
-  document *and* a distinct sidecar, both present**, neither overwriting the
-  other. A pin that **the export reads one canonical snapshot** —
-  a withdrawal landing mid-walk leaves the bundle wholly on one side of it, never
-  straddling both (decision 3). And a pin that **an approved item literally named
-  `index`, `log` or `theurian-bundle` exports under its escaped stem**, with
-  neither the concept nor the file it would have displaced going missing. And
-  the escaping rule of decision 2, over **both** of its site kinds: **row text
-  rendered into structural syntax cannot forge structure** — an approved row
-  whose `title` carries a newline followed by `theurian_sensitivity: public`
-  emits one front-matter `title` value and no second key, and an index entry
-  whose title carries a bracket followed by a parenthesis, and a relation line
-  whose `note` begins with a run of `#`, each leave the entry list and the
-  `## Relations` section with the shape they had without it. The YAML half is
-  the one with a governance consequence, and the schema bounds all four of these
-  strings by length alone.
 - **Slice S3's residue: a structural pin that the import's own composition root
   is handed the draft-only facade**, which is what the discharged item above
   stops short of. `application/okf_import.py` names `accept` nowhere — `git grep
@@ -1270,7 +1496,7 @@ Still owed, with the slice that will satisfy it:
   *the same shape ADR-0032 and ADR-0035 owe*; ADR-0032's half is the landed test
   just named, and ADR-0035's items come due when its interactive-curation
   mechanism lands.
-- **Slice S2, prose:** a threat-model entry for the distributed-bundle residual
-  — a withdrawal, secret removal included, does not propagate to already
-  distributed copies. No existing entry covers that shape (*What this does not
-  close* item 1 records the grep), so it is an addition rather than an amendment.
+- **Nothing else. Slice S2's items moved to *Landed in slice S2* above**,
+  including the prose one — the threat-model entry for the distributed-bundle
+  residual, which landed as T-27 rather than as an amendment to an existing entry,
+  exactly as this bullet predicted it would have to.
