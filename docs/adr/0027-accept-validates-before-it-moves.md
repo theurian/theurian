@@ -1058,8 +1058,9 @@ Still owed, with the issue that will satisfy it:
   scan would have redacted to four characters was printed whole by the refusal
   that beat it there. Every author-controlled string
   `application/proposal_service.py` interpolates into a message now passes
-  `_bounded`, which cuts it to what may be printed and scans exactly that cut
-  text. The population is proved rather than enumerated:
+  `_bounded`, which cuts it to what may be printed and scans both the whole
+  string and the cut, withholding if either reports. The population is proved
+  rather than enumerated:
   `tests/integration/test_proposal_refusal_names.py::test_every_interpolation_in_a_message_is_gated_or_recorded`
   reflects over the module's own syntax tree and reddens on a new raw
   interpolation that is neither routed through a gate nor recorded in the
