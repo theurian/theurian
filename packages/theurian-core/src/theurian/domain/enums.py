@@ -227,24 +227,39 @@ def may_surface(status: KnowledgeStatus, *, include_unapproved: bool) -> bool:
     reachable through no flag, because a rejected revision is where the secret
     that caused the rejection still lives.
 
-    Beside the set it reads, and in the domain, because it is consulted from
-    seven call sites in the shipped package: the index builder decides what to
-    write; ``knowledge.search`` decides what to return on each of its two
-    answer paths; ``knowledge.get`` decides both what to hand over by id and,
-    per edge, whether a related item is surfaceable before it publishes the
-    relation; the withdrawal purge decides which revisions a still-published
-    index must stop holding (ADR-0024 decision 5), the one *inverse* use -- it
-    names what is non-surfaceable so the purge and the surfacing gate cannot
-    disagree about what is withheld; and the write-intent tools'
-    caller-scoped current-revision lookup consults it so an item this caller
-    may not see answers ``None`` and ``knowledge.proposeChange``'s
-    optimistic-concurrency refusal cannot oracle its existence (ADR-0032
-    decision 6). The builder used to inline the two comparisons instead of
-    calling this, which is one copy of a security rule too many --
-    ``knowledge.get`` having *no* copy is how a caller who could not search
-    for a withheld item could still fetch it. The sites are spelled out and
-    pinned in ``tests/unit/test_gate_call_sites.py`` so an eighth inside the
-    shipped package cannot land unnoticed.
+    Beside the set it reads, and in the domain, because both the application
+    layer and the MCP surface consult it. Each site is named by its key in
+    ``STATUS_GATE_CALL_SITES``:
+
+    - ``application/index_builder.py :: IndexBuilder._build`` decides what to
+      write;
+    - ``application/okf_export.py :: OkfExporter._walk`` decides what a
+      *distributable* bundle holds (ADR-0037 decision 3) -- the same question
+      one artifact further out: a purge cannot reach a copy once it is
+      forwarded;
+    - ``application/visibility.py :: CanonicalVisibility._may_surface`` decides
+      what ``knowledge.search`` returns on its ranked answer path, and
+      ``mcp/search.py :: _scan`` on its substring fallback;
+    - ``mcp/tools.py :: register.knowledge_get`` decides what ``knowledge.get``
+      hands over by id, and ``mcp/tools.py :: _relation_is_visible``, per edge,
+      whether a related item is surfaceable before it publishes the relation;
+    - ``application/migration_engine.py :: revisions_to_purge``, the withdrawal
+      purge, decides which revisions a still-published index must stop holding
+      (ADR-0024 decision 5), the one *inverse* use -- it names what is
+      non-surfaceable so the purge and the surfacing gate cannot disagree about
+      what is withheld;
+    - ``mcp/tools.py :: register._draft_only_proposals.current_revision``, the
+      write-intent tools' caller-scoped current-revision lookup, consults it so
+      an item this caller may not see answers ``None`` and
+      ``knowledge.proposeChange``'s optimistic-concurrency refusal cannot
+      oracle its existence (ADR-0032 decision 6).
+
+    The builder used to inline the two comparisons instead of calling this,
+    which is one copy of a security rule too many -- ``knowledge.get`` having
+    *no* copy is how a caller who could not search for a withheld item could
+    still fetch it. The sites are spelled out and pinned in
+    ``tests/unit/test_gate_call_sites.py`` so another inside the shipped package
+    cannot land unnoticed.
     """
     if status not in SURFACEABLE_STATUSES:
         return False
@@ -275,27 +290,43 @@ def may_disclose(sensitivity: Sensitivity, *, visible: frozenset[Sensitivity]) -
     would come back -- the reason
     :class:`~theurian.application.visibility.Visibility` refuses one too.
 
-    Consulted from six call sites, each spelled out and pinned in
-    ``tests/unit/test_gate_call_sites.py``: the ranked path's canonical re-check
-    (``CanonicalVisibility._may_surface``), ``knowledge.get``'s gate on the item it
-    hands over by id, the per-edge gate on each endpoint of a relation before it is
-    published, the write-intent tools' caller-scoped current-revision lookup, which
-    consults it so an item above this deployment's ceiling answers ``None`` and the
-    concurrency refusal about it cannot be told from one about an absent item
-    (ADR-0032 decision 6), the index builder, which decides what is *written* rather
-    than what is shown, and the withdrawal purge, which decides which revisions a
-    *still-published* build must stop holding once an item is reclassified past the
-    ceiling that build ran under (``revisions_to_purge``, #119, ADR-0025 part 2) --
-    the one *inverse* use, as it is for :func:`may_surface`. The last two are not
-    further readers of the same rule but the ones that make the first three cheap:
-    an FTS5 external-content table scores against collection statistics computed
-    over every row it holds, so a withheld document left in the file moves the
-    score of every visible one (T-17a, ADR-0025 part 1). The builder keeps it out
-    of a new build; the purge takes it out of the published one.
+    Consulted from these sites, each spelled out and pinned in
+    ``tests/unit/test_gate_call_sites.py`` and named here by its key in
+    ``DISCLOSURE_GATE_CALL_SITES``:
 
-    ``knowledge.search``'s unranked fallback does *not* appear there and is not a
-    sixth: it hands ``visible`` to the canonical store as a SQL predicate, so no
-    above-ceiling row is materialised for a Python check to run on
+    - ``application/visibility.py :: CanonicalVisibility._may_surface``, the
+      ranked path's canonical re-check;
+    - ``mcp/tools.py :: register.knowledge_get``, ``knowledge.get``'s gate on the
+      item it hands over by id;
+    - ``mcp/tools.py :: _relation_is_visible``, the per-edge gate on each endpoint
+      of a relation before it is published;
+    - ``mcp/tools.py :: register._draft_only_proposals.current_revision``, the
+      write-intent tools' caller-scoped current-revision lookup, which consults it
+      so an item above this deployment's ceiling answers ``None`` and the
+      concurrency refusal about it cannot be told from one about an absent item
+      (ADR-0032 decision 6);
+    - ``application/index_builder.py :: IndexBuilder._build``, the index builder,
+      which decides what is *written* rather than what is shown;
+    - ``application/migration_engine.py :: revisions_to_purge``, the withdrawal
+      purge, which decides which revisions a *still-published* build must stop
+      holding once an item is reclassified past the ceiling that build ran under
+      (#119, ADR-0025 part 2) -- the one *inverse* use, as it is for
+      :func:`may_surface`;
+    - ``application/okf_export.py :: OkfExporter._walk``, the OKF export, which
+      decides what leaves the machine in a *distributable* bundle (ADR-0037
+      decision 3), a copy no purge reaches once it is forwarded.
+
+    The builder and the purge are not further readers of the same rule but the
+    ones that make the ranked re-check, ``knowledge.get``'s gate and the per-edge
+    gate cheap: an FTS5 external-content table scores against collection
+    statistics computed over every row it holds, so a withheld document left in
+    the file moves the score of every visible one (T-17a, ADR-0025 part 1). The
+    builder keeps it out of a new build; the purge takes it out of the published
+    one.
+
+    ``knowledge.search``'s unranked fallback does *not* appear there and is not
+    another site: it hands ``visible`` to the canonical store as a SQL predicate,
+    so no above-ceiling row is materialised for a Python check to run on
     (``mcp.search._scan``, and the cost note on
     :meth:`~theurian.domain.ports.canonical_store.CanonicalStore.list_items_by_status`).
     """
