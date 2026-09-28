@@ -821,7 +821,11 @@ def _pytest_collected_test_names(body: list[ast.stmt]) -> list[str]:
 
 
 def test_the_adrs_recorded_pin_count_command_counts_exactly_the_tests_this_file_defines() -> None:
-    """The count command ADR-0036 records must still discriminate, not merely print a number."""
+    """The count command ADR-0036 records must still discriminate, not merely print a number.
+
+    Not run by a documentation-only pull request (#839); ``release-core.yml``'s
+    quality job runs the whole suite at every tag, so a drift cannot reach a release.
+    """
     adr_text = ADR.read_text(encoding="utf-8")
     source = Path(__file__).read_text(encoding="utf-8")
 

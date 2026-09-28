@@ -357,7 +357,9 @@ not; **absent** — effectively nothing.
 
 ### Absent
 
-- **Any evaluation baseline for retrieval quality.** There are no golden
+- **Any evaluation baseline for retrieval quality.** *Closed: see the
+  2026-09-29 closure that ends this item. The text before it is the earlier
+  record, kept as written.* There are no golden
   queries, no relevance judgements, and no measurement harness — `tools/` holds
   only the mutation-testing scripts, and a search for "golden quer", "relevance
   judg", "recall@", "ndcg" or "mrr" across the repository returns one file,
@@ -381,6 +383,18 @@ not; **absent** — effectively nothing.
   > and a ranking change still ships against no baseline. **Nothing recomputes
   > this bullet.** Unlike appendix rows 3, 6 and 10 it carries no pin, which is
   > why it went stale silently; one is owed with the harness (Phase A slice S4).
+
+  > **Closed by Phase A, re-measured 2026-09-29.** At `855ebd87` all four
+  > artefacts this item records as absent exist: the golden queries
+  > `tests/fixtures/eval/queries.yaml` and the relevance judgements
+  > `tests/fixtures/eval/judgements.yaml` (slice S3, `d11f3552`), the harness
+  > `tools/eval/run.py` (slice S2, `9cd9ee34`), and the baseline report
+  > `tools/eval/baseline/report.json` (slice S4b, `673b12cf`). §7's Phase A
+  > *Exit criteria* row records the closure as *All three met, 2026-09-24*,
+  > CI's comparison against the baseline included — advisory, not blocking.
+  > The pin the note above owed is
+  > `packages/theurian-core/tests/unit/test_roadmap_claims.py::test_every_phase_a_artefact_the_roadmap_names_exists`,
+  > which asserts that every repository path this note backticks exists.
 - **Impact analysis.** One mention repository-wide, as an endpoint in a diagram.
   No design.
 - **Drift detection.** The D1–D7 conditions are defined and nothing evaluates
@@ -719,12 +733,22 @@ candidate #7) and a schema-required field.**
 
 ### 3. A disclosure change is ADR-first
 
-`may_surface` has **six call sites, pinned by
-`tests/unit/test_gate_call_sites.py`**, and `domain/enums.py`'s module docstring
-says so. Four security advisories have been published against this project, and
-all four are disclosure defects (GHSA-266v-fcj2-qggx, GHSA-7997-g35f-q59h,
-GHSA-vx8x-rjfj-9x54, GHSA-w5cm-cqf9-vm7r; the threat model records each). Any
-change that relaxes what may surface — most directly Phase D's history access —
+`may_surface` has **eight call sites**, pinned as `STATUS_GATE_CALL_SITES` in
+`packages/theurian-core/tests/unit/test_gate_call_sites.py` against a scan of the
+shipped source. `may_surface`'s own docstring names each site by that set's
+`module :: qualname` key and states no total;
+`packages/theurian-core/tests/unit/test_roadmap_claims.py::test_the_roadmaps_gate_call_site_counts_are_derived_from_the_pinned_set`
+recomputes the number here from the set's size. On 2026-09-29, eight security
+advisories had been published against this project, and every one is a
+disclosure defect. Seven disclose withheld knowledge content, or its existence
+and approximate size (GHSA-7997-g35f-q59h, GHSA-266v-fcj2-qggx,
+GHSA-w5cm-cqf9-vm7r, GHSA-vx8x-rjfj-9x54, GHSA-97q9-xxfg-33r6,
+GHSA-3f65-gr36-qqx8, GHSA-qg39-w622-q4xw); GHSA-923w-f36f-jcfq discloses the
+operator's resolved filesystem layout in MCP error responses. The threat model
+records each by ID except GHSA-qg39-w622-q4xw, whose entry there, T-26, does not
+name it. Re-check the list with
+`gh api repos/theurian/theurian/security-advisories --paginate --jq '.[] | select(.state=="published") | [.ghsa_id, .published_at[0:10], .summary] | @tsv'`.
+Any change that relaxes what may surface — most directly Phase D's history access —
 is written as an ADR and passed through security review *before* implementation,
 not after.
 
@@ -826,7 +850,7 @@ Anything independent may run in parallel.
 | **Schema** | The transition graph is a domain constant checked by the migration engine. The disclosure change is a change to the semantics of `SURFACEABLE_STATUSES` and `may_surface`. |
 | **MCP / API** | `includeSuperseded` on `knowledge.get` and `knowledge.trace`: explicit opt-in, reachable only along a supersedes chain, every result labelled. **Not added to `search`** — history is traversed, not searched. |
 | **Migration** | None; semantics only. |
-| **Security** | **This is the phase's core risk.** §6 principle 3 applies in full: item ② is written as an ADR (candidate #2) and passed through security review before implementation, and the change is write-side as well as read-side — two of `may_surface`'s six call sites are writers (the index builder, which decides what is written, and the withdrawal purge, which decides what a published index must stop holding), so a semantics change moves what gets indexed and what gets purged, not just what a query returns. **Design on the assumption that superseded bodies contain secrets.** That is not a worst case but the recorded procedure: the threat model's T-15 names superseding the revision or retiring the item as *the* operation for removing a secret that got in, so superseded revisions are where removed secrets collect by design — and T-17 records that performing exactly that remediation is what re-opened a channel to read the secret back. Supersede-time disclosability metadata is therefore **mandatory in this phase, not a contingency**. |
+| **Security** | **This is the phase's core risk.** §6 principle 3 applies in full: item ② is written as an ADR (candidate #2) and passed through security review before implementation, and the change is write-side as well as read-side — three of `may_surface`'s eight call sites are writers (the index builder, which decides what is written; the withdrawal purge, which decides what a published index must stop holding; and the OKF export, which decides what a distributable bundle holds under [ADR-0037](adr/0037-okf-is-the-knowledge-layer-interchange.md) decision 3), so a semantics change moves what gets indexed, what gets purged and what gets exported, not just what a query returns. **Design on the assumption that superseded bodies contain secrets.** That is not a worst case but the recorded procedure: the threat model's T-15 names superseding the revision or retiring the item as *the* operation for removing a secret that got in, so superseded revisions are where removed secrets collect by design — and T-17 records that performing exactly that remediation is what re-opened a channel to read the secret back. Supersede-time disclosability metadata is therefore **mandatory in this phase, not a contingency**. |
 | **Tests** | RED tests for transition enforcement · an equality test that history is reachable only through the opt-in and never leaks into `search` · determinism of snapshot re-query. |
 | **Benchmark** | Enable the golden set's historical and superseded classes. The superseded-knowledge error rate becomes meaningful here. |
 | **Exit criteria** | An evolution-shaped query is answerable from the supersedes chain with dates. An illegal transition is refused with an exit code. |

@@ -1,4 +1,4 @@
-r"""The roadmap's corrected claim about what the threat model's T-16 summary row reads.
+r"""The roadmap's corrected claims about other files, T-16's summary row first.
 
 ``docs/roadmap.md``'s Phase 0 release-gate paragraph used to close with *"Tracked
 by [#80] -- the summary table still points at #39, which is closed while its
@@ -16,13 +16,14 @@ row can move out from under the quotation when T-16's install-time control lands
 One side alone is a pin that reports safety it does not have -- a roadmap frozen
 against a threat model free to move is the same defect one file over.
 
-**Scoped to this one claim.** The file is named for the document, not for the
-claim, because the roadmap will acquire other corrected claims and a module per
-claim would be a module per sentence. What keeps it honest is that everything
-below is derived from the two live files: nothing here is a second copy of either
-document that a future edit could leave behind.
+**Named for the document, not the claim**, because the roadmap acquires corrected
+claims and a module per claim would be a module per sentence: the Phase A closure
+note and the gate call-site counts follow T-16's, each under its own section
+comment. What keeps the T-16 pins honest is that everything they read is derived
+from the two live files: nothing here is a second copy of either document that a
+future edit could leave behind.
 
-**The fact side, derived on both sides.** The only string this module takes from
+**The fact side, derived on both sides.** The only string the T-16 pins take from
 the roadmap is the one the roadmap itself quotes, read out of the document at run
 time; the only string it takes from the threat model is the summary row, located
 by its table shape. Neither is written here. The comparison is a substring test
@@ -90,10 +91,11 @@ It costs nothing today: the shipped quotation of the row names #39 and does not
 name the summary row, so it cannot match this key. Measured, not reasoned -- the
 scan over the shipped document returns zero.
 
-**Reach.** This module holds (1) that the roadmap carries exactly one block making
-the T-16 release-gate claim, located by a key taken from a sentence the correction
-left untouched -- not from either wording of the claim itself -- so a straight
-revert of the claim is still found rather than dropping out of the population;
+**Reach** of the T-16 pins. They hold (1) that the roadmap carries exactly one
+block making the T-16 release-gate claim, located by a key taken from a sentence
+the correction left untouched -- not from either wording of the claim itself --
+so a straight revert of the claim is still found rather than dropping out of the
+population;
 (2) that the threat model carries exactly one T-16 summary row;
 (3) that exactly one quotation in that block carries the row's link labels and is
 a substring of the live row; (4) that every quotation in that block is a substring
@@ -145,7 +147,11 @@ sweep's rule, which grades a cite by whether it names a closed issue as the
 
 from __future__ import annotations
 
+import ast
 import re
+import shutil
+import subprocess
+from pathlib import Path
 from typing import Final
 
 from write_lock_claims import REPO_ROOT, collapsed
@@ -702,4 +708,174 @@ def test_the_block_locator_reads_one_block_and_not_its_neighbours() -> None:
 
     assert quotations == ["the quotation this module reads"], (
         f"the locator did not isolate the T-16 block's own quotations: {quotations}"
+    )
+
+
+# -- The Phase A closure note: every path it backticks is tracked -------------
+
+PHASE_A_CLOSURE_ANCHOR: Final = "**Closed by Phase A, re-measured 2026-09-29.**"
+
+#: The four artefacts the Absent item recorded as missing.
+PHASE_A_ARTEFACTS: Final = frozenset(
+    {
+        "tests/fixtures/eval/queries.yaml",
+        "tests/fixtures/eval/judgements.yaml",
+        "tools/eval/run.py",
+        "tools/eval/baseline/report.json",
+    }
+)
+
+_BACKTICKED: Final = re.compile(r"`([^`]+)`")
+
+
+def _blockquote_carrying(document: str, key: str) -> str:
+    """The one ``>`` run of *document* containing *key*, markers dropped, case kept.
+
+    Not :func:`_blocks`: the note runs straight into the next list item with no
+    blank line between, so a blank-line block would read that item's paths too.
+    """
+    runs: list[list[str]] = [[]]
+    for line in document.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith(">"):
+            runs[-1].append(stripped[1:])
+        elif runs[-1]:
+            runs.append([])
+    found = [text for run in runs if key in (text := " ".join(" ".join(run).split()))]
+
+    assert len(found) == 1, f"{len(found)} blockquotes of the roadmap carry `{key}`, expected 1"
+    return found[0]
+
+
+def _tracked_files() -> frozenset[str]:
+    """Every path ``git ls-files`` reports for the checkout, NUL-split so no path is quoted."""
+    git = shutil.which("git")
+    assert git is not None, "the tracked-file population is git's answer, and git is not on PATH"
+    completed = subprocess.run(  # noqa: S603 - argv is module-owned, never user input
+        [git, "ls-files", "-z", "--cached"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="surrogateescape",
+        check=False,
+    )
+    assert completed.returncode == 0, f"`git ls-files` failed:\n{completed.stderr}"
+    return frozenset(path for path in completed.stdout.split("\0") if path)
+
+
+def test_every_phase_a_artefact_the_roadmap_names_exists() -> None:
+    """The Absent item went stale silently because nothing recomputed it.
+
+    Not run by a documentation-only pull request (#839); ``release-core.yml``'s
+    quality job runs the whole suite at every tag, so a drift cannot reach a release.
+    """
+    document = ROADMAP.read_text(encoding="utf-8")
+
+    assert document.count(PHASE_A_CLOSURE_ANCHOR) == 1, (
+        f"the roadmap carries `{PHASE_A_CLOSURE_ANCHOR}` "
+        f"{document.count(PHASE_A_CLOSURE_ANCHOR)} times, expected once"
+    )
+
+    note = _blockquote_carrying(document, PHASE_A_CLOSURE_ANCHOR)
+    paths = {path for span in _BACKTICKED.findall(note) if "/" in (path := span.split("::")[0])}
+
+    assert paths, f"the Phase A closure note backticks no path, so nothing is held: {note}"
+    assert paths >= PHASE_A_ARTEFACTS, (
+        f"the Phase A closure note no longer names {sorted(PHASE_A_ARTEFACTS - paths)}"
+    )
+    untracked = sorted(paths - _tracked_files())
+    assert not untracked, f"the Phase A closure note names paths git does not track: {untracked}"
+
+
+# -- The gate call-site counts: recomputed from the pinned sets ---------------
+
+#: Where the sets live. Read by literal evaluation: under ``--import-mode=importlib``
+#: a test module is not importable by name, and importing one runs its imports.
+GATE_PINS: Final = Path(__file__).resolve().with_name("test_gate_call_sites.py")
+
+PRINCIPLE_3_HEADING: Final = "### 3. A disclosure change is ADR-first"
+PHASE_D_HEADING: Final = "### Phase D — Temporal engineering truth"
+
+_NUMBER_WORDS: Final = (
+    *("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"),
+    *("eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen"),
+    *("eighteen", "nineteen", "twenty"),
+)
+_COUNT: Final = rf"(\d+|{'|'.join(_NUMBER_WORDS)})"
+_PRINCIPLE_3_CLAIM: Final = re.compile(rf"\b{_COUNT} call sites\b")
+_PHASE_D_CLAIM: Final = re.compile(
+    rf"\b{_COUNT} of `may_surface`'s {_COUNT} call sites are writers\b"
+)
+
+
+def _as_number(word: str) -> int:
+    return int(word) if word.isdigit() else _NUMBER_WORDS.index(word)
+
+
+def _pinned(*names: str) -> dict[str, set[tuple[str, str]]]:
+    """*names*' module-level literals in :data:`GATE_PINS`, each asserted found."""
+    tree = ast.parse(GATE_PINS.read_text(encoding="utf-8"))
+    found = {
+        node.targets[0].id: ast.literal_eval(node.value)
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id in names
+    }
+
+    assert set(found) == set(names), f"{GATE_PINS.name} no longer assigns {set(names) - set(found)}"
+    return found
+
+
+def _section_lines(document: str, heading: str) -> list[str]:
+    """The lines under *heading*, up to the next heading; *heading* asserted unique."""
+    lines = document.splitlines()
+    starts = [index for index, line in enumerate(lines) if line == heading]
+
+    assert len(starts) == 1, f"the roadmap carries `{heading}` {len(starts)} times, expected once"
+    section = []
+    for line in lines[starts[0] + 1 :]:
+        if re.match(r"#{1,6} ", line):
+            break
+        section.append(line)
+    return section
+
+
+def test_the_roadmaps_gate_call_site_counts_are_derived_from_the_pinned_set() -> None:
+    """At ``855ebd87`` both counts read six (two writers) against a set of eight (three).
+
+    Not run by a documentation-only pull request (#839); ``release-core.yml``'s
+    quality job runs the whole suite at every tag, so a drift cannot reach a release.
+    """
+    pinned = _pinned("STATUS_GATE_CALL_SITES", "STATUS_GATE_WRITER_SITES")
+    sites, writers = pinned["STATUS_GATE_CALL_SITES"], pinned["STATUS_GATE_WRITER_SITES"]
+    document = ROADMAP.read_text(encoding="utf-8")
+    principle = collapsed(" ".join(_section_lines(document, PRINCIPLE_3_HEADING)))
+    security_rows = [
+        collapsed(line)
+        for line in _section_lines(document, PHASE_D_HEADING)
+        if line.startswith("| **Security** |")
+    ]
+
+    stated = [_as_number(word) for word in _PRINCIPLE_3_CLAIM.findall(principle)]
+    assert stated == [len(sites)], (
+        f"§6 principle 3 states `may_surface`'s call-site count as {stated}; "
+        f"STATUS_GATE_CALL_SITES holds {len(sites)}, and the claim is stated once"
+    )
+
+    cited = set(re.findall(r"[\w./-]*test_gate_call_sites\.py", principle))
+    assert cited == {GATE_PINS.relative_to(REPO_ROOT).as_posix()}, (
+        f"§6 principle 3 cites the pinning file as {sorted(cited)}, not by its repository path"
+    )
+
+    assert len(security_rows) == 1, f"Phase D has {len(security_rows)} Security rows, expected 1"
+    stated_pairs = [
+        (_as_number(writer), _as_number(total))
+        for writer, total in _PHASE_D_CLAIM.findall(security_rows[0])
+    ]
+    assert stated_pairs == [(len(writers), len(sites))], (
+        f"Phase D's Security row states (writers, sites) as {stated_pairs}; the pinned "
+        f"sets hold ({len(writers)}, {len(sites)}), and the claim is stated once"
     )

@@ -36,6 +36,7 @@ import ast
 import inspect
 import pathlib
 import re
+from collections import Counter
 from collections.abc import Callable, Iterator
 
 import pytest
@@ -48,6 +49,7 @@ from theurian.infrastructure.sqlite.store import (
     _ITEM_WITH_CURRENT_CONTENT_SQL,
     _item_from_row,
 )
+from theurian.mcp import results
 
 pytestmark = pytest.mark.unit
 
@@ -202,7 +204,7 @@ DISCLOSURE_GATE = may_disclose.__name__
 #: ``knowledge.get`` and was added after the count was written. A count in a
 #: docstring is enforced by nothing; this set is.
 #:
-#: The eight, by responsibility, and the behavioural test that holds each to
+#: By responsibility, and the behavioural test that holds each to
 #: gating (so removing a site is caught here *and* the removal turns one red):
 #:   - the index builder decides what to write
 #:     (``test_index_builder`` withholds unapproved from the index);
@@ -248,10 +250,24 @@ STATUS_GATE_CALL_SITES = {
     ("mcp/tools.py", "register._draft_only_proposals.current_revision"),
 }
 
+#: A writer decides what a persisted artefact holds or loses; a reader, what a response returns.
+STATUS_GATE_WRITER_SITES = {
+    ("application/index_builder.py", "IndexBuilder._build"),
+    ("application/migration_engine.py", "revisions_to_purge"),
+    ("application/okf_export.py", "OkfExporter._walk"),
+}
+STATUS_GATE_READER_SITES = {
+    ("application/visibility.py", "CanonicalVisibility._may_surface"),
+    ("mcp/search.py", "_scan"),
+    ("mcp/tools.py", "_relation_is_visible"),
+    ("mcp/tools.py", "register.knowledge_get"),
+    ("mcp/tools.py", "register._draft_only_proposals.current_revision"),
+}
+
 #: Every place the product consults the disclosure gate, as
 #: ``(module path under theurian/, enclosing function)``.
 #:
-#: Seven: three canonical-side read paths a caller can reach content through
+#: By responsibility: three canonical-side read paths a caller can reach content through
 #: (#119 phase 2), the write-intent tools' caller-scoped current-revision lookup
 #: (ADR-0032 decision 6), the build side that decides what exists to be reached
 #: (#119 phase 3), the purge that removes it from a build already published
@@ -349,8 +365,8 @@ def _enums_bindings(tree: ast.AST, symbol: str) -> tuple[set[str], set[str]]:
     So the scan follows the import, not a spelling. ``import may_surface as gate``
     binds ``gate`` to the function (a *direct* name); ``import theurian.domain.enums
     as e`` and ``from theurian.domain import enums`` bind a name to the *module*,
-    through which the function is reached as ``e.may_surface``. Both are how a
-    sixth call site could hide from a scan that only knew the bare name — the
+    through which the function is reached as ``e.may_surface``. Both are how an
+    unlisted call site could hide from a scan that only knew the bare name — the
     adversarial review demonstrated both survive a bare-``Name`` scan.
 
     ``symbol`` is a parameter because there are two gates on this path and they
@@ -423,11 +439,10 @@ def test_every_place_the_product_consults_the_status_gate_is_enumerated() -> Non
     name, an ``as`` alias (``import may_surface as gate; gate(...)``), and an
     attribute on the imported module (``enums.may_surface(...)``). The adversarial
     review showed the last two survive a scan that only knew the bare name; both
-    are now killed, which is what makes enums.py's "a sixth cannot land unnoticed"
-    true rather than aspirational. What it still cannot see is a name it cannot
-    resolve statically — ``getattr``, a dispatch table, a re-export under a third
-    name — so it is a floor on the review a new call site gets, not a proof that
-    an ungated path cannot exist.
+    are now killed. What it still cannot see is a name it cannot resolve
+    statically — ``getattr``, a dispatch table, a re-export under a third name —
+    so it is a floor on the review a new call site gets, not a proof that an
+    ungated path cannot exist.
     """
     sites = _sites_reaching(STATUS_GATE)
 
@@ -440,13 +455,14 @@ def test_every_place_the_product_consults_the_status_gate_is_enumerated() -> Non
             f"  {module} :: {function}" for module, function in sorted(STATUS_GATE_CALL_SITES)
         )
         + f"\n\n`{STATUS_GATE}` is the one rule for whether a status may surface "
-        f"(SEC-13, T-15), and its enums.py / mcp/results.py docstrings state this "
-        f"count in prose. Prose enforces nothing: the count read 'four' while the "
-        f"tree held five until #63 phase 0. If you added a call site, it is a new "
-        f"path a withheld status can leave by — establish that it gates through "
-        f"`{STATUS_GATE}` before returning content, add a test that goes red when "
-        f"it stops, and only then add it here with that test named beside it. If "
-        f"you removed or moved one, amend this set and both docstrings together."
+        f"(SEC-13, T-15). If you added a call site, it is a new path a withheld "
+        f"status can leave by — establish that it gates through `{STATUS_GATE}` "
+        f"before returning content, add a test that goes red when it stops, and "
+        f"only then add it here with that test named beside it. Whatever changed, "
+        f"amend this set, `{STATUS_GATE}`'s docstring entry for the site (it names "
+        f"each by its `module :: qualname` key), and STATUS_GATE_WRITER_SITES or "
+        f"STATUS_GATE_READER_SITES together; test_roadmap_claims.py then holds "
+        f"docs/roadmap.md's two counts to the set's new size."
     )
 
 
@@ -487,6 +503,71 @@ def test_every_place_the_product_consults_the_disclosure_gate_is_enumerated() ->
         f"and only then add it here with that test named beside it. If you removed "
         f"one, say which query or which build-side exclusion now enforces that path "
         f"instead, the way `mcp/search.py :: _scan` is accounted for above."
+    )
+
+
+#: A site as a gate docstring names it, ``module :: qualname`` in double
+#: backticks, matched in whitespace-collapsed text so a wrapped pair still counts.
+_DOCSTRING_SITE = re.compile(r"``(\S+\.py) :: (\S+?)``")
+
+_CALL_SITE_COUNT = re.compile(
+    r"\b(?:\d+|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+    r"thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\s+call\s+sites?\b",
+    re.IGNORECASE,
+)
+
+
+def test_each_gate_docstring_enumerates_exactly_its_pinned_sites() -> None:
+    """The docstrings counted these sites and read seven, six and six when the
+    OKF export (#809) made the sets eight, seven and eight; nothing recomputed them.
+    """
+    for gate, pinned in (
+        (may_surface, STATUS_GATE_CALL_SITES),
+        (may_disclose, DISCLOSURE_GATE_CALL_SITES),
+    ):
+        named = _DOCSTRING_SITE.findall(" ".join((gate.__doc__ or "").split()))
+        repeated = sorted(site for site, times in Counter(named).items() if times > 1)
+
+        assert not repeated, f"`{gate.__name__}`'s docstring names {repeated} more than once"
+        assert set(named) == pinned, (
+            f"`{gate.__name__}`'s docstring names sites the pinned set does not hold, "
+            f"or misses sites it does.\nOnly in the docstring: {sorted(set(named) - pinned)}"
+            f"\nOnly in the set: {sorted(pinned - set(named))}\nName each site once as "
+            f"``module :: qualname``, the set's own key."
+        )
+
+    counted = {
+        owner: _CALL_SITE_COUNT.findall(doc or "")
+        for owner, doc in (
+            (may_surface.__name__, may_surface.__doc__),
+            (may_disclose.__name__, may_disclose.__doc__),
+            (results.__name__, results.__doc__),
+        )
+    }
+
+    assert not any(counted.values()), (
+        f"a gate docstring counts call sites again: {counted}. A count is the copy "
+        f"that went stale; enumerate by key instead."
+    )
+
+
+def test_every_status_gate_site_is_classified_as_writer_or_reader() -> None:
+    """docs/roadmap.md's Phase D row counts the writers, so a site cannot join
+    the status set without someone deciding which side it is on.
+    """
+    assert STATUS_GATE_WRITER_SITES < STATUS_GATE_CALL_SITES, (
+        f"STATUS_GATE_WRITER_SITES is not a proper subset of STATUS_GATE_CALL_SITES: "
+        f"{sorted(STATUS_GATE_WRITER_SITES - STATUS_GATE_CALL_SITES)}"
+    )
+    assert not STATUS_GATE_WRITER_SITES & STATUS_GATE_READER_SITES, (
+        f"classified as both writer and reader: "
+        f"{sorted(STATUS_GATE_WRITER_SITES & STATUS_GATE_READER_SITES)}"
+    )
+    assert STATUS_GATE_WRITER_SITES | STATUS_GATE_READER_SITES == STATUS_GATE_CALL_SITES, (
+        f"unclassified: "
+        f"{sorted(STATUS_GATE_CALL_SITES - STATUS_GATE_WRITER_SITES - STATUS_GATE_READER_SITES)}"
+        f"; classified but not a site: "
+        f"{sorted((STATUS_GATE_WRITER_SITES | STATUS_GATE_READER_SITES) - STATUS_GATE_CALL_SITES)}"
     )
 
 
