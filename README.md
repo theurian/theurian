@@ -651,9 +651,24 @@ what each phase does *not* claim:
 | E | Impact analysis and drift detection |
 | F | Ecosystem: a second client adapter, context export, and experimental work |
 
-Phases ship independently, and only dependencies constrain the order. **None of
-the above describes a shipped capability** — for that, `system.capabilities` is
-the authority, and this file agrees with it.
+Phases ship independently, and only dependencies constrain the order.
+
+**Shipped from phases A to F, and what says so.** For what a running Core
+serves, `system.capabilities` is the authority. A is complete — the
+[roadmap](docs/roadmap.md) records its exit criteria met on 2026-09-24 — but its
+harness in `tools/eval/` is a development tool that ships in no package and that
+no flag reports
+([ADR-0036](docs/adr/0036-golden-judgements-are-committed-regression-fixtures.md)).
+From B, the write-intent MCP tools have shipped and emit proposals for human
+review (`writeTools: true`), and GitHub review ingestion has shipped as
+`theurian review ingest`, with `review.search` callable over MCP
+(`reviewIngestion: true`); the roadmap records B's exit demonstration, from a
+second client, as not yet run. C has not shipped (`traceability: false`). From
+F, context export has shipped as `theurian okf export`, with
+`theurian okf import`. D and E have not shipped, nor have F's second client
+adapter and experimental work, and no flag reports any of them.
+`packages/theurian-core/tests/unit/test_readme_phase_claims.py::test_the_readmes_shipped_phase_claims_match_system_capabilities_and_the_cli`
+holds this paragraph to its authorities.
 
 ## Documentation
 
