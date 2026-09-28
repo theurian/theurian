@@ -197,7 +197,7 @@ DISCLOSURE_GATE = may_disclose.__name__
 #: Every place the product consults the status gate, as
 #: ``(module path under theurian/, enclosing function)``.
 #:
-#: The set the enums.py and mcp/results.py docstrings describe in prose, and the
+#: The set ``may_surface``'s docstring enumerates by key and mcp/results.py names — the
 #: set they got wrong: both said "three layers" and the module docstring said
 #: *four* callers while the tree held five — the fifth,
 #: ``mcp/tools.py :: _relation_is_visible``, gates each relation endpoint on
@@ -267,7 +267,7 @@ STATUS_GATE_READER_SITES = {
 #: Every place the product consults the disclosure gate, as
 #: ``(module path under theurian/, enclosing function)``.
 #:
-#: By responsibility: three canonical-side read paths a caller can reach content through
+#: By responsibility: the canonical-side read paths a caller can reach content through
 #: (#119 phase 2), the write-intent tools' caller-scoped current-revision lookup
 #: (ADR-0032 decision 6), the build side that decides what exists to be reached
 #: (#119 phase 3), the purge that removes it from a build already published
