@@ -353,6 +353,36 @@ def test_an_item_filter_value_matching_nothing_is_reported(
 
 
 # ---------------------------------------------------------------------------
+# Review-Finding: adversarial MEDIUM -- the unmatched-filter refusal
+# ordering claim had no test.
+# ---------------------------------------------------------------------------
+
+
+def test_unmatched_item_filter_values_are_reported_in_sorted_order(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    """`_unmatched_item_filter_refusals`'s `sorted()` call had no driving
+    test: the existing single-value case can never distinguish sorted output
+    from set-iteration order, since one element is "sorted" either way. Four
+    distinct values make an already-sorted `frozenset` iteration order
+    unlikely enough by chance to catch `sorted()`'s removal -- `frozenset`
+    iteration is hash-seeded per process (`PYTHONHASHSEED`), not per
+    assertion, so the unsorted order is fixed but unpredictable within one
+    run, which is exactly why the order is asserted rather than trusted.
+    """
+    bundle = tmp_path / "bundle"
+    _write(bundle, "vanilla.md", _VANILLA_CONCEPT)
+    unmatched = frozenset({"zzz-fourth", "aaa-first", "mmm-third", "bbb-second"})
+
+    result = _service(paths).import_bundle(
+        _request(bundle, item_filter=frozenset({"vanilla"}) | unmatched)
+    )
+
+    assert {p.item_id.value for p in result.concepts_admitted} == {"vanilla"}
+    assert [r.key for r in result.refusals] == sorted(unmatched)
+
+
+# ---------------------------------------------------------------------------
 # Review-Finding: code-review HIGH -- a divergent theurian_item_id was
 # unreachable by either --item spelling, and the refusal literal falsely
 # claimed no concept in the bundle carried the requested id.
@@ -657,6 +687,54 @@ def test_a_relation_beside_one_that_refuses_still_lands_for_the_drafted_concept(
 
 
 # ---------------------------------------------------------------------------
+# Review-Finding: adversarial MEDIUM -- a non-str relation target could
+# poison the aggregated relations proposal, untested.
+# ---------------------------------------------------------------------------
+
+
+def test_a_non_str_relation_target_is_dropped_and_valid_edges_still_land(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    """`okf_codec.py::_decode_relation_entry`'s `not isinstance(target, str)`
+    arm had no driving test. Every admitted concept's edges land in one
+    `draft_from_document` call, so a non-str target that reached
+    `targetItemId` -- a bare YAML int is the easy mistake to author -- would
+    fail the schema's `itemId` string ref for the whole document, losing
+    every valid edge alongside it. The codec drops the malformed entry at
+    decode time instead, so it never reaches the aggregation step at all.
+    """
+    bundle = tmp_path / "bundle"
+    concept = _EXPORTED_CONCEPT.replace(
+        "theurian_content_type: text/markdown",
+        "theurian_content_type: text/markdown\n"
+        "theurian_relations:\n"
+        "  - type: related_to\n"
+        "    target: architecture.session-store\n"
+        "  - type: depends_on\n"
+        "    target: 12345\n",
+    )
+    _write(bundle, "auth-policy.md", concept)
+    _write(bundle, "vanilla.md", _VANILLA_CONCEPT)
+
+    result = _service(paths).import_bundle(_request(bundle))
+
+    assert {p.item_id.value for p in result.concepts_admitted} == {
+        "architecture.auth-policy",
+        "vanilla",
+    }
+    assert result.relations_proposal is not None
+    document = yaml.safe_load(result.relations_proposal.migration_file.read_text(encoding="utf-8"))
+    assert document["operations"] == [
+        {
+            "op": "addRelation",
+            "sourceItemId": "architecture.auth-policy",
+            "relationType": "related_to",
+            "targetItemId": "architecture.session-store",
+        }
+    ]
+
+
+# ---------------------------------------------------------------------------
 # M13, corrected: a content type `body_extension` has no mapping for used to
 # reach `.draft()` uncaught and refuse as a raw `InvariantViolationError`
 # class name (review-round HIGH-1's crash shape). It is now caught one step
@@ -699,6 +777,41 @@ def test_a_content_type_with_no_body_extension_refuses_as_a_reference_not_at_dra
         "content type text/plain has no proposal-body form; the import preserves "
         "markdown, json and yaml bodies"
     )
+
+
+# ---------------------------------------------------------------------------
+# Review-Finding: adversarial MEDIUM -- the missing-content-type guard had
+# no test; its deletion aborts the bundle via an uncaught TypeError.
+# ---------------------------------------------------------------------------
+
+
+def test_a_sidecar_with_no_theurian_content_type_key_refuses_that_reference_alone(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    """`_resolve_sidecar_content_type`'s `if not concept.theurian_content_type:`
+    guard had no driving test. Without it, a bundle whose sidecar concept
+    omits the key entirely reaches `MediaType(None)`, which raises `TypeError`
+    rather than the `DomainError` the next line's `except` catches -- uncaught
+    by `.draft()`'s own `_DRAFT_REFUSAL` and the CLI's `except TheurianError`
+    alike, aborting the whole import rather than refusing this one reference.
+    """
+    bundle = tmp_path / "bundle"
+    _write(bundle, "sidecar.json", '{"ok": true}')
+    _write(
+        bundle,
+        "no-content-type.md",
+        "---\ntype: decision\ntitle: No content type\nstatus: stable\n"
+        "theurian_body_file: sidecar.json\n---\n\nbody\n",
+    )
+    _write(bundle, "vanilla.md", _VANILLA_CONCEPT)
+
+    result = _service(paths).import_bundle(_request(bundle))
+
+    assert {p.item_id.value for p in result.concepts_admitted} == {"vanilla"}
+    [refusal] = result.refusals
+    assert refusal.kind == "reference"
+    assert refusal.key == "theurian_content_type"
+    assert refusal.literal == ""
 
 
 # ---------------------------------------------------------------------------
