@@ -146,6 +146,11 @@ def okf_import(  # noqa: PLR0913 -- one option per drafted field, all keyword-on
     never the path it resolved to; the rest of the bundle still drafts.
     Nothing here fetches anything: the bundle is a local directory already on
     disk, and no URL or registry reference is ever followed.
+
+    A sidecar body's own content type must be Markdown, JSON, or YAML to
+    become a proposal body; any other content type the export preserves --
+    `text/plain`, an OpenAPI document, and the rest -- is refused by that
+    concept's own reference, the same way a bad path is.
     """
     from theurian.cli.commands import (  # noqa: PLC0415 - cycle
         _emit,

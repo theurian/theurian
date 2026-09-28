@@ -38,6 +38,17 @@ refuses that reference alone -- the bundle's own front-matter key and the
 literal string it wrote, never the path it resolved to (T-25) -- and the
 import continues with everything else the bundle admits.
 
+**`theurian_body_file` is resolved against the concept document's own
+directory, never against the bundle root.** The export writes the bare
+sidecar filename -- document-relative by design, matching the Markdown link
+it sits beside (ADR-0037 decisions 2 and 7) -- so a namespaced concept's
+sidecar lives beside its document, not at the bundle root. Containment stays
+bundle-root-scoped regardless: `read_source_file` resolves and contains the
+*joined* path against `root`, so a reference may legitimately step outside
+its own document's directory as long as it stays inside the bundle -- decision
+6's own words bound containment to "under the bundle root", not to the
+document's directory.
+
 **A `sources[]` entry is never followed, fetched, or reachability-checked.**
 Whether it becomes an additional :class:`SourceAnchor` is a syntactic test
 alone (decision 6): a URI or a relative path, never a scope descriptor
@@ -85,7 +96,7 @@ from theurian.domain.errors import (
 )
 from theurian.domain.identifiers import ItemId
 from theurian.domain.knowledge import SourceAnchor
-from theurian.domain.proposal import Evidence
+from theurian.domain.proposal import Evidence, body_extension
 from theurian.domain.values import MARKDOWN, MediaType
 from theurian.security.paths import read_source_file
 
@@ -320,29 +331,17 @@ def _read_failure_reason(exc: Exception) -> str:
     )
 
 
-def _resolve_body(
-    root: Path, concept: DecodedConcept, inline_body: str
-) -> tuple[str, MediaType] | ImportRefusal:
-    """The concept's body, and its media type.
+def _resolve_sidecar_content_type(concept: DecodedConcept) -> MediaType | ImportRefusal:
+    """The sidecar's declared media type, or why it cannot become a proposal body.
 
-    A markdown body embeds in the concept document (the common case); a
-    non-markdown body lives in the sidecar `theurian_body_file` names,
-    preserved byte for byte on export, so it is read the same way here.
+    `body_extension` is `.draft()`'s own predicate for which media types have a
+    proposal-body form (markdown, json, yaml): checked here so a bundle-declared
+    content type outside that set is refused by its own reference, named, rather
+    than reaching `.draft()` and refusing as a raw `InvariantViolationError`
+    class name (ADR-0037 decision 7's admitted set is a recorded boundary, not an
+    oversight -- export is total over content types, and this is the point where
+    import narrows back to what a proposal body can hold).
     """
-    if concept.theurian_body_file is None:
-        return inline_body, MARKDOWN
-    try:
-        sidecar_bytes = read_source_file(root, concept.theurian_body_file)
-    except (TheurianError, OSError, ValueError):
-        return ImportRefusal(
-            kind=KIND_REFERENCE, key=THEURIAN_BODY_FILE, literal=concept.theurian_body_file
-        )
-    try:
-        sidecar_text = sidecar_bytes.decode("utf-8")
-    except UnicodeDecodeError:
-        return ImportRefusal(
-            kind=KIND_REFERENCE, key=THEURIAN_BODY_FILE, literal=concept.theurian_body_file
-        )
     if not concept.theurian_content_type:
         return ImportRefusal(kind=KIND_REFERENCE, key="theurian_content_type", literal="")
     try:
@@ -353,6 +352,49 @@ def _resolve_body(
             key="theurian_content_type",
             literal=concept.theurian_content_type,
         )
+    try:
+        body_extension(content_type)
+    except InvariantViolationError:
+        return ImportRefusal(
+            kind=KIND_REFERENCE,
+            key="theurian_content_type",
+            literal=(
+                f"content type {content_type.value} has no proposal-body form; the import "
+                "preserves markdown, json and yaml bodies"
+            ),
+        )
+    return content_type
+
+
+def _resolve_body(
+    root: Path, relative: PurePosixPath, concept: DecodedConcept, inline_body: str
+) -> tuple[str, MediaType] | ImportRefusal:
+    """The concept's body, and its media type.
+
+    A markdown body embeds in the concept document (the common case); a
+    non-markdown body lives in the sidecar `theurian_body_file` names,
+    preserved byte for byte on export, so it is read the same way here --
+    joined onto `relative`'s own directory before the read, never onto the
+    bundle root (see the module docstring).
+    """
+    if concept.theurian_body_file is None:
+        return inline_body, MARKDOWN
+    sidecar_relative = (relative.parent / concept.theurian_body_file).as_posix()
+    try:
+        sidecar_bytes = read_source_file(root, sidecar_relative)
+    except (TheurianError, OSError, ValueError):
+        return ImportRefusal(
+            kind=KIND_REFERENCE, key=THEURIAN_BODY_FILE, literal=concept.theurian_body_file
+        )
+    try:
+        sidecar_text = sidecar_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        return ImportRefusal(
+            kind=KIND_REFERENCE, key=THEURIAN_BODY_FILE, literal=concept.theurian_body_file
+        )
+    content_type = _resolve_sidecar_content_type(concept)
+    if isinstance(content_type, ImportRefusal):
+        return content_type
     return sidecar_text, content_type
 
 
@@ -452,7 +494,7 @@ def _map_concept(root: Path, relative: PurePosixPath) -> ImportedConcept | Impor
             literal=f"unrecognized type: {concept.kind!r}",
         )
 
-    body_outcome = _resolve_body(root, concept, decoded.body)
+    body_outcome = _resolve_body(root, relative, concept, decoded.body)
     if isinstance(body_outcome, ImportRefusal):
         return body_outcome
     body, content_type = body_outcome

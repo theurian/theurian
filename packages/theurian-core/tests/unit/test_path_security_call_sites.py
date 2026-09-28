@@ -102,9 +102,10 @@ _CALL_SITES: Final = (
         form=REQUESTED,
         guarded_at="",
         why=(
-            "the relative path is `concept.theurian_body_file`, the literal string a "
-            "bundle's front matter wrote and never resolved before this call -- the "
-            "route walk is exactly what proves it stays inside the bundle root"
+            "the relative path is `(relative.parent / concept.theurian_body_file).as_posix()`, "
+            "joining the concept document's own bundle-relative directory with the literal "
+            "string its front matter wrote, never resolved before this call -- the route walk "
+            "is exactly what proves the joined path stays inside the bundle root"
         ),
     ),
     _CallSite(

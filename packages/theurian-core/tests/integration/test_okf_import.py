@@ -657,21 +657,27 @@ def test_a_relation_beside_one_that_refuses_still_lands_for_the_drafted_concept(
 
 
 # ---------------------------------------------------------------------------
-# M13: `_DRAFT_REFUSAL` names three exception types; the existing battery
-# only reaches two of them (ProposalError, MigrationError).
+# M13, corrected: a content type `body_extension` has no mapping for used to
+# reach `.draft()` uncaught and refuse as a raw `InvariantViolationError`
+# class name (review-round HIGH-1's crash shape). It is now caught one step
+# earlier, at the reference stage, with a named boundary instead of a leaked
+# exception name (ADR-0037 decision 7's admitted set is markdown/json/yaml;
+# `_DRAFT_REFUSAL` keeps `InvariantViolationError` for `draft_from_document`'s
+# own evidence check, a separate and still-reachable cause).
 # ---------------------------------------------------------------------------
 
 
-def test_a_content_type_with_no_body_extension_refuses_at_draft_not_the_whole_import(
+def test_a_content_type_with_no_body_extension_refuses_as_a_reference_not_at_draft(
     tmp_path: Path, paths: ProjectPaths
 ) -> None:
-    """`domain/proposal.py::body_extension` raises `InvariantViolationError`
-    for a content type outside Markdown/JSON/YAML -- reachable here because
-    `MediaType` accepts any `type/subtype` string while `_EXTENSIONS` maps
-    only three of them. Dropping this member from `_DRAFT_REFUSAL` would let
-    it escape `.draft()` uncaught, aborting the whole import rather than
-    refusing this one concept -- HIGH-1's crash shape, from the draft side
-    the read-failure battery cannot reach.
+    """`domain/proposal.py::body_extension` has no mapping for a content type
+    outside Markdown/JSON/YAML -- reachable here because `MediaType` accepts
+    any `type/subtype` string while `_EXTENSIONS` maps only three of them.
+    `_resolve_body` checks the same predicate before `.draft()` is ever
+    called, so this concept is refused by its own reference rather than by a
+    `.draft()` call that would otherwise raise `InvariantViolationError`
+    uncaught, aborting the whole import rather than refusing this one
+    concept.
     """
     bundle = tmp_path / "bundle"
     _write(bundle, "sidecar.txt", "plain text body")
@@ -687,9 +693,12 @@ def test_a_content_type_with_no_body_extension_refuses_at_draft_not_the_whole_im
 
     assert {p.item_id.value for p in result.concepts_admitted} == {"vanilla"}
     [refusal] = result.refusals
-    assert refusal.kind == "draft"
-    assert refusal.key == "plain-body"
-    assert refusal.literal == "the proposal service refused it: InvariantViolationError"
+    assert refusal.kind == "reference"
+    assert refusal.key == "theurian_content_type"
+    assert refusal.literal == (
+        "content type text/plain has no proposal-body form; the import preserves "
+        "markdown, json and yaml bodies"
+    )
 
 
 # ---------------------------------------------------------------------------
