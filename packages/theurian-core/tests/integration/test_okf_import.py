@@ -774,8 +774,10 @@ def test_a_content_type_with_no_body_extension_refuses_as_a_reference_not_at_dra
     assert refusal.kind == "reference"
     assert refusal.key == "theurian_content_type"
     assert refusal.literal == (
-        "content type text/plain has no proposal-body form; the import preserves "
-        "markdown, json and yaml bodies"
+        "content type text/plain has no proposal-body form; the import accepts "
+        "text/markdown, application/json or application/yaml exactly -- an alias "
+        "such as application/schema+json or text/x-yaml is refused even though its "
+        "body is JSON or YAML"
     )
 
 
@@ -811,7 +813,7 @@ def test_a_sidecar_with_no_theurian_content_type_key_refuses_that_reference_alon
     [refusal] = result.refusals
     assert refusal.kind == "reference"
     assert refusal.key == "theurian_content_type"
-    assert refusal.literal == ""
+    assert refusal.literal == "key absent"
 
 
 # ---------------------------------------------------------------------------

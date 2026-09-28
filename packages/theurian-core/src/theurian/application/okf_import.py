@@ -334,16 +334,22 @@ def _read_failure_reason(exc: Exception) -> str:
 def _resolve_sidecar_content_type(concept: DecodedConcept) -> MediaType | ImportRefusal:
     """The sidecar's declared media type, or why it cannot become a proposal body.
 
-    `body_extension` is `.draft()`'s own predicate for which media types have a
-    proposal-body form (markdown, json, yaml): checked here so a bundle-declared
-    content type outside that set is refused by its own reference, named, rather
-    than reaching `.draft()` and refusing as a raw `InvariantViolationError`
-    class name (ADR-0037 decision 7's admitted set is a recorded boundary, not an
-    oversight -- export is total over content types, and this is the point where
-    import narrows back to what a proposal body can hold).
+    `body_extension` admits exactly three literal values -- `text/markdown`,
+    `application/json`, `application/yaml` -- not the three *format classes*
+    export accepts: `sidecar_extension` maps any `+json`/`+yaml`-suffixed type
+    or `text/x-yaml` to the same sidecar extension on export, so
+    `application/schema+json` exports as a `.json` sidecar and still refuses
+    here, even though its body genuinely is JSON. Checked before `.draft()` so
+    a content type outside the literal set is refused by its own reference,
+    named, rather than reaching `.draft()` and refusing as a raw
+    `InvariantViolationError` class name (ADR-0037 decision 7's admitted set
+    is a recorded boundary, not an oversight -- export is total over content
+    types, and this is the point where import narrows back to what a
+    proposal body can hold). Alias normalization is a deliberate non-goal of
+    this check: it would widen the admitted set and belongs to its own issue.
     """
     if not concept.theurian_content_type:
-        return ImportRefusal(kind=KIND_REFERENCE, key="theurian_content_type", literal="")
+        return ImportRefusal(kind=KIND_REFERENCE, key="theurian_content_type", literal="key absent")
     try:
         content_type = MediaType(concept.theurian_content_type)
     except DomainError:
@@ -360,7 +366,9 @@ def _resolve_sidecar_content_type(concept: DecodedConcept) -> MediaType | Import
             key="theurian_content_type",
             literal=(
                 f"content type {content_type.value} has no proposal-body form; the import "
-                "preserves markdown, json and yaml bodies"
+                "accepts text/markdown, application/json or application/yaml exactly -- an "
+                "alias such as application/schema+json or text/x-yaml is refused even though "
+                "its body is JSON or YAML"
             ),
         )
     return content_type

@@ -14,23 +14,29 @@ and lost on re-import, and no test caught it because none ran both halves.
 
 The matrix is every combination of **where** a concept sits ({root,
 namespaced}) and **what its body is** ({markdown, json, yaml, text/plain,
-openapi}): ten cells, each built through the real write path -- `init`,
-`migrate apply`, `okf export` -- into a real bundle directory, then read back
-through `OkfImportService.import_bundle` into a second, independent project.
-Markdown never sidecars (it always embeds) and is here as the control: it
-admits at both positions before and after H-1's fix, so a matrix that went
-green by accident -- everything admitting regardless of the bug -- is not
-what this file measures.
+openapi}, plus two alias types below), each built through the real write
+path -- `init`, `migrate apply`, `okf export` -- into a real bundle
+directory, then read back through `OkfImportService.import_bundle` into a
+second, independent project. Markdown never sidecars (it always embeds) and
+is here as the control: it admits at both positions before and after H-1's
+fix, so a matrix that went green by accident -- everything admitting
+regardless of the bug -- is not what this file measures.
 
 Six cells (markdown/json/yaml, each at both positions) are ADMITTED: the
 concept drafts, and its body reaches the drafted proposal's body file
-byte-for-byte. Four cells (text/plain/openapi, each at both positions) are
-REFUSED: `domain/proposal.py::body_extension` has no mapping for either
-content type, which is ADR-0037 decision 7's recorded boundary -- export is
-total over content types, import narrows back to what a proposal body can
-hold (M-1). Before this PR that refusal happened at `.draft()`, leaking the
-raw `InvariantViolationError` class name; it now happens at the reference
-stage, named.
+byte-for-byte. The rest are REFUSED: `domain/proposal.py::body_extension`
+admits exactly `text/markdown`, `application/json` and `application/yaml` --
+literal values, not format classes -- which is ADR-0037 decision 7's
+recorded boundary (export is total over content types, import narrows back
+to what a proposal body can hold, M-1). Before this PR that refusal
+happened at `.draft()`, leaking the raw `InvariantViolationError` class
+name; it now happens at the reference stage, named. Two of the refused
+cells (`application/schema+json`, `text/x-yaml`) are aliases export treats
+as the same format as an admitted one (HIGH-1): `sidecar_extension` writes
+them as ordinary `.json`/`.yaml` sidecars on export, and they are still
+refused on import, because the literal-value boundary does not widen for an
+alias -- alias normalization is a deliberate non-goal, filed as its own
+issue.
 """
 
 from __future__ import annotations
@@ -166,6 +172,24 @@ CELLS: Final[tuple[Cell, ...]] = (
         "0NA10000000000000000000000",
         "application/vnd.oai.openapi",
         "openapi: 3.0.0\ninfo:\n  title: NS-OPENAPI-BODY-0a49\n  version: '1.0'\n",
+        admitted=False,
+    ),
+    # HIGH-1: an alias content type export treats as the same format
+    # (`sidecar_extension` maps any `+json`/`+yaml` suffix or `text/x-yaml` to
+    # the json/yaml sidecar extension) but `body_extension`'s literal set does
+    # not -- exported as a genuine json/yaml sidecar, still refused on import.
+    Cell(
+        "root-schema-json",
+        "0RSJ1100000000000000000000",
+        "application/schema+json",
+        '{"sentinel": "ROOT-SCHEMAJSON-BODY-7c31"}\n',
+        admitted=False,
+    ),
+    Cell(
+        "backend.namespaced-x-yaml",
+        "0NXY1200000000000000000000",
+        "text/x-yaml",
+        "sentinel: NS-XYAML-BODY-2f84\n",
         admitted=False,
     ),
 )
@@ -341,8 +365,10 @@ def test_every_position_and_content_type_round_trips_as_the_matrix_says(
     literals = [r.literal for r in reference_refusals]
     for content_type in _REFUSED_CONTENT_TYPES:
         expected = (
-            f"content type {content_type} has no proposal-body form; the import "
-            "preserves markdown, json and yaml bodies"
+            f"content type {content_type} has no proposal-body form; the import accepts "
+            "text/markdown, application/json or application/yaml exactly -- an alias "
+            "such as application/schema+json or text/x-yaml is refused even though its "
+            "body is JSON or YAML"
         )
         assert literals.count(expected) == sum(
             1 for c in CELLS if not c.admitted and c.content_type == content_type
