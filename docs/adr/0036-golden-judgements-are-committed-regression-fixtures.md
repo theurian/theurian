@@ -512,8 +512,9 @@ assertions it makes — not as its name or its docstring reads:
   one SQLite build, consecutive runs — and nothing here reaches a second machine.
 
 What holds this record against the tree is `tests/unit/tools/test_adr36_ratchet.py`,
-landed with this discharge — the file this ADR had never named. Seven pins, three
-of them guarding the citations above.
+landed with this discharge — the file this ADR had never named. Its pin count is
+what `grep -c '^def test_' tests/unit/tools/test_adr36_ratchet.py` prints, one
+per module-level test function, rather than a figure copied here. Among its pins:
 `test_every_test_name_cited_in_the_adrs_s2_compliance_block_collects` parses every
 backticked test name out of this block and asserts each appears in `pytest
 --collect-only` output over `tests/unit/tools`, `tests/integration/tools` and
@@ -526,9 +527,10 @@ direction, so a *new* loader rule this ADR does not cite stays green.
 `test_the_787_tripwire_published_per_query_metric_key_set_equals_todays_expected_set`
 is a tripwire rather than a frozen contract: it reads the key set
 `report._query_metrics` can publish from that function's own AST and compares it to
-today's snapshot, so the moment #787's channel member lands it goes RED — and that
-RED is the signal to move rider 1's "recorded channel" sentence from owed to
-implemented.
+today's snapshot. #787's channel landed at `a58fdcb5` (PR #795) without tripping
+it; the key that did was `abstentionCause`. Amendment 1's paragraph "What the
+tripwire caught was `abstentionCause`, not the channel" records why, and which
+pin holds the channel instead.
 
 Measured now, and reproducible from this ADR (2026-09-20, on the branch of
 PR #776):
@@ -562,11 +564,11 @@ comparison, which were this ADR's last owed item. The Exit-criteria row asked
 for "A baseline report is committed and CI reports regressions against it":
 
 - **The baseline** is `tools/eval/baseline/report.json` and `timings.json`, with
-  `README.md` beside them as the method record — what was measured (2026-09-24,
-  at `a58fdcb5`, over `tests/fixtures/eval`), the census it echoes from the
-  report, the instrument that produced it, and the environment `timings.json`
-  carries outside the byte-identity property. Its own statement of what the run
-  is for: "This run DEFINES the baseline; it does not assert one."
+  `README.md` beside them as the method record — what was measured and when
+  (its *Measured* section, cited here rather than copied), the census it echoes
+  from the report, the instrument that produced it, and the environment
+  `timings.json` carries outside the byte-identity property. Its own statement of
+  what the run is for: "This run DEFINES the baseline; it does not assert one."
 - **The local ratchet** is
   `test_a_fresh_run_over_the_frozen_corpus_reproduces_the_committed_baseline_report`
   (`tests/integration/tools/test_baseline_current.py`), which runs the harness
@@ -602,6 +604,14 @@ for "A baseline report is committed and CI reports regressions against it":
   committed on `main`); that remains unbuilt" — so a run compares this
   checkout's regeneration against this checkout's own committed baseline.
   Decision 4's *advisory* is now a workflow rather than an intention.
+
+Landed in Phase A slice S4c (`60d10164`, PR #798) — the RAPTOR comparison arm,
+against which decision 3's question of whether RAPTOR goes default-on was
+decided: extractive RAPTOR stays opt-in, and default-on is declined. The
+decision, the deltas it rests on and their re-check command are recorded in
+[ADR-0008](0008-raptor-forest.md)'s decision 10 amendment ("Amended in Phase A
+slice S4c"); the figures are `tools/eval/baseline/report.json`'s `raptor` and
+`comparison` members.
 
 **Nothing in this ADR is owed to a later phase, which is why no *Still owed*
 section follows.** The two questions it records as open are recorded decisions
@@ -795,7 +805,11 @@ trivially satisfied for them and tests nothing.
 > sets is in no record this ADR can cite**, and the per-query population is what
 > slice S4b's committed baseline states. Until it does, reading 18 or 21 out of
 > 26 as a rate understates the channel — a dated observation about that one run,
-> not a property of the corpus.
+> not a property of the corpus. *Since slice S4b (`673b12cf`):* the committed
+> baseline states that population per query for its own run, as
+> `tools/eval/baseline/report.json`'s `equality.queries` key — one entry per
+> enabled query run on both corpora (`report._equality_section`), each carrying
+> `atLimit.differingFields` and `atEqualityLimit.differingFields`.
 >
 > `report.json` now publishes `equality.channel` — `queriesDiffering` and `of`
 > at both limits, beside a `reason` carrying #787's annotation phrasing verbatim
@@ -845,6 +859,11 @@ trivially satisfied for them and tests nothing.
 > from that copy and reddens; its own docstring states that those counts are not
 > the S3 corpus's. 18 of 26 and 21 of 26 stay a dated measurement anchored to
 > `4ce0868f`, and slice S4's committed baseline is what will hold them.
+> *Since slice S4b (`673b12cf`):* it holds the live values, as
+> `tools/eval/baseline/report.json`'s `equality.channel.atLimit` and
+> `equality.channel.atEqualityLimit` (each `{of, queriesDiffering}`), which
+> `jq '.equality.channel | {atLimit, atEqualityLimit}' tools/eval/baseline/report.json`
+> prints.
 >
 > *Corrected in PR #795's trio round, at an adversarial finding:* the sentence
 > above previously read that `reason` was pinned "by equality against the

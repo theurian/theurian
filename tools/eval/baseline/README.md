@@ -44,8 +44,8 @@ already documented).
   at whatever commit is checked out and byte-compares it against the committed
   one, so at every committed state the pair is self-consistent or it reddens —
   which is the property a stamp cannot give and this one did not. The durable
-  anchor for this page is the merge commit this pull request squashes into,
-  which its own body will name.
+  anchor for this page is `60d10164`, the commit PR #798 squash-merged into
+  `main`.
 - **Corpus:** `tests/fixtures/eval` (`corpusId: adr-corpus-v1`)
 - **Census** (echoed from `report.json`'s own `census` member):
 
