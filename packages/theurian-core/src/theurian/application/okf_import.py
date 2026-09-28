@@ -58,6 +58,7 @@ alone (decision 6): a URI or a relative path, never a scope descriptor
 from __future__ import annotations
 
 import os
+import posixpath
 import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -98,7 +99,7 @@ from theurian.domain.identifiers import ItemId
 from theurian.domain.knowledge import SourceAnchor
 from theurian.domain.proposal import Evidence, body_extension
 from theurian.domain.values import MARKDOWN, MediaType
-from theurian.security.paths import read_source_file, resolve_within_root
+from theurian.security.paths import read_source_file
 
 #: `index.md`/`log.md` are OKF's reserved names, at every level (§3.1).
 _RESERVED_AT_EVERY_LEVEL: Final = frozenset({"index.md", "log.md"})
@@ -399,21 +400,31 @@ def _resolve_body(
     sidecar_relative = (relative.parent / concept.theurian_body_file).as_posix()
     try:
         sidecar_bytes = read_source_file(root, sidecar_relative)
-        # The sidecar's own bundle-relative path, resolved -- not `sidecar_relative`,
-        # which can still carry the `../` a cross-namespace reference wrote
-        # (MEDIUM-1): a second `okf-bundle:` anchor naming the concept document
-        # alone would misattribute a body that actually came from elsewhere in
-        # the bundle. Inside the same `try` as the read: `read_source_file`
-        # already resolved and proved containment for this exact reference, so
-        # this call cannot fail except through the read's own TOCTOU window,
-        # which the read-failure refusal below already covers.
-        sidecar_bundle_relative = PurePosixPath(
-            resolve_within_root(root, sidecar_relative).relative_to(root).as_posix()
-        )
     except (TheurianError, OSError, ValueError):
         return ImportRefusal(
             kind=KIND_REFERENCE, key=THEURIAN_BODY_FILE, literal=concept.theurian_body_file
         )
+    # The sidecar's own bundle-relative path, lexically collapsed -- not
+    # `sidecar_relative` itself, which can still carry the `../` a
+    # cross-namespace reference wrote (MEDIUM-1): a second `okf-bundle:`
+    # anchor naming the concept document alone would misattribute a body
+    # that actually came from elsewhere in the bundle. Collapsed with
+    # `posixpath.normpath`, never re-resolved against the filesystem:
+    # `read_source_file` already proved containment for this exact
+    # reference, so a second resolution bought nothing but a TOCTOU window
+    # and this function's own fragile invariant (HIGH-2) -- an earlier
+    # version compared `resolve_within_root(root, ...)`'s resolved
+    # destination against `root` exactly as this function received it,
+    # which `import_bundle` always resolves first but which nothing at
+    # this function's own signature enforced; called with an unresolved,
+    # symlinked `root` directly, that comparison raised `ValueError`,
+    # refusing every non-markdown concept. The lexical form needs no
+    # resolved `root` at all, so no caller, present or future, has to
+    # uphold that invariant. The concept's own identity anchor
+    # (`_bundle_identity_anchor` above) already names its path the same
+    # lexical way, for the same T-25 reason: never the path something
+    # resolved to, always the reference as written.
+    sidecar_bundle_relative = PurePosixPath(posixpath.normpath(sidecar_relative))
     try:
         sidecar_text = sidecar_bytes.decode("utf-8")
     except UnicodeDecodeError:

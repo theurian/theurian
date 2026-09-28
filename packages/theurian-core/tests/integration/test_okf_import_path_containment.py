@@ -25,7 +25,7 @@ second source anchor naming where its body actually came from (MEDIUM-1).
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 import yaml
@@ -33,7 +33,14 @@ from fakes.clock import FrozenClock
 from fakes.ids import SeededIdGenerator
 
 from theurian.application.draft_only_proposals import DraftOnlyProposals
-from theurian.application.okf_import import OkfImportRequest, OkfImportService, _read_failure_reason
+from theurian.application.okf_codec import DecodedConceptDocument, decode_concept_document
+from theurian.application.okf_import import (
+    ImportRefusal,
+    OkfImportRequest,
+    OkfImportService,
+    _read_failure_reason,
+    _resolve_body,
+)
 from theurian.application.project_service import ProjectPaths, initialize_project
 from theurian.application.proposal_service import ProposalService
 from theurian.cli.migration_pipeline import rehearse_migration_set
@@ -320,6 +327,86 @@ body
 
     assert not result.refusals
     assert {p.item_id.value for p in result.concepts_admitted} == {"vanilla", "with-sidecar"}
+
+
+def test_a_namespaced_sidecar_under_a_symlinked_bundle_root_admits_with_the_right_anchor(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    """The same `/tmp` shape as above, for the case HIGH-2 named: a
+    *namespaced* concept, so the sidecar's anchor (MEDIUM-1) is computed
+    from a joined, non-trivial path rather than the root-level test's bare
+    filename. `OkfImportService.import_bundle` resolves the bundle root
+    before any of these helpers run, so this admits either side of HIGH-2's
+    fix; `test_resolve_body_does_not_require_an_already_resolved_root` below
+    pins the fix itself, at the function that owns it.
+    """
+    real_parent = tmp_path / "real-parent"
+    real_parent.mkdir()
+    linked_parent = tmp_path / "linked-parent"
+    linked_parent.symlink_to(real_parent, target_is_directory=True)
+    bundle = linked_parent / "bundle"
+    concept = """---
+type: decision
+title: Namespaced sidecar under a symlinked root
+status: stable
+theurian_content_type: application/json
+theurian_body_file: structured.json
+---
+
+body
+"""
+    _write(bundle, "backend/structured.md", concept)
+    _write(bundle, "backend/structured.json", '{"hello": "namespaced-sentinel"}')
+    _write(bundle, "vanilla.md", _VANILLA_CONCEPT)
+
+    result = _service(paths).import_bundle(_request(bundle))
+
+    assert not result.refusals
+    [drafted] = [p for p in result.concepts_admitted if p.item_id.value == "backend.structured"]
+    assert drafted.proposal.body_file.read_text(encoding="utf-8") == (
+        '{"hello": "namespaced-sentinel"}'
+    )
+    anchors = _source_anchors_of(drafted.proposal.directory)
+    assert [str(a["sourceUri"]) for a in anchors] == [
+        "okf-bundle:backend/structured.md",
+        "okf-bundle:backend/structured.json",
+    ]
+
+
+def test_resolve_body_does_not_require_an_already_resolved_root(tmp_path: Path) -> None:
+    """HIGH-2, at the function that owned it: `_resolve_body`'s anchor
+    derivation used to call `resolve_within_root(root, ...).relative_to(root)`
+    -- comparing a resolved destination against `root` exactly as this
+    function received it. `import_bundle` always resolves `root` before any
+    of these helpers run, so the public entry point was never exposed to
+    this; nothing in `_resolve_body`'s own signature enforced it either.
+    Called directly with an unresolved, symlinked `root` -- bypassing
+    `import_bundle` on purpose, since that is the one caller that upheld the
+    invariant -- the old comparison raised `ValueError`, refusing a concept
+    whose sidecar was read successfully one line above. The lexical fix
+    needs no resolved `root` at all.
+    """
+    real_parent = tmp_path / "real-parent"
+    real_parent.mkdir()
+    linked_parent = tmp_path / "linked-parent"
+    linked_parent.symlink_to(real_parent, target_is_directory=True)
+    unresolved_root = linked_parent / "bundle"
+    _write(unresolved_root, "backend/structured.json", '{"hello": "namespaced-sentinel"}')
+    decoded = decode_concept_document(
+        "---\ntype: decision\ntitle: T\nstatus: stable\n"
+        "theurian_content_type: application/json\n"
+        "theurian_body_file: structured.json\n---\n\nbody\n"
+    )
+    assert isinstance(decoded, DecodedConceptDocument)
+
+    outcome = _resolve_body(
+        unresolved_root, PurePosixPath("backend/structured.md"), decoded.front_matter, decoded.body
+    )
+
+    assert not isinstance(outcome, ImportRefusal), outcome
+    body, _content_type, sidecar_relative = outcome
+    assert body == '{"hello": "namespaced-sentinel"}'
+    assert sidecar_relative == PurePosixPath("backend/structured.json")
 
 
 # -- The refusal-literal pin (T-25): the whole output surface, not one field ----------------
