@@ -1304,6 +1304,63 @@ its name or its docstring reads:
   which asserts the same over the CLI's whole JSON payload. Beside them,
   `tests/integration/test_okf_import_path_containment.py::test_a_bundle_root_under_a_symlinked_parent_directory_still_admits_in_bundle_references`
   holds the other direction: a bundle under a symlinked parent is not refused.
+- **The round-trip's content-type boundary: export is total, import narrows to
+  three literal media types, and nothing outside them is silently dropped.**
+  Decision 7's export is total over content types (`sidecar_extension` maps
+  `application/json` and any `+json`-suffixed type to `.json`,
+  `application/yaml`, `text/x-yaml` and any `+yaml`-suffixed type to `.yaml`,
+  and everything else — `text/plain` and `application/vnd.oai.openapi`
+  included — to `.txt`). Import re-admits only
+  `domain/proposal.py::body_extension`'s own three literal keys —
+  `text/markdown`, `application/json`, `application/yaml`, the proposal-body
+  domain — never the format *classes* export accepts: an alias export
+  sidecars under the same extension (`application/schema+json` to `.json`,
+  `text/x-yaml` to `.yaml`) still refuses on import despite its body
+  genuinely being JSON or YAML. A content type outside the three literals is
+  never a silent drop: it is a surfaced, typed per-reference refusal
+  (`kind="reference"`, keyed `theurian_content_type`) whose literal states
+  the three-member set and the alias caveat by name. Alias normalization —
+  widening import to export's format-class rule — is a deliberate non-goal
+  here, owed to a filed backlog issue rather than to a named milestone,
+  because it widens the admitted set rather than fixing a defect in the
+  boundary just stated.
+  `tests/integration/test_okf_roundtrip.py::test_every_position_and_content_type_round_trips_as_the_matrix_says`
+  drives this: twelve concepts over {root, namespaced} x {markdown, json,
+  yaml, text/plain, openapi}, plus `application/schema+json` at the root and
+  `text/x-yaml` namespaced, through the real write path (`init`,
+  `migrate apply`, `okf export`) and back through
+  `OkfImportService.import_bundle` into a second, independent project. It
+  asserts the six markdown/json/yaml cells at both positions are exactly the
+  admitted set, that each admitted sidecar body equals its source byte for
+  byte, that each admitted markdown body's decoded content contains its
+  (stripped) source text, and that each of the other six cells produces
+  exactly one `"reference"` refusal whose literal is the boundary sentence
+  above — counted per content type, so the two `text/plain` cells and the
+  two `application/vnd.oai.openapi` cells are each held to two matching
+  refusals and the two alias cells to one each.
+- **`theurian_body_file` resolves against the concept's own directory (H-1),
+  and containment stays scoped to the bundle root regardless of that base —
+  decision 6's own wording.** A namespaced concept's sidecar sits beside its
+  own document (decisions 2 and 7's document-relative filename); resolving
+  the reference against the bundle root instead silently lost every
+  namespaced non-markdown concept on re-import before this fix. The two
+  outcomes decision 6's containment rule — "resolve under the bundle root
+  after symlink resolution" — draws are each pinned:
+  `tests/integration/test_okf_import_path_containment.py::test_a_namespaced_concepts_body_file_that_truly_escapes_the_bundle_is_still_refused`
+  builds a namespaced concept (`backend/deep.md`) whose `theurian_body_file`
+  is `../../outside-sidecar.json` and asserts exactly one refusal keyed
+  `theurian_body_file` with the literal verbatim, that only the bundle's
+  other, untouched concept admits, and that the outside file's sentinel
+  bytes reach no written byte;
+  `::test_a_body_file_crossing_into_a_sibling_namespace_inside_the_bundle_is_admitted`
+  gives the same concept a `theurian_body_file` of `../sibling/data.json` —
+  crossing into a sibling namespace while staying inside the bundle root —
+  and asserts no refusal, the concept admitted with its sidecar's bytes read
+  back byte for byte, and its drafted migration's `sourceAnchors` holding
+  `okf-bundle:backend/deep.md` first and `okf-bundle:sibling/data.json`
+  present. The second anchor is MEDIUM-1's fix: without it, an admitted
+  cross-namespace body's `sourceAnchors` named only the concept document it
+  did not come from.
 - **The T-3 threat-model entry for the import path**, named in *What this does not
   close* item 4. It is written as the third arrival route inside
   [T-3](../security/threat-model.md) rather than as a new entry, because the root
