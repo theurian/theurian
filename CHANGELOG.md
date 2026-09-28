@@ -136,4 +136,9 @@ Apache-2.0, DCO, maintainer-led governance.
 
 | Plugin | Core | Protocol |
 | :-- | :-- | :-- |
-| 0.1.x | ≥ 0.1.0-dev.0, < 0.2.0 | `theurian/v1` |
+| 0.1.x | ≥ 0.1.0-dev.0, < 0.6.0 | `theurian/v1` |
+
+The row for the plugin series `plugins/claude-code/compatibility.yaml` declares —
+the `<MAJOR>.<MINOR>.x` of its `pluginVersion` — is derived from that file and
+held to it by
+`packages/theurian-core/tests/unit/test_plugin_boundary.py::test_every_published_compatibility_matrix_row_matches_compatibility_yaml`.

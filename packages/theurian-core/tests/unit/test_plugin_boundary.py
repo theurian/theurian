@@ -536,6 +536,100 @@ def test_installed_core_is_inside_the_declared_range() -> None:
     assert verdict.is_compatible, verdict.message
 
 
+MATRIX_HEADER: Final = "| Plugin | Core | Protocol |"
+
+#: Where it is published. A copy appearing or vanishing is a decision made here.
+MATRIX_FILES: Final = frozenset({"CHANGELOG.md", "docs/contributing/release.md"})
+
+
+def _tracked_markdown() -> list[str]:
+    """Every tracked ``*.md`` path, NUL-split so no path is quoted."""
+    git = shutil.which("git")
+    assert git is not None, "the matrix population is git's answer, and git is not on PATH"
+    completed = subprocess.run(  # noqa: S603 - argv is repository-owned, never user input
+        [git, "ls-files", "-z", "--cached", "--", "*.md"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="surrogateescape",
+        check=False,
+    )
+    assert completed.returncode == 0, f"`git ls-files` failed:\n{completed.stderr}"
+    return [path for path in completed.stdout.split("\0") if path]
+
+
+def _matrix_tables(text: str) -> list[list[list[str]]]:
+    """Every table under :data:`MATRIX_HEADER` in *text*: its body rows, each as stripped cells."""
+    lines = text.splitlines()
+    tables = []
+    for index, line in enumerate(lines):
+        if line.strip() != MATRIX_HEADER:
+            continue
+        rows = []
+        for row in lines[index + 1 :]:
+            if not row.startswith("|"):
+                break
+            cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
+            if not all(re.fullmatch(r":?-+:?", cell) for cell in cells):
+                rows.append(cells)
+        tables.append(rows)
+    return tables
+
+
+def _protocol_unquoted(row: list[str]) -> list[str]:
+    """*row* with backticks around its protocol cell dropped: one table writes them."""
+    if len(row) == 3 and len(row[2]) > 1 and row[2][0] == row[2][-1] == "`":
+        return [*row[:2], row[2][1:-1]]
+    return row
+
+
+def test_every_published_compatibility_matrix_row_matches_compatibility_yaml() -> None:
+    """At ``855ebd87`` both matrices read ``< 0.2.0``; ``compatibility.yaml`` declared ``0.6.0``.
+
+    Only the declared series' row is held; the rest would be history, and there
+    is none because the plugin train has never cut a ``plugin-v*`` tag (#46).
+    Not run by a documentation-only pull request (#839); ``release-core.yml``'s
+    quality job runs the whole suite at every tag, so a drift cannot reach a
+    release. ``plugin.yml`` runs this file on ``plugins/**``, so a pull request
+    that moves the declaration is held; ``core.yml`` also triggers on
+    ``docs/contributing/release.md``.
+    """
+    declaration = yaml.safe_load((PLUGIN / "compatibility.yaml").read_text(encoding="utf-8"))
+    major, minor = str(declaration["pluginVersion"]).split(".")[:2]
+    series = f"{major}.{minor}.x"
+    ceiling = declaration["coreCompatibility"]
+    expected = [
+        series,
+        f"≥ {ceiling['minimum']}, < {ceiling['maximumExclusive']}",
+        str(declaration["protocolVersion"]),
+    ]
+    published = {
+        path: tables
+        for path in _tracked_markdown()
+        if (REPO_ROOT / path).is_file()
+        and (tables := _matrix_tables((REPO_ROOT / path).read_text(encoding="utf-8")))
+    }
+
+    assert published, f"no tracked markdown file carries `{MATRIX_HEADER}`, so nothing is held"
+    assert set(published) == MATRIX_FILES, (
+        f"the matrix is published in {sorted(published)}, expected {sorted(MATRIX_FILES)}. "
+        f"Amend MATRIX_FILES only as a decision, and name the new copy in release.md."
+    )
+
+    stale = []
+    for path, tables in published.items():
+        for table in tables:
+            rows = [_protocol_unquoted(row) for row in table if row[0] == series]
+            if rows != [expected]:
+                stale.append((path, rows))
+
+    assert not stale, (
+        f"the {series} row of the published matrix does not read {expected}, which "
+        f"compatibility.yaml declares: {stale}. Re-derive the row from the declaration."
+    )
+
+
 def test_plugin_and_core_versions_are_independent() -> None:
     """ADR-0001: two release trains, not one artifact with two names."""
     from theurian import __version__
