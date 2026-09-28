@@ -12,6 +12,14 @@ call sites (``test_path_security_call_sites.py`` names them --
 reached through a symlinked parent, which must *not* be refused; and a sweep
 of the whole output surface for T-25's disclosure -- not one refusal's
 ``literal`` field, but every byte a run writes to disk.
+
+It also settles the question H-1's fix opens: ``theurian_body_file`` is now
+resolved against the concept document's own directory rather than the bundle
+root, so a namespaced concept's reference can legitimately step outside that
+directory while never leaving the bundle. Two tests below pin the two
+outcomes decision 6's own words draw the line between: a reference that
+truly escapes the bundle root is still refused, and one that only crosses
+into a sibling namespace -- staying inside the bundle -- is admitted.
 """
 
 from __future__ import annotations
@@ -336,3 +344,84 @@ body
     for refusal in result.refusals:
         assert str(tmp_path) not in refusal.literal
     assert str(tmp_path).encode() not in _all_written_bytes(paths)
+
+
+# -- The document-relative pin: H-1's fix draws containment at the bundle root,
+# -- never at the concept document's own directory ------------------------------------------
+
+
+def test_a_namespaced_concepts_body_file_that_truly_escapes_the_bundle_is_still_refused(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    """Joining `theurian_body_file` onto the concept's own directory (H-1's
+    fix) must not loosen containment: enough `../` from a namespaced
+    concept's directory still climbs above the bundle root, and
+    `resolve_within_root` still refuses it -- the same guard, the same root,
+    a different starting point.
+    """
+    bundle = tmp_path / "bundle"
+    outside_sidecar = tmp_path / "outside-sidecar.json"
+    outside_sidecar.write_text('{"secret": "namespaced-escape-sentinel"}', encoding="utf-8")
+    # `backend/deep.md`'s own directory is `backend/`, one level below `bundle`,
+    # which sits one level below `tmp_path`: two `../` reaches `tmp_path`, where
+    # `outside_sidecar` actually is -- a real, depth-independent sentinel rather
+    # than `/etc/passwd`, whose reachability at a fixed climb count depends on
+    # how deep pytest's own `tmp_path` happens to nest.
+    concept = """---
+type: decision
+title: Namespaced escape
+status: stable
+theurian_content_type: application/json
+theurian_body_file: ../../outside-sidecar.json
+---
+
+body
+"""
+    _write(bundle, "backend/deep.md", concept)
+    _write(bundle, "vanilla.md", _VANILLA_CONCEPT)
+
+    result = _service(paths).import_bundle(_request(bundle))
+
+    assert len(result.refusals) == 1
+    assert result.refusals[0].key == "theurian_body_file"
+    assert result.refusals[0].literal == "../../outside-sidecar.json"
+    assert {p.item_id.value for p in result.concepts_admitted} == {"vanilla"}
+    assert b"namespaced-escape-sentinel" not in _all_written_bytes(paths)
+
+
+def test_a_body_file_crossing_into_a_sibling_namespace_inside_the_bundle_is_admitted(
+    tmp_path: Path, paths: ProjectPaths
+) -> None:
+    """The recorded decision for the shape ADR-0037 decision 6 leaves open: a
+    `theurian_body_file` that steps outside its own concept's directory but
+    stays inside the bundle. Decision 6 states containment as "must resolve
+    under the bundle root after symlink resolution" -- the bundle root, not
+    the document's own directory -- so this reference is contained and
+    admitted rather than refused. Export never writes this shape (decisions
+    2 and 7's sidecar always sits beside its own document); this pins what a
+    hand-authored bundle gets from a reference that legitimately reaches
+    across namespaces without ADR-0037 narrowing decision 6's own boundary to
+    forbid it.
+    """
+    bundle = tmp_path / "bundle"
+    _write(bundle, "sibling/data.json", '{"sentinel": "sibling-namespace-body"}')
+    concept = """---
+type: decision
+title: Cross-namespace sidecar
+status: stable
+theurian_content_type: application/json
+theurian_body_file: ../sibling/data.json
+---
+
+body
+"""
+    _write(bundle, "backend/deep.md", concept)
+    _write(bundle, "vanilla.md", _VANILLA_CONCEPT)
+
+    result = _service(paths).import_bundle(_request(bundle))
+
+    assert not result.refusals
+    [drafted] = [p for p in result.concepts_admitted if p.item_id.value == "backend.deep"]
+    assert drafted.proposal.body_file.read_text(encoding="utf-8") == (
+        '{"sentinel": "sibling-namespace-body"}'
+    )
