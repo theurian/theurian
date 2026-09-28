@@ -34,6 +34,14 @@ What it cannot check is that a ``FLATTENED`` row's named upstream guard is the
 one actually protecting that read; that is an argument, and it is recorded in
 each row's ``why``. What it does check is that no site joins, leaves or changes
 category without someone writing down which of the two it is.
+
+**A second population, added for MEDIUM-2**: every bare ``resolve_within_root``
+call, the same walk over the same tree. ``resolve_within_root`` proves only the
+*destination*; a call with no ``assert_no_symlink_escape`` beside it over the
+same reference is on its own for the route, and its own site has to say why
+that is fine. This walker used to key on ``read_source_file`` alone, so
+``okf_import.py::_resolve_body`` grew a second, unpaired ``resolve_within_root``
+call invisible to it -- the anchor derivation HIGH-2 found and fixed.
 """
 
 from __future__ import annotations
@@ -300,3 +308,147 @@ def _calls_the_route_check(symbol: str) -> bool:
             if node.func.id == "assert_no_symlink_escape" and scope and scope[-1] == tail:
                 return True
     return False
+
+
+#: A `resolve_within_root` call immediately paired with `assert_no_symlink_escape`
+#: over the same reference gets `read_source_file`'s own two-part guarantee.
+PAIRED = "paired-with-route-check"
+
+#: No such pairing at this call; its own site names why the destination alone
+#: is enough there.
+BARE = "destination-only-with-its-own-reason"
+
+
+class _ResolveWithinRootCallSite(NamedTuple):
+    """One ``resolve_within_root`` call, and what covers its route."""
+
+    module: str
+    function: str
+    form: str
+    why: str
+
+
+#: Every `resolve_within_root` call in the shipped package, `read_source_file`'s
+#: own internal one included.
+_RESOLVE_WITHIN_ROOT_CALL_SITES: Final = (
+    _ResolveWithinRootCallSite(
+        module="security/paths.py",
+        function="read_source_file",
+        form=PAIRED,
+        why=(
+            "assert_no_symlink_escape(root, base=root, requested=relative) runs "
+            "immediately after, over the same `relative` -- the pairing every "
+            "REQUESTED row in the table above relies on"
+        ),
+    ),
+    _ResolveWithinRootCallSite(
+        module="cli/migration_pipeline.py",
+        function="_write",
+        form=BARE,
+        why=(
+            "the write lands at this call's own answer, so a symlink planted "
+            "inside the scratch copy by an earlier write in the same rehearsal "
+            "is refused if it points outside the copy and irrelevant if it "
+            "points inside -- the copy is a fresh tempfile directory this "
+            "process owns, not a tree anything else reads"
+        ),
+    ),
+    _ResolveWithinRootCallSite(
+        module="application/proposal_service.py",
+        function="ProposalService._destination_of",
+        form=PAIRED,
+        why=(
+            "assert_no_symlink_escape(self._paths.knowledge, "
+            "base=self._paths.migrations, requested=content_file) runs "
+            "immediately after, over the author's own unflattened contentFile "
+            "-- the guard the FLATTENED rows above (_reads_identical_bytes, "
+            "_commit) both defer to"
+        ),
+    ),
+    _ResolveWithinRootCallSite(
+        module="infrastructure/review_evidence/store.py",
+        function="ReviewEvidenceStore._write_one",
+        form=PAIRED,
+        why=(
+            "assert_no_symlink_escape(self._root, base=self._root, "
+            "requested=PurePosixPath(relative)) runs on the very next line, "
+            "over the same `relative`"
+        ),
+    ),
+    _ResolveWithinRootCallSite(
+        module="infrastructure/review_evidence/store.py",
+        function="ReviewEvidenceStore._refuse_a_relocated_directory",
+        form=BARE,
+        why=(
+            "not a containment check -- containment and the route are already "
+            "proved by `_write_one`'s own paired call, earlier in the same "
+            "write. This one compares the resolved parent against a plain "
+            "join to detect *any* link on the way, escaping or not (issue "
+            "#577's cheap half)"
+        ),
+    ),
+    _ResolveWithinRootCallSite(
+        module="infrastructure/filesystem/migration_loader.py",
+        function="_parse_upsert",
+        form=PAIRED,
+        why=(
+            "assert_no_symlink_escape(project_root, base=migrations_dir, "
+            "requested=content_file) runs on the very next line, over the "
+            "author's own unflattened contentFile -- the same function the "
+            "read_source_file table above already names FLATTENED for the "
+            "same reason"
+        ),
+    ),
+)
+
+
+def _resolve_within_root_calls() -> Counter[tuple[str, str]]:
+    """``(module path, enclosing function)`` for every ``resolve_within_root`` call."""
+    calls: Counter[tuple[str, str]] = Counter()
+    for path in sorted(_PACKAGE.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node, scope in _scoped(tree, ()):
+            if not isinstance(node, ast.Call):
+                continue
+            function = node.func
+            name = function.id if isinstance(function, ast.Name) else None
+            if name == "resolve_within_root":
+                calls[(path.relative_to(_PACKAGE).as_posix(), ".".join(scope) or "<module>")] += 1
+    return calls
+
+
+def test_every_resolve_within_root_call_is_one_this_table_categorises() -> None:
+    """MEDIUM-2: this walker used to key on `read_source_file` alone, so a bare
+    `resolve_within_root` call could grow anywhere and never appear here --
+    exactly how `okf_import.py::_resolve_body`'s anchor derivation did (HIGH-2).
+    """
+    found = _resolve_within_root_calls()
+    declared = Counter((site.module, site.function) for site in _RESOLVE_WITHIN_ROOT_CALL_SITES)
+
+    assert found == declared, (
+        "the `resolve_within_root` call sites in the shipped package no longer "
+        f"match the table in this file.\n  found:    {sorted(found.items())}\n"
+        f"  declared: {sorted(declared.items())}\n\n"
+        "A new call needs a `_ResolveWithinRootCallSite` row saying whether an "
+        "`assert_no_symlink_escape` call over the same reference covers its "
+        "route (PAIRED) or not (BARE, with its own reason)."
+    )
+
+
+def test_every_resolve_within_root_site_is_paired_or_names_its_own_reason() -> None:
+    """A PAIRED row's claim is checked the same way a FLATTENED `read_source_file`
+    row's upstream guard is: resolved in the shipped source, not trusted from the
+    label. A BARE row's whole content is its `why`.
+    """
+    for site in _RESOLVE_WITHIN_ROOT_CALL_SITES:
+        if site.form == PAIRED:
+            assert _calls_the_route_check(site.function), (
+                f"{site.function} is PAIRED but calls no assert_no_symlink_escape"
+            )
+            continue
+        assert site.form == BARE, f"{site.function} has an unknown form {site.form!r}"
+        assert site.why, f"{site.function} is BARE and must name its own reason"
+
+    assert any(site.form == BARE for site in _RESOLVE_WITHIN_ROOT_CALL_SITES), (
+        "the positive control: with no BARE row this test asserts nothing"
+    )
