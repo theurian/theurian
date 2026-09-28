@@ -19,7 +19,8 @@ root, so a namespaced concept's reference can legitimately step outside that
 directory while never leaving the bundle. Two tests below pin the two
 outcomes decision 6's own words draw the line between: a reference that
 truly escapes the bundle root is still refused, and one that only crosses
-into a sibling namespace -- staying inside the bundle -- is admitted.
+into a sibling namespace -- staying inside the bundle -- is admitted, with a
+second source anchor naming where its body actually came from (MEDIUM-1).
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 from fakes.clock import FrozenClock
 from fakes.ids import SeededIdGenerator
 
@@ -125,6 +127,15 @@ def _request(bundle: Path, **overrides: object) -> OkfImportRequest:
     }
     fields.update(overrides)
     return OkfImportRequest(**fields)  # type: ignore[arg-type]
+
+
+def _source_anchors_of(proposal_directory: Path) -> list[dict[str, object]]:
+    migrations = list(proposal_directory.glob("*.yaml"))
+    assert len(migrations) == 1, migrations
+    document = yaml.safe_load(migrations[0].read_text(encoding="utf-8"))
+    metadata = document["operations"][1]["metadata"]
+    anchors: list[dict[str, object]] = metadata["sourceAnchors"]
+    return anchors
 
 
 def _all_written_bytes(paths: ProjectPaths) -> bytes:
@@ -402,6 +413,11 @@ def test_a_body_file_crossing_into_a_sibling_namespace_inside_the_bundle_is_admi
     hand-authored bundle gets from a reference that legitimately reaches
     across namespaces without ADR-0037 narrowing decision 6's own boundary to
     forbid it.
+
+    Also pins MEDIUM-1: the body's true origin is a *second* `okf-bundle:`
+    anchor naming the resolved sidecar path, not only the concept document's
+    own path -- without it, this admitted body's origin would read as
+    `backend/deep.md`, which is not where its bytes came from.
     """
     bundle = tmp_path / "bundle"
     _write(bundle, "sibling/data.json", '{"sentinel": "sibling-namespace-body"}')
@@ -425,3 +441,7 @@ body
     assert drafted.proposal.body_file.read_text(encoding="utf-8") == (
         '{"sentinel": "sibling-namespace-body"}'
     )
+    anchors = _source_anchors_of(drafted.proposal.directory)
+    uris = [str(a["sourceUri"]) for a in anchors]
+    assert uris[0] == "okf-bundle:backend/deep.md"
+    assert "okf-bundle:sibling/data.json" in uris

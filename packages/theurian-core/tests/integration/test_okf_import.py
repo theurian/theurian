@@ -796,6 +796,8 @@ def test_a_sidecar_with_no_theurian_content_type_key_refuses_that_reference_alon
     rather than the `DomainError` the next line's `except` catches -- uncaught
     by `.draft()`'s own `_DRAFT_REFUSAL` and the CLI's `except TheurianError`
     alike, aborting the whole import rather than refusing this one reference.
+    This runs before the sidecar is ever read (LOW-1: the check needs nothing
+    from the file), so the refusal fires even though `sidecar.json` exists.
     """
     bundle = tmp_path / "bundle"
     _write(bundle, "sidecar.json", '{"ok": true}')
@@ -883,34 +885,68 @@ def test_every_demonstrated_crash_face_refuses_rather_than_raising_and_leaks_no_
     locked_concept.write_text(_yaml_concept(title="Locked concept"), encoding="utf-8")
     locked_concept.chmod(0o000)
 
+    # Each of these needs a valid `theurian_content_type` (the hoisted check
+    # of LOW-1 resolves it before the sidecar is ever read), or every one
+    # would refuse identically on the absent key instead of exercising the
+    # read-failure shape it is named for.
     _write(
         bundle,
         "body-directory.md",
-        _yaml_concept(title="Body is a directory", theurian_body_file="sidecar-dir"),
+        _yaml_concept(
+            title="Body is a directory",
+            theurian_content_type="application/json",
+            theurian_body_file="sidecar-dir",
+        ),
     )
-    _write(bundle, "body-empty.md", _yaml_concept(title="Body is empty", theurian_body_file=""))
-    _write(bundle, "body-dot.md", _yaml_concept(title="Body is dot", theurian_body_file="."))
+    _write(
+        bundle,
+        "body-empty.md",
+        _yaml_concept(
+            title="Body is empty", theurian_content_type="application/json", theurian_body_file=""
+        ),
+    )
+    _write(
+        bundle,
+        "body-dot.md",
+        _yaml_concept(
+            title="Body is dot", theurian_content_type="application/json", theurian_body_file="."
+        ),
+    )
     _write(
         bundle,
         "body-nul.md",
-        _yaml_concept(title="Body has a NUL", theurian_body_file="abc\x00def"),
+        _yaml_concept(
+            title="Body has a NUL",
+            theurian_content_type="application/json",
+            theurian_body_file="abc\x00def",
+        ),
     )
     _write(
         bundle,
         "body-locked.md",
-        _yaml_concept(title="Body is unreadable", theurian_body_file="locked-sidecar.bin"),
+        _yaml_concept(
+            title="Body is unreadable",
+            theurian_content_type="application/json",
+            theurian_body_file="locked-sidecar.bin",
+        ),
     )
     _write(
         bundle,
         "body-through-file.md",
         _yaml_concept(
-            title="Body reached through a file", theurian_body_file="plainfile.txt/sub.txt"
+            title="Body reached through a file",
+            theurian_content_type="application/json",
+            theurian_body_file="plainfile.txt/sub.txt",
         ),
     )
     _write(
         bundle,
         "body-too-long.md",
-        _yaml_concept(title="Body name too long", theurian_body_file=long_name),
+        _yaml_concept(
+            title="Body name too long",
+            theurian_content_type="application/json",
+            theurian_body_file=long_name,
+        ),
     )
     oversized_label = "x" * (5 * 1024 * 1024)
     _write(

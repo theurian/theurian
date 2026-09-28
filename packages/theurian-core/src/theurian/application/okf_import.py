@@ -98,7 +98,7 @@ from theurian.domain.identifiers import ItemId
 from theurian.domain.knowledge import SourceAnchor
 from theurian.domain.proposal import Evidence, body_extension
 from theurian.domain.values import MARKDOWN, MediaType
-from theurian.security.paths import read_source_file
+from theurian.security.paths import read_source_file, resolve_within_root
 
 #: `index.md`/`log.md` are OKF's reserved names, at every level (§3.1).
 _RESERVED_AT_EVERY_LEVEL: Final = frozenset({"index.md", "log.md"})
@@ -376,20 +376,40 @@ def _resolve_sidecar_content_type(concept: DecodedConcept) -> MediaType | Import
 
 def _resolve_body(
     root: Path, relative: PurePosixPath, concept: DecodedConcept, inline_body: str
-) -> tuple[str, MediaType] | ImportRefusal:
-    """The concept's body, and its media type.
+) -> tuple[str, MediaType, PurePosixPath | None] | ImportRefusal:
+    """The concept's body, its media type, and the sidecar's own bundle-relative
+    path -- `None` for an embedded markdown body, which has no sidecar.
 
     A markdown body embeds in the concept document (the common case); a
     non-markdown body lives in the sidecar `theurian_body_file` names,
     preserved byte for byte on export, so it is read the same way here --
     joined onto `relative`'s own directory before the read, never onto the
     bundle root (see the module docstring).
+
+    The content type is resolved *before* the sidecar is read: the check
+    needs nothing from the file, so a reference a bad content type already
+    dooms never pays for an up-to-8MiB read, and whichever check would have
+    run first no longer decides which refusal a doubly-bad reference reports.
     """
     if concept.theurian_body_file is None:
-        return inline_body, MARKDOWN
+        return inline_body, MARKDOWN, None
+    content_type_outcome = _resolve_sidecar_content_type(concept)
+    if isinstance(content_type_outcome, ImportRefusal):
+        return content_type_outcome
     sidecar_relative = (relative.parent / concept.theurian_body_file).as_posix()
     try:
         sidecar_bytes = read_source_file(root, sidecar_relative)
+        # The sidecar's own bundle-relative path, resolved -- not `sidecar_relative`,
+        # which can still carry the `../` a cross-namespace reference wrote
+        # (MEDIUM-1): a second `okf-bundle:` anchor naming the concept document
+        # alone would misattribute a body that actually came from elsewhere in
+        # the bundle. Inside the same `try` as the read: `read_source_file`
+        # already resolved and proved containment for this exact reference, so
+        # this call cannot fail except through the read's own TOCTOU window,
+        # which the read-failure refusal below already covers.
+        sidecar_bundle_relative = PurePosixPath(
+            resolve_within_root(root, sidecar_relative).relative_to(root).as_posix()
+        )
     except (TheurianError, OSError, ValueError):
         return ImportRefusal(
             kind=KIND_REFERENCE, key=THEURIAN_BODY_FILE, literal=concept.theurian_body_file
@@ -400,10 +420,7 @@ def _resolve_body(
         return ImportRefusal(
             kind=KIND_REFERENCE, key=THEURIAN_BODY_FILE, literal=concept.theurian_body_file
         )
-    content_type = _resolve_sidecar_content_type(concept)
-    if isinstance(content_type, ImportRefusal):
-        return content_type
-    return sidecar_text, content_type
+    return sidecar_text, content_type_outcome, sidecar_bundle_relative
 
 
 def _is_uri_or_relative_path(resource: str) -> bool:
@@ -460,8 +477,17 @@ def _bundle_identity_anchor(relative: PurePosixPath) -> SourceAnchor:
     )
 
 
-def _source_anchors(relative: PurePosixPath, concept: DecodedConcept) -> tuple[SourceAnchor, ...]:
+def _source_anchors(
+    relative: PurePosixPath, concept: DecodedConcept, sidecar_relative: PurePosixPath | None
+) -> tuple[SourceAnchor, ...]:
+    """The concept document's own identity anchor, plus a second one for its
+    sidecar when the body lives in one (MEDIUM-1): a cross-namespace
+    reference (H-1's fix admits one) makes the two paths genuinely different,
+    and the document-only anchor left the body's true origin unrecorded.
+    """
     anchors = [_bundle_identity_anchor(relative)]
+    if sidecar_relative is not None:
+        anchors.append(_bundle_identity_anchor(sidecar_relative))
     anchors.extend(
         SourceAnchor(provider="okf-source", source_uri=entry.resource)
         for entry in concept.sources
@@ -515,7 +541,7 @@ def _map_concept(root: Path, relative: PurePosixPath) -> ImportedConcept | Impor
     body_outcome = _resolve_body(root, relative, concept, decoded.body)
     if isinstance(body_outcome, ImportRefusal):
         return body_outcome
-    body, content_type = body_outcome
+    body, content_type, sidecar_relative = body_outcome
 
     return ImportedConcept(
         item_id=item_id,
@@ -524,7 +550,7 @@ def _map_concept(root: Path, relative: PurePosixPath) -> ImportedConcept | Impor
         body=body,
         content_type=content_type,
         labels=concept.labels,
-        source_anchors=_source_anchors(relative, concept),
+        source_anchors=_source_anchors(relative, concept, sidecar_relative),
         relations=concept.theurian_relations,
     )
 
