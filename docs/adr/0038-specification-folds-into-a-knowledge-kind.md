@@ -77,11 +77,11 @@ forcing Markdown — is what the revision body and its preserved `contentType`
 already provide (ADR-0010); neither `structured` field contributes to it.
 
 **The roadmap recommends the fold and does not state its constraint.** Roadmap
-§4 ("Four additions", item 1) and §9 candidate 6 recommend the unified form:
-spec-as-knowledge in `kind`, the machine-readable payload in `structured`. Both
-halves of that fold move a closed set — a new `kind` member, and two operations
-leaving ADR-0005's closed operation set — and the policy for moving a closed
-set is candidate 3, #274. The roadmap lists candidates 3 and 6 as owed "before
+§4 ("Four additions", item 1) recommends the unified form: spec-as-knowledge in
+`kind`, the machine-readable payload in `structured`. §9 candidate 6 only poses
+the question. Both halves of that fold move a closed set — a new `kind` member,
+and two operations leaving ADR-0005's closed operation set — and the policy for
+moving a closed set is candidate 3, #274. The roadmap lists candidates 3 and 6 as owed "before
 Phase C" and candidate 4, #275, as Phase C's own.
 
 **Why a decision record precedes Phase C's implementation.** §6 principle 3 ("A
