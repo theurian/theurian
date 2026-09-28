@@ -1305,7 +1305,8 @@ its name or its docstring reads:
   `tests/integration/test_okf_import_path_containment.py::test_a_bundle_root_under_a_symlinked_parent_directory_still_admits_in_bundle_references`
   holds the other direction: a bundle under a symlinked parent is not refused.
 - **The round-trip's content-type boundary: export is total, import narrows to
-  three literal media types, and nothing outside them is silently dropped.**
+  three literal media types, and — for a concept that names a sidecar —
+  nothing outside them is silently dropped.**
   Decision 7's export is total over content types (`sidecar_extension` maps
   `application/json` and any `+json`-suffixed type to `.json`,
   `application/yaml`, `text/x-yaml` and any `+yaml`-suffixed type to `.yaml`,
@@ -1316,10 +1317,19 @@ its name or its docstring reads:
   domain — never the format *classes* export accepts: an alias export
   sidecars under the same extension (`application/schema+json` to `.json`,
   `text/x-yaml` to `.yaml`) still refuses on import despite its body
-  genuinely being JSON or YAML. A content type outside the three literals is
-  never a silent drop: it is a surfaced, typed per-reference refusal
-  (`kind="reference"`, keyed `theurian_content_type`) whose literal states
-  the three-member set and the alias caveat by name. Alias normalization —
+  genuinely being JSON or YAML. A content type outside the three literals,
+  **on a concept that names a `theurian_body_file`**, is never a silent drop:
+  it is a surfaced, typed per-reference refusal (`kind="reference"`, keyed
+  `theurian_content_type`) whose literal states the three-member set and the
+  alias caveat by name. **When a concept names no `theurian_body_file` at
+  all, this check never runs**: `_resolve_body` returns the inline body as
+  `text/markdown` on its very first line, before `theurian_content_type` is
+  read at all — a concept declaring, say, `theurian_content_type:
+  application/json` with no sidecar therefore admits with zero refusals, its
+  declared type silently unread rather than enforced. Pre-existing
+  behaviour, recorded here rather than fixed: unpinned, recorded from the
+  release-cut round's measurement, and its handling is owed to a filed
+  backlog issue rather than to a named milestone. Alias normalization —
   widening import to export's format-class rule — is a deliberate non-goal
   here, owed to a filed backlog issue rather than to a named milestone,
   because it widens the admitted set rather than fixing a defect in the
