@@ -256,6 +256,7 @@ def test_the_bundle_identity_anchors_file_path_is_the_concepts_own_bundle_relati
         pytest.param("https://example.com/doc.pdf", True, id="https-uri"),
         pytest.param("docs/architecture.md", True, id="relative-path"),
         pytest.param("s3://data-bucket/path/to/object", True, id="scheme-uri-no-whitespace"),
+        pytest.param("docs/my design.md", False, id="legitimate-path-with-whitespace"),
     ],
 )
 def test_the_descriptor_grammar_admits_or_excludes_on_whitespace_alone(
@@ -267,9 +268,13 @@ def test_the_descriptor_grammar_admits_or_excludes_on_whitespace_alone(
     The fixed predicate excludes on whitespace before it ever checks the
     scheme grammar; this enumerates the grammar the fix has to hold across,
     not only the one phrasing the finding happened to name. The internal-space
-    URI case is graded on what the code actually does, not on what a URI
-    "should" be: whitespace excludes it too, since no legitimate URI or
-    relative path carries any.
+    URI case and `legitimate-path-with-whitespace` are graded on what the code
+    actually does, not on what a URI or a path "should" be: whitespace
+    excludes both, a recorded decision rather than a claim that no legitimate
+    one ever carries any (`docs/my design.md` is one, and it is still
+    excluded -- adversarial LOW: the predicate's docstring used to claim
+    otherwise). The lost anchor is optional provenance; INV-8's
+    bundle-identity anchor still holds the floor.
     """
     bundle = tmp_path / "bundle"
     front_matter = yaml.safe_dump(

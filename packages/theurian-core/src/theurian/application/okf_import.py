@@ -406,9 +406,19 @@ def _is_uri_or_relative_path(resource: str) -> bool:
     scope descriptor can itself open with a colon-terminated word that
     satisfies RFC 3986's scheme grammar ("BigQuery: all queries in project
     X" -- "BigQuery" is all letters, a legal scheme), so testing the scheme
-    first admitted any such descriptor as if it were a URI. No legitimate URI
-    or relative path carries whitespace, so checking for it first is never a
-    false exclusion.
+    first admitted any such descriptor as if it were a URI.
+
+    **Recorded decision, not a universal: whitespace marks a descriptor, and a
+    whitespace-bearing path is conservatively excluded along with it.** A
+    path such as `docs/my design.md` is a legitimate relative path that
+    happens to carry a space, and this predicate excludes it too -- the
+    descriptor/path ambiguity is unresolvable syntactically, so there is no
+    rule that admits the path without also admitting a colon-free descriptor
+    ("all queries in BigQuery project X" carries no colon at all). The cost
+    is a lost *optional* anchor (`sources[]` is provenance, not the concept's
+    identity); the benefit is that no descriptor is ever misrecorded as
+    provenance. INV-8's bundle-identity anchor still holds the floor
+    regardless of how this predicate classifies any `sources[]` entry.
 
     **The scheme grammar admits `javascript:`, `data:` and `file:`, and this
     function does not narrow it.** That is deliberate, not an oversight: this
