@@ -794,3 +794,56 @@ def test_judgements_schema_refuses_two_evidence_entries_sharing_the_exact_pair()
         "files are a distinct pair each, not the same object -- uniqueItems must "
         "not refuse this shape, or the refusal above is broader than the ADR credits"
     )
+
+
+# -- 5: the ADR's recorded pin-count command still counts this file's tests --
+
+_PIN_COUNT_PARAGRAPH_START = "What holds this record against the tree is"
+_RECORDED_PIN_COUNT_COMMAND = re.compile(
+    r"`grep\s+-c\s+'([^'`]+)'\s+tests/unit/tools/test_adr36_ratchet\.py`"
+)
+_COUNT_BEFORE_PINS = re.compile(
+    r"\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen"
+    r"|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)[*_`]*\s+pins\b",
+    re.IGNORECASE,
+)
+
+
+def _pytest_collected_test_names(body: list[ast.stmt]) -> list[str]:
+    names: list[str] = []
+    for node in body:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            if node.name.startswith("test"):
+                names.append(node.name)
+        elif isinstance(node, ast.ClassDef) and node.name.startswith("Test"):
+            names.extend(_pytest_collected_test_names(node.body))
+    return names
+
+
+def test_the_adrs_recorded_pin_count_command_counts_exactly_the_tests_this_file_defines() -> None:
+    """The count command ADR-0036 records must still discriminate, not merely print a number."""
+    adr_text = ADR.read_text(encoding="utf-8")
+    source = Path(__file__).read_text(encoding="utf-8")
+
+    recorded_keys = _RECORDED_PIN_COUNT_COMMAND.findall(adr_text)
+    assert len(recorded_keys) == 1, (
+        f"ADR-0036 is expected to record its pin-count command exactly once, found "
+        f"{len(recorded_keys)}: {recorded_keys}"
+    )
+    key = re.compile(recorded_keys[0])
+    grep_count = sum(1 for line in source.split("\n") if key.search(line))
+    collected = _pytest_collected_test_names(ast.parse(source).body)
+    stated_counts = _COUNT_BEFORE_PINS.findall(
+        _section(adr_text, _PIN_COUNT_PARAGRAPH_START, "\n\n")
+    )
+
+    assert grep_count == len(collected), (
+        f"ADR-0036's recorded command (grep -c {recorded_keys[0]!r}) prints "
+        f"{grep_count} for this file, but pytest collects {len(collected)} test "
+        f"functions from it -- the recorded command no longer discriminates "
+        f"this file's tests"
+    )
+    assert stated_counts == [], (
+        f"ADR-0036's pin-count paragraph states a count of pins again "
+        f"({stated_counts}) instead of deferring to the recorded command"
+    )
