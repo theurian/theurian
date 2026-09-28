@@ -45,6 +45,7 @@ alternatives that were rejected and why.
 | [0035](0035-interactive-source-curation-is-agent-mediated.md) | Interactive curation of sources is agent-mediated and does not relax the approval gate | proposed |
 | [0036](0036-golden-judgements-are-committed-regression-fixtures.md) | Golden judgements are committed regression fixtures, never a ranking input | accepted |
 | [0037](0037-okf-is-the-knowledge-layer-interchange.md) | OKF is the knowledge layer's interchange — an Index-class export and a gated import | accepted |
+| [0038](0038-specification-folds-into-a-knowledge-kind.md) | The Specification entity folds into a knowledge `kind` | accepted |
 
 ## Writing a new ADR
 
