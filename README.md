@@ -668,7 +668,11 @@ F, context export has shipped as `theurian okf export`, with
 `theurian okf import`. D and E have not shipped, nor have F's second client
 adapter and experimental work, and no flag reports any of them.
 `packages/theurian-core/tests/unit/test_readme_phase_claims.py::test_the_readmes_shipped_phase_claims_match_system_capabilities_and_the_cli`
-holds this paragraph to its authorities.
+checks, each against its authority, the capability flags this section backticks;
+the commands, MCP tool names and paths this paragraph backticks; and Phase A's
+exit date and Phase B's exit-demonstration status as the roadmap records them.
+It also goes red when the capability schema's flag set changes. The wording
+around those items is not checked.
 
 ## Documentation
 
