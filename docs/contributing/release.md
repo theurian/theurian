@@ -104,9 +104,15 @@ cancelled mid-build" tells them whether they were affected.
 
 Pre-1.0, every Core MINOR cut raises the bundled plugin's
 `coreCompatibility.maximumExclusive` to the next MINOR, in the cut's own pull
-request, whether or not the protocol changed — the ceiling rule under
-*Versioning* above. The 0.5.0 cut raised it to `0.6.0` with `protocolVersion`
-unchanged (`9aafb17a`).
+request, whether or not the protocol changed — this follows from the ceiling
+rule under *Versioning* above. The 0.5.0 cut raised it to `0.6.0` with
+`protocolVersion` unchanged (`9aafb17a`). The raise reaches installed plugins
+only through a plugin release — `version` in `plugin.json` and `pluginVersion`
+in `compatibility.yaml` bumped, then the marketplace entry updated — because
+Claude Code caches a plugin by its declared version (*Releasing the plugin*,
+§2). No step of a Core cut performs that release, and on 2026-09-29
+`git ls-remote --tags origin 'plugin-v*'` printed nothing
+([#46](https://github.com/theurian/theurian/issues/46)).
 
 If the protocol changed, say so prominently and list every client that must
 update. Then, in this order:
@@ -582,7 +588,13 @@ file, and
 `packages/theurian-core/tests/unit/test_plugin_boundary.py::test_every_published_compatibility_matrix_row_matches_compatibility_yaml`
 holds that row, one per table, to it, so a pull request that moves the
 declaration moves both rows or goes RED. Rows for earlier series are history,
-added as releases accumulate, and nothing holds them.
+added as releases accumulate, and nothing holds them. The per-release
+*Compatibility* blocks in `plugins/claude-code/CHANGELOG.md` are release-time
+snapshots that nothing compares with `compatibility.yaml`, and they are not
+history while their version is still the current one: the
+`[0.1.1] - 2026-08-09` block reads `>= 0.1.0-dev.0, < 0.2.0` while the in-tree
+`0.1.1` declares `< 0.6.0`, because the ceiling moved without a version bump
+([#46](https://github.com/theurian/theurian/issues/46)).
 
 | Plugin | Core | Protocol |
 | :-- | :-- | :-- |
