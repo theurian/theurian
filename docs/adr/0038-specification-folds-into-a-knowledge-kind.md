@@ -162,7 +162,7 @@ settled here.
 | `title` | The specification item's `KnowledgeRevision.title`; the entity's is the spec id's own string (*Context*) |
 | `status` (`SpecificationStatus`) | The specification item's `KnowledgeStatus` — **not a rename**; see *Negative* |
 | `content_format` | The specification item's `KnowledgeRevision.content_type` — the document's media type (`application/yaml` in the sample), not the governing item's (`text/markdown` there) |
-| `source_uri` | The specification item's revision body: the document it names is what that revision is to hold (decision 1) |
+| `source_uri` | The specification item's revision body: the document it names is what that revision is to hold (decision 1). The locator string itself is to be carried as a `SourceAnchor` (`source_uri`, plus `file_path` for a tracked file) in that revision's `KnowledgeRevision.source_anchors`, which the migration engine already populates on apply |
 | `validity` | The specification item's `KnowledgeRevision.validity` |
 | `structured` | The specification item's `KnowledgeRevision.structured`. The payload's home moves from a column that exists, `specifications.structured TEXT NOT NULL DEFAULT '{}'`, to a field whose writer is owed (*Compliance*, item 4); neither holds a payload today (*Context*) |
 | `anchors` | The specification item's `KnowledgeRevision.source_anchors` |
@@ -189,10 +189,11 @@ settled here.
   duration carried the body's size, which is
   [T-26](../security/threat-model.md), closed in 0.2.3 by the metadata form.
   A hop read through `get_item_exact` keeps the first property and drops the
-  second. It also owes the gate's others: both endpoints judged, with no
-  direction inference; a missing endpoint withheld; and the read scoped to the
-  project, as `_ITEM_METADATA_SQL`'s `project_id` scopes it and a `TraceNode`,
-  which carries no project, cannot.
+  second. It also owes the gate's others: both endpoints judged on status and
+  sensitivity (`may_surface`, `may_disclose`), with no direction inference; a
+  missing endpoint withheld; and the read scoped to the project, as
+  `_ITEM_METADATA_SQL`'s `project_id` scopes it and a `TraceNode`, which carries
+  no project, cannot.
 - **A specification item will get the governance every item has.** Status,
   sensitivity, ownership, aliases, relations and supersession are the knowledge
   model's, so none of them needs building a second time for specifications.
@@ -287,7 +288,7 @@ settled here.
 
 | Alternative | Why rejected |
 | :-- | :-- |
-| **Keep `Specification` a separate entity and bridge it to knowledge by relations or traceability edges** | It doubles every future surface: a second id space for trace endpoints; a second status vocabulary that `may_surface` does not read; no sensitivity axis, since the table has no `sensitivity` column; a second supersede mechanism beside the `supersedes` relation and INV-6; and a second population for every walker — the index build, `knowledge.get`'s relations, the OKF export — none of which reads the `specifications` table today. It keeps a table whose one field the knowledge side lacks is the revision pin (the field table) — a question #275 owns for every edge, not a reason for a second entity — and whose readers are never called (*Context*). And #277's reason to decide now cuts this way: no edge points at a spec id yet, so this is the cheap moment to keep one from ever doing so. |
+| **Keep `Specification` a separate entity and bridge it to knowledge by relations or traceability edges** | It doubles every future surface: a second id space for trace endpoints; a second status vocabulary that `may_surface` does not read; no sensitivity axis, since the table has no `sensitivity` column; a second supersede mechanism beside the `supersedes` relation, which INV-6 requires to be acyclic; and a second population for every walker — the index build, `knowledge.get`'s relations, the OKF export — none of which reads the `specifications` table today. It keeps a table whose one field the knowledge side lacks is the revision pin (the field table) — a question #275 owns for every edge, not a reason for a second entity — and whose readers are never called (*Context*). And #277's reason to decide now cuts this way: no edge points at a spec id yet, so this is the cheap moment to keep one from ever doing so. |
 | **Retire the two operations now by reinterpreting them under `theurian.dev/v1`** — `registerSpecification` read as `addAlias` from the spec id to the item, `supersedeSpecification` as a `supersedes` relation | Checked against source; it fails four ways. **(a)** The published v1 schema admits both as their own shapes (`$defs/opRegisterSpecification`, `$defs/opSupersedeSpecification`) and the loader parses them into their own operation classes (`RegisterSpecification`, `SupersedeSpecification`), so the reinterpretation changes what v1 means with no version signal. **(b)** Identical v1 documents would yield different canonical states on builds either side of the change. `MIGRATION_ENGINE_VERSION` (`domain/migration.py`) is hashed into the state hash "so an engine change invalidates cached state instead of silently reinterpreting it (ADR-0007)"; it keeps a cache from being trusted across the change, and does not tell a reader of the document which meaning it carries. Saying that a format changed is `apiVersion`'s job. **(c)** The operations do not behave like their proposed readings. The alias collision guard in `application/migration_alias_guards.py` reads `addAlias` and `removeAlias` and never `registerSpecification`, so committed documents could meet a refusal they were validated without; and `supersedeSpecification` is an `UPDATE` of one `specifications` row — nothing when no row matches — where `addRelation` is an `INSERT OR IGNORE` into `knowledge_relations`, so replay and idempotency differ. **(d)** An alias from the spec id to the governing item would make the specification that item, which it is not: the document it names is a different file (*Context*). |
 | **Defer this decision until #274 is accepted, and decide both together** | The questions separate, and only one of them blocks Phase C. The id space (decision 2) depends on nothing #274 decides, and the population slice needs it before its first edge; what depends on #274 is how the entity leaves (decisions 4 and 5). Deferring would leave that slice to choose an id space by default. |
 
@@ -305,7 +306,8 @@ Landing with this pull request:
   moves and this record must move with it — a call of a specification reader
   (which is also how a breach of decision 3 shows), a `specification` member in
   `KnowledgeKind`, a third compiled `apiVersion` comparison. Its reach is stated
-  in its own module docstring.
+  in the module docstring of `packages/theurian-core/tests/adr_0038_support.py`,
+  which holds the readers it shares with its `test_adr_0038_*.py` siblings.
 
 Rests on enforcement that already holds:
 
@@ -339,9 +341,10 @@ Still owed, with the issue or slice that will satisfy it:
    which stay in `domain/specification.py`; decide the `SpecificationStatus`
    correspondence (*Negative*); move `SpecificationProvider.discover`'s return
    type; amend ADR-0005's operation list and ADR-0032 decision 3's v1 set;
-   author any spec-id alias it produces as an `addAlias`, or pass it through
-   `refuse_alias_item_id_collision`; and move every committed document and
-   fixture that names either operation
+   author any spec-id alias it produces as an `addAlias`, since an alias from
+   any other producer reaches `refuse_alias_item_id_collision` only once
+   `_final_alias_targets` is extended to read it (T-21); and move every
+   committed document and fixture that names either operation
    (`git grep -l -E 'registerSpecification|supersedeSpecification'`), the
    sample project's migration among them.
 3. **[#275](https://github.com/theurian/theurian/issues/275)'s edge
