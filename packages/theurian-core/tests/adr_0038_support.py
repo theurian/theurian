@@ -36,7 +36,7 @@ a keyword smuggled through ``**kwargs``, a dictionary key computed at run time,
 SQL assembled from fragments, or a second whole-object read inside a function
 already on the allow-set.
 
-**What is not parsed, and what it costs.** Every module of the pin set -- each
+**What is not parsed.** Every module of the pin set -- each
 ``test_adr_0038_*.py`` module and this one -- spells the names its scans search
 for as data, so all of them are excluded (tracked, each would find itself).
 :data:`_UNREAD` takes them from that glob, and :func:`_parsed` refuses to run
@@ -44,14 +44,6 @@ unless the glob's tracked members are exactly the modules importing this one: a
 module named into the glob without importing this one would be hidden from the
 scans, and one importing it from outside the glob would be parsed. The import,
 at column 0, is the key; one inside a function is outside it (#845).
-``domain/enums.py``, read by the pin set only by importing its enums,
-``mcp/results.py`` and ``tests/unit/test_gate_call_sites.py`` are fenced because
-PR #835 (https://github.com/theurian/theurian/pull/835) edits all three. The
-fence is not free: ``mcp/results.py`` is a real ``KnowledgeRevision`` serialiser
--- it builds the search-result payload field by field -- so a
-specification-reader call, a ``structured`` publication or a traceability-edge
-method placed there is not seen by these scans while the fence stands. Deleting
-those three entries from :data:`_UNREAD` once #835 has merged lifts it.
 
 Every scan whose expected answer is *nothing* runs beside a positive control on
 the same key, and every widened shape is driven through its classifier from an
@@ -116,9 +108,6 @@ SAMPLE_MIGRATION: Final = (
 _PIN_GLOB: Final = "packages/theurian-core/tests/unit/test_adr_0038_*.py"
 _UNREAD: Final = frozenset(
     {
-        SRC + "domain/enums.py",
-        SRC + "mcp/results.py",
-        "packages/theurian-core/tests/unit/test_gate_call_sites.py",
         Path(__file__).resolve().relative_to(REPO_ROOT).as_posix(),
         *(path.relative_to(REPO_ROOT).as_posix() for path in REPO_ROOT.glob(_PIN_GLOB)),
     }
