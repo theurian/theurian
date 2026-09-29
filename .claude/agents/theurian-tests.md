@@ -33,12 +33,14 @@ plus a scoped `pytest` selection in your own clone (with
 the control is red). PR #596's arc measured the cost of this twice.
 
 **A refused step is reported and the work stops there** — never worked around,
-never re-attempted by another route. A classifier or infrastructure error ("no
-verdict", a transient failure) decided nothing: retry it. A refusal is a
-permission decision only the user can change: report it to the orchestrator,
-which routes it to the user. Burned in at its first instance, as the rule is
-cheap and the next instance's harm unbounded: a refused `sh .mutate-run` and
-`HOME` redirect were bypassed via the copy's venv python, nothing escaping this time ([PR #838's flip record](https://github.com/theurian/theurian/pull/838#issuecomment-5884815645), process note 2).
+never re-attempted by another route. Retry a transient classifier or
+infrastructure error ("no verdict") once, with the identical command; if it
+recurs, or you cannot tell an error from a refusal, report it as a refusal. A
+refusal is a permission decision only the user can change: report it to the
+orchestrator. Burned in at its first instance, as the rule is cheap and the next
+instance's harm unbounded: a refused `sh .mutate-run` and `HOME` redirect were
+bypassed via the copy's venv python (process note 2 of [PR #838's flip
+record](https://github.com/theurian/theurian/pull/838#issuecomment-5884815645)).
 
 Watch for assertions that hold regardless of the implementation:
 
@@ -131,9 +133,9 @@ Before writing any pin over a recorded bound or model: enumerate the input
 families or allocation terms *first*, pick the worst member of each, and check
 the parts sum to the measured whole. A population or fixture chosen because it
 makes the assertion pass is the class the pin exists to prevent. Burned in after
-two recurrences on PR #685 (rounds 1-3): a wire-ratio population all measuring
-the recorded 2x where the whole space held 3.0x, and a two-term memory-model pin
-steered onto an escape-heavy body while the jsonschema path it excluded measured 38x.
+two recurrences on PR #685 (rounds 1-3): a wire-ratio population all at the
+recorded 2x where the whole space held 3.0x, and a memory-model pin steered onto
+an escape-heavy body where the jsonschema path its model excluded measured 38x.
 
 ## An ASCII path fixture tests the one shape that renders as itself
 
@@ -161,8 +163,10 @@ behaviour over it is. The worked example is `test_fix_commit_check_adapter.py`'s
 `PATH_SHAPES` table *plus* its sibling tests — no single table holds the family.
 
 Burned in after one root cause, reading git's human rendering of paths, gave
-`FixCommitCheck.verify` three findings and a pre-flip fourth face ([PR #744's round record](https://github.com/theurian/theurian/pull/744#issuecomment-5739349093));
-PR #766 HIGH-1 was the encoding face, an `errors="replace"` fixture lacking the surrogate shape it named.
+`FixCommitCheck.verify` three findings and a pre-flip fourth ([PR #744's round
+record](https://github.com/theurian/theurian/pull/744#issuecomment-5739349093));
+PR #766 HIGH-1 was the encoding face, a fixture decoded with `errors="replace"`
+that could not produce the surrogate shape its name claimed.
 
 ## A population's count is stale the moment it moves
 
@@ -176,20 +180,26 @@ hand-audit of a candidate list is the failure mode this rule exists to catch.
 When a population has more than two outcome kinds (skip, fail,
 error-at-collection, …), name the taxonomy rather than collapsing it to two,
 or the third kind goes uncounted. Worked example: `tools/mutate.py`'s
-`_lend_git_objects` docstring; burned in after PR #802 hand-stated its count twice.
-Same family: `theurian-python.md`'s count-key rule, `theurian-docs.md`'s rule 7.
+`_lend_git_objects` docstring, burned in after PR #802 hand-stated its count
+twice ("five", stale after its #788 fix, then "seven"). (`theurian-python.md`
+carries this as "a count states its key beside it, and you re-run that key
+against the text as committed"; `theurian-docs.md`'s is "every count is a pasted
+derivation with its scope beside it" — one family, three wordings.)
 
-## A sentence saying what a pin holds is a claim, and the pin its only evidence
+## Prose on a pin's reach is a claim that the suite holds something
 
-State the **key** a scan uses beside the scan; no sentence on the pin's reach
-(docstring, `#: Reach:` comment, README, ADR) may say more than the key holds,
-as a wider one is false in the direction that stops a reader checking. Prove
-reach by perturbations anchored to the block under test (a first-occurrence
-replace can hit a sibling copy and read GREEN), with **green controls**: a
-correct spelling that must stay GREEN beside each wrong one that must go RED, or
-a driver reddening on everything looks like one reddening on the right thing.
-Burned in after PR #835 caught it twice: a README said its pin "holds this
-paragraph to its authorities" while `review.search`, a date and a status clause
-survived mutation ([round 1](https://github.com/theurian/theurian/pull/835#issuecomment-5881326704), HIGH-1); then round 2's
-six MEDIUMs, among them a `#: Reach:` comment wider than its regex, case-sensitive
-and fence-blind keys and a substring-borrowing arm ([record](https://github.com/theurian/theurian/pull/835#issuecomment-5882790780); residue #846).
+The pin is that claim's only evidence. State the **key** a scan uses beside the
+scan, and let no sentence on its reach (docstring, `#: Reach:` comment, README,
+ADR) say more than the key holds: a wider one is false in the direction that
+stops a reader checking. Prove reach by perturbations anchored to the block
+under test (a first-occurrence replace can hit another occurrence of the token
+and read GREEN), with **green controls**: a correct spelling that must stay
+GREEN beside each wrong one that must go RED, or a driver reddening on
+everything looks like one reddening on the right thing. Burned in after PR #835
+caught it twice: a README said its pin "holds this paragraph to its authorities"
+while `review.search`, a date and a status clause survived mutation ([round-1
+record](https://github.com/theurian/theurian/pull/835#issuecomment-5881326704),
+HIGH-1); then round 2's six MEDIUMs, among them a `#: Reach:` comment wider than
+its regex, case-sensitive and fence-blind keys and a substring-borrowing arm
+([record](https://github.com/theurian/theurian/pull/835#issuecomment-5882790780);
+residue #846).
