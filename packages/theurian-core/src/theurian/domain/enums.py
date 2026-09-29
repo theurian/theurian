@@ -324,7 +324,7 @@ def may_disclose(sensitivity: Sensitivity, *, visible: frozenset[Sensitivity]) -
     builder keeps it out of a new build; the purge takes it out of the published
     one.
 
-    ``knowledge.search``'s unranked fallback does *not* appear there and is not
+    ``knowledge.search``'s unranked fallback does *not* appear in the list above and is not
     another site: it hands ``visible`` to the canonical store as a SQL predicate,
     so no above-ceiling row is materialised for a Python check to run on
     (``mcp.search._scan``, and the cost note on
