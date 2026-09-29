@@ -532,6 +532,14 @@ it; the key that did was `abstentionCause`. Amendment 1's paragraph "What the
 tripwire caught was `abstentionCause`, not the channel" records why, and which
 pin holds the channel instead.
 
+*Corrected in PR #835:* the paragraph above previously gave the pin count as a
+figure, "Seven", one short of what the command above printed at `c909e9f7`
+(PR #789), where that sentence landed, and two short at `e2b2afd3` (PR #803).
+It also said the tripwire would go RED the moment #787's channel member landed,
+and that the RED was the signal to move rider 1's "recorded channel" sentence
+from owed to implemented; the channel landed at `a58fdcb5` (PR #795) without
+tripping it.
+
 Measured now, and reproducible from this ADR (2026-09-20, on the branch of
 PR #776):
 
@@ -569,6 +577,10 @@ for "A baseline report is committed and CI reports regressions against it":
   from the report, the instrument that produced it, and the environment
   `timings.json` carries outside the byte-identity property. Its own statement of
   what the run is for: "This run DEFINES the baseline; it does not assert one."
+  *Corrected in PR #835:* this bullet previously transcribed that section as
+  "(2026-09-24, at `a58fdcb5`, over `tests/fixtures/eval`)"; slice S4c's
+  re-measurement (PR #798) moved it off `a58fdcb5`, so the bullet now cites the
+  section rather than copying it.
 - **The local ratchet** is
   `test_a_fresh_run_over_the_frozen_corpus_reproduces_the_committed_baseline_report`
   (`tests/integration/tools/test_baseline_current.py`), which runs the harness
