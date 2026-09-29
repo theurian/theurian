@@ -524,8 +524,10 @@ _ORDINALS_PAST_FIRST = (
 )
 _PAST_FIRST = rf"\d+(?:st|nd|rd|th)|{'|'.join(_ORDINALS_PAST_FIRST)}"
 
-#: Reach: an ordinal but the word ``first`` anywhere ("a ninth"), or a cardinal or ordinal up to
-#: two words before site, caller, place or path, no ``.,;:!?`` between ("seven gated paths").
+#: Reach: an ordinal but the word ``first`` anywhere ("a ninth"), or a cardinal or ordinal
+#: whose optional emphasis or backticks are followed by whitespace or a hyphen, then up to two
+#: words before site, caller, place or path, no ``.,;:!?`` between ("seven gated paths").
+#: Spellings outside that -- "(eight) call sites", "twenty-first", "three writers" -- are #846.
 _SITE_COUNT = re.compile(
     rf"\b(?:{_PAST_FIRST}|first|\d+|{'|'.join(_CARDINAL_WORDS)})\b[*_`]*"
     rf"(?:[\s-]+[^\s.,;:!?]+){{0,2}}?[\s-]+[*_`]*(?:site|caller|place|path)s?\b"

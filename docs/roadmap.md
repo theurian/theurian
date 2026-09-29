@@ -390,8 +390,8 @@ not; **absent** — effectively nothing.
   > `tests/fixtures/eval/judgements.yaml` (slice S3, `d11f3552`), the harness
   > `tools/eval/run.py` (slice S2, `9cd9ee34`), and the baseline report
   > `tools/eval/baseline/report.json` (slice S4b, `673b12cf`). §7's Phase A
-  > *Exit criteria* row records the closure as *All three met, 2026-09-24*,
-  > CI's comparison against the baseline included — advisory, not blocking.
+  > *Exit criteria* row records the closure, CI's comparison against the
+  > baseline included — advisory, not blocking.
   > The pin the note above owed is
   > `packages/theurian-core/tests/unit/test_roadmap_claims.py::test_every_phase_a_artefact_the_roadmap_names_exists`,
   > which asserts that every repository path this note backticks exists.
