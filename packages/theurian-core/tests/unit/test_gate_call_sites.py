@@ -43,6 +43,7 @@ import pytest
 
 import theurian
 from theurian.application.retrieval_service import ResultGate
+from theurian.domain import enums
 from theurian.domain.enums import may_disclose, may_surface
 from theurian.infrastructure.sqlite.store import (
     _ITEM_METADATA_SQL,
@@ -250,7 +251,8 @@ STATUS_GATE_CALL_SITES = {
     ("mcp/tools.py", "register._draft_only_proposals.current_revision"),
 }
 
-#: A writer decides what a persisted artefact holds or loses; a reader, what a response returns.
+#: A writer decides which *canonical* content a persisted artefact holds or loses; a reader,
+#: what a response returns.
 STATUS_GATE_WRITER_SITES = {
     ("application/index_builder.py", "IndexBuilder._build"),
     ("application/migration_engine.py", "revisions_to_purge"),
@@ -510,11 +512,41 @@ def test_every_place_the_product_consults_the_disclosure_gate_is_enumerated() ->
 #: backticks, matched in whitespace-collapsed text so a wrapped pair still counts.
 _DOCSTRING_SITE = re.compile(r"``(\S+\.py) :: (\S+?)``")
 
-_CALL_SITE_COUNT = re.compile(
-    r"\b(?:\d+|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
-    r"thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\s+call\s+sites?\b",
+_CARDINAL_WORDS = (
+    *("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"),
+    *("eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen"),
+    *("eighteen", "nineteen", "twenty"),
+)
+_ORDINALS_PAST_FIRST = (
+    *("second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth"),
+    *("eleventh", "twelfth", "thirteenth", "fourteenth", "fifteenth", "sixteenth"),
+    *("seventeenth", "eighteenth", "nineteenth", "twentieth"),
+)
+_PAST_FIRST = rf"\d+(?:st|nd|rd|th)|{'|'.join(_ORDINALS_PAST_FIRST)}"
+
+#: Reach: an ordinal but the word ``first`` anywhere ("a ninth"), or a cardinal or ordinal up to
+#: two words before site, caller, place or path, no ``.,;:!?`` between ("seven gated paths").
+_SITE_COUNT = re.compile(
+    rf"\b(?:{_PAST_FIRST}|first|\d+|{'|'.join(_CARDINAL_WORDS)})\b[*_`]*"
+    rf"(?:[\s-]+[^\s.,;:!?]+){{0,2}}?[\s-]+[*_`]*(?:site|caller|place|path)s?\b"
+    rf"|\b(?:{_PAST_FIRST})\b",
     re.IGNORECASE,
 )
+
+#: The numbers these docstrings hold that count something other than sites, as exact phrases.
+_NOT_A_SITE_COUNT = {
+    may_disclose.__name__: ("A second axis rather than a widening",),
+    results.__name__: ("A shape constructed in two places drifts in one of them.",),
+}
+
+
+def _site_counts(owner: str, doc: str | None) -> list[str]:
+    """*doc*'s site counts, once each of *owner*'s exempt phrases is asserted present and cut."""
+    text = " ".join((doc or "").split())
+    for phrase in _NOT_A_SITE_COUNT.get(owner, ()):
+        assert phrase in text, f"`{owner}`'s docstring no longer reads the exempt {phrase!r}"
+        text = text.replace(phrase, ".")
+    return [match.group(0) for match in _SITE_COUNT.finditer(text)]
 
 
 def test_each_gate_docstring_enumerates_exactly_its_pinned_sites() -> None:
@@ -537,17 +569,19 @@ def test_each_gate_docstring_enumerates_exactly_its_pinned_sites() -> None:
         )
 
     counted = {
-        owner: _CALL_SITE_COUNT.findall(doc or "")
+        owner: _site_counts(owner, doc)
         for owner, doc in (
             (may_surface.__name__, may_surface.__doc__),
             (may_disclose.__name__, may_disclose.__doc__),
+            (enums.__name__, enums.__doc__),
             (results.__name__, results.__doc__),
         )
     }
 
     assert not any(counted.values()), (
         f"a gate docstring counts call sites again: {counted}. A count is the copy "
-        f"that went stale; enumerate by key instead."
+        f"that went stale; enumerate by key instead, or, if the number counts "
+        f"something else, add its exact phrase to _NOT_A_SITE_COUNT."
     )
 
 
