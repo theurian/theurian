@@ -587,7 +587,7 @@ def test_every_published_compatibility_matrix_row_matches_compatibility_yaml() -
     """At ``855ebd87`` both matrices read ``< 0.2.0``; ``compatibility.yaml`` declared ``0.6.0``.
 
     Only the declared series' row is held; the rest would be history, and there
-    is none because the plugin train has never cut a ``plugin-v*`` tag (#46).
+    was none because the plugin train had cut no ``plugin-v*`` tag as of 2026-09-29 (#46).
     Not run by a documentation-only pull request (#839); ``release-core.yml``'s
     quality job runs the whole suite at every tag, so a drift cannot reach a
     release. ``plugin.yml`` runs this file on ``plugins/**``, so a pull request

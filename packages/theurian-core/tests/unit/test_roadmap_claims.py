@@ -793,6 +793,8 @@ _PRINCIPLE_3_CLAIM: Final = re.compile(rf"\b{_COUNT} call sites\b")
 _PHASE_D_CLAIM: Final = re.compile(
     rf"\b{_COUNT} of `may_surface`'s {_COUNT} call sites are writers\b"
 )
+#: A site in single backticks, by the pinned sets' own ``(module, qualname)`` key.
+_NAMED_SITE: Final = re.compile(r"(?<!`)`([^`\s]+\.py) :: ([^`\s]+)`(?!`)")
 
 
 def _as_number(word: str) -> int:
@@ -832,6 +834,10 @@ def _section_lines(document: str, heading: str) -> list[str]:
 def test_the_roadmaps_gate_call_site_counts_are_derived_from_the_pinned_set() -> None:
     """At ``855ebd87`` both counts read six (two writers) against a set of eight (three).
 
+    Holds the Phase D row's named writers to ``STATUS_GATE_WRITER_SITES``; which site
+    is a writer is ``test_every_status_gate_site_is_classified_as_writer_or_reader``'s
+    recorded decision.
+
     Not run by a documentation-only pull request (#839); ``release-core.yml``'s
     quality job runs the whole suite at every tag, so a drift cannot reach a release.
     """
@@ -840,7 +846,7 @@ def test_the_roadmaps_gate_call_site_counts_are_derived_from_the_pinned_set() ->
     document = ROADMAP.read_text(encoding="utf-8")
     principle = collapsed(" ".join(_section_lines(document, PRINCIPLE_3_HEADING)))
     security_rows = [
-        collapsed(line)
+        line
         for line in _section_lines(document, PHASE_D_HEADING)
         if line.startswith("| **Security** |")
     ]
@@ -859,9 +865,16 @@ def test_the_roadmaps_gate_call_site_counts_are_derived_from_the_pinned_set() ->
     assert len(security_rows) == 1, f"Phase D has {len(security_rows)} Security rows, expected 1"
     stated_pairs = [
         (_as_number(writer), _as_number(total))
-        for writer, total in _PHASE_D_CLAIM.findall(security_rows[0])
+        for writer, total in _PHASE_D_CLAIM.findall(collapsed(security_rows[0]))
     ]
     assert stated_pairs == [(len(writers), len(sites))], (
         f"Phase D's Security row states (writers, sites) as {stated_pairs}; the pinned "
         f"sets hold ({len(writers)}, {len(sites)}), and the claim is stated once"
+    )
+
+    named = _NAMED_SITE.findall(security_rows[0])
+    assert len(named) == len(set(named)), f"Phase D's Security row repeats a writer: {named}"
+    assert set(named) == writers, (
+        f"Phase D's Security row names writers {sorted(named)}; STATUS_GATE_WRITER_SITES "
+        f"holds {sorted(writers)}"
     )
