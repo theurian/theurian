@@ -149,11 +149,10 @@ from __future__ import annotations
 
 import ast
 import re
-import shutil
-import subprocess
 from pathlib import Path
 from typing import Final
 
+from command_population import _population
 from write_lock_claims import REPO_ROOT, collapsed
 
 #: The two documents this module reads. Everything asserted below is a relation
@@ -747,23 +746,6 @@ def _blockquote_carrying(document: str, key: str) -> str:
     return found[0]
 
 
-def _tracked_files() -> frozenset[str]:
-    """Every path ``git ls-files`` reports for the checkout, NUL-split so no path is quoted."""
-    git = shutil.which("git")
-    assert git is not None, "the tracked-file population is git's answer, and git is not on PATH"
-    completed = subprocess.run(  # noqa: S603 - argv is module-owned, never user input
-        [git, "ls-files", "-z", "--cached"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="surrogateescape",
-        check=False,
-    )
-    assert completed.returncode == 0, f"`git ls-files` failed:\n{completed.stderr}"
-    return frozenset(path for path in completed.stdout.split("\0") if path)
-
-
 def test_every_phase_a_artefact_the_roadmap_names_exists() -> None:
     """The Absent item went stale silently because nothing recomputed it.
 
@@ -784,8 +766,12 @@ def test_every_phase_a_artefact_the_roadmap_names_exists() -> None:
     assert paths >= PHASE_A_ARTEFACTS, (
         f"the Phase A closure note no longer names {sorted(PHASE_A_ARTEFACTS - paths)}"
     )
-    untracked = sorted(paths - _tracked_files())
-    assert not untracked, f"the Phase A closure note names paths git does not track: {untracked}"
+    untracked = sorted(
+        paths - {path.relative_to(REPO_ROOT).as_posix() for path in _population(REPO_ROOT)}
+    )
+    assert not untracked, (
+        f"the Phase A closure note names paths that are not tracked files: {untracked}"
+    )
 
 
 # -- The gate call-site counts: recomputed from the pinned sets ---------------

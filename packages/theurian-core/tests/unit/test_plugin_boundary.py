@@ -17,6 +17,7 @@ from typing import Final
 
 import pytest
 import yaml
+from command_population import _population
 from jsonschema import Draft202012Validator
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
@@ -536,52 +537,50 @@ def test_installed_core_is_inside_the_declared_range() -> None:
     assert verdict.is_compatible, verdict.message
 
 
-MATRIX_HEADER: Final = "| Plugin | Core | Protocol |"
+#: Reach: a line whose first three cells read these once leading ``>`` markers, edge pipes,
+#: emphasis, backticks and case are dropped; more columns may follow.
+MATRIX_COLUMNS: Final = ("plugin", "core", "protocol")
 
 #: Where it is published. A copy appearing or vanishing is a decision made here.
 MATRIX_FILES: Final = frozenset({"CHANGELOG.md", "docs/contributing/release.md"})
 
+#: Reach: the ``<MAJOR>.<MINOR>.x``, any case and ``v`` allowed, leading a series cell once
+#: emphasis, backticks and a link bracket are stripped, whatever follows it (``0.1.x (bundled)``).
+_SERIES: Final = re.compile(r"v?(\d+\.\d+\.x)\b", re.IGNORECASE)
 
-def _tracked_markdown() -> list[str]:
-    """Every tracked ``*.md`` path, NUL-split so no path is quoted."""
-    git = shutil.which("git")
-    assert git is not None, "the matrix population is git's answer, and git is not on PATH"
-    completed = subprocess.run(  # noqa: S603 - argv is repository-owned, never user input
-        [git, "ls-files", "-z", "--cached", "--", "*.md"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="surrogateescape",
-        check=False,
-    )
-    assert completed.returncode == 0, f"`git ls-files` failed:\n{completed.stderr}"
-    return [path for path in completed.stdout.split("\0") if path]
+
+def _cells(line: str) -> list[str]:
+    """*line*'s table cells, stripped, with its blockquote markers and edge pipes dropped."""
+    return [cell.strip() for cell in line.lstrip(" \t>").strip().strip("|").split("|")]
 
 
 def _matrix_tables(text: str) -> list[list[list[str]]]:
-    """Every table under :data:`MATRIX_HEADER` in *text*: its body rows, each as stripped cells."""
+    """Every table in *text* headed by :data:`MATRIX_COLUMNS`: its body rows, as cells."""
     lines = text.splitlines()
     tables = []
     for index, line in enumerate(lines):
-        if line.strip() != MATRIX_HEADER:
+        if tuple(cell.strip("*_`").casefold() for cell in _cells(line)[:3]) != MATRIX_COLUMNS:
             continue
         rows = []
         for row in lines[index + 1 :]:
-            if not row.startswith("|"):
+            if "|" not in row:
                 break
-            cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
+            cells = _cells(row)
             if not all(re.fullmatch(r":?-+:?", cell) for cell in cells):
                 rows.append(cells)
         tables.append(rows)
     return tables
 
 
-def _protocol_unquoted(row: list[str]) -> list[str]:
-    """*row* with backticks around its protocol cell dropped: one table writes them."""
-    if len(row) == 3 and len(row[2]) > 1 and row[2][0] == row[2][-1] == "`":
-        return [*row[:2], row[2][1:-1]]
-    return row
+def _series(cell: str) -> str | None:
+    """The series token leading *cell*, lower-cased, or ``None``."""
+    match = _SERIES.match(cell.lstrip("*_[`"))
+    return match.group(1).lower() if match else None
+
+
+def _unquoted(cell: str) -> str:
+    """*cell* without wrapping backticks: one table writes them."""
+    return cell[1:-1] if len(cell) > 1 and cell[0] == cell[-1] == "`" else cell
 
 
 def test_every_published_compatibility_matrix_row_matches_compatibility_yaml() -> None:
@@ -605,13 +604,14 @@ def test_every_published_compatibility_matrix_row_matches_compatibility_yaml() -
         str(declaration["protocolVersion"]),
     ]
     published = {
-        path: tables
-        for path in _tracked_markdown()
-        if (REPO_ROOT / path).is_file()
-        and (tables := _matrix_tables((REPO_ROOT / path).read_text(encoding="utf-8")))
+        path.relative_to(REPO_ROOT).as_posix(): tables
+        for path in _population(REPO_ROOT)
+        if path.suffix == ".md" and (tables := _matrix_tables(path.read_text(encoding="utf-8")))
     }
 
-    assert published, f"no tracked markdown file carries `{MATRIX_HEADER}`, so nothing is held"
+    assert published, (
+        f"no tracked markdown file carries a {MATRIX_COLUMNS} table, so nothing is held"
+    )
     assert set(published) == MATRIX_FILES, (
         f"the matrix is published in {sorted(published)}, expected {sorted(MATRIX_FILES)}. "
         f"Amend MATRIX_FILES only as a decision, and name the new copy in release.md."
@@ -620,9 +620,9 @@ def test_every_published_compatibility_matrix_row_matches_compatibility_yaml() -
     stale = []
     for path, tables in published.items():
         for table in tables:
-            rows = [_protocol_unquoted(row) for row in table if row[0] == series]
-            if rows != [expected]:
-                stale.append((path, rows))
+            held = [row for row in table if _series(row[0]) == series]
+            if [[series, *(_unquoted(cell) for cell in row[1:3])] for row in held] != [expected]:
+                stale.append((path, held))
 
     assert not stale, (
         f"the {series} row of the published matrix does not read {expected}, which "
