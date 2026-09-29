@@ -54,10 +54,11 @@ item with a `text/markdown` revision, while its `sourceUri` and
 `format: application/yaml` name a different tracked file,
 `examples/sample-project/.theurian/specifications/order-cancellation.yaml`.
 Only a registration writes `revision_id` (an upsert, so re-registering the spec
-id re-pins it); a later revision of the item leaves it, since the table's only
-other write, `supersede_specification`, sets `status` and `superseded_by`. The
-table's `revision_id` is a foreign key to `knowledge_revisions(revision_id)`;
-the table has no `anchors` column and no `sensitivity` column.
+id re-pins it); a later revision of the item leaves it, since the only other
+statement that updates the table, `supersede_specification`, sets `status` and
+`superseded_by`. The table's `revision_id` is a foreign key to
+`knowledge_revisions(revision_id)`; the table has no `anchors` column and no
+`sensitivity` column.
 `infrastructure/sqlite/store.py`'s `_specification_from_row` builds a
 `Specification` without `anchors`, so a stored specification always reads back
 with `anchors=()`.
@@ -111,10 +112,11 @@ settled here.
    is the specification's *document* — the file a registration's `sourceUri`
    names — not the item it is registered against. Its revision body is to be
    that document in its native format under its own `contentType` (ADR-0010);
-   its parsed form belongs in that revision's `KnowledgeRevision.structured`,
-   which the structured and OpenAPI parsers under
-   `infrastructure/filesystem/parsers/` already produce at ingestion and whose
-   persistence is owed (*Compliance*, item 4). The link from the governing item
+   its parsed form — which the structured and OpenAPI parsers under
+   `infrastructure/filesystem/parsers/` already produce at ingestion, and which
+   goes no further today than `IngestedDocument.structured` (*Context*) —
+   belongs in that revision's `KnowledgeRevision.structured`, whose persistence
+   is owed (*Compliance*, item 4). The link from the governing item
    is to become a typed relation between the two items, its `RelationType` left
    to [#841](https://github.com/theurian/theurian/issues/841) or #275, and
    supersession a `supersedes` relation between specification items; only the
@@ -193,7 +195,7 @@ settled here.
   which carries no project, cannot.
 - **A specification item will get the governance every item has.** Status,
   sensitivity, ownership, aliases, relations and supersession are the knowledge
-  model's, so none of them is built a second time for specifications.
+  model's, so none of them needs building a second time for specifications.
 
 ### Negative
 
