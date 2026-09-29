@@ -310,3 +310,5 @@ Still owed, with the issue or slice that will satisfy it:
    reads a specification's parsed form, as
    [`traceability.md`](../architecture/traceability.md)'s `spec.getCoverage`
    would. This ADR does not choose between the closure options #834 records.
+   The `structured` half of roadmap §4 item 1's recommendation is owed to #834,
+   not shipped.
