@@ -64,6 +64,7 @@ from theurian.domain.knowledge import (
     KnowledgeRelation,
     KnowledgeRevision,
     RevisionMetadata,
+    SourceAnchor,
 )
 from theurian.domain.ports.canonical_store import CanonicalReadSession
 from theurian.domain.specification import (
@@ -282,6 +283,22 @@ def test_every_field_table_row_names_a_home_on_the_specification_item() -> None:
     assert "body" in fields["KnowledgeRevision"]
     assert typing.get_type_hints(KnowledgeItem)["status"] is KnowledgeStatus
     assert RelationType("supersedes") in ACYCLIC_RELATIONS
+
+
+def test_a_commit_on_the_revision_or_anchor_does_not_stand_in_for_the_revision_pin() -> None:
+    table = _table(_section(_adr(), "### Where each `Specification` field lands"))[1:]
+    [row] = [_collapsed(cell) for source, cell in table if source == "`revision_id`"]
+    clause = (
+        "a commit pin would not substitute like-for-like",
+        "revision_id names which stored revision of the governing item was current",
+        "KnowledgeRevision.source_commit, a SourceAnchor's commit_sha",
+        "names the tree something was measured against",
+        "so the choice changes meaning rather than relocating the pin",
+    )
+
+    assert "source_commit" in {field.name for field in dataclasses.fields(KnowledgeRevision)}
+    assert "commit_sha" in {field.name for field in dataclasses.fields(SourceAnchor)}
+    assert [words for words in clause if words not in row] == []
 
 
 def test_spec_ids_and_item_ids_share_one_grammar_and_one_schema_type() -> None:
