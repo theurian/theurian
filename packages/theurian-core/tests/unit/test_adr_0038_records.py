@@ -105,13 +105,13 @@ def test_the_roadmap_recommends_the_fold_and_owes_candidates_three_and_six_befor
     ) in additions[1]
     assert "and source_commit pinning when it was measured." in additions[2]
     assert candidates[6].startswith("Whether the Specification entity folds into a knowledge kind")
-    # Containment, not `endswith`: a recorded candidate keeps its phase tag and
-    # gains an appended `Recorded:` marker as continuation lines (§9 candidate 8's
-    # form).
-    assert "(before Phase C)." in candidates[3]
-    assert "(before Phase C)." in candidates[6]
-    assert "(Phase C)." in candidates[4]
-    assert "(before Phase C)" not in candidates[4]
+    # Containment, not `endswith`: a recorded candidate keeps its tag and gains an appended
+    # `Recorded:` marker (§9 candidate 8's form); split before it, so marker prose can't
+    # satisfy or trip the check — "(Phase C)." differs from "(before Phase C)." only by the "(".
+    questions = {n: candidates[n].split("Recorded:", 1)[0] for n in (3, 4, 6)}
+    assert "(before Phase C)." in questions[3]
+    assert "(before Phase C)." in questions[6]
+    assert "(Phase C)." in questions[4]
 
 
 def test_only_phase_d_is_adr_first_while_phase_c_security_opens_a_disclosure_family() -> None:
