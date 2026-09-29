@@ -961,6 +961,7 @@ flowchart LR
    [ADR-0036](adr/0036-golden-judgements-are-committed-regression-fixtures.md).
 6. **Whether the `Specification` entity folds into a knowledge `kind`** — which
    of the two the traceability work builds on (before Phase C).
+   **Recorded: [ADR-0038](adr/0038-specification-folds-into-a-knowledge-kind.md)**: it folds.
 7. **The semantics of impact analysis** — recorded-edges-only, the population
    declaration as a required field (§6 principle 2), and extending disclosure
    equality to graph responses (Phase E).
