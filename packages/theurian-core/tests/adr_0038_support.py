@@ -5,34 +5,53 @@ it and its ``test_adr_0038_*.py`` siblings read the tree and the documents
 through this one, so a fix to a reader lands once.
 
 **Reach.** The scans parse every ``.py`` file ``git ls-files`` lists and see
-attribute references, bare names and exact-string spellings. Four keys reach
-further. A ``structured`` read is an attribute load, ``getattr(x,
-"structured")`` or the bare string ``"structured"`` (a row or payload key), and
-beside it every whole-object read -- ``asdict``, ``astuple``, ``vars``,
-``__dict__``, ``getattr`` with a computed name -- is held as an exact allow-set.
-A compiled ``apiVersion`` check is any comparison or ``match`` that reads the
-key or names the constant, a container holding it, or a name bound to either;
-and every read of the key is held to the two functions that check it today.
-SQL names the ``specifications`` table bare, quoted, schema-qualified or after a
-comma join. A construction is ``Specification(...)`` called by bare name or as
-an attribute. The scans do not see a class imported under another name, a copy
-made by ``dataclasses.replace``, a keyword smuggled through ``**kwargs``, a
-dictionary key computed at run time, SQL assembled from fragments, or a second
-whole-object read inside a function already on the allow-set.
+attribute references, bare names and exact-string spellings. Each key marked
+(#845) below is also stated beside its scan, and #845
+(https://github.com/theurian/theurian/issues/845) owns widening it. A
+``structured`` read is an attribute load, ``getattr(x, "structured")`` or the
+bare string ``"structured"`` (a row or payload key). A whole-object read is a
+*call* of ``asdict``, ``astuple`` or ``vars``, a ``__dict__`` access or a
+``getattr`` with a computed name, held as an exact allow-set; a reader passed by
+reference (``default=dataclasses.asdict``) is not one (#845). A read of the
+``apiVersion`` key is a subscript or ``.get(...)`` of the literal, a ``match``
+subject included, held to the two functions that check it today; a
+mapping-pattern key or a key held in a named constant is not one (#845). A
+compiled ``apiVersion`` check is any comparison or ``match`` that reads the key
+or names the constant, a container holding it, or a name bound to either, and
+each of the two is held as a top-level ``if`` of exactly its comparison whose
+body is one ``raise``. SQL names the ``specifications`` table bare, quoted,
+schema-qualified or after a comma join. A construction is ``Specification(...)``
+called by bare name or as an attribute. The ``KnowledgeRevision.create`` scan
+counts that expression spelled exactly so, called or referenced: an aliased
+import's ``.create(...)`` is outside its reach, though a ``structured=`` keyword
+on such a call is still caught by the keyword scan. Three more pins hold less
+than the sentence they face (#845): the gate's project scope holds
+``_ITEM_METADATA_SQL``'s ``project_id`` scoping and the scoped argument tuple,
+not that ``get_item_exact_metadata`` makes no other read; the engine half of
+``kind`` riding on the revision holds only that ``_upsert_revision`` calls
+``with_revision``, not that the result reaches ``put_item`` unmodified; and the
+field table's not-carried rule is a denylist of negation words. The scans do not
+see a class imported under another name, a copy made by ``dataclasses.replace``,
+a keyword smuggled through ``**kwargs``, a dictionary key computed at run time,
+SQL assembled from fragments, or a second whole-object read inside a function
+already on the allow-set.
 
 **What is not parsed, and what it costs.** Every module of the pin set -- each
 ``test_adr_0038_*.py`` module and this one -- spells the names its scans search
 for as data, so all of them are excluded (tracked, each would find itself).
 :data:`_UNREAD` takes them from that glob, and :func:`_parsed` refuses to run
-while a module importing this one falls outside it. ``domain/enums.py``, read
-by the pin set only by importing its enums, ``mcp/results.py`` and
-``tests/unit/test_gate_call_sites.py`` are fenced because PR #835
-(https://github.com/theurian/theurian/pull/835) edits all three. The fence is
-not free: ``mcp/results.py`` is a real ``KnowledgeRevision`` serialiser -- it
-builds the search-result payload field by field -- so a specification-reader
-call, a ``structured`` publication or a traceability-edge method placed there
-is not seen by these scans while the fence stands. Deleting those three entries
-from :data:`_UNREAD` once #835 has merged lifts it.
+unless the glob's tracked members are exactly the modules importing this one: a
+module named into the glob without importing this one would be hidden from the
+scans, and one importing it from outside the glob would be parsed. The import,
+at column 0, is the key; one inside a function is outside it (#845).
+``domain/enums.py``, read by the pin set only by importing its enums,
+``mcp/results.py`` and ``tests/unit/test_gate_call_sites.py`` are fenced because
+PR #835 (https://github.com/theurian/theurian/pull/835) edits all three. The
+fence is not free: ``mcp/results.py`` is a real ``KnowledgeRevision`` serialiser
+-- it builds the search-result payload field by field -- so a
+specification-reader call, a ``structured`` publication or a traceability-edge
+method placed there is not seen by these scans while the fence stands. Deleting
+those three entries from :data:`_UNREAD` once #835 has merged lifts it.
 
 Every scan whose expected answer is *nothing* runs beside a positive control on
 the same key, and every widened shape is driven through its classifier from an
@@ -94,16 +113,14 @@ SAMPLE_MIGRATION: Final = (
     "01K1DEFABC01234567890ABCDE-add-order-cancellation.yaml"
 )
 
+_PIN_GLOB: Final = "packages/theurian-core/tests/unit/test_adr_0038_*.py"
 _UNREAD: Final = frozenset(
     {
         SRC + "domain/enums.py",
         SRC + "mcp/results.py",
         "packages/theurian-core/tests/unit/test_gate_call_sites.py",
         Path(__file__).resolve().relative_to(REPO_ROOT).as_posix(),
-        *(
-            path.relative_to(REPO_ROOT).as_posix()
-            for path in (REPO_ROOT / "packages/theurian-core/tests/unit").glob("test_adr_0038_*.py")
-        ),
+        *(path.relative_to(REPO_ROOT).as_posix() for path in REPO_ROOT.glob(_PIN_GLOB)),
     }
 )
 
@@ -150,17 +167,20 @@ def _tracked(*pathspecs: str) -> tuple[str, ...]:
 
 @functools.cache
 def _parsed() -> Mapping[str, ast.Module]:
-    """Every tracked ``.py`` file outside :data:`_UNREAD`, once the pin set is inside it."""
+    """Every tracked ``.py`` file outside :data:`_UNREAD`, once the glob matches the pin set."""
+    # Key: an import of this module at column 0; one inside a function is not seen (#845).
     grep = _git("grep", "-l", "-z", "-E", "^(from|import) adr_0038_support", "--", "*.py")
     pin_set = set(filter(None, grep.stdout.decode("utf-8", "surrogateescape").split("\0")))
+    named = set(_tracked(_PIN_GLOB))
 
     assert grep.returncode in {0, 1}, grep.stderr.decode("utf-8", "replace")
     assert "packages/theurian-core/tests/unit/test_adr_0038_claims.py" in pin_set, (
         "positive control: the import key no longer finds the claims module"
     )
-    assert pin_set <= _UNREAD, (
-        f"{sorted(pin_set - _UNREAD)} import adr_0038_support, so they spell its searched-for "
-        f"names as data, and the scans would parse them: _UNREAD's glob misses a pin module"
+    assert named == pin_set, (
+        f"{sorted(named - pin_set)} match {_PIN_GLOB} without importing adr_0038_support, so "
+        f"_UNREAD hides them from the scans; {sorted(pin_set - named)} import it from outside "
+        f"the glob, so the scans parse the names they spell as data"
     )
     return {
         path: ast.parse((REPO_ROOT / path).read_bytes(), filename=path)
@@ -279,6 +299,8 @@ def _structured_read(node: ast.AST) -> str | None:
 
 def _whole_object_read(node: ast.AST) -> str | None:
     """A read of every field of whatever object it is handed."""
+    # Key: a CALL of asdict/astuple/vars, a __dict__ access, a getattr with a computed name.
+    # Not a reader passed by reference, e.g. `default=dataclasses.asdict` (#845 widens it).
     match node:
         case ast.Call(func=ast.Name(id=name) | ast.Attribute(attr=name)) if (
             name in _WHOLE_OBJECT_READERS
@@ -363,6 +385,8 @@ def _migration_defs() -> dict[str, Any]:
 
 
 def _reads_the_version(node: ast.AST) -> bool:
+    # Key: a Subscript or .get(...) of the literal "apiVersion", a match subject included.
+    # Not a mapping-pattern key, nor a key held in a named constant (#845 widens it).
     match node:
         case (
             ast.Subscript(slice=ast.Constant(value="apiVersion"))
@@ -389,7 +413,7 @@ def _names_the_version(node: ast.AST | None, bound: frozenset[str]) -> bool:
 
 
 def _api_version_checks(trees: Mapping[str, ast.Module]) -> set[tuple[str, str]]:
-    """Every comparison or ``match`` over a document's ``apiVersion``, in any shape."""
+    """Every comparison or ``match`` that reads the key or names the version."""
     assignments = [
         (target.id, node.value)
         for tree in trees.values()

@@ -292,6 +292,14 @@ def test_every_whole_object_read_in_src_is_one_already_judged_not_to_publish_a_r
 # -- Consequences: the compiled apiVersion checks -----------------------------
 
 
+_API_VERSION_REFUSALS: Final = {
+    (LOADER, "_load_one"): "document['apiVersion'] != MIGRATION_API_VERSION",
+    (PROPOSALS, "_refuse_a_document_the_schema_rejects"): (
+        "document.get('apiVersion') != MIGRATION_API_VERSION"
+    ),
+}
+
+
 def test_two_exact_comparisons_are_the_only_compiled_api_version_checks() -> None:
     schema = json.loads(MIGRATION_SCHEMA.read_text(encoding="utf-8"))
     reads = {
@@ -300,14 +308,31 @@ def test_two_exact_comparisons_are_the_only_compiled_api_version_checks() -> Non
         for node, scope in _scoped(tree)
         if _reads_the_version(node)
     }
+    # Key: each site's top-level `if` whose test reads the key -- its whole test and its body's
+    # statement types. An earlier `return` in the same function is not held.
+    refusals = {
+        site: [
+            (ast.unparse(statement.test), [type(inner) for inner in statement.body])
+            for statement in _function(*site).body
+            if isinstance(statement, ast.If)
+            and any(map(_reads_the_version, ast.walk(statement.test)))
+        ]
+        for site in _API_VERSION_REFUSALS
+    }
 
     assert MIGRATION_API_VERSION == "theurian.dev/v1"
     assert schema["properties"]["apiVersion"]["const"] == MIGRATION_API_VERSION
     assert _api_version_checks(_trees(SRC)) == {
-        (LOADER, "document['apiVersion'] != MIGRATION_API_VERSION"),
-        (PROPOSALS, "document.get('apiVersion') != MIGRATION_API_VERSION"),
-    }, "a third compiled apiVersion check, or a relaxed one: ADR-0038's `no window` moves with it"
-    assert reads == {(LOADER, "_load_one"), (PROPOSALS, "_refuse_a_document_the_schema_rejects")}
+        (path, comparison) for (path, _), comparison in _API_VERSION_REFUSALS.items()
+    }, "a third compiled apiVersion check: ADR-0038's `no window` moves with it"
+    assert refusals == {
+        site: [(comparison, [ast.Raise])] for site, comparison in _API_VERSION_REFUSALS.items()
+    }, (
+        "a check is no longer a top-level `if` of exactly its comparison whose body is one "
+        "`raise` -- an added conjunct, an enclosing guard or a body that may not raise opens "
+        "the window ADR-0038 says v1 lacks"
+    )
+    assert reads == set(_API_VERSION_REFUSALS)
 
 
 @pytest.mark.parametrize(
@@ -379,4 +404,26 @@ def test_the_alias_collision_guard_reads_alias_operations_and_never_a_specificat
         "SUPERSEDE_SPECIFICATION",
         "registerSpecification",
         "supersedeSpecification",
+    }
+
+
+def test_the_alias_guard_takes_its_keys_from_final_alias_targets_alone() -> None:
+    collisions = _function(ALIAS_GUARDS, "_alias_item_collisions")
+
+    assert _callees(_function(ALIAS_GUARDS, "refuse_alias_item_id_collision")) == {
+        "_alias_item_collisions",
+        "AliasItemCollisionError",
+    }
+    assert _callees(collisions) == {
+        "_final_alias_targets",
+        "_final_item_statuses",
+        "_AliasCollision",
+        "get",
+        "sorted",
+    }, (
+        "the collision walk calls something new, which may be a second alias producer; "
+        "ADR-0038's Still owed item 2 says only `_final_alias_targets` feeds the guard"
+    )
+    assert "targets = _final_alias_targets(migration_set)" in {
+        ast.unparse(statement) for statement in collisions.body
     }

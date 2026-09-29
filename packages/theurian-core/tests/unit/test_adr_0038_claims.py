@@ -20,8 +20,8 @@ module, and the prose half. The fact halves are in three siblings:
 - ``test_adr_0038_populations.py`` -- who references, reads, writes and defines
   what: the entity's store methods and the ``specifications`` SQL, the
   ``structured`` readers and whole-object reads, the compiled ``apiVersion``
-  checks, ``must_be_acyclic``'s callers, the provider's implementations and the
-  alias guard's operations.
+  checks, ``must_be_acyclic``'s callers, the provider's implementations, and the
+  alias guard's operations and where it takes its keys.
 - ``test_adr_0038_model.py`` -- the entity, its table and its registration; the
   field table and where each field lands on the specification item; relations,
   trace types and ``with_revision``; the relation gate the id space lands in;
@@ -32,8 +32,8 @@ module, and the prose half. The fact halves are in three siblings:
   constant the ADR cites.
 
 Every module of the set reads the tree and the documents through
-``adr_0038_support``, whose docstring states once what the scans reach and what
-they do not parse.
+``adr_0038_support``, whose docstring indexes what the scans reach and what they
+do not parse.
 
 Pure: syntax trees, in-memory domain objects, JSON schemas, YAML, Markdown, and
 read-only ``git ls-files`` and ``git grep``. No database, socket or temporary
@@ -45,6 +45,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Final
 
+import adr_0038_support
 import pytest
 from adr_0038_support import REPO_ROOT, _adr, _collapsed, _section, _table
 
@@ -70,8 +71,12 @@ def test_the_adr_records_the_fold_as_accepted_and_rejects_keeping_the_entity_sep
     ) in {_collapsed(row[0]) for row in alternatives[1:]}
 
 
-def test_the_compliance_section_names_this_module() -> None:
+def test_the_compliance_section_names_this_module_and_where_its_reach_is_stated() -> None:
+    support = Path(adr_0038_support.__file__).resolve().relative_to(REPO_ROOT).as_posix()
+
     assert THIS_MODULE == "packages/theurian-core/tests/unit/test_adr_0038_claims.py"
+    assert support == "packages/theurian-core/tests/adr_0038_support.py"
+    assert "**Reach.**" in (adr_0038_support.__doc__ or "")
 
 
 # -- The prose half -----------------------------------------------------------
@@ -176,9 +181,25 @@ ADR_STATES: Final[dict[str, str]] = {
     "t26": "[T-26](../security/threat-model.md), closed in 0.2.3 by the metadata form.",
     "get-item-exact": """A hop read through `get_item_exact` keeps the first property and drops
         the second.""",
-    "gate-others": """both endpoints judged, with no direction inference; a missing endpoint
-        withheld; and the read scoped to the project, as `_ITEM_METADATA_SQL`'s `project_id`
-        scopes it and a `TraceNode`, which carries no project, cannot.""",
+    "floor": """Whatever reads a specification endpoint on a hop owes at least both of the
+        existing gate's read properties:""",
+    "gate-others": """both endpoints judged on status and sensitivity (`may_surface`,
+        `may_disclose`), with no direction inference; a missing endpoint withheld; and the read
+        scoped to the project, as `_ITEM_METADATA_SQL`'s `project_id` scopes it and a
+        `TraceNode`, which carries no project, cannot.""",
+    "resolve-at-population": """must be resolved to its knowledge item id when the edge is
+        populated (reachability), never inside a hop's authority read (T-21).""",
+    "owed-hop-read": """each hop endpoint read through `get_item_exact_metadata` or an equivalent
+        that neither resolves an alias nor reads the body, never the joined `get_item_exact`""",
+    "alias-producer": """author any spec-id alias it produces as an `addAlias`, since an alias
+        from any other producer reaches `refuse_alias_item_id_collision` only once
+        `_final_alias_targets` is extended to read it (T-21)""",
+    "locator-home": """The locator string itself is to be carried as a `SourceAnchor`
+        (`source_uri`, plus `file_path` for a tracked file) in that revision's
+        `KnowledgeRevision.source_anchors`, which the migration engine already populates on
+        apply""",
+    "supersede-acyclic": """a second supersede mechanism beside the `supersedes` relation, which
+        INV-6 requires to be acyclic""",
     "no-trace-path": """No traceability read path exists for it to gate — `knowledge.trace` is
         not registered, `system.capabilities` publishes `traceability: false`, and
         `TraceNode.node_id` is a free string""",
@@ -247,13 +268,26 @@ ADR_STATES: Final[dict[str, str]] = {
         nothing when no row matches — where `addRelation` is an `INSERT OR IGNORE` into
         `knowledge_relations`""",
     "compliance": "`packages/theurian-core/tests/unit/test_adr_0038_claims.py`, the claims pin.",
+    "reach-pointer": """Its reach is stated in the module docstring of
+        `packages/theurian-core/tests/adr_0038_support.py`""",
+}
+
+#: Why a fragment exists, where the edit that deletes it would look like a harmless alignment.
+_WHY: Final = {
+    "owed-hop-read": (
+        "This clause exists because the joined `get_item_exact` materialises a withheld "
+        "endpoint's body before withholding it, so a refusal's duration carries the body's size: "
+        "T-26, closed in 0.2.3 by the metadata form. The roadmap's Phase C Security row still "
+        "names `get_item_exact`, a stale face of #832; an edit that brings this ADR in line with "
+        "that row reopens the channel. It is the roadmap that moves.\n\n"
+    ),
 }
 
 
-@pytest.mark.parametrize("fragment", ADR_STATES.values(), ids=list(ADR_STATES))
-def test_the_adr_still_states(fragment: str) -> None:
+@pytest.mark.parametrize(("name", "fragment"), ADR_STATES.items(), ids=list(ADR_STATES))
+def test_the_adr_still_states(name: str, fragment: str) -> None:
     assert _collapsed(fragment) in _collapsed(_adr().read_text(encoding="utf-8")), (
-        f"ADR-0038 no longer states:\n\n  {_collapsed(fragment)}\n\nIf the fact half is GREEN, "
-        f"the tree did not move and the record is what gets restored; if it is RED, the "
-        f"sentence moves with the tree."
+        f"ADR-0038 no longer states:\n\n  {_collapsed(fragment)}\n\n{_WHY.get(name, '')}If the "
+        f"fact half is GREEN, the tree did not move and the record is what gets restored; if it "
+        f"is RED, the sentence moves with the tree."
     )

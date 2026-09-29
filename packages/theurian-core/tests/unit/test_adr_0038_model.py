@@ -238,7 +238,11 @@ def test_a_trace_node_is_a_free_string_with_no_project_and_the_trace_types_stay_
 _HOMES_NAMED_OTHERWISE: Final = {
     "spec_id": ("The specification item's id.",),
     "status": ("The specification item's KnowledgeStatus",),
-    "source_uri": ("The specification item's revision body:",),
+    "source_uri": (
+        "The specification item's revision body:",
+        "The locator string itself is to be carried as a SourceAnchor",
+        "in that revision's KnowledgeRevision.source_anchors",
+    ),
     "revision_id": (
         "The link is to become a typed relation from the governing item to the specification item",
         "The pin — which of the governing item's revisions was current at registration — "
@@ -247,6 +251,9 @@ _HOMES_NAMED_OTHERWISE: Final = {
     ),
     "superseded_by": ("A supersedes relation between two specification items",),
 }
+#: A DENYLIST, not a detector: outside the revision_id row it rejects these negation words,
+#: whole and in any case: "not carried", "not be carried", "drop", "drops", "dropped", "none",
+#: "no home", "lost", "unrepresented". Any other wording of a loss passes (#845).
 _NOT_CARRIED: Final = re.compile(
     r"\b(?:not (?:be )?carried|drop(?:s|ped)?|none|no home|lost|unrepresented)\b", re.IGNORECASE
 )
@@ -276,7 +283,7 @@ def test_every_field_table_row_names_a_home_on_the_specification_item() -> None:
         )
     assert {field for field, cell in rows.items() if _NOT_CARRIED.search(cell)} == {
         "revision_id"
-    }, "only the revision pin is owed rather than carried"
+    }, "a denylisted negation word left the `revision_id` row or entered another row"
     assert owed.startswith("[#275](")
     assert "whether an edge or relation carries the revision pin the fold will drop" in owed
     assert "item_id" in fields["KnowledgeItem"]
@@ -299,6 +306,23 @@ def test_a_commit_on_the_revision_or_anchor_does_not_stand_in_for_the_revision_p
     assert "source_commit" in {field.name for field in dataclasses.fields(KnowledgeRevision)}
     assert "commit_sha" in {field.name for field in dataclasses.fields(SourceAnchor)}
     assert [words for words in clause if words not in row] == []
+
+
+def test_the_locator_has_an_anchor_home_the_apply_path_already_populates() -> None:
+    upsert = _arms(_function(ENGINE, "_apply_operation"))["UpsertRevision"]
+    [applied] = [
+        call
+        for path, scope, call in _constructions("KnowledgeRevision")
+        if (path, scope) == (ENGINE, "_upsert_revision")
+    ]
+
+    assert {"source_uri", "file_path"} <= {field.name for field in dataclasses.fields(SourceAnchor)}
+    assert "source_anchors" in {field.name for field in dataclasses.fields(KnowledgeRevision)}
+    assert "_upsert_revision" in _callees(upsert)
+    assert _keywords(applied).get("source_anchors") == "metadata.source_anchors", (
+        "the apply path no longer passes the migration's anchors; ADR-0038's `which the "
+        "migration engine already populates on apply` moves with it"
+    )
 
 
 def test_spec_ids_and_item_ids_share_one_grammar_and_one_schema_type() -> None:
@@ -341,6 +365,8 @@ def test_an_item_takes_its_kind_from_each_revision_it_is_moved_to() -> None:
         created_at=MOMENT,
     )
     upsert = _arms(_function(ENGINE, "_apply_operation"))["UpsertRevision"]
+    # Key, engine half: only that _upsert_revision calls with_revision -- not that the result
+    # reaches put_item unmodified (#845 widens it).
 
     moved = item.with_revision(revision)
 
@@ -444,6 +470,8 @@ def test_the_relation_gate_withholds_a_missing_endpoint_and_reads_within_the_pro
         created_at=MOMENT,
     )
     read = _function(STORE, "get_item_exact_metadata")
+    # Key, project scope: _ITEM_METADATA_SQL's project_id scoping and the scoped argument
+    # tuple -- not that get_item_exact_metadata makes no other read (#845 widens it).
 
     def visible(store: _Endpoints) -> bool:
         return _relation_is_visible(
