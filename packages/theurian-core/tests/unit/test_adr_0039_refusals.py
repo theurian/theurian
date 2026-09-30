@@ -38,7 +38,10 @@ from theurian.application.okf_import import ImportedConcept, ImportRefusal, _map
 from theurian.cli.propose_commands import propose_app
 from theurian.domain.enums import (
     KnowledgeKind,
+    KnowledgeStatus,
     RelationType,
+    Sensitivity,
+    TrustLevel,
 )
 from theurian.domain.errors import (
     MigrationChecksumMismatchError,
@@ -236,6 +239,33 @@ def test_the_proposal_services_validator_refuses_at_the_loaders_seam() -> None:
         )
 
 
+def test_a_new_api_version_is_refused_by_name_where_an_unknown_operation_is_refused_as_one_of() -> (
+    None
+):
+    """Decision 3's *What it buys*: the clearer refusal the operation bump is kept for."""
+    unknown_op = _document()
+    unknown_op["operations"][0]["op"] = "addTrace"
+    new_version = _document()
+    new_version["apiVersion"] = "theurian.dev/v2"
+    branches = repr(_schema(MIGRATION_SCHEMA)["$defs"]["operation"]["oneOf"])
+
+    refusals = []
+    for document in (unknown_op, new_version):
+        with pytest.raises(MigrationError) as refused:
+            validate_migration_document(document, SCHEMAS)
+        refusals.append(str(refused.value))
+
+    assert refusals[0].startswith(
+        "invalid migration at operations/0: does not satisfy 'oneOf' (expected ["
+    )
+    assert f"({len(branches)} characters in all)" in refusals[0]
+    assert len(branches) == 524
+    assert refusals[1] == (
+        "invalid migration at apiVersion: does not satisfy 'const' (expected 'theurian.dev/v1'); "
+        "the value there is 'theurian.dev/v2'"
+    )
+
+
 def test_the_v1_gate_skips_an_unknown_op_for_the_validator_to_refuse() -> None:
     """Read from source, as the ADR's row is: the skip is the ``continue``."""
     gate = _function("application/proposal_service.py", "_refuse_operations_outside_the_v1_set")
@@ -385,11 +415,15 @@ def _revision_row() -> dict[str, object]:
     }
 
 
-#: Each decoder the ADR's store row names: (decode, a valid row, column, planted, enum).
+#: Each decoder the ADR's store row names, plus the three wire-enumerated columns decision
+#: 8 says ``_item_from_row`` decodes: (decode, a valid row, column, planted, enum).
 _DECODERS: Final[
     dict[str, tuple[Callable[[Any], object], Callable[[], dict[str, object]], str, str, type]]
 ] = {
     "item": (_item_from_row, _item_row, "kind", "requirement", KnowledgeKind),
+    "item-status": (_item_from_row, _item_row, "status", "archived", KnowledgeStatus),
+    "item-sensitivity": (_item_from_row, _item_row, "sensitivity", "secret", Sensitivity),
+    "item-trust-level": (_item_from_row, _item_row, "trust_level", "verified", TrustLevel),
     "revision": (
         lambda row: _revision_from_row(row, ()),
         _revision_row,

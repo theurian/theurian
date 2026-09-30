@@ -394,21 +394,43 @@ ADR_STATES: Final[dict[str, str]] = {
     "overlaps": """`review-generate-knowledge-candidate-input`'s `category`: `rejected-approach`
         and `known-exception`""",
     "overlaps-reviewer": "`review-findings-response`'s `reviewer`: `security`",
-    "hole": """*What the scan cannot report.* Each of these is classified by a person when it
-        appears, not passed silently.""",
-    "ref-hole": """A `$ref` spells a pointer, not a member: a schema that `$ref`s
+    "principle": """The schema-side residuals are today's reach, and #856 and #858 are filed to
+        widen it; the code-side completeness is an inherent static limit.""",
+    "hole": """*What the scan cannot report.* Its reach is exactly its three positions over the
+        files under `schemas/`. What lies outside that reach passes without turning anything
+        red, so nothing prompts a person to look.""",
+    "residuals-filed": """On the schema side it is today's reach, not a limit; the first four
+        have an issue filed to widen the scan to them:""",
+    "sdk-hole": """schemas served from outside `schemas/`: the `tools/list` input and output
+        schemas the MCP SDK derives from handler annotations, which spell no governed member
+        today (#856);""",
+    "literal-hole": """a member inside an instance-literal object — under `const`, `enum`,
+        `default` or `examples` — held under a key that is a keyword or a prose name, where the
+        scan still applies its keyword and prose exclusions (#858);""",
+    "ref-spelling-hole": """`$dynamicRef`, and a `$ref` spelled other than as `"$ref": "`, with
+        whitespace before the colon or an escaped key (#858).""",
+    "ref-hole": """A reference spells a pointer, not a member: a schema that `$ref`s
         `migration.schema.json#/$defs/kind` would close a value to `KnowledgeKind` with no member
         spelled in its own file.""",
     "ref-population": """prints 10 cross-file `$ref`s, to `tool-context`, `retrieval-result` and
-        `retrieval-metadata` — so the claims pin holds that population exact beside the
-        scan.""",
-    "pattern-hole": """A `pattern` that closes a value without spelling a member, a character
-        class for instance, is not an occurrence.""",
-    "default-hole": """A member embedded in a longer value that is not a pattern, such as a
-        `default` or `examples` entry spelled `"status:draft"`, is not an occurrence either""",
-    "superset-hole": """And a construct that carries a whole governed set plus other members
-        classifies as `overlap`, not `enumerated`; the scan still reports each member it spells,
-        and a person decides whether it publishes the set.""",
+        `retrieval-metadata` — and the claims pin holds the population of that canonical
+        spelling only, not every reference;""",
+    "format-hole": """a custom `format` value a client registers, which closes membership for
+        that client though JSON Schema 2020-12 treats it as an annotation (#858);""",
+    "pattern-hole": """a `pattern` that closes a value without spelling a member, a character
+        class for instance;""",
+    "default-hole": """a member embedded in a longer value that is not a pattern, such as a
+        `default` or `examples` entry spelled `"status:draft"`: exact spelling does not see it,
+        and widening the rule to substrings would bring back the noise it exists to avoid.""",
+    "unfiled": "The last two are stated residuals with no widening filed.",
+    "superset-hole": """A construct that carries a whole governed set plus other members is not
+        among these: the scan reports each member it spells, as `overlap`, and a person decides
+        whether it publishes the set.""",
+    "d9-reach": """The scan reports every new occurrence within its reach and a person
+        classifies it; what lies outside that reach is *Context*'s "What the scan cannot
+        report".""",
+    "compliance-ref": """a cross-file `$ref` in its canonical spelling added under
+        `schemas/`""",
     "items-by-status": """its counts come from `count_surfaceable_by_status`, which reads
         `SURFACEABLE_STATUSES` directly""",
     "items-by-status-measured": """Measured: that object schema refuses `{"superseded": 1}` and
@@ -475,8 +497,35 @@ ADR_STATES: Final[dict[str, str]] = {
     "due-849-853": """It and #853, the check at open that keeps an older Core from decoding a
         newer build's database row by row (*Context*, *The derived store*), are both due before
         the first `kind` or `relationType` member, whichever slice adds it.""",
-    "d3-cost": """Keeping the bump costs one permanently read `apiVersion` per added operation
-        and the multi-version read the first bump must build""",
+    "d3-ledger": """This decision holds the bump's whole ledger; every other place in this
+        record that mentions the bump defers to it.""",
+    "d3-buys": """*What it buys:* no safety, since an older Core refuses an unknown operation at
+        schema validation as it refuses an unknown `kind` (*Context*), but a clearer refusal.""",
+    "d3-measured": """Under v1 an unknown operation is refused as `invalid migration at
+        operations/0: does not satisfy 'oneOf'` over a 524-character list of branches, while a
+        document declaring the new version is refused as `invalid migration at apiVersion: does
+        not satisfy 'const' (expected 'theurian.dev/v1'); the value there is
+        'theurian.dev/v2'`, which names the version (measured by calling
+        `validate_migration_document`).""",
+    "d3-until-849": """That advantage holds until #849 is merged, and #849 is due before the
+        first `kind` or `relationType` member, not before the first operation; so decision 2's
+        argument, that a bump buys only a message #849 provides, does not reach operations.""",
+    "d3-cost": """*What it costs:* one permanently read `apiVersion` per added operation, and
+        building the multi-version read at the first bump. Dropping the bump would defer that
+        read, not save it: a decision-6 meaning bump would build it anyway.""",
+    "d3-kept": """*Why it is kept:* by deference to ADR-0005's rule and roadmap Phase C's
+        *Migration* row; weighing this ledger is left to a later slice (*Alternatives
+        considered*).""",
+    "code-limit": """Completeness is not achievable statically: Python has unboundedly many
+        ways to turn a string into a member — a dict of member accesses, a `match`, iteration
+        or `next` over the members, an attribute chain through a member such as
+        `member._value2member_map_`, annotation-driven conversion by the MCP SDK's pydantic
+        models — so the population is keyed, and forms outside the key are not claimed. The
+        MCP-annotation form is also #856's.""",
+    "d8-853": """A change that adds a `status`, `sensitivity` or `trustLevel` member also opens
+        the decode-before-gate bit #853's faces carry, since `_item_from_row` decodes all three
+        before any gate runs (`infrastructure/sqlite/store.py:1682`, `:1685`, `:1686`); so the
+        ADR for that set also answers #853, and #853 is due before that member too.""",
     "d6-routing": """A change whose effect reaches `status`, `sensitivity` or the withdrawal
         purge, or that moves which rows a gate reads — alias resolution (T-21), an item's
         `current_revision_id` and the served-content hash bound to it
@@ -526,3 +575,79 @@ def test_the_adr_still_states(name: str, fragment: str) -> None:
         f"GREEN, the tree did not move and the record is what gets restored; if it is RED, the "
         f"sentence moves with the tree."
     )
+
+
+#: Sentences review removed from ADR-0039 as false, held absent case-folded and collapsed,
+#: so neither a revert nor a re-wrap brings one back.
+ADR_NO_LONGER_STATES: Final = (
+    "classified by a person when it appears, not passed silently",
+    "carries nothing an older Core's refusal lacks",
+    "neither keeping nor dropping",
+)
+
+
+@pytest.mark.parametrize("sentence", ADR_NO_LONGER_STATES)
+def test_the_adr_no_longer_states(sentence: str) -> None:
+    assert collapsed(sentence).casefold() not in _adr().casefold()
+
+
+def _bullets(lines: list[str]) -> list[str]:
+    """The first bulleted list in ``lines``, each item's wrapped lines rejoined."""
+    items: list[list[str]] = []
+    for line in lines:
+        if line.startswith("- "):
+            items.append([line[2:]])
+        elif items and line.startswith("  "):
+            items[-1].append(line)
+        elif items:
+            break
+    return [collapsed(" ".join(item)) for item in items]
+
+
+def test_the_other_sites_naming_the_operation_bump_defer_to_decision_three_and_add_nothing() -> (
+    None
+):
+    """Decision 3 holds the bump's one ledger; a benefit or cost restated elsewhere drifts
+    from it, as the *Positive* claim that the bump carried nothing a refusal lacked did.
+
+    Held exact, so a sentence appended to either site goes RED too.
+    """
+    [positive] = [
+        item
+        for item in _bullets(_section("### Positive"))
+        if item.startswith("apiVersion moves only for grammar and for meaning.")
+    ]
+    [alternative] = [
+        row[1]
+        for row in _table(_section("## Alternatives considered"))
+        if collapsed(row[0]) == "Stop bumping apiVersion for operations too"
+    ]
+
+    assert positive == (
+        "apiVersion moves only for grammar and for meaning. For meaning it is the one signal a "
+        "reader of the document has (decision 6). For grammar it is kept per decision 3."
+    )
+    assert collapsed(alternative) == (
+        "Declined here, not refuted: the bump is kept per decision 3, which holds its ledger, "
+        "and weighing that ledger is left to a later slice. It stays the named option for that "
+        "slice."
+    )
+
+
+def _residuals() -> list[str]:
+    lines = _section("### What the wire carries")
+    [start] = [at for at, line in enumerate(lines) if line.startswith("*What the scan cannot")]
+    return _bullets(lines[start:])
+
+
+def test_the_scan_residuals_are_four_with_a_widening_filed_then_two_without() -> None:
+    """The fact half of ``residuals-filed`` and ``unfiled``."""
+    assert [re.findall(r"#\d+", item) for item in _residuals()] == [
+        ["#856"],
+        ["#858"],
+        ["#858"],
+        ["#858"],
+        [],
+        [],
+    ]
+
