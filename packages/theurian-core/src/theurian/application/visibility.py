@@ -175,8 +175,8 @@ class CanonicalVisibility:
         pre-gate body-materialization channel, fixed in 0.2.3). The per-candidate
         read is now ``get_item_metadata``, the pointer row alone: status,
         sensitivity and revision decide the gate from it, and the body is read —
-        through ``get_item``, once, memoised on ``self._served`` — only for a row
-        that has already cleared those axes and is going to be served. So the
+        through ``get_item_exact``, once, memoised on ``self._served`` — only for a
+        row that has already cleared those axes and is going to be served. So the
         *count* of per-candidate reads still moves with the withheld count (the
         T-17 residual below, unchanged), while its per-read *size* no longer does.
 
@@ -190,7 +190,7 @@ class CanonicalVisibility:
           item count* of ``ranked``, because :meth:`item` memoises on
           ``self._items`` for the life of the request. This is the number a
           canonical store can observe, so this is the number T-17 is about. (The
-          body-carrying ``get_item`` calls are the distinct *surfaceable* item
+          body-carrying ``get_item_exact`` calls are the distinct *surfaceable* item
           count, a subset, and carry no withheld row.)
 
         The two differ by chunking rather than marginally:

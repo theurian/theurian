@@ -6588,10 +6588,12 @@ the two together.
 pointer row alone — `_ITEM_METADATA_SQL` projects only `knowledge_items`' own
 columns, with no join to `knowledge_revisions` and so no `body` on the row. A
 withheld item is refused from that read and its body is never materialised. The
-body is read once, through `get_item`/`current_revision`, only after the item has
-cleared status, sensitivity and revision — content the caller may already see on
-every axis but content-identity — which is where the GHSA-3f65 served-content
-check still runs, unchanged, for a *surfaceable* row.
+body is read once, only after the item has cleared status, sensitivity and
+revision — content the caller may already see on every axis but content-identity
+— which is where the GHSA-3f65 served-content check still runs, unchanged, for a
+*surfaceable* row. `knowledge.get` reads it through `current_revision`,
+`CanonicalVisibility._served_item` through `get_item_exact`, and
+`_relation_is_visible` reads none.
 
 **Closure: structural first, measured second.** The durable, in-repo,
 re-runnable proof of size-independence is structural — by construction the refusal
