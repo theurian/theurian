@@ -1048,14 +1048,16 @@ into Phase 0's truth-making:
   >   what an operator substitutes is still a `CanonicalStore` adapter, so
   >   neither session opens a substitution point the register does not already
   >   cover.
-  > - **Reopened in [#832](https://github.com/theurian/theurian/issues/832):
-  >   that conclusion does not hold.** The SEC-13 gate path reads through
-  >   three session reads `CanonicalStore` does not offer, and an adapter
+  > - **Reopened in [#832](https://github.com/theurian/theurian/issues/832).**
+  >   The two gates that read through `CanonicalReadSession` do so through
+  >   three session reads `CanonicalStore` does not offer — search through the
+  >   injected `ResultGate` seam, the relation gate through a parameter that
+  >   shipped wiring always fills with the concrete store — and an adapter
   >   implementing only `CanonicalStore`'s methods is not a
-  >   `CanonicalReadSession`, so what an operator substitutes is more than a
-  >   `CanonicalStore` adapter. ADR-0003's `CanonicalReadSession` row now
-  >   records the standing as an open question, decided on
-  >   [#865](https://github.com/theurian/theurian/issues/865).
+  >   `CanonicalReadSession`. ADR-0003's `CanonicalReadSession` row now records
+  >   these facts and the standing as an open question; whether they make the
+  >   session a substitution point is
+  >   [#865](https://github.com/theurian/theurian/issues/865)'s question.
   >
   > Not settled here: whether `McpClientConfig` should *join* `ALL_PORTS`. That
   > is its own ADR-requiring decision. This block used to place it on #140,

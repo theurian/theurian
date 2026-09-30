@@ -431,16 +431,21 @@ class CanonicalReadSession(Protocol):
     ``__exit__`` add the handle lifetime it deliberately does not express. No
     :class:`CanonicalStore` method returns one.
 
-    The widening reads are the ones the gate uses: the SEC-13 gate path reads
-    through this Protocol with ``get_item_metadata``, ``get_item_exact``,
+    Over the two gates that use it, the SEC-13 gate path reads through this
+    Protocol with ``get_item_metadata``, ``get_item_exact``,
     ``get_item_exact_metadata`` and ``get_revision``, and the narrowed
-    ``get_item`` has no caller in ``src/``. The T-21 and T-26 contracts the gate
-    depends on are written only here, and an adapter implementing exactly
-    :class:`CanonicalStore`'s methods is not an instance of this
-    ``@runtime_checkable`` Protocol. So an operator substitutes more than a
-    :class:`CanonicalStore` adapter, and whether this joins the register is a
-    decision ADR-0003 point 5 records as open, filed as
-    `#865 <https://github.com/theurian/theurian/issues/865>`_.
+    ``get_item`` has no caller in ``src/``. ``ResultGate``'s ``store_factory``,
+    wired to ``SqliteCanonicalStore`` in ``mcp.search.hybrid_answer``, is the
+    gate path's one injected session seam; search reads ``get_item_metadata``,
+    ``get_item_exact`` and ``get_revision`` through it. ``_relation_is_visible``
+    is typed with this Protocol and reads ``get_item_exact_metadata``, but in
+    shipped wiring always receives the concrete ``SqliteCanonicalStore`` that
+    ``knowledge_get`` opens. The T-21 and T-26 read contracts the gates rely on
+    are declared here and not on :class:`CanonicalStore`, and an adapter
+    implementing exactly :class:`CanonicalStore`'s methods is not an instance of
+    this ``@runtime_checkable`` Protocol. Whether that makes this a substitution
+    point is `#865 <https://github.com/theurian/theurian/issues/865>`_'s
+    question, which ADR-0003 point 5 records as open.
 
     Injection is per consumer rather than one shared factory, and the two
     annotations differ: ``ResultGate`` (``application/retrieval_service.py``)
