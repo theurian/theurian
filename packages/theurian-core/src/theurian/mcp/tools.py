@@ -88,6 +88,7 @@ from theurian.domain.identifiers import (
 )
 from theurian.domain.knowledge import KnowledgeRelation, SourceAnchor
 from theurian.domain.ports.canonical_store import CanonicalReadSession
+from theurian.domain.ports.determinism import Clock
 from theurian.domain.proposal import Evidence
 from theurian.domain.state import ActiveState
 from theurian.domain.values import MediaType
@@ -1372,6 +1373,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
     registry: ProjectRegistry,
     grant: AuthorizationGrant,
     validate: MigrationDocumentValidator,
+    search_clock: Clock,
 ) -> MCPServer:
     """Register the read tools and the write-intent tools (ADR-0013, ADR-0032).
 
@@ -1387,6 +1389,9 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
     is an adapter's job (ADR-0003); the MCP composition root fills the same
     parameter ``cli/propose_commands.py`` does, so the generator and the
     accept-time rehearsal cannot come to hold two different validators.
+
+    ``search_clock`` supplies the instant ``knowledge.search`` computes
+    ``freshness`` against when its caller sends no ``asOf`` (ADR-0003).
     """
 
     # Derived from the registry rather than re-read from the environment, so the
@@ -2227,6 +2232,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                 budget_tokens=capped_budget,
                 use_dense=useDense,
                 as_of=as_of,
+                clock=search_clock,
                 provenance=provenance,
             )
             if isinstance(answer, Fallback):
@@ -2241,6 +2247,7 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
                     budget_tokens=capped_budget,
                     fallback=answer,
                     as_of=as_of,
+                    clock=search_clock,
                 )
         finally:
             search_admission.release(permit)

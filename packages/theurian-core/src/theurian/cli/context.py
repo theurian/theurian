@@ -8,6 +8,9 @@ rather than being scattered across command bodies.
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -24,6 +27,7 @@ from theurian.domain.errors import SchemaUnreadableError
 from theurian.domain.extras import DAEMON_REINSTALL
 from theurian.domain.identifiers import ProjectId
 from theurian.domain.migration import LoadedMigrations
+from theurian.domain.ports.determinism import Clock
 from theurian.domain.state import StateHash
 from theurian.infrastructure.determinism import SystemClock, UlidGenerator
 from theurian.infrastructure.filesystem.migration_loader import load_migrations
@@ -32,6 +36,24 @@ from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
 #: Timeout on every `git` invocation. An unbounded subprocess in a CLI that a
 #: hook may call is a hang the user cannot explain (SEC-19).
 GIT_TIMEOUT_SECONDS: Final = 5.0
+
+#: The clock an in-process caller composed into the commands it drives
+#: (ADR-0003), read by :func:`resolve_context`; unset, the wall clock. Not a
+#: flag, environment variable or config key: nothing a user sets may move it.
+#: Not Click's ``obj`` either: this factory is no command, so it would reach
+#: ``obj`` by importing ``click``, which this package does not declare
+#: (ADR-0014), or through a ``typer.Context`` on every command that resolves one.
+_COMPOSED_CLOCK: ContextVar[Clock | None] = ContextVar("theurian_cli_clock", default=None)
+
+
+@contextmanager
+def composed_clock(clock: Clock) -> Iterator[None]:
+    """Hand ``clock`` to every command context resolved inside this block."""
+    token = _COMPOSED_CLOCK.set(clock)
+    try:
+        yield
+    finally:
+        _COMPOSED_CLOCK.reset(token)
 
 
 def find_git_root(start: Path) -> Path | None:
@@ -170,7 +192,7 @@ class CommandContext:
     paths: ProjectPaths
     loaded: LoadedMigrations
     state_hash: StateHash
-    clock: SystemClock
+    clock: Clock
     ids: UlidGenerator
 
     @property
@@ -231,13 +253,14 @@ def resolve_context(
 
     paths = ProjectPaths.of(root)
     loaded = load_migrations(paths.root, paths.migrations, schema_root())
+    composed = _COMPOSED_CLOCK.get()
 
     return CommandContext(
         project_id=project_id or registry().id_for_root(root) or derive_project_id(root),
         paths=paths,
         loaded=loaded,
         state_hash=resolve_state_hash(loaded, SCHEMA_VERSION),
-        clock=SystemClock(),
+        clock=composed if composed is not None else SystemClock(),
         ids=UlidGenerator(),
     )
 

@@ -63,7 +63,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Final
 
@@ -91,6 +91,7 @@ from theurian.domain.context import RequestContext
 from theurian.domain.enums import KnowledgeStatus, Sensitivity, may_surface
 from theurian.domain.errors import TheurianError
 from theurian.domain.identifiers import ProjectId
+from theurian.domain.ports.determinism import Clock
 from theurian.domain.ranking import RetrievalMode, estimate_tokens, mode_of
 from theurian.domain.state import ActiveState
 from theurian.infrastructure.embedding import HashingEmbedding
@@ -587,6 +588,7 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
     budget_tokens: int,
     use_dense: bool,
     as_of: datetime | None,
+    clock: Clock,
     provenance: BuildProvenance,
 ) -> dict[str, Any] | Fallback:
     """Answer from the retrieval index, or say why it could not.
@@ -604,8 +606,8 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
     :meth:`~theurian.application.visibility.Visibility.at_moment` for why it
     is never folded into the check that loop's exit condition watches; and
     :func:`_shaper`, where it is the moment every returned hit's ``freshness``
-    is computed against -- ``datetime.now(UTC)`` when the caller pinned
-    nothing, exactly as before this parameter existed.
+    is computed against -- ``clock.now()`` when the caller pinned nothing,
+    ``clock`` being the one ``daemon/runner.build_server`` was composed with.
 
     ``visible_sensitivities`` is the deployment's grant (#119), and it reaches
     three places that are not the same check. :func:`_published_index` compares it
@@ -724,7 +726,7 @@ def hybrid_answer(  # noqa: PLR0913 - one keyword per published tool parameter
             )
             resolved = ResultGate(
                 store_factory=SqliteCanonicalStore,
-                shape=_shaper(as_of if as_of is not None else datetime.now(UTC)),
+                shape=_shaper(as_of if as_of is not None else clock.now()),
             ).admit(
                 ResultRequest(
                     database=database,
@@ -949,6 +951,7 @@ def substring_answer(  # noqa: PLR0913 - one keyword per published tool paramete
     budget_tokens: int,
     fallback: Fallback,
     as_of: datetime | None,
+    clock: Clock,
 ) -> dict[str, Any]:
     """Answer by scanning the canonical store, when no index can.
 
@@ -1002,6 +1005,7 @@ def substring_answer(  # noqa: PLR0913 - one keyword per published tool paramete
             include_unapproved=include_unapproved,
             visible_sensitivities=visible_sensitivities,
             as_of=as_of,
+            clock=clock,
         ),
         budget_tokens=budget_tokens,
         reserved_tokens=_envelope_tokens(project_id, query, provisional),
@@ -1028,6 +1032,7 @@ def _scan(  # noqa: PLR0913 - one keyword per published tool parameter, plus `da
     include_unapproved: bool,
     visible_sensitivities: frozenset[Sensitivity],
     as_of: datetime | None,
+    clock: Clock,
 ) -> list[dict[str, Any]]:
     """Every current revision whose title or body contains ``needle``.
 
@@ -1048,7 +1053,7 @@ def _scan(  # noqa: PLR0913 - one keyword per published tool parameter, plus `da
     (see ``CanonicalVisibility.at_moment``), it walks the whole corpus once
     whatever ``as_of`` excludes.
     """
-    now = as_of if as_of is not None else datetime.now(UTC)
+    now = as_of if as_of is not None else clock.now()
     context = RequestContext(project_id=ProjectId(project_id))
     matches: list[dict[str, Any]] = []
 
