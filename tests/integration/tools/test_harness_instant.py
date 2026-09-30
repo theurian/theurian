@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,6 +34,7 @@ import run as harness_run  # noqa: E402
 from theurian.application.project_service import ProjectPaths, read_active_state  # noqa: E402
 from theurian.domain.context import RequestContext  # noqa: E402
 from theurian.domain.identifiers import ProjectId  # noqa: E402
+from theurian.domain.ports.determinism import Clock  # noqa: E402
 from theurian.infrastructure.determinism import SystemClock  # noqa: E402
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore  # noqa: E402
 from theurian.security.yaml_loading import load_yaml_mapping  # noqa: E402
@@ -182,3 +183,35 @@ def test_the_harness_search_answers_on_the_clock_its_build_was_given() -> None:
         ((BUILT_AND_SEARCHED_AT - datetime.fromisoformat(each["revisionCreatedAt"])).days, True)
         for each in freshness
     ]
+
+
+def test_every_build_the_harness_makes_is_stamped_with_the_injected_instant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both pairs ``run.main`` builds, raptor and not, read through ``run.build_both``
+    as ``main`` calls it. Each pair's searches see its stamps only through
+    ``isWithinValidity``, true for a build at any instant up to the search's."""
+    stamped: dict[tuple[bool, str], set[datetime]] = {}
+    # `main`'s own binding; `run` does not re-export it to a type checker.
+    build_both: Callable[..., harness_build.BuildResult] = vars(harness_run)["build_both"]
+
+    def reading_the_stamps(
+        loaded: harness_corpus.Corpus, workspace: Path, *, clock: Clock, raptor: bool = False
+    ) -> harness_build.BuildResult:
+        built = build_both(loaded, workspace, clock=clock, raptor=raptor)
+        for name, project in built.projects.items():
+            stamped[raptor, name] = _stamped_valid_from(project)
+        return built
+
+    monkeypatch.setattr(harness_run, "build_both", reading_the_stamps)
+    with tempfile.TemporaryDirectory(prefix="theurian-eval-stamps-") as out:
+        code = harness_run.main(
+            ["--corpus", str(SMOKE_CORPUS), "--out", out], instant=BUILT_AND_SEARCHED_AT
+        )
+
+    assert code == 0
+    assert stamped == {
+        (raptor, name): {BUILT_AND_SEARCHED_AT}
+        for raptor in (False, True)
+        for name in harness_build.PLANES
+    }
