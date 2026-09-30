@@ -6,11 +6,13 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import collections
 import dataclasses
 import inspect
 import re
-from collections.abc import Mapping
+import textwrap
+from collections.abc import Callable, Mapping
 from typing import Final
 
 import pytest
@@ -29,6 +31,8 @@ from adr_0039_support import (
     _table,
     _trees,
 )
+from mcp.server import MCPServer
+from mcp.types import CallToolResult
 
 from theurian import __protocol_version__
 from theurian.application.project_service import resolve_state_hash
@@ -202,9 +206,10 @@ def test_the_pasted_commands_are_the_live_entry_point_population() -> None:
 def _held(references: list[Reference]) -> collections.Counter[tuple[str, str, str]]:
     """The entry-point tripwire: every reference by file, function and form, bar members.
 
-    A member access names a member statically and turns no external value into one,
-    so it is classified and not held; holding it would turn this pin RED on ordinary
-    code in any lane.
+    A member access is classified and not held, since holding it would turn this pin
+    RED on ordinary code in any lane. A lookup built from member accesses turns a
+    string into a member all the same, so the key is incomplete by construction:
+    ``test_the_forms_outside_the_key_turn_a_string_into_a_member_unheld``.
     """
     return collections.Counter(
         (path, scope, form) for path, scope, _, form, _ in references if form != "member"
@@ -212,8 +217,8 @@ def _held(references: list[Reference]) -> collections.Counter[tuple[str, str, st
 
 
 #: Every reference to an additive class under ``src/theurian`` but a member access, by
-#: form: held exact, so a new one of any form -- iteration, a comprehension,
-#: ``next(...)``, ``.parse`` -- goes RED for a person to classify.
+#: form: held exact, so a new one of any form -- iteration, a comprehension or
+#: ``next(...)`` over the class, ``.parse`` -- goes RED for a person to classify.
 REFERENCES: Final = {
     ("application/okf_import.py", "_resolve_kind", "construction"): 1,
     ("application/proposal_service.py", "_refuse_operations_outside_the_v1_set", "construction"): 1,
@@ -284,6 +289,75 @@ def test_each_form_of_reference_is_classified_and_annotations_are_not_references
         ("snippet.py", "forms", "unclassified"): 8,
         ("cli/snippet.py", "command", "option"): 1,
     }, "a member access is classified and not held; an iteration is held"
+
+
+def _by_dict(raw: str) -> object:
+    return {"domain": KnowledgeKind.DOMAIN, "decision": KnowledgeKind.DECISION}[raw]
+
+
+def _by_match(raw: str) -> object:
+    match raw:
+        case RelationType.IMPLEMENTS:
+            return RelationType.IMPLEMENTS
+    return None
+
+
+def _by_next(raw: str) -> object:
+    return next(m for m in (OperationKind.ADD_RELATION, OperationKind.ADD_ALIAS) if m == raw)
+
+
+def _by_value_map(raw: str) -> object:
+    return RelationType.IMPLEMENTS._value2member_map_[raw]  # type: ignore[attr-defined]
+
+
+def _by_class(raw: str) -> object:
+    return KnowledgeKind.DOMAIN.__class__(raw)
+
+
+def _by_type(raw: str) -> object:
+    return type(OperationKind.ADD_ALIAS)(raw)
+
+
+def _by_annotation(kind: KnowledgeKind) -> str:
+    return repr(kind)
+
+
+#: Each form round 3 of PR #852 reproduced outside the key, against (raw, member).
+_OUTSIDE: Final = {
+    _by_dict: ("domain", KnowledgeKind.DOMAIN),
+    _by_match: ("implements", RelationType.IMPLEMENTS),
+    _by_next: ("addAlias", OperationKind.ADD_ALIAS),
+    _by_value_map: ("implements", RelationType.IMPLEMENTS),
+    _by_class: ("domain", KnowledgeKind.DOMAIN),
+    _by_type: ("addRelation", OperationKind.ADD_RELATION),
+}
+
+
+def _parsed(function: Callable[..., object]) -> ast.Module:
+    return ast.parse(textwrap.dedent(inspect.getsource(function)))
+
+
+def test_the_forms_outside_the_key_turn_a_string_into_a_member_unheld() -> None:
+    """Each returned a member while every pin stayed GREEN (PR #852 round 3).
+
+    RED when the key is widened to hold one; the claims module's Reach and ADR-0039's
+    *Context* then move with it.
+    """
+    lookups = _references({f"mcp/{f.__name__}.py": _parsed(f) for f in _OUTSIDE})
+    server = MCPServer("outside-the-key")
+    server.tool()(_by_annotation)
+
+    converted = asyncio.run(server.call_tool("_by_annotation", {"kind": "domain"}))
+
+    assert [f(raw) is member for f, (raw, member) in _OUTSIDE.items()] == [True] * len(_OUTSIDE)
+    assert {path for path, *_ in lookups} == {f"mcp/{f.__name__}.py" for f in _OUTSIDE}
+    assert _held(lookups) == {}, "a member-built lookup is held: move the Reach with the key"
+    assert isinstance(converted, CallToolResult)
+    assert converted.structured_content == {"result": repr(KnowledgeKind.DOMAIN)}
+    assert _references({"mcp/handler.py": _parsed(_by_annotation)}) == []
+    assert [form for *_, form, _ in _references({"cli/handler.py": _parsed(_by_annotation)})] == [
+        "option"
+    ], "positive control: the same annotation under cli/ is held"
 
 
 def test_the_additive_classes_define_their_members_and_nothing_else() -> None:

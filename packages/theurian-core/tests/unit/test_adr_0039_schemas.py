@@ -251,6 +251,18 @@ SNIPPETS: Final = {
         {"type": "string", "examples": ["status:draft"]},
         [],
     ),
+    "the #858 hole: a member under a prose key of a const instance": (
+        {"const": {"title": "draft"}},
+        [],
+    ),
+    "the #858 hole: a member keyword as a key of a default instance": (
+        {"default": {"deprecated": True}},
+        [],
+    ),
+    "positive control: a member as a custom key of an enum instance": (
+        {"enum": [{"draft": 1}]},
+        [("custom-key", "#/enum/0", "draft")],
+    ),
 }
 
 
@@ -262,7 +274,11 @@ def test_the_scan_finds_each_spelling_the_detection_rule_names_and_nothing_else(
 
 
 def test_the_cross_file_ref_population_is_the_ten_the_adr_counts() -> None:
-    """The ``$ref`` hole, held beside the scan: a ``$ref`` spells a pointer, not a member."""
+    """The ``$ref`` hole, held beside the scan: a ``$ref`` spells a pointer, not a member.
+
+    Keyed on the canonical ``"$ref": "`` spelling only; ``$dynamicRef`` and any other
+    spelling are outside it (#858).
+    """
     by_id = {_schema(path)["$id"]: path.name for path in SCHEMAS.rglob("*.json")}
     refs = collections.Counter(
         (path.name, by_id[ref.split("#", 1)[0]])

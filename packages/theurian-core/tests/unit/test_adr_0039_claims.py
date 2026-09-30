@@ -38,11 +38,16 @@ The pin is six modules and a support module, split by section:
   ``_closed_value``, the type of an ``isinstance``, a member access, a CLI
   option, and anything else as *unclassified*. Every reference but a member
   access is held exact by file, function and form, so any new one goes RED for a
-  person. A member access is classified and not held: it names a member
-  statically and turns no external value into one. Outside the key: an aliased
-  import, a class reached through a variable or through reflection (``vars``,
-  ``globals``, ``importlib``), and
-  ``type(member)(raw)``; a method defined on a class is held apart, by
+  person. A member access is classified and not held. The population is keyed,
+  and its completeness is an inherent static limit (the ADR's *Context*).
+  Outside the key, each able to turn a string into a member: a lookup
+  built from member accesses (a dict, a ``match``, iteration or ``next`` over
+  members); an attribute chain through a member (``member._value2member_map_``,
+  ``member.__class__``, ``type(member)(raw)``); annotation-driven conversion
+  outside ``cli/`` (MCP handler parameters converted by pydantic, #856); an
+  aliased import; and a class reached through a variable or through reflection
+  (``vars``, ``globals``, ``importlib``). The first three are driven in
+  ``test_adr_0039_populations.py``. A method defined on a class is held apart, by
   asserting each class holds its members and nothing else. A table row
   *accounts for* a site when the site's token appears anywhere in the row's
   first two cells.
@@ -58,12 +63,17 @@ The pin is six modules and a support module, split by section:
   ``$id``, ``$ref``, ``$anchor`` and ``x-`` keys; and a member spelled as a
   whole word of a ``pattern`` or ``patternProperties`` key. Both populations
   are held exact, per class, file and pointer. The closing-construct key only
-  classifies. Outside the rule, as the ADR states: a ``$ref`` (its cross-file
-  population is held exact on its own), a pattern that closes without spelling
-  a member (the patterns that accept a member are held by file and pointer, each
-  required to accept a non-member identifier too), a
-  member embedded in a longer non-pattern value, and a superset construct's
-  meaning (it classifies as ``overlap``).
+  classifies. Outside the rule, passing with no RED, as the ADR's *What the scan
+  cannot report* lists: schemas served from outside ``schemas/``, the
+  SDK-derived ``tools/list`` schemas (#856); a member inside an instance-literal
+  object under a keyword or prose-name key (#858); ``$dynamicRef`` and a
+  ``$ref`` spelled other than ``"$ref": "`` (#858), the cross-file ``$ref``
+  population being held exact in that canonical spelling only; a custom
+  ``format`` (#858); a pattern that closes without spelling a member (the
+  patterns that accept a member are held by file and pointer, each required to
+  accept a non-member identifier too); and a member embedded in a longer
+  non-pattern value. A superset construct is reported, as ``overlap``; whether
+  it publishes the set is a person's call.
 - *The wire* is ``schemas/mcp/*.json`` plus every file a ``$ref`` reaches from
   them, an absolute ``$ref`` resolved by the ``$id`` it names.
 - *Published to a client* is a dict-literal key ``relationType`` or
@@ -651,3 +661,20 @@ def test_the_scan_residuals_are_four_with_a_widening_filed_then_two_without() ->
         [],
     ]
 
+
+#: A token of each residual *What the scan cannot report* lists, in its order.
+RESIDUALS: Final = (
+    "#856",
+    "instance-literal",
+    "$dynamicRef",
+    "custom format",
+    "without spelling a member",
+    "embedded in a longer",
+)
+
+
+def test_this_modules_reach_names_every_residual_the_adr_lists() -> None:
+    residuals = _residuals()
+
+    assert [token in item for token, item in zip(RESIDUALS, residuals, strict=True)] == [True] * 6
+    assert [token for token in RESIDUALS if token not in collapsed(__doc__ or "")] == []
