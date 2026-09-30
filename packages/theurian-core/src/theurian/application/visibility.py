@@ -95,11 +95,12 @@ class CanonicalVisibility:
     document contributes several chunks, and re-reading cannot change the answer
     inside a single session — so this costs one bodyless ``get_item_metadata``
     per distinct document per request however deep the retrievers are asked to
-    go. Recorded in ``21e1ba9`` and measured before 0.2.3, when that read was
-    the joined, body-carrying ``get_item``: 1.4 ms per hundred items, against
-    3.3 ms per hundred for the revision reads that used to happen on this path
-    for every candidate. That figure is not the current cost of the bodyless
-    read.
+    go. Recorded in ``21e1ba9``: 1.4 ms per hundred items, against 3.3 ms per
+    hundred for the revision reads that used to happen on this path for every
+    candidate. The 1.4 ms priced that commit's ``get_item``: the alias lookup
+    and the pointer row, with no join — the shape ``get_item_metadata`` reads
+    now. 0.1.0.dev13 (``39c529ad``) joined the current body into ``get_item``,
+    and 0.2.3 split the pointer read back out.
 
     That is the *canonical read* count, and :meth:`cleared` separates it from the
     number of times this class is asked — which is one per ranked row, and larger
@@ -235,10 +236,13 @@ class CanonicalVisibility:
         is the whole claim rather than a caveat on it: the line exists because
         the withdrawn rows are in the file the retriever ranked, and the
         withdrawal→purge trigger removes *this* term rather than reducing it. These
-        figures and the ``ec0dbcd`` ones below were taken before 0.2.3, when the
-        per-candidate read was body-carrying ``get_item``; 0.2.3 leaves the *shape*
-        (linear in the withheld document count) and shrinks each read to a bodyless
-        ``get_item_metadata``, so the magnitude here is an upper bound on the
+        figures were recorded in ``21e1ba9``, when the per-candidate ``get_item``
+        read the pointer row with no join — the shape ``get_item_metadata`` reads
+        now (corrected in #832: this paragraph used to date them to the joined
+        read). The ``ec0dbcd`` figures below were taken after 0.1.0.dev13 joined the
+        body into that read and before 0.2.3 split it back out: 0.2.3 leaves their
+        *shape* (linear in the withheld document count) and shrinks each read to a
+        bodyless ``get_item_metadata``, so their magnitude is an upper bound on the
         current per-read cost, not the current cost.
 
         **On a purged build there is no line left to be linear.** Re-measured
