@@ -511,13 +511,50 @@ def test_the_security_row_names_the_properties_of_the_relation_gate_an_equivalen
 
 # -- The per-candidate read on the search path: two records that still named get_item ----
 
-#: A sentence that names the session's `get_item` is history only if it dates the read.
-_DATED: Final = re.compile(r"\bbefore 0\.2\.3\b")
+#: The commit that joined `knowledge_revisions` into `get_item` (0.1.0.dev13), and
+#: the version that names it. Evidence, by `git show`: the count of
+#: `JOIN knowledge_revisions` in the store's `get_item` is 0 at `39c529ad^` and 1 at
+#: `39c529ad`. Not derived from git at test time, because CI checkouts may be
+#: shallow; the key's weak half is that this constant is hand-kept.
+_JOIN: Final = ("39c529ad", "0.1.0.dev13")
+
+#: The commits the records cite that precede `_JOIN`; `21e1ba9` recorded the 1.4 ms,
+#: 15 us, 6.047 ms, 0.09 s, 0.5 s and 0.163 ms figures, when `get_item` read
+#: `SELECT * FROM knowledge_items` with no join. Hand-kept too.
+_PRE_JOIN: Final = ("21e1ba9",)
+
+#: A commit or a version: what makes a sentence history.
+_DATE: Final = re.compile(r"\b(?=[0-9a-f]*\d)[0-9a-f]{7,40}\b|\b0\.\d+\.\d+(?:\.dev\d+)?\b")
+_CALLS_JOINED: Final = re.compile(r"\bjoined\b|\bbody-carrying\b")
+_CORRECTION: Final = re.compile(r"\(corrected in #\d+:[^)]*\)")
 
 
 def _undated_get_item(text: str) -> list[str]:
-    """The sentences of *text* that name the session's bare `get_item` without dating it."""
-    return [s for s in sentences(text) if "get_item" in _names(s) and not _DATED.search(s)]
+    """The sentences of *text* that name the bare `get_item` wrongly for their date.
+
+    A sentence naming `get_item` needs a commit or version in it, or, where it says
+    "that commit's", in the sentence before. A sentence that is dated to a commit in
+    `_PRE_JOIN` and does not itself name `_JOIN` must not call that read joined or
+    body-carrying; a "(corrected in #N: ...)" parenthetical is not read. Not seen: a
+    pre-join commit missing from `_PRE_JOIN`; a false clause in the correction
+    parenthetical; a date that belongs to another read in the same sentence; a
+    wrong claim about `get_item` that uses neither word.
+    """
+    found = sentences(text)
+    faults: list[str] = []
+    for i, sentence in enumerate(found):
+        if "get_item" not in _names(sentence):
+            continue
+        read = _CORRECTION.sub("", sentence)
+        window = " ".join(found[i - 1 : i + 1]) if "that commit" in read and i else read
+        pre_join_called_joined = (
+            any(commit in window for commit in _PRE_JOIN)
+            and not any(join in read for join in _JOIN)
+            and _CALLS_JOINED.search(read)
+        )
+        if not _DATE.search(window) or pre_join_called_joined:
+            faults.append(sentence)
+    return faults
 
 
 def _visibility_class_doc() -> str:
@@ -546,8 +583,9 @@ def test_a_record_names_the_bodyless_read_as_the_per_candidate_read_on_the_searc
     Both records kept saying `get_item` after 0.2.3 moved `CanonicalVisibility._lookup`
     to `get_item_metadata`, contradicting the T-21 Amended block. The sentence
     naming the per-candidate read must name exactly the search gate's derived read,
-    and `get_item` may appear only in a sentence that dates it before 0.2.3: the
-    class docstring's 1.4 ms figure is history and stays allowed. Not seen: a
+    and `get_item` may appear only as dated history that names the right read for
+    its date: the class docstring's 1.4 ms figure, recorded in `21e1ba9` before the
+    join, priced a joinless `get_item`. Not seen: a
     record that names no read, or names `get_item_metadata` and is wrong about how
     often it is paid.
     """
@@ -561,18 +599,57 @@ def test_a_record_names_the_bodyless_read_as_the_per_candidate_read_on_the_searc
 
 
 def test_the_undated_get_item_rule_reads_history_and_nothing_else() -> None:
-    """RED means the rule refuses the dated sentence it must allow, or passes one it must refuse."""
-    dated = (
+    """RED means the rule refuses right-read history or passes a sentence naming the wrong read."""
+    false_dating = (
         "Recorded in ``21e1ba9`` and measured before 0.2.3, when that read was the "
         "joined, body-carrying ``get_item``: 1.4 ms per hundred items."
     )
+    corrected = (
+        "Recorded in ``21e1ba9``: 1.4 ms per hundred items. The 1.4 ms priced that "
+        "commit's ``get_item``: the alias lookup and the pointer row, with no join. "
+        "0.1.0.dev13 (``39c529ad``) joined the current body into ``get_item``, and "
+        "0.2.3 split the pointer read back out."
+    )
+    reworded = (
+        "``21e1ba9`` recorded 1.4 ms per hundred items, priced on a joinless ``get_item``. "
+        "After ``39c529ad`` that read was joined and body-carrying ``get_item``."
+    )
     current = "So this costs one ``get_item`` per distinct document per request."
 
-    assert _undated_get_item(dated) == [], "control: the dated history sentence is allowed"
+    assert _undated_get_item(corrected) == [], "control: the corrected history is allowed"
+    assert _undated_get_item(reworded) == [], "control: a true rewording is allowed"
     assert _undated_get_item("It costs one bodyless ``get_item_metadata`` per document.") == [], (
         "control: `get_item_metadata` is not the bare `get_item`"
     )
-    assert _undated_get_item(current) == [current], "the pre-fix sentence is refused"
+    assert _undated_get_item(false_dating) == [false_dating], (
+        "the pre-join `joined` dating is refused"
+    )
+    assert _undated_get_item(current) == [current], "an undated current read is refused"
+
+
+def _cleared_doc() -> str:
+    owner = klass(tree(REPO_ROOT / VISIBILITY), "CanonicalVisibility")
+    return ast.get_docstring(methods(owner)["cleared"]) or ""
+
+
+def test_the_cleared_paragraph_dates_its_first_figures_to_the_commit_that_recorded_them() -> None:
+    """RED means T-17's first figures are dated to a read they never priced (#832, HIGH N-1).
+
+    The 15 us, 6.047 ms and 0.163 ms figures were recorded in `21e1ba9`, before
+    `39c529ad` joined the body into `get_item`; dating them "before 0.2.3, with the
+    body-carrying read" made the upper-bound claim rest on a read they never
+    priced. Not seen: a figure elsewhere in the paragraph, or a sentence that names
+    `21e1ba9` and is wrong in other words.
+    """
+    record = _cleared_doc()
+
+    sentence = sentence_containing(record, "These figures")
+
+    assert _PRE_JOIN[0] in sentence, (
+        f"the first figures are not dated to their commit: {sentence!r}"
+    )
+    assert not _CALLS_JOINED.search(_CORRECTION.sub("", sentence)), sentence
+    assert _undated_get_item(record) == [], "`cleared` names `get_item` wrongly for its date"
 
 
 # -- The cleared docstring's count, and the T-23 correction note -------------------

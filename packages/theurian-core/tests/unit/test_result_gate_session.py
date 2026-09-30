@@ -543,10 +543,10 @@ def test_the_canonical_read_count_is_the_ranking_length_and_so_the_withheld_coun
     the body is read only for a row that clears status, sensitivity and revision,
     through ``get_item_exact``, and never for one withheld on those axes (a row
     withheld on content identity, GHSA-3f65, is refused after its one body read).
-    The figures that follow — about 15 us per distinct
-    document, 6.047 ms with 400 documents retired after the build against 0.163 ms
-    with none — were taken before 0.2.3 with the body-carrying read, so they are an
-    upper bound on the current per-read cost; what reproduces and what this test
+    The figures that follow — about 15 us per distinct document, 6.047 ms with 400
+    documents retired after the build against 0.163 ms with none — were recorded in
+    ``21e1ba9``, before the join, when ``get_item`` read the pointer row alone, so
+    they price the read ``get_item_metadata`` makes now; what reproduces and what this test
     pins is the *count* being linear, one row at a time, with no threshold in it,
     **for as long as the ranking handed to ``cleared`` still carries the
     withdrawn rows.** That condition is the claim's scope rather than a caveat on
