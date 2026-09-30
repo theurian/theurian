@@ -1503,16 +1503,19 @@ ADR_STATES: Final[dict[str, str]] = {
         `--core-maximum-exclusive`, `--protocol-version` and `--json`""",
     "compat-protocol": """`CURRENT_PROTOCOL_VERSION = "theurian/v1"`
         (`domain/compatibility.py:125`). It reads no project, no migration and no enum.""",
-    "enumerates-key": """An `enum` enumerates a governed set when all of its non-null members
-        are members of that set.""",
-    "enumerates-found": """the program below finds four such enums and none of `kind`,
+    "enumerates-key": """A construct closes a value when it names the values an instance may
+        take: an `enum`, a `const`, or a `oneOf` or `anyOf` whose every branch is itself one of
+        those. A closing construct enumerates a governed set when every value it admits other
+        than null is a member of that set.""",
+    "enumerates-found": """the program below finds four such constructs and none of `kind`,
         `relationType` or the operation set""",
     "overlaps": """`review-generate-knowledge-candidate-input`'s `category` shares
         `rejected-approach` and `known-exception` with `KnowledgeKind`""",
     "overlaps-reviewer": "`review-findings-response`'s `reviewer` shares `security`",
-    "hole": """That is the key's hole: a future enum carrying a governed set plus other members
-        is not contained in the set, so the key does not count it, and it is to be classified
-        by a person when it appears rather than passed silently.""",
+    "hole": """The key has two holes, and each is classified by a person when it appears rather
+        than passed silently. A construct carrying a governed set plus other members is not
+        contained in the set, so the key does not count it. A `pattern` can close a value too —
+        an alternation of members would — and the key does not read patterns.""",
     "inputs": """type `kind` as a string (and the first types `trustLevel` and `sensitivity` as
         string or null), and `knowledge-generate-migration-draft-input` constrains no `op`.""",
     "record-kind": """`review-search-response`'s `records.items.kind`, `pull-request`,
