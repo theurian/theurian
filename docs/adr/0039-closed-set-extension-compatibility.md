@@ -155,35 +155,69 @@ reads no project, no migration and no enum.
 
 ### What the wire carries
 
-**The key for "enumerates".** A construct closes a value when it names the
-values an instance may take: an `enum`, a `const`, or a `oneOf` or `anyOf` whose
-every branch is itself one of those. A closing construct enumerates a governed
-set when every value it admits other than null is a member of that set. Over
-every schema under `schemas/` except the migration schema, which is the read
-grammar itself, the program below finds four such constructs and none of
-`kind`, `relationType` or the operation set:
-`schemas/knowledge/retrieval-result.schema.json`'s `status`, `trustLevel` and
-`sensitivity`, and `schemas/config/project-config.schema.json`'s
-`retrieval.includeStatuses`, which lists all six `status` members. Two enums
-share members with a governed set without being contained in one, so the key
-does not count them: `review-generate-knowledge-candidate-input`'s `category`
-shares `rejected-approach` and `known-exception` with `KnowledgeKind`
-(`domain/enums.py:69-70` against `:133-134`), and `review-findings-response`'s
-`reviewer` shares `security` (`domain/enums.py:64` against
-`domain/review_finding.py:65`). The key has two holes, and each is classified
-by a person when it appears rather than passed silently. A construct carrying a
-governed set plus other members is not contained in the set, so the key does
-not count it. A `pattern` can close a value too — an alternation of members
-would — and the key does not read patterns. Today no `pattern` names a governed
-member: the ones that accept one are open identifier grammars (`projectId`,
-`itemId`, `schemas/cli/version.schema.json`'s `platform`) that accept it as any
-other identifier. Among `const`, `default`, `examples` and `pattern` sites, the
-only governed value is `includeStatuses`' `default`, `["approved"]`, and a
-`default` closes nothing.
+**The closure is a universal scan, not a list of keywords.** Review found a
+keyword key narrower than the claim it held three times — `enum` alone, then
+`const` and `oneOf`/`anyOf`, then `properties` with `additionalProperties:
+false` — so detection no longer depends on knowing which construct can close a
+value.
+
+*Detection.* Every schema under `schemas/` is scanned, the migration schema as
+its own population. Every JSON object key is read, and every string value that
+is not under `description`, `title` or `$comment`. Each position's text is split
+into lowercase words at every character that is not a letter or a digit and at
+every camelCase boundary, and a governed member occurs there when its own words
+appear contiguously. So the key `approved` under `itemsByStatus` is an
+occurrence, and so are `api` in the property name `apiKeyEnv`, `domain` in the
+pattern `^(domain-behavior|…)$`, and `draft` in every `$schema` URL.
+
+*Tripwire.* That population is held exact. A new occurrence of any member, in
+any shape and at any position, is a change a person classifies before it is
+accepted.
+
+*Classification.* The keyword key survives only as the classifier. A closing
+construct is an `enum`, a `const`, or a `oneOf` or `anyOf` whose every branch
+is one of those, and it enumerates a governed set when every value it admits
+other than null is a member of that set. An object closes its property names
+through `additionalProperties: false` or through `propertyNames`. Each
+occurrence falls in exactly one class:
+
+| Class | The occurrence is | Outside the migration schema | Where |
+| :-- | :-- | --: | :-- |
+| enumerated | a value of a closing construct contained in one governed set | 17 | `retrieval-result.schema.json`'s `status` (3), `trustLevel` (4) and `sensitivity` (4); `project-config.schema.json`'s `retrieval.includeStatuses` (6) |
+| key-closure | a property name of an object that closes its property names to names contained in one governed set | 3 | `knowledge-status-response.schema.json`'s `itemsByStatus`: `approved`, `draft`, `proposed` |
+| overlap | a value of a closing construct contained in no governed set | 11 | `review-generate-knowledge-candidate-input`'s `category`, nine occurrences across eight of its eleven values (`architecture-rule`, `coding-convention`, `rejected-approach`, …; `domain/enums.py:69-70` against `:133-134` for the two whole values it shares); `review-findings-response`'s `reviewer`, `security` (`domain/enums.py:64` against `domain/review_finding.py:65`); `system-capabilities-response`'s `reviewIngestionScope` const `public-allowlisted`, `public` |
+| pattern | a `pattern` value or a `patternProperties` key | 2 | `project-config.schema.json`'s `traceabilityPolicy`, whose key pattern names a change-category vocabulary sharing `architecture` and the word `domain` with `KnowledgeKind` |
+| property-name | a property-name occurrence: a property name, or a `required` entry, in an object that does not close its names to a governed set | 6 | `project-config.schema.json`: `apiVersion` as a property and as a `required` entry, three `apiKeyEnv` (`api`), and `security` |
+| non-closing | a `default` or `examples` value | 1 | `includeStatuses`' `default`, `["approved"]` |
+| schema-keyword | a JSON Schema keyword used as a key | 1 | `knowledgeDirectory`'s `deprecated` annotation |
+| extension | the value of an `x-` annotation | 1 | `x-theurian-tool: knowledge.generateMigrationDraft` (`draft`) |
+| schema-identifier | a `$schema`, `$id` or `$ref` value | 23 | the 22 `$schema` URLs (draft 2020-12) and one `$id` that names a migration draft |
+| definition-name | a key under `$defs` or `definitions` | 0 | none; the migration schema's 14 are below |
+| unclassified | none of the above | 0 | — |
+
+The migration schema's own population is 102 occurrences: 60 enumerated, 14
+definition names (`opCreateItem` spells `createItem`, and so on), 11 property
+names (`dependsOn` spells `depends_on`, `supersededBy` spells `superseded_by`
+and `superseded`, `operations` and `apiVersion` spell members), 2 non-closing
+defaults (`unverified`, `internal`) and 15 schema identifiers.
+
+Outside the migration schema, only `enumerated` and `key-closure` close a
+published value or key set to a governed set, and neither holds a member of
+`kind`, `relationType` or the operation set. Decisions 8 and 9 rest on that.
+
+*What the scan cannot report.* A `$ref` spells a pointer, not a member: a schema
+that `$ref`s `migration.schema.json#/$defs/kind` would close a value to
+`KnowledgeKind` with no member spelled in its own file. No schema does that
+today — `git grep -n -E '"\$ref": *"[^#"]' -- schemas` prints 10 cross-file
+`$ref`s, to `tool-context`, `retrieval-result` and `retrieval-metadata` — so
+the claims pin holds that population exact beside the scan. And a `pattern`
+that closes a value without spelling a member, a character class for instance,
+is not an occurrence; it stays a stated residual.
 
 ```python
 # Run from the repository root with `uv run --frozen python`.
 import json
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -198,16 +232,36 @@ GOVERNED = (
     enums.TrustLevel,
     enums.SpecificationStatus,
 )
-SETS = {cls.__name__: {member.value for member in cls} for cls in GOVERNED}
-READ = Counter()
+SETS = [{member.value for member in cls} for cls in GOVERNED]
+PROSE = {"description", "title", "$comment"}
+WORD = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+")
 
 
-def construct(node):
-    return "enum" if "enum" in node else "const" if "const" in node else "oneOf/anyOf"
+def words(text):
+    return [word.lower() for word in WORD.findall(text)]
+
+
+SPELLINGS = {value: words(value) for members in SETS for value in members}
+
+
+def spelled(text):
+    """Every governed member whose words appear contiguously in `text`."""
+    found = words(text)
+    return [
+        value
+        for value, parts in SPELLINGS.items()
+        if any(found[i : i + len(parts)] == parts for i in range(len(found)))
+    ]
+
+
+def contained(values):
+    return bool(values) and any(values <= members for members in SETS)
 
 
 def closed(node):
     """The values a closing construct admits, as text, or None if it closes nothing."""
+    if not isinstance(node, dict):
+        return None
     if isinstance(node.get("enum"), list):
         raw = node["enum"]
     elif "const" in node:
@@ -216,54 +270,101 @@ def closed(node):
         branches = node.get("oneOf") or node.get("anyOf")
         if not isinstance(branches, list) or not branches:
             return None
-        parts = [closed(branch) if isinstance(branch, dict) else None for branch in branches]
+        parts = [closed(branch) for branch in branches]
         return None if None in parts else set().union(*parts)
     return {
         value if isinstance(value, str) else json.dumps(value) for value in raw if value is not None
     }
 
 
-def walk(node, path):
+def keys_closed(owner):
+    return (
+        owner.get("additionalProperties") is False or closed(owner.get("propertyNames")) is not None
+    )
+
+
+def classify_key(trail):
+    holder, under = trail[-1] if trail else (None, None)
+    if under == "properties":
+        names = set(holder["properties"])
+        return "key-closure" if keys_closed(holder) and contained(names) else "property-name"
+    if under == "patternProperties":
+        return "pattern"
+    if under in ("$defs", "definitions"):
+        return "definition-name"
+    return "schema-keyword"
+
+
+def classify_value(trail):
+    named = [(i, holder, key) for i, (holder, key) in enumerate(trail) if isinstance(key, str)]
+    i, holder, key = named[-1]
+    if key.startswith("x-"):
+        return "extension"
+    if key in ("enum", "const"):
+        construct = holder
+        if i >= 2 and trail[i - 2][1] in ("oneOf", "anyOf") and closed(trail[i - 2][0]) is not None:
+            construct = trail[i - 2][0]
+        under_names = any(outer == "propertyNames" for _, _, outer in named[:-1])
+        if contained(closed(construct)):
+            return "key-closure" if under_names else "enumerated"
+        return "overlap"
+    return {
+        "pattern": "pattern",
+        "default": "non-closing",
+        "examples": "non-closing",
+        "$schema": "schema-identifier",
+        "$id": "schema-identifier",
+        "$ref": "schema-identifier",
+        "required": "property-name",
+    }.get(key, "unclassified")
+
+
+def visit(node, trail):
     if isinstance(node, dict):
-        values = closed(node)
-        if values is not None:
-            READ[construct(node)] += 1
-            yield path, values
-            if construct(node) == "oneOf/anyOf":
-                return
         for key, value in node.items():
-            yield from walk(value, f"{path}/{key}")
+            yield "key", key, trail
+            if key not in PROSE:
+                yield from visit(value, [*trail, (node, key)])
     elif isinstance(node, list):
         for index, value in enumerate(node):
-            yield from walk(value, f"{path}/{index}")
+            yield from visit(value, [*trail, (node, index)])
+    elif isinstance(node, str):
+        yield "value", node, trail
 
 
+totals, where = {}, {}
 for schema in sorted(Path("schemas").rglob("*.json")):
-    if schema.name == "migration.schema.json":
-        continue
-    for path, values in walk(json.loads(schema.read_text()), "#"):
-        inside = [name for name, members in SETS.items() if values and values <= members]
-        shared = {
-            name: sorted(values & members) for name, members in SETS.items() if values & members
-        }
-        if inside:
-            print("enumerates", inside, schema, path)
-        elif shared:
-            print("overlaps", shared, schema, path)
-print("read", dict(sorted(READ.items())))
+    population = "migration" if schema.name == "migration.schema.json" else "published"
+    for position, text, trail in visit(json.loads(schema.read_text()), []):
+        for member in spelled(text):
+            kind = classify_key(trail) if position == "key" else classify_value(trail)
+            totals.setdefault(population, Counter())[kind] += 1
+            if population == "published":
+                name = "*" if kind == "schema-identifier" else schema.name
+                where.setdefault((kind, name), Counter())[member] += 1
+for (kind, name), members in sorted(where.items()):
+    print(kind, name, sum(members.values()), dict(sorted(members.items())))
+for population, counts in sorted(totals.items()):
+    print(population, sum(counts.values()), dict(sorted(counts.items())))
 ```
 
-It prints the following; the last line is the positive control that the walk
-reaches every kind of construct the key names.
+It prints:
 
 ```text
-enumerates ['KnowledgeStatus'] schemas/config/project-config.schema.json #/properties/retrieval/properties/includeStatuses/items
-enumerates ['KnowledgeStatus'] schemas/knowledge/retrieval-result.schema.json #/properties/status
-enumerates ['TrustLevel'] schemas/knowledge/retrieval-result.schema.json #/properties/trustLevel
-enumerates ['Sensitivity'] schemas/knowledge/retrieval-result.schema.json #/properties/sensitivity
-overlaps {'KnowledgeKind': ['security']} schemas/mcp/review-findings-response.schema.json #/properties/findings/items/properties/reviewer
-overlaps {'KnowledgeKind': ['known-exception', 'rejected-approach']} schemas/mcp/review-generate-knowledge-candidate-input.schema.json #/properties/category
-read {'const': 17, 'enum': 20, 'oneOf/anyOf': 2}
+enumerated project-config.schema.json 6 {'approved': 1, 'deprecated': 1, 'draft': 1, 'proposed': 1, 'rejected': 1, 'superseded': 1}
+enumerated retrieval-result.schema.json 11 {'approved': 1, 'authoritative': 1, 'confidential': 1, 'draft': 1, 'inferred': 1, 'internal': 1, 'proposed': 1, 'public': 1, 'restricted': 1, 'reviewed': 1, 'unverified': 1}
+extension knowledge-generate-migration-draft-input.schema.json 1 {'draft': 1}
+key-closure knowledge-status-response.schema.json 3 {'approved': 1, 'draft': 1, 'proposed': 1}
+non-closing project-config.schema.json 1 {'approved': 1}
+overlap review-findings-response.schema.json 1 {'security': 1}
+overlap review-generate-knowledge-candidate-input.schema.json 9 {'architecture': 1, 'convention': 1, 'domain': 1, 'incident': 1, 'known-exception': 1, 'rejected': 1, 'rejected-approach': 1, 'security': 1, 'testing': 1}
+overlap system-capabilities-response.schema.json 1 {'public': 1}
+pattern project-config.schema.json 2 {'architecture': 1, 'domain': 1}
+property-name project-config.schema.json 6 {'api': 5, 'security': 1}
+schema-identifier * 23 {'draft': 23}
+schema-keyword project-config.schema.json 1 {'deprecated': 1}
+migration 102 {'definition-name': 14, 'enumerated': 60, 'non-closing': 2, 'property-name': 11, 'schema-identifier': 15}
+published 65 {'enumerated': 17, 'extension': 1, 'key-closure': 3, 'non-closing': 1, 'overlap': 11, 'pattern': 2, 'property-name': 6, 'schema-identifier': 23, 'schema-keyword': 1}
 ```
 
 The MCP input schemas `knowledge-propose-change-input` and
@@ -272,8 +373,8 @@ first types `trustLevel` and `sensitivity` as string or null), and
 `knowledge-generate-migration-draft-input` constrains no `op`. The schemas do
 hold an enum on a property named `kind` — `review-search-response`'s
 `records.items.kind`, `pull-request`, `review-submission` and `review-thread`,
-the kind of a review record and not `KnowledgeKind` — which is the positive
-control that the walk reaches such a property.
+the kind of a review record and not `KnowledgeKind` — and none of its values
+spells a member, so the scan reports nothing there.
 
 Values still travel, un-enumerated, in two response fields, neither under a
 response schema: `knowledge.get` publishes each visible relation's
@@ -293,7 +394,15 @@ inputs above, and the one `.kind` published is the review record's
 types each result by `$ref` to `schemas/knowledge/retrieval-result.schema.json`,
 which enumerates `status` as the three surfaceable members (`approved`, `draft`,
 `proposed`), `trustLevel` (4) and `sensitivity` (4); `mcp/results.py:95-97`
-publishes all three on every result.
+publishes all three on every result. `status` is closed a second time, in a
+second tool: `knowledge-status-response.schema.json`'s `itemsByStatus` closes
+its property names to the same three through `properties` and
+`additionalProperties: false`, which is `knowledge.status`'s published T-17
+contract (the schema's own `itemCount` and `itemsByStatus` descriptions), and
+its counts come from `count_surfaceable_by_status`, which reads
+`SURFACEABLE_STATUSES` directly (`infrastructure/sqlite/store.py:752`, `:834`).
+Measured: that object schema refuses `{"superseded": 1}` and accepts
+`{"approved": 1}`.
 
 `plugins/` uses a member in two places and parses none: three operation names in
 the prose of `plugins/claude-code/commands/index.md:47-49`, and
@@ -349,19 +458,20 @@ change from one written after it.
    Core refuses either way. What it would buy is a better message, and that
    message is owed without one: today's refusal cannot be told from a typo
    (*Context*), and a refusal naming the file, the field path and the value, and
-   saying that a newer Core may define it, is the scope of #849, which is due
-   before #841 adds its `kind` member. That first member also waits on #853, the
+   saying that a newer Core may define it, is the scope of #849. It and #853, the
    check at open that keeps an older Core from decoding a newer build's database
-   row by row (*Context*, *The derived store*). This takes roadmap §4's
-   recommendation for the first two of its three clauses.
+   row by row (*Context*, *The derived store*), are both due before the first
+   `kind` or `relationType` member, whichever slice adds it. This takes roadmap
+   §4's recommendation for the first two of its three clauses.
 3. **Adding an operation keeps ADR-0005's rule: it bumps `apiVersion`.** The
    rule is kept by deference, not re-derived here. An older Core refuses an
    unknown operation at schema validation exactly as it refuses an unknown
-   `kind` (*Context*), so decision 2's argument reaches operations too; but
-   ADR-0005 states the bump as a standing rule, roadmap Phase C's *Migration*
-   row plans on it, and re-deciding a governed rule inside this ADR needs a
-   benefit that neither keeping nor dropping it offers (*Alternatives
-   considered*). The Core that bumps reads every earlier `apiVersion`
+   `kind` (*Context*), so decision 2's argument reaches operations too. Keeping
+   the bump costs one permanently read `apiVersion` per added operation and the
+   multi-version read the first bump must build; that saving is weighed in a
+   later slice, not here, because ADR-0005 states the rule and roadmap Phase C's
+   *Migration* row plans on it (*Alternatives considered*). The Core that bumps
+   reads every earlier `apiVersion`
    (decision 5), and every document Core authors declares the **lowest**
    `apiVersion` whose grammar admits the document and under which it carries the
    meaning Core wrote, so a document that uses no new operation and no changed
@@ -418,16 +528,28 @@ change from one written after it.
    (`packages/theurian-core/tests/unit/test_gate_call_sites.py`) — the index
    builder, the withdrawal purge and the OKF export among them — plus
    `knowledge.status`'s counts, and #275's trace once it exists. The recorded
-   argument is settled by measurement, not by reasoning: the committed corpus
-   replayed under the old engine and the new one, with identical tool
-   responses. A change whose effect reaches `status`, `sensitivity` or the
-   withdrawal purge does not take this path; it takes decision 8's ADR-first
-   route. And the bump invalidates cached state on the build path only: nothing
-   at open reads `engine_version` (*Context*, *The derived store*), and the
-   serve-path check is #853's. This is where this ADR meets ADR-0038's rejected
-   alternative (b), whose objection to an
-   engine-version bump was that it "does not tell a reader of the document which
-   meaning it carries". That objection is about documents that can still be
+   argument is settled by measurement, not by reasoning. This decision states
+   what the slice that invokes it must run; this pull request builds no
+   harness. It needs a named corpus that exercises every operation whose effect
+   changes, including planted inputs the old engine refused, and that holds a
+   withheld row; a positive control showing that the comparison tells the two
+   engines apart when one is perturbed; and a comparison of each migration's
+   apply outcome and of the OKF export bundle, as well as of tool responses. For
+   #841 that corpus has to be built: the dogfood corpus names neither retiring
+   operation (`git grep -c -E 'registerSpecification|supersedeSpecification' -- .theurian/migrations/`
+   prints nothing), the one committed document that does is the sample
+   project's `registerSpecification`, and no tool reads the `specifications`
+   table (ADR-0038, *Context*). A change whose effect reaches `status`,
+   `sensitivity` or the withdrawal purge, or that moves which rows a gate reads
+   — alias resolution (T-21), an item's `current_revision_id` and the
+   served-content hash bound to it (`current_served_content_sha256`,
+   GHSA-3f65), or relation rows — does not take this path; it takes decision
+   8's ADR-first route. And the bump invalidates cached state on the build path
+   only: nothing at open reads `engine_version` (*Context*, *The derived store*),
+   and the serve-path check is #853's. This is where this ADR meets ADR-0038's
+   rejected alternative (b), whose objection to an engine-version bump was that
+   it "does not tell a reader of the document which meaning it carries". That
+   objection is about documents that can still be
    written; for them this decision requires the `apiVersion` bump. It cannot
    apply to a frozen document, which carries the version it was written under
    and can carry no other, and the recorded argument is what establishes that
@@ -442,25 +564,36 @@ change from one written after it.
    refusal lists the valid values in is a contract.
 8. **Wire-enumerated sets are outside the additive class.** Decision 2's "no
    `protocolVersion` bump" rests on decision 9's ground, that no schema outside
-   the migration format enumerates the set; `retrieval-result.schema.json`
-   enumerates all three of these (*Context*), so a change to one can move a
-   published `enum`, and `protocolVersion` is a live question rather than a
-   formality. Any change to `status`, `sensitivity` or `trustLevel` is therefore
-   written as its own ADR, which decides its effect on `apiVersion`, on
-   `protocolVersion`, on the Core version and on the CHANGELOG. For the two gate-feeding sets, `status`
-   and `sensitivity`, that ADR is also written first, before implementation,
-   under roadmap §6 principle 3. `trustLevel` feeds no gate; the governance
-   ground in decision 1 is why its ADR still gets the same care. A change to
-   `status` also moves `project-config.schema.json`'s `retrieval.includeStatuses`,
-   which lists all six members; that is a published configuration schema, not
-   the wire, and the same ADR answers for it. The concrete case is roadmap §9
-   candidate 2, whose change to `SURFACEABLE_STATUSES` would move the
-   three-member `status` enum `retrieval-result.schema.json` publishes.
+   the migration format closes a value or a key set to the set (*Context*'s
+   scan). For these three it fails: `retrieval-result.schema.json` enumerates
+   all three, and `knowledge-status-response.schema.json`'s `itemsByStatus`
+   closes its property names to three `status` members, so a change to one can
+   move a published `enum` or key set, and `protocolVersion` is a live question
+   rather than a formality. Any change to `status`, `sensitivity` or
+   `trustLevel` is therefore written as its own ADR, which decides its effect on
+   `apiVersion`, on `protocolVersion`, on the Core version and on the
+   CHANGELOG. For the two gate-feeding sets, `status` and `sensitivity`, that
+   ADR is also written first, before implementation, under roadmap §6 principle
+   3. `trustLevel` feeds no gate; the governance ground in decision 1 is why its
+   ADR still gets the same care. A change to `status` moves, besides
+   `retrieval-result.schema.json`'s `status` enum: `itemsByStatus`, whose key
+   set is exactly `SURFACEABLE_STATUSES` and is `knowledge.status`'s published
+   T-17 contract, a second tool's; and `project-config.schema.json`'s
+   `retrieval.includeStatuses`, which lists all six members, a published
+   configuration schema rather than the wire. The same ADR answers for each. The
+   concrete case is roadmap §9 candidate 2, whose change to
+   `SURFACEABLE_STATUSES` would move the three-member `status` enum
+   `retrieval-result.schema.json` publishes and `itemsByStatus`'s key set.
 9. **No change to `kind`, `relationType` or the operation set bumps
-   `protocolVersion`**, because no schema outside the migration format
-   enumerates any of them under the key *Context* states, which reads `enum`,
-   `const`, and a `oneOf`/`anyOf` built from them, and leaves `pattern` as a
-   stated hole. A member a client does not know reaches it as
+   `protocolVersion`**, because *Context*'s scan finds no occurrence of their
+   members outside the migration format that closes a value or a key set to one
+   of them: the occurrences there are `KnowledgeKind` words in overlaps
+   (`category`, `reviewer`), in a pattern over another vocabulary
+   (`traceabilityPolicy`) and in property names (`apiVersion`, `apiKeyEnv`,
+   `security`), and no `relationType` or operation member occurs at all. The
+   scan reports every new occurrence and a person classifies it; a `$ref` into
+   the migration schema and a pattern that spells no member are its stated
+   residuals. A member a client does not know reaches it as
    an unrecognised string, in the two response fields that publish any of the
    three: a `relationType` in `knowledge.get`'s `relations`, and an operation
    name in `knowledge.generateMigrationDraft`'s `operations`. A later change that
@@ -488,7 +621,7 @@ and is marked `BREAKING` in the CHANGELOG.
 | **C4** Rename a member or an operation (decision 4) | As C1 for a member, as C2 for an operation; the old spelling stays readable | Unchanged (decision 9) | As C3: MINOR pre-1.0, MAJOR post-1.0 | `Added` for the new spelling and `Changed`, `BREAKING`, for the old | As C1 or C2 for the new spelling | Reads the old spelling | As C1 or C2 for the new spelling, as C3 for the old | As C1 for the new spelling |
 | **C5** Reorder members (decision 7) | Unchanged | Unchanged | No version event | None required; the diff is reviewed | No effect | No effect | No effect: values are strings, and the order a refusal lists them in is not a contract | No effect |
 | **C6** Change what a member or operation means (decision 6) | Bumped for documents under the new meaning, and Core writes such a document at the version that carries that meaning, never at an earlier one whose grammar also admits it (decision 3); earlier versions keep the earlier meaning. Where a Core must change what an earlier document does, `MIGRATION_ENGINE_VERSION` is bumped instead, only with a recorded argument, settled by replay, that no reader observes the difference | Unchanged (decision 9) | MINOR, pre- and post-1.0: no document changes meaning for any reader | `Changed`, naming the `apiVersion`, or the engine version, under which the new meaning applies | Refuses a document declaring the new version | Earlier meaning; under the engine-version path, a different effect no reader of the canonical state observes | No effect by itself | No effect: a bundle carries values, not a migration `apiVersion` |
-| **C7** Any of C1–C6 on `status`, `sensitivity` or `trustLevel` (decision 8) | Decided by the change's own ADR | Decided by that ADR: all three are enumerated on the wire | Decided by that ADR | Decided by that ADR | Decided by that ADR; until one exists, an unknown value is refused at schema validation like any other | Decided by that ADR | Decided by that ADR; today `_closed_value` refuses an unknown `trustLevel` or `sensitivity`, and `retrieval-result.schema.json` enumerates all three | Decided by that ADR |
+| **C7** Any of C1–C6 on `status`, `sensitivity` or `trustLevel` (decision 8) | Decided by the change's own ADR | Decided by that ADR: all three are enumerated on the wire | Decided by that ADR | Decided by that ADR | Decided by that ADR; until one exists, an unknown value is refused at schema validation like any other | Decided by that ADR | Decided by that ADR; today `_closed_value` refuses an unknown `trustLevel` or `sensitivity`, `retrieval-result.schema.json` enumerates all three, and `itemsByStatus` closes its keys to three `status` members | Decided by that ADR |
 | **C8** `SpecificationStatus`, which leaves with the entity (#841) | Unchanged by its removal (decision 4); `$defs/opRegisterSpecification/properties/status` stays in the v1 read grammar. No member is added: nothing new is built on the entity (ADR-0038 decision 3) | Unchanged: it appears on no wire schema | As C3, in #841's release | As C3, in #841's entry | Unaffected | Reads a v1 `registerSpecification` naming it; what that operation then does is decision 6's, in #841 | Not published | Not reached: the OKF export does not read the `specifications` table (ADR-0038, *Context*) |
 
 ## Consequences
@@ -511,7 +644,8 @@ and is marked `BREAKING` in the CHANGELOG.
   keeps fail-closed, and fail-closed with a message that names the operation
   index, reports `oneOf`, and can lose the value to truncation reads like a typo
   (*Context*). The additive class depends on #849 to be usable, which is why
-  #849 is due before the first member.
+  #849, with #853, is due before the first `kind` or `relationType` member,
+  whichever slice adds it.
 - **The read grammar only grows.** A removed operation keeps its `$defs` branch
   and its loader path for good, and a hand-written document can still name it:
   the schema cannot tell an old document from a new one, which is decision 4's
@@ -521,8 +655,9 @@ and is marked `BREAKING` in the CHANGELOG.
   admits the removed member. Of the writers decision 4 names, only the proposal
   service's operation gate has an explicit set today.
 - **Decision 6's engine-version path rests on a recorded replay, not a standing
-  check.** Each use records its own replay of the committed corpus; nothing
-  re-runs it afterwards, and nothing at open reads the engine version.
+  check.** Each use runs its own replay over a named corpus, with the positive
+  control decision 6 requires; nothing re-runs it afterwards, and nothing at
+  open reads the engine version.
 - **ADR-0037 is moved by decision 2, prospectively.** It states `RelationType`'s
   fourteen members in decision 4, the *Consequences*, the alternatives table and
   *Compliance*, and `packages/theurian-core/tests/unit/test_adr_0037_claims.py`
@@ -553,8 +688,8 @@ and is marked `BREAKING` in the CHANGELOG.
 | **A tolerant reader: an older Core admits an unknown member as opaque, or skips the operation** | Identical documents would produce different canonical states on different Cores, which FR-K4's replay and the state hash exist to rule out, and a skipped `addRelation` is a silently missing edge. Fail-closed is kept. |
 | **Removal as a version event: drop the member from a new `apiVersion`'s read grammar** | A frozen document cannot move to the new version (FR-K5), and a fresh clone replays it (FR-K4), so every Core must still read the old version and the member with it. Under decision 3 no writer would declare the new version, and one that always did would lock out older Cores that read the document fine (decision 4). |
 | **Make `theurian compat check` detect an enum mismatch** (roadmap §4's third clause) | It compares a plugin declaration with the running Core and reads no project. The mismatch is between a project's documents and a Core, and it already surfaces at every migration load; the form it surfaces in is #849's (decision 10). |
-| **Bump `protocolVersion` for a vocabulary or grammar change** | No schema outside the migration format closes a value to `kind`, `relationType` or the operation set under *Context*'s key, so no client validating against a published schema validates against their membership (decision 9); `pattern` is the key's stated hole. The wire-enumerated sets are left to their own ADRs (decision 8). |
-| **Stop bumping `apiVersion` for operations too** | An older Core refuses an unknown operation at schema validation exactly as it refuses an unknown `kind` (*Context*), so decision 2's argument reaches operations as well. Declined here, not refuted: ADR-0005 states the bump as a standing rule and roadmap Phase C's *Migration* row plans on it, and re-deciding a governed rule inside this ADR needs a benefit that neither keeping nor dropping it offers (decision 3). It stays the named option for a later slice. |
+| **Bump `protocolVersion` for a vocabulary or grammar change** | *Context*'s scan finds no schema outside the migration format that closes a value or a key set to `kind`, `relationType` or the operation set, so no client validating against a published schema validates against their membership (decision 9). The scan reports every new occurrence for a person to classify. The wire-enumerated sets are left to their own ADRs (decision 8). |
+| **Stop bumping `apiVersion` for operations too** | An older Core refuses an unknown operation at schema validation exactly as it refuses an unknown `kind` (*Context*), so decision 2's argument reaches operations as well. Dropping it would save one permanently read `apiVersion` per added operation and the multi-version read the first bump must build. Declined here, not refuted: that saving is weighed in a later slice, not here, because ADR-0005 states the rule and roadmap Phase C's *Migration* row plans on it (decision 3). It stays the named option for that slice. |
 
 ## Compliance
 
@@ -567,10 +702,10 @@ Landing with this pull request:
   pin.** It is owed both directions for each fact this record states about the
   codebase: a prose side that fails when this record drifts from what it says,
   and a fact side derived from live source that fails when the codebase moves
-  and this record must move with it — a closed set added to or removed from the
-  schema walk, a governed set published as a wire `enum`, a parameter added to
-  `resolve_compatibility`, a matrix row gained or lost. Its reach is stated in
-  its module docstring.
+  and this record must move with it — an occurrence of a governed member added
+  to or removed from either population of *Context*'s scan, a cross-file `$ref`
+  added under `schemas/`, a parameter added to `resolve_compatibility`, a matrix
+  row gained or lost. Its reach is stated in its module docstring.
 
 Rests on enforcement that already holds:
 
@@ -587,8 +722,9 @@ Rests on enforcement that already holds:
 
 Still owed, with the issue or slice that will satisfy it:
 
-1. **[#849](https://github.com/theurian/theurian/issues/849)**, due before
-   #841 adds its `kind` member: the loader's and `validate_migration_document`'s
+1. **[#849](https://github.com/theurian/theurian/issues/849)**, due before the
+   first `kind` or `relationType` member, whichever slice adds it: the loader's
+   and `validate_migration_document`'s
    refusal names the file, the field path and the unknown value, and says a
    newer Core may define it (decision 2). The value it names stays bounded by
    `MAX_ECHOED_VALUE` and escaped by `repr`, because an author, an agent or an
@@ -599,16 +735,27 @@ Still owed, with the issue or slice that will satisfy it:
    either the recorded argument decision 6 requires, with the
    `MIGRATION_ENGINE_VERSION` bump, or the operations' original effect kept.
 3. **[#853](https://github.com/theurian/theurian/issues/853), what an older
-   Core does with a state database a newer build wrote.** It is decided per
+   Core does with a state database a newer build wrote**, due before the first
+   `kind` or `relationType` member, whichever slice adds it. It is decided per
    database, at open, before any row is decoded. A per-row refusal of any
    wording carries a withheld-versus-absent bit: a withheld row naming a member
    the Core lacks is refused as an unreadable database before the gate runs,
-   where an absent id is answered as absent. Its two faces are the item decode
-   (`knowledge.get`'s `get_item_metadata`) and the relation decode
-   (`list_relations`), both ahead of the gate (*Context*). Its acceptance is a
-   two-corpora test: a withheld row carrying an unknown member against an absent
-   id, with identical responses. The serve-path engine check decision 6 names
-   is part of it.
+   where an absent id is answered as absent. Its faces are keyed on the gate
+   register decision 6 uses, `STATUS_GATE_CALL_SITES` and
+   `DISCLOSURE_GATE_CALL_SITES`: every gate site that decodes a row before it
+   judges it. Three are established. `knowledge.get`'s `get_item_metadata` and
+   `list_relations` decode ahead of its gate (*Context*), and a known-type edge
+   from a visible item to a withheld neighbour carrying an unknown member
+   raises through `_relation_is_visible` → `get_item_exact_metadata` →
+   `_item_from_row` (`mcp/tools.py:1191`), measured in PR #852's round-two
+   security review and recorded on the tracker. The write tools'
+   `current_revision` (`mcp/tools.py:1942`) and `CanonicalVisibility.item`
+   (`application/visibility.py:372`) decode before their gates too, read from
+   source. Its acceptance is a two-corpora test, a withheld row carrying an
+   unknown member against an absent id with identical responses, and a
+   visible-neighbour probe: a visible item whose edge points at such a withheld
+   row answers as it does when the neighbour is absent. The serve-path engine
+   check decision 6 names is part of it.
 4. **The slice that first bumps `apiVersion`** — Phase C's edge operation, if
    [#275](https://github.com/theurian/theurian/issues/275)'s representation
    needs one: the multi-version read (decision 5) in the schema, the loader and
@@ -616,4 +763,5 @@ Still owed, with the issue or slice that will satisfy it:
 5. **The slice that adds the first `relationType` member**: ADR-0037's
    amendment, for the four places it states the count.
 6. **Roadmap §9 candidate 2's ADR**: its effect on `protocolVersion`, since the
-   `status` enum it would move is published (decision 8).
+   `status` enum it would move and `itemsByStatus`'s key set are published
+   (decision 8).

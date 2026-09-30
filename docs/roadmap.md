@@ -616,10 +616,10 @@ and traversal depend on the type being closed.
   (an external node has no `itemId`), adding to the closed operation set is an
   `apiVersion` bump ([ADR-0005](adr/0005-yaml-knowledge-migrations.md)'s rule).
   Whether adding a `kind` or `RelationType` value is breaking or additive was
-  **not stated anywhere in the current policy** until ADR-0039 — settle it in
-  **ADR candidate #3**. Recommendation: specify the current behaviour (a
-  migration containing a value an older Core cannot read is refused), treat the
-  addition as minor, and make `compat check` detect it.
+  **not stated anywhere** until ADR-0039 (**ADR candidate #3**). Recommendation:
+  specify the current behaviour (a migration containing a value an older Core
+  cannot read is refused), treat the addition as minor, and make `compat check`
+  detect it.
   **Recorded: [ADR-0039](adr/0039-closed-set-extension-compatibility.md)**, which
   takes the first two clauses and declines the third, since `compat check`
   reads no project.

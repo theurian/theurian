@@ -43,13 +43,14 @@ at `855ebd87`.** Source paths are relative to
 > - **Decision 4's precondition is met**: #274's policy is accepted, as ADR-0039.
 > - **Decision 5 and rejected alternative (b) are narrowed by ADR-0039 decision
 >   6.** A frozen v1 document's effect may change only under that decision's
->   engine-version path: a `MIGRATION_ENGINE_VERSION` bump with a recorded replay
->   of the committed corpus showing identical tool responses, never for an effect
->   that reaches `status`, `sensitivity` or the withdrawal purge. Every other
->   change of meaning takes a new `apiVersion`, as decision 5 says.
+>   engine-version path: a `MIGRATION_ENGINE_VERSION` bump with the recorded
+>   replay that decision requires, and never for an effect that reaches
+>   `status`, `sensitivity` or the withdrawal purge, or that moves which rows a
+>   gate reads. Every other change of meaning takes a new `apiVersion`, as
+>   decision 5 says.
 > - ***Compliance*, Still owed item 1, is discharged** by ADR-0039.
-> - ***Compliance*, Still owed item 2, is narrowed** by ADR-0039 decision 4, in
->   three places. Its "remove `registerSpecification` and
+> - ***Compliance*, Still owed item 2, is narrowed** by ADR-0039 decisions 4 and
+>   6, in five places. Its "remove `registerSpecification` and
 >   `supersedeSpecification` from `OperationKind`, the migration schema, the
 >   loader and `V1_OPERATION_KINDS`" becomes: remove them from Core's writers —
 >   `V1_OPERATION_KINDS` and the propose paths; `OperationKind`, the migration
@@ -61,7 +62,14 @@ at `855ebd87`.** Source paths are relative to
 >   `domain/migration.py:272-287`), by these types or by a re-typed parse, which
 >   is #841's choice. Its "amend ADR-0005's operation list" becomes: record the
 >   two operations as outside Core's writers; ADR-0005's list stays the permanent
->   v1 read grammar.
+>   v1 read grammar. Its "move every committed document and fixture that names
+>   either operation …, the sample project's migration among them" becomes:
+>   committed documents that name either operation stay as written, since they
+>   are frozen history (ADR-0039 decision 4), and fixtures that exercise the v1
+>   read of both operations are kept. And its removal of the `specifications`
+>   table is conditional on ADR-0039 decision 6's engine-version path: without
+>   that path's recorded replay, the operations keep their original effect and
+>   the table they write stays.
 
 ## Context
 
