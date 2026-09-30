@@ -43,14 +43,14 @@ The pin is six modules and a support module, split by section:
   Outside the key, each able to turn a string into a member: a lookup
   built from member accesses (a dict, a ``match``, iteration or ``next`` over
   members); an attribute chain through a member (``member._value2member_map_``,
-  ``member.__class__``, ``type(member)(raw)``); annotation-driven conversion
-  outside ``cli/`` (MCP handler parameters converted by pydantic, #856); an
-  aliased import; and a class reached through a variable or through reflection
-  (``vars``, ``globals``, ``importlib``). The first three are driven in
-  ``test_adr_0039_populations.py``. A method defined on a class is held apart, by
-  asserting each class holds its members and nothing else. A table row
-  *accounts for* a site when the site's token appears anywhere in the row's
-  first two cells.
+  ``member.__class__``); a call of a member's type (``type(member)(raw)``);
+  annotation-driven conversion outside ``cli/`` (MCP handler parameters
+  converted by pydantic, #856); an aliased import; and a class reached through a
+  variable or through reflection (``vars``, ``globals``, ``importlib``). The
+  first four are driven in ``test_adr_0039_populations.py``. A method defined on
+  a class is held apart, by asserting each class holds its members and nothing
+  else. A table row *accounts for* a site when the site's token appears
+  anywhere in the row's first two cells.
 - *What ``compat check`` reads* is every name ``compat_check`` and
   ``domain/compatibility.py`` spell or import; a read through another module's
   function is outside it.
@@ -58,18 +58,19 @@ The pin is six modules and a support module, split by section:
   over every key and string value of every schema under ``schemas/``, not
   over a list of constructs (``adr_0039_support.occurrences``): an object key
   spelling a member, unless it is a 2020-12 keyword (read from the
-  specification's metaschemas) in keyword position; a string value spelling a
-  member, outside ``description``, ``title``, ``$comment``, ``$schema``,
-  ``$id``, ``$ref``, ``$anchor`` and ``x-`` keys; and a member spelled as a
-  whole word of a ``pattern`` or ``patternProperties`` key. Both populations
+  specification's metaschemas) not directly under a name-bearing keyword, inside
+  an instance literal too; a string value spelling a member, outside
+  ``description``, ``title``, ``$comment``, ``$schema``, ``$id``, ``$ref``,
+  ``$anchor`` and ``x-`` keys; and a member spelled as a whole word of a
+  ``pattern`` or ``patternProperties`` key. Both populations
   are held exact, per class, file and pointer. The closing-construct key only
   classifies. Outside the rule, passing with no RED, as the ADR's *What the scan
   cannot report* lists: schemas served from outside ``schemas/``, the
   SDK-derived ``tools/list`` schemas (#856); a member inside an instance-literal
-  object under a keyword or prose-name key (#858); ``$dynamicRef`` and a
-  ``$ref`` spelled other than ``"$ref": "`` (#858), the cross-file ``$ref``
-  population being held exact in that canonical spelling only; a custom
-  ``format`` (#858); a pattern that closes without spelling a member (the
+  object spelled as a keyword key, or held under a prose, identifier or ``x-``
+  key (#858); ``$dynamicRef`` and a ``$ref`` spelled other than ``"$ref": "``
+  (#858), the cross-file ``$ref`` population being held exact in that canonical
+  spelling only; a custom ``format`` (#858); a pattern that closes without spelling a member (the
   patterns that accept a member are held by file and pointer, each required to
   accept a non-member identifier too); and a member embedded in a longer
   non-pattern value. A superset construct is reported, as ``overlap``; whether
@@ -90,6 +91,10 @@ The pin is six modules and a support module, split by section:
 - *A store method decodes* the ``*_from_row`` functions its body names,
   following ``self.<method>(...)`` within ``SqliteCanonicalStore``; *before the
   gate* is source position within ``knowledge_get``, not a line number.
+- *Gated in SQL first*, in ``test_adr_0039_refusals.py``: ``_scan``'s assignment
+  of the name it passes as ``list_items_by_status``'s ``statuses`` spells
+  ``may_surface`` and precedes that call by source position; the store's filter
+  is held by behaviour, one planted row per status on a real database.
 - *A statement* is a string literal holding an upper-case ``SELECT ... FROM`` or
   ``INSERT INTO``; SQL assembled at run time is outside it.
 - *An example advertising a member* is an ``e.g.`` list naming a
