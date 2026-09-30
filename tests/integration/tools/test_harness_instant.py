@@ -113,15 +113,17 @@ def test_the_two_instants_put_every_fixture_revision_either_side_of_ten_days() -
 def test_the_report_is_a_function_of_the_injected_instant_not_of_system_clock() -> None:
     """RED three ways: the two runs at one instant differ, so a seam reads
     ``SystemClock`` or the run is not deterministic; the runs either side of ten
-    days agree, so the instant no longer reaches the searches; or they differ
-    beyond ``usedTokens``, so the instant reaches something else."""
+    days agree in the base arm or under ``raptor``, so the instant no longer
+    reaches that arm's searches; or they differ beyond ``usedTokens``, so the
+    instant reaches something else."""
     first = _report(UNDER_TEN_DAYS, SYSTEM_CLOCK_BEFORE)
     crossed = _report(TEN_DAYS, SYSTEM_CLOCK_BEFORE)
     again = _report(UNDER_TEN_DAYS, SYSTEM_CLOCK_AFTER)
 
     assert again == first
     differences = list(_differences(json.loads(first), json.loads(crossed)))
-    assert differences, "the injected instant no longer reaches report.json"
+    arms = {"raptor" if path[0] == "raptor" else "base" for path, _, _ in differences}
+    assert arms == {"base", "raptor"}, f"the injected instant moves only {sorted(arms)}"
     assert [path for path, _, _ in differences if not _is_a_differing_fields_list(path)] == []
     assert all(
         set(before) ^ set(after) == {"retrieval.usedTokens"} for _, before, after in differences
