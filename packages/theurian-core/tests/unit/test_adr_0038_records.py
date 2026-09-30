@@ -189,8 +189,10 @@ def _outside_amendments(text: str) -> tuple[str, list[str]]:
 def test_adr_0005_closes_the_set_over_both_operations_and_governs_only_adding_one() -> None:
     """Reach: ADR-0005 outside ADR-0039's amendment run, since that run governs removal.
 
-    Removal is keyed by the stems in :data:`_REMOVAL`; a synonym outside them is
-    outside the key. Every other amendment run is held to name no removal either,
+    Removal is keyed by the stems in :data:`_REMOVAL` -- remov, retir, delet, drop,
+    withdr, eliminat, discontinu, retract, abolish, prun, struck and strik, case
+    folded; a synonym outside them is outside the key. Every other amendment run is
+    held to name no removal either,
     so a later amendment stating a removal rule goes RED for a person.
 
     ADR-0038's *Negative* sentence that ADR-0005 "says nothing of removing one" is

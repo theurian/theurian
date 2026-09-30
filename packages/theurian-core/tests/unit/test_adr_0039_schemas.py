@@ -297,13 +297,14 @@ def test_items_by_status_closes_its_keys_to_the_surfaceable_statuses() -> None:
 
 
 def test_the_patterns_that_accept_a_governed_member_are_open_identifier_grammars() -> None:
-    """The unspelled-pattern hole's tripwire, keyed by file, pointer and pattern.
+    """The unspelled-pattern hole's tripwire, keyed by file and pointer.
 
     A pattern that closes a value without spelling a member is not an occurrence,
-    so every pattern that *accepts* a governed member is held here instead, text
-    and all: a new one, or an accepting one rewritten, goes RED for a person.
+    so every pattern that *accepts* a governed member is held here instead: a new
+    one goes RED for a person. Each is also held *open*, accepting an identifier no
+    governed set holds, so one closed to members goes RED while one re-anchored or
+    bounded but still open stays GREEN.
     """
-    identifier = "^[a-z0-9]+(?:-[a-z0-9]+)*"
     accepting = {
         (path.relative_to(REPO_ROOT).as_posix(), pointer): node["pattern"]
         for path in sorted(SCHEMAS.rglob("*.json"))
@@ -312,20 +313,28 @@ def test_the_patterns_that_accept_a_governed_member_are_open_identifier_grammars
         if any(re.search(node["pattern"], member) for member in MEMBERS)
     }
 
-    assert accepting == {
-        ("schemas/cli/version.schema.json", "#/properties/platform"): "^[a-z]+-[A-Za-z0-9_]+$",
-        (_CONFIG, "#/properties/projectId"): f"{identifier}$",
-        (_RESULT, "#/properties/itemId"): f"{identifier}(?:\\.[a-z0-9]+(?:-[a-z0-9]+)*)*$",
-        ("schemas/mcp/knowledge-search-response.schema.json", "#/properties/projectId"): (
-            f"{identifier}$"
-        ),
-        (_STATUS, "#/properties/projectId"): f"{identifier}$",
+    assert set(_OPEN_PROBES).isdisjoint(MEMBERS)
+    assert set(accepting) == {
+        ("schemas/cli/version.schema.json", "#/properties/platform"),
+        (_CONFIG, "#/properties/projectId"),
+        (_RESULT, "#/properties/itemId"),
+        ("schemas/mcp/knowledge-search-response.schema.json", "#/properties/projectId"),
+        (_STATUS, "#/properties/projectId"),
         (
             "schemas/mcp/project-list-response.schema.json",
             "#/properties/projects/items/properties/projectId",
-        ): f"{identifier}$",
-        ("schemas/mcp/tool-context.schema.json", "#/properties/projectId"): f"{identifier}$",
+        ),
+        ("schemas/mcp/tool-context.schema.json", "#/properties/projectId"),
     }
+    assert [
+        site
+        for site, pattern in accepting.items()
+        if not any(re.search(pattern, probe) for probe in _OPEN_PROBES)
+    ] == [], "a pattern that accepts a governed member accepts no other identifier"
+
+
+#: Identifiers no governed set holds; an open identifier grammar accepts one of them.
+_OPEN_PROBES: Final = ("zz-not-a-member", "zz-notamember", "zz")
 
 
 def _pattern_nodes(node: object, pointer: str = "#") -> list[tuple[str, dict[str, Any]]]:

@@ -39,8 +39,9 @@ The pin is six modules and a support module, split by section:
   option, and anything else as *unclassified*. Every reference but a member
   access is held exact by file, function and form, so any new one goes RED for a
   person. A member access is classified and not held: it names a member
-  statically and turns no external value into one. Outside the key: an aliased import, a class reached through a
-  variable or through reflection (``vars``, ``globals``, ``importlib``), and
+  statically and turns no external value into one. Outside the key: an aliased
+  import, a class reached through a variable or through reflection (``vars``,
+  ``globals``, ``importlib``), and
   ``type(member)(raw)``; a method defined on a class is held apart, by
   asserting each class holds its members and nothing else. A table row
   *accounts for* a site when the site's token appears anywhere in the row's
@@ -59,8 +60,8 @@ The pin is six modules and a support module, split by section:
   are held exact, per class, file and pointer. The closing-construct key only
   classifies. Outside the rule, as the ADR states: a ``$ref`` (its cross-file
   population is held exact on its own), a pattern that closes without spelling
-  a member (the patterns that accept a member are held by file, pointer and
-  text), a
+  a member (the patterns that accept a member are held by file and pointer, each
+  required to accept a non-member identifier too), a
   member embedded in a longer non-pattern value, and a superset construct's
   meaning (it classifies as ``overlap``).
 - *The wire* is ``schemas/mcp/*.json`` plus every file a ``$ref`` reaches from
