@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 from fakes import CannedReviewProvider, FakeReviewFindingSource
+from record_sentences import not_found, sentence_with
 from write_lock_claims import REPO_ROOT, collapsed
 
 from theurian.application.index_builder import IndexBuilder
@@ -99,10 +100,11 @@ ADR_0003 = REPO_ROOT / "docs" / "adr" / "0003-ports-and-adapters.md"
 #: what stops the set being widened to whatever the walk happens to find.
 EXPECTED_OUTSIDE_THE_REGISTER = frozenset(
     {
-        # A narrowing of `CanonicalStore` with an explicit handle lifetime.
-        # Injected as a `store_factory: Callable[[Path], CanonicalReadSession]`,
-        # so what an operator substitutes is still a `CanonicalStore` adapter and
-        # no boundary opens that `ALL_PORTS` does not already govern.
+        # An open question rather than a settled standing (#865). It narrows
+        # three of `CanonicalStore`'s reads and widens it by three more, so an
+        # adapter of exactly the port is not one, and it is injected as a
+        # `store_factory: Callable[[Path], CanonicalReadSession]`. Whether it
+        # *joins* the register is an ADR decision (#865).
         "CanonicalReadSession",
         # A widening of `CanonicalReadSession` by `list_relations`, for SEC-11's
         # build-time scan of a relation's `note` (#329). Same standing as the
@@ -610,9 +612,9 @@ def test_the_records_name_the_class_that_actually_takes_the_session_factory() ->
         rf"\b{_BUILDER_SESSION}\b", gate
     ), (
         f"`ResultGate` is handed `{gate}`, and the records say it takes a "
-        f"`{_GATE_SESSION}`. That is the row's whole reason for placing "
-        f"`{_GATE_SESSION}` outside the register: the SEC-13 gate substitutes a "
-        f"`CanonicalStore` adapter, not a second boundary."
+        f"`{_GATE_SESSION}`. That is the records' 'injection is per consumer, not "
+        f"shared': the SEC-13 gate takes the session and the index builder takes its "
+        f"widening."
     )
     assert re.search(rf"\b{_BUILDER_SESSION}\b", builder) and not re.search(
         rf"\b{_GATE_SESSION}\b", builder
@@ -652,21 +654,56 @@ def _declared_members(class_name: str) -> frozenset[str]:
     )
 
 
-def _sentence_with(text: str, word: str) -> str:
-    """The first sentence of *text* (whitespace-collapsed, case kept) holding *word*."""
-    flat = re.sub(r"\s+", " ", re.sub(r"(?m)^[ \t]*>[ \t]?", "", text))
-    found = [s for s in re.split(r"(?<=\.)(?:\*\*)?\s", flat) if re.search(word, s)]
-    assert found, f"record not found: no sentence carries {word!r}"
-    return found[0]
-
-
 def _spans(text: str) -> set[str]:
     """Identifiers in single or double backticks, ``:class:`` roles included."""
     return set(re.findall(r"`+([A-Za-z_][A-Za-z0-9_]*)`+", text))
 
 
+#: The two sentences T2 locates by what they *say about the port*, never by the
+#: headline's wording: the row's sentence naming the reads the port does not
+#: offer, and the docstring's ``;``-clause doing the same. Neither key contains
+#: "widen", so a headline reworded with it moves nothing here.
+_ROW_WIDENING_KEY = r"none of which `CanonicalStore` offers"
+_DOC_WIDENING_KEY = "none of which that port offers"
+
+
+def _session_row() -> str:
+    rows = [
+        line
+        for line in ADR_0003.read_text(encoding="utf-8").splitlines()
+        if line.lstrip().startswith(f"> | `{_GATE_SESSION}` |")
+    ]
+    if len(rows) != 1:
+        not_found(f"{len(rows)} rows of ADR-0003 start with `{_GATE_SESSION}`")
+    return rows[0]
+
+
+def _row_widening(row: str) -> str:
+    return sentence_with(row, _ROW_WIDENING_KEY)
+
+
+def _doc_widening(docstring: str) -> str:
+    found = [
+        clause
+        for clause in sentence_with(docstring, r"\bmembers\b").split(";")
+        if _DOC_WIDENING_KEY in clause
+    ]
+    if len(found) != 1:
+        not_found(f"{len(found)} `;`-clauses of the class docstring carry {_DOC_WIDENING_KEY!r}")
+    return found[0]
+
+
+def _misspelled_counts(sentence: str, count: int) -> list[str]:
+    """Number words other than *count*'s that the sentence spells directly before "members"."""
+    return [
+        word
+        for number, word in _NUMBER_WORDS.items()
+        if number != count and re.search(rf"\b{word}\s+members\b", _prose(sentence))
+    ]
+
+
 def test_the_read_session_records_name_the_members_the_class_declares() -> None:
-    """RED means a record's member list, count word or widening list disagrees with the class.
+    """RED means a record's member list, member count or widening list disagrees with the class.
 
     ADR-0003's `CanonicalReadSession` row said "six members" and named one
     widening read after 0.2.3 made them eight and three (#832); the class
@@ -676,37 +713,75 @@ def test_the_read_session_records_name_the_members_the_class_declares() -> None:
     reddens every assertion that names or counts them.
 
     Holds: the row's members sentence (the first sentence of the row carrying
-    "members") names exactly the members; the row's widening sentence (the first
-    carrying "widen") spells the widening count and names exactly the widening
-    set before its first em dash; the class
-    docstring's members sentence names exactly the members and spells the count,
-    and its clause containing "none of which" names exactly the widening set. The
-    spans are identifiers in backticks, ``CanonicalStore`` set aside. Not held:
-    the Standing column's reasoning, or the docstring's account of why each read
-    exists.
+    "members") names exactly the members and spells no other number directly
+    before "members"; the row's sentence carrying "none of which `CanonicalStore`
+    offers" spells the widening count and names exactly the widening set before
+    its first em dash; the class docstring's members sentence names exactly the
+    members and spells their count, and its ``;``-clause carrying "none of which
+    that port offers" names exactly the widening set. The spans are identifiers in
+    backticks, ``CanonicalStore`` set aside. Not held: the Standing column's
+    reasoning, the docstring's account of why each read exists, a members sentence
+    that spells no count (the row's does not), and a headline reworded to carry
+    "members", which the members key would read as the sentence.
     """
     members = _declared_members(_GATE_SESSION)
     widening = members - _declared_members("CanonicalStore") - _HANDLE_LIFETIME
-    row = next(
-        line
-        for line in ADR_0003.read_text(encoding="utf-8").splitlines()
-        if line.lstrip().startswith(f"> | `{_GATE_SESSION}` |")
-    )
-    row_members = _sentence_with(row, r"\bmembers\b")
-    row_widening = _sentence_with(row, r"\bwiden")
+    row = _session_row()
+    row_members = sentence_with(row, r"\bmembers\b")
+    row_widening = _row_widening(row)
     docstring = inspect.getdoc(CanonicalReadSession) or ""
-    doc_members = _sentence_with(docstring, r"\bmembers\b")
-    (doc_widening,) = (clause for clause in doc_members.split(";") if "none of which" in clause)
+    doc_members = sentence_with(docstring, r"\bmembers\b")
+    doc_widening = _doc_widening(docstring)
 
     assert widening == {"get_item_exact", "get_item_metadata", "get_item_exact_metadata"}, (
         "positive control: the derivation no longer finds the three widening reads"
     )
     assert _spans(row_members) == members, "ADR-0003's row names other than the members"
-    assert _spells(row_widening, _NUMBER_WORDS[len(widening)])
-    assert _spans(row_widening.split("\u2014")[0]) - {"CanonicalStore"} == widening
-    assert _spans(doc_members) - {"CanonicalStore"} == members
-    assert _spells(doc_members, _NUMBER_WORDS[len(members)])
-    assert _spans(doc_widening) - {"CanonicalStore"} == widening
+    assert _misspelled_counts(row_members, len(members)) == [], (
+        "ADR-0003's row spells another count of members than the class declares"
+    )
+    assert _spells(row_widening, _NUMBER_WORDS[len(widening)]), (
+        "ADR-0003's row does not spell the widening count"
+    )
+    assert _spans(row_widening.split("\u2014")[0]) - {"CanonicalStore"} == widening, (
+        "ADR-0003's row names other than the widening reads before its first em dash"
+    )
+    assert _spans(doc_members) - {"CanonicalStore"} == members, (
+        "the class docstring names other than the members"
+    )
+    assert _spells(doc_members, _NUMBER_WORDS[len(members)]), (
+        "the class docstring does not spell the member count"
+    )
+    assert _misspelled_counts(doc_members, len(members)) == [], (
+        "the class docstring spells another count of members than the class declares"
+    )
+    assert _spans(doc_widening) - {"CanonicalStore"} == widening, (
+        "the class docstring names other than the widening reads in its widening clause"
+    )
+
+
+def test_a_headline_reworded_with_widen_does_not_move_the_row_locators() -> None:
+    """The widening sentence is found by what it says about the port, not the headline (code M1)."""
+    row = _session_row()
+    reworded = row.replace("**An open question", "**It widens nothing. An open question", 1)
+
+    assert reworded != row, "control: the headline this rewording anchors on has moved"
+    assert _row_widening(reworded) == _row_widening(row), (
+        "a headline carrying 'widen' was read as the widening sentence"
+    )
+
+
+def test_a_members_sentence_spelling_the_wrong_count_is_seen() -> None:
+    """A count spelled beside "members" must be the class's (adversarial U7)."""
+    assert _misspelled_counts("Its six members are `list_items`.", 8) == ["six"], (
+        "a wrong count directly before 'members' went unseen"
+    )
+    assert _misspelled_counts("Its eight members are `list_items`.", 8) == [], (
+        "control: the right count must not be reported"
+    )
+    assert _misspelled_counts("Its members are `list_items`.", 8) == [], (
+        "control: a sentence with no count must not be reported"
+    )
 
 
 def test_all_ports_is_exported_and_consistent() -> None:
