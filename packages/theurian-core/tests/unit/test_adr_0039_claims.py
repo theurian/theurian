@@ -372,10 +372,13 @@ ADR_STATES: Final[dict[str, str]] = {
         `--core-maximum-exclusive`, `--protocol-version` and `--json`""",
     "compat-protocol": """`CURRENT_PROTOCOL_VERSION = "theurian/v1"`
         (`domain/compatibility.py:125`). It reads no project, no migration and no enum.""",
+    "closure-heading": "**The closure is a construct-agnostic scan, not a list of keywords.**",
     "detection-keys": """An object key equal to a member is an occurrence unless it is a JSON
-        Schema 2020-12 keyword in keyword position; keys under `properties`, `$defs`,
-        `definitions`, `dependentSchemas` and `dependentRequired` are names, so they are always
-        candidates, and the `deprecated` annotation is the live keyword case.""",
+        Schema 2020-12 keyword and its object does not sit directly under a name-bearing
+        keyword, inside an instance literal too (see *What the scan cannot report*); keys
+        directly under `properties`, `$defs`, `definitions`, `dependentSchemas` and
+        `dependentRequired` are names, so they are always candidates, and the `deprecated`
+        annotation is the live keyword case.""",
     "detection-values": """A string value equal to a member is an occurrence wherever it sits —
         `enum`, `const`, `default`, `examples`, `required`, a `propertyNames` subschema — except
         under `description`, `title`, `$comment`, `$schema`, `$id`, `$ref`, `$anchor` or an
@@ -414,9 +417,11 @@ ADR_STATES: Final[dict[str, str]] = {
     "sdk-hole": """schemas served from outside `schemas/`: the `tools/list` input and output
         schemas the MCP SDK derives from handler annotations, which spell no governed member
         today (#856);""",
+    # Fact half: test_adr_0039_schemas.py's instance-literal hole, RED when #858 lands.
     "literal-hole": """a member inside an instance-literal object — under `const`, `enum`,
-        `default` or `examples` — held under a key that is a keyword or a prose name, where the
-        scan still applies its keyword and prose exclusions (#858);""",
+        `default` or `examples` — spelled as a key that is a keyword, or held under a prose or
+        identifier key or an `x-` key, where the scan still applies its keyword exclusion and
+        its prose-or-identifier exclusion (#858);""",
     "ref-spelling-hole": """`$dynamicRef`, and a `$ref` spelled other than as `"$ref": "`, with
         whitespace before the colon or an escaped key (#858).""",
     "ref-hole": """A reference spells a pointer, not a member: a schema that `$ref`s
@@ -519,10 +524,12 @@ ADR_STATES: Final[dict[str, str]] = {
         `validate_migration_document`).""",
     "d3-until-849": """That advantage holds until #849 is merged, and #849 is due before the
         first `kind` or `relationType` member, not before the first operation; so decision 2's
-        argument, that a bump buys only a message #849 provides, does not reach operations.""",
+        argument, that a bump buys only a message #849 provides, does not reach operations
+        before #849 is merged.""",
     "d3-cost": """*What it costs:* one permanently read `apiVersion` per added operation, and
         building the multi-version read at the first bump. Dropping the bump would defer that
-        read, not save it: a decision-6 meaning bump would build it anyway.""",
+        read, and would save it only if no meaning change ever bumps `apiVersion` (decision
+        6).""",
     "d3-kept": """*Why it is kept:* by deference to ADR-0005's rule and roadmap Phase C's
         *Migration* row; weighing this ledger is left to a later slice (*Alternatives
         considered*).""",
@@ -532,10 +539,21 @@ ADR_STATES: Final[dict[str, str]] = {
         `member._value2member_map_`, annotation-driven conversion by the MCP SDK's pydantic
         models — so the population is keyed, and forms outside the key are not claimed. The
         MCP-annotation form is also #856's.""",
+    # Fact half: test_adr_0039_populations.py's two decode-order tests, which hold the four
+    # faces by name, and test_adr_0039_refusals.py's decoder test for the three columns.
     "d8-853": """A change that adds a `status`, `sensitivity` or `trustLevel` member also opens
-        the decode-before-gate bit #853's faces carry, since `_item_from_row` decodes all three
-        before any gate runs (`infrastructure/sqlite/store.py:1682`, `:1685`, `:1686`); so the
-        ADR for that set also answers #853, and #853 is due before that member too.""",
+        the decode-before-gate bit #853's faces carry: `_item_from_row` decodes all three
+        (`infrastructure/sqlite/store.py:1682`, `:1685`, `:1686`), and at each of those faces
+        that reads an item row — `knowledge.get`, `_relation_is_visible`, the write tools'
+        `current_revision` and `CanonicalVisibility._may_surface` — that decode runs before the
+        caller's gate.""",
+    # Fact half: test_adr_0039_refusals.py's two tests of the search fallback's SQL gate.
+    "d8-sql-gated": """A caller that gates in SQL first is not one of them: `knowledge.search`'s
+        `_scan` passes the statuses it has already resolved to `list_items_by_status`, and a
+        `rejected` row carrying an unknown `trustLevel` member is filtered out there and never
+        decoded (measured by calling `list_items_by_status` and `get_item_metadata` on one such
+        row; the second refuses it). So the ADR for that set also answers #853, and #853 is due
+        before that member too.""",
     "d6-routing": """A change whose effect reaches `status`, `sensitivity` or the withdrawal
         purge, or that moves which rows a gate reads — alias resolution (T-21), an item's
         `current_revision_id` and the served-content hash bound to it
@@ -575,6 +593,13 @@ ADR_STATES: Final[dict[str, str]] = {
         security") and `review-generate-knowledge-candidate-input` ("e.g. convention,
         architecture, security")""",
     "declined": "Declined here, not refuted",
+    # The alternatives table's protocolVersion row; its test holds column one only.
+    "alt-protocol": """*Context*'s scan finds no file under `schemas/` outside the migration
+        format that closes a value or a key set to `kind`, `relationType` or the operation set,
+        so, as far as the scan reaches, no client validating against one of those files
+        validates against their membership (decision 9); a schema served from outside
+        `schemas/` is beyond it (#856). The scan reports every new occurrence within its reach
+        (*Context*'s "What the scan cannot report") for a person to classify.""",
 }
 
 
@@ -587,12 +612,19 @@ def test_the_adr_still_states(name: str, fragment: str) -> None:
     )
 
 
-#: Sentences review removed from ADR-0039 as false, held absent case-folded and collapsed,
-#: so neither a revert nor a re-wrap brings one back.
+#: Claims review removed from ADR-0039 as false or wider than their key, held absent
+#: case-folded and collapsed, so neither a revert nor a re-wrap brings one back.
 ADR_NO_LONGER_STATES: Final = (
     "classified by a person when it appears, not passed silently",
     "carries nothing an older Core's refusal lacks",
     "neither keeping nor dropping",
+    "universal scan",
+    "in keyword position",
+    "not save it",
+    "before any gate runs",
+    "before its caller's gate runs",
+    "the older Core's refusal is undiagnosable",
+    "every new occurrence for a person to classify",
 )
 
 
@@ -620,12 +652,15 @@ def test_the_other_sites_naming_the_operation_bump_defer_to_decision_three_and_a
     """Decision 3 holds the bump's one ledger; a benefit or cost restated elsewhere drifts
     from it, as the *Positive* claim that the bump carried nothing a refusal lacked did.
 
-    Held exact, so a sentence appended to either site goes RED too.
+    Held exact, so a sentence appended to any site goes RED too.
     """
     [positive] = [
         item
         for item in _bullets(_section("### Positive"))
         if item.startswith("apiVersion moves only for grammar and for meaning.")
+    ]
+    [negative] = [
+        item for item in _bullets(_section("### Negative")) if item.startswith("Until #849")
     ]
     [alternative] = [
         row[1]
@@ -636,6 +671,14 @@ def test_the_other_sites_naming_the_operation_bump_defer_to_decision_three_and_a
     assert positive == (
         "apiVersion moves only for grammar and for meaning. For meaning it is the one signal a "
         "reader of the document has (decision 6). For grammar it is kept per decision 3."
+    )
+    assert negative == (
+        "Until #849 is merged, an older Core's refusal of a new kind or relationType member is "
+        "undiagnosable. Decision 2 keeps fail-closed, and fail-closed with a message that names "
+        "the operation index, reports oneOf, and can lose the value to truncation reads like a "
+        "typo (Context). A new operation's refusal is decision 3's, which holds the operation "
+        "bump's ledger. The additive class depends on #849 to be usable, which is why #849, with "
+        "#853, is due before the first kind or relationType member, whichever slice adds it."
     )
     assert collapsed(alternative) == (
         "Declined here, not refuted: the bump is kept per decision 3, which holds its ledger, "
