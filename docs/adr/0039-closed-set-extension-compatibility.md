@@ -162,17 +162,25 @@ false` — so detection no longer depends on knowing which construct can close a
 value.
 
 *Detection.* Every schema under `schemas/` is scanned, the migration schema as
-its own population. Every JSON object key is read, and every string value that
-is not under `description`, `title` or `$comment`. Each position's text is split
-into lowercase words at every character that is not a letter or a digit and at
-every camelCase boundary, and a governed member occurs there when its own words
-appear contiguously. So the key `approved` under `itemsByStatus` is an
-occurrence, and so are `api` in the property name `apiKeyEnv`, `domain` in the
-pattern `^(domain-behavior|…)$`, and `draft` in every `$schema` URL.
+its own population. A governed member occurs where a schema spells it exactly,
+in one of three positions. An object key equal to a member is an occurrence
+unless it is a JSON Schema 2020-12 keyword in keyword position; keys under
+`properties`, `$defs`, `definitions`, `dependentSchemas` and
+`dependentRequired` are names, so they are always candidates, and the
+`deprecated` annotation is the live keyword case. A string value equal to a
+member is an occurrence wherever it sits — `enum`, `const`, `default`,
+`examples`, `required`, a `propertyNames` subschema — except under
+`description`, `title`, `$comment`, `$schema`, `$id`, `$ref`, `$anchor` or an
+`x-` key, whose values are prose or identifiers. And a `pattern` value or a
+`patternProperties` key is an occurrence of each member it spells as a whole
+word of the regex source, with `-` and `_` counted as word characters, so
+`rejected-approach` and `depends_on` match whole and `domain` does not match
+inside `domain-behavior`. The rule is exact spelling, not word fragments, so
+that the tripwire fires on a governed spelling and not on a new file's
+`$schema` URL.
 
 *Tripwire.* That population is held exact. A new occurrence of any member, in
-any shape and at any position, is a change a person classifies before it is
-accepted.
+any of those positions, is a change a person classifies before it is accepted.
 
 *Classification.* The keyword key survives only as the classifier. A closing
 construct is an `enum`, a `const`, or a `oneOf` or `anyOf` whose every branch
@@ -185,34 +193,38 @@ occurrence falls in exactly one class:
 | :-- | :-- | --: | :-- |
 | enumerated | a value of a closing construct contained in one governed set | 17 | `retrieval-result.schema.json`'s `status` (3), `trustLevel` (4) and `sensitivity` (4); `project-config.schema.json`'s `retrieval.includeStatuses` (6) |
 | key-closure | a property name of an object that closes its property names to names contained in one governed set | 3 | `knowledge-status-response.schema.json`'s `itemsByStatus`: `approved`, `draft`, `proposed` |
-| overlap | a value of a closing construct contained in no governed set | 11 | `review-generate-knowledge-candidate-input`'s `category`, nine occurrences across eight of its eleven values (`architecture-rule`, `coding-convention`, `rejected-approach`, …; `domain/enums.py:69-70` against `:133-134` for the two whole values it shares); `review-findings-response`'s `reviewer`, `security` (`domain/enums.py:64` against `domain/review_finding.py:65`); `system-capabilities-response`'s `reviewIngestionScope` const `public-allowlisted`, `public` |
-| pattern | a `pattern` value or a `patternProperties` key | 2 | `project-config.schema.json`'s `traceabilityPolicy`, whose key pattern names a change-category vocabulary sharing `architecture` and the word `domain` with `KnowledgeKind` |
-| property-name | a property-name occurrence: a property name, or a `required` entry, in an object that does not close its names to a governed set | 6 | `project-config.schema.json`: `apiVersion` as a property and as a `required` entry, three `apiKeyEnv` (`api`), and `security` |
+| overlap | a value of a closing construct contained in no governed set | 3 | `review-generate-knowledge-candidate-input`'s `category`: `rejected-approach` and `known-exception` (`domain/enums.py:69-70` against `:133-134`); `review-findings-response`'s `reviewer`: `security` (`domain/enums.py:64` against `domain/review_finding.py:65`) |
+| pattern | a member spelled in a `pattern` value or a `patternProperties` key | 1 | `project-config.schema.json`'s `traceabilityPolicy` key pattern `^(domain-behavior\|architecture\|bug-fix\|refactoring\|formatting)$`, with `additionalProperties: false`: it closes the policy's keys to a change-category vocabulary that shares `architecture` with `KnowledgeKind`, and its `domain-behavior` is not `domain` |
+| property-name | a property-name occurrence: a property name, or a `required` entry, in an object that does not close its names to a governed set | 1 | `project-config.schema.json`'s `security` section |
 | non-closing | a `default` or `examples` value | 1 | `includeStatuses`' `default`, `["approved"]` |
-| schema-keyword | a JSON Schema keyword used as a key | 1 | `knowledgeDirectory`'s `deprecated` annotation |
-| extension | the value of an `x-` annotation | 1 | `x-theurian-tool: knowledge.generateMigrationDraft` (`draft`) |
-| schema-identifier | a `$schema`, `$id` or `$ref` value | 23 | the 22 `$schema` URLs (draft 2020-12) and one `$id` that names a migration draft |
-| definition-name | a key under `$defs` or `definitions` | 0 | none; the migration schema's 14 are below |
 | unclassified | none of the above | 0 | — |
 
-The migration schema's own population is 102 occurrences: 60 enumerated, 14
-definition names (`opCreateItem` spells `createItem`, and so on), 11 property
-names (`dependsOn` spells `depends_on`, `supersededBy` spells `superseded_by`
-and `superseded`, `operations` and `apiVersion` spell members), 2 non-closing
-defaults (`unverified`, `internal`) and 15 schema identifiers.
+The classifier has two more classes, `definition-name` for a key under `$defs`
+or `definitions` and `custom-key` for any other non-keyword key, and neither
+occurs today. The migration schema's own population is 61 occurrences: 57
+enumerated, 2 non-closing defaults (`unverified`, `internal`) and 2 property
+names (`operations` as a property and as a `required` entry).
 
 Outside the migration schema, only `enumerated` and `key-closure` close a
-published value or key set to a governed set, and neither holds a member of
-`kind`, `relationType` or the operation set. Decisions 8 and 9 rest on that.
+published value or key set to a governed set, no `overlap` contains a whole
+governed set, and none of them holds a member of `kind`, `relationType` or the
+operation set. Decisions 8 and 9 rest on that.
 
-*What the scan cannot report.* A `$ref` spells a pointer, not a member: a schema
+*What the scan cannot report.* Each of these is classified by a person when it
+appears, not passed silently. A `$ref` spells a pointer, not a member: a schema
 that `$ref`s `migration.schema.json#/$defs/kind` would close a value to
 `KnowledgeKind` with no member spelled in its own file. No schema does that
 today — `git grep -n -E '"\$ref": *"[^#"]' -- schemas` prints 10 cross-file
 `$ref`s, to `tool-context`, `retrieval-result` and `retrieval-metadata` — so
-the claims pin holds that population exact beside the scan. And a `pattern`
-that closes a value without spelling a member, a character class for instance,
-is not an occurrence; it stays a stated residual.
+the claims pin holds that population exact beside the scan. A `pattern` that
+closes a value without spelling a member, a character class for instance, is
+not an occurrence. A member embedded in a longer value that is not a pattern,
+such as a `default` or `examples` entry spelled `"status:draft"`, is not an
+occurrence either: exact spelling does not see it, and widening the rule to
+substrings would bring back the noise it exists to avoid. And a construct that
+carries a whole governed set plus other members classifies as `overlap`, not
+`enumerated`; the scan still reports each member it spells, and a person
+decides whether it publishes the set.
 
 ```python
 # Run from the repository root with `uv run --frozen python`.
@@ -233,25 +245,24 @@ GOVERNED = (
     enums.SpecificationStatus,
 )
 SETS = [{member.value for member in cls} for cls in GOVERNED]
-PROSE = {"description", "title", "$comment"}
-WORD = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+")
+MEMBERS = set().union(*SETS)
+KEYWORDS = set(
+    """$schema $id $ref $anchor $dynamicRef $dynamicAnchor $vocabulary $comment $defs
+    definitions allOf anyOf oneOf not if then else dependentSchemas prefixItems items
+    contains properties patternProperties additionalProperties propertyNames
+    unevaluatedItems unevaluatedProperties type enum const multipleOf maximum
+    exclusiveMaximum minimum exclusiveMinimum maxLength minLength pattern maxItems
+    minItems uniqueItems maxContains minContains maxProperties minProperties required
+    dependentRequired format contentEncoding contentMediaType contentSchema title
+    description default deprecated readOnly writeOnly examples""".split()
+)
+NAME_BEARING = {"properties", "$defs", "definitions", "dependentSchemas", "dependentRequired"}
+IDENTIFIERS = {"description", "title", "$comment", "$schema", "$id", "$ref", "$anchor"}
 
 
-def words(text):
-    return [word.lower() for word in WORD.findall(text)]
-
-
-SPELLINGS = {value: words(value) for members in SETS for value in members}
-
-
-def spelled(text):
-    """Every governed member whose words appear contiguously in `text`."""
-    found = words(text)
-    return [
-        value
-        for value, parts in SPELLINGS.items()
-        if any(found[i : i + len(parts)] == parts for i in range(len(found)))
-    ]
+def in_regex(source):
+    """Members spelled as a whole word of a regex source; `-` and `_` are word characters."""
+    return [m for m in MEMBERS if re.search(rf"(?<![\w-]){re.escape(m)}(?![\w-])", source)]
 
 
 def contained(values):
@@ -283,65 +294,69 @@ def keys_closed(owner):
     )
 
 
-def classify_key(trail):
+def key_occurrence(key, trail):
+    """(class, members) for an object key, or None if it spells no member."""
     holder, under = trail[-1] if trail else (None, None)
+    if under == "patternProperties":
+        found = in_regex(key)
+        return ("pattern", found) if found else None
+    if key not in MEMBERS or (under not in NAME_BEARING and key in KEYWORDS):
+        return None
     if under == "properties":
         names = set(holder["properties"])
-        return "key-closure" if keys_closed(holder) and contained(names) else "property-name"
-    if under == "patternProperties":
-        return "pattern"
+        closes = keys_closed(holder) and contained(names)
+        return ("key-closure" if closes else "property-name", [key])
     if under in ("$defs", "definitions"):
-        return "definition-name"
-    return "schema-keyword"
+        return ("definition-name", [key])
+    return ("property-name" if under in NAME_BEARING else "custom-key", [key])
 
 
-def classify_value(trail):
+def value_occurrence(text, trail):
+    """(class, members) for a string value, or None if it spells no member."""
     named = [(i, holder, key) for i, (holder, key) in enumerate(trail) if isinstance(key, str)]
     i, holder, key = named[-1]
-    if key.startswith("x-"):
-        return "extension"
+    if key in IDENTIFIERS or key.startswith("x-"):
+        return None
+    if key == "pattern":
+        found = in_regex(text)
+        return ("pattern", found) if found else None
+    if text not in MEMBERS:
+        return None
     if key in ("enum", "const"):
         construct = holder
         if i >= 2 and trail[i - 2][1] in ("oneOf", "anyOf") and closed(trail[i - 2][0]) is not None:
             construct = trail[i - 2][0]
-        under_names = any(outer == "propertyNames" for _, _, outer in named[:-1])
+        names = any(outer == "propertyNames" for _, _, outer in named[:-1])
         if contained(closed(construct)):
-            return "key-closure" if under_names else "enumerated"
-        return "overlap"
-    return {
-        "pattern": "pattern",
-        "default": "non-closing",
-        "examples": "non-closing",
-        "$schema": "schema-identifier",
-        "$id": "schema-identifier",
-        "$ref": "schema-identifier",
-        "required": "property-name",
-    }.get(key, "unclassified")
+            return ("key-closure" if names else "enumerated", [text])
+        return ("overlap", [text])
+    kinds = {"default": "non-closing", "examples": "non-closing", "required": "property-name"}
+    return (kinds.get(key, "unclassified"), [text])
 
 
 def visit(node, trail):
     if isinstance(node, dict):
         for key, value in node.items():
-            yield "key", key, trail
-            if key not in PROSE:
-                yield from visit(value, [*trail, (node, key)])
+            yield key_occurrence(key, trail)
+            yield from visit(value, [*trail, (node, key)])
     elif isinstance(node, list):
         for index, value in enumerate(node):
             yield from visit(value, [*trail, (node, index)])
     elif isinstance(node, str):
-        yield "value", node, trail
+        yield value_occurrence(node, trail)
 
 
 totals, where = {}, {}
 for schema in sorted(Path("schemas").rglob("*.json")):
     population = "migration" if schema.name == "migration.schema.json" else "published"
-    for position, text, trail in visit(json.loads(schema.read_text()), []):
-        for member in spelled(text):
-            kind = classify_key(trail) if position == "key" else classify_value(trail)
+    for found in visit(json.loads(schema.read_text()), []):
+        if found is None:
+            continue
+        kind, members = found
+        for member in members:
             totals.setdefault(population, Counter())[kind] += 1
             if population == "published":
-                name = "*" if kind == "schema-identifier" else schema.name
-                where.setdefault((kind, name), Counter())[member] += 1
+                where.setdefault((kind, schema.name), Counter())[member] += 1
 for (kind, name), members in sorted(where.items()):
     print(kind, name, sum(members.values()), dict(sorted(members.items())))
 for population, counts in sorted(totals.items()):
@@ -353,18 +368,14 @@ It prints:
 ```text
 enumerated project-config.schema.json 6 {'approved': 1, 'deprecated': 1, 'draft': 1, 'proposed': 1, 'rejected': 1, 'superseded': 1}
 enumerated retrieval-result.schema.json 11 {'approved': 1, 'authoritative': 1, 'confidential': 1, 'draft': 1, 'inferred': 1, 'internal': 1, 'proposed': 1, 'public': 1, 'restricted': 1, 'reviewed': 1, 'unverified': 1}
-extension knowledge-generate-migration-draft-input.schema.json 1 {'draft': 1}
 key-closure knowledge-status-response.schema.json 3 {'approved': 1, 'draft': 1, 'proposed': 1}
 non-closing project-config.schema.json 1 {'approved': 1}
 overlap review-findings-response.schema.json 1 {'security': 1}
-overlap review-generate-knowledge-candidate-input.schema.json 9 {'architecture': 1, 'convention': 1, 'domain': 1, 'incident': 1, 'known-exception': 1, 'rejected': 1, 'rejected-approach': 1, 'security': 1, 'testing': 1}
-overlap system-capabilities-response.schema.json 1 {'public': 1}
-pattern project-config.schema.json 2 {'architecture': 1, 'domain': 1}
-property-name project-config.schema.json 6 {'api': 5, 'security': 1}
-schema-identifier * 23 {'draft': 23}
-schema-keyword project-config.schema.json 1 {'deprecated': 1}
-migration 102 {'definition-name': 14, 'enumerated': 60, 'non-closing': 2, 'property-name': 11, 'schema-identifier': 15}
-published 65 {'enumerated': 17, 'extension': 1, 'key-closure': 3, 'non-closing': 1, 'overlap': 11, 'pattern': 2, 'property-name': 6, 'schema-identifier': 23, 'schema-keyword': 1}
+overlap review-generate-knowledge-candidate-input.schema.json 2 {'known-exception': 1, 'rejected-approach': 1}
+pattern project-config.schema.json 1 {'architecture': 1}
+property-name project-config.schema.json 1 {'security': 1}
+migration 61 {'enumerated': 57, 'non-closing': 2, 'property-name': 2}
+published 26 {'enumerated': 17, 'key-closure': 3, 'non-closing': 1, 'overlap': 3, 'pattern': 1, 'property-name': 1}
 ```
 
 The MCP input schemas `knowledge-propose-change-input` and
@@ -587,13 +598,12 @@ change from one written after it.
 9. **No change to `kind`, `relationType` or the operation set bumps
    `protocolVersion`**, because *Context*'s scan finds no occurrence of their
    members outside the migration format that closes a value or a key set to one
-   of them: the occurrences there are `KnowledgeKind` words in overlaps
+   of them: the occurrences there are `KnowledgeKind` members in two overlaps
    (`category`, `reviewer`), in a pattern over another vocabulary
-   (`traceabilityPolicy`) and in property names (`apiVersion`, `apiKeyEnv`,
-   `security`), and no `relationType` or operation member occurs at all. The
-   scan reports every new occurrence and a person classifies it; a `$ref` into
-   the migration schema and a pattern that spells no member are its stated
-   residuals. A member a client does not know reaches it as
+   (`traceabilityPolicy`) and in one property name (`security`), and no
+   `relationType` or operation member occurs at all. The scan reports every new
+   occurrence and a person classifies it; its stated holes are *Context*'s
+   "What the scan cannot report". A member a client does not know reaches it as
    an unrecognised string, in the two response fields that publish any of the
    three: a `relationType` in `knowledge.get`'s `relations`, and an operation
    name in `knowledge.generateMigrationDraft`'s `operations`. A later change that
