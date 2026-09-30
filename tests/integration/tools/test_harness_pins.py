@@ -38,6 +38,7 @@ from wire import ToolCall, mcp_session  # noqa: E402
 
 from theurian.application.project_service import ProjectRegistry  # noqa: E402
 from theurian.daemon.runner import build_server  # noqa: E402
+from theurian.infrastructure.determinism import SystemClock  # noqa: E402
 
 SMOKE_CORPUS = REPO_ROOT / "tests" / "fixtures" / "eval-smoke"
 
@@ -85,7 +86,7 @@ def smoke_calls() -> Iterator[dict[str, Any]]:
     loaded = harness_corpus.load_corpus(SMOKE_CORPUS)
     with tempfile.TemporaryDirectory(prefix="theurian-eval-pin-") as workspace_name:
         workspace = Path(workspace_name)
-        built = harness_build.build_both(loaded, workspace)
+        built = harness_build.build_both(loaded, workspace, clock=SystemClock())
         with ExitStack() as sessions:
             calls: dict[str, ToolCall] = {
                 name: sessions.enter_context(
@@ -494,7 +495,7 @@ def test_census_mismatch_rule_refuses_a_manifest_whose_census_disagrees_with_a_r
         tempfile.TemporaryDirectory(prefix="theurian-eval-census-") as workspace_name,
         pytest.raises(harness_corpus.CorpusError) as excinfo,
     ):
-        harness_build.build_both(loaded, Path(workspace_name))
+        harness_build.build_both(loaded, Path(workspace_name), clock=SystemClock())
 
     assert excinfo.value.rule == "census-mismatch"
 

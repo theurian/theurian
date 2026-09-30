@@ -37,6 +37,7 @@ from wire import mcp_session  # noqa: E402
 
 from theurian.application.project_service import ProjectRegistry  # noqa: E402
 from theurian.daemon.runner import build_server  # noqa: E402
+from theurian.infrastructure.determinism import SystemClock  # noqa: E402
 
 _BASELINE_DIR = REPO_ROOT / "tools" / "eval" / "baseline"
 CORPUS = REPO_ROOT / "tests" / "fixtures" / "eval"
@@ -494,7 +495,9 @@ def test_no_raptor_path_title_in_the_full_arms_default_response_leaks_an_unappro
 
     titles: list[str] = []
     with tempfile.TemporaryDirectory(prefix="theurian-eval-raptor-title-leak-") as workspace_name:
-        built = harness_build.build_both(loaded, Path(workspace_name), raptor=True)
+        built = harness_build.build_both(
+            loaded, Path(workspace_name), clock=SystemClock(), raptor=True
+        )
         with ExitStack() as sessions:
             project = built.projects["full"]
             call = sessions.enter_context(

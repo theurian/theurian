@@ -30,9 +30,11 @@ from corpus import Corpus, CorpusCensus, CorpusError
 from typer.testing import CliRunner
 
 from theurian.application.project_service import ProjectPaths, read_active_state
+from theurian.cli.context import composed_clock
 from theurian.cli.main import app
 from theurian.domain.context import RequestContext
 from theurian.domain.identifiers import ProjectId
+from theurian.domain.ports.determinism import Clock
 from theurian.infrastructure.sqlite.store import SqliteCanonicalStore
 
 _RUNNER = CliRunner()
@@ -70,9 +72,13 @@ class BuiltProject:
 class BuildResult:
     projects: dict[str, BuiltProject]
     home: Path
+    #: Carried so ``run._open_sessions`` hands the search side the build's clock.
+    clock: Clock
 
 
-def build_both(loaded: Corpus, workspace: Path, *, raptor: bool = False) -> BuildResult:
+def build_both(
+    loaded: Corpus, workspace: Path, *, clock: Clock, raptor: bool = False
+) -> BuildResult:
     """Build ``full`` and ``clean``, each under its own ``THEURIAN_DATA_DIR``.
 
     Both builds register under the **same** ``projectId`` -- the manifest's
@@ -93,19 +99,23 @@ def build_both(loaded: Corpus, workspace: Path, *, raptor: bool = False) -> Buil
     apart by which :class:`BuildResult` it holds, not by a name suffix, so
     ``report.py``'s per-corpus-name functions run over the raptor pair
     unchanged.
+
+    ``clock`` is composed into every CLI command this function drives --
+    ``migrate apply`` stamps ``validFrom`` with it.
     """
     home = workspace / "home"
     home.mkdir(parents=True, exist_ok=True)
     projects: dict[str, BuiltProject] = {}
-    for name in PLANES:
-        directory = f"{name}-raptor" if raptor else name
-        data_dir = workspace / directory / "data"
-        data_dir.mkdir(parents=True, exist_ok=True)
-        with _environment(HOME=str(home), THEURIAN_DATA_DIR=str(data_dir)):
-            projects[name] = _build_one(
-                loaded, workspace / directory / "project", name, data_dir, raptor=raptor
-            )
-    return BuildResult(projects=projects, home=home)
+    with composed_clock(clock):
+        for name in PLANES:
+            directory = f"{name}-raptor" if raptor else name
+            data_dir = workspace / directory / "data"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            with _environment(HOME=str(home), THEURIAN_DATA_DIR=str(data_dir)):
+                projects[name] = _build_one(
+                    loaded, workspace / directory / "project", name, data_dir, raptor=raptor
+                )
+    return BuildResult(projects=projects, home=home, clock=clock)
 
 
 def _build_one(

@@ -25,8 +25,9 @@ import tempfile
 import time
 from collections.abc import Sequence
 from contextlib import ExitStack
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final
+from typing import Final, final
 
 from corpus import BUILD_CEILING, CorpusError, JudgementEntry, QueryEntry, load_corpus
 from corpus_build import BuildResult, BuiltProject, build_both
@@ -54,6 +55,27 @@ MAX_TOKENS: Final = 32_000
 INCLUDE_UNAPPROVED: Final = False
 USE_DENSE: Final = False
 EQUALITY_LIMIT: Final = 50
+
+#: The instant the harness's one clock answers, to the build's ``validFrom``
+#: stamps and to each hit's ``freshness`` alike. Under the wall clock
+#: ``report.json`` moved when ``ageDays`` reached 10, because ``usedTokens``
+#: prices each hit on its serialised length. The value is the ``date`` the
+#: baseline committed in #798 recorded in ``timings.json``. One fixed instant
+#: rather than a later search instant or a ticking clock, so no output depends
+#: on how many reads came first; ``isWithinValidity`` still reads true, because
+#: ``ValidityPeriod.contains`` includes ``validFrom`` itself.
+PINNED_NOW: Final = datetime(2026, 9, 24, 7, 13, 8, tzinfo=UTC)
+
+
+@final
+@dataclasses.dataclass(frozen=True, slots=True)
+class PinnedClock:
+    """A ``Clock`` (ADR-0003) that always answers ``instant``."""
+
+    instant: datetime
+
+    def now(self) -> datetime:
+        return self.instant
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -83,11 +105,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     args.out.mkdir(parents=True, exist_ok=True)
 
+    clock = PinnedClock(PINNED_NOW)
     with tempfile.TemporaryDirectory(prefix="theurian-eval-") as workspace_name:
         workspace = Path(workspace_name)
         try:
-            built = build_both(loaded, workspace)
-            raptor_built = build_both(loaded, workspace, raptor=True)
+            built = build_both(loaded, workspace, clock=clock)
+            raptor_built = build_both(loaded, workspace, clock=clock, raptor=True)
         except CorpusError as exc:
             print(f"build refused: {exc}", file=sys.stderr)
             return 1
@@ -129,7 +152,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _open_sessions(sessions: ExitStack, built: BuildResult) -> dict[str, ToolCall]:
     return {
         name: sessions.enter_context(
-            mcp_session(build_server(ProjectRegistry.default(project.data_dir)), project.data_dir)
+            mcp_session(
+                build_server(ProjectRegistry.default(project.data_dir), search_clock=built.clock),
+                project.data_dir,
+            )
         )
         for name, project in built.projects.items()
     }
