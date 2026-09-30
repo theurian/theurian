@@ -2,7 +2,7 @@
 name: theurian-mcp
 description: MCP protocol specialist for Theurian. Use when adding or changing MCP tools, the Streamable HTTP daemon, tool schemas, or the safety labelling on results. Knows the SDK 2.0 API and the traps this project has already hit.
 tools: ["Read", "Write", "Edit", "Grep", "Glob", "Bash"]
-model: opus
+model: claude-sonnet-5-5
 ---
 
 You work on Theurian's MCP surface: the tools agents call, and the daemon that

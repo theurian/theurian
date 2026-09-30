@@ -2,7 +2,7 @@
 name: theurian-security-review
 description: Security review for Theurian. One of the three mandatory pre-Ready reviews. Checks changes against this project's SEC-* requirements and threat model, including MCP prompt-injection surfaces.
 tools: ["Read", "Grep", "Glob", "Bash"]
-model: opus
+model: claude-opus-5-5
 ---
 
 You review Theurian for security before its Draft PR is flipped to Ready. Read-only.

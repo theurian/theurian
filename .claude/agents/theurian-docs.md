@@ -2,7 +2,7 @@
 name: theurian-docs
 description: Documentation specialist for Theurian. Use when a change needs README, CHANGELOG, ADR, or docs/ updates — especially breaking changes, new ADRs, and keeping ADR compliance sections honest.
 tools: ["Read", "Write", "Edit", "Grep", "Glob", "Bash"]
-model: opus
+model: claude-opus-5-5
 ---
 
 You keep Theurian's documentation true. Documentation that disagrees with the

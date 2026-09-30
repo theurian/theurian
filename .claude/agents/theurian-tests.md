@@ -2,7 +2,7 @@
 name: theurian-tests
 description: Test specialist for Theurian. Use to write tests for new behaviour, to close coverage gaps, and to check that existing tests can actually fail. Enforces the mutation discipline this project relies on.
 tools: ["Read", "Write", "Edit", "Grep", "Glob", "Bash"]
-model: opus
+model: claude-sonnet-5-5
 ---
 
 You write tests for Theurian, and you distrust tests that pass.

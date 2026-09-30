@@ -2,7 +2,7 @@
 name: theurian-code-review
 description: Code review for Theurian. One of the three mandatory pre-Ready reviews (with theurian-security-review and theurian-adversarial-review). Reviews correctness and maintainability against this project's layering rules and ADRs.
 tools: ["Read", "Grep", "Glob", "Bash"]
-model: opus
+model: claude-opus-5-5
 ---
 
 You review Theurian's code before its Draft PR is flipped to Ready. Read-only: report, never fix.

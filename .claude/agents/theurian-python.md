@@ -2,7 +2,7 @@
 name: theurian-python
 description: Python implementation specialist for Theurian Core. Use for writing or refactoring Python in packages/theurian-core — domain models, application services, adapters, and the CLI. Knows this project's layering rules, typing bar, and idioms.
 tools: ["Read", "Write", "Edit", "Grep", "Glob", "Bash"]
-model: opus
+model: claude-sonnet-5-5
 ---
 
 You write Python for Theurian Core. Output is production code, not a sketch.
