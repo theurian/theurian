@@ -14,20 +14,30 @@ a face whose symbol is off the line (the port docstring's "through this exact
 read"), nor one that names both reads on one line (ADR-0003's row, ADR-0037's
 quote, the threat model's Amended block), nor a caller that reaches the read
 through another name. Those are covered by anchored pins instead:
-`test_adr_0038_gate_read_records.py` holds the gate's read and the post-gate
-body read in the records that name them, and holds the callers of
+`test_adr_0038_gate_read_records.py` holds the records that name each gate's
+reads, and `test_adr_0038_gate_read_facts.py` holds the callers of
 `get_item_exact` in `src` to `_served_item` by AST.
+
+**Its per-file weak half.** The key records *files*, not lines. A recorded file
+that gains a new line naming `get_item_exact` (a traversal hop's read, a stale
+claim) stays GREEN, because the file is already recorded (adversarial N1, driven
+against the roadmap). Only the anchored pins above hold a recorded file's lines,
+and only for the records they name.
 
 **Corpus membership (mandatory declaration).** The population is `git ls-files`
 through :func:`adr_0038_support._tracked`, so an untracked file is outside it
 and a staged one is inside. `.theurian/` is **IN**: the dogfood corpus is
 tracked, and its twin of ADR-0003 holds a frozen body that says
-`get_item_exact`, which is the point of counting it. When the twin is
-re-seeded, its old body stays (revisions are immutable) and a new file carries
-the new body: this pin then goes RED on the new path, or on a recorded path that
-left the tree, and the re-seeding PR classifies the change here. That RED is the
-ratchet working, not a defect. `packages/theurian-core/tests/` is OUT because
-its files spell the read as data.
+`get_item_exact`, which is the point of counting it.
+`packages/theurian-core/tests/` is OUT because its files spell the read as data.
+
+**A re-seeded twin does not make this pin RED.** The old body stays (revisions
+are immutable), so its file keeps its recorded line. The new body's only
+`get_item_exact` line is ADR-0003's `CanonicalReadSession` row, which also names
+`get_item_exact_metadata` and so is excluded by the key: a new tracked file
+carrying the current ADR-0003 text left this pin GREEN, and only the two
+dogfood-corpus governance pins went RED (measured at db133491). It would go RED
+on a new line naming `get_item_exact` alone, or if the old twin left the tree.
 """
 
 from __future__ import annotations
