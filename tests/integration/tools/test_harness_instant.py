@@ -13,6 +13,7 @@ import json
 import sys
 import tempfile
 from collections.abc import Iterator
+from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
@@ -27,12 +28,14 @@ if str(_HARNESS_DIR) not in sys.path:
     sys.path.insert(0, str(_HARNESS_DIR))
 
 import corpus as harness_corpus  # noqa: E402
+import corpus_build as harness_build  # noqa: E402
 import run as harness_run  # noqa: E402
 
 from theurian.infrastructure.determinism import SystemClock  # noqa: E402
 from theurian.security.yaml_loading import load_yaml_mapping  # noqa: E402
 
 CORPUS = REPO_ROOT / "tests" / "fixtures" / "eval"
+SMOKE_CORPUS = REPO_ROOT / "tests" / "fixtures" / "eval-smoke"
 
 UNDER_TEN_DAYS: Final = harness_run.PINNED_NOW
 TEN_DAYS: Final = datetime(2026, 9, 30, 0, 0, 38, tzinfo=UTC)
@@ -42,6 +45,10 @@ TEN_DAYS: Final = datetime(2026, 9, 30, 0, 0, 38, tzinfo=UTC)
 #: ``freshness`` from it, changes hit lengths between the two.
 SYSTEM_CLOCK_BEFORE: Final = datetime(2000, 1, 1, tzinfo=UTC)
 SYSTEM_CLOCK_AFTER: Final = datetime(2099, 1, 1, tzinfo=UTC)
+
+#: Neither ``PINNED_NOW``'s day nor any day from 2026-09-30, when this was written,
+#: so a search reading either answers another ``ageDays``.
+BUILT_AND_SEARCHED_AT: Final = datetime(2026, 9, 21, 12, 0, tzinfo=UTC)
 
 _DIFFERING_FIELDS_PARENTS: Final = frozenset(
     {("equality", "queries"), ("raptor", "equality", "queries")}
@@ -119,3 +126,32 @@ def test_the_report_is_a_function_of_the_injected_instant_not_of_system_clock() 
     assert all(
         set(before) ^ set(after) == {"retrieval.usedTokens"} for _, before, after in differences
     ), differences
+
+
+def test_the_harness_search_answers_on_the_clock_its_build_was_given() -> None:
+    """Held below ``report.json``, which cannot see this: a search pinned to
+    ``PINNED_NOW`` over a build at the ten-day instant reproduces correct wiring's
+    report byte for byte, because ``isWithinValidity`` turning false adds the one
+    character ``ageDays`` going 4 -> 10 adds. So both fields, on every hit."""
+    loaded = harness_corpus.load_corpus(SMOKE_CORPUS)
+    with (
+        tempfile.TemporaryDirectory(prefix="theurian-eval-wiring-") as workspace,
+        ExitStack() as sessions,
+    ):
+        built = harness_build.build_both(
+            loaded, Path(workspace), clock=harness_run.PinnedClock(BUILT_AND_SEARCHED_AT)
+        )
+        calls = harness_run._open_sessions(sessions, built)
+        freshness = [
+            hit["freshness"]
+            for name, project in built.projects.items()
+            for hit in calls[name](
+                "knowledge.search", {"projectId": project.project_id, "query": "policy"}
+            )["results"]
+        ]
+
+    assert freshness
+    assert [(each["ageDays"], each["isWithinValidity"]) for each in freshness] == [
+        ((BUILT_AND_SEARCHED_AT - datetime.fromisoformat(each["revisionCreatedAt"])).days, True)
+        for each in freshness
+    ]
