@@ -242,16 +242,27 @@ def test_the_decision_section_holds_exactly_decisions_one_to_ten() -> None:
     assert [n for n, anchor in DECISIONS.items() if not decisions[n].startswith(anchor)] == []
 
 
-def test_the_lowest_version_rule_keeps_its_meaning_clause_wherever_it_is_stated() -> None:
+def test_the_two_statements_of_the_rule_carry_the_meaning_clause() -> None:
     """Cut to "whose grammar admits the document", the rule lets Core write a changed
-    meaning under an earlier version whose grammar also admits it (decision 6)."""
+    meaning under an earlier version whose grammar also admits it (decision 6).
+
+    Key: the anchor "lowest apiVersion (or version) whose grammar admits", stated
+    exactly at decision 3 and matrix row C2. A paraphrase of the rule that does not
+    spell the anchor is outside the key.
+    """
+    anchor = r"lowest (?:apiVersion |version )whose grammar admits"
     tail = "the document and under which it carries the meaning Core wrote"
     [c2] = [row for row in _table(_section("### The matrix"))[1:] if row[0].startswith("**C2**")]
-    shortened = rf"lowest (?:apiVersion |version )whose grammar admits(?! {tail})"
+    sites = {"decision 3": _numbered(_section("## Decision"))[3], "C2": collapsed(c2[1])}
 
-    assert f"whose grammar admits {tail}" in _numbered(_section("## Decision"))[3]
-    assert f"whose grammar admits {tail}" in collapsed(c2[1])
-    assert re.findall(shortened, _adr()) == []
+    assert {site: len(re.findall(anchor, text)) for site, text in sites.items()} == {
+        "decision 3": 1,
+        "C2": 1,
+    }
+    assert len(re.findall(anchor, _adr())) == 2, "the rule is stated outside decision 3 and C2"
+    assert [
+        site for site, text in sites.items() if f"whose grammar admits {tail}" not in text
+    ] == []
 
 
 #: The alternatives table's first column, in order.

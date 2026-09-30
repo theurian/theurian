@@ -426,6 +426,56 @@ def test_knowledge_get_decodes_its_item_and_relations_before_the_gate_the_revisi
     assert "_relation_from_row" in _decoded_by("list_relations")
 
 
+def _first_call(function: ast.AST, name: str) -> int:
+    """The source position of a function's first call of ``name``, as an ordinal."""
+    calls = sorted(
+        (node for node in ast.walk(function) if isinstance(node, ast.Call)),
+        key=lambda node: (node.lineno, node.col_offset),
+    )
+    return [_named(node.func) for node in calls].index(name)
+
+
+def test_three_more_registered_gate_sites_decode_a_row_before_they_judge_it() -> None:
+    """#853's faces beyond ``knowledge.get``, keyed on the gate register decision 6 uses.
+
+    Key: the site is in ``STATUS_GATE_CALL_SITES``, and its first call of a store
+    read comes before its first ``may_surface`` call, by source position. A gate
+    site not named here is outside the pin, not cleared by it.
+    """
+    register = REPO_ROOT / "packages/theurian-core/tests/unit/test_gate_call_sites.py"
+    [status_sites] = [
+        ast.literal_eval(node.value)
+        for node in ast.parse(register.read_bytes()).body
+        if isinstance(node, ast.Assign) and ast.unparse(node.targets[0]) == "STATUS_GATE_CALL_SITES"
+    ]
+    neighbour = _function("mcp/tools.py", "_relation_is_visible")
+    write_tools = _function("mcp/tools.py", "current_revision")
+    [visibility] = [
+        node
+        for node in _trees()["application/visibility.py"].body
+        if isinstance(node, ast.ClassDef) and node.name == "CanonicalVisibility"
+    ]
+    methods = {node.name: node for node in visibility.body if isinstance(node, ast.FunctionDef)}
+
+    assert {
+        ("mcp/tools.py", "_relation_is_visible"),
+        ("mcp/tools.py", "register._draft_only_proposals.current_revision"),
+        ("application/visibility.py", "CanonicalVisibility._may_surface"),
+    } <= status_sites
+    assert _first_call(neighbour, "get_item_exact_metadata") < _first_call(neighbour, "may_surface")
+    assert "_item_from_row" in _decoded_by("get_item_exact_metadata")
+    assert _first_call(write_tools, "get_item_metadata") < _first_call(write_tools, "may_surface")
+    assert _first_call(methods["_may_surface"], "item") < _first_call(
+        methods["_may_surface"], "may_surface"
+    )
+    assert "_lookup" in {
+        _named(n.func) for n in ast.walk(methods["item"]) if isinstance(n, ast.Call)
+    }
+    assert "get_item_metadata" in {
+        _named(n.func) for n in ast.walk(methods["_lookup"]) if isinstance(n, ast.Call)
+    }
+
+
 def test_the_engine_version_is_written_at_create_and_never_selected() -> None:
     """ADR-0007's invalidation holds on the build path only: nothing at open reads the engine.
 
@@ -497,32 +547,26 @@ def test_the_loader_keeps_reading_a_register_specification_spec_id_and_status() 
     assert (fields["spec_id"], fields["status"]) == ("SpecId", "SpecificationStatus")
 
 
-def test_compat_check_takes_a_declaration_and_cores_own_versions_and_no_project() -> None:
-    group = typer.main.get_command(app).commands["compat"]  # type: ignore[attr-defined]
-    options = {param.name: param.opts for param in group.commands["check"].params}
-    [call] = [
-        node
-        for node in ast.walk(_function("cli/main.py", "compat_check"))
-        if isinstance(node, ast.Call) and _named(node.func) == "resolve_compatibility"
-    ]
+def test_resolve_compatibility_takes_a_declaration_and_cores_own_versions() -> None:
+    """The ``compat-signature`` fragment: no parameter names a project, path or migration."""
     parameters = [
         *inspect.signature(resolve_compatibility).parameters,
         *inspect.signature(compat_check).parameters,
     ]
-    module = _trees()["domain/compatibility.py"]
-    imported = {
-        alias.name
-        for node in ast.walk(module)
-        if isinstance(node, ast.ImportFrom)
-        for alias in node.names
-    }
-    read = _spelled(_function("cli/main.py", "compat_check")) | _spelled(module) | imported
 
     assert list(inspect.signature(resolve_compatibility).parameters) == [
         "declaration",
         "core_version",
         "core_protocol_version",
     ]
+    assert [p for p in parameters if re.search(r"project|path|root|migration|dir", p)] == []
+
+
+def test_compat_checks_options_are_the_declaration_and_json() -> None:
+    """The ``compat-options`` fragment."""
+    group = typer.main.get_command(app).commands["compat"]  # type: ignore[attr-defined]
+    options = {param.name: param.opts for param in group.commands["check"].params}
+
     assert set(options) - {"as_json"} == {
         f.name for f in dataclasses.fields(CompatibilityDeclaration)
     }
@@ -535,14 +579,35 @@ def test_compat_check_takes_a_declaration_and_cores_own_versions_and_no_project(
             "--json",
         ]
     )
+
+
+def test_compat_check_compares_cores_own_protocol_and_reads_no_project_migration_or_enum() -> None:
+    """The ``compat-protocol`` fragment."""
+    [call] = [
+        node
+        for node in ast.walk(_function("cli/main.py", "compat_check"))
+        if isinstance(node, ast.Call) and _named(node.func) == "resolve_compatibility"
+    ]
+    module = _trees()["domain/compatibility.py"]
+    imported = {
+        alias.name
+        for node in ast.walk(module)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    }
+    read = _spelled(_function("cli/main.py", "compat_check")) | _spelled(module) | imported
+
     assert [ast.unparse(arg) for arg in call.args[1:]] == [
         "Version.parse_python(__version__)",
         "__protocol_version__",
     ]
     assert __protocol_version__ == CURRENT_PROTOCOL_VERSION == "theurian/v1"
-    assert [p for p in parameters if re.search(r"project|path|root|migration|dir", p)] == []
     assert "CompatibilityOutcome" in read, "positive control: the name key reads the module"
     assert read & (GOVERNED_NAMES | {"load_migrations", "resolve_context", "ProjectPaths"}) == set()
+
+
+def test_compat_check_decides_one_of_five_outcomes() -> None:
+    """The ``compat-outcomes`` fragment."""
     assert [outcome.value for outcome in CompatibilityOutcome] == [
         "compatible",
         "core-missing",
