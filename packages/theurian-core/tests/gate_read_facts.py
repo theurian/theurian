@@ -9,7 +9,8 @@ call site. This module derives the sets the records are held to.
   reaches names the ``knowledge_revisions`` table, where a body lives. Reached =
   the method plus every ``self.<method>(...)`` call, transitively, whose target
   the class defines, and SQL = a string constant in those bodies or a module-level
-  string constant one of them names. Blind: SQL assembled from fragments, a method
+  string constant one of them names. The table name is matched case-insensitively,
+  as SQLite resolves it. Blind: SQL assembled from fragments, a method
   handed on by reference rather than called (``mapper=self.x``), a body kept in
   another table, and any call not spelled ``self.<name>(...)``. A method's own
   docstring is not read.
@@ -18,7 +19,11 @@ call site. This module derives the sets the records are held to.
   bare name. Per gate: ``knowledge_get`` for `knowledge.get`; every method of
   ``CanonicalVisibility`` and of ``ResultGate`` for search; ``_relation_is_visible``
   for the relation gate. Blind: a reader reached through a function the gate calls
-  in another scope.
+  in another scope. **The list of gates is enumerated by hand, not derived.** The
+  write path's gate, ``register._draft_only_proposals.current_revision`` in
+  ``mcp/tools.py``, is not modelled: it reads no body today, so no record is held
+  to it, and a body read added there is not seen. #870
+  (https://github.com/theurian/theurian/issues/870) owns deriving the list.
 - *A gate's read.* The session members the same functions call that read no body,
   which for search is taken from ``CanonicalVisibility._lookup`` alone.
 """
@@ -157,7 +162,8 @@ def reached_sql(module: ast.Module, owner: ast.ClassDef, name: str) -> list[str]
 
 
 def reads_body(module: ast.Module, owner: ast.ClassDef, name: str) -> bool:
-    return any(BODY_TABLE in sql for sql in reached_sql(module, owner, name))
+    """Whether the SQL *name* reaches names the body table; SQLite resolves it in any case."""
+    return any(BODY_TABLE in sql.lower() for sql in reached_sql(module, owner, name))
 
 
 def _names_a_module_constant(owner: ast.ClassDef, name: str, constant: str) -> bool:

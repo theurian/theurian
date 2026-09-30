@@ -55,6 +55,7 @@ tree, and it is line-keyed. The Control, part A paragraph of T-21 is the
 
 from __future__ import annotations
 
+import ast
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -71,6 +72,7 @@ from adr_0038_support import (
 )
 from gate_read_facts import (
     READ_NAMES,
+    REPO_ROOT,
     TOOLS_FILE,
     Gate,
     body_readers,
@@ -79,6 +81,8 @@ from gate_read_facts import (
     function,
     gates,
     joined_readers,
+    klass,
+    methods,
     tree,
 )
 from gate_read_rules import (
@@ -95,7 +99,7 @@ from gate_read_rules import (
     _problems,
     _row,
 )
-from record_sentences import from_anchor, sentence_containing
+from record_sentences import from_anchor, sentence_containing, sentences
 
 pytestmark = pytest.mark.unit
 
@@ -503,3 +507,143 @@ def test_the_security_row_names_the_properties_of_the_relation_gate_an_equivalen
     assert relation.sites == {"_relation_is_visible"}, (
         "the relation gate moved off `_relation_is_visible`"
     )
+
+
+# -- The per-candidate read on the search path: two records that still named get_item ----
+
+#: A sentence that names the session's `get_item` is history only if it dates the read.
+_DATED: Final = re.compile(r"\bbefore 0\.2\.3\b")
+
+
+def _undated_get_item(text: str) -> list[str]:
+    """The sentences of *text* that name the session's bare `get_item` without dating it."""
+    return [s for s in sentences(text) if "get_item" in _names(s) and not _DATED.search(s)]
+
+
+def _visibility_class_doc() -> str:
+    owner = klass(tree(REPO_ROOT / VISIBILITY), "CanonicalVisibility")
+    return ast.get_docstring(owner) or ""
+
+
+_PER_CANDIDATE: Final = (
+    ("CanonicalVisibility class docstring", _visibility_class_doc, "per distinct document"),
+    (
+        "SqliteCanonicalStore.__enter__ comment",
+        lambda: _comment(STORE, "is a comprehension over the retriever's"),
+        "never calls",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("label", "text", "anchor"), _PER_CANDIDATE, ids=[row[0] for row in _PER_CANDIDATE]
+)
+def test_a_record_names_the_bodyless_read_as_the_per_candidate_read_on_the_search_path(
+    label: str, text: Callable[[], str], anchor: str
+) -> None:
+    """RED means a record names `get_item` as search's per-candidate read (#832, code-review HIGH).
+
+    Both records kept saying `get_item` after 0.2.3 moved `CanonicalVisibility._lookup`
+    to `get_item_metadata`, contradicting the T-21 Amended block. The sentence
+    naming the per-candidate read must name exactly the search gate's derived read,
+    and `get_item` may appear only in a sentence that dates it before 0.2.3: the
+    class docstring's 1.4 ms figure is history and stays allowed. Not seen: a
+    record that names no read, or names `get_item_metadata` and is wrong about how
+    often it is paid.
+    """
+    record = text()
+    decided_on = gates()["search"].read
+
+    sentence = sentence_containing(record, anchor)
+
+    assert set(_names(sentence)) == decided_on, f"{label} names {_names(sentence)}: {sentence!r}"
+    assert _undated_get_item(record) == [], f"{label} names `get_item` undated"
+
+
+def test_the_undated_get_item_rule_reads_history_and_nothing_else() -> None:
+    """RED means the rule refuses the dated sentence it must allow, or passes one it must refuse."""
+    dated = (
+        "Recorded in ``21e1ba9`` and measured before 0.2.3, when that read was the "
+        "joined, body-carrying ``get_item``: 1.4 ms per hundred items."
+    )
+    current = "So this costs one ``get_item`` per distinct document per request."
+
+    assert _undated_get_item(dated) == [], "control: the dated history sentence is allowed"
+    assert _undated_get_item("It costs one bodyless ``get_item_metadata`` per document.") == [], (
+        "control: `get_item_metadata` is not the bare `get_item`"
+    )
+    assert _undated_get_item(current) == [current], "the pre-fix sentence is refused"
+
+
+# -- The cleared docstring's count, and the T-23 correction note -------------------
+
+
+def _axes_before_the_body_read() -> list[str]:
+    """The axes `_may_surface` checks, in source order, before it calls `_served_item`.
+
+    Key: a top-level `if` of `_may_surface` whose test calls `may_surface` (status),
+    calls `may_disclose` (sensitivity) or compares `current_revision_id` with `!=`
+    (revision). An `if` of another shape, such as the `is None` guard, is not an axis.
+    """
+    owner = klass(tree(REPO_ROOT / VISIBILITY), "CanonicalVisibility")
+    body = methods(owner)["_may_surface"].body
+    served = next(i for i, node in enumerate(body) if "_served_item" in callees(node))
+    axes: list[str] = []
+    for node in body[:served]:
+        if not isinstance(node, ast.If):
+            continue
+        test = node.test
+        unequal = any(
+            isinstance(n, ast.Compare) and isinstance(n.ops[0], ast.NotEq) for n in ast.walk(test)
+        )
+        if "may_surface" in callees(test):
+            axes.append("status")
+        if "may_disclose" in callees(test):
+            axes.append("sensitivity")
+        if unequal and "current_revision_id" in ast.unparse(test):
+            axes.append("revision")
+    return axes
+
+
+def test_the_cleared_docstring_counts_body_reads_over_the_rows_that_cleared_the_pointer_axes() -> (
+    None
+):
+    """RED means the count parenthetical says which rows get a body read in words the code refutes.
+
+    The pre-fix parenthetical called them "the distinct *surfaceable* item count"
+    that "carry no withheld row". A GHSA-3f65 content-mismatch row is withheld
+    after its one `get_item_exact`, so the claim holds only for the axes before
+    it: status, sensitivity and revision, derived here from the order of
+    `_may_surface`'s checks. Not seen: the word "subset", or the count itself.
+    """
+    parenthetical = from_anchor(
+        _doc(VISIBILITY, "cleared", "CanonicalVisibility"), "(The body-carrying"
+    )
+    axes = _axes_before_the_body_read()
+    spelled = ", ".join(axes[:-1]) + " and " + axes[-1]
+
+    assert axes == ["status", "sensitivity", "revision"], f"`_may_surface` checks {axes}"
+    assert f"rows that clear {spelled}" in parenthetical, (
+        f"the parenthetical does not say the rows are those that clear {spelled}"
+    )
+    assert "surfaceable" not in parenthetical, (
+        "it names the rows 'surfaceable', which is not the key"
+    )
+    assert "carry no withheld row" not in parenthetical, (
+        "it says a row with a body read is never withheld, which a content mismatch refutes"
+    )
+
+
+def test_the_t23_correction_note_names_the_read_the_search_gate_decides_on() -> None:
+    """RED means the note on the T-23 paragraphs names another read as the one the gate decides on.
+
+    The note says that since 0.2.3 the gate decides on the bodyless read and the
+    hash comes from a separate joined one. It names one session read, and it must
+    be the one `CanonicalVisibility._lookup` makes. Not seen: the joined read,
+    which the note does not name, and "only for a row that has cleared the gate".
+    """
+    note = _block(_threat_model(), "two paragraphs below described the 0.1.0.dev13 read")
+
+    named = set(_names(note))
+
+    assert named == gates()["search"].read, f"the T-23 correction note names {sorted(named)}"

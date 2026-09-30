@@ -19,8 +19,10 @@ in `src` whose first argument is spelled with `context`. The writer's
 `get_item(project_id, item_id)` is a different method and is excluded by that key;
 a session call whose first argument is not spelled with `context` is outside it.
 The gate-path reads are the session members called by `_relation_is_visible`,
-every method of `CanonicalVisibility` and `ResultGate._surfaced`; a read reached
-through another function is outside it.
+every method of `CanonicalVisibility` and every method of `ResultGate` (the scopes
+`gates()` walks); a read reached through another function is outside it. The
+session-factory annotation scan is a `Callable[...]` subscript naming
+`CanonicalReadSession`; a string annotation or an alias is outside it.
 """
 
 from __future__ import annotations
@@ -66,6 +68,7 @@ _SNIPPET: Final = textwrap.dedent(
     '''
     _BODY_SQL = "SELECT body FROM knowledge_revisions WHERE x = ?"
     _POINTER_SQL = "SELECT item_id FROM knowledge_items WHERE x = ?"
+    _MIXED_CASE_SQL = "SELECT body FROM Knowledge_Revisions WHERE x = ?"
 
     class Store:
         def direct(self):
@@ -80,6 +83,15 @@ _SNIPPET: Final = textwrap.dedent(
 
         def through_two_self_calls(self):
             return self.through_a_self_call()
+
+        def direct_upper_case(self):
+            return self._read("SELECT * FROM KNOWLEDGE_REVISIONS")
+
+        def direct_mixed_case(self):
+            return self._read("SELECT r.body FROM Knowledge_Items i JOIN Knowledge_Revisions r")
+
+        def through_a_mixed_case_constant(self):
+            return self._read(_MIXED_CASE_SQL)
 
         def pointer_only(self):
             return self._read(_POINTER_SQL)
@@ -104,6 +116,9 @@ _SNIPPET: Final = textwrap.dedent(
     ("method", "selects_a_body"),
     [
         ("direct", True),
+        ("direct_upper_case", True),
+        ("direct_mixed_case", True),
+        ("through_a_mixed_case_constant", True),
         ("through_a_constant", True),
         ("through_a_self_call", True),
         ("through_two_self_calls", True),
@@ -123,6 +138,10 @@ def test_a_method_reads_a_body_when_its_self_call_reach_names_the_revisions_tabl
     pin green while the constant-name key read the method as body-free. The last
     two rows are the key's stated weak half (a method handed on by reference, a
     call on another object), asserted so that widening the key is a decision.
+    The upper- and mixed-case rows are adversarial M1: SQLite resolves a table
+    name in any case, so a body read spelled `KNOWLEDGE_REVISIONS` or
+    `Knowledge_Revisions` left every pin green while a case-sensitive key read
+    the method as body-free.
     """
     module = ast.parse(_SNIPPET)
     owner = klass(module, "Store")
@@ -321,3 +340,50 @@ def test_the_t26_proof_names_a_test_that_drives_cleared_alone_and_counts_one_of_
     assert "it does not drive `ResultGate._surfaced`" in spelled, (
         "the bullet no longer says the test leaves `_surfaced` undriven"
     )
+
+
+def test_the_only_session_factory_annotation_in_src_is_result_gates_store_factory() -> None:
+    """RED means a second `Callable[..., CanonicalReadSession]` seam exists, or the first moved.
+
+    The records call `ResultGate`'s `store_factory` the gate path's one injected
+    session seam. Key: a `Callable[...]` subscript whose text names
+    `CanonicalReadSession`; `IndexBuildSession`'s factory is the other annotation and
+    is not one. Not seen: a string annotation, or an alias of the session.
+    """
+
+    def factory(node: ast.AST) -> str | None:
+        match node:
+            case ast.Subscript(value=ast.Name(id="Callable") | ast.Attribute(attr="Callable")):
+                text = ast.unparse(node)
+                return text if "CanonicalReadSession" in text else None
+        return None
+
+    found = _sites(_trees(SRC), factory)
+
+    assert {(path, label) for path, _, label in found} == {
+        (SRC + "application/retrieval_service.py", "Callable[[Path], CanonicalReadSession]")
+    }, f"session-factory annotations in src: {sorted(found)}"
+    assert _sites({"<snippet>": ast.parse("x: Callable[[Path], CanonicalReadSession]")}, factory), (
+        "control: the key does not see the annotation it is written for"
+    )
+
+
+def test_the_relation_gate_has_one_call_site_and_it_is_in_knowledge_get() -> None:
+    """RED means `_relation_is_visible` gained a caller, or moved out of `knowledge_get`.
+
+    The records say shipped wiring always hands it the concrete store that
+    `knowledge_get` opens; that holds only while it has no other caller.
+    """
+
+    def call(node: ast.AST) -> str | None:
+        match node:
+            case ast.Call(
+                func=ast.Name(id="_relation_is_visible")
+                | ast.Attribute(attr="_relation_is_visible")
+            ):
+                return "_relation_is_visible"
+        return None
+
+    assert _sites(_trees(SRC), call) == {
+        (SRC + "mcp/tools.py", "knowledge_get", "_relation_is_visible")
+    }, f"callers of `_relation_is_visible`: {sorted(_sites(_trees(SRC), call))}"

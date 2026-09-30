@@ -41,6 +41,7 @@ Pure: the store is a fake, the candidate source is a fake, and no file is opened
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NamedTuple, final
@@ -394,10 +395,13 @@ def test_search_reads_a_body_for_every_row_that_clears_and_a_revision_for_the_fi
     check's joined ``get_item_exact`` for **every** row that clears, memoised per
     distinct item and including rows past ``limit`` that are never served, and
     ``ResultGate._surfaced`` then reads ``get_revision`` for each of the first
-    ``limit`` candidates. A row withheld on status is read by neither. Driven over
-    the real ``ResultGate`` and ``CanonicalVisibility``; the session is a recording
-    fake, so this holds which reads the gate makes and not what the store does
-    with them.
+    ``limit`` candidates. A row withheld on status, sensitivity or revision is read
+    by neither; a row withheld on content identity (GHSA-3f65) is refused only
+    after its one ``get_item_exact``, which this fixture does not drive -- its
+    withheld row is unknown to the session, so it is refused at the pointer read.
+    Driven over the real ``ResultGate`` and ``CanonicalVisibility``; the session is
+    a recording fake, so this holds which reads the gate makes and not what the
+    store does with them.
     """
     surfaceable = tuple(_row(number) for number in (1, 2, 3))
     withheld = _row(9)
@@ -418,6 +422,27 @@ def test_search_reads_a_body_for_every_row_that_clears_and_a_revision_for_the_fi
     assert not [
         entry for entry in log if withheld.item_id in entry or withheld.revision_id in entry
     ], "a withheld row had a body read"
+
+
+def test_a_document_with_two_chunks_has_its_body_read_once_for_the_content_check() -> None:
+    """RED means `_served_item` no longer memoises, so each chunk of one document pays a body read.
+
+    The memo is what keeps the content check's joined read per distinct item and
+    not per ranked row, and the other pins give every row its own item id, so
+    nothing else here can see it go.
+    """
+    first = _row(1)
+    second = replace(first, chunk_id=f"{_ulid(1)}#1")
+    log: list[str] = []
+    admitted = CanonicalVisibility(
+        _RecordingSession(log, known=(first,)),
+        CONTEXT,
+        include_unapproved=False,
+        visible_sensitivities=EVERY_SENSITIVITY,
+    ).cleared((first, second))
+
+    assert admitted == (first, second), "precondition: both chunks were asked about and cleared"
+    assert log.count(f"get_item_exact:{first.item_id}") == 1
 
 
 # -- What a scan costs: the duration face of T-17a -------------------------
@@ -515,8 +540,10 @@ def test_the_canonical_read_count_is_the_ranking_length_and_so_the_withheld_coun
     residual carried a *second* channel — the refusal's duration scaled with the
     withheld body's size (the pre-gate body-materialization channel). ``_measure``
     now counts ``get_item_metadata``, the pointer-row read that decides the gate;
-    the body is read only for a row that clears, through ``get_item_exact``, and
-    never for a withheld one. The figures that follow — about 15 us per distinct
+    the body is read only for a row that clears status, sensitivity and revision,
+    through ``get_item_exact``, and never for one withheld on those axes (a row
+    withheld on content identity, GHSA-3f65, is refused after its one body read).
+    The figures that follow — about 15 us per distinct
     document, 6.047 ms with 400 documents retired after the build against 0.163 ms
     with none — were taken before 0.2.3 with the body-carrying read, so they are an
     upper bound on the current per-read cost; what reproduces and what this test
