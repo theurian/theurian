@@ -18,11 +18,17 @@ synthetic text beside a control. Nothing here reads a document by name.
    `_relation_is_visible` names that read.
 
 **Known-weak halves.** A clause ends at `record_sentences.clauses`: ``;``, ``--``,
-an em dash or ``, and ``, so a second read joined by a bare comma is read with the
-first. Check 4 is exclusion within a clause, not pairing: two call sites in one
-clause may swap their reads. `_FORBIDDEN` is the phrases the pre-fix records used,
-and a false claim in other words passes it. Reads are matched by name, so a record
-that says "the joined read" and names none is held only by check 3.
+an em dash or ``, and ``. The last is the Oxford comma: "A, B, and C" is cut before
+C, while "A, B and C" is one clause, so a second read joined by a bare comma or by
+a plain "and" is read with the first. Check 4 is exclusion within a clause, not
+pairing: two call sites in one clause may swap their reads. `_FORBIDDEN` is the
+phrases the pre-fix records used, and a false claim in other words passes it.
+Reads are matched by name, so a record that says "the joined read" and names none
+is held only by check 3. The rules hold reader *names*, not the quantifiers a
+sentence attaches to them ("for every row that is served", "for the first
+`limit`"): a record that names the right readers and says "served" of the wrong
+rows passes. #870 (https://github.com/theurian/theurian/issues/870) owns holding
+them.
 """
 
 from __future__ import annotations
