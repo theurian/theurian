@@ -538,17 +538,18 @@ recommendation. Do not stop with an open question and no analysis.
 never re-attempted by another route, as a refused mutate run once was through
 the copy's venv python ([PR #838, process note
 2](https://github.com/theurian/theurian/pull/838#issuecomment-5884815645)). A
-transient classifier or infrastructure error is retried once, with the identical
-command; if it recurs, or cannot be told from a refusal, it is reported as a
-refusal. The orchestrator takes a refusal to the user, Blocking Issue or not —
-never to Codex or the `watchdog` agent: it is a permission decision, not a
-judgment for a second reader, and only the user owns those. Nor does the
-orchestrator re-run a specialist's refused step, as an exception-1 scratch
-script or otherwise. A refusal about *scope* — who may act, as worktree
-isolation confines a session's git to its own tree — is not one about the
-*action*: a differently-scoped node doing its own work in its own domain
-circumvents nothing. Ask what the refusal decided and whose goal the action
-serves; if the refused session's, stop and escalate — never fetch it for them.
+transient classifier or infrastructure error ("no verdict") is retried once,
+with the identical command; if it recurs, or cannot be told from a refusal, it
+is reported as a refusal. The orchestrator takes a refusal to the user, Blocking
+Issue or not — never to Codex or the `watchdog` agent: it is a permission
+decision, not a judgment for a second reader, and only the user owns those. Nor
+does the orchestrator re-run a specialist's refused step, as an exception-1
+scratch script or otherwise. A refusal of the *action* binds every node; one
+about *scope* — who may act, as worktree isolation confines a session's git to
+its own tree — binds only that session, so a differently-scoped node doing its
+own work in its own domain circumvents nothing. But if the action serves the
+refused session's goal at all — and any step in work the orchestrator assigned
+does — stop and escalate; never run it on that session's behalf.
 
 ### A non-Blocking judgment goes to the reviewer node, not through the user
 
