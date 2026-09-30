@@ -10,10 +10,11 @@ eval harness fills both with one fixed clock so its byte-pinned baseline
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 from fakes.clock import FrozenClock
@@ -35,6 +36,9 @@ from theurian.infrastructure.sqlite.store import SqliteCanonicalStore
 pytestmark = pytest.mark.integration
 
 runner = CliRunner()
+
+PRODUCT_SOURCE: Final = Path(__file__).resolve().parents[2] / "src"
+_COMPOSED_CLOCK_NAME: Final = re.compile(r"\bcomposed_clock\b")
 
 ITEM_ID = "architecture.auth-policy"
 BODY = "# Authentication policy\n\nEvery call carries a signed token.\n"
@@ -187,3 +191,27 @@ def test_the_composed_clock_holds_only_inside_its_block(project: Path) -> None:
     with composed_clock(pinned):
         assert resolve_context(project).clock is pinned
     assert isinstance(resolve_context(project).clock, SystemClock)
+
+
+def test_no_product_module_calls_composed_clock() -> None:
+    """``validFrom`` and a registered project's ``registered_at`` are stamped from
+    the clock ``resolve_context`` returns; a product module composing one would
+    stamp governed state from a clock no operator chose.
+
+    Key: every line matching ``\\bcomposed_clock\\b`` in a ``*.py`` file under
+    ``packages/theurian-core/src``, comments and strings included, less the
+    ``def composed_clock(`` line in ``theurian/cli/context.py``."""
+    mentions = [
+        (path.relative_to(PRODUCT_SOURCE).as_posix(), line.strip())
+        for path in sorted(PRODUCT_SOURCE.rglob("*.py"))
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if _COMPOSED_CLOCK_NAME.search(line)
+    ]
+
+    definitions = [
+        (module, line)
+        for module, line in mentions
+        if module == "theurian/cli/context.py" and line.startswith("def composed_clock(")
+    ]
+    assert len(definitions) == 1, mentions
+    assert [mention for mention in mentions if mention not in definitions] == []

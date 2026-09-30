@@ -1016,6 +1016,28 @@ def test_serve_composes_the_grant_from_the_declared_profile(
     )
 
 
+def test_serve_hands_build_server_no_search_clock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unset, ``build_server`` searches on the wall clock. A daemon composed with
+    a fixed clock -- the eval harness's ``PinnedClock`` -- would compute every
+    hit's ``freshness`` against one instant for as long as it ran."""
+    passed: list[dict[str, object]] = []
+
+    def _record(*_args: object, **kwargs: object) -> object:
+        passed.append(kwargs)
+        return object()
+
+    monkeypatch.setattr("theurian.daemon.runner.build_server", _record)
+    monkeypatch.setattr("theurian.daemon.runner.build_app", lambda _config, _server: object())
+    monkeypatch.setattr("theurian.daemon.runner.uvicorn.run", lambda *_args, **_kwargs: None)
+
+    serve(tmp_path, port=_free_port())
+
+    assert len(passed) == 1
+    assert "search_clock" not in passed[0], passed[0]
+
+
 def test_port_is_free_detects_an_occupied_port() -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as squatter:
         squatter.bind(("127.0.0.1", 0))
