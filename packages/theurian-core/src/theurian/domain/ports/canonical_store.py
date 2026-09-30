@@ -504,13 +504,17 @@ class CanonicalReadSession(Protocol):
         columns, and reading the current revision's body before that decision made
         a withheld item's refusal scale with the body's size -- an
         existence-and-size side channel a caller could time. This read answers the
-        gate from the pointer row; a body is read only once the item is confirmed
-        surfaceable -- through :meth:`get_item_exact` by the GHSA-3f65 content
-        check, and through ``SqliteCanonicalStore.current_revision`` by
-        ``knowledge.get``. Resolves aliases like :meth:`get_item`. The returned item carries
-        ``current_served_content_sha256=None``: no body was read to compute it, so
-        the serve gate treats it as unverifiable and withholds -- which is why the
-        GHSA-3f65 content-identity check reads the full item, never this one.
+        gate from the pointer row; a body is read only after the item clears it --
+        by ``knowledge.get`` through ``SqliteCanonicalStore.current_revision``; on
+        search through :meth:`get_item_exact` by the GHSA-3f65 content check
+        (``CanonicalVisibility._served_item``), memoised per distinct item with a
+        row that clears status, sensitivity and revision, served or not, and
+        through :meth:`get_revision` by ``ResultGate._surfaced`` for each of the
+        first ``limit`` candidates. Resolves aliases like :meth:`get_item`. The
+        returned item carries ``current_served_content_sha256=None``: no body was
+        read to compute it, so the serve gate treats it as unverifiable and
+        withholds -- which is why the GHSA-3f65 content-identity check reads the
+        full item, never this one.
         """
         ...
 

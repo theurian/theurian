@@ -492,10 +492,13 @@ class SqliteCanonicalStore:
         with that body's size, an existence-and-size oracle a caller could measure
         for content it may not read. This read (`get_item_exact_metadata` for
         `_relation_is_visible`) answers the gate from the pointer row alone; a
-        body is read only once the item has cleared status and sensitivity -- by
-        `knowledge.get` through `current_revision`, and by
-        `CanonicalVisibility._served_item` through `get_item_exact` -- and
-        `_relation_is_visible` reads none.
+        body is read only after the item has cleared it -- by `knowledge.get`
+        through `current_revision`; on search by `CanonicalVisibility._served_item`
+        through `get_item_exact`, the GHSA-3f65 content check, memoised per
+        distinct item with a row that clears status, sensitivity and revision,
+        served or not, and by `ResultGate._surfaced` through `get_revision` for
+        each of the first `limit` candidates -- and `_relation_is_visible` reads
+        none.
 
         Resolves aliases like `get_item` -- reachability may follow a rename. The
         returned item carries `current_served_content_sha256=None` because no body
@@ -1597,7 +1600,8 @@ def _project_from_row(row: sqlite3.Row) -> Project:
     )
 
 
-#: The item read the serve gate uses, joined to its current revision's served text.
+#: The item read behind the serve gate's content check, joined to its current
+#: revision's served text.
 #:
 #: Selects the current revision's `title` and `body` rather than its stored
 #: `content_sha256`, because the gate checks *served* content identity: the index
@@ -1660,14 +1664,23 @@ _ITEM_METADATA_SQL: Final = (
 def _item_with_current_content_from_row(row: sqlite3.Row) -> KnowledgeItem:
     """`_item_from_row` plus the current revision's served-content hash from the join.
 
-    The gate reads carry `current_served_content_sha256` so
+    The joined reads, `get_item` and `get_item_exact`, carry
+    `current_served_content_sha256` so
     :meth:`~theurian.application.visibility.CanonicalVisibility._may_surface` can
     check that indexed text still matches canonical's *current served content*
-    (GHSA-3f65) -- title-plus-body, the text an excerpt is cut from -- without a
-    second per-row read the candidate-depth discipline forbids. Recomputed here
-    from the joined `title` and `body` with the same `served_content_hash` the
-    index build uses, so a drift in either moves this value and the gate catches
-    it; keying on the stored body-only `content_sha256` would miss a title drift.
+    (GHSA-3f65) -- title-plus-body, the text an excerpt is cut from. Neither is
+    the read the gate decides on: since 0.2.3 that is the bodyless
+    `get_item_metadata`, which carries no hash, and
+    `CanonicalVisibility._served_item` then reads `get_item_exact`, memoised per
+    distinct item, for a row that has cleared status, sensitivity and revision --
+    a second canonical read for each such item, rows the response never serves
+    included. For one row through `CanonicalVisibility.cleared`,
+    `test_may_surface_reads_the_body_of_a_surfaceable_row`
+    (`tests/integration/test_pre_gate_body_materialization.py`) holds the pair:
+    one metadata read, one body read. Recomputed here from the joined `title` and
+    `body` with the same `served_content_hash` the index build uses, so a drift in
+    either moves this value and the gate catches it; keying on the stored
+    body-only `content_sha256` would miss a title drift.
     `None` when the pointer is unset or names no surviving revision (both join
     columns NULL); the gate withholds on `None`, the safe direction for a check
     that guards a disclosure.

@@ -319,15 +319,18 @@ class KnowledgeItem:
     #: the serve gate can check that indexed text still matches canonical's
     #: *current served content*, not only its current revision id (GHSA-3f65).
     #:
-    #: Populated on exactly one path: the gate read
-    #: (`_ITEM_WITH_CURRENT_CONTENT_SQL` in the SQLite store), which joins the
-    #: current revision and recomputes this from its title and body. Every other
-    #: construction leaves it `None` -- including `with_revision`, which moves the
-    #: pointer in memory but does not read the store, so it cannot know the served
-    #: hash without one. `None` is what the gate treats as unverifiable and
+    #: Populated only by the SQLite store's joined item read
+    #: (`_ITEM_WITH_CURRENT_CONTENT_SQL`), which joins the current revision and
+    #: recomputes this from its title and body. That is not the read the gate
+    #: decides on: since 0.2.3 the gate reads the bodyless pointer row, which
+    #: leaves this `None`, and the content check then reads the joined form
+    #: through `CanonicalVisibility._served_item`. Every other construction leaves
+    #: it `None` too -- including `with_revision`, which moves the pointer in
+    #: memory but does not read the store, so it cannot know the served hash
+    #: without one. `None` is what the content check treats as unverifiable and
     #: withholds on, the safe direction for a check that exists to stop a stale
-    #: body reaching a caller; an in-memory item never reaches the gate, which
-    #: always reads a fresh item through that join.
+    #: body reaching a caller; an in-memory item never reaches that check, which
+    #: always reads a fresh item through the join.
     current_served_content_sha256: ContentHash | None = None
 
     def with_revision(self, revision: KnowledgeRevision) -> Self:
@@ -346,9 +349,10 @@ class KnowledgeItem:
                 f"not to {self.project_id}"
             )
         # `current_served_content_sha256` is deliberately not set here: it is the
-        # serve gate's check value, and the gate reads it from the store's
-        # gate-read join, not from an in-memory item (GHSA-3f65). Computing it here
-        # from `revision.content_sha256` would be both dead (nothing reads it) and
+        # serve gate's check value, and the content check reads it from the
+        # store's joined read (`CanonicalVisibility._served_item`), not from an
+        # in-memory item (GHSA-3f65). Computing it here from
+        # `revision.content_sha256` would be both dead (nothing reads it) and
         # wrong (that is the body-only hash, not the served title-plus-body one).
         return replace(
             self,
