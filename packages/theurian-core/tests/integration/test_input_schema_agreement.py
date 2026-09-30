@@ -89,6 +89,74 @@ pytestmark = pytest.mark.integration
 #: this set equal to the population it claims to describe.
 UNREAD_CONTEXT_KEYS: Final = frozenset({"snapshotId", "agentId", "taskId"})
 
+_TOOL_CONTEXT_FIELDS: Final = frozenset({"projectId", *UNREAD_CONTEXT_KEYS})
+
+#: Each tool's effective published input keys: its file's ``properties`` with its
+#: ``allOf`` referents' merged in. Literal, so a field added to a handler and its
+#: schema together -- which the agreement rules above admit -- goes RED here.
+PUBLISHED_INPUT_FIELDS: Final[dict[str, frozenset[str]]] = {
+    "knowledge.generateMigrationDraft": _TOOL_CONTEXT_FIELDS | {"document", "evidence", "local"},
+    "knowledge.get": _TOOL_CONTEXT_FIELDS | {"includeUnapproved", "itemId"},
+    "knowledge.proposeChange": _TOOL_CONTEXT_FIELDS
+    | {
+        "author",
+        "body",
+        "contentType",
+        "description",
+        "evidence",
+        "expectedRevision",
+        "itemId",
+        "kind",
+        "labels",
+        "local",
+        "namespace",
+        "owner",
+        "scopePaths",
+        "sensitivity",
+        "sourceAnchors",
+        "title",
+        "trustLevel",
+    },
+    "knowledge.search": _TOOL_CONTEXT_FIELDS
+    | {"asOf", "includeUnapproved", "limit", "maxTokens", "query", "useDense"},
+    "knowledge.status": _TOOL_CONTEXT_FIELDS,
+    "project.list": frozenset(),
+    "review.findings": _TOOL_CONTEXT_FIELDS
+    | {
+        "commitSha",
+        "family",
+        "limit",
+        "pullRequest",
+        "q",
+        "reviewer",
+        "severity",
+        "specialist",
+    },
+    "review.generateKnowledgeCandidate": _TOOL_CONTEXT_FIELDS
+    | {
+        "author",
+        "body",
+        "category",
+        "description",
+        "evidence",
+        "expectedRevision",
+        "fixCommit",
+        "itemId",
+        "kind",
+        "labels",
+        "namespace",
+        "owner",
+        "recordKey",
+        "repository",
+        "scopePaths",
+        "sourceAnchors",
+        "title",
+    },
+    "review.search": _TOOL_CONTEXT_FIELDS
+    | {"author", "filePath", "limit", "pullRequest", "q", "repository", "threadState"},
+    "system.capabilities": frozenset(),
+}
+
 
 @pytest.fixture(scope="module")
 def server() -> MCPServer:
@@ -360,6 +428,22 @@ def test_the_excluded_context_keys_are_still_the_unread_three(server: MCPServer)
         f"https://github.com/theurian/theurian/issues/665 and move the exclusion and "
         f"the module docstring together"
     )
+
+
+def test_every_published_input_field_is_in_the_recorded_population(server: MCPServer) -> None:
+    """ADR-0003: the clocks a build and a search read are composed at the roots
+    (``build_server``'s ``search_clock``, ``composed_clock``), and a caller's
+    only instant is ``asOf``, one request's moment. A new input field is where a
+    caller could reach a clock, so it lands here with the review that decides
+    what it may move."""
+    by_id = _by_id(server)
+
+    published = {
+        tool: frozenset(_effective_properties(document, by_id))
+        for tool, document in _published(server).items()
+    }
+
+    assert published == PUBLISHED_INPUT_FIELDS
 
 
 @pytest.mark.parametrize("tool_name", _TOOL_NAMES)
