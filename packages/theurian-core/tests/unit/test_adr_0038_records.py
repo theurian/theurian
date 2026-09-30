@@ -26,6 +26,7 @@ from adr_0038_support import (
     ROADMAP,
     SAMPLE_MIGRATION,
     TRACEABILITY,
+    _adr,
     _arms,
     _collapsed,
     _function,
@@ -158,7 +159,17 @@ def test_the_mcp_input_schema_types_kind_as_a_string_the_handler_closes(schema: 
 
 
 def test_adr_0005_closes_the_set_over_both_operations_and_governs_only_adding_one() -> None:
-    text = ADR_0005.read_text(encoding="utf-8")
+    """Reach: ADR-0005's text outside its ``>`` amendment blocks, since ADR-0039's governs removal.
+
+    ADR-0038's *Negative* sentence that ADR-0005 "says nothing of removing one" is
+    held as true when measured, and superseded, by ADR-0038's own amendment block.
+    """
+    lines = ADR_0005.read_text(encoding="utf-8").splitlines()
+    text = "\n".join(line for line in lines if not line.startswith(">"))
+    amendment = _collapsed(" ".join(line[1:] for line in lines if line.startswith(">")))
+    head = _adr().read_text(encoding="utf-8").split("\n## Context\n", 1)[0].splitlines()
+    block = "\n".join(line.removeprefix(">") for line in head if line.startswith(">"))
+    first_bullet = _collapsed(re.split(r"\n\s*- ", block)[1])
     closed = re.search(r"The operation set is closed: (.*?)\. Adding", " ".join(text.split()))
     residue = re.sub(r"\b(?:removeRelation|removeAlias|removeEvidence)\b", "", text)
 
@@ -172,6 +183,13 @@ def test_adr_0005_closes_the_set_over_both_operations_and_governs_only_adding_on
     )
     assert re.search(r"(?i)remov", text), "positive control: the removal key reads this file"
     assert not re.search(r"(?i)remov|retir|delet|drop|withdr", residue)
+    assert amendment.startswith(
+        "Amended in Phase C, by [ADR-0039](0039-closed-set-extension-compatibility.md)"
+    )
+    assert (
+        'That item\'s sentence that ADR-0005 "says nothing of removing one" was true when '
+        "measured and is not now: ADR-0005 carries an amendment pointing to ADR-0039."
+    ) in first_bullet
 
 
 def test_both_operations_are_published_admitted_to_drafts_and_parsed_into_their_own_classes() -> (
