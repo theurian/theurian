@@ -277,9 +277,10 @@ _WHY: Final = {
     "owed-hop-read": (
         "This clause exists because the joined `get_item_exact` materialises a withheld "
         "endpoint's body before withholding it, so a refusal's duration carries the body's size: "
-        "T-26, closed in 0.2.3 by the metadata form. The roadmap's Phase C Security row still "
-        "names `get_item_exact`, a stale face of #832; an edit that brings this ADR in line with "
-        "that row reopens the channel. It is the roadmap that moves.\n\n"
+        "T-26, closed in 0.2.3 by the metadata form. An edit that brings this ADR in line with "
+        "a body-joining hop read reopens the channel; the records that name the gate's read are "
+        "held to the derived read by `test_adr_0038_gate_read_records.py`, so it is they that "
+        "move.\n\n"
     ),
 }
 

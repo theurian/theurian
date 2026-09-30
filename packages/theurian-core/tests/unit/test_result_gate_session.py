@@ -394,7 +394,7 @@ def test_the_canonical_read_count_is_the_ranking_length_and_so_the_withheld_coun
     residual carried a *second* channel — the refusal's duration scaled with the
     withheld body's size (the pre-gate body-materialization channel). ``_measure``
     now counts ``get_item_metadata``, the pointer-row read that decides the gate;
-    the body is read only for a surfaceable row, through ``get_item``, and never
+    the body is read only for a surfaceable row, through ``get_item_exact``, and never
     for a withheld one. The figures that follow — about 15 us per distinct
     document, 6.047 ms with 400 documents retired after the build against 0.163 ms
     with none — were taken before 0.2.3 with the body-carrying read, so they are an
