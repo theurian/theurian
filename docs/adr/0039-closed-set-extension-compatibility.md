@@ -64,6 +64,12 @@ The population is keyed on the three classes the additive policy governs —
 becomes one of them: a construction from a value, a call of the MCP layer's
 closed-set parser with one of them, and a CLI option typed by one of them. JSON
 Schema validation, which refuses before any of them is built, is listed too.
+Completeness is not achievable statically: Python has unboundedly many ways to
+turn a string into a member — a dict of member accesses, a `match`, iteration or
+`next` over the members, an attribute chain through a member such as
+`member._value2member_map_`, annotation-driven conversion by the MCP SDK's
+pydantic models — so the population is keyed, and forms outside the key are not
+claimed. The MCP-annotation form is also #856's.
 
 ```console
 $ git grep -n -E 'KnowledgeKind\(|RelationType\(|OperationKind\(' -- packages/theurian-core/src
@@ -155,8 +161,10 @@ reads no project, no migration and no enum.
 
 ### What the wire carries
 
-**The closure is a universal scan, not a list of keywords.** Review found a
-keyword key narrower than the claim it held three times — `enum` alone, then
+**The closure is a universal scan, not a list of keywords.** The schema-side
+residuals are today's reach, and #856 and #858 are filed to widen it; the
+code-side completeness is an inherent static limit. Review found a keyword key
+narrower than the claim it held three times — `enum` alone, then
 `const` and `oneOf`/`anyOf`, then `properties` with `additionalProperties:
 false` — so detection no longer depends on knowing which construct can close a
 value.
@@ -210,21 +218,40 @@ published value or key set to a governed set, no `overlap` contains a whole
 governed set, and none of them holds a member of `kind`, `relationType` or the
 operation set. Decisions 8 and 9 rest on that.
 
-*What the scan cannot report.* Each of these is classified by a person when it
-appears, not passed silently. A `$ref` spells a pointer, not a member: a schema
-that `$ref`s `migration.schema.json#/$defs/kind` would close a value to
-`KnowledgeKind` with no member spelled in its own file. No schema does that
-today — `git grep -n -E '"\$ref": *"[^#"]' -- schemas` prints 10 cross-file
-`$ref`s, to `tool-context`, `retrieval-result` and `retrieval-metadata` — so
-the claims pin holds that population exact beside the scan. A `pattern` that
-closes a value without spelling a member, a character class for instance, is
-not an occurrence. A member embedded in a longer value that is not a pattern,
-such as a `default` or `examples` entry spelled `"status:draft"`, is not an
-occurrence either: exact spelling does not see it, and widening the rule to
-substrings would bring back the noise it exists to avoid. And a construct that
-carries a whole governed set plus other members classifies as `overlap`, not
-`enumerated`; the scan still reports each member it spells, and a person
-decides whether it publishes the set.
+*What the scan cannot report.* Its reach is exactly its three positions over
+the files under `schemas/`. What lies outside that reach passes without turning
+anything red, so nothing prompts a person to look. On the schema side it is
+today's reach, not a limit; the first four have an issue filed to widen the
+scan to them:
+
+- schemas served from outside `schemas/`: the `tools/list` input and output
+  schemas the MCP SDK derives from handler annotations, which spell no governed
+  member today (#856);
+- a member inside an instance-literal object — under `const`, `enum`,
+  `default` or `examples` — held under a key that is a keyword or a prose
+  name, where the scan still applies its keyword and prose exclusions (#858);
+- `$dynamicRef`, and a `$ref` spelled other than as `"$ref": "`, with
+  whitespace before the colon or an escaped key (#858). A reference spells a
+  pointer, not a member: a schema that `$ref`s
+  `migration.schema.json#/$defs/kind` would close a value to `KnowledgeKind`
+  with no member spelled in its own file. No schema does that today —
+  `git grep -n -E '"\$ref": *"[^#"]' -- schemas` prints 10 cross-file `$ref`s,
+  to `tool-context`, `retrieval-result` and `retrieval-metadata` — and the
+  claims pin holds the population of that canonical spelling only, not every
+  reference;
+- a custom `format` value a client registers, which closes membership for that
+  client though JSON Schema 2020-12 treats it as an annotation (#858);
+- a `pattern` that closes a value without spelling a member, a character class
+  for instance;
+- a member embedded in a longer value that is not a pattern, such as a
+  `default` or `examples` entry spelled `"status:draft"`: exact spelling does
+  not see it, and widening the rule to substrings would bring back the noise it
+  exists to avoid.
+
+The last two are stated residuals with no widening filed. A construct that
+carries a whole governed set plus other members is not among these: the scan
+reports each member it spells, as `overlap`, and a person decides whether it
+publishes the set.
 
 ```python
 # Run from the repository root with `uv run --frozen python`.
@@ -474,21 +501,32 @@ change from one written after it.
    row by row (*Context*, *The derived store*), are both due before the first
    `kind` or `relationType` member, whichever slice adds it. This takes roadmap
    §4's recommendation for the first two of its three clauses.
-3. **Adding an operation keeps ADR-0005's rule: it bumps `apiVersion`.** The
-   rule is kept by deference, not re-derived here. An older Core refuses an
-   unknown operation at schema validation exactly as it refuses an unknown
-   `kind` (*Context*), so decision 2's argument reaches operations too. Keeping
-   the bump costs one permanently read `apiVersion` per added operation and the
-   multi-version read the first bump must build; that saving is weighed in a
-   later slice, not here, because ADR-0005 states the rule and roadmap Phase C's
-   *Migration* row plans on it (*Alternatives considered*). The Core that bumps
-   reads every earlier `apiVersion`
-   (decision 5), and every document Core authors declares the **lowest**
-   `apiVersion` whose grammar admits the document and under which it carries the
-   meaning Core wrote, so a document that uses no new operation and no changed
-   meaning stays readable by older Cores. Core authors documents in one place:
-   the two lines under `packages/theurian-core/src` that stamp `apiVersion` are
-   both in `application/proposal_service.py` (`:3813`, `:4393`), behind
+3. **Adding an operation keeps ADR-0005's rule: it bumps `apiVersion`.** This
+   decision holds the bump's whole ledger; every other place in this record
+   that mentions the bump defers to it. *What it buys:* no safety, since an
+   older Core refuses an unknown operation at schema validation as it refuses
+   an unknown `kind` (*Context*), but a clearer refusal. Under v1 an unknown
+   operation is refused as `invalid migration at operations/0: does not satisfy
+   'oneOf'` over a 524-character list of branches, while a document declaring
+   the new version is refused as `invalid migration at apiVersion: does not
+   satisfy 'const' (expected 'theurian.dev/v1'); the value there is
+   'theurian.dev/v2'`, which names the version (measured by calling
+   `validate_migration_document`). That advantage holds until #849 is merged,
+   and #849 is due before the first `kind` or `relationType` member, not before
+   the first operation; so decision 2's argument, that a bump buys only a
+   message #849 provides, does not reach operations. *What it costs:* one
+   permanently read `apiVersion` per added operation, and building the
+   multi-version read at the first bump. Dropping the bump would defer that
+   read, not save it: a decision-6 meaning bump would build it anyway. *Why it
+   is kept:* by deference to ADR-0005's rule and roadmap Phase C's *Migration*
+   row; weighing this ledger is left to a later slice (*Alternatives
+   considered*). The Core that bumps reads every earlier `apiVersion` (decision
+   5), and every document Core authors declares the **lowest** `apiVersion`
+   whose grammar admits the document and under which it carries the meaning
+   Core wrote, so a document that uses no new operation and no changed meaning
+   stays readable by older Cores. Core authors documents in one place: the two
+   lines under `packages/theurian-core/src` that stamp `apiVersion` are both in
+   `application/proposal_service.py` (`:3813`, `:4393`), behind
    `theurian propose`, the MCP draft tools and OKF import.
 4. **Removing or renaming a member or an operation takes it out of Core's own
    writers only. It never leaves the read grammar of the `apiVersion` that
@@ -591,9 +629,13 @@ change from one written after it.
    set is exactly `SURFACEABLE_STATUSES` and is `knowledge.status`'s published
    T-17 contract, a second tool's; and `project-config.schema.json`'s
    `retrieval.includeStatuses`, which lists all six members, a published
-   configuration schema rather than the wire. The same ADR answers for each. The
-   concrete case is roadmap §9 candidate 2, whose change to
-   `SURFACEABLE_STATUSES` would move the three-member `status` enum
+   configuration schema rather than the wire. The same ADR answers for each. A
+   change that adds a `status`, `sensitivity` or `trustLevel` member also opens
+   the decode-before-gate bit #853's faces carry, since `_item_from_row` decodes
+   all three before any gate runs (`infrastructure/sqlite/store.py:1682`,
+   `:1685`, `:1686`); so the ADR for that set also answers #853, and #853 is due
+   before that member too. The concrete case is roadmap §9 candidate 2, whose
+   change to `SURFACEABLE_STATUSES` would move the three-member `status` enum
    `retrieval-result.schema.json` publishes and `itemsByStatus`'s key set.
 9. **No change to `kind`, `relationType` or the operation set bumps
    `protocolVersion`**, because *Context*'s scan finds no occurrence of their
@@ -602,10 +644,11 @@ change from one written after it.
    (`category`, `reviewer`), in a pattern over another vocabulary
    (`traceabilityPolicy`) and in one property name (`security`), and no
    `relationType` or operation member occurs at all. The scan reports every new
-   occurrence and a person classifies it; its stated holes are *Context*'s
-   "What the scan cannot report". A member a client does not know reaches it as
-   an unrecognised string, in the two response fields that publish any of the
-   three: a `relationType` in `knowledge.get`'s `relations`, and an operation
+   occurrence within its reach and a person classifies it; what lies outside
+   that reach is *Context*'s "What the scan cannot report". A member a client
+   does not know reaches it as an unrecognised string, in the two response
+   fields that publish any of the three: a `relationType` in `knowledge.get`'s
+   `relations`, and an operation
    name in `knowledge.generateMigrationDraft`'s `operations`. A later change that
    publishes one of them as a wire `enum` re-opens this decision.
 10. **`theurian compat check` does not surface an enum mismatch, and roadmap §4's
@@ -644,9 +687,8 @@ and is marked `BREAKING` in the CHANGELOG.
 - **No committed document becomes unreadable under this policy.** Decisions 4
   and 5 together mean FR-K4's replay holds on every Core that ships under it.
 - **`apiVersion` moves only for grammar and for meaning.** For meaning it is the
-  one signal a reader of the document has (decision 6). For grammar it carries
-  nothing an older Core's refusal lacks, and it is kept by deference to
-  ADR-0005's rule (decision 3).
+  one signal a reader of the document has (decision 6). For grammar it is kept
+  per decision 3.
 
 ### Negative
 
@@ -699,7 +741,7 @@ and is marked `BREAKING` in the CHANGELOG.
 | **Removal as a version event: drop the member from a new `apiVersion`'s read grammar** | A frozen document cannot move to the new version (FR-K5), and a fresh clone replays it (FR-K4), so every Core must still read the old version and the member with it. Under decision 3 no writer would declare the new version, and one that always did would lock out older Cores that read the document fine (decision 4). |
 | **Make `theurian compat check` detect an enum mismatch** (roadmap §4's third clause) | It compares a plugin declaration with the running Core and reads no project. The mismatch is between a project's documents and a Core, and it already surfaces at every migration load; the form it surfaces in is #849's (decision 10). |
 | **Bump `protocolVersion` for a vocabulary or grammar change** | *Context*'s scan finds no schema outside the migration format that closes a value or a key set to `kind`, `relationType` or the operation set, so no client validating against a published schema validates against their membership (decision 9). The scan reports every new occurrence for a person to classify. The wire-enumerated sets are left to their own ADRs (decision 8). |
-| **Stop bumping `apiVersion` for operations too** | An older Core refuses an unknown operation at schema validation exactly as it refuses an unknown `kind` (*Context*), so decision 2's argument reaches operations as well. Dropping it would save one permanently read `apiVersion` per added operation and the multi-version read the first bump must build. Declined here, not refuted: that saving is weighed in a later slice, not here, because ADR-0005 states the rule and roadmap Phase C's *Migration* row plans on it (decision 3). It stays the named option for that slice. |
+| **Stop bumping `apiVersion` for operations too** | Declined here, not refuted: the bump is kept per decision 3, which holds its ledger, and weighing that ledger is left to a later slice. It stays the named option for that slice. |
 
 ## Compliance
 
@@ -714,8 +756,9 @@ Landing with this pull request:
   and a fact side derived from live source that fails when the codebase moves
   and this record must move with it — an occurrence of a governed member added
   to or removed from either population of *Context*'s scan, a cross-file `$ref`
-  added under `schemas/`, a parameter added to `resolve_compatibility`, a matrix
-  row gained or lost. Its reach is stated in its module docstring.
+  in its canonical spelling added under `schemas/`, a parameter added to
+  `resolve_compatibility`, a matrix row gained or lost. Its reach is stated in
+  its module docstring.
 
 Rests on enforcement that already holds:
 
