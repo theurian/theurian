@@ -7,7 +7,7 @@ schema or behaviour, RED when the tree moves; and a prose half -- a table or lis
 parsed out of the ADR, or a fragment in :data:`ADR_STATES` -- RED when the record
 drifts.
 
-The pin is five modules and a support module, split by section:
+The pin is six modules and a support module, split by section:
 
 - this one -- the closed sets and their mirrors, the matrix, the decisions, the
   Compliance section's naming of this module, and the prose half;
@@ -15,8 +15,9 @@ The pin is five modules and a support module, split by section:
   point today, and the frozen-history premise of decision 4;
 - ``test_adr_0039_populations.py`` -- the entry-point population, the derived
   store, ``compat check``, and the writers decisions 3 and 4 name;
-- ``test_adr_0039_wire.py`` -- what the published schemas close and what the
-  wire carries open;
+- ``test_adr_0039_schemas.py`` -- the schema scan: every governed spelling
+  under ``schemas/``, classified and held exact;
+- ``test_adr_0039_wire.py`` -- what the wire closes and what it carries open;
 - ``test_adr_0039_records.py`` -- the amendments to ADR-0005 and ADR-0038, and
   the roadmap;
 - ``adr_0039_support.py`` (tests root) -- the readers they share.
@@ -42,16 +43,20 @@ The pin is five modules and a support module, split by section:
 - *What ``compat check`` reads* is every name ``compat_check`` and
   ``domain/compatibility.py`` spell or import; a read through another module's
   function is outside it.
-- *Enumerates* is the ADR's key: a closing construct -- an ``enum``, a
-  ``const``, or a ``oneOf``/``anyOf`` every branch of which is one -- all of
-  whose non-null values are members of one governed set, over every schema
-  under ``schemas/`` except the migration schema. It has the ADR's two holes. A
-  superset construct is not counted, which is why the *overlap* population is
-  pinned exactly: any growth there goes RED for a person to classify. A
-  ``pattern`` is not read, which is why the patterns that accept a governed
-  member and the ``const``/``default``/``examples`` values naming one are
-  pinned as populations of their own. ``allOf``, ``not`` and ``if``/``then``
-  are not read either.
+- *A governed occurrence* in a schema is the ADR's *Detection* rule, scanned
+  over every key and string value of every schema under ``schemas/``, not
+  over a list of constructs (``adr_0039_support.occurrences``): an object key
+  spelling a member, unless it is a 2020-12 keyword (read from the
+  specification's metaschemas) in keyword position; a string value spelling a
+  member, outside ``description``, ``title``, ``$comment``, ``$schema``,
+  ``$id``, ``$ref``, ``$anchor`` and ``x-`` keys; and a member spelled as a
+  whole word of a ``pattern`` or ``patternProperties`` key. Both populations
+  are held exact, per class, file and pointer. The closing-construct key only
+  classifies. Outside the rule, as the ADR states: a ``$ref`` (its cross-file
+  population is held exact on its own), a pattern that closes without spelling
+  a member (the patterns that accept a member are held by file and pointer), a
+  member embedded in a longer non-pattern value, and a superset construct's
+  meaning (it classifies as ``overlap``).
 - *The wire* is ``schemas/mcp/*.json`` plus every file a ``$ref`` reaches from
   them, an absolute ``$ref`` resolved by the ``$id`` it names.
 - *Published to a client* is a dict-literal key ``relationType`` or
@@ -271,7 +276,8 @@ def test_the_compliance_section_names_this_module_whose_docstring_states_its_rea
 
 #: What ADR-0039 still has to say, in its own markup and wrapped at will: the
 #: comparison collapses whitespace, emphasis and code markers on both sides.
-#: Each fragment's fact half is the test above that carries the same claim.
+#: Each fragment's fact half is the test, here or in a sibling module the module
+#: docstring names, that carries the same claim.
 ADR_STATES: Final[dict[str, str]] = {
     "measured-at": """**Every repository fact below was measured on 2026-09-30 against
         `origin/main` at `f0e4d754`.**""",
@@ -338,27 +344,59 @@ ADR_STATES: Final[dict[str, str]] = {
         `--core-maximum-exclusive`, `--protocol-version` and `--json`""",
     "compat-protocol": """`CURRENT_PROTOCOL_VERSION = "theurian/v1"`
         (`domain/compatibility.py:125`). It reads no project, no migration and no enum.""",
-    "enumerates-key": """A construct closes a value when it names the values an instance may
-        take: an `enum`, a `const`, or a `oneOf` or `anyOf` whose every branch is itself one of
-        those. A closing construct enumerates a governed set when every value it admits other
-        than null is a member of that set.""",
-    "enumerates-found": """the program below finds four such constructs and none of `kind`,
-        `relationType` or the operation set""",
-    "overlaps": """`review-generate-knowledge-candidate-input`'s `category` shares
-        `rejected-approach` and `known-exception` with `KnowledgeKind`""",
-    "overlaps-reviewer": "`review-findings-response`'s `reviewer` shares `security`",
-    "hole": """The key has two holes, and each is classified by a person when it appears rather
-        than passed silently. A construct carrying a governed set plus other members is not
-        contained in the set, so the key does not count it. A `pattern` can close a value too —
-        an alternation of members would — and the key does not read patterns.""",
-    "pattern-hole": """Today no `pattern` names a governed member: the ones that accept one are
-        open identifier grammars (`projectId`, `itemId`, `schemas/cli/version.schema.json`'s
-        `platform`) that accept it as any other identifier.""",
-    "default-hole": """Among `const`, `default`, `examples` and `pattern` sites, the only
-        governed value is `includeStatuses`' `default`, `["approved"]`, and a `default` closes
-        nothing.""",
-    "pasted-control": """the last line is the positive control that the walk reaches every
-        kind of construct the key names.""",
+    "detection-keys": """An object key equal to a member is an occurrence unless it is a JSON
+        Schema 2020-12 keyword in keyword position; keys under `properties`, `$defs`,
+        `definitions`, `dependentSchemas` and `dependentRequired` are names, so they are always
+        candidates, and the `deprecated` annotation is the live keyword case.""",
+    "detection-values": """A string value equal to a member is an occurrence wherever it sits —
+        `enum`, `const`, `default`, `examples`, `required`, a `propertyNames` subschema — except
+        under `description`, `title`, `$comment`, `$schema`, `$id`, `$ref`, `$anchor` or an
+        `x-` key, whose values are prose or identifiers.""",
+    "detection-pattern": """And a `pattern` value or a `patternProperties` key is an occurrence
+        of each member it spells as a whole word of the regex source, with `-` and `_` counted as
+        word characters, so `rejected-approach` and `depends_on` match whole and `domain` does
+        not match inside `domain-behavior`.""",
+    "pasted-control": """*Tripwire.* That population is held exact. A new occurrence of any
+        member, in any of those positions, is a change a person classifies before it is
+        accepted.""",
+    "enumerates-key": """A closing construct is an `enum`, a `const`, or a `oneOf` or `anyOf`
+        whose every branch is one of those, and it enumerates a governed set when every value it
+        admits other than null is a member of that set. An object closes its property names
+        through `additionalProperties: false` or through `propertyNames`.""",
+    "more-classes": """The classifier has two more classes, `definition-name` for a key under
+        `$defs` or `definitions` and `custom-key` for any other non-keyword key, and neither
+        occurs today.""",
+    "migration-population": """The migration schema's own population is 61 occurrences: 57
+        enumerated, 2 non-closing defaults (`unverified`, `internal`) and 2 property names
+        (`operations` as a property and as a `required` entry).""",
+    "enumerates-found": """Outside the migration schema, only `enumerated` and `key-closure`
+        close a published value or key set to a governed set, no `overlap` contains a whole
+        governed set, and none of them holds a member of `kind`, `relationType` or the operation
+        set.""",
+    "overlaps": """`review-generate-knowledge-candidate-input`'s `category`: `rejected-approach`
+        and `known-exception`""",
+    "overlaps-reviewer": "`review-findings-response`'s `reviewer`: `security`",
+    "hole": """*What the scan cannot report.* Each of these is classified by a person when it
+        appears, not passed silently.""",
+    "ref-hole": """A `$ref` spells a pointer, not a member: a schema that `$ref`s
+        `migration.schema.json#/$defs/kind` would close a value to `KnowledgeKind` with no member
+        spelled in its own file.""",
+    "ref-population": """prints 10 cross-file `$ref`s, to `tool-context`, `retrieval-result` and
+        `retrieval-metadata` — so the claims pin holds that population exact beside the
+        scan.""",
+    "pattern-hole": """A `pattern` that closes a value without spelling a member, a character
+        class for instance, is not an occurrence.""",
+    "default-hole": """A member embedded in a longer value that is not a pattern, such as a
+        `default` or `examples` entry spelled `"status:draft"`, is not an occurrence either""",
+    "superset-hole": """And a construct that carries a whole governed set plus other members
+        classifies as `overlap`, not `enumerated`; the scan still reports each member it spells,
+        and a person decides whether it publishes the set.""",
+    "items-by-status": """its counts come from `count_surfaceable_by_status`, which reads
+        `SURFACEABLE_STATUSES` directly""",
+    "items-by-status-measured": """Measured: that object schema refuses `{"superseded": 1}` and
+        accepts `{"approved": 1}`.""",
+    "record-kind-silent": """and none of its values spells a member, so the scan reports
+        nothing there.""",
     "inputs": """type `kind` as a string (and the first types `trustLevel` and `sensitivity` as
         string or null), and `knowledge-generate-migration-draft-input` constrains no `op`.""",
     "record-kind": """`review-search-response`'s `records.items.kind`, `pull-request`,
@@ -391,9 +429,11 @@ ADR_STATES: Final[dict[str, str]] = {
     "count-test": "asserts `len(RelationType) == 14`",
     "partition-test": """`test_the_v1_operation_set_partitions_operation_kind` fails when an
         `OperationKind` is routed nowhere.""",
-    "config-status": """A change to `status` also moves `project-config.schema.json`'s
-        `retrieval.includeStatuses`, which lists all six members; that is a published
-        configuration schema, not the wire""",
+    "config-status": """A change to `status` moves, besides `retrieval-result.schema.json`'s
+        `status` enum: `itemsByStatus`, whose key set is exactly `SURFACEABLE_STATUSES` and is
+        `knowledge.status`'s published T-17 contract, a second tool's; and
+        `project-config.schema.json`'s `retrieval.includeStatuses`, which lists all six members,
+        a published configuration schema rather than the wire.""",
     "config-api-version": """`schemas/config/project-config.schema.json` carries its own
         `apiVersion` const with the same spelling, `theurian.dev/v1`.""",
     "reach": "Its reach is stated in its module docstring.",
@@ -403,10 +443,31 @@ ADR_STATES: Final[dict[str, str]] = {
         (`store.py:968-973`) before `_relation_is_visible` filters them (`mcp/tools.py:2415`);
         `_revision_from_row` runs after the gate""",
     "owed-853": """3. **[#853](https://github.com/theurian/theurian/issues/853), what an older
-        Core does with a state database a newer build wrote.**""",
-    "owed-853-faces": """Its two faces are the item decode (`knowledge.get`'s
-        `get_item_metadata`) and the relation decode (`list_relations`), both ahead of the gate
-        (*Context*).""",
+        Core does with a state database a newer build wrote**, due before the first `kind` or
+        `relationType` member, whichever slice adds it.""",
+    "owed-853-faces": """Its faces are keyed on the gate register decision 6 uses,
+        `STATUS_GATE_CALL_SITES` and `DISCLOSURE_GATE_CALL_SITES`: every gate site that decodes
+        a row before it judges it. Three are established. `knowledge.get`'s `get_item_metadata`
+        and `list_relations` decode ahead of its gate (*Context*), and a known-type edge from a
+        visible item to a withheld neighbour carrying an unknown member raises through
+        `_relation_is_visible` → `get_item_exact_metadata` → `_item_from_row`""",
+    "owed-853-more": """The write tools' `current_revision` (`mcp/tools.py:1942`) and
+        `CanonicalVisibility.item` (`application/visibility.py:372`) decode before their gates
+        too, read from source.""",
+    "due-849-853": """It and #853, the check at open that keeps an older Core from decoding a
+        newer build's database row by row (*Context*, *The derived store*), are both due before
+        the first `kind` or `relationType` member, whichever slice adds it.""",
+    "d3-cost": """Keeping the bump costs one permanently read `apiVersion` per added operation
+        and the multi-version read the first bump must build""",
+    "d6-routing": """A change whose effect reaches `status`, `sensitivity` or the withdrawal
+        purge, or that moves which rows a gate reads — alias resolution (T-21), an item's
+        `current_revision_id` and the served-content hash bound to it
+        (`current_served_content_sha256`, GHSA-3f65), or relation rows — does not take this
+        path; it takes decision 8's ADR-first route.""",
+    # Fact half: test_adr_0038_records.py's two committed-YAML population pins.
+    "d6-corpus": """the dogfood corpus names neither retiring operation (`git grep -c -E
+        'registerSpecification|supersedeSpecification' -- .theurian/migrations/` prints nothing),
+        the one committed document that does is the sample project's `registerSpecification`""",
     "engine-unread": """`create_database` writes `schema_metadata.engine_version`
         (`infrastructure/sqlite/connection.py:1075`), and the only read of `schema_metadata` at
         open selects `schema_version` alone (`:1084`); no statement under
@@ -418,8 +479,11 @@ ADR_STATES: Final[dict[str, str]] = {
         withdrawal purge and the OKF export among them — plus `knowledge.status`'s counts""",
     "retiring-parse": """the loader's parse of a v1 `registerSpecification` keeps reading its
         `specId` and `status`""",
-    "d9-key": """under the key *Context* states, which reads `enum`, `const`, and a
-        `oneOf`/`anyOf` built from them, and leaves `pattern` as a stated hole.""",
+    "d9-key": """because *Context*'s scan finds no occurrence of their members outside the
+        migration format that closes a value or a key set to one of them: the occurrences there
+        are `KnowledgeKind` members in two overlaps (`category`, `reviewer`), in a pattern over
+        another vocabulary (`traceabilityPolicy`) and in one property name (`security`), and no
+        `relationType` or operation member occurs at all.""",
     "d9-fields": """in the two response fields that publish any of the three: a
         `relationType` in `knowledge.get`'s `relations`, and an operation name in
         `knowledge.generateMigrationDraft`'s `operations`.""",

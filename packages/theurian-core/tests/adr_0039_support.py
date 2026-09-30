@@ -203,3 +203,120 @@ def _nodes(node: object, pointer: str = "#") -> Iterator[tuple[str, dict[str, An
     elif isinstance(node, list):
         for index, value in enumerate(node):
             yield from _nodes(value, f"{pointer}/{index}")
+
+
+# -- The schema scan: ADR-0039's *Detection* and *Classification* ------------
+
+SETS: Final = {cls.__name__: frozenset(member.value for member in cls) for cls in GOVERNED}
+MEMBERS: Final = frozenset().union(*SETS.values())
+#: Keys whose own keys are names, never keywords.
+NAME_BEARING: Final = frozenset(
+    {"properties", "$defs", "definitions", "dependentSchemas", "dependentRequired"}
+)
+#: Keys whose string values are prose or identifiers, never an occurrence.
+PROSE_OR_ID: Final = frozenset(
+    {"description", "title", "$comment", "$schema", "$id", "$ref", "$anchor"}
+)
+
+
+@functools.cache
+def keywords() -> frozenset[str]:
+    """Every JSON Schema 2020-12 keyword, read from the specification's own metaschemas."""
+    from jsonschema_specifications import REGISTRY  # type: ignore[import-untyped]
+
+    return frozenset(
+        key
+        for uri in REGISTRY
+        if uri.startswith("https://json-schema.org/draft/2020-12/")
+        for key in REGISTRY.contents(uri).get("properties", {})
+    )
+
+
+def in_regex(source: str) -> list[str]:
+    """The members a regex source spells as whole words, ``-`` and ``_`` counting as word."""
+    return sorted(m for m in MEMBERS if re.search(rf"(?<![\w-]){re.escape(m)}(?![\w-])", source))
+
+
+def closed(node: object) -> set[str] | None:
+    """The values a closing construct admits, as text; ``None`` if it closes nothing."""
+    if not isinstance(node, dict):
+        return None
+    if isinstance(node.get("enum"), list):
+        raw = node["enum"]
+    elif "const" in node:
+        raw = [node["const"]]
+    else:
+        branches = node.get("oneOf") or node.get("anyOf")
+        if not isinstance(branches, list) or not branches:
+            return None
+        parts = [closed(branch) for branch in branches]
+        return None if None in parts else set().union(*(part for part in parts if part))
+    return {v if isinstance(v, str) else json.dumps(v) for v in raw if v is not None}
+
+
+def _contained(values: set[str] | None) -> bool:
+    return values is not None and bool(values) and any(values <= s for s in SETS.values())
+
+
+def _keys_closed(owner: dict[str, Any]) -> bool:
+    return (
+        owner.get("additionalProperties") is False or closed(owner.get("propertyNames")) is not None
+    )
+
+
+#: One step down a schema: the container, the key or index taken, the container's pointer.
+Step = tuple[Any, str | int, str]
+#: ``(class, pointer, member)``; the pointer is the object that holds the key or value.
+Occurrence = tuple[str, str, str]
+
+
+def _key_occurrences(key: str, pointer: str, trail: Sequence[Step]) -> list[Occurrence]:
+    owner, under, owner_pointer = trail[-1] if trail else (None, None, "")
+    if under == "patternProperties":
+        return [("pattern", owner_pointer, member) for member in in_regex(key)]
+    if key not in MEMBERS or (under not in NAME_BEARING and key in keywords()):
+        return []
+    if under == "properties" and isinstance(owner, dict):
+        closes = _keys_closed(owner) and _contained(set(owner["properties"]))
+        return [("key-closure" if closes else "property-name", owner_pointer, key)]
+    if under in ("$defs", "definitions"):
+        return [("definition-name", owner_pointer, key)]
+    if under in NAME_BEARING:
+        return [("property-name", owner_pointer, key)]
+    return [("custom-key", pointer, key)]
+
+
+def _value_occurrences(text: str, trail: Sequence[Step]) -> list[Occurrence]:
+    named = [(at, *step) for at, step in enumerate(trail) if isinstance(step[1], str)]
+    at, holder, key, pointer = named[-1]
+    if key in PROSE_OR_ID or str(key).startswith("x-"):
+        return []
+    if key == "pattern":
+        return [("pattern", pointer, member) for member in in_regex(text)]
+    if text not in MEMBERS:
+        return []
+    if key in ("enum", "const"):
+        construct = holder
+        if at >= 2 and trail[at - 2][1] in ("oneOf", "anyOf") and closed(trail[at - 2][0]):
+            construct, pointer = trail[at - 2][0], trail[at - 2][2]
+        in_names = any(step[2] == "propertyNames" for step in named[:-1])
+        if _contained(closed(construct)):
+            return [("key-closure" if in_names else "enumerated", pointer, text)]
+        return [("overlap", pointer, text)]
+    kinds = {"default": "non-closing", "examples": "non-closing", "required": "property-name"}
+    return [(kinds.get(str(key), "unclassified"), pointer, text)]
+
+
+def occurrences(node: object, trail: Sequence[Step] = (), pointer: str = "#") -> list[Occurrence]:
+    """Every occurrence of a governed member in a schema document, classified."""
+    found: list[Occurrence] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            found += _key_occurrences(key, pointer, trail)
+            found += occurrences(value, [*trail, (node, key, pointer)], f"{pointer}/{key}")
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            found += occurrences(value, [*trail, (node, index, pointer)], f"{pointer}/{index}")
+    elif isinstance(node, str) and trail:
+        found += _value_occurrences(node, trail)
+    return found
