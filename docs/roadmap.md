@@ -233,8 +233,10 @@ not; **absent** — effectively nothing.
   `_relation_is_visible` gated each endpoint through a read that *resolved
   aliases*, so an alias key equal to a withheld item's id evaluated the wrong
   item's authority. **T-21 was closed by two fixes, on both sides.** Read side:
-  the non-resolving read — each endpoint is now read with `get_item_exact`, the
-  row the id literally names, and the principle the split records is
+  the non-resolving read — each endpoint is read by the row the id literally
+  names, through `get_item_exact` from 0.1.0.dev6 and, since 0.2.3, through its
+  body-free form `get_item_exact_metadata` (T-26) — and the principle the split
+  records is
   **reachability may resolve an alias; authority — a visibility decision on a
   referenced id — must read the literally-named row.** Write side: a whole-set
   refusal — `AliasItemCollisionError` rejects a migration set whose alias key
@@ -836,8 +838,8 @@ Anything independent may run in parallel.
 | **Schema** | Promote the existing, unpopulated `traceability_edges` table to real use. Add apply-time enforcement of INV-6. |
 | **MCP / API** | One new read tool, `knowledge.trace`: a bounded traversal from an item id or a `TraceNode`, with direction, edge type and depth. `traceability: true`. **The nine tools `traceability.md` anticipates are not built** — start with `trace` alone (plus Phase E's `impact`) and add only what use demonstrates. |
 | **Migration** | If external-node edges need a migration operation, adding to the closed set is an `apiVersion` decision (ADR candidate #3). |
-| **Security** | **A graph response is a new disclosure family.** Edge counts, reachability, and where a traversal truncates can each carry the existence of a withheld node. Apply the per-edge visibility gate at every hop — and apply it in T-21's corrected form, because per-edge gating on its own is what leaked: **a traversal hop must not resolve an alias when deciding authority.** Reachability may resolve; the visibility decision on each hop's endpoint reads the literally-named row (`get_item_exact`). Multi-hop traversal multiplies the number of places that distinction can be lost, which is why it is stated here as a requirement rather than left to the implementer. **Write the two-corpora equality test for trace responses in the same change as the implementation** — not afterwards. That is T-17's lesson. |
-| **Tests** | Equality extension · depth limits · cycle tolerance · confidence and evidence passed through faithfully · **a test pinning that every hop's visibility decision goes through the non-resolving read path**, so a hop that reverts to a resolving read turns it red rather than reopening T-21 in graph form. |
+| **Security** | **A graph response is a new disclosure family.** Edge counts, reachability, and where a traversal truncates can each carry the existence of a withheld node. Apply the per-edge visibility gate at every hop — and apply it in T-21's corrected form, because per-edge gating on its own is what leaked: **a traversal hop must not resolve an alias when deciding authority.** Reachability may resolve; the visibility decision on each hop's endpoint reads the literally-named row's metadata — through `get_item_exact_metadata` or an equivalent that neither resolves an alias (T-21) nor reads the body (T-26), never the joined `get_item_exact`: a gate on that read materialises a withheld endpoint's body before withholding it, so the refusal's duration carries the body's size. Multi-hop traversal multiplies the number of places that distinction can be lost, which is why it is stated here as a requirement rather than left to the implementer. **Write the two-corpora equality test for trace responses in the same change as the implementation** — not afterwards. That is T-17's lesson. |
+| **Tests** | Equality extension · depth limits · cycle tolerance · confidence and evidence passed through faithfully · **a test pinning that every hop's visibility decision goes through the non-resolving, body-free read path**, so a hop that reverts to a resolving read turns it red rather than reopening T-21 in graph form, and one that reverts to a body-joining read turns it red rather than reopening T-26. |
 | **Benchmark** | Enable the golden set's spec → ADR → implementation and code → decision classes. Add citation correctness as a metric the harness measures. |
 | **Exit criteria** | A demonstration on this project's own corpus that "why is this module shaped this way" traces to an ADR. Equality tests green. |
 | **Dependencies** | Phase A, for the measuring stick. Independent of Phase B — they may run in parallel. |

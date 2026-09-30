@@ -7064,6 +7064,21 @@ that closes an *already-poisoned* database — a `0.1.0.dev5` state built before
 write-side guard existed — because no migration guard reaches a database that is
 already built.
 
+> **Amended in [#832](https://github.com/theurian/theurian/issues/832)
+> (2026-09-30): the read moved in 0.2.3; the property part A rests on did not.**
+> Part A above is the 0.1.0.dev6 record and stays. Since 0.2.3,
+> `_relation_is_visible` (`mcp/tools.py`) reads each endpoint through
+> `get_item_exact_metadata`, the body-free form of `get_item_exact`: still
+> non-resolving, so this control holds unchanged, and now reading only the
+> `knowledge_items` pointer row, because a gate on the joined `get_item_exact`
+> materialised a withheld endpoint's body before withholding it —
+> T-26, closed in 0.2.3. `get_item_exact` remains, as the full read behind
+> `CanonicalVisibility._served_item` (`application/visibility.py`), the GHSA-3f65
+> content check on a row that has already cleared the gate. A gate read that
+> keeps T-21's property and drops T-26's reopens T-26;
+> [ADR-0038](../adr/0038-specification-folds-into-a-knowledge-kind.md) records
+> both as owed by the per-hop gate a traversal will need (*Compliance*, item 3).
+
 **Control, part B — write-side, prevention.** A whole-set static guard,
 `refuse_alias_item_id_collision`
 ([`application/migration_alias_guards.py`](https://github.com/theurian/theurian/blob/main/packages/theurian-core/src/theurian/application/migration_alias_guards.py)),
