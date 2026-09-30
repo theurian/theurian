@@ -5,7 +5,7 @@ the call site. `_relation_is_visible` moved from `get_item_exact` to
 `get_item_exact_metadata` in 0.2.3 (T-26); the records kept saying the old
 one, and `get_item`, for the body read that `CanonicalVisibility._served_item`
 makes through `get_item_exact`. Here both reads are *derived* from the code, and
-each record is held to the derived name; no expected read is spelled in this file.
+each record is held to the derived name, and no table row spells the read it expects.
 
 - **R**, the gate's read: the one `CanonicalReadSession` `get_item*` member
   `mcp/tools.py::_relation_is_visible` calls.
