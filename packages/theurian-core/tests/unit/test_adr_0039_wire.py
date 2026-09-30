@@ -126,13 +126,18 @@ def test_the_adrs_pasted_output_is_the_live_classification() -> None:
     enumerates, overlaps, read = _classified()
     lines = _section("### What the wire carries")
     pasted = lines[lines.index("```text") + 1 :]
+    *classified, counted = pasted[: pasted.index("```")]
+    measured = ast.literal_eval(counted.removeprefix("read "))
     live = [
         *(f"enumerates {names} {path} {pointer}" for (path, pointer), names in enumerates.items()),
         *(f"overlaps {shared} {path} {pointer}" for (path, pointer), shared in overlaps.items()),
-        f"read {dict(sorted(read.items()))}",
     ]
 
-    assert pasted[: pasted.index("```")] == live
+    assert classified == live
+    assert read.keys() == measured.keys()
+    # `>=`, not `==`: the totals are a dated coverage measurement, not a claim, so an
+    # unrelated enum or const added under schemas/ must not force an edit to the ADR.
+    assert {key: read[key] >= measured[key] for key in measured} == dict.fromkeys(measured, True)
 
 
 def test_each_closing_construct_is_classified_by_containment() -> None:
