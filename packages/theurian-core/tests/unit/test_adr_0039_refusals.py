@@ -8,7 +8,9 @@ from __future__ import annotations
 import ast
 import copy
 import shutil
+import sqlite3
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import closing
 from pathlib import Path, PurePosixPath
 from typing import Any, Final
 
@@ -36,26 +38,37 @@ from theurian.application.migration_engine import (
 )
 from theurian.application.okf_import import ImportedConcept, ImportRefusal, _map_concept
 from theurian.cli.propose_commands import propose_app
+from theurian.domain.context import RequestContext
 from theurian.domain.enums import (
     KnowledgeKind,
     KnowledgeStatus,
     RelationType,
     Sensitivity,
     TrustLevel,
+    may_surface,
 )
 from theurian.domain.errors import (
     MigrationChecksumMismatchError,
     MigrationError,
     MigrationHistoryMissingError,
 )
-from theurian.domain.migration import MIGRATION_API_VERSION, LoadedMigrations
+from theurian.domain.identifiers import ItemId, ProjectId
+from theurian.domain.migration import (
+    MIGRATION_API_VERSION,
+    MIGRATION_ENGINE_VERSION,
+    LoadedMigrations,
+)
 from theurian.infrastructure.filesystem.migration_loader import (
     MAX_ECHOED_VALUE,
     load_migrations,
     validate_migration_document,
 )
-from theurian.infrastructure.sqlite.connection import StateDatabaseUnreadableError
+from theurian.infrastructure.sqlite.connection import (
+    StateDatabaseUnreadableError,
+    create_database,
+)
 from theurian.infrastructure.sqlite.store import (
+    SqliteCanonicalStore,
     _item_from_row,
     _reading,
     _relation_from_row,
@@ -489,6 +502,79 @@ def test_every_store_read_decodes_its_row_inside_the_reading_guard() -> None:
         [block] = [node for node in ast.walk(reader) if isinstance(node, ast.With)]
         assert "_reading" in _spelled(block.items[0].context_expr), name
         assert "mapper" in _spelled(ast.Module(block.body, [])), name
+
+
+def _state_database(path: Path, status: str) -> Path:
+    """A real state database holding one item row whose ``trust_level`` no build defines."""
+    create_database(path, "0" * 64, MIGRATION_ENGINE_VERSION)
+    row = {**_item_row(), "status": status, "trust_level": "verified"}
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.execute(
+            "INSERT INTO projects (project_id, root_path, default_branch, knowledge_directory, "
+            "registered_at) VALUES ('demo', '/demo', 'main', '.theurian', :valid_from)",
+            row,
+        )
+        connection.execute(
+            "INSERT INTO knowledge_items (item_id, project_id, namespace, kind, status, "
+            "current_revision_id, owner, trust_level, sensitivity, valid_from, valid_to, "
+            "tenant_id, acl_group) VALUES (:item_id, :project_id, :namespace, :kind, :status, "
+            ":current_revision_id, :owner, :trust_level, :sensitivity, :valid_from, :valid_to, "
+            ":tenant_id, :acl_group)",
+            row,
+        )
+    return path
+
+
+_DEMO: Final = RequestContext(project_id=ProjectId("demo"))
+
+
+def _search_fallback_read(store: SqliteCanonicalStore) -> tuple[object, ...]:
+    """``_scan``'s store read under the widest gate: every flag, every level granted."""
+    return store.list_items_by_status(
+        _DEMO,
+        statuses=frozenset(s for s in KnowledgeStatus if may_surface(s, include_unapproved=True)),
+        sensitivities=frozenset(Sensitivity),
+    )
+
+
+def test_the_search_fallback_filters_a_withheld_row_in_sql_before_it_decodes_it(
+    tmp_path: Path,
+) -> None:
+    """Decision 8's exception to #853's decode-before-gate order.
+
+    A withheld row naming a member this build lacks answers as absent on ``_scan``'s
+    read and is refused on ``knowledge.get``'s, which decodes before its gate.
+    """
+    withheld = _state_database(tmp_path / "withheld.sqlite3", "rejected")
+    visible = _state_database(tmp_path / "visible.sqlite3", "approved")
+
+    with SqliteCanonicalStore(withheld) as store:
+        listed = _search_fallback_read(store)
+        with pytest.raises(StateDatabaseUnreadableError):
+            store.get_item_metadata(_DEMO, ItemId("domain.example"))
+    with SqliteCanonicalStore(visible) as store, pytest.raises(StateDatabaseUnreadableError):
+        _search_fallback_read(store)
+
+    assert listed == ()
+
+
+def test_the_search_fallback_resolves_its_statuses_before_the_store_read() -> None:
+    scan = _function("mcp/search.py", "_scan")
+    [read] = [
+        node
+        for node in ast.walk(scan)
+        if isinstance(node, ast.Call) and _named(node.func) == "list_items_by_status"
+    ]
+    statuses = {keyword.arg: keyword.value for keyword in read.keywords}["statuses"]
+    [resolved] = [
+        node
+        for node in ast.walk(scan)
+        if isinstance(node, ast.Assign)
+        and [ast.unparse(target) for target in node.targets] == [ast.unparse(statuses)]
+    ]
+
+    assert "may_surface" in _spelled(resolved.value)
+    assert (resolved.lineno, resolved.col_offset) < (read.lineno, read.col_offset)
 
 
 def _history(root: Path) -> dict[Any, str]:
