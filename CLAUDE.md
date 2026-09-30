@@ -544,12 +544,13 @@ is reported as a refusal. The orchestrator takes a refusal to the user, Blocking
 Issue or not — never to Codex or the `watchdog` agent: it is a permission
 decision, not a judgment for a second reader, and only the user owns those. Nor
 does the orchestrator re-run a specialist's refused step, as an exception-1
-scratch script or otherwise. A refusal of the *action* binds every node, and so
-does one whose kind cannot be told; one about *scope* — who may act, as worktree
-isolation confines a session's git to its own tree — binds only that session, so
-a differently-scoped node doing its own work in its own domain circumvents
-nothing. But if the step would produce or prove the refused session's own
-deliverable, stop and escalate; never run it on that session's behalf.
+scratch script or otherwise: a refusal of the *action* binds every node, and so
+does one whose kind cannot be told. The one exception is a *scope* refusal — who
+may act, as worktree isolation confines a session's git to its own tree — which
+binds only that session, so a differently-scoped node doing its own work in its
+own domain circumvents nothing. But if the step would produce or prove the
+refused session's own deliverable, or supply something it needs to finish it,
+stop and escalate. Never run it on that session's behalf.
 
 ### A non-Blocking judgment goes to the reviewer node, not through the user
 
