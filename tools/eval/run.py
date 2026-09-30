@@ -78,7 +78,7 @@ class PinnedClock:
         return self.instant
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None, *, instant: datetime = PINNED_NOW) -> int:
     args = _parse_args(argv)
     if args.corpus == DEFAULT_CORPUS and not args.corpus.exists():
         print(
@@ -105,7 +105,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     args.out.mkdir(parents=True, exist_ok=True)
 
-    clock = PinnedClock(PINNED_NOW)
+    clock = PinnedClock(instant)
     with tempfile.TemporaryDirectory(prefix="theurian-eval-") as workspace_name:
         workspace = Path(workspace_name)
         try:
