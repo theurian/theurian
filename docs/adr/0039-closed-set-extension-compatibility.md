@@ -38,9 +38,9 @@ of `$defs/operation.oneOf`'s fourteen branches.
 | `kind` | `$defs/kind` | `domain/enums.py` `KnowledgeKind` | 11 | vocabulary |
 | `relationType` | `$defs/relationType` | `domain/enums.py` `RelationType` | 14 | vocabulary |
 | the operation set | `$defs/operation.oneOf`, one `op` const per branch | `domain/migration.py` `OperationKind` | 14 | grammar |
-| `status` | `$defs/status` | `domain/enums.py` `KnowledgeStatus` | 6 | gate-bearing |
-| `sensitivity` | `$defs/sensitivity` | `domain/enums.py` `Sensitivity` | 4 | gate-bearing |
-| `trustLevel` | `$defs/trustLevel` | `domain/enums.py` `TrustLevel` | 4 | gate-bearing |
+| `status` | `$defs/status` | `domain/enums.py` `KnowledgeStatus` | 6 | wire-enumerated |
+| `sensitivity` | `$defs/sensitivity` | `domain/enums.py` `Sensitivity` | 4 | wire-enumerated |
+| `trustLevel` | `$defs/trustLevel` | `domain/enums.py` `TrustLevel` | 4 | wire-enumerated |
 | a specification's status | `$defs/opRegisterSpecification/properties/status` | `domain/enums.py` `SpecificationStatus` | 4 | retiring |
 | the format version | `properties/apiVersion`, `const` `theurian.dev/v1` | `domain/migration.py` `MIGRATION_API_VERSION` | 1 | the version constant |
 
@@ -153,7 +153,8 @@ publishes a `KnowledgeKind`: under `mcp/`, it appears only as the two
 `_closed_value` inputs above, and the one `.kind` published is the review
 record's (`mcp/review_search.py:523`).
 
-**The gate-bearing sets are enumerated on the wire.** `knowledge-search-response`
+**`status`, `sensitivity` and `trustLevel` are enumerated on the wire.**
+`knowledge-search-response`
 types each result by `$ref` to `schemas/knowledge/retrieval-result.schema.json`,
 which enumerates `status` as the three surfaceable members (`approved`, `draft`,
 `proposed`), `trustLevel` (4) and `sensitivity` (4); `mcp/results.py:95-97`
@@ -193,16 +194,17 @@ change from one written after it.
    one class**, because what a change puts at risk differs by class.
    *Vocabulary* — `kind`, `relationType` — is a value inside an operation shape
    that already exists. *Grammar* — the operation set — is the set of shapes the
-   loader dispatches on. *Gate-bearing* — `status`, `sensitivity`, `trustLevel`
-   — is governance: `status` feeds `may_surface` and `sensitivity` feeds
-   `may_disclose` (`domain/enums.py:222`, `:269`); `trustLevel` feeds neither
-   gate, and is classed with them as the third closed-set governance label: OKF
-   import never copies it from a bundle (`application/okf_import.py`'s module
-   docstring, under ADR-0037 decision 1), and import and candidate generation
-   fix it at `inferred` (`application/okf_import.py:180`,
-   `domain/review.py:335`). *Retiring* — `SpecificationStatus` — leaves with its
-   entity under #841. The version constant, `apiVersion`, is what the other
-   classes move or do not move.
+   loader dispatches on. *Wire-enumerated* — `status`, `sensitivity`,
+   `trustLevel` — is published as an `enum` on the `knowledge.search` wire
+   (*Context*). Two of them are also *gate-feeding*: `status` feeds
+   `may_surface` and `sensitivity` feeds `may_disclose` (`domain/enums.py:222`,
+   `:269`). `trustLevel` feeds neither gate; it is a governance label all the
+   same, which OKF import never copies from a bundle
+   (`application/okf_import.py`'s module docstring, under ADR-0037 decision 1)
+   and which import and candidate generation fix at `inferred`
+   (`application/okf_import.py:180`, `domain/review.py:335`). *Retiring* —
+   `SpecificationStatus` — leaves with its entity under #841. The version
+   constant, `apiVersion`, is what the other classes move or do not move.
 2. **Adding a vocabulary member is additive.** No `apiVersion` bump and no
    `protocolVersion` bump; it is a Core MINOR, recorded under the CHANGELOG's
    `Added` naming the first Core version that reads it. An older Core keeps
@@ -273,15 +275,20 @@ change from one written after it.
    `$defs/relationType` equal to `RelationType` as an ordered list because "a
    reorder is a diff its reviewer should see" — but neither it nor the order a
    refusal lists the valid values in is a contract.
-8. **Gate-bearing sets are outside the additive class.** Any change to `status`,
-   `sensitivity` or `trustLevel` is written as an ADR first, under roadmap §6
-   principle 3 for the two sets that feed a gate and under decision 1's
-   governance ground for `trustLevel`, and that ADR decides its own effect on
-   `apiVersion`, on `protocolVersion`, on the Core version and on the CHANGELOG.
-   `protocolVersion` is a live question for these sets, not a formality: the
-   wire enumerates all three (*Context*). The concrete case is roadmap §9
-   candidate 2, whose change to `SURFACEABLE_STATUSES` would move the
-   three-member `status` enum `retrieval-result.schema.json` publishes.
+8. **Wire-enumerated sets are outside the additive class.** Decision 2's "no
+   `protocolVersion` bump" rests on decision 9's ground, that no published
+   schema enumerates the set; `retrieval-result.schema.json` enumerates all
+   three of these (*Context*), so a change to one can move a published `enum`,
+   and `protocolVersion` is a live question rather than a formality. Any change
+   to `status`, `sensitivity` or `trustLevel` is therefore written as its own
+   ADR, which decides its effect on `apiVersion`, on `protocolVersion`, on the
+   Core version and on the CHANGELOG. For the two gate-feeding sets, `status`
+   and `sensitivity`, that ADR is also written first, before implementation,
+   under roadmap §6 principle 3. `trustLevel` feeds no
+   gate; the governance ground in decision 1 is why its ADR still gets the same
+   care. The concrete case is roadmap §9 candidate 2, whose change to
+   `SURFACEABLE_STATUSES` would move the three-member `status` enum
+   `retrieval-result.schema.json` publishes.
 9. **No change to `kind`, `relationType` or the operation set bumps
    `protocolVersion`**, because no published schema enumerates any of them
    (*Context*). A member a client does not know reaches it as an unrecognised
@@ -375,7 +382,7 @@ and is marked `BREAKING` in the CHANGELOG.
 | **A tolerant reader: an older Core admits an unknown member as opaque, or skips the operation** | Identical documents would produce different canonical states on different Cores, which FR-K4's replay and the state hash exist to rule out, and a skipped `addRelation` is a silently missing edge. Fail-closed is kept. |
 | **Removal as a version event: drop the member from a new `apiVersion`'s read grammar** | A frozen document cannot move to the new version (FR-K5), and a fresh clone replays it (FR-K4), so every Core must still read the old version and the member with it. Under decision 3 no writer would declare the new version, and one that always did would lock out older Cores that read the document fine (decision 4). |
 | **Make `theurian compat check` detect an enum mismatch** (roadmap §4's third clause) | It compares a plugin declaration with the running Core and reads no project. The mismatch is between a project's documents and a Core, and it already surfaces at every migration load; the form it surfaces in is #849's (decision 10). |
-| **Bump `protocolVersion` for a vocabulary or grammar change** | No published schema enumerates `kind`, `relationType` or the operation set, so no client validates against their membership (decision 9). The gate-bearing sets, which are enumerated, are left to their own ADRs (decision 8). |
+| **Bump `protocolVersion` for a vocabulary or grammar change** | No published schema enumerates `kind`, `relationType` or the operation set, so no client validates against their membership (decision 9). The wire-enumerated sets are left to their own ADRs (decision 8). |
 
 ## Compliance
 
