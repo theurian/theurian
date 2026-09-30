@@ -268,8 +268,8 @@ class SqliteCanonicalStore:
         # decision rather than symmetry with `__exit__`.
         #
         # `CanonicalVisibility.cleared` is a comprehension over the retriever's
-        # rows, so a query that matched nothing never calls `get_item`, never
-        # calls `_conn`, and never opens this connection. The ~0.4 ms of
+        # rows, so a query that matched nothing never calls `get_item_metadata`,
+        # never calls `_conn`, and never opens this connection. The ~0.4 ms of
         # `sqlite3.connect` plus the pragmas plus the schema-version check was
         # therefore charged to exactly those requests that *found* something —
         # and when the response says `count: 0`, that bit says "everything it

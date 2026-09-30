@@ -93,10 +93,13 @@ class CanonicalVisibility:
 
     Memoised by item for the life of one request. The retrievers overlap, one
     document contributes several chunks, and re-reading cannot change the answer
-    inside a single session — so this costs one ``get_item`` per distinct
-    document per request however deep the retrievers are asked to go. Measured at
-    1.4 ms per hundred items, against 3.3 ms per hundred for the revision reads
-    that used to happen on this path for every candidate.
+    inside a single session — so this costs one bodyless ``get_item_metadata``
+    per distinct document per request however deep the retrievers are asked to
+    go. Recorded in ``21e1ba9`` and measured before 0.2.3, when that read was
+    the joined, body-carrying ``get_item``: 1.4 ms per hundred items, against
+    3.3 ms per hundred for the revision reads that used to happen on this path
+    for every candidate. That figure is not the current cost of the bodyless
+    read.
 
     That is the *canonical read* count, and :meth:`cleared` separates it from the
     number of times this class is asked — which is one per ranked row, and larger
