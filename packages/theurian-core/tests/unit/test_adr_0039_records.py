@@ -67,7 +67,7 @@ def _adr_0038_block() -> list[str]:
     return [collapsed(bullet) for bullet in re.split(r"\n\s*- ", block)[1:]]
 
 
-def _removal_sites() -> dict[str, str]:
+def _version_claim_sites() -> dict[str, str]:
     [adr_0005] = [block for block in _blockquotes(ADR_0005) if collapsed(ADR_0039_LINK) in block]
     return {
         "ADR-0039 decision 4": _numbered(_section("## Decision"))[4],
@@ -79,9 +79,9 @@ def _removal_sites() -> dict[str, str]:
 @pytest.mark.parametrize(
     "site", ["ADR-0039 decision 4", "ADR-0005's amendment", "ADR-0038's first bullet"]
 )
-def test_each_record_of_a_removal_names_both_versions_it_leaves_alone(site: str) -> None:
+def test_each_version_claim_names_both_versions_it_leaves_alone(site: str) -> None:
     """An unqualified "bumps nothing" read as leaving the engine version alone too."""
-    text = _removal_sites()[site]
+    text = _version_claim_sites()[site]
 
     assert "bumps neither apiVersion nor protocolVersion" in text
     assert not re.search(r"bumps (?:nothing|no version)", text)
