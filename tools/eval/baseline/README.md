@@ -98,6 +98,80 @@ Since slice S4c, the same command builds and queries the raptor-ON pair too
 the two-run comparison above is over the whole `report.json`, so it already
 covers the `raptor` and `comparison` keys, not only the base arm's.
 
+### The pinned instant
+
+`report.json` depends on what the clock says. Every search hit carries
+`freshness.ageDays` and `freshness.isWithinValidity`, both computed against
+"now", and `retrieval.usedTokens` prices each hit on its serialised length, so
+a hit one character longer can move an equality `differingFields` list. Under
+the wall clock that is what turned `test_baseline_current.py` red on
+2026-09-30 with no code or corpus change: the fixtures' `ageDays` went from 9
+to 10 ([#836](https://github.com/theurian/theurian/issues/836) Face C). The
+build reads a clock too — `migrate apply` stamps each revision's `validFrom` —
+so `tools/eval/run.py` builds one `PinnedClock(PINNED_NOW)` and hands it to
+every build and every search:
+
+- **`PINNED_NOW = 2026-09-24T07:13:08Z`**, one instant for the builds and the
+  searches. One is enough because `ValidityPeriod.contains`
+  (`packages/theurian-core/src/theurian/domain/values.py`) includes its lower
+  bound — `if moment < self.valid_from: return False` — so a `validFrom`
+  equal to "now" leaves `isWithinValidity` `true`.
+- **Why this instant.** It is the `date` the committed baseline's own
+  `timings.json` recorded when PR #798 measured it:
+
+  ```console
+  $ git show 60d10164:tools/eval/baseline/timings.json | grep -m1 '"date"'
+    "date": "2026-09-24T07:13:08.322675+00:00",
+  ```
+
+  The committed bytes last reproduced under the wall clock in `main`'s Core
+  run at `902af744` (run 36578627448, created 2026-09-29T13:54:38Z), when the
+  fixtures were 9 days old.
+- **Any instant at which every fixture is 0 to 9 days old gives the same
+  bytes**, because every `ageDays` is then one character. Measured
+  2026-09-30 on [PR #851](https://github.com/theurian/theurian/pull/851)'s
+  branch through `run.main`'s `instant` keyword, at noon UTC on each day from
+  2026-09-20 to 2026-09-29 and at 2026-09-26T03:04:05.678901Z and
+  2026-09-29T23:59:59Z: all twelve runs were byte-identical to the committed
+  `report.json`.
+  `test_the_two_instants_put_every_fixture_revision_either_side_of_ten_days`
+  holds `PINNED_NOW` 0 to 9 days after every fixture migration's `createdAt`.
+  That range is not why this instant was chosen; the baseline's own
+  measurement date is.
+
+### What the byte pin does not see
+
+`report.json` carries no knowledge-body text, so a body edit reaches the byte
+pin only by moving something the report derives from the bodies: which items a
+query returns and at what rank, abstention, an equality `differingFields` list
+(where a hit's length shows, through `retrieval.usedTokens`), the census, or
+the RAPTOR forest's node count. A one-word edit that moves none of those stays
+green, even one that removes a query term. Measured 2026-09-30 on PR #851's
+branch with
+`test_a_fresh_run_over_the_frozen_corpus_reproduces_the_committed_baseline_report`,
+each body edit with its migration's `contentSha256` updated:
+
+| Perturbation | Byte pin |
+| :-- | :-- |
+| `session-token-ttl` body, `morning` → `evening`: same length, in no query | green |
+| the same place, `morning` → `kubelet`: same length, a term of `q-absent-kubernetes` | red: that query's abstention turns incorrect |
+| `raptor-forest` body, `rather than by a policy check` → `rather than by a check`: removes a term of `q-session-token-ttl` | green |
+| `policy` removed at five other places: `session-token-ttl` twice, `a-purge-is-a-build`, `immutable-revisions-and-optimistic-concurrency`, the draft `draft-scan-hardening` | red |
+| `RRF_K` 60 → 61 (`domain/ranking.py`) | red |
+
+Byte-identity also does not rule out length-compensating drift. A build at
+2026-09-30T00:00:38Z searched at `PINNED_NOW` (`build_both` at that instant,
+its `BuildResult.clock` swapped for `PINNED_NOW`) reproduced, byte for byte,
+the report both clocks give at 2026-09-30T00:00:38Z: `isWithinValidity`
+turning `false` added the one character that `ageDays` going from 4 to 10
+adds. The field-level pin
+`test_the_harness_search_answers_on_the_clock_its_build_was_given`
+(`test_harness_instant.py`) is what catches that: it builds the smoke corpus
+at one instant and, on every hit of a `policy` search through the harness's
+own sessions, holds `ageDays` and `isWithinValidity` to that instant.
+Hard-wiring that search to `PINNED_NOW` turned it red and left the other four
+tests in `test_baseline_current.py` and `test_harness_instant.py` green.
+
 ## Environment (from `timings.json`, outside the byte-identity property)
 
 - **Platform:** `macOS-26.6.2-arm64-arm-64bit-Mach-O`
@@ -108,9 +182,18 @@ covers the `raptor` and `comparison` keys, not only the base arm's.
 sha, the environment, per-query latency and index-build cost, and it is *not*
 expected to reproduce byte-for-byte across runs or machines — that is exactly
 the property `report.json` claims and `timings.json` does not. `report.json`
-by design embeds no sha and no timestamp, so a re-run at this same commit
-diffs empty against it; a re-run at a different commit or on different
-hardware is a new, separate measurement, not a correction of this one.
+by design embeds no sha and no timestamp, and the harness computes it at
+`PINNED_NOW` (above), so a re-run at this same commit diffs empty against it;
+a re-run at a different commit or on different hardware is a new, separate
+measurement, not a correction of this one.
+
+**The producing environment is not stamped into `report.json`, by decision.**
+It was proposed during the #836 Face C fix and declined. `timings.json`
+already records `platform`, `pythonVersion` and `sqliteVersion`, outside the
+byte-identity property, and the failure a stamp would have explained was not
+per-environment: the pre-fix harness went red on macOS locally and, in CI run
+36661066587, on the ubuntu and macOS test jobs and the no-network full suite
+alike.
 
 ## The headline numbers
 
@@ -288,4 +371,13 @@ what it does and does not cover) together with every other harness pin:
 
 ```console
 $ uv run pytest tests/unit/tools tests/integration/tools -q
+```
+
+Run the pins that hold this baseline to `PINNED_NOW` (see "The pinned instant"
+above): the byte pin, and `test_harness_instant.py`, which holds the report to
+the injected instant rather than to what `SystemClock` answers, and the
+harness's search to its build's clock:
+
+```console
+$ uv run pytest tests/integration/tools/test_baseline_current.py tests/integration/tools/test_harness_instant.py -q
 ```
