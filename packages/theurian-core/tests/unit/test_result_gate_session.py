@@ -8,7 +8,8 @@ session it ranks through, and asking that session about rows.
 withheld, so anything it does *only when something was found* answers the
 question the response is refusing to answer. Acquiring the session lazily was
 exactly that — ``CanonicalVisibility.cleared`` is a comprehension, so a query
-matching no indexed chunk never calls ``get_item``, never opened the SQLite
+matching no indexed chunk never asked the session about a row (``get_item`` when
+this was measured, ``get_item_metadata`` since 0.2.3), never opened the SQLite
 connection, and skipped the 0.4 ms of connect, pragmas and schema check that
 every other request paid.
 
@@ -57,10 +58,15 @@ from theurian.application.retrieval_service import (
 from theurian.application.visibility import CanonicalVisibility, Visibility
 from theurian.domain.context import RequestContext
 from theurian.domain.enums import KnowledgeKind, KnowledgeStatus, Sensitivity, TrustLevel
-from theurian.domain.identifiers import ItemId, ProjectId, RevisionId
-from theurian.domain.knowledge import KnowledgeItem, KnowledgeRevision
-from theurian.domain.ranking import Ranked
-from theurian.domain.values import ContentHash, ValidityPeriod
+from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId
+from theurian.domain.knowledge import (
+    KnowledgeItem,
+    KnowledgeRevision,
+    RevisionMetadata,
+    SourceAnchor,
+)
+from theurian.domain.ranking import Fused, Ranked
+from theurian.domain.values import MARKDOWN, ContentHash, ValidityPeriod
 
 pytestmark = pytest.mark.unit
 
@@ -134,6 +140,44 @@ def _approved_item(row: Ranked) -> KnowledgeItem:
     )
 
 
+def _revision(item: KnowledgeItem) -> KnowledgeRevision:
+    """The revision ``item``'s pointer names, as ``get_revision`` returns it."""
+    assert item.current_revision_id is not None, (
+        "an approved fixture item always points at a revision"
+    )
+    return KnowledgeRevision.create(
+        revision_id=item.current_revision_id,
+        item_id=item.item_id,
+        project_id=PROJECT,
+        migration_id=MigrationId("01K1DEFABC1234567890ABCDEF"),
+        title="Gateway timeouts",
+        body="Retry with jitter.",
+        content_type=MARKDOWN,
+        metadata=RevisionMetadata(
+            kind=item.kind,
+            namespace=item.namespace,
+            status=item.status,
+            trust_level=item.trust_level,
+            sensitivity=item.sensitivity,
+            owner=item.owner,
+        ),
+        validity=ValidityPeriod(valid_from=NOW),
+        author="engineer@example.com",
+        created_at=NOW,
+        source_anchors=(
+            SourceAnchor(
+                provider="git",
+                source_uri="git://demo/.theurian/knowledge/architecture/gateway.md",
+                repository="acme/demo",
+                commit_sha="a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+                file_path=".theurian/knowledge/architecture/gateway.md",
+                line_start=1,
+                line_end=3,
+            ),
+        ),
+    )
+
+
 @final
 class _RecordingSession:
     """A canonical read session that says when it was acquired and when it was read.
@@ -169,6 +213,7 @@ class _RecordingSession:
         context: RequestContext,  # noqa: ARG002 - named by the port; this fake is project-blind
         item_id: ItemId,
     ) -> KnowledgeItem | None:
+        # No gate calls this since 0.2.3; the port still declares it.
         self._log.append("get_item")
         return self._known.get(item_id.value)
 
@@ -181,8 +226,8 @@ class _RecordingSession:
         # and revision from it, and a withheld candidate is refused here without
         # its body ever being read. Logged under its own name -- the read-count
         # assertions below count *this* read (it is the one every candidate pays,
-        # the T-17a duration residual), while "get_item" is the body-carrying
-        # content read only a surfaceable candidate reaches.
+        # the T-17a duration residual). The body reads a cleared row reaches are
+        # `get_item_exact` and `get_revision`, each logged with the id it read.
         self._log.append("get_item_metadata")
         return self._known.get(item_id.value)
 
@@ -191,12 +236,10 @@ class _RecordingSession:
         context: RequestContext,  # noqa: ARG002 - named by the port; this fake is project-blind
         item_id: ItemId,
     ) -> KnowledgeItem | None:
-        # This fake resolves no alias, so exact and resolving reads coincide; it
-        # exists to satisfy the port the gate depends on (T-21). Logged under its
-        # own name, not "get_item": the read-count assertions below count
-        # "get_item", and a gate that later routed a read through the exact form
-        # would silently inflate those counts if the two shared a label.
-        self._log.append("get_item_exact")
+        # The joined read behind the GHSA-3f65 content check. This fake resolves no
+        # alias, so exact and resolving reads coincide. Logged with the id, so a test
+        # can say which rows had a body read and which did not.
+        self._log.append(f"get_item_exact:{item_id.value}")
         return self._known.get(item_id.value)
 
     def get_item_exact_metadata(
@@ -208,9 +251,16 @@ class _RecordingSession:
         return self._known.get(item_id.value)
 
     def get_revision(
-        self, context: RequestContext, revision_id: RevisionId
+        self,
+        context: RequestContext,  # noqa: ARG002 - named by the port; this fake is project-blind
+        revision_id: RevisionId,
     ) -> KnowledgeRevision | None:
-        raise NotImplementedError  # pragma: no cover - the gated requests withhold every row
+        self._log.append(f"get_revision:{revision_id.value}")
+        owner = next(
+            (item for item in self._known.values() if item.current_revision_id == revision_id),
+            None,
+        )
+        return None if owner is None else _revision(owner)
 
 
 def _shape(surfaced: Surfaced) -> dict[str, Any]:
@@ -240,7 +290,7 @@ def test_the_canonical_session_is_acquired_before_the_retrievers_run() -> None:
     the visibility to judge — which is the leak, stated as a sequence rather than
     as a stopwatch. The row is unknown to the session, so the bodyless
     per-candidate read (``get_item_metadata``, 0.2.3) refuses it and no
-    body-carrying ``get_item`` follows.
+    body-carrying ``get_item_exact`` follows.
     """
     log: list[str] = []
 
@@ -299,6 +349,77 @@ def test_the_session_is_released_even_when_the_source_raises() -> None:
     assert log == ["acquired", "released"]
 
 
+def _admit_ranking(
+    log: list[str], ranking: Sequence[Ranked], known: Sequence[Ranked], *, limit: int
+) -> None:
+    """One ordinary gated request whose source clears ``ranking`` and offers what cleared."""
+
+    def source(visible: Visibility) -> SearchOutcome:
+        return SearchOutcome(
+            candidates=tuple(
+                Fused(
+                    chunk_id=row.chunk_id,
+                    item_id=row.item_id,
+                    revision_id=row.revision_id,
+                    fused_score=1.0,
+                )
+                for row in visible.cleared(tuple(ranking))
+            )
+        )
+
+    ResultGate(
+        store_factory=lambda _path: _RecordingSession(log, known=known),
+        shape=lambda surfaced: {"itemId": surfaced.candidate.item_id},
+    ).admit(
+        ResultRequest(
+            database=Path("/nonexistent/state.sqlite"),
+            project_id="demo",
+            include_unapproved=False,
+            visible_sensitivities=EVERY_SENSITIVITY,
+            limit=limit,
+            budget_tokens=2000,
+        ),
+        source,
+    )
+
+
+@pytest.mark.parametrize("limit", [1, 2])
+def test_search_reads_a_body_for_every_row_that_clears_and_a_revision_for_the_first_limit(
+    limit: int,
+) -> None:
+    """A published claim about search's post-gate reads, driven through the real gate (#832).
+
+    The records said search reads a body "once", for a row going to be served,
+    through one reader. It reads two: ``cleared`` makes the GHSA-3f65 content
+    check's joined ``get_item_exact`` for **every** row that clears, memoised per
+    distinct item and including rows past ``limit`` that are never served, and
+    ``ResultGate._surfaced`` then reads ``get_revision`` for each of the first
+    ``limit`` candidates. A row withheld on status is read by neither. Driven over
+    the real ``ResultGate`` and ``CanonicalVisibility``; the session is a recording
+    fake, so this holds which reads the gate makes and not what the store does
+    with them.
+    """
+    surfaceable = tuple(_row(number) for number in (1, 2, 3))
+    withheld = _row(9)
+    log: list[str] = []
+
+    _admit_ranking(log, (surfaceable[0], withheld, *surfaceable[1:]), surfaceable, limit=limit)
+
+    assert len(surfaceable) > limit, "precondition: some cleared rows lie past the limit"
+    assert log.count("get_item_metadata") == len(surfaceable) + 1, (
+        "every distinct ranked item, the withheld one included, is decided on its pointer row once"
+    )
+    assert [entry for entry in log if entry.startswith("get_item_exact:")] == [
+        f"get_item_exact:{row.item_id}" for row in surfaceable
+    ], "every row that clears has its body read for the content check, served or not"
+    assert [entry for entry in log if entry.startswith("get_revision:")] == [
+        f"get_revision:{row.revision_id}" for row in surfaceable[:limit]
+    ], "only the first `limit` candidates have their revision read"
+    assert not [
+        entry for entry in log if withheld.item_id in entry or withheld.revision_id in entry
+    ], "a withheld row had a body read"
+
+
 # -- What a scan costs: the duration face of T-17a -------------------------
 
 #: How many surfaceable rows every ranking measured below carries.
@@ -355,9 +476,9 @@ def _measure(withheld: int, placement: str) -> _Measured:
 
     ``reads`` counts ``get_item_metadata`` -- the bodyless per-candidate read
     every ranked row pays since 0.2.3, and so the one that carries the T-17a
-    duration residual. The body-carrying ``get_item`` read a surfaceable row also
-    makes is deliberately not counted here: it is the visible-row subset and does
-    not move with the withheld count, which is the quantity this file measures.
+    duration residual. The body-carrying ``get_item_exact`` read a row that clears
+    also makes is deliberately not counted here: it is the cleared-row subset and
+    does not move with the withheld count, which is the quantity this file measures.
     """
     visible = tuple(_row(number) for number in range(VISIBLE_HEAD))
     withdrawn = tuple(_row(VISIBLE_HEAD + number) for number in range(withheld))
@@ -394,8 +515,8 @@ def test_the_canonical_read_count_is_the_ranking_length_and_so_the_withheld_coun
     residual carried a *second* channel — the refusal's duration scaled with the
     withheld body's size (the pre-gate body-materialization channel). ``_measure``
     now counts ``get_item_metadata``, the pointer-row read that decides the gate;
-    the body is read only for a surfaceable row, through ``get_item_exact``, and never
-    for a withheld one. The figures that follow — about 15 us per distinct
+    the body is read only for a row that clears, through ``get_item_exact``, and
+    never for a withheld one. The figures that follow — about 15 us per distinct
     document, 6.047 ms with 400 documents retired after the build against 0.163 ms
     with none — were taken before 0.2.3 with the body-carrying read, so they are an
     upper bound on the current per-read cost; what reproduces and what this test
