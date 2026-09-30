@@ -35,8 +35,7 @@ CI configuration — is assigned to the specialist that owns it:
 This holds even when the orchestrator can obviously see the fix. The reason is
 not effort but **independence**: work written and reviewed inside one context is
 graded by the mind that produced it, and that mind has already decided the change
-is correct. Splitting implementation from judgement is what makes a round mean
-anything.
+is correct.
 
 What the orchestrator keeps: deciding what to assign, to whom and in what order;
 writing each brief — assignment (*The assignment brief*) and review (*The review
@@ -75,8 +74,7 @@ partition:
 4. **Verification stays serial per item, always.** Parallelism is for
    producing fixes, never for checking them — and the ceiling on useful
    fan-out is the orchestrator's own verification rate, not the worktree
-   count. Fixes delivered faster than they can be run and reviewed are
-   inventory, not progress.
+   count.
 
 ### The assignment brief
 
@@ -185,8 +183,7 @@ session carrying too much: a cluster of parallel fixes plus their verification i
 one context. Prevent them structurally: **commit at every green** (the work
 survives the death), **keep a cluster small enough to verify in one sitting**, and
 **`/new` at each clean transition** rather than letting one session run a whole
-milestone. A stall is not bad luck; it is a session that was asked to hold more
-than it could.
+milestone.
 
 ### Merge-ready work is checked at every transition
 
@@ -537,6 +534,22 @@ name something, whether a comment is accurate.
 When escalating, give the options, the trade-off in one line each, and a
 recommendation. Do not stop with an open question and no analysis.
 
+**A refused step is reported and the work stops there** — never worked around,
+never re-attempted by another route, as a refused mutate run once was through
+the copy's venv python ([PR #838, process note
+2](https://github.com/theurian/theurian/pull/838#issuecomment-5884815645)). A
+transient classifier or infrastructure error is retried once, with the identical
+command; if it recurs, or cannot be told from a refusal, it is reported as a
+refusal. The orchestrator takes a refusal to the user, Blocking Issue or not —
+never to Codex or the `watchdog` agent: it is a permission decision, not a
+judgment for a second reader, and only the user owns those. Nor does the
+orchestrator re-run a specialist's refused step, as an exception-1 scratch
+script or otherwise. A refusal about *scope* — who may act, as worktree
+isolation confines a session's git to its own tree — is not one about the
+*action*: a differently-scoped node doing its own work in its own domain
+circumvents nothing. Ask what the refusal decided and whose goal the action
+serves; if the refused session's, stop and escalate — never fetch it for them.
+
 ### A non-Blocking judgment goes to the reviewer node, not through the user
 
 A judgment that is *not* a Blocking Issue but that the orchestrator cannot settle
@@ -561,8 +574,6 @@ user makes the user the bottleneck — the orchestrator idles waiting on a decis
 a second reader could have settled in-session, and the human is consumed as a
 router rather than reserved for the decisions only they can make. Measured on
 this project, that routing was the largest single sink of the user's own hours.
-The user's time is spent on Blocking Issues; everything else is settled between
-the orchestrator, Codex, and the `watchdog` agent.
 
 ## Relaying subagent output
 
@@ -578,10 +589,8 @@ a false report, even if the CRITICAL was fixed.
 
 ### Brevity
 
-Code and prose must be minimal.
-
-Do not add a comment, docstring, variable, helper, branch, abstraction, or
-sentence unless it removes real ambiguity.
+Code and prose must be minimal: do not add a comment, docstring, variable,
+helper, branch, abstraction, or sentence unless it removes real ambiguity.
 
 Before reporting done, run a deletion pass over everything you added or edited.
 Delete anything that only:
@@ -624,10 +633,9 @@ permanently.
 
 The dividing line is direction of travel: text that lives in the repository or
 instructs an agent is English; text delivered to a person as a report follows
-the reader's language (professional register for a teammate; Japanese cat-speech
-in conversation with this project's maintainer). A brief looks like scratch,
-which is exactly why it needs naming — it gets quoted in reports, pasted into
-issues, and read by whoever debugs the orchestration later.
+the reader's language. A brief looks like scratch, which is exactly why it needs
+naming — it gets quoted in reports, pasted into issues, and read by whoever
+debugs the orchestration later.
 
 **Non-English text as *data* is correct and must not be translated.** The rule
 governs prose, not examples. `署名付きトークンを持つ` in ADR-0023, the CHANGELOG
@@ -678,8 +686,7 @@ is the last step and not the next one. The PR does not leave Draft until the
 round is green — CRITICAL and HIGH at zero, per *What "green" means*.
 Flipping to Ready *asserts* that the round is green; flip with a PR comment
 recording the round — findings per severity, what was fixed, what was
-consciously deferred and why. What this fixes is *when* the round runs, not how
-heavy it is. Merge continues to gate on the required checks.
+consciously deferred and why. Merge continues to gate on the required checks.
 
 **A commit that fixes a review finding records the finding as history.** The
 commit body carries a structured trailer:
