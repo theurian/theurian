@@ -48,7 +48,7 @@ _COMPOSED_CLOCK: ContextVar[Clock | None] = ContextVar("theurian_cli_clock", def
 
 @contextmanager
 def composed_clock(clock: Clock) -> Iterator[None]:
-    """Hand ``clock`` to every command context resolved inside this block."""
+    """Hand ``clock`` to :func:`resolve_context` for this block, in this context."""
     token = _COMPOSED_CLOCK.set(clock)
     try:
         yield
