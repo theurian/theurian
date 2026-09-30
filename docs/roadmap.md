@@ -233,10 +233,10 @@ not; **absent** — effectively nothing.
   `_relation_is_visible` gated each endpoint through a read that *resolved
   aliases*, so an alias key equal to a withheld item's id evaluated the wrong
   item's authority. **T-21 was closed by two fixes, on both sides.** Read side:
-  the non-resolving read — each endpoint is read by the row the id literally
-  names, through `get_item_exact` from 0.1.0.dev6 and, since 0.2.3, through its
-  body-free form `get_item_exact_metadata` (T-26) — and the principle the split
-  records is
+  the non-resolving read — each endpoint is judged by the row its id literally
+  names, read through `get_item_exact` from 0.1.0.dev6 and, since 0.2.3,
+  through its body-free form `get_item_exact_metadata` (T-26) — and the
+  principle the split records is
   **reachability may resolve an alias; authority — a visibility decision on a
   referenced id — must read the literally-named row.** Write side: a whole-set
   refusal — `AliasItemCollisionError` rejects a migration set whose alias key

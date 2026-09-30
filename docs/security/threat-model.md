@@ -7097,8 +7097,12 @@ already built.
 > materialised a withheld endpoint's body before withholding it —
 > T-26, closed in 0.2.3. `get_item_exact` remains, as the full read behind
 > `CanonicalVisibility._served_item` (`application/visibility.py`), the GHSA-3f65
-> content check on a row that has already cleared the gate. A gate read that
-> keeps T-21's property and drops T-26's reopens T-26;
+> content check on a row that has already cleared the gate. Part A's
+> reachability read moved in the same release: `knowledge.get` and
+> `CanonicalVisibility.item` resolve an id through `get_item_metadata`, the
+> body-free form of `get_item`, so a rename still resolves, and nothing in
+> `src/` calls the session's `get_item`. A gate read that keeps T-21's
+> property and drops T-26's reopens T-26;
 > [ADR-0038](../adr/0038-specification-folds-into-a-knowledge-kind.md) records
 > both as owed by the per-hop gate a traversal will need (*Compliance*, item 3).
 
@@ -7664,7 +7668,7 @@ fix.
 | T-18 | Reused revision id resolves to a withheld item's body | I | Critical | Closed in 0.1.0.dev3 — item-scoped `append_revision` + `put_item` store guards, `SCHEMA_VERSION` gate (GHSA-7997-g35f-q59h) |
 | T-19 | A repository ships a doctored `.theurian/state/` served without a local build | I | Critical | Closed in 0.1.0.dev4 — out-of-tree `BuildProvenance` anchor, enforced at every serve path (GHSA-266v-fcj2-qggx, ADR-0004, SEC-7) |
 | T-20 | A body file shared across two revisions is served past the status gate | I | Critical | Closed in 0.1.0.dev5 — whole-set refusal keyed on body filesystem identity (`st_dev`/`st_ino`), `DuplicateContentFileError` (GHSA-w5cm-cqf9-vm7r) |
-| T-21 | An alias key colliding with a live item id resolves a withheld item to an approved item's authority | I | Critical | Closed in 0.1.0.dev6 — non-resolving `get_item_exact` on the read gate, plus a whole-set write refusal (`AliasItemCollisionError`, `deprecated` exempt); ranked face held by T-18 (GHSA-vx8x-rjfj-9x54) |
+| T-21 | An alias key colliding with a live item id resolves a withheld item to an approved item's authority | I | Critical | Closed in 0.1.0.dev6 — non-resolving `get_item_exact` on the read gate (body-free `get_item_exact_metadata` since 0.2.3, T-26), plus a whole-set write refusal (`AliasItemCollisionError`, `deprecated` exempt); ranked face held by T-18 (GHSA-vx8x-rjfj-9x54) |
 | T-22 | A canonical read's cost grows with the above-ceiling rows it withholds | I | Medium | Accepted residual, measured (0.20 µs/row on the scan, 0.54 µs/row on `knowledge.status`'s counts); flattening owned by [#338](https://github.com/theurian/theurian/issues/338), acceptance recorded on #119 |
 | T-23 | A revision's served content drifts under an unchanged revision id, and a stale index serves it past the gate | I | Critical | Closed in 0.1.0.dev13 — serve gate keyed on `served_content_hash(title, body)` both sides, `INDEX_SCHEMA_VERSION` 6 → 7 forced rebuild; a new face of the derived-state-trust class T-19 (GHSA-3f65-gr36-qqx8); leaf-excerpt only, the `raptorPath[].title` face stays the T-17a residual (GHSA-97q9-xxfg-33r6) |
 | T-24 | A repository ships its own `.theurian/review/` and a local build serves it as review history | T | Medium | Accepted residual, recorded. SEC-15's triple on every row, and the promotion path out of the untrusted plane — ADR-0033's candidate generator, since slice B5 — ends at an unapproved proposal a human reads; the tool description and response schema state that the T-19 check is on the *store* and never on who wrote the records. Verifying evidence provenance is unowned, adjacent to [#575](https://github.com/theurian/theurian/issues/575) |
