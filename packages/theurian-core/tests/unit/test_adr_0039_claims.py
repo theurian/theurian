@@ -480,6 +480,11 @@ ADR_STATES: Final[dict[str, str]] = {
         `current_revision_id` and the served-content hash bound to it
         (`current_served_content_sha256`, GHSA-3f65), or relation rows — does not take this
         path; it takes decision 8's ADR-first route.""",
+    "d6-replay": """It needs a named corpus that exercises every operation whose effect
+        changes, including planted inputs the old engine refused, and that holds a withheld
+        row; a positive control showing that the comparison tells the two engines apart when
+        one is perturbed; and a comparison of each migration's apply outcome and of the OKF
+        export bundle, as well as of tool responses.""",
     # Fact half: test_adr_0038_records.py's two committed-YAML population pins.
     "d6-corpus": """the dogfood corpus names neither retiring operation (`git grep -c -E
         'registerSpecification|supersedeSpecification' -- .theurian/migrations/` prints nothing),
