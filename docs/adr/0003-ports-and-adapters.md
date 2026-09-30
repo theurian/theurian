@@ -98,18 +98,34 @@ Ports and adapters, with the port set fixed in advance and deliberately small.
    > **What the pin on that table does and does not hold.** It checks the row
    > *names* against the live difference, so a Protocol that leaves the register
    > or joins it outside cannot pass unnamed. It does not read the Standing
-   > column: an empty or wrong reason is green. That column is a reviewer's to
-   > demand, not a test's — the reason a Protocol is deliberately outside is a
-   > judgement about substitution boundaries, and a test that scored it would
-   > be scoring prose it cannot evaluate. A row added without a real standing
-   > is the failure this leaves open, and it is left open knowingly.
+   > column: an empty or wrong reason is green. (Since
+   > [#832](https://github.com/theurian/theurian/issues/832) a second pin reads
+   > the member facts one cell states, and only those — amended below.) That
+   > column is a reviewer's to demand, not a test's — the reason a Protocol is
+   > deliberately outside is a judgement about substitution boundaries, and a
+   > test that scored it would be scoring prose it cannot evaluate. A row added
+   > without a real standing is the failure this leaves open, and it is left
+   > open knowingly.
    >
-   > **Which members a Protocol declares is not a standing.** The
-   > `CanonicalReadSession` row's member list is a fact of the class rather
-   > than a judgement, so it is a test's to hold, derived from the class, and
-   > not a reviewer's to re-read. The row said "six members" and named one
-   > widening read from 0.2.3, which made them eight and three, until
-   > [#832](https://github.com/theurian/theurian/issues/832).
+   > **Amended in [#832](https://github.com/theurian/theurian/issues/832)
+   > (2026-10-01): which members a Protocol declares is not a standing, and one
+   > cell's member facts are now read by a pin.** The paragraph above is the
+   > Milestone 7 record and stays; it is still true of the pin it describes,
+   > which checks row names. The `CanonicalReadSession` row's member list is a
+   > fact of the class rather than a judgement, and the row said "six members"
+   > and named one widening read from 0.2.3, which made them eight and three,
+   > until this amendment.
+   > `packages/theurian-core/tests/unit/test_ports.py::test_the_read_session_records_name_the_members_the_class_declares`
+   > now reads inside that one Standing cell. It derives two sets from the
+   > Protocol's source: the members, the `def`s its body declares; and the
+   > widening reads, those members less `CanonicalStore`'s and less `__enter__`
+   > and `__exit__`. The row's first sentence carrying "members" must name
+   > exactly the members; its first sentence carrying "widen" must spell the
+   > widening count and, before its first em dash, name exactly the widening
+   > reads. What it still does not read is the standing itself — the headline,
+   > "Mostly a narrowing of `CanonicalStore`, not a second substitution point",
+   > and the reasoning around those two sentences — nor any other row's
+   > Standing cell. Those remain a reviewer's, for the reason above.
 
 6. No dependency-injection framework. Composition roots wire objects with plain
    constructor calls, in one readable function per entry point.
