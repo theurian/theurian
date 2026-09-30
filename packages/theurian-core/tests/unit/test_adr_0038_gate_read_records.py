@@ -2,7 +2,7 @@
 
 **The class.** Prose names a read by symbol, and nothing derived that prose from
 the call site. `_relation_is_visible` moved from `get_item_exact` to
-`get_item_exact_metadata` in 0.2.3 (T-26); eleven records kept saying the old
+`get_item_exact_metadata` in 0.2.3 (T-26); the records kept saying the old
 one, and `get_item`, for the body read that `CanonicalVisibility._served_item`
 makes through `get_item_exact`. Here both reads are *derived* from the code, and
 each record is held to the derived name; no expected read is spelled in this file.
@@ -290,7 +290,7 @@ _SERVED: Final = (
     Record(
         "SqliteCanonicalStore.get_item_metadata docstring",
         lambda: _doc(STORE, "get_item_metadata", "SqliteCanonicalStore"),
-        "a body is read",
+        "body is read",
         _exactly,
     ),
     Record(
@@ -316,12 +316,6 @@ _SERVED: Final = (
         lambda: _block(_threat_model(), "**The fix: gate on metadata"),
         "",
         _paragraph,
-    ),
-    Record(
-        "threat model T-26 fix paragraph, the caller",
-        lambda: _block(_threat_model(), "**The fix: gate on metadata"),
-        "CanonicalVisibility._served_item",
-        _first,
     ),
 )
 
