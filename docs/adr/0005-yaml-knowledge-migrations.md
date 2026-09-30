@@ -69,6 +69,21 @@ The operation set is closed: `createItem`, `upsertRevision`, `deprecateItem`,
 `supersedeSpecification`, `addEvidence`, `removeEvidence`. Adding an operation is
 a protocol change and requires a version bump of `apiVersion`.
 
+> **Amended in Phase C, by [ADR-0039](0039-closed-set-extension-compatibility.md)
+> ([#274](https://github.com/theurian/theurian/issues/274)).** The paragraph
+> above states one rule for the operation set, and ADR-0039 keeps it: adding an
+> operation bumps `apiVersion`. What the paragraph left unstated, for the
+> operation set and for the format's other closed sets, ADR-0039 decides. A new
+> `kind` or `relationType` member is additive and bumps no version. Removing or
+> renaming a member or an operation takes it out of Core's writers only: it never
+> leaves the read grammar of the `apiVersion` that admitted it, because an
+> applied migration is frozen (rule 2) and an empty store replays every committed
+> document (rule 8), so a Core cannot tell an old document from a new one. Every
+> Core reads every `apiVersion` a released Core admitted. A change of meaning
+> under an existing spelling bumps `apiVersion` for documents written under the
+> new meaning. Changes to `status`, `sensitivity` and `trustLevel` are left to
+> their own ADRs.
+
 Body content lives in a separate file referenced by `contentFile`, not inline in
 the YAML. Reviewers read a normal Markdown/YAML/JSON diff, and content hashing is
 over the file's bytes rather than over a YAML-escaped copy of them.

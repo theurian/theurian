@@ -46,6 +46,7 @@ alternatives that were rejected and why.
 | [0036](0036-golden-judgements-are-committed-regression-fixtures.md) | Golden judgements are committed regression fixtures, never a ranking input | accepted |
 | [0037](0037-okf-is-the-knowledge-layer-interchange.md) | OKF is the knowledge layer's interchange — an Index-class export and a gated import | accepted |
 | [0038](0038-specification-folds-into-a-knowledge-kind.md) | The Specification entity folds into a knowledge `kind` | accepted |
+| [0039](0039-closed-set-extension-compatibility.md) | How the migration format's closed sets change | accepted |
 
 ## Writing a new ADR
 
