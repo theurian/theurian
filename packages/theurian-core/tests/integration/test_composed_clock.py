@@ -38,7 +38,21 @@ pytestmark = pytest.mark.integration
 runner = CliRunner()
 
 PRODUCT_SOURCE: Final = Path(__file__).resolve().parents[2] / "src"
-_COMPOSED_CLOCK_NAME: Final = re.compile(r"\bcomposed_clock\b")
+_COMPOSED_CLOCK_SEAM: Final = re.compile(r"\b(composed_clock|_COMPOSED_CLOCK)\b|theurian_cli_clock")
+
+#: The seam's own lines, stripped: the ContextVar, the context manager's
+#: definition, its set and reset, and ``resolve_context``'s read.
+_SEAM_LINES: Final = sorted(
+    ("theurian/cli/context.py", line)
+    for line in (
+        "_COMPOSED_CLOCK: ContextVar[Clock | None] = "
+        'ContextVar("theurian_cli_clock", default=None)',
+        "def composed_clock(clock: Clock) -> Iterator[None]:",
+        "token = _COMPOSED_CLOCK.set(clock)",
+        "_COMPOSED_CLOCK.reset(token)",
+        "composed = _COMPOSED_CLOCK.get()",
+    )
+)
 
 ITEM_ID = "architecture.auth-policy"
 BODY = "# Authentication policy\n\nEvery call carries a signed token.\n"
@@ -193,25 +207,23 @@ def test_the_composed_clock_holds_only_inside_its_block(project: Path) -> None:
     assert isinstance(resolve_context(project).clock, SystemClock)
 
 
-def test_no_product_module_calls_composed_clock() -> None:
+def test_no_product_module_reaches_the_composed_clock_seam() -> None:
     """``validFrom`` and a registered project's ``registered_at`` are stamped from
-    the clock ``resolve_context`` returns; a product module composing one would
-    stamp governed state from a clock no operator chose.
+    the clock ``resolve_context`` returns; a product module composing one, or
+    setting the ContextVar behind it, would stamp governed state from a clock no
+    operator chose.
 
-    Key: every line matching ``\\bcomposed_clock\\b`` in a ``*.py`` file under
-    ``packages/theurian-core/src``, comments and strings included, less the
-    ``def composed_clock(`` line in ``theurian/cli/context.py``."""
+    Key: every line matching ``\\b(composed_clock|_COMPOSED_CLOCK)\\b`` or
+    ``theurian_cli_clock`` in a ``*.py`` file under ``packages/theurian-core/src``,
+    case-sensitive, comments and strings included. It must be exactly
+    ``_SEAM_LINES``, each once, so a seam line moved or renamed goes RED rather
+    than leaving an allowance that matches nothing. A name built at runtime,
+    such as ``getattr(module, "composed_" + "clock")``, is outside any text key."""
     mentions = [
         (path.relative_to(PRODUCT_SOURCE).as_posix(), line.strip())
         for path in sorted(PRODUCT_SOURCE.rglob("*.py"))
         for line in path.read_text(encoding="utf-8").splitlines()
-        if _COMPOSED_CLOCK_NAME.search(line)
+        if _COMPOSED_CLOCK_SEAM.search(line)
     ]
 
-    definitions = [
-        (module, line)
-        for module, line in mentions
-        if module == "theurian/cli/context.py" and line.startswith("def composed_clock(")
-    ]
-    assert len(definitions) == 1, mentions
-    assert [mention for mention in mentions if mention not in definitions] == []
+    assert sorted(mentions) == _SEAM_LINES
