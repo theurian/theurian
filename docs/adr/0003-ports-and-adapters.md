@@ -91,41 +91,50 @@ Ports and adapters, with the port set fixed in advance and deliberately small.
    >
    > | Outside `ALL_PORTS` | Standing |
    > | :-- | :-- |
-   > | `CanonicalReadSession` | **Mostly a narrowing of `CanonicalStore`, not a second substitution point.** Its members are `list_items`, `get_item`, `get_item_exact`, `get_item_metadata`, `get_item_exact_metadata`, `get_revision`, `__enter__` and `__exit__`. `list_items`, `get_item` and `get_revision` are narrowed in from that port, and `__enter__`/`__exit__` add the handle lifetime it deliberately does not express. Three reads *widen* it, none of which `CanonicalStore` offers: `get_item_exact`, the alias-free read T-21 needs, and `get_item_metadata` and `get_item_exact_metadata`, the body-free reads T-26 needs (0.2.3) — each a form of `get_item` that skips its alias hop, its body read, or both. They are why the headline is hedged and not flat, and `get_item_exact` is the precedent `IndexBuildSession` then followed, a session Protocol adding a member the port lacks. Injection is per consumer, not shared: `ResultGate` — the SEC-13 gate itself — takes `store_factory: Callable[[Path], CanonicalReadSession]` (`application/retrieval_service.py`), while `IndexBuilder` takes `Callable[[Path], IndexBuildSession]` (`application/index_builder.py`) — the widened row below. `RetrievalService`, which this row named through two revisions, takes no `store_factory` at all. **No `CanonicalStore` method returns either.** What an operator substitutes is still a `CanonicalStore` adapter, so this opens no boundary `ALL_PORTS` does not already govern |
-   > | `IndexBuildSession` | **A widening of `CanonicalReadSession` by one method, not a second substitution point.** It adds `list_relations` because a relation's `note` is served verbatim on every `knowledge.get` response, so SEC-11's build-time control has to read that channel too; it is declared separately rather than folded into the base so that every session-shaped collaborator is not obliged to answer a question only the index build asks. What an operator substitutes is still a `CanonicalStore` adapter, so its standing is `CanonicalReadSession`'s. It is also the demonstration this amendment's own pin was owed for: it landed outside the register in [#329](https://github.com/theurian/theurian/issues/329) between the amendment being written and its pin landing, and nothing went RED |
+   > | `CanonicalReadSession` | **An open question, recorded here rather than settled.** Its members are `list_items`, `get_item`, `get_item_exact`, `get_item_metadata`, `get_item_exact_metadata`, `get_revision`, `__enter__` and `__exit__`. `list_items`, `get_item` and `get_revision` are narrowed in from `CanonicalStore`, and `__enter__`/`__exit__` add the handle lifetime that port deliberately does not express. Three reads *widen* it, none of which `CanonicalStore` offers: `get_item_exact`, the alias-free read T-21 needs, and `get_item_metadata` and `get_item_exact_metadata`, the body-free reads T-26 needs (0.2.3) — each a form of `get_item` that skips its alias hop, its body read, or both. This row once called it a narrowing, and where it matters it is not one: the SEC-13 gate path reads through the session with `get_item_metadata`, `get_item_exact`, `get_item_exact_metadata` and `get_revision`, three of them widening, while the narrowed `get_item` has no caller in `src/`; the T-21 and T-26 contracts the gate depends on are written only on this Protocol; and an adapter implementing exactly `CanonicalStore`'s methods is not an instance of this `@runtime_checkable` Protocol. What an operator substitutes is therefore more than a `CanonicalStore` adapter, and nothing keyed to `ALL_PORTS` checks the rest. Whether it *joins* the register is itself a decision this point says requires an ADR, and this amendment does not take it; the decision is filed as [#865](https://github.com/theurian/theurian/issues/865). `get_item_exact` is the precedent `IndexBuildSession` then followed, a session Protocol adding a member the port lacks. Injection is per consumer, not shared: `ResultGate` — the SEC-13 gate itself — takes `store_factory: Callable[[Path], CanonicalReadSession]` (`application/retrieval_service.py`), while `IndexBuilder` takes `Callable[[Path], IndexBuildSession]` (`application/index_builder.py`) — the widened row below. `RetrievalService`, which this row named through two revisions, takes no `store_factory` at all. **No `CanonicalStore` method returns either.** |
+   > | `IndexBuildSession` | **A widening of `CanonicalReadSession` by one method, with that Protocol's standing.** It adds `list_relations` because a relation's `note` is served verbatim on every `knowledge.get` response, so SEC-11's build-time control has to read that channel too; it is declared separately rather than folded into the base so that every session-shaped collaborator is not obliged to answer a question only the index build asks. `list_relations` is `CanonicalStore`'s own, so this adds nothing past the reads `CanonicalReadSession` already widens by, and its standing is that row's open question, [#865](https://github.com/theurian/theurian/issues/865). It is also the demonstration this amendment's own pin was owed for: it landed outside the register in [#329](https://github.com/theurian/theurian/issues/329) between the amendment being written and its pin landing, and nothing went RED |
    > | `McpClientConfig` | **An open question, recorded here rather than settled.** It has a port's shape: `SetupContext.mcp_config` is constructor-injected, and `cli/setup_commands.py` — a composition root — names `ClaudeCodeMcpConfig` as its adapter. Yet it is absent from `ALL_PORTS` and unimported by `ports/__init__.py`, so `test_port_set_is_closed` has never seen it. Whether it *joins* the register is itself a decision this point says requires an ADR, and this amendment does not take it; the decision is filed as [#553](https://github.com/theurian/theurian/issues/553). Trail: [#140](https://github.com/theurian/theurian/issues/140) (the CL that wrote this amendment) |
    >
    > **What the pin on that table does and does not hold.** It checks the row
    > *names* against the live difference, so a Protocol that leaves the register
    > or joins it outside cannot pass unnamed. It does not read the Standing
-   > column: an empty or wrong reason is green. (Since
-   > [#832](https://github.com/theurian/theurian/issues/832) a second pin reads
-   > the member facts one cell states, and only those — amended below.) That
-   > column is a reviewer's to demand, not a test's — the reason a Protocol is
-   > deliberately outside is a judgement about substitution boundaries, and a
-   > test that scored it would be scoring prose it cannot evaluate. A row added
-   > without a real standing is the failure this leaves open, and it is left
-   > open knowingly.
+   > column: an empty or wrong reason is green. That column is a reviewer's to
+   > demand, not a test's — the reason a Protocol is deliberately outside is a
+   > judgement about substitution boundaries, and a test that scored it would
+   > be scoring prose it cannot evaluate. A row added without a real standing
+   > is the failure this leaves open, and it is left open knowingly.
    >
    > **Amended in [#832](https://github.com/theurian/theurian/issues/832)
    > (2026-10-01): which members a Protocol declares is not a standing, and one
-   > cell's member facts are now read by a pin.** The paragraph above is the
-   > Milestone 7 record and stays; it is still true of the pin it describes,
-   > which checks row names. The `CanonicalReadSession` row's member list is a
-   > fact of the class rather than a judgement, and the row said "six members"
-   > and named one widening read from 0.2.3, which made them eight and three,
-   > until this amendment.
+   > cell's member facts are now read by a pin; that cell's standing is
+   > reopened.** The paragraph above is the Milestone 7 record and stays; it is
+   > still true of the pin it describes, which checks row names. The
+   > `CanonicalReadSession` row's member list is a fact of the class rather than
+   > a judgement, and the row said "six members" and named one widening read
+   > from 0.2.3, which made them eight and three, until this amendment.
    > `packages/theurian-core/tests/unit/test_ports.py::test_the_read_session_records_name_the_members_the_class_declares`
    > now reads inside that one Standing cell. It derives two sets from the
    > Protocol's source: the members, the `def`s its body declares; and the
    > widening reads, those members less `CanonicalStore`'s and less `__enter__`
    > and `__exit__`. The row's first sentence carrying "members" must name
-   > exactly the members; its first sentence carrying "widen" must spell the
-   > widening count and, before its first em dash, name exactly the widening
-   > reads. What it still does not read is the standing itself — the headline,
-   > "Mostly a narrowing of `CanonicalStore`, not a second substitution point",
-   > and the reasoning around those two sentences — nor any other row's
-   > Standing cell. Those remain a reviewer's, for the reason above.
+   > exactly the members; its sentence carrying "none of which `CanonicalStore`
+   > offers" must spell the widening count and, before its first em dash, name
+   > exactly the widening reads. What it does not read is the standing itself —
+   > the headline and the reasoning after the widening sentence — nor any other
+   > row's Standing cell. Those remain a reviewer's, for the reason above.
+   >
+   > A reviewer did read the standing, in round one of
+   > [#860](https://github.com/theurian/theurian/pull/860)'s review, and it did
+   > not hold. The row's headline called the Protocol mostly a narrowing of
+   > `CanonicalStore` and not a second substitution point, hedged on its one
+   > widening read, and its last sentence concluded that an operator still
+   > substitutes only a `CanonicalStore` adapter, so no boundary opens outside
+   > `ALL_PORTS`. Three widening reads, three of the four reads the gate path
+   > makes through the session, and a `CanonicalStore`-only adapter that is not
+   > an instance of the session make that conclusion false. The row now records
+   > the standing as an open question, in the `McpClientConfig` row's form, and
+   > the decision is [#865](https://github.com/theurian/theurian/issues/865).
+   > The `IndexBuildSession` row, whose standing is this one's, follows it.
 
 6. No dependency-injection framework. Composition roots wire objects with plain
    constructor calls, in one readable function per entry point.

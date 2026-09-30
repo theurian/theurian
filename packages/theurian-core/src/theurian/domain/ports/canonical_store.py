@@ -4,12 +4,13 @@ Deliberately exposes no method that updates a revision. Immutability (ADR-0006)
 is expressed in the type signature, not only in prose -- an adapter cannot offer
 an update path without violating the Protocol.
 
-Three Protocols live here, not three ports. Only :class:`CanonicalStore` is in
-``ALL_PORTS``, the register ADR-0003 point 5 is closed over;
-:class:`CanonicalReadSession` is mostly a narrowing of it and
-:class:`IndexBuildSession` is a widening of *that* by one method, so both sit
-outside the register on purpose, for the reasons their own docstrings give, and
-the port set ADR-0003 fixes is unchanged.
+Three Protocols live here, and only :class:`CanonicalStore` is in
+``ALL_PORTS``, the register ADR-0003 point 5 is closed over.
+:class:`CanonicalReadSession` narrows three of its reads and widens it by three
+more, and :class:`IndexBuildSession` widens *that* by one method. Whether the
+two sessions belong outside the register is open, for the reasons
+:class:`CanonicalReadSession`'s docstring gives (#865); the port set ADR-0003
+fixes is unchanged.
 """
 
 from __future__ import annotations
@@ -419,15 +420,27 @@ class CanonicalStore(Protocol):
 class CanonicalReadSession(Protocol):
     """One pass over canonical state, opened and closed by the caller.
 
-    **Not a port, and deliberately outside the register.** ADR-0003's closed set
-    is :data:`theurian.domain.ports.ALL_PORTS` -- see point 5's Milestone 7
-    amendment -- and this is not in it. Of its eight members, ``list_items``,
-    ``get_item`` and ``get_revision`` are :class:`CanonicalStore`'s own narrowed
-    in; ``get_item_exact`` is the alias-free read T-21 needs, and
+    **Not in the register, and whether it belongs there is open.** ADR-0003's
+    closed set is :data:`theurian.domain.ports.ALL_PORTS` -- see point 5's
+    Milestone 7 amendment -- and this is not in it. Of its eight members,
+    ``list_items``, ``get_item`` and ``get_revision`` are
+    :class:`CanonicalStore`'s own narrowed in; ``get_item_exact`` is the
+    alias-free read T-21 needs, and
     ``get_item_metadata``/``get_item_exact_metadata`` are the body-free reads the
     timing gate needs (0.2.3) -- none of which that port offers; ``__enter__`` and
     ``__exit__`` add the handle lifetime it deliberately does not express. No
     :class:`CanonicalStore` method returns one.
+
+    The widening reads are the ones the gate uses: the SEC-13 gate path reads
+    through this Protocol with ``get_item_metadata``, ``get_item_exact``,
+    ``get_item_exact_metadata`` and ``get_revision``, and the narrowed
+    ``get_item`` has no caller in ``src/``. The T-21 and T-26 contracts the gate
+    depends on are written only here, and an adapter implementing exactly
+    :class:`CanonicalStore`'s methods is not an instance of this
+    ``@runtime_checkable`` Protocol. So an operator substitutes more than a
+    :class:`CanonicalStore` adapter, and whether this joins the register is a
+    decision ADR-0003 point 5 records as open, filed as
+    `#865 <https://github.com/theurian/theurian/issues/865>`_.
 
     Injection is per consumer rather than one shared factory, and the two
     annotations differ: ``ResultGate`` (``application/retrieval_service.py``)
@@ -437,9 +450,7 @@ class CanonicalReadSession(Protocol):
     :class:`IndexBuildSession` records. ``ResultGate`` is the same SEC-13 gate
     :meth:`__enter__` below already names as the caller that matters, which is
     the check this sentence should have run: the module contradicted itself for
-    two revisions while naming ``RetrievalService`` here. What an operator
-    substitutes is still a :class:`CanonicalStore` adapter either way, so this
-    opens no boundary the register does not already govern.
+    two revisions while naming ``RetrievalService`` here.
 
     Stated without an ordinal on purpose. This paragraph read "not a fifteenth
     port" while ``ALL_PORTS`` held seventeen: an ordinal pinned to a count drifts
