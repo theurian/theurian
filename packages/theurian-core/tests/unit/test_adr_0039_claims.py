@@ -29,17 +29,21 @@ The pin is six modules and a support module, split by section:
 - *A governed position* is a ``$defs`` property whose schema is a ``$ref`` to one
   of the six enum ``$defs``, an inline ``enum``, the ``op`` discriminator, or the
   root ``apiVersion``.
-- *An entry point* is, over every ``.py`` under ``src/theurian``, one of
-  ``KnowledgeKind``/``RelationType``/``OperationKind`` named by bare name or as
-  an attribute and reached from a value: a call of it; a subscript
-  (``Cls[raw]``); ``_value2member_map_``, ``_member_map_``, ``__members__``,
-  ``__call__``, ``__new__`` or ``_missing_`` on it; an ``in``/``not in`` test
-  against it; ``getattr(Cls, ...)`` or ``map(Cls, ...)``; a ``_closed_value``
-  call whose first argument names it; or a ``cli/`` parameter whose annotation
-  names it. Outside the key: an aliased import, a class held in a variable or
-  passed to any other callable, ``type(member)(raw)``, and reflection through
-  ``vars``, ``globals`` or ``importlib``. A table row *accounts for* a site when
-  the site's token appears anywhere in the row's first two cells.
+- *An entry point* is detected by reference and classified by form. Detection:
+  every ``Name`` or ``Attribute`` naming ``KnowledgeKind``, ``RelationType`` or
+  ``OperationKind`` in a value position of any ``.py`` under ``src/theurian`` --
+  every position but an annotation, where a ``cli/`` parameter's annotation
+  counts as an option because Typer parses a value into it. Classification, by
+  the node that holds the reference: a call of the class, the first argument of
+  ``_closed_value``, the type of an ``isinstance``, a member access, a CLI
+  option, and anything else as *unclassified*. The population of references is
+  held exact by file, function and form, so any new reference goes RED for a
+  person. Outside the key: an aliased import, a class reached through a
+  variable or through reflection (``vars``, ``globals``, ``importlib``), and
+  ``type(member)(raw)``; a method defined on a class is held apart, by
+  asserting each class holds its members and nothing else. A table row
+  *accounts for* a site when the site's token appears anywhere in the row's
+  first two cells.
 - *What ``compat check`` reads* is every name ``compat_check`` and
   ``domain/compatibility.py`` spell or import; a read through another module's
   function is outside it.

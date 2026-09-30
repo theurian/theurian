@@ -39,10 +39,13 @@ from theurian.domain.compatibility import (
     CompatibilityOutcome,
     resolve_compatibility,
 )
-from theurian.domain.migration import RegisterSpecification
+from theurian.domain.enums import KnowledgeKind, RelationType
+from theurian.domain.migration import OperationKind, RegisterSpecification
 from theurian.domain.state import StateInputs
 
 pytestmark = pytest.mark.unit
+
+ADDITIVE_CLASSES: Final = (KnowledgeKind, RelationType, OperationKind)
 
 
 def _pasted() -> dict[str, collections.Counter[tuple[str, str]]]:
@@ -61,55 +64,76 @@ def _pasted() -> dict[str, collections.Counter[tuple[str, str]]]:
     return outputs
 
 
-#: Attributes that turn a value into a member, or answer whether one would.
-_LOOKUP_ATTRIBUTES: Final = frozenset(
-    {"_value2member_map_", "_member_map_", "__members__", "__call__", "__new__", "_missing_"}
-)
+#: Each additive class's member names: an attribute naming one is a static member access.
+_MEMBERS_OF: Final = {cls.__name__: frozenset(cls.__members__) for cls in ADDITIVE_CLASSES}
 
 
-def _lookup(node: ast.AST) -> bool:
-    """A value reaching one of the classes other than by a plain call of it."""
-    match node:
-        case ast.Subscript(value=cls) if _named(cls) in ADDITIVE:
-            return True
-        case ast.Attribute(value=cls, attr=attr) if _named(cls) in ADDITIVE:
-            return attr in _LOOKUP_ATTRIBUTES
-        case ast.Compare(ops=ops, comparators=comparators):
-            return any(
-                isinstance(op, ast.In | ast.NotIn) and _named(right) in ADDITIVE
-                for op, right in zip(ops, comparators, strict=True)
-            )
-        case ast.Call(func=ast.Name(id="getattr" | "map"), args=[cls, *_]):
-            return _named(cls) in ADDITIVE
-    return False
+def _annotations(tree: ast.AST) -> tuple[set[int], set[int]]:
+    """Ids of every node inside an annotation, and of those inside a parameter's."""
+    everywhere: set[int] = set()
+    parameters: set[int] = set()
+    for node in ast.walk(tree):
+        roots: list[ast.AST] = []
+        if isinstance(node, ast.arg) and node.annotation is not None:
+            parameters |= {id(inner) for inner in ast.walk(node.annotation)}
+            roots.append(node.annotation)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.returns is not None:
+            roots.append(node.returns)
+        if isinstance(node, ast.AnnAssign):
+            roots.append(node.annotation)
+        everywhere |= {id(inner) for root in roots for inner in ast.walk(root)}
+    return everywhere, parameters
 
 
-def _entry_points(
-    trees: Mapping[str, ast.Module] | None = None,
-) -> dict[str, list[tuple[str, str, ast.AST]]]:
-    """``(path, function, node)`` per mechanism, under the key in the module docstring."""
-    found: dict[str, list[tuple[str, str, ast.AST]]] = collections.defaultdict(list)
+def _form(node: ast.AST, parent: ast.AST, name: str) -> str:
+    """What a value-position reference does with the class, by the node that holds it."""
+    match parent:
+        case ast.Call(func=func) if func is node:
+            return "construction"
+        case ast.Call(func=func, args=[first, *_]) if first is node and _named(func) == (
+            "_closed_value"
+        ):
+            return "_closed_value"
+        case ast.Call(func=ast.Name(id="isinstance"), args=[_, second]) if second is node:
+            return "isinstance"
+        case ast.Attribute(value=value, attr=attr) if value is node and attr in _MEMBERS_OF[name]:
+            return "member"
+    return "unclassified"
+
+
+#: ``(path, function, class, form, node)``.
+Reference = tuple[str, str, str, str, ast.AST]
+
+
+def _references(trees: Mapping[str, ast.Module] | None = None) -> list[Reference]:
+    """Every reference to an additive class, under the key in the claims module's docstring."""
+    found: list[Reference] = []
     for path, tree in (_trees() if trees is None else trees).items():
+        parents = {
+            id(child): parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)
+        }
+        annotation, parameter = _annotations(tree)
         for node, scope in _scoped(tree):
-            if _lookup(node):
-                found["lookup"].append((path, scope, node))
-            elif isinstance(node, ast.Call) and _named(node.func) in ADDITIVE:
-                found["construction"].append((path, scope, node))
-            elif (
-                isinstance(node, ast.Call)
-                and _named(node.func) == "_closed_value"
-                and _named(node.args[0]) in ADDITIVE
-            ):
-                found["_closed_value"].append((path, scope, node))
-            elif isinstance(node, ast.arg) and path.startswith("cli/") and node.annotation:
-                found["option"] += [
-                    (path, scope, name)
-                    for name in ast.walk(node.annotation)
-                    if isinstance(name, ast.Name) and name.id in ADDITIVE
-                ]
-            elif isinstance(node, ast.ClassDef) and node.name in ADDITIVE:
-                found["class"].append((path, scope, node))
+            name = _named(node) if isinstance(node, ast.Name | ast.Attribute) else None
+            if name not in ADDITIVE:
+                continue
+            if id(node) in parameter and path.startswith("cli/"):
+                form = "option"
+            elif id(node) in annotation:
+                continue
+            else:
+                form = _form(node, parents[id(node)], name)
+            found.append((path, scope, name, form, node))
     return found
+
+
+def _class_statements() -> list[tuple[str, ast.ClassDef]]:
+    return [
+        (path, node)
+        for path, tree in _trees().items()
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and node.name in ADDITIVE
+    ]
 
 
 #: Each construction site the loader's schema check does not stand in front of,
@@ -152,68 +176,136 @@ _LOADER: Final = "infrastructure/filesystem/migration_loader.py"
 
 def test_the_pasted_commands_are_the_live_entry_point_population() -> None:
     """Keyed on text, not on line numbers: the pasted lines are dated to ``f0e4d754``."""
-    found = _entry_points()
+    references = _references()
     live = [
         collections.Counter(
-            (path, _line(path, node))
-            for mechanism in mechanisms
-            for path, _, node in found[mechanism]
-        )
-        for mechanisms in (("construction", "class"), ("_closed_value",), ("option",))
+            [
+                *(
+                    (path, _line(path, node))
+                    for path, _, _, form, node in references
+                    if form == "construction"
+                ),
+                *((path, _line(path, node)) for path, node in _class_statements()),
+            ]
+        ),
+        *(
+            collections.Counter(
+                (path, _line(path, node)) for path, _, _, f, node in references if f == form
+            )
+            for form in ("_closed_value", "option")
+        ),
     ]
 
     assert list(_pasted().values()) == live
 
 
-def test_every_way_of_reaching_a_class_from_a_value_is_recognised() -> None:
-    """Driven from a snippet: no live site uses any of these forms today."""
-    snippet = ast.parse(
-        "def forms(raw, enums):\n"
-        "    KnowledgeKind[raw]\n"
-        "    enums.RelationType[raw]\n"
-        "    RelationType._value2member_map_.get(raw)\n"
-        "    OperationKind._member_map_\n"
-        "    KnowledgeKind.__members__\n"
-        "    KnowledgeKind.__call__(raw)\n"
-        "    raw in OperationKind\n"
-        "    raw not in KnowledgeKind\n"
-        "    getattr(KnowledgeKind, raw)\n"
-        "    map(RelationType, raw)\n"
-        "    KnowledgeKind.DOMAIN\n"
-        "    isinstance(raw, KnowledgeKind)\n"
-        "    frozenset(OperationKind)\n"
+#: Every reference to an additive class under ``src/theurian``, by form: held exact, so a
+#: new one of any form -- iteration, a comprehension, ``next(...)``, ``.parse`` -- goes RED
+#: for a person to classify.
+REFERENCES: Final = {
+    ("application/migration_engine.py", "_apply_operation", "member"): 1,
+    ("application/okf_import.py", "_resolve_kind", "construction"): 1,
+    ("application/proposal_service.py", "<module>", "member"): 14,
+    ("application/proposal_service.py", "_refuse_operations_outside_the_v1_set", "construction"): 1,
+    ("cli/propose_commands.py", "propose_draft", "option"): 1,
+    ("domain/enums.py", "<module>", "member"): 11,
+    ("domain/migration.py", "kind", "member"): 14,
+    ("infrastructure/filesystem/migration_loader.py", "_parse_operation", "construction"): 3,
+    ("infrastructure/filesystem/migration_loader.py", "_parse_upsert", "construction"): 1,
+    ("infrastructure/sqlite/store.py", "_item_from_row", "construction"): 1,
+    ("infrastructure/sqlite/store.py", "_relation_from_row", "construction"): 1,
+    ("infrastructure/sqlite/store.py", "_revision_from_row", "construction"): 1,
+    ("mcp/tools.py", "knowledge_propose_change", "_closed_value"): 1,
+    ("mcp/tools.py", "review_generate_knowledge_candidate", "_closed_value"): 1,
+}
+
+
+def test_every_reference_to_an_additive_class_is_classified_and_held() -> None:
+    references = _references()
+
+    assert [
+        (path, scope, ast.unparse(node))
+        for path, scope, _, form, node in references
+        if form == "unclassified"
+    ] == []
+    assert (
+        collections.Counter((path, scope, form) for path, scope, _, form, _ in references)
+        == REFERENCES
     )
 
-    found = _entry_points({"snippet.py": snippet})
 
-    assert [ast.unparse(node) for _, _, node in found["lookup"]] == [
-        "KnowledgeKind[raw]",
-        "enums.RelationType[raw]",
-        "RelationType._value2member_map_",
-        "OperationKind._member_map_",
-        "KnowledgeKind.__members__",
-        "KnowledgeKind.__call__",
-        "raw in OperationKind",
-        "raw not in KnowledgeKind",
-        "getattr(KnowledgeKind, raw)",
-        "map(RelationType, raw)",
+def test_each_form_of_reference_is_classified_and_annotations_are_not_references() -> None:
+    """Driven from snippets: the live tree holds no ``isinstance`` and no unclassified form."""
+    snippet = ast.parse(
+        "from theurian.domain.enums import KnowledgeKind\n"
+        "def forms(raw, enums, kind: KnowledgeKind) -> KnowledgeKind:\n"
+        "    held: KnowledgeKind = KnowledgeKind(raw)\n"
+        "    enums.RelationType(raw)\n"
+        "    _closed_value(KnowledgeKind, raw, 'kind')\n"
+        "    isinstance(raw, KnowledgeKind)\n"
+        "    KnowledgeKind.DOMAIN\n"
+        "    KnowledgeKind[raw]\n"
+        "    RelationType._value2member_map_.get(raw)\n"
+        "    raw in OperationKind\n"
+        "    KnowledgeKind.__call__(raw)\n"
+        "    {member.value: member for member in KnowledgeKind}\n"
+        "    next(member for member in KnowledgeKind if member == raw)\n"
+        "    KnowledgeKind.parse(raw)\n"
+        "    getattr(KnowledgeKind, raw)\n"
+    )
+    option = ast.parse("def command(kind: KnowledgeKind | None = None) -> KnowledgeKind: ...\n")
+
+    found = _references({"snippet.py": snippet, "cli/snippet.py": option})
+
+    assert sorted(
+        (getattr(node, "lineno", 0), form)
+        for path, _, _, form, node in found
+        if path == "snippet.py"
+    ) == [
+        (3, "construction"),
+        (4, "construction"),
+        (5, "_closed_value"),
+        (6, "isinstance"),
+        (7, "member"),
+        *((line, "unclassified") for line in range(8, 16)),
     ]
-    assert found["construction"] == []
+    assert [(path, form) for path, _, _, form, _ in found if path == "cli/snippet.py"] == [
+        ("cli/snippet.py", "option")
+    ]
+
+
+def test_the_additive_classes_define_their_members_and_nothing_else() -> None:
+    """A method on one -- a ``parse`` classmethod, say -- is an entry point by another name."""
+    statements = _class_statements()
+
+    assert sorted(node.name for _, node in statements) == sorted(ADDITIVE)
+    for path, node in statements:
+        body = node.body[1:] if isinstance(node.body[0], ast.Expr) else node.body
+
+        assert (node.decorator_list, [ast.unparse(base) for base in node.bases]) == (
+            [],
+            ["StrEnum"],
+        ), path
+        assert [
+            ast.unparse(statement)
+            for statement in body
+            if not (
+                isinstance(statement, ast.Assign)
+                and isinstance(statement.targets[0], ast.Name)
+                and isinstance(statement.value, ast.Constant)
+            )
+        ] == [], f"{node.name} defines more than its members"
 
 
 def test_every_entry_point_the_schema_does_not_guard_has_its_table_row() -> None:
-    found = _entry_points()
+    references = _references()
     loader = [
-        scope
-        for mechanism in ("construction", "lookup")
-        for path, scope, _ in found[mechanism]
-        if path == _LOADER
+        scope for path, scope, _, form, _ in references if path == _LOADER and form != "member"
     ]
     reachable = {
         (path, scope)
-        for mechanism in ("construction", "lookup", "_closed_value", "option")
-        for path, scope, _ in found[mechanism]
-        if path != _LOADER
+        for path, scope, _, form, _ in references
+        if path != _LOADER and form in ("construction", "_closed_value", "option")
     }
     lines = _section("### What an unknown value meets today")
     table = _table(
