@@ -114,7 +114,7 @@ The entry points an unknown value can reach refuse it as follows:
 | `theurian propose --kind` (`cli/propose_commands.py:148-150`, typed `KnowledgeKind`) | Option parsing, Typer `BadParameter`: `'requirement' is not one of 'architecture', ..., 'known-exception'.` | Yes, with the valid set | Measured: the option's own type converted the value on the built command; the command was not invoked |
 | OKF import, a concept's `type` (`application/okf_import.py:285-289`, `:544-550`) | Per concept, `ImportRefusal(kind="concept", key=<file>, literal="unrecognized type: 'specification'")`; other concepts still import | Yes | Measured: `_map_concept` on one concept file; `type: domain` maps |
 | OKF import, a relation entry's `type` (`:586-590`, `_draft_relations` `:829-853`) | Carried verbatim into an `addRelation` in the one relations draft. An unknown type fails that draft's validation, and the whole draft is refused as one `ImportRefusal(kind="relations", key="addRelation")` carrying the validator's message, so every relation in the bundle is dropped, not only the unknown one | As the loader | Read from source, not run |
-| Derived store row decoders: `_item_from_row` (`infrastructure/sqlite/store.py:1681`), `_revision_from_row` (`:1707`) and `_relation_from_row` (`:1784`). `knowledge.get` reaches `_revision_from_row` through `current_revision` → `get_revision` (`:582`, `:538`); `list_revisions` (`:615`) is its other caller | The decoder raises `ValueError` (`'requirement' is not a valid KnowledgeKind`, `'traces_to' is not a valid RelationType`), and every store read runs its decoder inside `_reading()` (`_read_one`, `:418-420`), which re-raises it as `StateDatabaseUnreadableError`: `This project's state database cannot be read (ValueError): it is damaged, or holds a value this build cannot interpret.`, followed by a remedy to delete `.theurian/state/` and run `theurian migrate apply` | No: the message names only the exception type; the value is on `__cause__` | Measured: each decoder called on a mapping inside `_reading()`, as `_read_one` calls it; the valid values decode |
+| Derived store row decoders: `_item_from_row` (`infrastructure/sqlite/store.py:1681`), `_revision_from_row` (`:1707`) and `_relation_from_row` (`:1784`). `knowledge.get`'s first store read is `get_item_metadata` → `_item_from_row` (`mcp/tools.py:2343`), before its `may_surface`/`may_disclose` gate (`:2351-2352`); `list_relations` decodes every edge inside `_read_all` (`store.py:968-973`) before `_relation_is_visible` filters them (`mcp/tools.py:2415`); `_revision_from_row` runs after the gate, through `current_revision` → `get_revision` (`mcp/tools.py:2397`; `store.py:582`, `:538`) | The decoder raises `ValueError` (`'requirement' is not a valid KnowledgeKind`, `'traces_to' is not a valid RelationType`), and every store read runs its decoder inside `_reading()` (`_read_one`, `:418-420`), which re-raises it as `StateDatabaseUnreadableError`: `This project's state database cannot be read (ValueError): it is damaged, or holds a value this build cannot interpret.`, followed by a remedy to delete `.theurian/state/` and run `theurian migrate apply` | No: the message names only the exception type; the value is on `__cause__` | Measured: each decoder called on a mapping inside `_reading()`, as `_read_one` calls it; the valid values decode |
 
 ### The derived store
 
@@ -131,8 +131,16 @@ older daemon serving a project whose pointer a newer Core wrote can therefore
 reach the row decoders above without meeting the loader's refusal first, and
 the store then reports an unreadable database whose remedy, a rebuild through
 `theurian migrate apply`, runs into that same loader's refusal. The path is read
-from source, not run; what the tool returns then is owed (*Compliance*, Still
-owed item 3).
+from source, not run; what the tool returns then is item 3 of *Compliance*'s
+obligations.
+
+Nothing at open checks which engine built the database. `create_database`
+writes `schema_metadata.engine_version` (`infrastructure/sqlite/connection.py:1075`),
+and the only read of `schema_metadata` at open selects `schema_version` alone
+(`:1084`); no statement under `packages/theurian-core/src` selects the
+`engine_version` column. So ADR-0007's invalidation holds on the build path, where the
+state hash names the database, and not on the serve path, which opens whatever
+the pointer names. The serve-path check is #853's.
 
 ### What `theurian compat check` compares (read from source, not run)
 
@@ -147,27 +155,36 @@ reads no project, no migration and no enum.
 
 ### What the wire carries
 
-**The key for "enumerates".** An `enum` enumerates a governed set when all of
-its non-null members are members of that set. Over every schema under
-`schemas/` except the migration schema, which is the read grammar itself, the
-program below finds four such enums and none of `kind`, `relationType` or the
-operation set: `schemas/knowledge/retrieval-result.schema.json`'s `status`,
-`trustLevel` and `sensitivity`, and
-`schemas/config/project-config.schema.json`'s `retrieval.includeStatuses`,
-which lists all six `status` members. Two enums share members with a governed
-set without being contained in one, so the key does not count them:
-`review-generate-knowledge-candidate-input`'s `category` shares
-`rejected-approach` and `known-exception` with `KnowledgeKind`
-(`domain/enums.py:69-70` against `:133-134`), and
-`review-findings-response`'s `reviewer` shares `security`
-(`domain/enums.py:64` against `domain/review_finding.py:65`). That is the key's
-hole: a future enum carrying a governed set plus other members is not
-contained in the set, so the key does not count it, and it is to be classified
-by a person when it appears rather than passed silently.
+**The key for "enumerates".** A construct closes a value when it names the
+values an instance may take: an `enum`, a `const`, or a `oneOf` or `anyOf` whose
+every branch is itself one of those. A closing construct enumerates a governed
+set when every value it admits other than null is a member of that set. Over
+every schema under `schemas/` except the migration schema, which is the read
+grammar itself, the program below finds four such constructs and none of
+`kind`, `relationType` or the operation set:
+`schemas/knowledge/retrieval-result.schema.json`'s `status`, `trustLevel` and
+`sensitivity`, and `schemas/config/project-config.schema.json`'s
+`retrieval.includeStatuses`, which lists all six `status` members. Two enums
+share members with a governed set without being contained in one, so the key
+does not count them: `review-generate-knowledge-candidate-input`'s `category`
+shares `rejected-approach` and `known-exception` with `KnowledgeKind`
+(`domain/enums.py:69-70` against `:133-134`), and `review-findings-response`'s
+`reviewer` shares `security` (`domain/enums.py:64` against
+`domain/review_finding.py:65`). The key has two holes, and each is classified
+by a person when it appears rather than passed silently. A construct carrying a
+governed set plus other members is not contained in the set, so the key does
+not count it. A `pattern` can close a value too — an alternation of members
+would — and the key does not read patterns. Today no `pattern` names a governed
+member: the ones that accept one are open identifier grammars (`projectId`,
+`itemId`, `schemas/cli/version.schema.json`'s `platform`) that accept it as any
+other identifier. Among `const`, `default`, `examples` and `pattern` sites, the
+only governed value is `includeStatuses`' `default`, `["approved"]`, and a
+`default` closes nothing.
 
 ```python
 # Run from the repository root with `uv run --frozen python`.
 import json
+from collections import Counter
 from pathlib import Path
 
 from theurian.domain import enums, migration
@@ -182,12 +199,38 @@ GOVERNED = (
     enums.SpecificationStatus,
 )
 SETS = {cls.__name__: {member.value for member in cls} for cls in GOVERNED}
+READ = Counter()
+
+
+def construct(node):
+    return "enum" if "enum" in node else "const" if "const" in node else "oneOf/anyOf"
+
+
+def closed(node):
+    """The values a closing construct admits, as text, or None if it closes nothing."""
+    if isinstance(node.get("enum"), list):
+        raw = node["enum"]
+    elif "const" in node:
+        raw = [node["const"]]
+    else:
+        branches = node.get("oneOf") or node.get("anyOf")
+        if not isinstance(branches, list) or not branches:
+            return None
+        parts = [closed(branch) if isinstance(branch, dict) else None for branch in branches]
+        return None if None in parts else set().union(*parts)
+    return {
+        value if isinstance(value, str) else json.dumps(value) for value in raw if value is not None
+    }
 
 
 def walk(node, path):
     if isinstance(node, dict):
-        if isinstance(node.get("enum"), list):
-            yield path, {value for value in node["enum"] if value is not None}
+        values = closed(node)
+        if values is not None:
+            READ[construct(node)] += 1
+            yield path, values
+            if construct(node) == "oneOf/anyOf":
+                return
         for key, value in node.items():
             yield from walk(value, f"{path}/{key}")
     elif isinstance(node, list):
@@ -207,6 +250,20 @@ for schema in sorted(Path("schemas").rglob("*.json")):
             print("enumerates", inside, schema, path)
         elif shared:
             print("overlaps", shared, schema, path)
+print("read", dict(sorted(READ.items())))
+```
+
+It prints the following; the last line is the positive control that the walk
+reaches every kind of construct the key names.
+
+```text
+enumerates ['KnowledgeStatus'] schemas/config/project-config.schema.json #/properties/retrieval/properties/includeStatuses/items
+enumerates ['KnowledgeStatus'] schemas/knowledge/retrieval-result.schema.json #/properties/status
+enumerates ['TrustLevel'] schemas/knowledge/retrieval-result.schema.json #/properties/trustLevel
+enumerates ['Sensitivity'] schemas/knowledge/retrieval-result.schema.json #/properties/sensitivity
+overlaps {'KnowledgeKind': ['security']} schemas/mcp/review-findings-response.schema.json #/properties/findings/items/properties/reviewer
+overlaps {'KnowledgeKind': ['known-exception', 'rejected-approach']} schemas/mcp/review-generate-knowledge-candidate-input.schema.json #/properties/category
+read {'const': 17, 'enum': 20, 'oneOf/anyOf': 2}
 ```
 
 The MCP input schemas `knowledge-propose-change-input` and
@@ -281,8 +338,9 @@ change from one written after it.
    (`application/okf_import.py`'s module docstring, under ADR-0037 decision 1)
    and which import and candidate generation fix at `inferred`
    (`application/okf_import.py:180`, `domain/review.py:335`). *Retiring* —
-   `SpecificationStatus` — leaves with its entity under #841. The version
-   constant, `apiVersion`, is what the other classes move or do not move.
+   `SpecificationStatus` — leaves Core's writers with its entity under #841. The
+   version constant, `apiVersion`, is what the other classes move or do not
+   move.
 2. **Adding a vocabulary member is additive.** No `apiVersion` bump and no
    `protocolVersion` bump; it is a Core MINOR, recorded under the CHANGELOG's
    `Added` naming the first Core version that reads it. An older Core keeps
@@ -292,28 +350,38 @@ change from one written after it.
    message is owed without one: today's refusal cannot be told from a typo
    (*Context*), and a refusal naming the file, the field path and the value, and
    saying that a newer Core may define it, is the scope of #849, which is due
-   before #841 adds its `kind` member. This takes roadmap §4's recommendation for
-   the first two of its three clauses.
-3. **Adding an operation keeps ADR-0005's rule: it bumps `apiVersion`.** An
-   operation changes the grammar the loader dispatches on, not a value inside a
-   shape it already reads. The Core that bumps reads every earlier `apiVersion`
+   before #841 adds its `kind` member. That first member also waits on #853, the
+   check at open that keeps an older Core from decoding a newer build's database
+   row by row (*Context*, *The derived store*). This takes roadmap §4's
+   recommendation for the first two of its three clauses.
+3. **Adding an operation keeps ADR-0005's rule: it bumps `apiVersion`.** The
+   rule is kept by deference, not re-derived here. An older Core refuses an
+   unknown operation at schema validation exactly as it refuses an unknown
+   `kind` (*Context*), so decision 2's argument reaches operations too; but
+   ADR-0005 states the bump as a standing rule, roadmap Phase C's *Migration*
+   row plans on it, and re-deciding a governed rule inside this ADR needs a
+   benefit that neither keeping nor dropping it offers (*Alternatives
+   considered*). The Core that bumps reads every earlier `apiVersion`
    (decision 5), and every document Core authors declares the **lowest**
-   `apiVersion` whose grammar admits it, so a document that uses no new operation
-   stays readable by older Cores. Core authors documents in one place: the two
-   lines under `packages/theurian-core/src` that stamp `apiVersion` are both in
-   `application/proposal_service.py` (`:3813`, `:4393`), behind
+   `apiVersion` whose grammar admits the document and under which it carries the
+   meaning Core wrote, so a document that uses no new operation and no changed
+   meaning stays readable by older Cores. Core authors documents in one place:
+   the two lines under `packages/theurian-core/src` that stamp `apiVersion` are
+   both in `application/proposal_service.py` (`:3813`, `:4393`), behind
    `theurian propose`, the MCP draft tools and OKF import.
 4. **Removing or renaming a member or an operation takes it out of Core's own
    writers only. It never leaves the read grammar of the `apiVersion` that
-   admitted it, and the removal by itself bumps nothing.** The reason is in the
-   codebase, not in preference: applied migrations are frozen — an edited one is
-   refused by `verify_no_applied_migration_changed`, a deleted one by
+   admitted it, and the removal by itself bumps neither `apiVersion` nor
+   `protocolVersion`.** The reason is in the codebase, not in preference:
+   applied migrations are frozen — an edited one is refused by
+   `verify_no_applied_migration_changed`, a deleted one by
    `verify_no_applied_migration_removed` — and FR-K4 replays every committed
    document on a fresh clone, where nothing is recorded as applied, so a Core
-   cannot tell an old document from a new one and must read both. A version bump
-   for the removal would buy nothing: under decision 3's lowest-version rule no
-   writer would declare it, and a Core that always declared it would lock out
-   older Cores that read the document fine. OKF import is one of those writers —
+   cannot tell an old document from a new one and must read both. An
+   `apiVersion` bump for the removal would buy nothing: under decision 3's
+   lowest-version rule no writer would declare it, and a Core that always
+   declared it would lock out older Cores that read the document fine. OKF
+   import is one of those writers —
    ADR-0037 decision 6 makes it an on-ramp to the existing write path, not a new
    source class — so after a removal a bundle concept naming the removed member
    is refused at import like any new draft, not admitted on the strength of the
@@ -325,7 +393,13 @@ change from one written after it.
    operation set — enumerated rather than derived as
    `frozenset(OperationKind) - refused`, which would admit a new kind by omission
    (`application/proposal_service.py:327-351`). A rename is decision 2 or 3 for
-   the new spelling plus this decision for the old one.
+   the new spelling plus this decision for the old one. A retiring set's
+   read-side parse stays for the same reason: `SpecificationStatus` leaves
+   Core's writers, and the loader's parse of a v1 `registerSpecification` keeps
+   reading its `specId` and `status` (`infrastructure/filesystem/migration_loader.py:1714`,
+   `:1718`; `domain/migration.py:272-287`), by these types or by a re-typed
+   parse, which is #841's choice. This decision does not apply to the
+   wire-enumerated sets (decision 8).
 5. **Read support is permanent.** Every Core reads every `apiVersion` any
    released Core admitted, under that version's meaning.
 6. **Changing what an existing member or operation means, under its existing
@@ -338,14 +412,27 @@ change from one written after it.
    whose stated purpose is that "an engine change invalidates cached state
    instead of silently reinterpreting it" (ADR-0007), and it is permitted only
    with a recorded argument that no reader of the canonical state observes the
-   difference. Otherwise the operation keeps its original effect. This is where
-   this ADR meets ADR-0038's rejected alternative (b), whose objection to an
+   difference. Otherwise the operation keeps its original effect. A reader of the
+   canonical state is any site in `STATUS_GATE_CALL_SITES` or
+   `DISCLOSURE_GATE_CALL_SITES`
+   (`packages/theurian-core/tests/unit/test_gate_call_sites.py`) — the index
+   builder, the withdrawal purge and the OKF export among them — plus
+   `knowledge.status`'s counts, and #275's trace once it exists. The recorded
+   argument is settled by measurement, not by reasoning: the committed corpus
+   replayed under the old engine and the new one, with identical tool
+   responses. A change whose effect reaches `status`, `sensitivity` or the
+   withdrawal purge does not take this path; it takes decision 8's ADR-first
+   route. And the bump invalidates cached state on the build path only: nothing
+   at open reads `engine_version` (*Context*, *The derived store*), and the
+   serve-path check is #853's. This is where this ADR meets ADR-0038's rejected
+   alternative (b), whose objection to an
    engine-version bump was that it "does not tell a reader of the document which
    meaning it carries". That objection is about documents that can still be
    written; for them this decision requires the `apiVersion` bump. It cannot
    apply to a frozen document, which carries the version it was written under
    and can carry no other, and the recorded argument is what establishes that
-   there is no second meaning for a reader to be told about.
+   there is no second meaning for a reader to be told about. This decision does
+   not apply to the wire-enumerated sets (decision 8).
 7. **Reordering members is a reviewed diff, not a version event.** Values are
    strings, so a reorder changes no value's meaning and bumps nothing. The order
    is visible — the published schema's `enum` order is what a third party reads,
@@ -354,13 +441,13 @@ change from one written after it.
    reorder is a diff its reviewer should see" — but neither it nor the order a
    refusal lists the valid values in is a contract.
 8. **Wire-enumerated sets are outside the additive class.** Decision 2's "no
-   `protocolVersion` bump" rests on decision 9's ground, that no published
-   schema enumerates the set; `retrieval-result.schema.json` enumerates all
-   three of these (*Context*), so a change to one can move a published `enum`,
-   and `protocolVersion` is a live question rather than a formality. Any change
-   to `status`, `sensitivity` or `trustLevel` is therefore written as its own
-   ADR, which decides its effect on `apiVersion`, on `protocolVersion`, on the
-   Core version and on the CHANGELOG. For the two gate-feeding sets, `status`
+   `protocolVersion` bump" rests on decision 9's ground, that no schema outside
+   the migration format enumerates the set; `retrieval-result.schema.json`
+   enumerates all three of these (*Context*), so a change to one can move a
+   published `enum`, and `protocolVersion` is a live question rather than a
+   formality. Any change to `status`, `sensitivity` or `trustLevel` is therefore
+   written as its own ADR, which decides its effect on `apiVersion`, on
+   `protocolVersion`, on the Core version and on the CHANGELOG. For the two gate-feeding sets, `status`
    and `sensitivity`, that ADR is also written first, before implementation,
    under roadmap §6 principle 3. `trustLevel` feeds no gate; the governance
    ground in decision 1 is why its ADR still gets the same care. A change to
@@ -370,8 +457,10 @@ change from one written after it.
    candidate 2, whose change to `SURFACEABLE_STATUSES` would move the
    three-member `status` enum `retrieval-result.schema.json` publishes.
 9. **No change to `kind`, `relationType` or the operation set bumps
-   `protocolVersion`**, because no published schema enumerates any of them,
-   under the key *Context* states. A member a client does not know reaches it as
+   `protocolVersion`**, because no schema outside the migration format
+   enumerates any of them under the key *Context* states, which reads `enum`,
+   `const`, and a `oneOf`/`anyOf` built from them, and leaves `pattern` as a
+   stated hole. A member a client does not know reaches it as
    an unrecognised string, in the two response fields that publish any of the
    three: a `relationType` in `knowledge.get`'s `relations`, and an operation
    name in `knowledge.generateMigrationDraft`'s `operations`. A later change that
@@ -394,11 +483,11 @@ and is marked `BREAKING` in the CHANGELOG.
 | Change | `apiVersion` | `protocolVersion` | Core version | CHANGELOG | An older Core reading a newer document | A newer Core reading an older (frozen) document | An MCP client against a Core | An older Core importing a newer Core's OKF bundle |
 | :-- | :-- | :-- | :-- | :-- | :-- | :-- | :-- | :-- |
 | **C1** Add a `kind` or `relationType` member (decision 2) | Unchanged | Unchanged (decision 9) | MINOR, pre- and post-1.0 | `Added`, naming the first Core that reads it | Refuses the whole document at schema validation, today with the undiagnosable message and after #849 with a diagnosable one | Reads it; every earlier member stays | The write tools admit a new `kind` only against a Core that has it; an older Core's `_closed_value` refuses it, listing its own set. A new `relationType` reaches an older client as an unrecognised string in `knowledge.get`'s `relations` | A concept of the new `kind` is refused on its own (`unrecognized type`); a relation of the new type fails the one relations draft, dropping every relation in the bundle |
-| **C2** Add an operation (decision 3) | Bumped; Core writes the lowest version whose grammar admits the document | Unchanged (decision 9) | MINOR, pre- and post-1.0: no document an earlier Core read stops loading (decision 5) | `Added`, naming the new `apiVersion` and the first Core that reads it | Refuses a document declaring the new version at the schema `const`; a document using no new operation keeps the earlier version and loads | Reads it under its own version's grammar (decision 5) | `knowledge.generateMigrationDraft` carries the operation only once `V1_OPERATION_KINDS`, or its successor, admits it by a deliberate edit; an older Core's draft path refuses it at validation | Not reached: a bundle carries concepts and relation entries, not operations |
-| **C3** Remove a member or an operation (decision 4) | Unchanged; the member stays in the read grammar of every version that admitted it | Unchanged (decision 9) | A break for Core's writers: MINOR pre-1.0, MAJOR post-1.0 | `Changed`, `BREAKING`, naming the writers that stop accepting it and stating that documents naming it still load | Unaffected: it still has the member | Reads it (decision 4); what it then does is decision 6's | Writers refuse it against their explicit write sets; a stored relation of a removed type is still published | Unaffected. The reverse direction — a newer Core importing a bundle naming it — refuses it at import |
+| **C2** Add an operation (decision 3) | Bumped; Core writes the lowest version whose grammar admits the document and under which it carries the meaning Core wrote | Unchanged (decision 9) | MINOR, pre- and post-1.0: no document an earlier Core read stops loading (decision 5) | `Added`, naming the new `apiVersion` and the first Core that reads it | Refuses a document declaring the new version at the schema `const`; a document using no new operation keeps the earlier version and loads | Reads it under its own version's grammar (decision 5) | `knowledge.generateMigrationDraft` carries the operation only once `V1_OPERATION_KINDS`, or its successor, admits it by a deliberate edit; an older Core's draft path refuses it at validation | Not reached: a bundle carries concepts and relation entries, not operations |
+| **C3** Remove a member or an operation (decision 4) | Unchanged; the member stays in the read grammar of every version that admitted it | Unchanged (decision 9) | A break for Core's writers: MINOR pre-1.0, MAJOR post-1.0 | `Changed`, `BREAKING`, naming the writers that stop accepting it and stating that documents naming it still load | Unaffected: it still has the member | Reads it (decision 4); what it then does is decision 6's | Writers refuse it against their explicit write sets; a stored relation of a removed type is still published. The removal updates the examples that advertise a member: `plugins/claude-code/commands/propose.md:51` (`--kind architecture`), and the `kind` descriptions of `knowledge-propose-change-input` ("e.g. architecture, decision, security") and `review-generate-knowledge-candidate-input` ("e.g. convention, architecture, security") | Unaffected. The reverse direction — a newer Core importing a bundle naming it — refuses it at import |
 | **C4** Rename a member or an operation (decision 4) | As C1 for a member, as C2 for an operation; the old spelling stays readable | Unchanged (decision 9) | As C3: MINOR pre-1.0, MAJOR post-1.0 | `Added` for the new spelling and `Changed`, `BREAKING`, for the old | As C1 or C2 for the new spelling | Reads the old spelling | As C1 or C2 for the new spelling, as C3 for the old | As C1 for the new spelling |
 | **C5** Reorder members (decision 7) | Unchanged | Unchanged | No version event | None required; the diff is reviewed | No effect | No effect | No effect: values are strings, and the order a refusal lists them in is not a contract | No effect |
-| **C6** Change what a member or operation means (decision 6) | Bumped for documents under the new meaning; earlier versions keep the earlier meaning. Where a Core must change what an earlier document does, `MIGRATION_ENGINE_VERSION` is bumped instead, only with a recorded argument that no reader observes the difference | Unchanged (decision 9) | MINOR, pre- and post-1.0: no document changes meaning for any reader | `Changed`, naming the `apiVersion`, or the engine version, under which the new meaning applies | Refuses a document declaring the new version | Earlier meaning; under the engine-version path, a different effect no reader of the canonical state observes | No effect by itself | No effect: a bundle carries values, not a migration `apiVersion` |
+| **C6** Change what a member or operation means (decision 6) | Bumped for documents under the new meaning, and Core writes such a document at the version that carries that meaning, never at an earlier one whose grammar also admits it (decision 3); earlier versions keep the earlier meaning. Where a Core must change what an earlier document does, `MIGRATION_ENGINE_VERSION` is bumped instead, only with a recorded argument, settled by replay, that no reader observes the difference | Unchanged (decision 9) | MINOR, pre- and post-1.0: no document changes meaning for any reader | `Changed`, naming the `apiVersion`, or the engine version, under which the new meaning applies | Refuses a document declaring the new version | Earlier meaning; under the engine-version path, a different effect no reader of the canonical state observes | No effect by itself | No effect: a bundle carries values, not a migration `apiVersion` |
 | **C7** Any of C1–C6 on `status`, `sensitivity` or `trustLevel` (decision 8) | Decided by the change's own ADR | Decided by that ADR: all three are enumerated on the wire | Decided by that ADR | Decided by that ADR | Decided by that ADR; until one exists, an unknown value is refused at schema validation like any other | Decided by that ADR | Decided by that ADR; today `_closed_value` refuses an unknown `trustLevel` or `sensitivity`, and `retrieval-result.schema.json` enumerates all three | Decided by that ADR |
 | **C8** `SpecificationStatus`, which leaves with the entity (#841) | Unchanged by its removal (decision 4); `$defs/opRegisterSpecification/properties/status` stays in the v1 read grammar. No member is added: nothing new is built on the entity (ADR-0038 decision 3) | Unchanged: it appears on no wire schema | As C3, in #841's release | As C3, in #841's entry | Unaffected | Reads a v1 `registerSpecification` naming it; what that operation then does is decision 6's, in #841 | Not published | Not reached: the OKF export does not read the `specifications` table (ADR-0038, *Context*) |
 
@@ -411,9 +500,10 @@ and is marked `BREAKING` in the CHANGELOG.
   Core and every later one, refused by earlier ones exactly as today.
 - **No committed document becomes unreadable under this policy.** Decisions 4
   and 5 together mean FR-K4's replay holds on every Core that ships under it.
-- **One version signal, spent where it carries information.** `apiVersion` moves
-  only for grammar and for meaning, where a reader of the document cannot
-  otherwise know what it holds.
+- **`apiVersion` moves only for grammar and for meaning.** For meaning it is the
+  one signal a reader of the document has (decision 6). For grammar it carries
+  nothing an older Core's refusal lacks, and it is kept by deference to
+  ADR-0005's rule (decision 3).
 
 ### Negative
 
@@ -430,9 +520,9 @@ and is marked `BREAKING` in the CHANGELOG.
   first removal, a writer that validates against the Python enum or the schema
   admits the removed member. Of the writers decision 4 names, only the proposal
   service's operation gate has an explicit set today.
-- **Decision 6's engine-version path rests on an argument, not a mechanism.**
-  Whether a reader observes a difference is a claim each use must record and
-  defend; nothing checks it.
+- **Decision 6's engine-version path rests on a recorded replay, not a standing
+  check.** Each use records its own replay of the committed corpus; nothing
+  re-runs it afterwards, and nothing at open reads the engine version.
 - **ADR-0037 is moved by decision 2, prospectively.** It states `RelationType`'s
   fourteen members in decision 4, the *Consequences*, the alternatives table and
   *Compliance*, and `packages/theurian-core/tests/unit/test_adr_0037_claims.py`
@@ -463,7 +553,8 @@ and is marked `BREAKING` in the CHANGELOG.
 | **A tolerant reader: an older Core admits an unknown member as opaque, or skips the operation** | Identical documents would produce different canonical states on different Cores, which FR-K4's replay and the state hash exist to rule out, and a skipped `addRelation` is a silently missing edge. Fail-closed is kept. |
 | **Removal as a version event: drop the member from a new `apiVersion`'s read grammar** | A frozen document cannot move to the new version (FR-K5), and a fresh clone replays it (FR-K4), so every Core must still read the old version and the member with it. Under decision 3 no writer would declare the new version, and one that always did would lock out older Cores that read the document fine (decision 4). |
 | **Make `theurian compat check` detect an enum mismatch** (roadmap §4's third clause) | It compares a plugin declaration with the running Core and reads no project. The mismatch is between a project's documents and a Core, and it already surfaces at every migration load; the form it surfaces in is #849's (decision 10). |
-| **Bump `protocolVersion` for a vocabulary or grammar change** | No published schema enumerates `kind`, `relationType` or the operation set, so no client validates against their membership (decision 9). The wire-enumerated sets are left to their own ADRs (decision 8). |
+| **Bump `protocolVersion` for a vocabulary or grammar change** | No schema outside the migration format closes a value to `kind`, `relationType` or the operation set under *Context*'s key, so no client validating against a published schema validates against their membership (decision 9); `pattern` is the key's stated hole. The wire-enumerated sets are left to their own ADRs (decision 8). |
+| **Stop bumping `apiVersion` for operations too** | An older Core refuses an unknown operation at schema validation exactly as it refuses an unknown `kind` (*Context*), so decision 2's argument reaches operations as well. Declined here, not refuted: ADR-0005 states the bump as a standing rule and roadmap Phase C's *Migration* row plans on it, and re-deciding a governed rule inside this ADR needs a benefit that neither keeping nor dropping it offers (decision 3). It stays the named option for a later slice. |
 
 ## Compliance
 
@@ -499,18 +590,25 @@ Still owed, with the issue or slice that will satisfy it:
 1. **[#849](https://github.com/theurian/theurian/issues/849)**, due before
    #841 adds its `kind` member: the loader's and `validate_migration_document`'s
    refusal names the file, the field path and the unknown value, and says a
-   newer Core may define it (decision 2).
+   newer Core may define it (decision 2). The value it names stays bounded by
+   `MAX_ECHOED_VALUE` and escaped by `repr`, because an author, an agent or an
+   imported bundle chose it.
 2. **[#841](https://github.com/theurian/theurian/issues/841), the retirement.**
    An explicit write set at each writer decision 4 names; the two
    operations and `SpecificationStatus` kept in the v1 schema and loader; and
    either the recorded argument decision 6 requires, with the
    `MIGRATION_ENGINE_VERSION` bump, or the operations' original effect kept.
-3. **#841, before it adds its `kind` member: what an older Core does with a
-   state database a newer Core built.** The MCP tools open the pointer's database
-   without loading migrations, and a store read of a row naming a member the
-   Core lacks raises `StateDatabaseUnreadableError`, whose rebuild remedy meets
-   the loader's refusal (*Context*); what a tool returns then, and whether such
-   a database opens under an older Core at all, was not run.
+3. **[#853](https://github.com/theurian/theurian/issues/853), what an older
+   Core does with a state database a newer build wrote.** It is decided per
+   database, at open, before any row is decoded. A per-row refusal of any
+   wording carries a withheld-versus-absent bit: a withheld row naming a member
+   the Core lacks is refused as an unreadable database before the gate runs,
+   where an absent id is answered as absent. Its two faces are the item decode
+   (`knowledge.get`'s `get_item_metadata`) and the relation decode
+   (`list_relations`), both ahead of the gate (*Context*). Its acceptance is a
+   two-corpora test: a withheld row carrying an unknown member against an absent
+   id, with identical responses. The serve-path engine check decision 6 names
+   is part of it.
 4. **The slice that first bumps `apiVersion`** — Phase C's edge operation, if
    [#275](https://github.com/theurian/theurian/issues/275)'s representation
    needs one: the multi-version read (decision 5) in the schema, the loader and

@@ -26,27 +26,42 @@ at `855ebd87`.** Source paths are relative to
 
 > **Amended on 2026-09-30, by [ADR-0039](0039-closed-set-extension-compatibility.md)
 > ([#274](https://github.com/theurian/theurian/issues/274)), the policy decision 4
-> waited for.** It moves this record in four places. The block sits here, above
-> *Context*, because those places span *Decision*, *Negative* and *Compliance*,
-> and this is where a reader of any of them enters the record.
+> waited for.** It moves this record in the places listed below. The block sits
+> here, above *Context*, because those places span *Decision*, *Negative*,
+> *Alternatives considered* and *Compliance*, and this is where a reader of any of
+> them enters the record.
 >
 > - ***Negative*, first item, "Both halves of the fold are protocol changes".**
 >   Under ADR-0039 the `kind` half is additive: no `apiVersion` or
 >   `protocolVersion` bump, a Core MINOR (its decision 2). The operation half is a
->   removal from Core's writers only, which by itself bumps nothing (its decision
->   4); what a committed v1 `registerSpecification` or `supersedeSpecification`
->   does once the `specifications` table goes is its decision 6's. That item's
->   sentence that ADR-0005 "says nothing of removing one" was true when measured
->   and is not now: ADR-0005 carries an amendment pointing to ADR-0039.
+>   removal from Core's writers only, which by itself bumps neither `apiVersion`
+>   nor `protocolVersion` (its decision 4); what a committed v1
+>   `registerSpecification` or `supersedeSpecification` does once the
+>   `specifications` table goes is its decision 6's. That item's sentence that
+>   ADR-0005 "says nothing of removing one" was true when measured and is not
+>   now: ADR-0005 carries an amendment pointing to ADR-0039.
 > - **Decision 4's precondition is met**: #274's policy is accepted, as ADR-0039.
+> - **Decision 5 and rejected alternative (b) are narrowed by ADR-0039 decision
+>   6.** A frozen v1 document's effect may change only under that decision's
+>   engine-version path: a `MIGRATION_ENGINE_VERSION` bump with a recorded replay
+>   of the committed corpus showing identical tool responses, never for an effect
+>   that reaches `status`, `sensitivity` or the withdrawal purge. Every other
+>   change of meaning takes a new `apiVersion`, as decision 5 says.
 > - ***Compliance*, Still owed item 1, is discharged** by ADR-0039.
-> - ***Compliance*, Still owed item 2, is narrowed.** Its "remove
->   `registerSpecification` and `supersedeSpecification` from `OperationKind`,
->   the migration schema, the loader and `V1_OPERATION_KINDS`" becomes: remove
->   them from Core's writers — `V1_OPERATION_KINDS` and the propose paths.
->   `OperationKind`, the migration schema and the loader keep reading both
->   operations, and with them the `status` values
->   `$defs/opRegisterSpecification` admits (ADR-0039 decision 4).
+> - ***Compliance*, Still owed item 2, is narrowed** by ADR-0039 decision 4, in
+>   three places. Its "remove `registerSpecification` and
+>   `supersedeSpecification` from `OperationKind`, the migration schema, the
+>   loader and `V1_OPERATION_KINDS`" becomes: remove them from Core's writers —
+>   `V1_OPERATION_KINDS` and the propose paths; `OperationKind`, the migration
+>   schema and the loader keep reading both operations, and with them the
+>   `status` values `$defs/opRegisterSpecification` admits. Its "remove … `SpecId`,
+>   `SpecificationStatus`" becomes: the loader's parse of a v1
+>   `registerSpecification` keeps reading its `specId` and `status`
+>   (`infrastructure/filesystem/migration_loader.py:1714`, `:1718`;
+>   `domain/migration.py:272-287`), by these types or by a re-typed parse, which
+>   is #841's choice. Its "amend ADR-0005's operation list" becomes: record the
+>   two operations as outside Core's writers; ADR-0005's list stays the permanent
+>   v1 read grammar.
 
 ## Context
 
