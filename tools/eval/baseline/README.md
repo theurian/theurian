@@ -116,8 +116,8 @@ every build and every search:
   (`packages/theurian-core/src/theurian/domain/values.py`) includes its lower
   bound — `if moment < self.valid_from: return False` — so a `validFrom`
   equal to "now" leaves `isWithinValidity` `true`.
-- **Why this instant.** It is the `date` the committed baseline's own
-  `timings.json` recorded when PR #798 measured it:
+- **Why this instant.** It is the `date` PR #798's `timings.json` recorded
+  (`60d10164`), truncated to the second:
 
   ```console
   $ git show 60d10164:tools/eval/baseline/timings.json | grep -m1 '"date"'
@@ -136,8 +136,8 @@ every build and every search:
   `report.json`.
   `test_the_two_instants_put_every_fixture_revision_either_side_of_ten_days`
   holds `PINNED_NOW` 0 to 9 days after every fixture migration's `createdAt`.
-  That range is not why this instant was chosen; the baseline's own
-  measurement date is.
+  That range is not why this instant was chosen; PR #798's measurement date
+  is.
 
 ### What the byte pin does not see
 
@@ -168,7 +168,8 @@ adds. The field-level pin
 `test_the_harness_search_answers_on_the_clock_its_build_was_given`
 (`test_harness_instant.py`) is what catches that: it builds the smoke corpus
 at one instant and, on every hit of a `policy` search through the harness's
-own sessions, holds `ageDays` and `isWithinValidity` to that instant.
+own sessions, holds `ageDays` and `isWithinValidity` to that instant, and
+every item's and revision's `validFrom` in both built stores to it too.
 Hard-wiring that search to `PINNED_NOW` turned it red and left the other four
 tests in `test_baseline_current.py` and `test_harness_instant.py` green.
 
