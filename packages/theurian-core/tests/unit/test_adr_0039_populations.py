@@ -39,6 +39,7 @@ from theurian.domain.compatibility import (
     CompatibilityOutcome,
     resolve_compatibility,
 )
+from theurian.domain.migration import RegisterSpecification
 from theurian.domain.state import StateInputs
 
 pytestmark = pytest.mark.unit
@@ -275,6 +276,133 @@ def test_only_cli_modules_load_migrations_while_mcp_opens_the_pointers_database(
 
     assert loaders == {"cli/context.py", "cli/migration_pipeline.py", "cli/setup_commands.py"}
     assert {"read_active_state", "state_database_named"} <= called
+
+
+_STORE: Final = "infrastructure/sqlite/store.py"
+
+
+def _decoded_by(method: str) -> set[str]:
+    """The ``*_from_row`` decoders a ``SqliteCanonicalStore`` method reaches.
+
+    Key: the decoders its body names, following ``self.<method>(...)`` into the
+    class's own methods; a decoder reached through another object is outside it.
+    """
+    [store] = [
+        node
+        for node in _trees()[_STORE].body
+        if isinstance(node, ast.ClassDef) and node.name == "SqliteCanonicalStore"
+    ]
+    methods = {node.name: node for node in store.body if isinstance(node, ast.FunctionDef)}
+    seen: set[str] = set()
+    pending = [method]
+    while pending:
+        seen.add(current := pending.pop())
+        for node in ast.walk(methods[current]):
+            match node:
+                case ast.Call(func=ast.Attribute(value=ast.Name(id="self"), attr=called)) if (
+                    called in methods and called not in seen
+                ):
+                    pending.append(called)
+    return {
+        name
+        for current in seen
+        for name in _spelled(methods[current])
+        if name.endswith("_from_row")
+    }
+
+
+def test_knowledge_get_decodes_its_item_and_relations_before_the_gate_the_revision_after() -> None:
+    """#853's two faces: a row the Core cannot decode refuses before the gate runs."""
+    handler = _function("mcp/tools.py", "knowledge_get")
+    calls = sorted(
+        (node for node in ast.walk(handler) if isinstance(node, ast.Call)),
+        key=lambda node: (node.lineno, node.col_offset),
+    )
+    order = [_named(node.func) for node in calls]
+    first = {name: order.index(name) for name in set(order) - {None}}
+    reads = [
+        _named(node.func)
+        for node in calls
+        if isinstance(node.func, ast.Attribute) and _named(node.func.value) == "store"
+    ]
+
+    assert reads[0] == "get_item_metadata"
+    assert "_item_from_row" in _decoded_by("get_item_metadata")
+    assert first["get_item_metadata"] < first["may_surface"] < first["current_revision"]
+    assert "_revision_from_row" in _decoded_by("current_revision")
+    assert first["list_relations"] < first["_relation_is_visible"]
+    assert "_relation_from_row" in _decoded_by("list_relations")
+
+
+def test_the_engine_version_is_written_at_create_and_never_selected() -> None:
+    """ADR-0007's invalidation holds on the build path only: nothing at open reads the engine.
+
+    Key: a string literal holding an upper-case ``SELECT ... FROM`` or ``INSERT INTO``;
+    SQL assembled from fragments at run time is outside it.
+    """
+    statements = [
+        (path, node.value)
+        for path, tree in _trees().items()
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and re.search(r"\bSELECT\b.*\bFROM\b|\bINSERT INTO\b", node.value, re.DOTALL)
+    ]
+
+    assert [text for _, text in statements if "schema_metadata" in text and "SELECT" in text] == [
+        "SELECT schema_version FROM schema_metadata WHERE id = 1"
+    ], "positive control: the one read at open"
+    assert [path for path, text in statements if "INSERT INTO schema_metadata" in text] == [
+        "infrastructure/sqlite/connection.py"
+    ]
+    assert [text for _, text in statements if "INSERT INTO schema_metadata" in text] == [
+        "INSERT INTO schema_metadata (id, schema_version, engine_version, state_hash, created_at) "
+        "VALUES (1, ?, ?, ?, ?)"
+    ]
+    assert [
+        path for path, text in statements if "SELECT" in text and "engine_version" in text
+    ] == []
+
+
+def test_the_readers_of_the_canonical_state_are_the_two_gate_registers() -> None:
+    """Decision 6 names these registers as who must observe no difference."""
+    register = REPO_ROOT / "packages/theurian-core/tests/unit/test_gate_call_sites.py"
+    sites = {
+        target.id: ast.literal_eval(node.value)
+        for node in ast.parse(register.read_bytes()).body
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+        and target.id in {"STATUS_GATE_CALL_SITES", "DISCLOSURE_GATE_CALL_SITES"}
+    }
+
+    assert sites.keys() == {"STATUS_GATE_CALL_SITES", "DISCLOSURE_GATE_CALL_SITES"}
+    assert {
+        ("application/index_builder.py", "IndexBuilder._build"),
+        ("application/migration_engine.py", "revisions_to_purge"),
+        ("application/okf_export.py", "OkfExporter._walk"),
+    } <= sites["STATUS_GATE_CALL_SITES"] & sites["DISCLOSURE_GATE_CALL_SITES"]
+
+
+def test_the_loader_keeps_reading_a_register_specification_spec_id_and_status() -> None:
+    """Decision 4 keeps the retiring set's read-side parse; #841 may re-type it."""
+    [arm] = [
+        case
+        for case in ast.walk(_function(_LOADER, "_parse_operation"))
+        if isinstance(case, ast.match_case)
+        and isinstance(case.pattern, ast.MatchValue)
+        and ast.literal_eval(case.pattern.value) == "registerSpecification"
+    ]
+    built = {
+        _named(call.func): ast.unparse(call.args[0])
+        for call in ast.walk(arm)
+        if isinstance(call, ast.Call) and call.args
+    }
+    fields = {field.name: field.type for field in dataclasses.fields(RegisterSpecification)}
+
+    assert built["SpecId"] == "payload['specId']"
+    assert built["SpecificationStatus"] == "payload.get('status', 'active')"
+    assert (fields["spec_id"], fields["status"]) == ("SpecId", "SpecificationStatus")
 
 
 def test_compat_check_takes_a_declaration_and_cores_own_versions_and_no_project() -> None:

@@ -65,6 +65,13 @@ The pin is five modules and a support module, split by section:
 - *Decoded inside the guard* is every reference to a ``store.py`` ``*_from_row``
   function, outside such a function's own body, lying inside a
   ``with _reading()`` block or an argument of ``_read_one``/``_read_all``.
+- *A store method decodes* the ``*_from_row`` functions its body names,
+  following ``self.<method>(...)`` within ``SqliteCanonicalStore``; *before the
+  gate* is source position within ``knowledge_get``, not a line number.
+- *A statement* is a string literal holding an upper-case ``SELECT ... FROM`` or
+  ``INSERT INTO``; SQL assembled at run time is outside it.
+- *An example advertising a member* is an ``e.g.`` list naming a
+  ``KnowledgeKind`` member in the description of a property named ``kind``.
 
 **Not pinned.** The ``file:line`` citations are the ADR's dated measurement at
 ``f0e4d754``; what each line holds is pinned by symbol, never by number.
@@ -226,6 +233,36 @@ def test_the_decision_section_holds_exactly_decisions_one_to_ten() -> None:
     assert [n for n, anchor in DECISIONS.items() if not decisions[n].startswith(anchor)] == []
 
 
+def test_the_lowest_version_rule_keeps_its_meaning_clause_wherever_it_is_stated() -> None:
+    """Cut to "whose grammar admits the document", the rule lets Core write a changed
+    meaning under an earlier version whose grammar also admits it (decision 6)."""
+    tail = "the document and under which it carries the meaning Core wrote"
+    [c2] = [row for row in _table(_section("### The matrix"))[1:] if row[0].startswith("**C2**")]
+    shortened = rf"lowest (?:apiVersion |version )whose grammar admits(?! {tail})"
+
+    assert f"whose grammar admits {tail}" in _numbered(_section("## Decision"))[3]
+    assert f"whose grammar admits {tail}" in collapsed(c2[1])
+    assert re.findall(shortened, _adr()) == []
+
+
+#: The alternatives table's first column, in order.
+ALTERNATIVES: Final = [
+    "Bump apiVersion for every new vocabulary member",
+    "A tolerant reader: an older Core admits an unknown member as opaque, or skips the operation",
+    "Removal as a version event: drop the member from a new apiVersion's read grammar",
+    "Make theurian compat check detect an enum mismatch (roadmap §4's third clause)",
+    "Bump protocolVersion for a vocabulary or grammar change",
+    "Stop bumping apiVersion for operations too",
+]
+
+
+def test_the_alternatives_table_holds_exactly_the_six_it_weighs() -> None:
+    rows = _table(_section("## Alternatives considered"))
+
+    assert rows[0] == ("Alternative", "Why rejected")
+    assert [collapsed(row[0]) for row in rows[1:]] == ALTERNATIVES
+
+
 def test_the_compliance_section_names_this_module_whose_docstring_states_its_reach() -> None:
     assert Path(__file__).resolve().relative_to(REPO_ROOT).as_posix() == THIS_MODULE
     assert collapsed(f"`{THIS_MODULE}`, the claims pin.") in _adr()
@@ -360,6 +397,38 @@ ADR_STATES: Final[dict[str, str]] = {
     "config-api-version": """`schemas/config/project-config.schema.json` carries its own
         `apiVersion` const with the same spelling, `theurian.dev/v1`.""",
     "reach": "Its reach is stated in its module docstring.",
+    "decode-order": """`knowledge.get`'s first store read is `get_item_metadata` →
+        `_item_from_row` (`mcp/tools.py:2343`), before its `may_surface`/`may_disclose` gate
+        (`:2351-2352`); `list_relations` decodes every edge inside `_read_all`
+        (`store.py:968-973`) before `_relation_is_visible` filters them (`mcp/tools.py:2415`);
+        `_revision_from_row` runs after the gate""",
+    "owed-853": """3. **[#853](https://github.com/theurian/theurian/issues/853), what an older
+        Core does with a state database a newer build wrote.**""",
+    "owed-853-faces": """Its two faces are the item decode (`knowledge.get`'s
+        `get_item_metadata`) and the relation decode (`list_relations`), both ahead of the gate
+        (*Context*).""",
+    "engine-unread": """`create_database` writes `schema_metadata.engine_version`
+        (`infrastructure/sqlite/connection.py:1075`), and the only read of `schema_metadata` at
+        open selects `schema_version` alone (`:1084`); no statement under
+        `packages/theurian-core/src` selects the `engine_version` column.""",
+    "serve-path": "The serve-path check is #853's.",
+    "readers-register": """A reader of the canonical state is any site in
+        `STATUS_GATE_CALL_SITES` or `DISCLOSURE_GATE_CALL_SITES`
+        (`packages/theurian-core/tests/unit/test_gate_call_sites.py`) — the index builder, the
+        withdrawal purge and the OKF export among them — plus `knowledge.status`'s counts""",
+    "retiring-parse": """the loader's parse of a v1 `registerSpecification` keeps reading its
+        `specId` and `status`""",
+    "d9-key": """under the key *Context* states, which reads `enum`, `const`, and a
+        `oneOf`/`anyOf` built from them, and leaves `pattern` as a stated hole.""",
+    "d9-fields": """in the two response fields that publish any of the three: a
+        `relationType` in `knowledge.get`'s `relations`, and an operation name in
+        `knowledge.generateMigrationDraft`'s `operations`.""",
+    "c3-examples": """The removal updates the examples that advertise a member:
+        `plugins/claude-code/commands/propose.md:51` (`--kind architecture`), and the `kind`
+        descriptions of `knowledge-propose-change-input` ("e.g. architecture, decision,
+        security") and `review-generate-knowledge-candidate-input` ("e.g. convention,
+        architecture, security")""",
+    "declined": "Declined here, not refuted",
 }
 
 

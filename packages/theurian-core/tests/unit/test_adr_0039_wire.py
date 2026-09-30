@@ -35,6 +35,7 @@ from adr_0039_support import (
 from theurian.application.okf_import import ImportedConcept
 from theurian.domain.enums import (
     SURFACEABLE_STATUSES,
+    KnowledgeKind,
     KnowledgeStatus,
     Sensitivity,
     TrustLevel,
@@ -392,6 +393,33 @@ def test_the_project_config_carries_its_own_api_version_for_another_format() -> 
 
     assert config["properties"]["apiVersion"]["const"] == "theurian.dev/v1"
     assert config["$id"] != _schema(MIGRATION_SCHEMA)["$id"]
+
+
+def test_the_kind_descriptions_advertising_members_are_the_two_c3_names() -> None:
+    """C3's list of what a removal updates, beside ``--kind architecture`` pinned below.
+
+    Key: an ``e.g.`` list naming a ``KnowledgeKind`` member in the description of a
+    property named ``kind``; an example in any other prose is outside it.
+    """
+    members = {member.value for member in KnowledgeKind}
+    examples = {
+        path.relative_to(REPO_ROOT).as_posix(): example
+        for path in sorted(SCHEMAS.rglob("*.json"))
+        for pointer, node in _nodes(_schema(path))
+        if pointer.endswith("/properties/kind")
+        for example in re.findall(r"e\.g\. ([^.;]*)", node.get("description", ""))
+        if set(example.split(", ")) & members
+    }
+
+    assert examples == {
+        "schemas/mcp/knowledge-propose-change-input.schema.json": (
+            "architecture, decision, security"
+        ),
+        "schemas/mcp/review-generate-knowledge-candidate-input.schema.json": (
+            "convention, architecture, security"
+        ),
+    }
+    assert all(set(example.split(", ")) <= members for example in examples.values())
 
 
 def test_plugins_use_a_member_in_the_four_places_the_adr_names_and_parse_none() -> None:
