@@ -37,11 +37,16 @@ The pin is five modules and a support module, split by section:
 - *What ``compat check`` reads* is every name ``compat_check`` and
   ``domain/compatibility.py`` spell or import; a read through another module's
   function is outside it.
-- *Enumerates* is the ADR's key: an ``enum`` all of whose non-null members are
-  members of one governed set, over every schema under ``schemas/`` except the
-  migration schema. A superset enum is not counted by it, which is why the
-  *overlap* population is pinned exactly: any growth there goes RED for a human
-  to classify.
+- *Enumerates* is the ADR's key: a closing construct -- an ``enum``, a
+  ``const``, or a ``oneOf``/``anyOf`` every branch of which is one -- all of
+  whose non-null values are members of one governed set, over every schema
+  under ``schemas/`` except the migration schema. It has the ADR's two holes. A
+  superset construct is not counted, which is why the *overlap* population is
+  pinned exactly: any growth there goes RED for a person to classify. A
+  ``pattern`` is not read, which is why the patterns that accept a governed
+  member and the ``const``/``default``/``examples`` values naming one are
+  pinned as populations of their own. ``allOf``, ``not`` and ``if``/``then``
+  are not read either.
 - *The wire* is ``schemas/mcp/*.json`` plus every file a ``$ref`` reaches from
   them, an absolute ``$ref`` resolved by the ``$id`` it names.
 - *Published to a client* is a dict-literal key ``relationType`` or
@@ -304,6 +309,14 @@ ADR_STATES: Final[dict[str, str]] = {
         than passed silently. A construct carrying a governed set plus other members is not
         contained in the set, so the key does not count it. A `pattern` can close a value too —
         an alternation of members would — and the key does not read patterns.""",
+    "pattern-hole": """Today no `pattern` names a governed member: the ones that accept one are
+        open identifier grammars (`projectId`, `itemId`, `schemas/cli/version.schema.json`'s
+        `platform`) that accept it as any other identifier.""",
+    "default-hole": """Among `const`, `default`, `examples` and `pattern` sites, the only
+        governed value is `includeStatuses`' `default`, `["approved"]`, and a `default` closes
+        nothing.""",
+    "pasted-control": """the last line is the positive control that the walk reaches every
+        kind of construct the key names.""",
     "inputs": """type `kind` as a string (and the first types `trustLevel` and `sensitivity` as
         string or null), and `knowledge-generate-migration-draft-input` constrains no `op`.""",
     "record-kind": """`review-search-response`'s `records.items.kind`, `pull-request`,

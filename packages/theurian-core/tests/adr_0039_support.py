@@ -36,40 +36,17 @@ from theurian.domain.migration import OperationKind
 
 #: ``parents[3]``: ``tests`` -> ``theurian-core`` -> ``packages`` -> root.
 REPO_ROOT: Final = Path(__file__).resolve().parents[3]
-
-
 SRC: Final = REPO_ROOT / "packages" / "theurian-core" / "src" / "theurian"
-
-
 SCHEMAS: Final = REPO_ROOT / "schemas"
-
-
 MIGRATION_SCHEMA: Final = SCHEMAS / "migrations" / "migration.schema.json"
-
-
 ADR_DIR: Final = REPO_ROOT / "docs" / "adr"
-
-
 ADR: Final = ADR_DIR / "0039-closed-set-extension-compatibility.md"
-
-
 ADR_0005: Final = ADR_DIR / "0005-yaml-knowledge-migrations.md"
-
-
 ADR_0038: Final = ADR_DIR / "0038-specification-folds-into-a-knowledge-kind.md"
-
-
 ROADMAP: Final = REPO_ROOT / "docs" / "roadmap.md"
-
-
 SAMPLE: Final = REPO_ROOT / "examples" / "sample-project"
-
-
 SECOND: Final = "01K1DEFABC01234567890ABCDE-add-order-cancellation.yaml"
-
-
 ADR_0039_LINK: Final = "[ADR-0039](0039-closed-set-extension-compatibility.md)"
-
 
 GOVERNED: Final = (
     KnowledgeKind,
@@ -80,11 +57,7 @@ GOVERNED: Final = (
     TrustLevel,
     SpecificationStatus,
 )
-
-
 GOVERNED_NAMES: Final = frozenset(cls.__name__ for cls in GOVERNED)
-
-
 ADDITIVE: Final = frozenset({"KnowledgeKind", "RelationType", "OperationKind"})
 
 
@@ -93,12 +66,20 @@ def _adr() -> str:
 
 
 def _section(heading: str, path: Path = ADR) -> list[str]:
+    """The lines under ``heading``, up to the next heading of its level or above.
+
+    Fence-aware: a ``# `` comment inside a fenced code block is not a heading.
+    """
     lines = path.read_text(encoding="utf-8").splitlines()
     assert heading in lines, f"{path.name} has no heading {heading!r}; this read anchors on it"
     start = lines.index(heading)
     level = len(heading) - len(heading.lstrip("#"))
-    ends = (at for at in range(start + 1, len(lines)) if re.match(rf"#{{1,{level}}} ", lines[at]))
-    return lines[start + 1 : next(ends, len(lines))]
+    fenced = False
+    for at in range(start + 1, len(lines)):
+        fenced ^= lines[at].startswith("```")
+        if not fenced and re.match(rf"#{{1,{level}}} ", lines[at]):
+            return lines[start + 1 : at]
+    return lines[start + 1 :]
 
 
 def _table(lines: Sequence[str]) -> list[tuple[str, ...]]:

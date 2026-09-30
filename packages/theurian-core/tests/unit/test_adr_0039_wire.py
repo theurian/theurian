@@ -6,10 +6,14 @@
 from __future__ import annotations
 
 import ast
+import collections
 import dataclasses
 import importlib
+import json
+import re
+from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime
-from typing import Final
+from typing import Any, Final
 
 import pytest
 from adr_0037_support import collapsed, revision
@@ -23,6 +27,7 @@ from adr_0039_support import (
     _nodes,
     _schema,
     _scoped,
+    _section,
     _spelled,
     _trees,
 )
@@ -43,20 +48,59 @@ pytestmark = pytest.mark.unit
 _SETS: Final = {cls.__name__: frozenset(member.value for member in cls) for cls in GOVERNED}
 
 
-def _classified() -> tuple[
-    dict[tuple[str, str], list[str]], dict[tuple[str, str], dict[str, list[str]]]
+def _closed(node: dict[str, Any]) -> set[str] | None:
+    """The values a closing construct admits, as text; ``None`` if it closes nothing."""
+    if isinstance(node.get("enum"), list):
+        raw = node["enum"]
+    elif "const" in node:
+        raw = [node["const"]]
+    else:
+        branches = node.get("oneOf") or node.get("anyOf")
+        if not isinstance(branches, list) or not branches:
+            return None
+        parts = [_closed(branch) if isinstance(branch, dict) else None for branch in branches]
+        return None if None in parts else set().union(*(part for part in parts if part))
+    return {
+        value if isinstance(value, str) else json.dumps(value) for value in raw if value is not None
+    }
+
+
+def _constructs(node: object, pointer: str = "#") -> Iterator[tuple[str, str, set[str]]]:
+    """``(pointer, construct, values)``; a closing ``oneOf``/``anyOf`` is not descended into."""
+    if isinstance(node, dict):
+        values = _closed(node)
+        if values is not None:
+            construct = "enum" if "enum" in node else "const" if "const" in node else "oneOf/anyOf"
+            yield pointer, construct, values
+            if construct == "oneOf/anyOf":
+                return
+        for key, value in node.items():
+            yield from _constructs(value, f"{pointer}/{key}")
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            yield from _constructs(value, f"{pointer}/{index}")
+
+
+def _classified(
+    documents: Mapping[str, object] | None = None,
+) -> tuple[
+    dict[tuple[str, str], list[str]],
+    dict[tuple[str, str], dict[str, list[str]]],
+    collections.Counter[str],
 ]:
-    """The ADR's program: which enums enumerate a governed set, and which only overlap one."""
+    """The ADR's program: what enumerates a governed set, what only overlaps one, what was read."""
+    if documents is None:
+        documents = {
+            path.relative_to(REPO_ROOT).as_posix(): _schema(path)
+            for path in sorted(SCHEMAS.rglob("*.json"))
+            if path != MIGRATION_SCHEMA
+        }
     enumerates: dict[tuple[str, str], list[str]] = {}
     overlaps: dict[tuple[str, str], dict[str, list[str]]] = {}
-    for path in sorted(SCHEMAS.rglob("*.json")):
-        if path == MIGRATION_SCHEMA:
-            continue
-        for pointer, node in _nodes(_schema(path)):
-            if not isinstance(node.get("enum"), list):
-                continue
-            where = (path.relative_to(REPO_ROOT).as_posix(), pointer)
-            values = {value for value in node["enum"] if value is not None}
+    read: collections.Counter[str] = collections.Counter()
+    for path, document in documents.items():
+        for pointer, construct, values in _constructs(document):
+            read[construct] += 1
             inside = [name for name, members in _SETS.items() if values and values <= members]
             shared = {
                 name: sorted(values & members)
@@ -64,10 +108,10 @@ def _classified() -> tuple[
                 if values & members
             }
             if inside:
-                enumerates[where] = inside
+                enumerates[(path, pointer)] = inside
             elif shared:
-                overlaps[where] = shared
-    return enumerates, overlaps
+                overlaps[(path, pointer)] = shared
+    return enumerates, overlaps, read
 
 
 _RESULT: Final = "schemas/knowledge/retrieval-result.schema.json"
@@ -76,8 +120,43 @@ _RESULT: Final = "schemas/knowledge/retrieval-result.schema.json"
 _CONFIG: Final = "schemas/config/project-config.schema.json"
 
 
+def test_the_adrs_pasted_output_is_the_live_classification() -> None:
+    """The ADR's pasted run, re-run: its ``read`` line is the positive control per construct."""
+    enumerates, overlaps, read = _classified()
+    lines = _section("### What the wire carries")
+    pasted = lines[lines.index("```text") + 1 :]
+    live = [
+        *(f"enumerates {names} {path} {pointer}" for (path, pointer), names in enumerates.items()),
+        *(f"overlaps {shared} {path} {pointer}" for (path, pointer), shared in overlaps.items()),
+        f"read {dict(sorted(read.items()))}",
+    ]
+
+    assert pasted[: pasted.index("```")] == live
+
+
+def test_each_closing_construct_is_classified_by_containment() -> None:
+    """Driven from a snippet: no live schema closes a value to a governed set by ``oneOf``."""
+    snippet = {
+        "snippet": {
+            "kinds": {"oneOf": [{"const": "domain"}, {"const": "api"}]},
+            "open": {"anyOf": [{"const": "elsewhere"}, {"type": "string"}]},
+            "one": {"const": "supersedes"},
+            "superset": {"enum": ["domain", "elsewhere", None]},
+        }
+    }
+
+    enumerates, overlaps, read = _classified(snippet)
+
+    assert enumerates == {
+        ("snippet", "#/kinds"): ["KnowledgeKind"],
+        ("snippet", "#/one"): ["RelationType"],
+    }
+    assert overlaps == {("snippet", "#/superset"): {"KnowledgeKind": ["domain"]}}
+    assert read == {"oneOf/anyOf": 1, "const": 2, "enum": 1}
+
+
 def test_the_enumerates_key_finds_status_trust_level_and_sensitivity_and_nothing_additive() -> None:
-    enumerates, _ = _classified()
+    enumerates, _, _ = _classified()
     result = _schema(REPO_ROOT / _RESULT)["properties"]
 
     assert enumerates == {
@@ -101,12 +180,12 @@ def test_the_enumerates_key_finds_status_trust_level_and_sensitivity_and_nothing
 
 
 def test_the_overlap_population_is_exactly_the_two_enums_the_adr_classified() -> None:
-    """The key's hole as a tripwire: a new overlap is for a person to classify.
+    """The key's superset hole as a tripwire: a new overlap is for a person to classify.
 
-    A superset enum -- a governed set plus other members -- is not *contained* in
+    A construct carrying a governed set plus other members is not *contained* in
     the set, so the enumerates key does not count it; it lands here instead.
     """
-    _, overlaps = _classified()
+    _, overlaps, _ = _classified()
 
     assert overlaps == {
         (
@@ -118,6 +197,43 @@ def test_the_overlap_population_is_exactly_the_two_enums_the_adr_classified() ->
             "#/properties/category",
         ): {"KnowledgeKind": ["known-exception", "rejected-approach"]},
     }
+
+
+def _spells(member: str, pattern: str) -> bool:
+    return re.search(rf"(?<![\w-]){re.escape(member)}(?![\w-])", pattern) is not None
+
+
+def test_no_pattern_default_or_example_closes_a_value_to_a_governed_member() -> None:
+    """The key's ``pattern`` hole, measured here because the key reads no pattern."""
+    members = set().union(*_SETS.values())
+    accepting: set[tuple[str, str]] = set()
+    spelling: list[tuple[str, str]] = []
+    governed: list[tuple[str, str, object]] = []
+    for path in sorted(SCHEMAS.rglob("*.json")):
+        if path == MIGRATION_SCHEMA:
+            continue
+        name = path.relative_to(REPO_ROOT).as_posix()
+        for pointer, node in _nodes(_schema(path)):
+            pattern = node.get("pattern")
+            if isinstance(pattern, str):
+                if any(re.search(pattern, member) for member in members):
+                    accepting.add((name, pointer.rsplit("/", 1)[1]))
+                spelling += [(name, member) for member in members if _spells(member, pattern)]
+            for keyword in ("const", "default", "examples"):
+                value = node.get(keyword)
+                values = value if isinstance(value, list) else [value]
+                if {v for v in values if isinstance(v, str)} & members:
+                    governed.append((name, f"{pointer}/{keyword}", value))
+
+    assert _spells("domain", "^(domain|api)$"), "positive control: the spelling key"
+    assert {prop for _, prop in accepting} == {"projectId", "itemId", "platform"}
+    assert {name for name, prop in accepting if prop == "platform"} == {
+        "schemas/cli/version.schema.json"
+    }
+    assert spelling == []
+    assert governed == [
+        (_CONFIG, "#/properties/retrieval/properties/includeStatuses/default", ["approved"])
+    ]
 
 
 def _wire(*, follow_refs: bool = True) -> dict[str, str | None]:
@@ -144,7 +260,7 @@ def test_the_wire_enumerates_status_trust_level_and_sensitivity_only_through_the
     None
 ):
     wire = _wire()
-    enumerates, _ = _classified()
+    enumerates, _, _ = _classified()
     record_kind = dict(_nodes(_schema(SCHEMAS / "mcp" / "review-search-response.schema.json")))[
         "#/properties/records/items/properties/kind"
     ]
