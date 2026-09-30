@@ -259,6 +259,10 @@ SNIPPETS: Final = {
         {"properties": {"a": {"deprecated": True}}},
         [],
     ),
+    "a member as a custom key of an enum instance": (
+        {"enum": [{"draft": 1}]},
+        [("custom-key", "#/enum/0", "draft")],
+    ),
 }
 
 
