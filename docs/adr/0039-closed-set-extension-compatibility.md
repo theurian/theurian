@@ -161,8 +161,8 @@ reads no project, no migration and no enum.
 
 ### What the wire carries
 
-**The closure is a universal scan, not a list of keywords.** The schema-side
-residuals are today's reach, and #856 and #858 are filed to widen it; the
+**The closure is a construct-agnostic scan, not a list of keywords.** The
+schema-side residuals are today's reach, and #856 and #858 are filed to widen it; the
 code-side completeness is an inherent static limit. Review found a keyword key
 narrower than the claim it held three times — `enum` alone, then
 `const` and `oneOf`/`anyOf`, then `properties` with `additionalProperties:
@@ -172,10 +172,12 @@ value.
 *Detection.* Every schema under `schemas/` is scanned, the migration schema as
 its own population. A governed member occurs where a schema spells it exactly,
 in one of three positions. An object key equal to a member is an occurrence
-unless it is a JSON Schema 2020-12 keyword in keyword position; keys under
-`properties`, `$defs`, `definitions`, `dependentSchemas` and
-`dependentRequired` are names, so they are always candidates, and the
-`deprecated` annotation is the live keyword case. A string value equal to a
+unless it is a JSON Schema 2020-12 keyword and its object does not sit directly
+under a name-bearing keyword, inside an instance literal too (see *What the
+scan cannot report*); keys directly under `properties`, `$defs`,
+`definitions`, `dependentSchemas` and `dependentRequired` are names, so they
+are always candidates, and the `deprecated` annotation is the live keyword
+case. A string value equal to a
 member is an occurrence wherever it sits — `enum`, `const`, `default`,
 `examples`, `required`, a `propertyNames` subschema — except under
 `description`, `title`, `$comment`, `$schema`, `$id`, `$ref`, `$anchor` or an
@@ -228,8 +230,9 @@ scan to them:
   schemas the MCP SDK derives from handler annotations, which spell no governed
   member today (#856);
 - a member inside an instance-literal object — under `const`, `enum`,
-  `default` or `examples` — held under a key that is a keyword or a prose
-  name, where the scan still applies its keyword and prose exclusions (#858);
+  `default` or `examples` — spelled as a key that is a keyword, or held under
+  a prose or identifier key or an `x-` key, where the scan still applies its
+  keyword exclusion and its prose-or-identifier exclusion (#858);
 - `$dynamicRef`, and a `$ref` spelled other than as `"$ref": "`, with
   whitespace before the colon or an escaped key (#858). A reference spells a
   pointer, not a member: a schema that `$ref`s
@@ -514,12 +517,13 @@ change from one written after it.
    `validate_migration_document`). That advantage holds until #849 is merged,
    and #849 is due before the first `kind` or `relationType` member, not before
    the first operation; so decision 2's argument, that a bump buys only a
-   message #849 provides, does not reach operations. *What it costs:* one
-   permanently read `apiVersion` per added operation, and building the
-   multi-version read at the first bump. Dropping the bump would defer that
-   read, not save it: a decision-6 meaning bump would build it anyway. *Why it
-   is kept:* by deference to ADR-0005's rule and roadmap Phase C's *Migration*
-   row; weighing this ledger is left to a later slice (*Alternatives
+   message #849 provides, does not reach operations before #849 is merged.
+   *What it costs:* one permanently read `apiVersion` per added operation, and
+   building the multi-version read at the first bump. Dropping the bump would
+   defer that read, and would save it only if no meaning change ever bumps
+   `apiVersion` (decision 6). *Why it is kept:* by deference to ADR-0005's
+   rule and roadmap Phase C's *Migration* row; weighing this ledger is left to
+   a later slice (*Alternatives
    considered*). The Core that bumps reads every earlier `apiVersion` (decision
    5), and every document Core authors declares the **lowest** `apiVersion`
    whose grammar admits the document and under which it carries the meaning
@@ -632,8 +636,9 @@ change from one written after it.
    configuration schema rather than the wire. The same ADR answers for each. A
    change that adds a `status`, `sensitivity` or `trustLevel` member also opens
    the decode-before-gate bit #853's faces carry, since `_item_from_row` decodes
-   all three before any gate runs (`infrastructure/sqlite/store.py:1682`,
-   `:1685`, `:1686`); so the ADR for that set also answers #853, and #853 is due
+   all three before its caller's gate runs
+   (`infrastructure/sqlite/store.py:1682`, `:1685`, `:1686`); so the ADR for
+   that set also answers #853, and #853 is due
    before that member too. The concrete case is roadmap §9 candidate 2, whose
    change to `SURFACEABLE_STATUSES` would move the three-member `status` enum
    `retrieval-result.schema.json` publishes and `itemsByStatus`'s key set.
@@ -692,10 +697,12 @@ and is marked `BREAKING` in the CHANGELOG.
 
 ### Negative
 
-- **Until #849 is merged, the older Core's refusal is undiagnosable.** Decision 2
-  keeps fail-closed, and fail-closed with a message that names the operation
-  index, reports `oneOf`, and can lose the value to truncation reads like a typo
-  (*Context*). The additive class depends on #849 to be usable, which is why
+- **Until #849 is merged, an older Core's refusal of a new `kind` or
+  `relationType` member is undiagnosable.** Decision 2 keeps fail-closed, and
+  fail-closed with a message that names the operation index, reports `oneOf`,
+  and can lose the value to truncation reads like a typo (*Context*). A new
+  operation's refusal is decision 3's, which holds the operation bump's ledger.
+  The additive class depends on #849 to be usable, which is why
   #849, with #853, is due before the first `kind` or `relationType` member,
   whichever slice adds it.
 - **The read grammar only grows.** A removed operation keeps its `$defs` branch
@@ -740,7 +747,7 @@ and is marked `BREAKING` in the CHANGELOG.
 | **A tolerant reader: an older Core admits an unknown member as opaque, or skips the operation** | Identical documents would produce different canonical states on different Cores, which FR-K4's replay and the state hash exist to rule out, and a skipped `addRelation` is a silently missing edge. Fail-closed is kept. |
 | **Removal as a version event: drop the member from a new `apiVersion`'s read grammar** | A frozen document cannot move to the new version (FR-K5), and a fresh clone replays it (FR-K4), so every Core must still read the old version and the member with it. Under decision 3 no writer would declare the new version, and one that always did would lock out older Cores that read the document fine (decision 4). |
 | **Make `theurian compat check` detect an enum mismatch** (roadmap §4's third clause) | It compares a plugin declaration with the running Core and reads no project. The mismatch is between a project's documents and a Core, and it already surfaces at every migration load; the form it surfaces in is #849's (decision 10). |
-| **Bump `protocolVersion` for a vocabulary or grammar change** | *Context*'s scan finds no schema outside the migration format that closes a value or a key set to `kind`, `relationType` or the operation set, so no client validating against a published schema validates against their membership (decision 9). The scan reports every new occurrence for a person to classify. The wire-enumerated sets are left to their own ADRs (decision 8). |
+| **Bump `protocolVersion` for a vocabulary or grammar change** | *Context*'s scan finds no file under `schemas/` outside the migration format that closes a value or a key set to `kind`, `relationType` or the operation set, so, as far as the scan reaches, no client validating against one of those files validates against their membership (decision 9); a schema served from outside `schemas/` is beyond it (#856). The scan reports every new occurrence within its reach (*Context*'s "What the scan cannot report") for a person to classify. The wire-enumerated sets are left to their own ADRs (decision 8). |
 | **Stop bumping `apiVersion` for operations too** | Declined here, not refuted: the bump is kept per decision 3, which holds its ledger, and weighing that ledger is left to a later slice. It stays the named option for that slice. |
 
 ## Compliance
