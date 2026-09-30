@@ -1,13 +1,12 @@
-"""``run.PINNED_NOW`` against the two records that restate it (ADR-0036).
+"""``run.PINNED_NOW`` against the records that restate it and its reason (ADR-0036).
 
-The baseline README's "The pinned instant" section copies the value, and gives
-as its reason that it is the ``date`` the committed ``timings.json`` recorded.
-Both copies drift from their source silently, so each is recomputed here.
+The baseline README's "The pinned instant" section copies the value, and
+``run.py`` and the README give as its reason the instant #798 measured the
+baseline at. Each is held here, so moving ``PINNED_NOW`` alone goes RED.
 """
 
 from __future__ import annotations
 
-import json
 import re
 import sys
 from datetime import datetime
@@ -26,11 +25,16 @@ if str(_HARNESS_DIR) not in sys.path:
 import run as harness_run  # noqa: E402
 
 BASELINE_README = _HARNESS_DIR / "baseline" / "README.md"
-BASELINE_TIMINGS = _HARNESS_DIR / "baseline" / "timings.json"
 
 #: Key: every backtick-delimited ``PINNED_NOW = <value>`` span in the README,
 #: fenced or not, case-sensitive. A restatement spelled any other way is not read.
 _README_RESTATEMENT: Final = re.compile(r"`PINNED_NOW = ([^`]+)`")
+
+#: The ``date`` ``git show 60d10164:tools/eval/baseline/timings.json`` prints.
+#: A literal rather than a git read, because a CI checkout may be shallow; and
+#: not the working-tree ``timings.json``, whose ``date`` every re-measurement
+#: rewrites while the reason stays true.
+BASELINE_798_MEASURED_AT: Final = datetime.fromisoformat("2026-09-24T07:13:08.322675+00:00")
 
 
 def test_the_baseline_readme_states_the_harness_pinned_instant() -> None:
@@ -40,12 +44,9 @@ def test_the_baseline_readme_states_the_harness_pinned_instant() -> None:
     assert {datetime.fromisoformat(value) for value in stated} == {harness_run.PINNED_NOW}, stated
 
 
-def test_the_pinned_instant_is_the_committed_baseline_timings_date() -> None:
-    """RED when the baseline is re-measured: the reason ``run.py``'s comment and
-    the README give for ``PINNED_NOW`` then names a date the committed
-    ``timings.json`` no longer carries."""
-    recorded = datetime.fromisoformat(
-        json.loads(BASELINE_TIMINGS.read_text(encoding="utf-8"))["date"]
+def test_the_pinned_instant_is_the_instant_798s_baseline_was_measured_at() -> None:
+    assert BASELINE_798_MEASURED_AT.replace(microsecond=0) == harness_run.PINNED_NOW, (
+        "PINNED_NOW no longer equals the instant #798's baseline was measured at; update "
+        "the reason in tools/eval/run.py and the baseline README's 'The pinned instant', "
+        "and this constant, together."
     )
-
-    assert recorded.replace(microsecond=0) == harness_run.PINNED_NOW
