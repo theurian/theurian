@@ -431,11 +431,12 @@ def test_the_excluded_context_keys_are_still_the_unread_three(server: MCPServer)
 
 
 def test_every_published_input_field_is_in_the_recorded_population(server: MCPServer) -> None:
-    """ADR-0003: the clocks a build and a search read are composed at the roots
-    (``build_server``'s ``search_clock``, ``composed_clock``), and a caller's
-    only instant is ``asOf``, one request's moment. A new input field is where a
-    caller could reach a clock, so it lands here with the review that decides
-    what it may move."""
+    """The whole published input population, every field of every tool, is pinned.
+
+    That is what makes a clock-carrying field visible: ADR-0003 composes the
+    build and search clocks at the roots (``build_server``'s ``search_clock``,
+    ``composed_clock``), and the table's one instant a caller sends is ``asOf``.
+    """
     by_id = _by_id(server)
 
     published = {
@@ -443,7 +444,10 @@ def test_every_published_input_field_is_in_the_recorded_population(server: MCPSe
         for tool, document in _published(server).items()
     }
 
-    assert published == PUBLISHED_INPUT_FIELDS
+    assert published == PUBLISHED_INPUT_FIELDS, (
+        "a published input field was added or removed; this is a wire-contract change: "
+        "update PUBLISHED_INPUT_FIELDS in the same PR and route it through full review"
+    )
 
 
 @pytest.mark.parametrize("tool_name", _TOOL_NAMES)
