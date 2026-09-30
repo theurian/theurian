@@ -297,14 +297,15 @@ def test_items_by_status_closes_its_keys_to_the_surfaceable_statuses() -> None:
 
 
 def test_the_patterns_that_accept_a_governed_member_are_open_identifier_grammars() -> None:
-    """The unspelled-pattern hole's tripwire, keyed by file and pointer.
+    """The unspelled-pattern hole's tripwire, keyed by file, pointer and pattern.
 
     A pattern that closes a value without spelling a member is not an occurrence,
-    so every pattern that *accepts* a governed member is held here instead; a new
-    one goes RED for a person to classify.
+    so every pattern that *accepts* a governed member is held here instead, text
+    and all: a new one, or an accepting one rewritten, goes RED for a person.
     """
+    identifier = "^[a-z0-9]+(?:-[a-z0-9]+)*"
     accepting = {
-        (path.relative_to(REPO_ROOT).as_posix(), pointer)
+        (path.relative_to(REPO_ROOT).as_posix(), pointer): node["pattern"]
         for path in sorted(SCHEMAS.rglob("*.json"))
         if path != MIGRATION_SCHEMA
         for pointer, node in _pattern_nodes(_schema(path))
@@ -312,16 +313,18 @@ def test_the_patterns_that_accept_a_governed_member_are_open_identifier_grammars
     }
 
     assert accepting == {
-        ("schemas/cli/version.schema.json", "#/properties/platform"),
-        (_CONFIG, "#/properties/projectId"),
-        (_RESULT, "#/properties/itemId"),
-        ("schemas/mcp/knowledge-search-response.schema.json", "#/properties/projectId"),
-        (_STATUS, "#/properties/projectId"),
+        ("schemas/cli/version.schema.json", "#/properties/platform"): "^[a-z]+-[A-Za-z0-9_]+$",
+        (_CONFIG, "#/properties/projectId"): f"{identifier}$",
+        (_RESULT, "#/properties/itemId"): f"{identifier}(?:\\.[a-z0-9]+(?:-[a-z0-9]+)*)*$",
+        ("schemas/mcp/knowledge-search-response.schema.json", "#/properties/projectId"): (
+            f"{identifier}$"
+        ),
+        (_STATUS, "#/properties/projectId"): f"{identifier}$",
         (
             "schemas/mcp/project-list-response.schema.json",
             "#/properties/projects/items/properties/projectId",
-        ),
-        ("schemas/mcp/tool-context.schema.json", "#/properties/projectId"),
+        ): f"{identifier}$",
+        ("schemas/mcp/tool-context.schema.json", "#/properties/projectId"): f"{identifier}$",
     }
 
 

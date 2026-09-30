@@ -58,7 +58,8 @@ The pin is six modules and a support module, split by section:
   are held exact, per class, file and pointer. The closing-construct key only
   classifies. Outside the rule, as the ADR states: a ``$ref`` (its cross-file
   population is held exact on its own), a pattern that closes without spelling
-  a member (the patterns that accept a member are held by file and pointer), a
+  a member (the patterns that accept a member are held by file, pointer and
+  text), a
   member embedded in a longer non-pattern value, and a superset construct's
   meaning (it classifies as ``overlap``).
 - *The wire* is ``schemas/mcp/*.json`` plus every file a ``$ref`` reaches from
