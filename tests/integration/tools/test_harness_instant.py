@@ -1,10 +1,10 @@
 """The eval report is a function of the instant the harness injects (ADR-0036, ADR-0003).
 
 On 2026-09-30 the committed baseline went RED with no code or corpus change:
-each hit's ``freshness.ageDays`` was priced against the wall clock and reached
-10, the longer hit moved ``retrieval.usedTokens``, and ``equality``
-``differingFields`` lists gained or lost it. ``run.main`` now composes one clock
-into the build and the searches; these pins hold it there.
+each hit's ``freshness.ageDays`` was computed against the wall clock and reached
+10, ``retrieval.usedTokens`` prices each hit on its serialised length, and
+``equality`` ``differingFields`` lists gained or lost it. ``run.main`` now
+composes one clock into the build and the searches.
 """
 
 from __future__ import annotations
@@ -38,8 +38,8 @@ UNDER_TEN_DAYS: Final = harness_run.PINNED_NOW
 TEN_DAYS: Final = datetime(2026, 9, 30, 0, 0, 38, tzinfo=UTC)
 
 #: What ``SystemClock`` answers during a run: one before every injected instant
-#: and one after, so a build stamping ``validFrom`` from it, or a search pricing
-#: ``freshness`` on it, lengthens or shortens hits between the two.
+#: and one after, so a build stamping ``validFrom`` from it, or a search computing
+#: ``freshness`` from it, changes hit lengths between the two.
 SYSTEM_CLOCK_BEFORE: Final = datetime(2000, 1, 1, tzinfo=UTC)
 SYSTEM_CLOCK_AFTER: Final = datetime(2099, 1, 1, tzinfo=UTC)
 
@@ -104,9 +104,10 @@ def test_the_two_instants_put_every_fixture_revision_either_side_of_ten_days() -
 
 
 def test_the_report_is_a_function_of_the_injected_instant_not_of_system_clock() -> None:
-    """RED at the same instant: a build or search seam reads ``SystemClock``.
-    Equal across the two instants: the instant stopped reaching the searches.
-    A difference outside ``usedTokens``: it reaches something else."""
+    """RED three ways: the two runs at one instant differ, so a seam reads
+    ``SystemClock`` or the run is not deterministic; the runs either side of ten
+    days agree, so the instant no longer reaches the searches; or they differ
+    beyond ``usedTokens``, so the instant reaches something else."""
     first = _report(UNDER_TEN_DAYS, SYSTEM_CLOCK_BEFORE)
     crossed = _report(TEN_DAYS, SYSTEM_CLOCK_BEFORE)
     again = _report(UNDER_TEN_DAYS, SYSTEM_CLOCK_AFTER)
