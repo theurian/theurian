@@ -175,12 +175,14 @@ jobs:
   test:
     name: Tests (${{ matrix.os }}, py${{ matrix.python }})
     runs-on: ${{ matrix.os }}
-    # #104: observed p95 ~7.3 min on ubuntu-latest / ~5.9 min on macos-latest
-    # over 28 runs (worst observed 7.48 min); this is roughly 4x that tail,
-    # not the repository floor. This is the job the liveness guard in
+    # Stopgap: 30 min was too tight. Push runs on main at
+    # 612b141f took 29 min (ubuntu) / 29 min (macos); at 0d405b47, 22 / 25 min
+    # (`gh run view <run-id> --json jobs`, runs listed by
+    # `gh run list --workflow Core --branch main`). The durable fix, a faster or
+    # split suite, is owed by #643. This is the job the liveness guard in
     # `RetrievalService._visible_ranking` protects (docs/work-logs and #16):
     # a regression that removes the guard hangs this job, not fails it.
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
