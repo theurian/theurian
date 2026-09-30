@@ -635,10 +635,17 @@ change from one written after it.
    `retrieval.includeStatuses`, which lists all six members, a published
    configuration schema rather than the wire. The same ADR answers for each. A
    change that adds a `status`, `sensitivity` or `trustLevel` member also opens
-   the decode-before-gate bit #853's faces carry, since `_item_from_row` decodes
-   all three before its caller's gate runs
-   (`infrastructure/sqlite/store.py:1682`, `:1685`, `:1686`); so the ADR for
-   that set also answers #853, and #853 is due
+   the decode-before-gate bit #853's faces carry: `_item_from_row` decodes all
+   three (`infrastructure/sqlite/store.py:1682`, `:1685`, `:1686`), and at each
+   of those faces that reads an item row — `knowledge.get`,
+   `_relation_is_visible`, the write tools' `current_revision` and
+   `CanonicalVisibility._may_surface` — that decode runs before the caller's
+   gate. A caller that gates in SQL first is not one of them:
+   `knowledge.search`'s `_scan` passes the statuses it has already resolved to
+   `list_items_by_status`, and a `rejected` row carrying an unknown `trustLevel`
+   member is filtered out there and never decoded (measured by calling
+   `list_items_by_status` and `get_item_metadata` on one such row; the second
+   refuses it). So the ADR for that set also answers #853, and #853 is due
    before that member too. The concrete case is roadmap §9 candidate 2, whose
    change to `SURFACEABLE_STATUSES` would move the three-member `status` enum
    `retrieval-result.schema.json` publishes and `itemsByStatus`'s key set.
