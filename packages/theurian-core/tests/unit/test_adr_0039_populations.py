@@ -322,7 +322,8 @@ def _by_annotation(kind: KnowledgeKind) -> str:
     return repr(kind)
 
 
-#: Each form round 3 of PR #852 reproduced outside the key, against (raw, member).
+#: Each lookup the claims module's Reach names outside the key, against (raw, member).
+#: The first four are the ones PR #852's round 3 reproduced.
 _OUTSIDE: Final = {
     _by_dict: ("domain", KnowledgeKind.DOMAIN),
     _by_match: ("implements", RelationType.IMPLEMENTS),
@@ -338,7 +339,7 @@ def _parsed(function: Callable[..., object]) -> ast.Module:
 
 
 def test_the_forms_outside_the_key_turn_a_string_into_a_member_unheld() -> None:
-    """Each returned a member while every pin stayed GREEN (PR #852 round 3).
+    """Each turns a string into a member while the scan holds none of them.
 
     RED when the key is widened to hold one; the claims module's Reach and ADR-0039's
     *Context* then move with it.
