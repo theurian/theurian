@@ -18,7 +18,11 @@ drifts.
   ``KnowledgeKind``/``RelationType``/``OperationKind`` by bare name or as an
   attribute; a ``_closed_value`` call whose first argument names one of them; or
   a ``cli/`` parameter whose annotation names one. An aliased import, a class
-  held in a variable, or ``getattr`` is outside it.
+  held in a variable, or ``getattr`` is outside it. A table row *accounts for* a
+  site when the site's token appears anywhere in the row's first two cells.
+- *What ``compat check`` reads* is every name ``compat_check`` and
+  ``domain/compatibility.py`` spell or import; a read through another module's
+  function is outside it.
 - *Enumerates* is the ADR's key: an ``enum`` all of whose non-null members are
   members of one governed set, over every schema under ``schemas/`` except the
   migration schema. A superset enum is not counted by it, which is why the
@@ -951,9 +955,14 @@ def test_compat_check_takes_a_declaration_and_cores_own_versions_and_no_project(
         *inspect.signature(resolve_compatibility).parameters,
         *inspect.signature(compat_check).parameters,
     ]
-    read = _spelled(_function("cli/main.py", "compat_check")) | _spelled(
-        _trees()["domain/compatibility.py"]
-    )
+    module = _trees()["domain/compatibility.py"]
+    imported = {
+        alias.name
+        for node in ast.walk(module)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    }
+    read = _spelled(_function("cli/main.py", "compat_check")) | _spelled(module) | imported
 
     assert list(inspect.signature(resolve_compatibility).parameters) == [
         "declaration",
