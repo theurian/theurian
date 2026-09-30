@@ -105,17 +105,22 @@ def test_the_adr_0038_block_narrows_what_adr_0038_says() -> None:
         "Decision 4's precondition is met: #274's policy is accepted, as ADR-0039",
         "Decision 5 and rejected alternative (b) are narrowed by ADR-0039 decision 6",
         "Compliance, Still owed item 1, is discharged by ADR-0039",
-        "Compliance, Still owed item 2, is narrowed by ADR-0039 decision 4, in three places",
+        "Compliance, Still owed item 2, is narrowed by ADR-0039 decisions 4 and 6, in five places",
     ]
     assert decisions[5].startswith("The two operations are not retired by reinterpreting them")
     assert "**(b)**" in reinterpret
     assert "does not tell a reader of the document which meaning it carries" in adr_0038
-    assert len(re.findall(r"Its .*? becomes:", narrowing)) == 3
+    assert (
+        len(re.findall(r"Its .*? becomes:|its removal of the specifications table", narrowing)) == 5
+    )
     for quoted in (
         "remove registerSpecification and supersedeSpecification from OperationKind, the "
         "migration schema, the loader and V1_OPERATION_KINDS",
         "SpecId, SpecificationStatus",
         "amend ADR-0005's operation list",
+        "move every committed document and fixture that names either operation",
+        "the sample project's migration among them",
+        "remove the entity, the specifications table",
     ):
         assert quoted in owed_2, f"ADR-0038's Still owed item 2 no longer says {quoted!r}"
 
