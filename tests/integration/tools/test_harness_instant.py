@@ -31,7 +31,11 @@ import corpus as harness_corpus  # noqa: E402
 import corpus_build as harness_build  # noqa: E402
 import run as harness_run  # noqa: E402
 
+from theurian.application.project_service import ProjectPaths, read_active_state  # noqa: E402
+from theurian.domain.context import RequestContext  # noqa: E402
+from theurian.domain.identifiers import ProjectId  # noqa: E402
 from theurian.infrastructure.determinism import SystemClock  # noqa: E402
+from theurian.infrastructure.sqlite.store import SqliteCanonicalStore  # noqa: E402
 from theurian.security.yaml_loading import load_yaml_mapping  # noqa: E402
 
 CORPUS = REPO_ROOT / "tests" / "fixtures" / "eval"
@@ -130,11 +134,30 @@ def test_the_report_is_a_function_of_the_injected_instant_not_of_system_clock() 
     ), differences
 
 
+def _stamped_valid_from(project: harness_build.BuiltProject) -> set[datetime]:
+    """Every item's and revision's ``validFrom`` in ``project``'s built canonical store."""
+    paths = ProjectPaths.of(project.root)
+    active = read_active_state(paths)
+    assert active is not None, project.root
+    context = RequestContext(project_id=ProjectId(project.project_id))
+    with SqliteCanonicalStore(paths.database_for(active.state_hash)) as store:
+        items = store.list_items(context)
+        revisions = [
+            revision for item in items for revision in store.list_revisions(context, item.item_id)
+        ]
+    assert items and revisions, project.root
+    return {item.validity.valid_from for item in items} | {
+        revision.validity.valid_from for revision in revisions
+    }
+
+
 def test_the_harness_search_answers_on_the_clock_its_build_was_given() -> None:
     """Held below ``report.json``, which cannot see this: a search pinned to
     ``PINNED_NOW`` over a build at the ten-day instant reproduces correct wiring's
     report byte for byte, because ``isWithinValidity`` turning false adds the one
-    character ``ageDays`` going 4 -> 10 adds. So both fields, on every hit."""
+    character ``ageDays`` going 4 -> 10 adds. So both fields, on every hit -- and
+    the build's ``validFrom`` stamps read from its store, because
+    ``isWithinValidity`` holds them only at or before the search instant."""
     loaded = harness_corpus.load_corpus(SMOKE_CORPUS)
     with (
         tempfile.TemporaryDirectory(prefix="theurian-eval-wiring-") as workspace,
@@ -151,7 +174,9 @@ def test_the_harness_search_answers_on_the_clock_its_build_was_given() -> None:
                 "knowledge.search", {"projectId": project.project_id, "query": "policy"}
             )["results"]
         ]
+        stamped = {name: _stamped_valid_from(project) for name, project in built.projects.items()}
 
+    assert stamped == {name: {BUILT_AND_SEARCHED_AT} for name in built.projects}
     assert freshness
     assert [(each["ageDays"], each["isWithinValidity"]) for each in freshness] == [
         ((BUILT_AND_SEARCHED_AT - datetime.fromisoformat(each["revisionCreatedAt"])).days, True)
