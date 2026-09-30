@@ -59,13 +59,11 @@ versions today.
 
 ### What an unknown value meets today
 
-The population is keyed on where a value becomes one of these enums — every
-construction from a value, and every call of the MCP layer's closed-set parser —
-plus the two mechanisms that refuse before any enum is built by name: JSON
-Schema validation, and a CLI option typed by the enum
-(`git grep -n -E '^[[:space:]]+(KnowledgeKind|RelationType|OperationKind|KnowledgeStatus|Sensitivity|TrustLevel|SpecificationStatus)( \| None)?,' -- packages/theurian-core/src/theurian/cli`
-finds `propose`'s `--kind`, `--trust-level` and `--sensitivity`, at
-`cli/propose_commands.py:149`, `:201` and `:209`).
+The population is keyed on the three classes the additive policy governs —
+`KnowledgeKind`, `RelationType` and `OperationKind` — at every place a value
+becomes one of them: a construction from a value, a call of the MCP layer's
+closed-set parser with one of them, and a CLI option typed by one of them. JSON
+Schema validation, which refuses before any of them is built, is listed too.
 
 ```console
 $ git grep -n -E 'KnowledgeKind\(|RelationType\(|OperationKind\(' -- packages/theurian-core/src
@@ -81,17 +79,30 @@ packages/theurian-core/src/theurian/infrastructure/filesystem/migration_loader.p
 packages/theurian-core/src/theurian/infrastructure/sqlite/store.py:1681:        kind=KnowledgeKind(row["kind"]),
 packages/theurian-core/src/theurian/infrastructure/sqlite/store.py:1707:            kind=KnowledgeKind(row["kind"]),
 packages/theurian-core/src/theurian/infrastructure/sqlite/store.py:1784:        relation_type=RelationType(row["relation_type"]),
-$ git grep -n '_closed_value(' -- packages/theurian-core/src
+$ git grep -n -E '_closed_value\((KnowledgeKind|RelationType|OperationKind),' -- packages/theurian-core/src
 packages/theurian-core/src/theurian/mcp/tools.py:3382:                kind=_closed_value(KnowledgeKind, kind, "kind"),
-packages/theurian-core/src/theurian/mcp/tools.py:3395:                    else _closed_value(TrustLevel, trustLevel, "trustLevel")
-packages/theurian-core/src/theurian/mcp/tools.py:3400:                    else _closed_value(Sensitivity, sensitivity, "sensitivity")
 packages/theurian-core/src/theurian/mcp/tools.py:3542:                    kind=_closed_value(KnowledgeKind, kind, "kind"),
-packages/theurian-core/src/theurian/mcp/tools.py:3543:                    category=_closed_value(ReviewCommentCategory, category, "category"),
+$ git grep -n -E '^[[:space:]]+(KnowledgeKind|RelationType|OperationKind)( \| None)?,' -- packages/theurian-core/src/theurian/cli
+packages/theurian-core/src/theurian/cli/propose_commands.py:149:        KnowledgeKind | None, typer.Option("--kind", help="What sort of knowledge (required).")
 ```
 
-Three of the first twelve lines are class statements. The loader's four
-constructions run after schema validation, so no unknown value reaches them. The
-entry points an unknown value can reach refuse it as follows:
+Of the first command's twelve lines, three are class statements and four are the
+loader's constructions, which run after schema validation, so no unknown value
+reaches them. That leaves five construction sites — `okf_import.py:287`,
+`proposal_service.py:3768`, and the store's `:1681`, `:1707` and `:1784` — and
+the table accounts for each.
+
+The construction sites of the wire-enumerated and retiring sets are outside this
+population: decision 8 sends a change to a wire-enumerated set to its own ADR,
+which takes that population on, and the retiring set goes with #841. They are
+reachable today. `SqliteCanonicalStore.count_surfaceable_by_status` constructs
+`Sensitivity` from a stored row (`infrastructure/sqlite/store.py:845`), and
+`knowledge.status` reaches it (`mcp/tools.py:2471`) on the same MCP path that
+opens the pointer's database without loading migrations (`mcp/tools.py:1769`;
+*The derived store*, below), so the ADR that changes one of those sets inherits
+that path for its own decoders.
+
+The entry points an unknown value can reach refuse it as follows:
 
 | Entry point | Where and as what | Names the unknown value? | Established by |
 | :-- | :-- | :-- | :-- |
@@ -99,11 +110,11 @@ entry points an unknown value can reach refuse it as follows:
 | The same loader, `apiVersion` | JSON Schema `const`, `MigrationError`: `is invalid at apiVersion: does not satisfy 'const' (expected 'theurian.dev/v1'); the value there is 'theurian.dev/v2'`, before the compiled comparison at `:1613` is reached. With `theurian.dev/v2` and an unknown `kind` in one document, this is the refusal reported | Yes | Measured, same copy |
 | `validate_migration_document` (`:1103`), the validator the proposal service is given | The loader's seam (`_schema_rejection`), `MigrationError`: `invalid migration at operations/<N>: does not satisfy 'oneOf' ...` | As the loader | Measured: an unknown `relationType` and an unknown `op` refused, a valid document accepted |
 | Proposal service `draft_from_document` (`application/proposal_service.py`), behind `knowledge.generateMigrationDraft` and OKF import's relations draft | The v1 gate skips an unknown `op` (`OperationKind(raw)` at `:3767-3770` `continue`s) and leaves it to the injected validator: `MigrationError` at draft, with nothing written (the method's `Raises`, `:1002-1004`). At `propose accept`, `_refuse_a_document_the_schema_rejects` wraps the validator's refusal as `ProposalError` (`:1850-1861`) | As the loader | Read from source, not run; the validator is the row above |
-| MCP `knowledge.proposeChange` (`kind`, `trustLevel`, `sensitivity`) and `review.generateKnowledgeCandidate` (`kind`), through `_closed_value` (`mcp/tools.py:1251`) | Handler, `ToolError`: `` `kind` must be one of: architecture, decision, domain, operations, security, testing, api, incident, convention, rejected-approach, known-exception. `` | No: it names the field and the valid set | Measured: `_closed_value` called with an unknown `kind`, `trustLevel` and `sensitivity`; `domain` accepted |
-| `theurian propose --kind` (`cli/propose_commands.py:148-150`, typed `KnowledgeKind`); `--trust-level` and `--sensitivity` (`:200-214`) are typed the same way | Option parsing, Typer `BadParameter`: `'requirement' is not one of 'architecture', ..., 'known-exception'.` | Yes, with the valid set | Measured for `--kind`: the option's own type converted the value on the built command, and the command was not invoked. The other two read from source, not run |
+| MCP `knowledge.proposeChange` and `review.generateKnowledgeCandidate`, their `kind`, through `_closed_value` (`mcp/tools.py:1251`; called at `:3382` and `:3542`) | Handler, `ToolError`: `` `kind` must be one of: architecture, decision, domain, operations, security, testing, api, incident, convention, rejected-approach, known-exception. `` | No: it names the field and the valid set | Measured: `_closed_value` called with an unknown `kind`; `domain` accepted |
+| `theurian propose --kind` (`cli/propose_commands.py:148-150`, typed `KnowledgeKind`) | Option parsing, Typer `BadParameter`: `'requirement' is not one of 'architecture', ..., 'known-exception'.` | Yes, with the valid set | Measured: the option's own type converted the value on the built command; the command was not invoked |
 | OKF import, a concept's `type` (`application/okf_import.py:285-289`, `:544-550`) | Per concept, `ImportRefusal(kind="concept", key=<file>, literal="unrecognized type: 'specification'")`; other concepts still import | Yes | Measured: `_map_concept` on one concept file; `type: domain` maps |
 | OKF import, a relation entry's `type` (`:586-590`, `_draft_relations` `:829-853`) | Carried verbatim into an `addRelation` in the one relations draft. An unknown type fails that draft's validation, and the whole draft is refused as one `ImportRefusal(kind="relations", key="addRelation")` carrying the validator's message, so every relation in the bundle is dropped, not only the unknown one | As the loader | Read from source, not run |
-| Derived store row decoders: `_item_from_row` (`infrastructure/sqlite/store.py:1681`), `_relation_from_row` (`:1784`) | Bare `ValueError`: `'requirement' is not a valid KnowledgeKind`, `'traces_to' is not a valid RelationType` | Yes | Measured: each decoder called on a mapping; the valid values decode |
+| Derived store row decoders: `_item_from_row` (`infrastructure/sqlite/store.py:1681`), `_revision_from_row` (`:1707`) and `_relation_from_row` (`:1784`). `knowledge.get` reaches `_revision_from_row` through `current_revision` → `get_revision` (`:582`, `:538`); `list_revisions` (`:615`) is its other caller | The decoder raises `ValueError` (`'requirement' is not a valid KnowledgeKind`, `'traces_to' is not a valid RelationType`), and every store read runs its decoder inside `_reading()` (`_read_one`, `:418-420`), which re-raises it as `StateDatabaseUnreadableError`: `This project's state database cannot be read (ValueError): it is damaged, or holds a value this build cannot interpret.`, followed by a remedy to delete `.theurian/state/` and run `theurian migrate apply` | No: the message names only the exception type; the value is on `__cause__` | Measured: each decoder called on a mapping inside `_reading()`, as `_read_one` calls it; the valid values decode |
 
 ### The derived store
 
@@ -117,7 +128,9 @@ document names a member it lacks. The MCP tools do not load migrations: they
 open the database the project's active-state pointer names
 (`mcp/tools.py:1769`, `read_active_state`; `:1817`, `state_database_named`). An
 older daemon serving a project whose pointer a newer Core wrote can therefore
-reach the row decoders above without meeting the loader's refusal first. Read
+reach the row decoders above without meeting the loader's refusal first, and
+the store then reports an unreadable database whose remedy, a rebuild through
+`theurian migrate apply`, runs into that same loader's refusal. The path is read
 from source, not run; what the tool returns then is owed (*Compliance*, Still
 owed item 3).
 
@@ -134,24 +147,89 @@ reads no project, no migration and no enum.
 
 ### What the wire carries
 
-No `kind`, `relationType` or operation set is enumerated in any published wire
-schema. `git grep -n -E '"(enum|const)":' -- schemas/mcp schemas/knowledge`
-lists every `enum` and `const` those schemas hold, and none is one of the three.
+**The key for "enumerates".** An `enum` enumerates a governed set when all of
+its non-null members are members of that set. Over every schema under
+`schemas/` except the migration schema, which is the read grammar itself, the
+program below finds four such enums and none of `kind`, `relationType` or the
+operation set: `schemas/knowledge/retrieval-result.schema.json`'s `status`,
+`trustLevel` and `sensitivity`, and
+`schemas/config/project-config.schema.json`'s `retrieval.includeStatuses`,
+which lists all six `status` members. Two enums share members with a governed
+set without being contained in one, so the key does not count them:
+`review-generate-knowledge-candidate-input`'s `category` shares
+`rejected-approach` and `known-exception` with `KnowledgeKind`
+(`domain/enums.py:69-70` against `:133-134`), and
+`review-findings-response`'s `reviewer` shares `security`
+(`domain/enums.py:64` against `domain/review_finding.py:65`). That is the key's
+hole: a future enum carrying a governed set plus other members is not
+contained in the set, so the key does not count it, and it is to be classified
+by a person when it appears rather than passed silently.
+
+```python
+# Run from the repository root with `uv run --frozen python`.
+import json
+from pathlib import Path
+
+from theurian.domain import enums, migration
+
+GOVERNED = (
+    enums.KnowledgeKind,
+    enums.RelationType,
+    migration.OperationKind,
+    enums.KnowledgeStatus,
+    enums.Sensitivity,
+    enums.TrustLevel,
+    enums.SpecificationStatus,
+)
+SETS = {cls.__name__: {member.value for member in cls} for cls in GOVERNED}
+
+
+def walk(node, path):
+    if isinstance(node, dict):
+        if isinstance(node.get("enum"), list):
+            yield path, {value for value in node["enum"] if value is not None}
+        for key, value in node.items():
+            yield from walk(value, f"{path}/{key}")
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            yield from walk(value, f"{path}/{index}")
+
+
+for schema in sorted(Path("schemas").rglob("*.json")):
+    if schema.name == "migration.schema.json":
+        continue
+    for path, values in walk(json.loads(schema.read_text()), "#"):
+        inside = [name for name, members in SETS.items() if values and values <= members]
+        shared = {
+            name: sorted(values & members) for name, members in SETS.items() if values & members
+        }
+        if inside:
+            print("enumerates", inside, schema, path)
+        elif shared:
+            print("overlaps", shared, schema, path)
+```
+
 The MCP input schemas `knowledge-propose-change-input` and
 `review-generate-knowledge-candidate-input` type `kind` as a string (and the
 first types `trustLevel` and `sensitivity` as string or null), and
-`knowledge-generate-migration-draft-input` constrains no `op`. The listing does
+`knowledge-generate-migration-draft-input` constrains no `op`. The schemas do
 hold an enum on a property named `kind` — `review-search-response`'s
 `records.items.kind`, `pull-request`, `review-submission` and `review-thread`,
 the kind of a review record and not `KnowledgeKind` — which is the positive
-control that the key reaches such a property.
+control that the walk reaches such a property.
 
-Values still travel. `knowledge.get` publishes each visible relation's
-`relationType` (`mcp/tools.py:2434`) and has no response schema, so a client
-meets a member it does not know as an unrecognised string. No MCP response
-publishes a `KnowledgeKind`: under `mcp/`, it appears only as the two
-`_closed_value` inputs above, and the one `.kind` published is the review
-record's (`mcp/review_search.py:523`).
+Values still travel, un-enumerated, in two response fields, neither under a
+response schema: `knowledge.get` publishes each visible relation's
+`relationType` (`mcp/tools.py:2434`), and `knowledge.generateMigrationDraft`
+publishes the drafted document's operation names as `operations`
+(`_drafted_migration_payload`, `mcp/tools.py:1365`). A client meets a member it
+does not know there as an unrecognised string. The key was
+`git grep -n -E '"operations"|"relationType"|\.value for ' -- packages/theurian-core/src/theurian/mcp`,
+whose other hits sit on refusal paths, `_closed_value`'s among them, which lists
+`kind`'s members in its message (`mcp/tools.py:1263`). No MCP response publishes a
+`KnowledgeKind`: under `mcp/`, it appears only as the two `_closed_value`
+inputs above, and the one `.kind` published is the review record's
+(`mcp/review_search.py:523`).
 
 **`status`, `sensitivity` and `trustLevel` are enumerated on the wire.**
 `knowledge-search-response`
@@ -284,17 +362,20 @@ change from one written after it.
    ADR, which decides its effect on `apiVersion`, on `protocolVersion`, on the
    Core version and on the CHANGELOG. For the two gate-feeding sets, `status`
    and `sensitivity`, that ADR is also written first, before implementation,
-   under roadmap §6 principle 3. `trustLevel` feeds no
-   gate; the governance ground in decision 1 is why its ADR still gets the same
-   care. The concrete case is roadmap §9 candidate 2, whose change to
-   `SURFACEABLE_STATUSES` would move the three-member `status` enum
-   `retrieval-result.schema.json` publishes.
+   under roadmap §6 principle 3. `trustLevel` feeds no gate; the governance
+   ground in decision 1 is why its ADR still gets the same care. A change to
+   `status` also moves `project-config.schema.json`'s `retrieval.includeStatuses`,
+   which lists all six members; that is a published configuration schema, not
+   the wire, and the same ADR answers for it. The concrete case is roadmap §9
+   candidate 2, whose change to `SURFACEABLE_STATUSES` would move the
+   three-member `status` enum `retrieval-result.schema.json` publishes.
 9. **No change to `kind`, `relationType` or the operation set bumps
-   `protocolVersion`**, because no published schema enumerates any of them
-   (*Context*). A member a client does not know reaches it as an unrecognised
-   string — a `relationType` in `knowledge.get`'s `relations`, the one place any
-   of the three is published. A later change that publishes one of them as a
-   wire `enum` re-opens this decision.
+   `protocolVersion`**, because no published schema enumerates any of them,
+   under the key *Context* states. A member a client does not know reaches it as
+   an unrecognised string, in the two response fields that publish any of the
+   three: a `relationType` in `knowledge.get`'s `relations`, and an operation
+   name in `knowledge.generateMigrationDraft`'s `operations`. A later change that
+   publishes one of them as a wire `enum` re-opens this decision.
 10. **`theurian compat check` does not surface an enum mismatch, and roadmap §4's
     third clause — "make `compat check` detect it" — is declined.** `compat
     check` is the plugin-to-Core axis and reads no project (*Context*). An enum
@@ -426,9 +507,10 @@ Still owed, with the issue or slice that will satisfy it:
    `MIGRATION_ENGINE_VERSION` bump, or the operations' original effect kept.
 3. **#841, before it adds its `kind` member: what an older Core does with a
    state database a newer Core built.** The MCP tools open the pointer's database
-   without loading migrations, and the row decoders raise a bare `ValueError`
-   on a member they lack (*Context*); what a tool returns then, and whether
-   such a database opens under an older Core at all, was not run.
+   without loading migrations, and a store read of a row naming a member the
+   Core lacks raises `StateDatabaseUnreadableError`, whose rebuild remedy meets
+   the loader's refusal (*Context*); what a tool returns then, and whether such
+   a database opens under an older Core at all, was not run.
 4. **The slice that first bumps `apiVersion`** — Phase C's edge operation, if
    [#275](https://github.com/theurian/theurian/issues/275)'s representation
    needs one: the multi-version read (decision 5) in the schema, the loader and
