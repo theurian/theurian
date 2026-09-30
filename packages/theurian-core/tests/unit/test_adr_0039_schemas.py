@@ -251,17 +251,13 @@ SNIPPETS: Final = {
         {"type": "string", "examples": ["status:draft"]},
         [],
     ),
-    "the #858 hole: a member under a prose key of a const instance": (
-        {"const": {"title": "draft"}},
-        [],
+    "a keyword key directly under properties is a name": (
+        {"properties": {"deprecated": {}}},
+        [("property-name", "#", "deprecated")],
     ),
-    "the #858 hole: a member keyword as a key of a default instance": (
-        {"default": {"deprecated": True}},
+    "a keyword key one level below properties is a keyword": (
+        {"properties": {"a": {"deprecated": True}}},
         [],
-    ),
-    "positive control: a member as a custom key of an enum instance": (
-        {"enum": [{"draft": 1}]},
-        [("custom-key", "#/enum/0", "draft")],
     ),
 }
 
@@ -271,6 +267,48 @@ def test_the_scan_finds_each_spelling_the_detection_rule_names_and_nothing_else(
     document: dict[str, Any], expected: list[Occurrence]
 ) -> None:
     assert occurrences(document) == expected
+
+
+#: ADR-0039's residual bullet 2 (#858), each form beside its control: the same instance
+#: literal with the excluding key made plain, which the scan reports.
+INSTANCE_LITERAL_HOLE: Final = {
+    "a keyword key of a const instance": (
+        {"const": {"deprecated": True}},
+        {"const": {"draft": True}},
+        [("custom-key", "#/const", "draft")],
+    ),
+    "a keyword key of a default instance": (
+        {"default": {"deprecated": True}},
+        {"default": {"draft": True}},
+        [("custom-key", "#/default", "draft")],
+    ),
+    "a prose key of a const instance": (
+        {"const": {"title": "domain"}},
+        {"const": {"name": "domain"}},
+        [("unclassified", "#/const", "domain")],
+    ),
+    "an identifier key of an enum instance": (
+        {"enum": [{"$id": "domain"}]},
+        {"enum": [{"id": "domain"}]},
+        [("unclassified", "#/enum/0", "domain")],
+    ),
+    "an x- key of each enum instance": (
+        {"enum": [{"x-kind": "domain"}, {"x-kind": "api"}]},
+        {"enum": [{"kind": "domain"}, {"kind": "api"}]},
+        [("unclassified", "#/enum/0", "domain"), ("unclassified", "#/enum/1", "api")],
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("hole", "control", "reported"), INSTANCE_LITERAL_HOLE.values(), ids=list(INSTANCE_LITERAL_HOLE)
+)
+def test_a_member_in_an_instance_literal_under_an_excluded_key_is_not_reported(
+    hole: dict[str, Any], control: dict[str, Any], reported: list[Occurrence]
+) -> None:
+    """RED when #858 lands, and ADR-0039's residual bullet 2 must then move."""
+    assert occurrences(control) == reported
+    assert occurrences(hole) == []
 
 
 def test_the_cross_file_ref_population_is_the_ten_the_adr_counts() -> None:
