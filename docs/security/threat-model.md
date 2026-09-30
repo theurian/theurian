@@ -6600,7 +6600,7 @@ pointer row alone — `_ITEM_METADATA_SQL` projects only `knowledge_items`' own
 columns, with no join to `knowledge_revisions` and so no `body` on the row. A
 withheld item is refused from that read and its body is never materialised. A
 body is read only for an item that has cleared status and sensitivity, content
-the caller may already see on those axes. What each gate reads once it has
+the caller may already see on those axes. What each gate reads after it has
 cleared a row:
 - **`knowledge.get`** (`mcp/tools.py`, `knowledge_get`) reads the body through
   `SqliteCanonicalStore.current_revision`. It runs no GHSA-3f65 content check.
@@ -7222,7 +7222,7 @@ with the same hash of canonical's *current* revision's title and body, and
 withholds any row whose build-time hash disagrees, beside the status and
 sensitivity checks and inside `cleared`, before the candidate-depth cut (never at
 excerpt time, which would reopen the SEC-13 candidate-displacement oracle). The
-current hash is not on the gate's read: once a row has cleared status,
+current hash is not on the gate's read: after a row has cleared status,
 sensitivity and revision on the bodyless `get_item_metadata`,
 `CanonicalVisibility._served_item` (`application/visibility.py`) reads the joined
 `get_item_exact`, memoised per distinct item, whose
