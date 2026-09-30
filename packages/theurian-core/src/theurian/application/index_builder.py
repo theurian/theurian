@@ -258,7 +258,7 @@ class IndexBuilder:
         # approved, in-ceiling item with no current revision serves no
         # `knowledge.get` of its own and is still a legitimate far end of an edge
         # published from one that does -- exactly what `mcp.tools
-        # ._relation_is_visible` asks `get_item_exact` about each endpoint.
+        # ._relation_is_visible` asks `get_item_exact_metadata` about each endpoint.
         visible: set[str] = set()
         # The items whose `knowledge.get` would publish a relation list at all, in
         # walk order, so the second pass is deterministic.
@@ -673,9 +673,10 @@ def _relation_secrets(
     caller may see, so an edge to a withheld item must not reach this count either
     -- a number that moved with a row the build refused to index is the shape T-17
     took. ``visible`` is the set of ids that cleared both filters in the walk
-    above, which is the same answer ``get_item_exact`` gives for each endpoint and
-    costs no second read; an endpoint absent from the corpus is absent from the
-    set, so a dangling edge is withheld rather than scanned.
+    above, which is the same answer ``_relation_is_visible`` reaches through
+    ``get_item_exact_metadata`` for each endpoint and costs no second read; an
+    endpoint absent from the corpus is absent from the set, so a dangling edge is
+    withheld rather than scanned.
 
     **The index is a position in the published list, so the gate runs before the
     ``enumerate`` and not inside it.** ``knowledge.get`` emits the gate-cleared

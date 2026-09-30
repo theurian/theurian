@@ -465,8 +465,12 @@ class SqliteCanonicalStore:
         a key equal to a `rejected` item's id resolves through `get_item` to the
         approved item it points at, so a gate keyed on the resolved status clears
         as that approved item and publishes the rejected item's content.
-        `_relation_is_visible` reads each endpoint through this instead -- the
-        row the id names, judged by its own status.
+        `_relation_is_visible` therefore reads each endpoint without resolving --
+        through `get_item_exact_metadata`, this read's body-free form, since it
+        decides on status and sensitivity alone (0.2.3, T-26). This joined read's
+        caller is `CanonicalVisibility._served_item`: the GHSA-3f65 content check,
+        on a row the gate has already cleared, hashes the current body of that
+        row's item -- not of wherever a second alias hop would lead.
         """
         return self._read_one(
             _ITEM_WITH_CURRENT_CONTENT_SQL
@@ -486,15 +490,18 @@ class SqliteCanonicalStore:
         `sensitivity`, both of which live on `knowledge_items` itself, yet paid to
         read a *withheld* item's body first: the refusal's wall-clock then scaled
         with that body's size, an existence-and-size oracle a caller could measure
-        for content it may not read. This read answers the gate from the pointer
-        row alone; the body is read through `get_item` only once the item has
-        cleared status and sensitivity and is going to be served.
+        for content it may not read. This read (`get_item_exact_metadata` for
+        `_relation_is_visible`) answers the gate from the pointer row alone; a
+        body is read only once the item has cleared status and sensitivity -- by
+        `knowledge.get` through `current_revision`, and by
+        `CanonicalVisibility._served_item` through `get_item_exact` -- and
+        `_relation_is_visible` reads none.
 
         Resolves aliases like `get_item` -- reachability may follow a rename. The
         returned item carries `current_served_content_sha256=None` because no body
         was read to hash, exactly as `list_items` leaves it, so the serve gate
         treats it as unverifiable and withholds on it: the GHSA-3f65 content check
-        must therefore read the full item through `get_item`, never this one.
+        therefore reads the full item through `get_item_exact`, never this one.
         """
         resolved = self._resolve_alias(context.project_id, item_id)
         return self._read_one(
@@ -1603,7 +1610,8 @@ def _project_from_row(row: sqlite3.Row) -> Project:
 #: item -- with `current_served_content_sha256` NULL, which the gate reads as
 #: "cannot verify" and withholds. The join binds no parameter; each caller appends
 #: its own `WHERE`, so the trailing space is load-bearing. Only
-#: `get_item`/`get_item_exact` use it, because only they feed `CanonicalVisibility`;
+#: `get_item`/`get_item_exact` use it, because only they return the served-content
+#: hash; `CanonicalVisibility._served_item` reads it through `get_item_exact`.
 #: `list_items` and the status-filtered read stay on the plain `SELECT *` that
 #: their measured timing (see `list_items_by_status`) and the index builder were
 #: written against.

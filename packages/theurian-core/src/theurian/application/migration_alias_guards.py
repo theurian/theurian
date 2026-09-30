@@ -14,7 +14,7 @@ the alias points at and clears a relation-visibility gate as that item --
 publishing the rejected item's edge and its ``note`` (where the secret that
 caused the rejection lives) on the approved item's response. The read side is
 fixed independently (``_relation_is_visible`` reads the literally-named row via
-``get_item_exact``); this refuses the collision from ever being authored.
+``get_item_exact_metadata``); this refuses the collision from ever being authored.
 
 Whole-set rather than pending-only, for the reason
 :func:`~theurian.application.migration_engine.refuse_unenforceable_scope` is:

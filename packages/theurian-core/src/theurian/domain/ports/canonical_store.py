@@ -488,8 +488,12 @@ class CanonicalReadSession(Protocol):
         non-surfaceable item's id would otherwise let that item clear a gate as
         the approved item the alias points at:
         :func:`~theurian.mcp.tools._relation_is_visible` gates each relation
-        endpoint through this exact read, so an endpoint that is also an alias
-        key is judged by its own status and not the alias target's (SEC-13, T-21).
+        endpoint through this read's body-free form, :meth:`get_item_exact_metadata`,
+        so an endpoint that is also an alias key is judged by its own status and
+        not the alias target's (SEC-13, T-21). This joined form serves a row the
+        gate has already cleared:
+        :meth:`~theurian.application.visibility.CanonicalVisibility._served_item`,
+        the GHSA-3f65 content check, reads the current body through it.
         """
         ...
 
@@ -500,9 +504,10 @@ class CanonicalReadSession(Protocol):
         columns, and reading the current revision's body before that decision made
         a withheld item's refusal scale with the body's size -- an
         existence-and-size side channel a caller could time. This read answers the
-        gate from the pointer row; the body is read through :meth:`get_item` only
-        once the item is confirmed surfaceable and is going to be served. Resolves
-        aliases like :meth:`get_item`. The returned item carries
+        gate from the pointer row; a body is read only once the item is confirmed
+        surfaceable -- through :meth:`get_item_exact` by the GHSA-3f65 content
+        check, and through ``SqliteCanonicalStore.current_revision`` by
+        ``knowledge.get``. Resolves aliases like :meth:`get_item`. The returned item carries
         ``current_served_content_sha256=None``: no body was read to compute it, so
         the serve gate treats it as unverifiable and withholds -- which is why the
         GHSA-3f65 content-identity check reads the full item, never this one.
