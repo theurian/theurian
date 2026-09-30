@@ -175,13 +175,16 @@ jobs:
   test:
     name: Tests (${{ matrix.os }}, py${{ matrix.python }})
     runs-on: ${{ matrix.os }}
-    # Stopgap: 30 min was too tight. Push runs on main at
-    # 612b141f took 29 min (ubuntu) / 29 min (macos); at 0d405b47, 22 / 25 min
-    # (`gh run view <run-id> --json jobs`, runs listed by
-    # `gh run list --workflow Core --branch main`). The durable fix, a faster or
-    # split suite, is owed by #643. This is the job the liveness guard in
-    # `RetrievalService._visible_ranking` protects (docs/work-logs and #16):
-    # a regression that removes the guard hangs this job, not fails it.
+    # Stopgap: 30 min was too tight. Ubuntu / macos took 29m02s / 28m42s on
+    # main at 612b141f (run 36679166472) and 22m18s / 25m23s at 0d405b47 (run
+    # 36684955725); on the PR #852 head (run 36722037864) both legs were
+    # cancelled at the 30 min cap. Re-check: `gh run view <run-id> --json jobs`.
+    # 45 is deliberately below tests/ci/test_job_timeouts.py's sizing rule
+    # ("roughly 3-4x p95, minimum 10") until #643 lands; do not "correct" it to
+    # the rule. The durable fix, a faster or split suite, is owed by #643.
+    # This is the job the liveness guard in `RetrievalService._visible_ranking`
+    # protects (docs/work-logs and #16): a regression that removes the guard
+    # hangs this job, not fails it.
     timeout-minutes: 45
     strategy:
       fail-fast: false

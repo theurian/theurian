@@ -89,8 +89,11 @@ jobs:
     # suite (no marker filter, e2e included) and measured 480s of a 600s
     # ceiling at the 0.1.0 tag; the same selection grew ~28% by 0.2.0, which
     # is the coin-flip margin that killed core.yml's no-network step at that
-    # cut. 30 matches core.yml's `test` job, the sibling that runs this
-    # suite: a hang backstop, not a ceiling the healthy runtime brushes.
+    # cut. 30 is sized from this job's own run: at the core-v0.5.0 cut (run
+    # 36406228594) the job took 15m46s, its `uv run pytest -q` step 15m13s
+    # (`gh run view 36406228594 --json jobs`). core.yml's `test` job runs
+    # `-m "not e2e" --cov` and is sized separately. A hang backstop, not a
+    # ceiling the healthy runtime brushes.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
