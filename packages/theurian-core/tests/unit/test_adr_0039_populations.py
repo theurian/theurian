@@ -199,17 +199,25 @@ def test_the_pasted_commands_are_the_live_entry_point_population() -> None:
     assert list(_pasted().values()) == live
 
 
-#: Every reference to an additive class under ``src/theurian``, by form: held exact, so a
-#: new one of any form -- iteration, a comprehension, ``next(...)``, ``.parse`` -- goes RED
-#: for a person to classify.
+def _held(references: list[Reference]) -> collections.Counter[tuple[str, str, str]]:
+    """The entry-point tripwire: every reference by file, function and form, bar members.
+
+    A member access names a member statically and turns no external value into one,
+    so it is classified and not held; holding it would turn this pin RED on ordinary
+    code in any lane.
+    """
+    return collections.Counter(
+        (path, scope, form) for path, scope, _, form, _ in references if form != "member"
+    )
+
+
+#: Every reference to an additive class under ``src/theurian`` but a member access, by
+#: form: held exact, so a new one of any form -- iteration, a comprehension,
+#: ``next(...)``, ``.parse`` -- goes RED for a person to classify.
 REFERENCES: Final = {
-    ("application/migration_engine.py", "_apply_operation", "member"): 1,
     ("application/okf_import.py", "_resolve_kind", "construction"): 1,
-    ("application/proposal_service.py", "<module>", "member"): 14,
     ("application/proposal_service.py", "_refuse_operations_outside_the_v1_set", "construction"): 1,
     ("cli/propose_commands.py", "propose_draft", "option"): 1,
-    ("domain/enums.py", "<module>", "member"): 11,
-    ("domain/migration.py", "kind", "member"): 14,
     ("infrastructure/filesystem/migration_loader.py", "_parse_operation", "construction"): 3,
     ("infrastructure/filesystem/migration_loader.py", "_parse_upsert", "construction"): 1,
     ("infrastructure/sqlite/store.py", "_item_from_row", "construction"): 1,
@@ -228,10 +236,7 @@ def test_every_reference_to_an_additive_class_is_classified_and_held() -> None:
         for path, scope, _, form, node in references
         if form == "unclassified"
     ] == []
-    assert (
-        collections.Counter((path, scope, form) for path, scope, _, form, _ in references)
-        == REFERENCES
-    )
+    assert _held(references) == REFERENCES
 
 
 def test_each_form_of_reference_is_classified_and_annotations_are_not_references() -> None:
@@ -272,6 +277,13 @@ def test_each_form_of_reference_is_classified_and_annotations_are_not_references
     assert [(path, form) for path, _, _, form, _ in found if path == "cli/snippet.py"] == [
         ("cli/snippet.py", "option")
     ]
+    assert _held(found) == {
+        ("snippet.py", "forms", "construction"): 2,
+        ("snippet.py", "forms", "_closed_value"): 1,
+        ("snippet.py", "forms", "isinstance"): 1,
+        ("snippet.py", "forms", "unclassified"): 8,
+        ("cli/snippet.py", "command", "option"): 1,
+    }, "a member access is classified and not held; an iteration is held"
 
 
 def test_the_additive_classes_define_their_members_and_nothing_else() -> None:

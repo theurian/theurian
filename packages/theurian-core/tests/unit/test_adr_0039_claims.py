@@ -36,9 +36,10 @@ The pin is six modules and a support module, split by section:
   counts as an option because Typer parses a value into it. Classification, by
   the node that holds the reference: a call of the class, the first argument of
   ``_closed_value``, the type of an ``isinstance``, a member access, a CLI
-  option, and anything else as *unclassified*. The population of references is
-  held exact by file, function and form, so any new reference goes RED for a
-  person. Outside the key: an aliased import, a class reached through a
+  option, and anything else as *unclassified*. Every reference but a member
+  access is held exact by file, function and form, so any new one goes RED for a
+  person. A member access is classified and not held: it names a member
+  statically and turns no external value into one. Outside the key: an aliased import, a class reached through a
   variable or through reflection (``vars``, ``globals``, ``importlib``), and
   ``type(member)(raw)``; a method defined on a class is held apart, by
   asserting each class holds its members and nothing else. A table row
