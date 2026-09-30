@@ -10,6 +10,7 @@ import collections
 import dataclasses
 import inspect
 import re
+from collections.abc import Mapping
 from typing import Final
 
 import pytest
@@ -59,12 +60,39 @@ def _pasted() -> dict[str, collections.Counter[tuple[str, str]]]:
     return outputs
 
 
-def _entry_points() -> dict[str, list[tuple[str, str, ast.AST]]]:
+#: Attributes that turn a value into a member, or answer whether one would.
+_LOOKUP_ATTRIBUTES: Final = frozenset(
+    {"_value2member_map_", "_member_map_", "__members__", "__call__", "__new__", "_missing_"}
+)
+
+
+def _lookup(node: ast.AST) -> bool:
+    """A value reaching one of the classes other than by a plain call of it."""
+    match node:
+        case ast.Subscript(value=cls) if _named(cls) in ADDITIVE:
+            return True
+        case ast.Attribute(value=cls, attr=attr) if _named(cls) in ADDITIVE:
+            return attr in _LOOKUP_ATTRIBUTES
+        case ast.Compare(ops=ops, comparators=comparators):
+            return any(
+                isinstance(op, ast.In | ast.NotIn) and _named(right) in ADDITIVE
+                for op, right in zip(ops, comparators, strict=True)
+            )
+        case ast.Call(func=ast.Name(id="getattr" | "map"), args=[cls, *_]):
+            return _named(cls) in ADDITIVE
+    return False
+
+
+def _entry_points(
+    trees: Mapping[str, ast.Module] | None = None,
+) -> dict[str, list[tuple[str, str, ast.AST]]]:
     """``(path, function, node)`` per mechanism, under the key in the module docstring."""
     found: dict[str, list[tuple[str, str, ast.AST]]] = collections.defaultdict(list)
-    for path, tree in _trees().items():
+    for path, tree in (_trees() if trees is None else trees).items():
         for node, scope in _scoped(tree):
-            if isinstance(node, ast.Call) and _named(node.func) in ADDITIVE:
+            if _lookup(node):
+                found["lookup"].append((path, scope, node))
+            elif isinstance(node, ast.Call) and _named(node.func) in ADDITIVE:
                 found["construction"].append((path, scope, node))
             elif (
                 isinstance(node, ast.Call)
@@ -136,12 +164,53 @@ def test_the_pasted_commands_are_the_live_entry_point_population() -> None:
     assert list(_pasted().values()) == live
 
 
+def test_every_way_of_reaching_a_class_from_a_value_is_recognised() -> None:
+    """Driven from a snippet: no live site uses any of these forms today."""
+    snippet = ast.parse(
+        "def forms(raw, enums):\n"
+        "    KnowledgeKind[raw]\n"
+        "    enums.RelationType[raw]\n"
+        "    RelationType._value2member_map_.get(raw)\n"
+        "    OperationKind._member_map_\n"
+        "    KnowledgeKind.__members__\n"
+        "    KnowledgeKind.__call__(raw)\n"
+        "    raw in OperationKind\n"
+        "    raw not in KnowledgeKind\n"
+        "    getattr(KnowledgeKind, raw)\n"
+        "    map(RelationType, raw)\n"
+        "    KnowledgeKind.DOMAIN\n"
+        "    isinstance(raw, KnowledgeKind)\n"
+        "    frozenset(OperationKind)\n"
+    )
+
+    found = _entry_points({"snippet.py": snippet})
+
+    assert [ast.unparse(node) for _, _, node in found["lookup"]] == [
+        "KnowledgeKind[raw]",
+        "enums.RelationType[raw]",
+        "RelationType._value2member_map_",
+        "OperationKind._member_map_",
+        "KnowledgeKind.__members__",
+        "KnowledgeKind.__call__",
+        "raw in OperationKind",
+        "raw not in KnowledgeKind",
+        "getattr(KnowledgeKind, raw)",
+        "map(RelationType, raw)",
+    ]
+    assert found["construction"] == []
+
+
 def test_every_entry_point_the_schema_does_not_guard_has_its_table_row() -> None:
     found = _entry_points()
-    loader = [scope for path, scope, _ in found["construction"] if path == _LOADER]
+    loader = [
+        scope
+        for mechanism in ("construction", "lookup")
+        for path, scope, _ in found[mechanism]
+        if path == _LOADER
+    ]
     reachable = {
         (path, scope)
-        for mechanism in ("construction", "_closed_value", "option")
+        for mechanism in ("construction", "lookup", "_closed_value", "option")
         for path, scope, _ in found[mechanism]
         if path != _LOADER
     }
