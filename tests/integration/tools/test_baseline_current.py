@@ -42,7 +42,10 @@ def test_a_fresh_run_over_the_frozen_corpus_reproduces_the_committed_baseline_re
     Relies on the same determinism decision 5 and 7 pin
     (``test_two_consecutive_harness_runs_over_the_smoke_corpus_produce_a_byte_identical_report``)
     already covers: at one machine, one interpreter, one SQLite build, a run
-    over unchanged corpus and code reproduces its own prior output. A red here
+    over unchanged corpus and code reproduces its own prior output. And on one
+    instant: ``run.main`` composes ``run.PINNED_NOW`` into the build and the
+    searches, and ``test_harness_instant.py`` holds the report to that instant
+    and not to what ``SystemClock`` answers. A red here
     means either the corpus or the harness moved since the baseline was
     committed, and the baseline needs a recorded re-measurement -- not that
     this test is wrong.
