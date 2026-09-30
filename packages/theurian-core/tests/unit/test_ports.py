@@ -24,6 +24,7 @@ from theurian.application.index_builder import IndexBuilder
 from theurian.application.retrieval_service import ResultGate, RetrievalService
 from theurian.domain import ports
 from theurian.domain.ports import ReviewFindingSource, ReviewProvider
+from theurian.domain.ports.canonical_store import CanonicalReadSession
 from theurian.infrastructure.git.trailer_source import GitTrailerFindingSource
 from theurian.infrastructure.github.review_provider import GitHubReviewProvider
 
@@ -620,6 +621,92 @@ def test_the_records_name_the_class_that_actually_takes_the_session_factory() ->
         f"`{_BUILDER_SESSION}`. The two consumers taking the *same* session is the "
         f"second of the three wrong versions, returning."
     )
+
+
+_CANONICAL_STORE_MODULE = (
+    REPO_ROOT / "packages/theurian-core/src/theurian/domain/ports/canonical_store.py"
+)
+
+#: The two members a session adds for the handle's lifetime, which the class
+#: docstring and ADR-0003's row name apart from the reads it widens.
+_HANDLE_LIFETIME = frozenset({"__enter__", "__exit__"})
+
+
+def _declared_members(class_name: str) -> frozenset[str]:
+    """Every ``def`` directly in *class_name*'s body in ``canonical_store.py``.
+
+    Key: the class body's own ``FunctionDef``/``AsyncFunctionDef`` nodes, read
+    from the source. A member inherited from a base or assigned as a class
+    attribute is outside it, which is the case today because the session is a
+    flat ``Protocol`` with no base but ``Protocol``.
+    """
+    tree = ast.parse(_CANONICAL_STORE_MODULE.read_text(encoding="utf-8"))
+    (owner,) = (
+        node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == class_name
+    )
+    assert [ast.unparse(base) for base in owner.bases] == ["Protocol"], (
+        f"{class_name} gained a base; its inherited members are outside this key"
+    )
+    return frozenset(
+        node.name for node in owner.body if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+    )
+
+
+def _sentence_with(text: str, word: str) -> str:
+    """The first sentence of *text* (whitespace-collapsed, case kept) holding *word*."""
+    flat = re.sub(r"\s+", " ", re.sub(r"(?m)^[ \t]*>[ \t]?", "", text))
+    found = [s for s in re.split(r"(?<=\.)(?:\*\*)?\s", flat) if re.search(word, s)]
+    assert found, f"record not found: no sentence carries {word!r}"
+    return found[0]
+
+
+def _spans(text: str) -> set[str]:
+    """Identifiers in single or double backticks, ``:class:`` roles included."""
+    return set(re.findall(r"`+([A-Za-z_][A-Za-z0-9_]*)`+", text))
+
+
+def test_the_read_session_records_name_the_members_the_class_declares() -> None:
+    """RED means a record's member list, count word or widening list disagrees with the class.
+
+    ADR-0003's `CanonicalReadSession` row said "six members" and named one
+    widening read after 0.2.3 made them eight and three (#832); the class
+    docstring already spelled eight. Both are derived here: the members are the
+    ``def`` nodes of the Protocol's body, the widening set is those members minus
+    ``CanonicalStore``'s and the two handle-lifetime dunders. A ninth member
+    reddens every assertion that names or counts them.
+
+    Holds: the row's members sentence (the first sentence of the row carrying
+    "members") names exactly the members; the row's widening sentence (the first
+    carrying "widen") spells the widening count and names exactly the widening
+    set before its first em dash; the class
+    docstring's members sentence names exactly the members and spells the count,
+    and its clause containing "none of which" names exactly the widening set. The
+    spans are identifiers in backticks, ``CanonicalStore`` set aside. Not held:
+    the Standing column's reasoning, or the docstring's account of why each read
+    exists.
+    """
+    members = _declared_members(_GATE_SESSION)
+    widening = members - _declared_members("CanonicalStore") - _HANDLE_LIFETIME
+    row = next(
+        line
+        for line in ADR_0003.read_text(encoding="utf-8").splitlines()
+        if line.lstrip().startswith(f"> | `{_GATE_SESSION}` |")
+    )
+    row_members = _sentence_with(row, r"\bmembers\b")
+    row_widening = _sentence_with(row, r"\bwiden")
+    docstring = inspect.getdoc(CanonicalReadSession) or ""
+    doc_members = _sentence_with(docstring, r"\bmembers\b")
+    (doc_widening,) = (clause for clause in doc_members.split(";") if "none of which" in clause)
+
+    assert widening == {"get_item_exact", "get_item_metadata", "get_item_exact_metadata"}, (
+        "positive control: the derivation no longer finds the three widening reads"
+    )
+    assert _spans(row_members) == members, "ADR-0003's row names other than the members"
+    assert _spells(row_widening, _NUMBER_WORDS[len(widening)])
+    assert _spans(row_widening.split("\u2014")[0]) - {"CanonicalStore"} == widening
+    assert _spans(doc_members) - {"CanonicalStore"} == members
+    assert _spells(doc_members, _NUMBER_WORDS[len(members)])
+    assert _spans(doc_widening) - {"CanonicalStore"} == widening
 
 
 def test_all_ports_is_exported_and_consistent() -> None:
