@@ -45,7 +45,7 @@ from theurian.domain.errors import (
     MigrationError,
     MigrationHistoryMissingError,
 )
-from theurian.domain.migration import LoadedMigrations
+from theurian.domain.migration import MIGRATION_API_VERSION, LoadedMigrations
 from theurian.infrastructure.filesystem.migration_loader import (
     MAX_ECHOED_VALUE,
     load_migrations,
@@ -192,10 +192,14 @@ def test_an_unknown_api_version_is_refused_at_the_schema_const_before_an_unknown
     _plant(document, "createItem", ("kind",), "requirement")
 
     refused = _refusal(_project(tmp_path, document))
+    quoted = (
+        f"is invalid at apiVersion: does not satisfy 'const' (expected "
+        f"{MIGRATION_API_VERSION!r}); the value there is 'theurian.dev/v2'"
+    )
 
     assert isinstance(refused.__cause__, ValidationError), "reached the compiled comparison"
-    assert str(refused).startswith(f"{SECOND} ")
-    assert collapsed(str(refused).removeprefix(f"{SECOND} ")) in _adr()
+    assert str(refused) == f"{SECOND} {quoted}"
+    assert collapsed(quoted) in _adr()
 
 
 def test_a_legal_note_truncates_the_unknown_relation_type_out_of_the_echo(tmp_path: Path) -> None:
@@ -254,10 +258,12 @@ def test_the_v1_gate_skips_an_unknown_op_for_the_validator_to_refuse() -> None:
 
 
 def test_closed_value_names_the_field_and_the_valid_set_but_not_the_value() -> None:
+    valid = ", ".join(member.value for member in KnowledgeKind)
+
     with pytest.raises(ToolError) as refused:
         _closed_value(KnowledgeKind, "requirement", "kind")
 
-    assert "requirement" not in str(refused.value)
+    assert str(refused.value) == f"`kind` must be one of: {valid}."
     assert collapsed(str(refused.value)) in _adr()
     assert _closed_value(KnowledgeKind, "domain", "kind") is KnowledgeKind.DOMAIN
 
@@ -400,6 +406,10 @@ def test_a_store_row_naming_an_unknown_member_reads_as_an_unreadable_database(
     decoder: str,
 ) -> None:
     decode, valid, column, value, cls = _DECODERS[decoder]
+    quoted = (
+        "This project's state database cannot be read (ValueError): it is damaged, or holds a "
+        "value this build cannot interpret."
+    )
 
     with _reading():
         decode(valid())
@@ -407,7 +417,8 @@ def test_a_store_row_naming_an_unknown_member_reads_as_an_unreadable_database(
         decode({**valid(), column: value})
 
     assert value not in str(refused.value)
-    assert collapsed(str(refused.value).split(" A state database", 1)[0]) in _adr()
+    assert str(refused.value).startswith(f"{quoted} A state database")
+    assert collapsed(quoted) in _adr()
     assert "delete `.theurian/state/` and run `theurian migrate apply`" in str(refused.value)
     assert isinstance(refused.value.__cause__, ValueError)
     assert str(refused.value.__cause__) == f"{value!r} is not a valid {cls.__name__}"
