@@ -113,6 +113,32 @@ def test_empty_waiver_fails(repo: Path, text: str) -> None:
     assert main(["--base", "main", "--body-file", _body(repo, text)]) == 1
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "## Size waiver\n<!-- why -->\n",
+        "```\n## Size waiver\nreason\n```\n",
+        "~~~\n## Size waiver\nreason\n~~~\n",
+        "    ## Size waiver\n    reason\n",
+        "<!--\n## Size waiver\nreason\n-->\n",
+        "## Size waiver\n\u200b\n",
+        "## Size waiver\n&nbsp;\n",
+    ],
+    ids=[
+        "comment",
+        "backtick-fence",
+        "tilde-fence",
+        "indented",
+        "hidden-heading",
+        "zwsp",
+        "entity",
+    ],
+)
+def test_waiver_that_renders_empty_fails(repo: Path, text: str) -> None:
+    _commit(repo, {"a": _lines(1001)})
+    assert main(["--base", "main", "--body-file", _body(repo, text)]) == 1
+
+
 def test_excluded_paths_do_not_count(repo: Path) -> None:
     _commit(
         repo,

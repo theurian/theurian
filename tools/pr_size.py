@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
+import unicodedata
 from pathlib import Path
 
 # Google eng-practices, Small CLs: "100 lines is usually a reasonable size for a
@@ -66,16 +68,36 @@ def measure(base: str, head: str) -> tuple[int, int, int]:
     return commits, files, lines
 
 
+_COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)  # as tests/ci/test_red_team_sweep_prose.py
+_ENTITY = re.compile(r"&(?:#\d+|#[xX][0-9a-fA-F]+|\w+);")
+_FENCE = re.compile(r"\s{0,3}(```|~~~)")
+
+
+def _has_text(line: str) -> bool:
+    visible = "".join(c for c in _ENTITY.sub("", line) if unicodedata.category(c) != "Cf")
+    return any(c.isalnum() for c in visible)
+
+
 def waiver(body: str) -> str | None:
-    """First non-empty line under the waiver heading, before any next heading."""
+    """First line with text under a rendered waiver heading, before any next heading."""
     inside = False
-    for line in body.splitlines():
+    fence = ""
+    for line in _COMMENT.sub("", body).splitlines():
+        opened = _FENCE.match(line)
+        if opened and not fence:
+            fence = opened.group(1)
+            continue
+        if fence:
+            fence = "" if opened and opened.group(1) == fence else fence
+            continue
         stripped = line.strip()
-        if stripped.lower() == WAIVER_HEADING.lower():
-            inside = True
-        elif inside and stripped.startswith("#"):
+        if not inside:
+            inside = (
+                not line.startswith(("    ", "\t")) and stripped.lower() == WAIVER_HEADING.lower()
+            )
+        elif stripped.startswith("#"):
             return None
-        elif inside and stripped:
+        elif _has_text(stripped):
             return stripped
     return None
 
