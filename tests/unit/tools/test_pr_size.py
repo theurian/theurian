@@ -123,6 +123,14 @@ def test_empty_waiver_fails(repo: Path, text: str) -> None:
         "<!--\n## Size waiver\nreason\n-->\n",
         "## Size waiver\n\u200b\n",
         "## Size waiver\n&nbsp;\n",
+        "````\n```\n## Size waiver\nreason\n````\n",
+        "- ```\n## Size waiver\nreason\n",
+        "`<!--` note\n```\n## Size waiver\nreason\n```\n<!-- end -->\n",
+        "```text\n## Size waiver\nreason\n```\n",
+        "\t```\n## Size waiver\nreason\n",
+        "## Size waiver\n<br>\n",
+        "## Size waiver\n[](x)\n",
+        "## Size waiver\nㅤ\n",
     ],
     ids=[
         "comment",
@@ -132,11 +140,34 @@ def test_empty_waiver_fails(repo: Path, text: str) -> None:
         "hidden-heading",
         "zwsp",
         "entity",
+        "long-fence",
+        "list-fence",
+        "inline-comment-opener",
+        "info-string",
+        "tab-fence",
+        "tag",
+        "empty-link",
+        "hangul-filler",
     ],
 )
 def test_waiver_that_renders_empty_fails(repo: Path, text: str) -> None:
     _commit(repo, {"a": _lines(1001)})
     assert main(["--base", "main", "--body-file", _body(repo, text)]) == 1
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["## Size waiver\nGenerated `fixtures` only.\n", "## Size waiver\nreason\n\n```\ncode\n```\n"],
+)
+def test_waiver_with_inline_code_or_a_later_example_passes(repo: Path, text: str) -> None:
+    _commit(repo, {"a": _lines(1001)})
+    assert main(["--base", "main", "--body-file", _body(repo, text)]) == 0
+
+
+def test_fence_before_the_heading_is_named(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _commit(repo, {"a": _lines(1001)})
+    main(["--base", "main", "--body-file", _body(repo, "```\nx\n```\n## Size waiver\nwhy\n")])
+    assert "put '## Size waiver' above" in capsys.readouterr().out
 
 
 def test_excluded_paths_do_not_count(repo: Path) -> None:

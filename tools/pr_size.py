@@ -62,38 +62,59 @@ def measure(base: str, head: str) -> tuple[int, int, int]:
     return commits, files, lines
 
 
-_COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)  # as tests/ci/test_red_team_sweep_prose.py
 _ENTITY = re.compile(r"&(?:#\d+|#[xX][0-9a-fA-F]+|\w+);")
-_FENCE = re.compile(r"\s{0,3}(```|~~~)")
+_MARKUP = re.compile(r"!?\[[^\]]*\]\([^)]*\)|<[^>]*>")
+_FILLERS = "\u115f\u1160\u3164\uffa0"  # blank-looking letters, category Lo
+
+
+def _visible_lines(body: str) -> list[str]:
+    """Body lines minus comments that start at column 0; an unclosed one hides the rest."""
+    kept, hidden = [], False
+    for line in body.splitlines():
+        hidden = hidden or line.startswith("<!--")
+        if not hidden:
+            kept.append(line)
+        hidden = hidden and "-->" not in line
+    return kept
 
 
 def _has_text(line: str) -> bool:
-    visible = "".join(c for c in _ENTITY.sub("", line) if unicodedata.category(c) != "Cf")
+    visible = _ENTITY.sub("", _MARKUP.sub("", line))
+    visible = "".join(c for c in visible if unicodedata.category(c) != "Cf" and c not in _FILLERS)
     return any(c.isalnum() for c in visible)
 
 
+def _fenced(line: str) -> bool:
+    return "```" in line or "~~~" in line
+
+
 def waiver(body: str) -> str | None:
-    """First line with text under a rendered waiver heading, before any next heading."""
+    """The reason under a column-0 waiver heading, or None.
+
+    Nothing that can open a code context may precede the heading, so the reader
+    never has to model rendering.
+    """
     inside = False
-    fence = ""
-    for line in _COMMENT.sub("", body).splitlines():
-        opened = _FENCE.match(line)
-        if opened and not fence:
-            fence = opened.group(1)
-            continue
-        if fence:
-            fence = "" if opened and opened.group(1) == fence else fence
-            continue
+    for line in _visible_lines(body):
         stripped = line.strip()
+        if _fenced(line):
+            return None
         if not inside:
-            inside = (
-                not line.startswith(("    ", "\t")) and stripped.lower() == WAIVER_HEADING.lower()
-            )
+            inside = line.rstrip().lower() == WAIVER_HEADING.lower()
         elif stripped.startswith("#"):
             return None
         elif _has_text(stripped):
             return stripped
     return None
+
+
+def fence_precedes_heading(body: str) -> bool:
+    for line in _visible_lines(body):
+        if line.rstrip().lower() == WAIVER_HEADING.lower():
+            return False
+        if _fenced(line):
+            return True
+    return False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -124,8 +145,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     print(
         f"error: {'; '.join(over)}; split the change or add a '{WAIVER_HEADING}' section "
-        "(a new run needs a pushed commit: editing the body starts none)"
+        "(editing the body starts no run; push a commit or close and reopen)"
     )
+    if fence_precedes_heading(body):
+        print(f"error: a code fence precedes the heading; put '{WAIVER_HEADING}' above any code")
     return 1
 
 
