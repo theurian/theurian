@@ -56,12 +56,6 @@ def _lines(n: int) -> str:
     return "y\n" * n
 
 
-def _body(repo: Path, text: str) -> str:
-    path = repo.parent / "body.md"
-    path.write_text(text)
-    return str(path)
-
-
 def test_small_branch_exits_zero_with_summary(
     repo: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -100,92 +94,19 @@ def test_at_file_limit_passes(repo: Path) -> None:
     assert main(["--base", "main"]) == 0
 
 
-def test_waiver_with_reason_passes(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_over_limit_message_names_the_override(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     _commit(repo, {"a": _lines(1001)})
-    body = _body(repo, "## Size waiver\n\nGenerated fixtures.\n\n## Summary\nx\n")
-    assert main(["--base", "main", "--body-file", body]) == 0
-    assert "waived: Generated fixtures." in capsys.readouterr().out
+    assert main(["--base", "main"]) == 1
+    assert "split the change (a larger change is merged only by" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("text", ["## Size waiver\n", "## Size waiver\n\n## Next\ntext\n"])
-def test_empty_waiver_fails(repo: Path, text: str) -> None:
+def test_a_body_file_argument_is_rejected(repo: Path) -> None:
     _commit(repo, {"a": _lines(1001)})
-    assert main(["--base", "main", "--body-file", _body(repo, text)]) == 1
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "## Size waiver\n<!-- why -->\n",
-        "```\n## Size waiver\nreason\n```\n",
-        "~~~\n## Size waiver\nreason\n~~~\n",
-        "    ## Size waiver\n    reason\n",
-        "<!--\n## Size waiver\nreason\n-->\n",
-        "## Size waiver\n\u200b\n",
-        "## Size waiver\n&nbsp;\n",
-        "````\n```\n## Size waiver\nreason\n````\n",
-        "- ```\n## Size waiver\nreason\n",
-        "`<!--` note\n```\n## Size waiver\nreason\n```\n<!-- end -->\n",
-        "```text\n## Size waiver\nreason\n```\n",
-        "\t```\n## Size waiver\nreason\n",
-        "## Size waiver\n<br>\n",
-        "## Size waiver\n[](x)\n",
-        "## Size waiver\nㅤ\n",
-        "<pre>\n## Size waiver\nreason\n</pre>\n",
-        "<details>\n<summary>s</summary>\n## Size waiver\nreason\n</details>\n",
-        "<code>\n## Size waiver\nreason\n",
-        " <!--\n## Size waiver\nreason\n-->\n",
-        "x\n\n## Size waiver\nreason\n",
-        " ## Size waiver\nreason\n",
-        "## Size waiver\n<!-- x -->\n",
-    ],
-    ids=[
-        "comment",
-        "backtick-fence",
-        "tilde-fence",
-        "indented",
-        "hidden-heading",
-        "zwsp",
-        "entity",
-        "long-fence",
-        "list-fence",
-        "inline-comment-opener",
-        "info-string",
-        "tab-fence",
-        "tag",
-        "empty-link",
-        "hangul-filler",
-        "pre",
-        "details",
-        "code-tag",
-        "space-comment",
-        "second-paragraph",
-        "indented-by-one",
-        "comment-reason",
-    ],
-)
-def test_waiver_that_renders_empty_fails(repo: Path, text: str) -> None:
-    _commit(repo, {"a": _lines(1001)})
-    assert main(["--base", "main", "--body-file", _body(repo, text)]) == 1
-
-
-@pytest.mark.parametrize(
-    "text",
-    [
-        "## Size waiver\nGenerated `fixtures` only.\n",
-        "## Size waiver\nreason\n\n```\ncode\n```\n",
-        "\n\n## Size waiver\nreason\n",
-    ],
-)
-def test_waiver_with_inline_code_or_a_later_example_passes(repo: Path, text: str) -> None:
-    _commit(repo, {"a": _lines(1001)})
-    assert main(["--base", "main", "--body-file", _body(repo, text)]) == 0
-
-
-def test_heading_that_is_not_first_is_named(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    _commit(repo, {"a": _lines(1001)})
-    main(["--base", "main", "--body-file", _body(repo, "intro\n\n## Size waiver\nwhy\n")])
-    assert "must be the first line of the pull request description" in capsys.readouterr().out
+    with pytest.raises(SystemExit) as raised:
+        main(["--base", "main", "--body-file", "body.md"])
+    assert raised.value.code == 2  # argparse usage error: no waiver exists to read
 
 
 def test_excluded_paths_do_not_count(repo: Path) -> None:

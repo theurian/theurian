@@ -209,13 +209,10 @@ jobs:
           fetch-depth: 0
       - name: Change is small enough to review
         env:
-          PR_BODY: ${{ github.event.pull_request.body }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          printf '%s\n' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
-          python3 tools/pr_size.py --base "$BASE_SHA" --head "$HEAD_SHA" \
-            --body-file "$RUNNER_TEMP/pr-body.md"
+          python3 tools/pr_size.py --base "$BASE_SHA" --head "$HEAD_SHA"
 
   docs:
     name: Documentation links

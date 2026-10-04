@@ -1,25 +1,20 @@
-"""Fail a pull request that is too large to review, unless it carries a waiver.
+"""Fail a pull request that is too large to review.
 
-``uv run python tools/pr_size.py --base <ref> [--head <ref>] [--body-file <path>]``
+``uv run python tools/pr_size.py --base <ref> [--head <ref>]``
 """
 
 from __future__ import annotations
 
 import argparse
-import re
 import subprocess
 import sys
-import unicodedata
-from pathlib import Path
 
 # Google eng-practices, Small CLs: "100 lines is usually a reasonable size for a
 # CL, and 1000 lines is usually too large"; "The number of files that a change
-# is spread across also affects its size"; a large change needs "consent from
-# your reviewers in advance" -- here, the waiver heading below.
+# is spread across also affects its size".
 WARN_LINES = 400
 LIMIT_LINES = 1000
 LIMIT_FILES = 30
-WAIVER_HEADING = "## Size waiver"
 
 EXCLUDED = (
     "uv.lock",  # generated lockfile
@@ -62,36 +57,10 @@ def measure(base: str, head: str) -> tuple[int, int, int]:
     return commits, files, lines
 
 
-_ENTITY = re.compile(r"&(?:#\d+|#[xX][0-9a-fA-F]+|\w+);")
-_MARKUP = re.compile(r"!?\[[^\]]*\]\([^)]*\)|<[^>]*>")
-_FILLERS = "\u115f\u1160\u3164\uffa0"  # blank-looking letters, category Lo
-
-
-def _is_heading(line: str) -> bool:
-    return line.rstrip().lower() == WAIVER_HEADING.lower()
-
-
-def _has_text(line: str) -> bool:
-    visible = _ENTITY.sub("", _MARKUP.sub("", line))
-    visible = "".join(c for c in visible if unicodedata.category(c) != "Cf" and c not in _FILLERS)
-    return any(c.isalnum() for c in visible)
-
-
-def waiver(body: str) -> str | None:
-    """The heading must be the first line, so no earlier text can change how it renders."""
-    lines = [line for line in body.splitlines() if line.strip()]
-    heading, reason = ([*lines, "", ""])[:2]
-    if not _is_heading(heading):
-        return None
-    reason = reason.strip()
-    return reason if not re.match(r"#{1,6}\s", reason) and _has_text(reason) else None
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", required=True)
     parser.add_argument("--head", default="HEAD")
-    parser.add_argument("--body-file")
     args = parser.parse_args(argv)
 
     commits, files, lines = measure(args.base, args.head)
@@ -108,18 +77,11 @@ def main(argv: list[str] | None = None) -> int:
         if lines > WARN_LINES:
             print(f"warning: {lines} changed lines is above {WARN_LINES}; consider splitting")
         return 0
-    body = Path(args.body_file).read_text(encoding="utf-8") if args.body_file else ""
-    reason = waiver(body)
-    if reason is not None:
-        print(f"waived: {reason}")
-        return 0
-    print(
-        f"error: {'; '.join(over)}; split the change or add a '{WAIVER_HEADING}' section "
-        "(editing the body starts no run; push a commit or close and reopen)"
-    )
-    first = next((line for line in body.splitlines() if line.strip()), "")
-    if not _is_heading(first) and any(_is_heading(line) for line in body.splitlines()):
-        print(f"error: '{WAIVER_HEADING}' must be the first line of the pull request description")
+    for reason in over:
+        print(
+            f"error: {reason}; split the change "
+            "(a larger change is merged only by the owner's administrator override)"
+        )
     return 1
 
 
