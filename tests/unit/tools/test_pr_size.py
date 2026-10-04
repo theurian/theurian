@@ -151,6 +151,23 @@ def test_excluded_paths_do_not_count(repo: Path) -> None:
     assert main(["--base", "main"]) == 0
 
 
+@pytest.mark.parametrize(
+    "path", ["src/pkg/.theurian/payload.py", "docs/uv.lock", "x/tools/eval/baseline/c.py"]
+)
+def test_exclusions_are_anchored_at_the_repository_root(repo: Path, path: str) -> None:
+    _commit(repo, {path: _lines(1001)})
+    assert main(["--base", "main"]) == 1
+
+
+def test_renamed_file_is_counted_and_does_not_crash(
+    repo: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _git(repo, "mv", "gone.txt", "moved.txt")
+    _git(repo, "commit", "-qm", "move")
+    assert main(["--base", "main"]) == 0
+    assert "files=2 lines=501 " in capsys.readouterr().out
+
+
 def test_unexcluded_path_of_same_size_counts(repo: Path) -> None:
     _commit(repo, {"tools/eval/other/b.json": _lines(1001)})
     assert main(["--base", "main"]) == 1

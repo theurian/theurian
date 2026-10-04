@@ -29,13 +29,7 @@ EXCLUDED = (
 
 
 def _excluded(path: str) -> bool:
-    for pattern in EXCLUDED:
-        if pattern.endswith("/"):
-            if path.startswith(pattern) or f"/{pattern}" in path:
-                return True
-        elif path == pattern or path.endswith(f"/{pattern}"):
-            return True
-    return False
+    return any(path.startswith(p) if p.endswith("/") else path == p for p in EXCLUDED)
 
 
 def _git(*args: str) -> str:
