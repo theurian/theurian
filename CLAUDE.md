@@ -100,12 +100,12 @@ set → acceptance criteria → fences → size budget are written; the first tw
 5. **Observable families** — the applicable ones enumerated in *The review
    round*; they bind the implementer.
 6. **Known-unfinished** — so the reviewer spends its time elsewhere.
-7. **Size budget** — planned commits and changed lines. A PR's limit is 1,000
-   changed lines or 30 files, with a warning above 400 lines, read by
-   `uv run python tools/pr_size.py --base <the PR's base branch>`; past it needs
-   a size waiver. The planned commits or 8 elapsed hours close the batch: flip
-   what is green, box-split the rest — a 5-commit plan that lands 12 has traded
-   closure latency for review surface.
+7. **Size budget** — planned commits and changed lines, measured by
+   `uv run python tools/pr_size.py --base <the PR's base branch>`. Past 1,000
+   changed lines or 30 files (warning above 400 lines) the CI check fails, and
+   only the owner's administrator override merges it. The planned commits or 8
+   elapsed hours close the batch: flip what is green, box-split the rest — a
+   5-commit plan that lands 12 has traded closure latency for review surface.
 
 Draft → Ready then gates on the AC met *and* the round green (*Early push and
 Draft PRs*), not either alone.
@@ -158,10 +158,10 @@ before starting another slice in that class:
   CRITICAL/HIGH, it is not ballooning — the core is hard, and that is a
   different problem said plainly. Settle which by grep and source, not by
   running one more round. Either is a diagnosis, never a licence to grow the PR:
-  only the owner waives its size limit, in advance. The ask carries the **size
-  line** — commits, files and changed lines so far against the plan, and what
-  the next step adds — as does every scope-extension question to the owner, and
-  the consent is recorded under the PR's `## Size waiver` heading.
+  crossing its size limit takes the owner's consent, asked in advance with the
+  **size line** — commits, files and changed lines so far against the plan, and
+  what the next step adds — as is every scope-extension question. The answer is
+  recorded in prose in the PR's round comment; no heading is machine-read.
 - **Compare against the plan.** If no planned milestone item has a commit, a PR,
   or an assignment in progress, the next slot starts a planned item — unless the
   class still has a reproducible CRITICAL in shipped default behaviour.
@@ -487,9 +487,9 @@ recorded decision.
 *fix in the open PR*, *next cluster*, *backlog with a named milestone*, or
 *recorded and closed*. A filing with no disposition is inventory manufactured,
 not work discovered — filings outpaced closures 65 to 28 over 2026-08-19..25.
-Where a fix would take the PR past its size limit, the first becomes *a stacked
-follow-up PR*, based on the open PR's branch; only a CRITICAL or HIGH in the
-PR's own core is fixed in place, under a size waiver.
+A fix that would cross the size limit goes to *a stacked follow-up PR* based on
+the open PR's branch; a CRITICAL or HIGH in its own core is fixed in place, and
+if that takes the PR past the limit the owner is asked first, with the size line.
 
 Each reviewer's scale drifts toward its own mandate, so **the orchestrator
 applies the first table, never the reviewer who wrote the finding**, and names
@@ -531,9 +531,9 @@ embeddings; whether to break a published wire contract.
 
 Examples that do **not** qualify — decide these, and record why: which of two
 equivalent implementations to use, whether a MEDIUM is fixed now or filed, how to
-name something, whether a comment is accurate. A size waiver goes to the owner,
-Blocking Issue or not and never to a second reader: it changes nothing in the
-product's character, but the owner asked to own it.
+name something, whether a comment is accurate. Crossing a size limit is the
+owner's call, Blocking Issue or not and never a second reader's: it changes
+nothing in the product's character, but the owner asked to own it.
 
 When escalating, give the options, the trade-off in one line each, and a
 recommendation. Do not stop with an open question and no analysis.
