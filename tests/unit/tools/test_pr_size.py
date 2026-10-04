@@ -95,6 +95,11 @@ def test_over_file_limit_fails(repo: Path, capsys: pytest.CaptureFixture[str]) -
     assert "files 31 exceeds" in capsys.readouterr().out
 
 
+def test_at_file_limit_passes(repo: Path) -> None:
+    _commit(repo, {f"f{i}": "z\n" for i in range(30)})
+    assert main(["--base", "main"]) == 0
+
+
 def test_waiver_with_reason_passes(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
     _commit(repo, {"a": _lines(1001)})
     body = _body(repo, "## Summary\nx\n\n## Size waiver\n\nGenerated fixtures.\n")
