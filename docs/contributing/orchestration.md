@@ -322,9 +322,10 @@ does not fire on — is [#724](https://github.com/theurian/theurian/issues/724).
 - Confirm `git rev-parse origin/<branch>` equals local HEAD before any flip or
   squash. The squash reads origin; a docs stage committed and not pushed does not
   land.
-- Read `uv run python tools/pr_size.py --base origin/main` before the flip. Over
-  the limit with no `## Size waiver` heading in the body, do not flip: take the
-  size line to the owner.
+- Read `uv run python tools/pr_size.py --base <the PR's base branch>` before the
+  flip — for a stacked PR that is its parent, not `main`. Over the limit with no
+  `## Size waiver` heading in the body, do not flip: take the size line to the
+  owner.
 - Pass an explicit `--body` to `gh pr merge --squash`, carrying that PR's
   `Review-Finding:` trailers and the DCO `Signed-off-by`. Without it the squash
   message is the PR title and description only, and the trailers are dropped:

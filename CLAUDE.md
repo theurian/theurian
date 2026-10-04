@@ -102,10 +102,10 @@ set → acceptance criteria → fences → size budget are written; the first tw
 6. **Known-unfinished** — so the reviewer spends its time elsewhere.
 7. **Size budget** — planned commits and changed lines. A PR's limit is 1,000
    changed lines or 30 files, with a warning above 400 lines, read by
-   `uv run python tools/pr_size.py --base origin/main`; past it needs a size
-   waiver. The planned commits or 8 elapsed hours close the batch: flip what is
-   green, box-split the rest — a 5-commit plan that lands 12 has traded closure
-   latency for review surface.
+   `uv run python tools/pr_size.py --base <the PR's base branch>`; past it needs
+   a size waiver. The planned commits or 8 elapsed hours close the batch: flip
+   what is green, box-split the rest — a 5-commit plan that lands 12 has traded
+   closure latency for review surface.
 
 Draft → Ready then gates on the AC met *and* the round green (*Early push and
 Draft PRs*), not either alone.
