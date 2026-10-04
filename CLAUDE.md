@@ -79,10 +79,10 @@ partition:
 ### The assignment brief
 
 **Definition of Ready:** no assignment dispatches until reproduce → measured file
-set → acceptance criteria → fences are written — the first two are *Independence
-is a measured file set, not an issue title*, the last two are here. **INVEST** is
-the admission test: dispatch a unit only when it is Independent (its own measured
-file set), Small (within the cluster cap), and Testable (every AC names a check):
+set → acceptance criteria → fences → size budget are written; the first two are
+*Independence is a measured file set, not an issue title*, the rest are here.
+**INVEST** is the admission test: Independent (its own measured file set), Small
+(within its size budget), and Testable (every AC names a check):
 
 1. **Scope and acceptance criteria.** Scope names the requirement IDs
    (FR-*/SEC-*) and ADRs the change touches; AC are written before dispatch in
@@ -100,6 +100,12 @@ file set), Small (within the cluster cap), and Testable (every AC names a check)
 5. **Observable families** — the applicable ones enumerated in *The review
    round*; they bind the implementer.
 6. **Known-unfinished** — so the reviewer spends its time elsewhere.
+7. **Size budget** — planned commits and changed lines. A PR's limit is 1,000
+   changed lines or 30 files, with a warning above 400 lines, read by
+   `uv run python tools/pr_size.py --base origin/main`; past it needs a size
+   waiver. The planned commits or 8 elapsed hours close the batch: flip what is
+   green, box-split the rest — a 5-commit plan that lands 12 has traded closure
+   latency for review surface.
 
 Draft → Ready then gates on the AC met *and* the round green (*Early push and
 Draft PRs*), not either alone.
@@ -124,7 +130,7 @@ happened, in order:
    discharged or newly owes.
 5. **Flip the Draft PR to Ready** — it has been open since the first green
    commit (see *Early push and Draft PRs*) — with a description that states what
-   was found and fixed, not only what was built.
+   was found and fixed, not only what was built, and its size line.
 6. **CI green**, then squash-merge.
 
 ## Depth is instructed; stopping is not — so instruct it
@@ -151,7 +157,11 @@ before starting another slice in that class:
 - **Say which it is.** If the slice's own core still carries an unresolved
   CRITICAL/HIGH, it is not ballooning — the core is hard, and that is a
   different problem said plainly. Settle which by grep and source, not by
-  running one more round.
+  running one more round. Either is a diagnosis, never a licence to grow the PR:
+  only the owner waives its size limit, in advance. The ask carries the **size
+  line** — commits, files and changed lines so far against the plan, and what
+  the next step adds — as does every scope-extension question to the owner, and
+  the consent is recorded under the PR's `## Size waiver` heading.
 - **Compare against the plan.** If no planned milestone item has a commit, a PR,
   or an assignment in progress, the next slot starts a planned item — unless the
   class still has a reproducible CRITICAL in shipped default behaviour.
@@ -266,11 +276,10 @@ Route by what would settle the claim, not by file type:
 | nothing behavioural — a changelog inventory, a link, an issue reference, wording | code review alone |
 
 **A false closure argument is the case that does not surface later.** It is
-consumed as a settled premise rather than re-examined: the BM25 residual's
-acceptance was approved, written into the threat model in the orchestrator's own
-words, and carried for two rounds before anyone measured it. So it carries the
-commit it was measured against and its re-check command, and the anchored pass
-re-runs those checks rather than re-deriving them.
+consumed as a settled premise rather than re-examined — the BM25 residual's
+acceptance rode two rounds in the threat model before anyone measured it — so it
+carries the commit it was measured against and its re-check command, and the
+anchored pass re-runs those checks rather than re-deriving them.
 
 Each brief must carry, explicitly:
 
@@ -306,10 +315,11 @@ hold the standing context; the brief names it and adds what this change needs.
 ### Round one is full; later rounds are not
 
 **Round one gets all three reviewers at full scope** — for a full-round change;
-the blast-radius table above says which. Nothing it found in
-Milestone 5 — extraction oracles, a schema that rejected the product's own
-output, tests that stayed green with the code deleted — was findable by reading.
-A later round re-reading from zero only looks where round one already has.
+the blast-radius table above says which. None of Milestone 5's round-one findings
+was findable by reading: retrieval defects are invisible until something runs, so
+a slow round is not a failed one. A later round re-reading from zero only looks
+where round one already has; the next section cuts the *number* of rounds, never
+a round's checks.
 
 **Cap LOW at five per reviewer**; the rest goes in the PR description as one
 line. Round two produced thirteen and deferred nearly all of them.
@@ -320,10 +330,6 @@ What must *not* be parallelised is verification: **reproduce a finding yourself
 before assigning it.** Three times this milestone the reviewer's stated mechanism
 was wrong while the finding was real, and a brief built on an unverified
 mechanism sends the fix at the wrong cause.
-
-Do not read a slow round as a failed one: retrieval defects are invisible until
-something runs, so time spent running things is the round working. The next
-section cuts the *number* of rounds, never a round's checks.
 
 ### Round two onward: run the reviewers' methods before they do
 
@@ -354,32 +360,28 @@ doing its job.
 **A CRITICAL or HIGH is not closed when its fix lands. It is closed when someone
 states the class the finding belongs to and why no other member of that class
 exists.** That argument is written by someone other than whoever wrote the fix,
-and it is what makes the round green. Milestone 5 spent three rounds on one
-information-disclosure defect with five faces, finding them one at a time and
-closing none of them, before round four stated the class and ended all five in
-one — and those rounds carried plenty of unrelated work besides. The account is
-in [the work log](docs/work-logs/2026-08-03-milestone-5-review-rounds.md).
+and it is what makes the round green. Milestone 5 spent three rounds, amid
+unrelated work, finding one disclosure defect's five faces and closing none,
+until round four stated the class and ended all five in one
+([work log](docs/work-logs/2026-08-03-milestone-5-review-rounds.md)).
 
 **Deferral is a closure claim too.** A list of items carried to the next
-milestone asserts that they are separate items rather than one class carried
-several times. Milestone 5's registry carry-over listed two surfaces; a search
-found five consumers of `ProjectRegistry.load()`, four of them silent about the
-skipped set and two of them printing a remedy the same milestone had just made
-impossible. Apply the argument to the list before it is filed, not to the items
-after.
+milestone asserts they are separate items rather than one class carried several
+times. Milestone 5's registry carry-over listed two surfaces; a search found
+five consumers of `ProjectRegistry.load()`, four silent about the skipped set
+and two printing a remedy the same milestone had just made impossible. Apply the
+argument to the list before it is filed, not to the items after.
 
 **State the argument over the whole response, not field by field.** Two of those
-five faces were not field values; what moved was *which rows reached* the fields
-— a withheld row taking one of fifty candidate slots, and `diversify` choosing
-which paragraph of a *visible* document to excerpt. "Every published field is a
-function of gate-cleared results" is true of both and closes neither. The
-argument that holds is **one query against two corpora**: an index holding the
-withheld documents and an index that never did must return the same response.
+five faces, candidate displacement and excerpt choice, moved *which rows reached*
+the fields, so "every published field is a function of gate-cleared results"
+closed neither. The argument that holds is **one query against two corpora**: an
+index holding the withheld documents and an index that never did must return the
+same response.
 
 **Enumerate the families before round one, not after round four.** An observable
-carries a bit through more than its value, and round four met timing and the
-BM25 collection statistics as two separate surprises because this list existed
-nowhere:
+carries a bit through more than its value; round four met timing and the BM25
+collection statistics as two surprises because this list existed nowhere:
 
 | Family | What it looked like in Milestone 5 |
 | :-- | :-- |
@@ -408,11 +410,10 @@ a brief is read as an instruction, not as a claim.
 PR description or a MEDIUM triage asserts what the codebase does or does not
 contain.** All four are read as settled fact by whoever comes next.
 `codex:codex-rescue` is the one available here. No script discovers that a test
-already pins the constant you were about to ask someone to pin; the failure is
-not knowing where to look, which is why re-reading it yourself reproduces the
-error rather than correcting it. And **reproduction settles a behaviour, not a
-property** — what FTS5 scores or what SQLite guarantees is not something a
-scratch script tests by accident.
+already pins the constant you were about to ask someone to pin, and re-reading
+it yourself reproduces the error: the failure is not knowing where to look. And
+**reproduction settles a behaviour, not a property** — what FTS5 scores or what
+SQLite guarantees is not something a scratch script tests by accident.
 
 | The brief asserts | Verified before dispatch by |
 | :-- | :-- |
@@ -433,11 +434,9 @@ State the population as well as the count: a search answers "how many" only once
 the key is chosen, and choosing the key is inference — Milestone 5 got it wrong
 twice, counting symptoms and then counting the wrong method. A reader given the
 key can attack the key; given only the list, only the number. Four of that
-milestone's orchestrator claims were false; the
-[work log](docs/work-logs/2026-08-03-milestone-5-review-rounds.md) names all
-four. Cost is not the reason to skip the check — latency is what keeps it
-narrow, and a check before dispatch serialises assignments this file otherwise
-launches together, so spend it on the rows above and not on every brief.
+milestone's orchestrator claims were false, all named in the
+[work log](docs/work-logs/2026-08-03-milestone-5-review-rounds.md). Latency, not
+cost, keeps the check narrow: spend it on the rows above, not on every brief.
 
 **Not over the reviewers' findings.** They already are independent readers who
 go to the source. This is for the node they do not cover.
@@ -488,6 +487,9 @@ recorded decision.
 *fix in the open PR*, *next cluster*, *backlog with a named milestone*, or
 *recorded and closed*. A filing with no disposition is inventory manufactured,
 not work discovered — filings outpaced closures 65 to 28 over 2026-08-19..25.
+Where a fix would take the PR past its size limit, the first becomes *a stacked
+follow-up PR*, based on the open PR's branch; only a CRITICAL or HIGH in the
+PR's own core is fixed in place, under a size waiver.
 
 Each reviewer's scale drifts toward its own mandate, so **the orchestrator
 applies the first table, never the reviewer who wrote the finding**, and names
@@ -529,7 +531,9 @@ embeddings; whether to break a published wire contract.
 
 Examples that do **not** qualify — decide these, and record why: which of two
 equivalent implementations to use, whether a MEDIUM is fixed now or filed, how to
-name something, whether a comment is accurate.
+name something, whether a comment is accurate. A size waiver goes to the owner,
+Blocking Issue or not and never to a second reader: it changes nothing in the
+product's character, but the owner asked to own it.
 
 When escalating, give the options, the trade-off in one line each, and a
 recommendation. Do not stop with an open question and no analysis.
@@ -583,9 +587,9 @@ this project, that routing was the largest single sink of the user's own hours.
 not happen, from their side.
 
 After a review round, always report: how many findings at each severity, what the
-serious ones actually were, what was fixed, and what was consciously deferred and
-why. A summary that says "reviews passed" after a round that found a CRITICAL is
-a false report, even if the CRITICAL was fixed.
+serious ones actually were, what was fixed, what was consciously deferred and
+why, and the size line. A summary that says "reviews passed" after a round that
+found a CRITICAL is a false report, even if the CRITICAL was fixed.
 
 ## Standing conventions
 
@@ -664,9 +668,6 @@ its language is the point.
   production modules and three schemas were untracked, and so invisible to it.
   An uncommitted tree has no boundary a reviewer can check. The same green
   pushes to origin and opens a Draft PR — see *Early push and Draft PRs*.
-- A cluster PR ships at its planned scope: reaching the planned commits or 8
-  elapsed hours closes the batch — flip what is green, box-split the rest. A
-  5-commit plan that lands 12 has traded closure latency for review surface.
 - Never run a real `theurian setup`, `theurian uninstall`, or a detached
   `daemon start` on the user's machine — those are what write `~/.claude.json`
   and register the OS service. `--dry-run` is the form that is safe here, and
@@ -685,10 +686,10 @@ the work while it is still in flight.
 **Draft → Ready is the review gate.** The review round, at the weight its blast
 radius sets, runs before the flip; documentation follows the round, so the flip
 is the last step and not the next one. The PR does not leave Draft until the
-round is green — CRITICAL and HIGH at zero, per *What "green" means*.
-Flipping to Ready *asserts* that the round is green; flip with a PR comment
-recording the round — findings per severity, what was fixed, what was
-consciously deferred and why. Merge continues to gate on the required checks.
+round is green — CRITICAL and HIGH at zero, per *What "green" means*. Flipping
+to Ready *asserts* that the round is green; flip with a PR comment recording the
+round — findings per severity, what was fixed, what was consciously deferred and
+why, and the size line. Merge continues to gate on the required checks.
 
 **A commit that fixes a review finding records the finding as history.** The
 commit body carries a structured trailer:
@@ -705,7 +706,10 @@ comment and the trailer are English; findings are summarised, not pasted.
 
 **Embargoed disclosure work follows the same pattern on the private fork.**
 Nothing — branch, PR, or CHANGELOG hint — touches public origin until the
-advisory ships.
+advisory ships. Nor is the size limit suspended: an embargoed fix splits by root
+cause into separate advisories or lands as layered, individually buildable
+commits, and the size instrument runs locally before each push, since no CI
+runs on the private fork.
 
 ### Running the CLI on a development machine
 
