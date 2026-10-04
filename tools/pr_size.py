@@ -122,7 +122,10 @@ def main(argv: list[str] | None = None) -> int:
     if reason is not None:
         print(f"waived: {reason}")
         return 0
-    print(f"error: {'; '.join(over)}; split the change or add a '{WAIVER_HEADING}' section")
+    print(
+        f"error: {'; '.join(over)}; split the change or add a '{WAIVER_HEADING}' section "
+        "(a new run needs a pushed commit: editing the body starts none)"
+    )
     return 1
 
 
