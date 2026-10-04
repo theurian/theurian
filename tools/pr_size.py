@@ -67,15 +67,8 @@ _MARKUP = re.compile(r"!?\[[^\]]*\]\([^)]*\)|<[^>]*>")
 _FILLERS = "\u115f\u1160\u3164\uffa0"  # blank-looking letters, category Lo
 
 
-def _visible_lines(body: str) -> list[str]:
-    """Body lines minus comments that start at column 0; an unclosed one hides the rest."""
-    kept, hidden = [], False
-    for line in body.splitlines():
-        hidden = hidden or line.startswith("<!--")
-        if not hidden:
-            kept.append(line)
-        hidden = hidden and "-->" not in line
-    return kept
+def _is_heading(line: str) -> bool:
+    return line.rstrip().lower() == WAIVER_HEADING.lower()
 
 
 def _has_text(line: str) -> bool:
@@ -84,37 +77,14 @@ def _has_text(line: str) -> bool:
     return any(c.isalnum() for c in visible)
 
 
-def _fenced(line: str) -> bool:
-    return "```" in line or "~~~" in line
-
-
 def waiver(body: str) -> str | None:
-    """The reason under a column-0 waiver heading, or None.
-
-    Nothing that can open a code context may precede the heading, so the reader
-    never has to model rendering.
-    """
-    inside = False
-    for line in _visible_lines(body):
-        stripped = line.strip()
-        if _fenced(line):
-            return None
-        if not inside:
-            inside = line.rstrip().lower() == WAIVER_HEADING.lower()
-        elif stripped.startswith("#"):
-            return None
-        elif _has_text(stripped):
-            return stripped
-    return None
-
-
-def fence_precedes_heading(body: str) -> bool:
-    for line in _visible_lines(body):
-        if line.rstrip().lower() == WAIVER_HEADING.lower():
-            return False
-        if _fenced(line):
-            return True
-    return False
+    """The heading must be the first line, so no earlier text can change how it renders."""
+    lines = [line for line in body.splitlines() if line.strip()]
+    heading, reason = ([*lines, "", ""])[:2]
+    if not _is_heading(heading):
+        return None
+    reason = reason.strip()
+    return reason if not re.match(r"#{1,6}\s", reason) and _has_text(reason) else None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -147,8 +117,9 @@ def main(argv: list[str] | None = None) -> int:
         f"error: {'; '.join(over)}; split the change or add a '{WAIVER_HEADING}' section "
         "(editing the body starts no run; push a commit or close and reopen)"
     )
-    if fence_precedes_heading(body):
-        print(f"error: a code fence precedes the heading; put '{WAIVER_HEADING}' above any code")
+    first = next((line for line in body.splitlines() if line.strip()), "")
+    if not _is_heading(first) and any(_is_heading(line) for line in body.splitlines()):
+        print(f"error: '{WAIVER_HEADING}' must be the first line of the pull request description")
     return 1
 
 

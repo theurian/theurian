@@ -102,7 +102,7 @@ def test_at_file_limit_passes(repo: Path) -> None:
 
 def test_waiver_with_reason_passes(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
     _commit(repo, {"a": _lines(1001)})
-    body = _body(repo, "## Summary\nx\n\n## Size waiver\n\nGenerated fixtures.\n")
+    body = _body(repo, "## Size waiver\n\nGenerated fixtures.\n\n## Summary\nx\n")
     assert main(["--base", "main", "--body-file", body]) == 0
     assert "waived: Generated fixtures." in capsys.readouterr().out
 
@@ -131,6 +131,13 @@ def test_empty_waiver_fails(repo: Path, text: str) -> None:
         "## Size waiver\n<br>\n",
         "## Size waiver\n[](x)\n",
         "## Size waiver\nㅤ\n",
+        "<pre>\n## Size waiver\nreason\n</pre>\n",
+        "<details>\n<summary>s</summary>\n## Size waiver\nreason\n</details>\n",
+        "<code>\n## Size waiver\nreason\n",
+        " <!--\n## Size waiver\nreason\n-->\n",
+        "x\n\n## Size waiver\nreason\n",
+        " ## Size waiver\nreason\n",
+        "## Size waiver\n<!-- x -->\n",
     ],
     ids=[
         "comment",
@@ -148,6 +155,13 @@ def test_empty_waiver_fails(repo: Path, text: str) -> None:
         "tag",
         "empty-link",
         "hangul-filler",
+        "pre",
+        "details",
+        "code-tag",
+        "space-comment",
+        "second-paragraph",
+        "indented-by-one",
+        "comment-reason",
     ],
 )
 def test_waiver_that_renders_empty_fails(repo: Path, text: str) -> None:
@@ -157,17 +171,21 @@ def test_waiver_that_renders_empty_fails(repo: Path, text: str) -> None:
 
 @pytest.mark.parametrize(
     "text",
-    ["## Size waiver\nGenerated `fixtures` only.\n", "## Size waiver\nreason\n\n```\ncode\n```\n"],
+    [
+        "## Size waiver\nGenerated `fixtures` only.\n",
+        "## Size waiver\nreason\n\n```\ncode\n```\n",
+        "\n\n## Size waiver\nreason\n",
+    ],
 )
 def test_waiver_with_inline_code_or_a_later_example_passes(repo: Path, text: str) -> None:
     _commit(repo, {"a": _lines(1001)})
     assert main(["--base", "main", "--body-file", _body(repo, text)]) == 0
 
 
-def test_fence_before_the_heading_is_named(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_heading_that_is_not_first_is_named(repo: Path, capsys: pytest.CaptureFixture[str]) -> None:
     _commit(repo, {"a": _lines(1001)})
-    main(["--base", "main", "--body-file", _body(repo, "```\nx\n```\n## Size waiver\nwhy\n")])
-    assert "put '## Size waiver' above" in capsys.readouterr().out
+    main(["--base", "main", "--body-file", _body(repo, "intro\n\n## Size waiver\nwhy\n")])
+    assert "must be the first line of the pull request description" in capsys.readouterr().out
 
 
 def test_excluded_paths_do_not_count(repo: Path) -> None:
