@@ -112,6 +112,27 @@ def test_deletion_and_tag_are_not_measured(repo: Path) -> None:
     assert r.stdout == ""
 
 
+def test_pushing_the_base_branch_is_not_measured(repo: Path) -> None:
+    _git(repo, "checkout", "-q", "main")
+    sha = _commit(repo, "sync.txt", 1500)
+    r = _push(repo, f"refs/heads/main {sha} refs/heads/main {ZERO}\n")
+    assert r.returncode == 0
+    assert "pr-size:" not in r.stdout
+
+
+def test_base_branch_skip_does_not_hide_another_line(repo: Path) -> None:
+    _git(repo, "checkout", "-q", "main")
+    sync = _commit(repo, "sync.txt", 1500)
+    big = _branch(repo, "big", 1001, start="origin/main")
+    r = _push(
+        repo,
+        f"refs/heads/main {sync} refs/heads/main {ZERO}\n"
+        f"refs/heads/big {big} refs/heads/big {ZERO}\n",
+    )
+    assert r.returncode != 0
+    assert "lines=1001 " in r.stdout
+
+
 def test_stacked_base_measures_against_parent(repo: Path) -> None:
     _branch(repo, "parent", 20)
     sha = _branch(repo, "child", 3, start="parent")

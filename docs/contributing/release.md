@@ -796,7 +796,7 @@ Step 3 records what that means and the two supported ways the merge lands anyway
    The `pr-size` check does not run either. To run it on every `git push`, enable
    the opt-in hook in that clone with `git config core.hooksPath tools/hooks`; it
    measures each pushed branch against `origin/main` (a stacked branch sets
-   `PR_SIZE_BASE=<parent>`) and refuses the push over the limits, or when the base
+   `PR_SIZE_BASE=<parent>`; pushing the base branch itself is not measured) and refuses the push over the limits, or when the base
    does not resolve. `git push --no-verify` is the owner's override.
 
    Write as much of the release into those commits as the fix's line allows: the
