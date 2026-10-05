@@ -101,8 +101,9 @@ set → acceptance criteria → fences → size budget are written; the first tw
    round*; they bind the implementer.
 6. **Known-unfinished** — so the reviewer spends its time elsewhere.
 7. **Size budget** — planned commits and changed lines; after `git fetch origin`,
-   `uv run python tools/pr_size.py --base origin/<base> --head origin/<branch>`
-   prints the **size line** — never let `--head` default to the checkout. Past
+   `uv run python tools/pr_size.py --base origin/<base> --head <tip>` prints the
+   **size line** for `<tip>`, the commit gated: the local branch until the flip,
+   `origin/<branch>` at it — never let `--head` default to the checkout. Past
    1,000 changed lines or 30 files (warning above 400 lines) the CI check fails;
    only the owner's administrator override merges the PR. The planned commits or
    8 elapsed hours close its batch: flip what is green, box-split the rest — a
@@ -529,8 +530,7 @@ embeddings; whether to break a published wire contract.
 
 Examples that do **not** qualify — decide these, and record why: which of two
 equivalent implementations to use, whether a MEDIUM is fixed now or filed, how to
-name something, whether a comment is accurate. Crossing a size limit is still
-the owner's call (*A class stops expanding on a budget, not on running dry*).
+name something, whether a comment is accurate. Size limits are the owner's call.
 
 When escalating, give the options, the trade-off in one line each, and a
 recommendation. Do not stop with an open question and no analysis.
@@ -705,7 +705,7 @@ comment and the trailer are English; findings are summarised, not pasted.
 Nothing — branch, PR, or CHANGELOG hint — touches public origin until the
 advisory ships. The size limit holds there too: an embargoed fix splits by root
 cause into separate advisories or lands as layered commits that each build, and
-with no CI on the fork the size instrument runs locally before each push.
+with no CI there the size instrument measures the local branch before each push.
 
 ### Running the CLI on a development machine
 
