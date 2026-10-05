@@ -17,7 +17,13 @@ ZERO = "0" * 40
 
 
 def _env(repo: Path) -> dict[str, str]:
-    return {**os.environ, "GIT_CEILING_DIRECTORIES": str(repo.parent)}
+    env = {k: v for k, v in os.environ.items() if k != "PR_SIZE_BASE"}
+    return {
+        **env,
+        "GIT_CEILING_DIRECTORIES": str(repo.parent),
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+    }
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -64,15 +70,17 @@ def repo(tmp_path: Path) -> Path:
     return root
 
 
-def _push(repo: Path, lines: str, **env: str) -> subprocess.CompletedProcess[str]:
+def _push(
+    repo: Path, lines: str, hook: Path = HOOK, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(  # noqa: S603 - fixed argv in a throwaway repository
-        ["/bin/sh", str(HOOK)],
+        ["/bin/sh", str(hook)],
         input=lines,
         check=False,
         capture_output=True,
         text=True,
         cwd=repo,
-        env={**_env(repo), **env},
+        env={**_env(repo), **(env or {})},
     )
 
 
@@ -96,7 +104,7 @@ def test_unresolved_base_fails_closed(repo: Path, typo: str | None) -> None:
     if typo is None:
         _git(repo, "update-ref", "-d", "refs/remotes/origin/main")
     env = {} if typo is None else {"PR_SIZE_BASE": typo}
-    r = _push(repo, f"refs/heads/feat {sha} refs/heads/feat {ZERO}\n", **env)
+    r = _push(repo, f"refs/heads/feat {sha} refs/heads/feat {ZERO}\n", env=env)
     assert r.returncode != 0
     assert f"'{typo or 'origin/main'}' does not resolve" in r.stderr
     assert "pr-size:" not in r.stdout
@@ -133,10 +141,57 @@ def test_base_branch_skip_does_not_hide_another_line(repo: Path) -> None:
     assert "lines=1001 " in r.stdout
 
 
+@pytest.mark.parametrize("local", ["HEAD", "sha"])
+def test_a_push_typed_as_head_or_sha_is_measured(repo: Path, local: str) -> None:
+    sha = _branch(repo, "big", 1001)
+    r = _push(repo, f"{'HEAD' if local == 'HEAD' else sha} {sha} refs/heads/big {ZERO}\n")
+    assert r.returncode != 0
+    assert "lines=1001 " in r.stdout
+
+
+def test_a_local_base_with_a_slash_does_not_skip_a_branch_named_like_its_tail(
+    repo: Path,
+) -> None:
+    _git(repo, "branch", "feat/parent", "main")
+    sha = _branch(repo, "parent", 1001)
+    r = _push(
+        repo,
+        f"refs/heads/parent {sha} refs/heads/parent {ZERO}\n",
+        env={"PR_SIZE_BASE": "feat/parent"},
+    )
+    assert r.returncode != 0
+    assert "lines=1001 " in r.stdout
+
+
+def test_a_remote_base_with_a_slash_skips_only_its_own_branch(repo: Path) -> None:
+    _git(repo, "update-ref", "refs/remotes/origin/fix/x", "main")
+    sha = _branch(repo, "big", 1001)
+    env = {"PR_SIZE_BASE": "origin/fix/x"}
+    skipped = _push(repo, f"refs/heads/big {sha} refs/heads/fix/x {ZERO}\n", env=env)
+    measured = _push(repo, f"refs/heads/big {sha} refs/heads/x {ZERO}\n", env=env)
+    assert (skipped.returncode, skipped.stdout) == (0, "")
+    assert measured.returncode != 0
+    assert "lines=1001 " in measured.stdout
+
+
+def test_an_installed_copy_refuses_a_tree_without_tools(repo: Path) -> None:
+    installed = repo / ".git" / "hooks" / "pre-push"
+    shutil.copy(HOOK, installed)
+    _git(repo, "checkout", "-q", "-b", "notools", "main")
+    _git(repo, "rm", "-rq", "tools")
+    _git(repo, "commit", "-qm", "drop tools")
+    sha = _git(repo, "rev-parse", "HEAD")
+    r = _push(repo, f"refs/heads/notools {sha} refs/heads/notools {ZERO}\n", hook=installed)
+    assert not (repo / "tools").exists()
+    assert r.returncode != 0
+
+
 def test_stacked_base_measures_against_parent(repo: Path) -> None:
     _branch(repo, "parent", 20)
     sha = _branch(repo, "child", 3, start="parent")
-    r = _push(repo, f"refs/heads/child {sha} refs/heads/child {ZERO}\n", PR_SIZE_BASE="parent")
+    r = _push(
+        repo, f"refs/heads/child {sha} refs/heads/child {ZERO}\n", env={"PR_SIZE_BASE": "parent"}
+    )
     assert r.returncode == 0
     assert "pr-size: commits=1 files=1 lines=3" in r.stdout
 

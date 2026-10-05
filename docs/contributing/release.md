@@ -794,10 +794,13 @@ Step 3 records what that means and the two supported ways the merge lands anyway
      before you merge.
 
    The `pr-size` check does not run either. To run it on every `git push`, enable
-   the opt-in hook in that clone with `git config core.hooksPath tools/hooks`; it
-   measures each pushed branch against `origin/main` (a stacked branch sets
-   `PR_SIZE_BASE=<parent>`; pushing the base branch itself is not measured) and refuses the push over the limits, or when the base
-   does not resolve. `git push --no-verify` is the owner's override.
+   the opt-in hook in that clone by copying it:
+   `cp tools/hooks/pre-push "$(git rev-parse --git-common-dir)/hooks/pre-push"`.
+   It measures each pushed branch against `origin/main` and refuses the push over
+   the limits, when the base does not resolve, or when the checked-out tree has no
+   `tools/pr_size.py`. A stacked branch sets `PR_SIZE_BASE=<parent>`, and its parent
+   is pushed in its own push without it. Pushing the base branch itself is not
+   measured. `git push --no-verify` is the owner's override.
 
    Write as much of the release into those commits as the fix's line allows: the
    CHANGELOG **Security** entry, the threat-model entry, and the version bump
