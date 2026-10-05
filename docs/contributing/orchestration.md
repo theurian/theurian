@@ -73,8 +73,7 @@ excluded from the published documentation site for that reason.
   ambiguity, and the implementer runs a deletion pass before reporting done.
 - State the ladder in every code brief — to `theurian-python`, `theurian-tests`,
   `theurian-mcp` or `theurian-ci`, never `theurian-docs` or a reviewer — and
-  that no check an AC names is a deletion candidate (CLAUDE.md, *The assignment
-  brief*).
+  point at what it never deletes, listed in CLAUDE.md, *The assignment brief*.
 - When the assignment runs the CLI, restate the dev-machine fences by name:
   `--dry-run` only for `theurian setup` and `theurian uninstall`, absolute
   binary path with the working directory set in the same command, `HOME` /
@@ -110,9 +109,12 @@ excluded from the published documentation site for that reason.
   behaviour with no disclosure surface takes code review sync; prose, process
   guidance and CI plumbing take one light pass.
 - Run the over-engineering pass over the diff's code, tests, schemas and CI
-  configuration before every review, round one and a light pass included, and
-  record its `net:` line and how many findings were taken beside the size line.
-  Prose is outside it. A round dispatched without it is not a round.
+  configuration — not prose or schema `description`s — before every review,
+  round one and a light pass included; it never deletes what CLAUDE.md,
+  *The assignment brief*, lists. Record its net line beside the size line in the
+  round comment: `net: -N lines possible` and how many findings were taken,
+  `Lean already` when it finds nothing, or `n/a: no code in diff`. No review
+  dispatches without one of the three.
 - Give every sync reviewer a ten-minute wall-clock budget, and the claims to
   spend it on: each invariant the implementation says it holds, with the command
   that re-checks it. The review object is those claims, not the diff as a

@@ -92,7 +92,9 @@ set → acceptance criteria → fences → size budget are written; the first tw
 2. **Do** — the change itself. A code brief, not a docs one, states the ladder —
    stop at the first rung that holds: not needed, already in this codebase,
    stdlib, native platform, installed dependency, one line, the minimum that
-   works — and that no check an AC names is a deletion candidate.
+   works — and what it never deletes: a check an AC names (a named test, a pin, a
+   mutation proof, a two-corpora test, a measured claim's check), trust-boundary
+   validation, or a security measure.
 3. **Non-goals** — the scope DON'T. An adjacent finding is box-split into its own
    issue, never folded in (*A class stops expanding on a budget, not on running
    dry*).
@@ -135,7 +137,7 @@ happened, in order:
    discharged or newly owes.
 5. **Flip the Draft PR to Ready** — it has been open since the first green
    commit (see *Early push and Draft PRs*) — with a description that states what
-   was found and fixed, not only what was built, and its size line.
+   was found and fixed, not only what was built, and its size and net lines.
 6. **CI green**, then squash-merge.
 
 ## Depth is instructed; stopping is not — so instruct it
@@ -334,18 +336,17 @@ mechanism sends the fix at the wrong cause.
 A round ends when CRITICAL and HIGH are zero, not when findings stop; neither
 MEDIUM nor LOW forces another cycle. Aim at the two that do.
 
-Before dispatching any round after the first — and the first bullet before
-every review, round one and a light pass included:
+Before dispatching any round after the first:
 
 - **Run the over-engineering pass.** Ask what the ladder deletes from the diff's
-  code, tests, schemas and CI configuration — prose is outside it — with
-  `/ponytail-review` where the plugin is installed; each finding is applied by
-  its owning specialist or declined with a one-line reason. No check an AC names
-  is a candidate — a named test, a pin, a mutation proof, a two-corpora test, a
-  measured claim's check — nor trust-boundary validation or a security measure:
-  this project's test discipline wins over the plugin's *YAGNI applies to tests
-  too*. Its last line, `net: -N lines possible`, and how many were taken go in
-  the round record beside the size line; a round without it is not a round.
+  code, tests, schemas and CI configuration — not prose or schema `description`s
+  (*Brevity*) — by hand or with `/ponytail-review` from the optional ponytail
+  plugin, no repository dependency. Each finding is applied by its owning
+  specialist or declined with a one-line reason; what is never a candidate
+  (*The assignment brief*) outranks the plugin's *YAGNI applies to tests too*.
+  The round comment's **net line** is `net: -N lines possible` and how many were
+  taken, `Lean already`, or `n/a: no code in diff`; no review, round one and a
+  light pass included, dispatches without one.
 - **Sweep the diff for property claims.** Every added sentence asserting that
   something does not move, cannot be observed, or is independent of what was
   withheld gets one of three: a named test that goes RED when it is false, a
@@ -413,9 +414,8 @@ Implementation gets three of them. The orchestrator's own briefs, findings and
 decisions get none, and they are not safer for being written by the node that
 reads every report. They are less safe: nothing downstream catches them, because
 a brief is read as an instruction, not as a claim. So the orchestrator's plan
-takes the ladder's first rung: before a brief dispatches or a scope extension
-reaches the owner, every scope item, AC and mechanism in it must be needed in
-*this* PR, or it is deleted or box-split.
+takes the ladder's first rung: each scope item, AC and mechanism of a brief or a
+scope extension is needed in *this* PR, or deleted or box-split before it leaves.
 
 **Send an independent reader to the source before a brief, a carry-over list, a
 PR description or a MEDIUM triage asserts what the codebase does or does not
@@ -590,8 +590,8 @@ not happen, from their side.
 
 After a review round, always report: how many findings at each severity, what the
 serious ones actually were, what was fixed, what was consciously deferred and
-why, and the size line. A summary that says "reviews passed" after a round that
-found a CRITICAL is a false report, even if the CRITICAL was fixed.
+why, and the size and net lines. A summary that says "reviews passed" after a
+round that found a CRITICAL is a false report, even if the CRITICAL was fixed.
 
 ## Standing conventions
 
@@ -686,7 +686,7 @@ is the last step and not the next one. The PR does not leave Draft until the
 round is green — CRITICAL and HIGH at zero, per *What "green" means*. Flipping
 to Ready *asserts* that the round is green; flip with a PR comment recording the
 round — findings per severity, what was fixed, what was consciously deferred and
-why, the size and `net:` lines. Merge continues to gate on the required checks.
+why, and the size and net lines. Merge continues to gate on the required checks.
 
 **A commit that fixes a review finding records the finding as history.** The
 commit body carries a structured trailer:
