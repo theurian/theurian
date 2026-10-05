@@ -1,6 +1,6 @@
 #!/bin/sh
 # Opt-in, per clone: cp tools/hooks/pre-push "$(git rev-parse --git-common-dir)/hooks/pre-push"
-# (core.hooksPath is relative to the checked-out tree, so a tree without it runs no hook).
+# (a hooks directory inside the tree is absent on branches that predate it, and git then runs no hook).
 # Runs the CI `pr-size` check locally, for clones where CI does not run. A tree
 # without tools/pr_size.py fails the push.
 base=${PR_SIZE_BASE:-origin/main}
