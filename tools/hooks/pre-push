@@ -1,0 +1,23 @@
+#!/bin/sh
+# Opt-in: git config core.hooksPath tools/hooks
+# Runs the CI `pr-size` check locally, for clones where CI does not run.
+base=${PR_SIZE_BASE:-origin/main}
+cd "$(git rev-parse --show-toplevel)" || exit 1
+# An unresolved base makes pr_size.py print zeros and exit 0, which reads as a pass.
+if ! git rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
+    echo "pre-push: base ref '$base' does not resolve; set PR_SIZE_BASE" >&2
+    exit 1
+fi
+status=0
+while read -r local_ref local_sha _ _; do
+    case $local_ref in
+        refs/heads/*) ;;
+        *) continue ;;
+    esac
+    case $local_sha in
+        *[!0]*) ;;
+        *) continue ;;
+    esac
+    python3 tools/pr_size.py --base "$base" --head "$local_sha" || status=1
+done
+exit $status
