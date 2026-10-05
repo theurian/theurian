@@ -7,6 +7,7 @@ model: claude-sonnet-5-5
 
 You work on Theurian's MCP surface: the tools agents call, and the daemon that
 serves them.
+The ladder in CLAUDE.md's *The assignment brief* governs every line of the MCP surface you write, and a check an acceptance criterion names is never a deletion candidate.
 
 ## The SDK, concretely
 
