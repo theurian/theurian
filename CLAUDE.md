@@ -32,10 +32,9 @@ CI configuration — is assigned to the specialist that owns it:
 | Workflow, packaging, quality gate | `theurian-ci` |
 | Review | the three reviewers below |
 
-This holds even when the orchestrator can obviously see the fix. The reason is
-not effort but **independence**: work written and reviewed inside one context is
-graded by the mind that produced it, and that mind has already decided the change
-is correct.
+This holds even when the orchestrator can see the fix: the reason is not effort
+but **independence** — work written and reviewed in one context is graded by the
+mind that produced it, which has already decided the change is correct.
 
 What the orchestrator keeps: deciding what to assign, to whom and in what order;
 writing each brief — assignment (*The assignment brief*) and review (*The review
@@ -90,7 +89,10 @@ set → acceptance criteria → fences → size budget are written; the first tw
    \<condition>, the \<system> shall NOT \<behaviour>* — and a behaviour example
    is Given-When-Then, each GWT roughly one pytest. Every AC line names its
    verification: a named test, a measurement, or a search command.
-2. **Do** — the change itself.
+2. **Do** — the change itself. A code brief, not a docs one, states the ladder —
+   stop at the first rung that holds: not needed, already in this codebase,
+   stdlib, native platform, installed dependency, one line, the minimum that
+   works — and that no check an AC names is a deletion candidate.
 3. **Non-goals** — the scope DON'T. An adjacent finding is box-split into its own
    issue, never folded in (*A class stops expanding on a budget, not on running
    dry*).
@@ -126,7 +128,8 @@ happened, in order:
    the service registration, so `setup` runs here only with `--dry-run` (see
    *Running the CLI on a development machine*). Every milestone so far has found
    a defect at this step that no test caught. Reading is not verification.
-3. **Three reviews in parallel** for a full round — see below. Loop until green.
+3. **The over-engineering pass, then three reviews in parallel** for a full
+   round — see below. Loop until green.
 4. **Documentation follows** — CHANGELOG (breaking changes named as such), README
    status and roadmap, new ADRs, and every ADR compliance section the milestone
    discharged or newly owes.
@@ -176,8 +179,7 @@ not, it was never a warm-up.
 it is itself the finding: the round-two closure argument was incomplete.** Two
 enforced rules keep the round count down without weakening round one:
 
-- **Pre-empt round two before dispatching it** — run the reviewers' own methods
-  first (mutation and timing, below); a finding you surface costs no round.
+- **Pre-empt round two** with the checks below: what you surface costs no round.
 - **Round three does not block on anything below the gate.** Entering a third
   round, every finding that is not a reproducible CRITICAL or HIGH is *filed as
   an issue and the PR ships* — it does not earn another cycle. Only a CRITICAL or
@@ -186,15 +188,12 @@ enforced rules keep the round count down without weakening round one:
 
 ### Stalls are flow debt too — keep sessions small
 
-A session that dies mid-verification — thinking with no output, no commit landing
-— loses every hour since its last green with nothing to show, and the recovery is
-the user noticing. Measured on this project, session stalls were a larger
-wall-clock sink on a bad night than any single review round. They come from one
-session carrying too much: a cluster of parallel fixes plus their verification in
-one context. Prevent them structurally: **commit at every green** (the work
-survives the death), **keep a cluster small enough to verify in one sitting**, and
-**`/new` at each clean transition** rather than letting one session run a whole
-milestone.
+A session that dies mid-verification — thinking, no output, no commit — loses
+every hour since its last green, and the recovery is the user noticing; measured
+here, stalls cost more wall clock on a bad night than any single review round.
+The cause is one session carrying parallel fixes plus their verification, so:
+**commit at every green** (the work survives the death), **keep a cluster small
+enough to verify in one sitting**, and **`/new` at each clean transition**.
 
 ### Merge-ready work is checked at every transition
 
@@ -246,9 +245,7 @@ no tag cuts until the anchored pass is clean, and the cost is a latent defect on
 
 The routing table below decides who reviews a *claim*; this one decides how much
 apparatus a *change* gets, and when they disagree the claims table wins — a
-prose file asserting a measured property is a disclosure-class claim. The
-failure mode it stops is uniform weight: a wording fix pushed through a gate
-change's machinery spends credibility on work that cannot pay for it.
+prose file asserting a measured property is a disclosure-class claim.
 
 Before flipping any PR out of Draft, when the change takes the full round,
 launch all three **in a single message** so they run concurrently:
@@ -337,8 +334,18 @@ mechanism sends the fix at the wrong cause.
 A round ends when CRITICAL and HIGH are zero, not when findings stop; neither
 MEDIUM nor LOW forces another cycle. Aim at the two that do.
 
-Before dispatching any round after the first:
+Before dispatching any round after the first — and the first bullet before
+every review, round one and a light pass included:
 
+- **Run the over-engineering pass.** Ask what the ladder deletes from the diff's
+  code, tests, schemas and CI configuration — prose is outside it — with
+  `/ponytail-review` where the plugin is installed; each finding is applied by
+  its owning specialist or declined with a one-line reason. No check an AC names
+  is a candidate — a named test, a pin, a mutation proof, a two-corpora test, a
+  measured claim's check — nor trust-boundary validation or a security measure:
+  this project's test discipline wins over the plugin's *YAGNI applies to tests
+  too*. Its last line, `net: -N lines possible`, and how many were taken go in
+  the round record beside the size line; a round without it is not a round.
 - **Sweep the diff for property claims.** Every added sentence asserting that
   something does not move, cannot be observed, or is independent of what was
   withheld gets one of three: a named test that goes RED when it is false, a
@@ -405,7 +412,10 @@ earlier round closed means that closure was never real.
 Implementation gets three of them. The orchestrator's own briefs, findings and
 decisions get none, and they are not safer for being written by the node that
 reads every report. They are less safe: nothing downstream catches them, because
-a brief is read as an instruction, not as a claim.
+a brief is read as an instruction, not as a claim. So the orchestrator's plan
+takes the ladder's first rung: before a brief dispatches or a scope extension
+reaches the owner, every scope item, AC and mechanism in it must be needed in
+*this* PR, or it is deleted or box-split.
 
 **Send an independent reader to the source before a brief, a carry-over list, a
 PR description or a MEDIUM triage asserts what the codebase does or does not
@@ -439,8 +449,7 @@ milestone's orchestrator claims were false, all named in the
 [work log](docs/work-logs/2026-08-03-milestone-5-review-rounds.md). Latency, not
 cost, keeps the check narrow: spend it on the rows above, not on every brief.
 
-**Not over the reviewers' findings.** They already are independent readers who
-go to the source. This is for the node they do not cover.
+**Not over the reviewers' findings** — they already are independent readers.
 
 **A reviewer's claim is a claim.** Independence makes a finding worth acting on;
 it does not make its stated mechanism true. Before a claim is carried into a
@@ -571,12 +580,8 @@ recommendation — then hand it over; a consult without a position is offloading
 The answer is a claim, not an order: you still apply the severity table and
 record the decision, naming who was consulted. Only if the two readers disagree,
 or the doubt survives both, does it become a Blocking Issue for the user.
-
-**Why this is a rule and not a preference:** routing every judgment through the
-user makes the user the bottleneck — the orchestrator idles waiting on a decision
-a second reader could have settled in-session, and the human is consumed as a
-router rather than reserved for the decisions only they can make. Measured on
-this project, that routing was the largest single sink of the user's own hours.
+Routing every judgment through the user makes them the bottleneck and a router;
+measured here, that was the largest single sink of the user's own hours.
 
 ## Relaying subagent output
 
@@ -634,18 +639,15 @@ permanently.
 | Review output, and anything else that may be read by a teammate | **the caller's language, professional register, no cat-speech** |
 | Conversation with the user | **Japanese**, cat-speech per the global personality rule |
 
-The dividing line is direction of travel: text that lives in the repository or
-instructs an agent is English; text delivered to a person as a report follows
-the reader's language. A brief looks like scratch, which is exactly why it needs
-naming — it gets quoted in reports, pasted into issues, and read by whoever
-debugs the orchestration later.
+Direction of travel draws the line: into the repository or an agent, English; to
+a person, the reader's language. A brief looks like scratch, so the table names
+it: reports and issues quote it, and whoever debugs the orchestration reads it.
 
-**Non-English text as *data* is correct and must not be translated.** The rule
+**Non-English text as *data* is correct and must not be translated** — the rule
 governs prose, not examples. `署名付きトークンを持つ` in ADR-0023, the CHANGELOG
-and the test fixtures is the measured input that demonstrates the CJK
-tokenization problem; translating it deletes the thing being demonstrated. The
-same holds wherever a query or a corpus sample is in a given language *because*
-its language is the point.
+and the test fixtures is the measured input demonstrating the CJK tokenization
+problem; translating it, or any query or corpus sample whose language is the
+point, deletes what it demonstrates.
 
 ### Commits and local safety
 
@@ -674,11 +676,9 @@ its language is the point.
 ### Early push and Draft PRs
 
 A topic branch is pushed to origin at its **first green commit**, and a **Draft
-PR is opened at the same moment** — not when the work is finished. Every later
-green commit is pushed when it lands. The Draft PR is the visibility surface —
-the state of every lane is on GitHub, not on a local disk — and the crash-safety
-net; CI runs on the Draft from the first push, so the required checks exercise
-the work while it is still in flight.
+PR is opened at the same moment**; every later green commit is pushed when it
+lands. The Draft PR is the visibility surface — every lane's state is on GitHub,
+not a local disk — and the crash-safety net; CI runs on it from the first push.
 
 **Draft → Ready is the review gate.** The review round, at the weight its blast
 radius sets, runs before the flip; documentation follows the round, so the flip
@@ -686,7 +686,7 @@ is the last step and not the next one. The PR does not leave Draft until the
 round is green — CRITICAL and HIGH at zero, per *What "green" means*. Flipping
 to Ready *asserts* that the round is green; flip with a PR comment recording the
 round — findings per severity, what was fixed, what was consciously deferred and
-why, and the size line. Merge continues to gate on the required checks.
+why, the size and `net:` lines. Merge continues to gate on the required checks.
 
 **A commit that fixes a review finding records the finding as history.** The
 commit body carries a structured trailer:

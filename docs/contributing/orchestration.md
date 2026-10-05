@@ -71,6 +71,10 @@ excluded from the published documentation site for that reason.
 - Put brevity discipline in every implementation brief: comments, docstrings,
   helpers, abstractions, and prose are added only when they remove real
   ambiguity, and the implementer runs a deletion pass before reporting done.
+- State the ladder in every code brief — to `theurian-python`, `theurian-tests`,
+  `theurian-mcp` or `theurian-ci`, never `theurian-docs` or a reviewer — and
+  that no check an AC names is a deletion candidate (CLAUDE.md, *The assignment
+  brief*).
 - When the assignment runs the CLI, restate the dev-machine fences by name:
   `--dry-run` only for `theurian setup` and `theurian uninstall`, absolute
   binary path with the working directory set in the same command, `HOME` /
@@ -95,6 +99,9 @@ excluded from the published documentation site for that reason.
   an earlier report. Copying it into a brief makes it a claim you are now making.
 - List what is known-unfinished, so the reviewer spends its time elsewhere.
 - Name the non-goals. An adjacent finding is box-split, never folded in.
+- Run the ladder's first rung over the brief before it leaves, and over a scope
+  extension before it reaches the owner: every scope item, AC and mechanism is
+  needed in *this* PR, or it is deleted or box-split.
 
 ## REVIEW — running a round
 
@@ -102,6 +109,10 @@ excluded from the published documentation site for that reason.
   state, security claims and the wire contract take the full sync round;
   behaviour with no disclosure surface takes code review sync; prose, process
   guidance and CI plumbing take one light pass.
+- Run the over-engineering pass over the diff's code, tests, schemas and CI
+  configuration before every review, round one and a light pass included, and
+  record its `net:` line and how many findings were taken beside the size line.
+  Prose is outside it. A round dispatched without it is not a round.
 - Give every sync reviewer a ten-minute wall-clock budget, and the claims to
   spend it on: each invariant the implementation says it holds, with the command
   that re-checks it. The review object is those claims, not the diff as a
