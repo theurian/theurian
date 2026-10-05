@@ -345,7 +345,7 @@ Before dispatching any round after the first:
   specialist or declined with a one-line reason; what is never a candidate
   (*The assignment brief*) outranks the plugin's *YAGNI applies to tests too*.
   The round comment's **net line** is `net: -N lines possible` and how many were
-  taken, `Lean already`, or `n/a: no code in diff`; no review, round one and a
+  taken, `Lean already`, or `n/a: prose only`; no review, round one and a
   light pass included, dispatches without one.
 - **Sweep the diff for property claims.** Every added sentence asserting that
   something does not move, cannot be observed, or is independent of what was
