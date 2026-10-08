@@ -175,6 +175,29 @@ def test_upsert_rows_follow_the_first_write_that_loosened_each_field() -> None:
     ]
 
 
+def test_upsert_rows_keep_0_5_1s_order_where_no_larger_id_holds_the_field() -> None:
+    """Migration 10 lowers and restores X by sanctioned writes, then upserts Y and X lower.
+
+    Only a write inverted against a larger id may note a field; a plain sanctioned
+    lowering noting X first would order X's row ahead of Y's, where 0.5.1 printed Y's.
+    """
+    writers = LabelWriters()
+    create = CreateItem.__new__(CreateItem)
+    writers.wrote(_migration(1), create, prior=None, landed=_labelled(_X, _INTERNAL))
+    writers.wrote(_migration(1), create, prior=None, landed=_labelled(_Y, _INTERNAL))
+    writers.wrote(
+        _migration(10), _CHANGE, prior=_labelled(_X, _INTERNAL), landed=_labelled(_X, _PUBLIC)
+    )
+    writers.wrote(
+        _migration(10), _CHANGE, prior=_labelled(_X, _PUBLIC), landed=_labelled(_X, _INTERNAL)
+    )
+
+    writers.upserted(_migration(10), _labelled(_Y, _INTERNAL), _labelled(_Y, _PUBLIC))
+    writers.upserted(_migration(10), _labelled(_X, _INTERNAL), _labelled(_X, _PUBLIC))
+
+    assert _order(writers) == [("10", _Y, "lowers", "01"), ("10", _X, "lowers", "01")]
+
+
 def test_reorders_rows_follow_the_first_write_that_loosened_each_field() -> None:
     """Migration 10 replays after 30, restates X, lowers Y, then lowers X: Y's row comes first."""
     writers = LabelWriters()
