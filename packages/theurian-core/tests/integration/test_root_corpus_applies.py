@@ -55,19 +55,15 @@ ADR-0013 -- ``propose``/``accept`` through the real write path -- and #315's
 drift sweep re-seeded another wave again. **How many is not recorded here**, for
 the reason :data:`_RESEED_PAYLOAD_MARKERS` states for its own population: the
 number moves with every re-seed, and a count narrated in prose goes stale on the
-first one nobody re-narrates. The entries of that constant, **together with
-:data:`_RESEEDED_ITEM`** -- which the ``#414`` assertions pin by hand, and
-which also carries an entry since #832's re-seed, because those hand pins count
-the same in the body it superseded -- are the live answer, and the census
-assertion holds that *union* to exactly the set of items the **loaded migration
-set** gives more than one revision. The loaded set, not a store query: the two
-are measured identical (2026-09-05 on #557's branch, the store asked directly
-by ``SELECT item_id ... GROUP BY item_id HAVING COUNT(*) > 1``), and what ties
-them is the nothing-was-skipped assertion the same test makes first -- every
-loaded migration applied, so every ``upsertRevision`` the loaded set folds is a
-revision row the store holds. A reader sent to the entries alone would read one
-short. The #440 round's ADV-RC MEDIUM-1 lesson
-generalises to every one of them, but **only at one revert depth**, and saying
+first one nobody re-narrates. The entries of that constant are the live answer,
+and the census assertion holds them to exactly the set of items the **loaded
+migration set** gives more than one revision. The loaded set, not a store
+query: the two are measured identical (2026-09-05 on #557's branch, the store
+asked directly by ``SELECT item_id ... GROUP BY item_id HAVING COUNT(*) > 1``),
+and what ties them is the nothing-was-skipped assertion the same test makes
+first -- every loaded migration applied, so every ``upsertRevision`` the loaded
+set folds is a revision row the store holds. The #440 round's ADV-RC MEDIUM-1
+lesson generalises to every one of them, but **only at one revert depth**, and saying
 so precisely is the point -- an earlier version of this paragraph claimed the
 whole class was invisible to everything else, and the adversarial round
 measured that false. Three depths, measured 2026-09-02:
@@ -185,9 +181,8 @@ MIGRATIONS_DIRECTORY: Final = REPO_ROOT / ".theurian" / "migrations"
 #: figures afterwards, and moved them in the live record rather than here.
 MINIMUM_KNOWLEDGE_ITEMS: Final = 26
 
-#: The item the #416 re-seed gave a second revision -- the one member of this
-#: corpus a from-empty apply must resolve to something other than its own
-#: first ``upsertRevision``.
+#: The item whose current revision and applied body the ``#414`` assertions
+#: check by hand, after a from-empty apply.
 _RESEEDED_ITEM: Final = ItemId("architecture.ai-writes-produce-proposals")
 
 
@@ -342,8 +337,8 @@ _RESEED_PAYLOAD_MARKERS: Final[tuple[_PayloadMarker, ...]] = (
     # Re-measured 2026-10-08 for #832's re-seed: `#145` counts 1 in both the new
     # body and the revision it replaced. The test-name cite below counts 1 in the new
     # body and 0 in all four earlier corpus bodies and at every source commit before
-    # 011441b3 that lacked it; `test_index_schema_v4.py::` is part of the token
-    # because the bare test name also counts 1 at earlier points.
+    # 011441b3; the token starts `tests/integration/…`, because the bare test name
+    # also counts 1 at earlier points.
     _PayloadMarker(
         ItemId("architecture.raptor-forest"),
         "`tests/integration/test_index_schema_v4.py::test_a_node_row_does_not_move_a_leaf_chunks_bm25_score`",
@@ -360,9 +355,9 @@ _RESEED_PAYLOAD_MARKERS: Final[tuple[_PayloadMarker, ...]] = (
     ),
     _PayloadMarker(ItemId("architecture.a-purge-is-a-build"), "#499", 4),
     # Re-measured 2026-10-08 for #832's re-seed: `#553` counts 1 in both the new
-    # body and the revision it replaced. "`def`s" counts 1 in the new body and 0 at
-    # every earlier point; it sits in the #832 amendment block of ADR-0003.
-    _PayloadMarker(ItemId("architecture.ports-and-adapters"), "`def`s", 1),
+    # body and the revision it replaced. "#832" counts 1 in the new body and 0 at
+    # every earlier point; it is the issue reference of ADR-0003's amendment block.
+    _PayloadMarker(ItemId("architecture.ports-and-adapters"), "#832", 1),
     _PayloadMarker(ItemId("architecture.state-hash-partitioned-databases"), "#497", 1),
     _PayloadMarker(ItemId("architecture.index-lives-in-its-own-database"), "#497", 1),
     # Added 2026-10-08 for #832's re-seed, whose ADR-0011 twin gained its second
@@ -700,7 +695,7 @@ def test_the_committed_root_corpus_applies_cleanly_to_an_empty_store(tmp_path: P
         f"{sorted({item.value for item in pinned if pinned.count(item) > 1})}. Two entries "
         f"for one item let one of them be wrong while the other passes."
     )
-    accounted = set(pinned) | {_RESEEDED_ITEM}
+    accounted = set(pinned)
     assert accounted == multi_revision, (
         f"the pinned set and the multi-revision set disagree. Pinned but not re-seeded: "
         f"{sorted(item.value for item in accounted - multi_revision)}; "
@@ -708,9 +703,8 @@ def test_the_committed_root_corpus_applies_cleanly_to_an_empty_store(tmp_path: P
         f"{sorted(item.value for item in multi_revision - accounted)}. "
         f"Every item with more than one revision has had a payload replaced, so every one of "
         f"them needs a content pin -- add a _PayloadMarker measured against every point in "
-        f"its source document's history. {_RESEEDED_ITEM.value} is counted as accounted for "
-        f"without an entry because the #414 assertions above pin it by hand; it carries "
-        f"one anyway, since those pins do not discriminate on their own (#832)."
+        f"its source document's history. The #414 assertions above do not stand in for an "
+        f"entry: they count the same in a superseded body (#832)."
     )
 
     checked: list[ItemId] = []
