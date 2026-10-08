@@ -7086,14 +7086,20 @@ for migration ids that sort that way.
    or restores an item, run `theurian migrate validate` and read any
    `reorders` row.
 2. To repair a `reorders` row whose `undoes` set the level meant to hold,
-   merge a new migration that declares `dependsOn: [<the row's migrationId>]`
-   and sets that level again. Measured on main at 8d7e2f09 on 2026-10-08
-   through the CLI, for a `changeSensitivity` to `confidential` (id 300)
-   undone by one back to `internal` (id 100, `dependsOn` the root), and for a
-   deprecation undone by a `restoreItem` the same way: with the repair's id
-   larger than both and smaller than both alike, the item ends `confidential`,
-   or `deprecated`. The row is still reported afterwards, as there is no way
-   to acknowledge one (T-28's known cost).
+   merge a new migration that sets that level again and declares `dependsOn`
+   on the last migration in `migrate validate`'s `applicationOrder` that
+   writes the field: often the row's `migrationId`, but read it, never assume
+   it. Another migration that writes the field and also depends on the row's,
+   with a larger id or further down a chain, replays after a repair that
+   depends on the row's alone, and the item stays loose. Confirm by the
+   item's label, or by `knowledge.get`, after `migrate apply`, never by the
+   report: the row is still reported, as there is no way to acknowledge one
+   (T-28's known cost). Measured on main at 8d7e2f09 on 2026-10-08 through
+   the CLI, for a `changeSensitivity` to `confidential` (id 300) undone by one
+   back to `internal` (id 100, `dependsOn` the root), and for a deprecation
+   undone by a `restoreItem` the same way: a repair depending on id 100, with
+   an id larger than both or smaller than both, ends the item `confidential`,
+   or `deprecated`.
 3. Follow an `accept` refusal's remedy, and expect a second refusal on a
    `dependsOn` chain: the remedy names the migration that last took the field
    below, not the last one leaving it loose
