@@ -275,13 +275,13 @@ jobs:
     # ~18 min (4x) (2026-09-05-era calibration; the suite has since roughly
     # tripled -- the step comment below carries the current series). Set
     # higher instead: the three steps below already carry a combined
-    # step-level budget of 35 min (10 + 20 + 5), added for the
+    # step-level budget (the sum of the step timeouts below), added for the
     # network-sandbox invariant this job proves, + checkout/setup overhead
     # (measured max 0.35 min on runs 36056084152 / 36041023166 /
     # 36030358674, 2026-09-24; the fetch-depth: 0 checkout dominates it). A
     # job-level timeout tighter than the steps it
     # wraps would fire before those steps ever could -- and a future step
-    # added to this job cannot be sized as if 35 + its own minutes were the
+    # added to this job cannot be sized as if the step sum + its own minutes were the
     # whole budget; the overhead is real and already spoken for.
     #
     # That is why this moved 30 -> 35 with the suite step's 10 -> 15, and then
@@ -317,8 +317,8 @@ jobs:
       # runner's own connection to GitHub, hanging the job until it is killed --
       # a failure mode that says nothing about whether the tests need network.
       #
-      # The timeout below bounds that hang, not the suite: 20 rather than the
-      # 15 set at the previous bump (10 set when this step was written,
+      # The timeout below bounds that hang, not the suite: 25 rather than the
+      # 20 set at the previous bump (15 before that, 10 set when this step was written,
       # 5513d84c, Milestone 1; moved 10 -> 15 when the suite outgrew 10 -- the
       # same `-m 'not e2e'` selection measured 478s at the 0.1.0 cut (run
       # 33942378921), 574s on main (run 34607118047), and 609.87s GREEN here
@@ -330,8 +330,7 @@ jobs:
       # over: 90% progress at 895s before the 900s cap killed the step (job
       # 107975349094, 2026-09-25), a projected ~994s (~16.6 min) full run. A
       # step that reports a hung sandbox as a failed suite is the one thing
-      # this budget exists to prevent, so it is sized off the measurement
-      # with margin, not off runner luck. The durable fix is a faster suite.
+      # this budget exists to prevent. The durable fix is a faster suite.
       #
       # 2026-10-08: 20 -> 25. Runner variance crossed ~8% headroom on a
       # prose-only diff: step durations 12.4, 13.7, 15.0, 15.8, 17.7, 18.0,
@@ -339,6 +338,9 @@ jobs:
       # 37745174915, 37730922535, 37730754916, 37733739856, 37749838629)
       # and 20.2 min TIMED OUT (run 37747729558, c6cb5d05). Stopgap; the
       # durable fix is #643 (trim or parallelize the no-network suite).
+      # 25 is a stopgap inside the observed spread (12.4-18.1 min on the same
+      # 10480 tests; the timed-out run projected ~20.4), not a margin sized
+      # off the measurement: another timeout is possible before #643 lands.
       - name: Run the suite with no network access
         timeout-minutes: 25
         run: |
