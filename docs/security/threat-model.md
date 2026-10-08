@@ -7057,6 +7057,7 @@ for migration ids that sort that way.
    the item ends `confidential`. The status face, a deprecation undone by a
    `restoreItem`, ends `approved` with `[]` both ways, and `deprecated` when L
    declares none. Measured on main at 8d7e2f09 on 2026-10-08, through the CLI.
+   `test_reorders_report.py::test_a_loosening_with_a_larger_id_replays_last_with_no_row` holds the three histories, both faces, at `[]` and those ends.
    It generalises residual 2 to any operation in P's place; an
    `upsertRevision` in L's place is reported, `kind: undoes` (the migration
    format's *What is reported*). Accepted rather than merged as a file, P is
@@ -7072,6 +7073,7 @@ for migration ids that sort that way.
    `[]`. A deprecation (id 100, `dependsOn` the root) replaying after a
    `restoreItem` (id 300, none) ends `deprecated` with `[]`. Measured on main
    at 8d7e2f09 on 2026-10-08, through the CLI.
+   `::test_a_tightening_inversion_ends_tightened_and_reports_nothing` holds both histories at `[]` and those ends.
    `test_reorders_report.py::test_a_tightening_inversion_is_not_reported`
    pins `[]` for a status history of that shape, two deprecations, the second
    declaring `dependsOn` on the first, and a larger-id `restoreItem`, and
@@ -7105,7 +7107,7 @@ for migration ids that sort that way.
    back to `internal` (id 100, `dependsOn` the root), and for a deprecation
    undone by a `restoreItem` the same way: a repair depending on id 100, with
    an id larger than both or smaller than both, ends the item `confidential`,
-   or `deprecated`.
+   or `deprecated` (`::test_the_repair_a_reorders_row_asks_for_holds_the_level_and_the_row_stays`).
 3. Follow an `accept` refusal's remedy, and expect a second refusal on a
    `dependsOn` chain: the remedy names the migration that last took the field
    below, not the last one leaving it loose
