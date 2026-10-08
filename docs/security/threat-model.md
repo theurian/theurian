@@ -6711,7 +6711,7 @@ and asserts none reaches a *canonical* write is a second, narrower control: it
 reaches one level and so does not, by itself, hold the first clause — which is
 why the facade above is what does (ADR-0032 decision 8).
 
-#### T-28 — A content update re-asserts an existing item's governance labels, so an accepted proposal lowers its sensitivity or readmits it (Tampering / Information disclosure, High — closed in 0.5.1 at draft and `accept`; its replay-order face, GHSA-wwq9-p8wq-5m68 (Critical), closed at `accept` in 0.5.2; the merge-order race and a hand-authored migration's replay-order inversion are detected, not prevented)
+#### T-28 — A content update re-asserts an existing item's governance labels, so an accepted proposal lowers its sensitivity or readmits it (Tampering / Information disclosure, High — closed in 0.5.1 at draft and `accept`, but for an in-place withdrawal to `draft` or `proposed` (residual 8); the replay order, GHSA-wwq9-p8wq-5m68 included, is T-29)
 
 Class: **a proposal moves a gate label input in the permissive direction** —
 `status` from non-surfaceable to surfaceable, or `sensitivity` to a lower class.
@@ -6757,17 +6757,9 @@ caller's view — for a `confidential` item, a raised ceiling. The two faces
 reachable over MCP in the default configuration, a named lower sensitivity and
 the readmission of a retired item with no revision, write the label they set
 into the drafted migration; what the diff does not show is the label the item
-held before. ADR-0032's amendment graded the post-accept race (residual 6
-below) CRITICAL as a review finding, on the anchor that a merge approves only
-what its diff shows, and records the decision to report it rather than refuse
-it. The heading grades the threat as shipped; what the controls leave open
-is the residual list below.
-The replay-order face was Critical as shipped: a merge approves only what its
-diff shows, neither migration's diff shows the order the two replay in, and
-`knowledge.get` served what the proposal withheld at the default ceiling with
-no refusal and no row. The entry stays High after 0.5.2 because `accept`
-refuses that face, and a hand-authored migration, which runs no `accept`, is
-residual 5, detected, not prevented.
+held before. The heading grades the threat as shipped; what the controls leave
+open is the residual list below. T-29 grades the replay order, with the
+post-accept race and GHSA-wwq9-p8wq-5m68's Critical face.
 
 **Controls (0.5.1 and 0.5.2)**, each symbol in `application/proposal_service.py` unless
 another module is named:
@@ -6864,7 +6856,8 @@ the same call for an absent id. The item is in the caller's view, the
 population ADR-0032 decision 6's bind leaves out, and the amendment records
 it there.
 
-**Residuals.** All but the tenth are open in 0.5.2.
+**Residuals.** Seven are open in 0.5.2: the sixth and the ninth moved to T-29,
+and the tenth is closed.
 
 1. **The floors compare at `accept` time only.** Nothing compares labels when
    a pull request merges or when `migrate apply` runs.
@@ -6889,10 +6882,7 @@ it there.
    is where its own migration left the field, and a further lowering that
    starts below the attributed level is not another such row, so read the
    item's current label, not `after`.
-6. **The post-accept race is detected, not prevented, and no exit code
-   moves.** A withdrawal merged after an update was accepted, with a migration
-   id that sorts before the update's, is undone, and only `permissiveMoves`
-   says so. The operator actions below are the control.
+6. **Moved to T-29, its residual 1:** the post-accept race.
 7. **One migration is one reviewed diff.** A migration that withdraws and
    re-asserts an item, or lowers and restores it, nets out and is not
    reported: its end is no looser than its start, and its reviewer saw both
@@ -6901,14 +6891,10 @@ it there.
    a `dependsOn` replay, is neither refused nor reported.** Both predicates read
    `may_surface(…, include_unapproved=True)`, under which `draft`, `proposed`
    and `approved` are all surfaceable, while the default serving flag serves
-   `approved` alone. So the race can put such an item back in front of a
-   default caller with no row.
-9. **Two sanctioned label operations merged against their id order replay so
-   that the later id wins, with no report, absent `dependsOn`.** A `changeSensitivity` raise and a
-   lowering, or a `deprecateItem` and a `restoreItem`, then apply in migration-id
-   order whatever order they merged in, and neither is an upsert. It is the
-   same ordering root cause as residual 6, outside the upsert class the report
-   covers. With a `dependsOn`, see residual 5 and `reorders`.
+   `approved` alone. So the race, or a `dependsOn` replay, can put such an item
+   back in front of a default caller with no row.
+9. **Moved to T-29, its residual 2:** two sanctioned label operations merged
+   against their id order.
 10. **Closed in 0.5.2.** An accept whose withdrawal or raise a landed sanctioned
     operation with a later migration id undoes was accepted, with no report
     row. `accept` now refuses it on the field's end state: exit 1 and nothing
@@ -6953,6 +6939,168 @@ floors do not compare; a write-intent tool that reaches `changeSensitivity` or
 served path that returns `permissiveMoves`, whose rows name labels an item
 held before it was loosened; or the race reached without a human merging both
 migrations.
+
+#### T-29 — The replay order decides which of two reviewed label writes an item ends with, so a landed migration undoes what a later proposal set (Tampering / Information disclosure, **Critical** — closed at `accept` in 0.5.2, but for an in-place withdrawal to `draft` or `proposed` (T-28 residual 8); without `accept`, or after it, reported at most and never refused)
+
+Class: **a label write's effect depends on which writes replay after it, and
+the replay order is not the order the migrations were reviewed in.** Named by
+its root cause: `MigrationSet._topological_order` (`domain/migration.py`)
+replays in Kahn rounds, each sorted by migration id. So a migration that
+declares `dependsOn` replays after every one that declares none, whatever the
+ids, and migrations no `dependsOn` separates replay in id order, whatever
+order they merged in. No diff shows which of two writes replays last. T-28
+holds what a drafted update asserts about an item's labels; this entry holds
+the order the writes replay in. The function's body is the same at
+`core-v0.1.0.dev0`, `core-v0.5.1` and 8d7e2f09. The advisory is
+[GHSA-wwq9-p8wq-5m68](https://github.com/theurian/theurian/security/advisories/GHSA-wwq9-p8wq-5m68),
+and the decision record
+[ADR-0032](../adr/0032-the-write-intent-mcp-tool-surface.md)'s amendment of
+the same name.
+
+**The advisory's face, in 0.5.1 and earlier.** On an `internal` item, a
+landed `changeSensitivity` to `confidential`, then a landed one back to
+`internal` declaring `dependsOn` on it, then an update drafted with
+`theurian propose --sensitivity confidential`: `accept` and `migrate apply`
+exited 0, the item ended `internal`, `knowledge.get` served the updated body
+under the default ceiling, and `migrate validate` and `migrate apply`
+reported `[]`. Without the `dependsOn` the item ended `confidential` and was
+withheld. The status twin, a landed deprecation, a landed `restoreItem`
+declaring `dependsOn` on it and a deprecation drafted with
+`knowledge.generateMigrationDraft`, ended `approved` and served. Measured on
+`core-v0.5.1` on 2026-10-08, driving 8d7e2f09's `replay_order_support`
+histories through the CLI. The landed lowering is a sanctioned operation,
+which 0.5.1 never reported, so `accept` had no row to refuse on.
+
+**Severity: Critical, as shipped**, by T-28's convention: the heading grades
+the threat as shipped, and what the controls leave open is the residual list.
+A merge approves only what its diff shows, neither migration's diff shows the
+order the two replay in, and in 0.5.1 `knowledge.get` served what the
+proposal withheld at the default ceiling with no refusal and no row: withheld
+content reached a caller in the default configuration, the advisory's grade
+too. ADR-0032's amendment graded the post-accept race (residual 1) CRITICAL
+as a review finding, on that anchor, and records the decision to report it
+rather than refuse it.
+
+**Controls (0.5.2).** Each is stated once, in T-28, and pointed at here:
+
+1. **T-28 control 5, at `accept`.** The advisory's face meets it first:
+   `test_accept_refuses_a_replay_order_overwrite.py::test_accept_refuses_and_names_the_overwriting_migration_and_the_route`
+   builds the advisory's history for both faces and asserts exit 1, an error
+   naming the landed `dependsOn` migration, the item and the field in control
+   5's words ("undoing what this proposal sets") and not the end-state
+   refusal's, a remedy naming `dependsOn: [<that migration>]`, and nothing
+   moved.
+2. **The end-state refusal, at `accept`, after control 5**: T-28 residual 10.
+   It also refuses where control 5 has no row, as for a landed loosening with
+   a larger id than the proposal's.
+3. **T-28 control 4's `kind: "reorders"` rows**, for a migration merged as a
+   file, or after an accept, by the rule
+   [the migration format](../protocol/migrations.md#permissive-moves-are-reported-not-refused)
+   states under `reorders`. They refuse nothing and move no exit code.
+
+**What holds it.**
+`test_replay_order_serves_an_overwritten_label.py::test_an_accepted_label_is_not_overwritten_by_a_migration_that_declares_dependson`
+builds the advisory's history for both faces and passes only if `accept`
+exits non-zero and moves nothing, or the item holds the proposal's label and
+`knowledge.get` answers with an error;
+`::test_without_dependson_the_accepted_label_is_the_one_served` drops the
+`dependsOn` and asserts that the accept lands and the item holds the
+proposal's label, withheld. The face test goes RED only with the end-state
+refusal and the `reorders` rows both removed, so it holds neither alone.
+Measured on main at 8d7e2f09 on 2026-10-08 in a private checkout, over the 53 tests of its module,
+`test_accept_refuses_a_replay_order_overwrite.py`, `test_reorders_report.py`
+and `test_accept_never_introduces_a_report_row.py`: with
+`_refuse_a_landed_overwrite` returning at once, four went RED, among them the
+two larger-id cases of
+`test_accept_refuses_a_replay_order_overwrite.py::test_a_restatement_after_the_proposal_hides_no_later_loosening`;
+with `_reordered` returning `None`, 19, among them
+`test_reorders_report.py::test_validate_and_apply_report_the_dependson_migration_as_reordering_the_later_id`.
+That one merges, as files, a raise (or a deprecation), a lowering (or a
+`restoreItem`) declaring `dependsOn` on it and a larger-id raise (or
+deprecation), and asserts that `migrate apply` and `migrate validate` each
+report exactly one row: the `dependsOn` migration's, `kind: reorders`,
+`undoes` naming the larger id.
+
+**Residuals.** All four are open in 0.5.2. Ids written 100 < 200 < 300 stand
+for migration ids that sort that way.
+
+1. **The post-accept race is detected, not prevented, and no exit code
+   moves** (T-28 residual 6 until this entry). A withdrawal merged after an
+   update was accepted, with a migration id that sorts before the update's,
+   is undone, and only `permissiveMoves` says so; an in-place withdrawal to
+   `draft` or `proposed` it undoes is not reported either (T-28 residual 8).
+   The operator actions below are the control.
+2. **Two sanctioned label operations merged against their id order replay so
+   that the later id wins, with no report, absent `dependsOn`** (T-28
+   residual 9 until this entry). A `changeSensitivity` raise and a lowering,
+   or a `deprecateItem` and a `restoreItem`, then apply in migration-id order
+   whatever order they merged in, and neither is an upsert. It is the same
+   ordering root cause as residual 1, outside the upsert class the report
+   covers. With a `dependsOn`, see T-28 residual 5 and `reorders`.
+3. **A loosening with a larger id than a migration merged after it replays
+   last, with no row.** P (id 100), merged after L (id 300), raises an
+   `internal` item to `confidential`, and L lowers it to `internal`, neither
+   declaring `dependsOn`: they replay P, L, the item ends `internal`, and
+   `permissiveMoves` is `[]`, since L is simply the later id and there is no
+   inversion for `reorders` to see. With X (id 200, `dependsOn` the root)
+   restating `confidential` and L declaring `dependsOn` on X, they replay P,
+   X, L, with the same end and `[]`; if L declares none, X replays last and
+   the item ends `confidential`. The status face, a deprecation undone by a
+   `restoreItem`, ends `approved` with `[]` both ways, and `deprecated` when L
+   declares none. Measured on main at 8d7e2f09 on 2026-10-08, through the CLI.
+   It generalises residual 2 to any operation in P's place. Accepted rather
+   than merged as a file, P is refused by the end-state refusal: measured the
+   same way, a drafted raise (or deprecation), then a larger-id lowering (or
+   `restoreItem`) with no `dependsOn`, exits 1 in that refusal's words, naming
+   L, with nothing moved.
+4. **A tightening inversion is neither refused nor reported**: `reorders`
+   covers the loosening direction only. On an `internal` item, C (id 100,
+   `dependsOn` the root) raises it to `confidential`, H (id 200, `dependsOn`
+   C) to `restricted`, and D (id 300, none) declassifies it to `internal`;
+   they replay D, C, H, the item ends `restricted`, and `permissiveMoves` is
+   `[]`. A deprecation (id 100, `dependsOn` the root) replaying after a
+   `restoreItem` (id 300, none) ends `deprecated` with `[]`. Measured on main
+   at 8d7e2f09 on 2026-10-08, through the CLI.
+   `test_reorders_report.py::test_a_tightening_inversion_is_not_reported`
+   pins `[]` for a status history of that shape, two deprecations, the second
+   declaring `dependsOn` on the first, and a larger-id `restoreItem`, and
+   asserts nothing about where the item ends. Nothing is disclosed: the item
+   ends withheld, or at a higher class. What is lost, silently, is a reviewed
+   declassification or readmission.
+   [#897](https://github.com/theurian/theurian/issues/897) records changing
+   the order, which removes both directions, and what it costs.
+
+**The same root cause, without disclosure.** `theurian propose
+--expected-revision` drafts no `dependsOn`, so for an item whose revision a
+`dependsOn` migration wrote, the update replays first and `accept` refuses it
+([#863](https://github.com/theurian/theurian/issues/863)).
+
+**Operator actions.** T-28's apply. In addition:
+
+1. Before merging any migration that declares `dependsOn` and lowers a class
+   or restores an item, run `theurian migrate validate` and read any
+   `reorders` row.
+2. To repair a `reorders` row whose `undoes` set the level meant to hold,
+   merge a new migration that declares `dependsOn: [<the row's migrationId>]`
+   and sets that level again. Measured on main at 8d7e2f09 on 2026-10-08
+   through the CLI, for a `changeSensitivity` to `confidential` (id 300)
+   undone by one back to `internal` (id 100, `dependsOn` the root), and for a
+   deprecation undone by a `restoreItem` the same way: with the repair's id
+   larger than both and smaller than both alike, the item ends `confidential`,
+   or `deprecated`. The row is still reported afterwards, as there is no way
+   to acknowledge one (T-28's known cost).
+3. Follow an `accept` refusal's remedy, and expect a second refusal on a
+   `dependsOn` chain: the remedy names the migration that last took the field
+   below, not the last one leaving it loose
+   ([#898](https://github.com/theurian/theurian/issues/898)).
+
+**What would reopen or widen it.** An `accept` path that lands a proposal
+without control 5 and the end-state refusal; a write-intent tool that reaches
+`changeSensitivity` or `restoreItem`; a change to the replay order, such as
+#897's, while a state database the old order built is still served
+([#853](https://github.com/theurian/theurian/issues/853)), so that `accept`
+compares an order other than the one served; or a residual reached without a
+human merging both migrations.
 
 #### T-18 — A reused revision id resolves an approved item to a withheld item's body (Information disclosure, **Critical** — closed in 0.1.0.dev3)
 
@@ -7920,7 +8068,8 @@ fix.
 | T-25 | An MCP error response names the operator's resolved filesystem layout | I | High | Closed in 0.2.0 — GHSA-923w-f36f-jcfq. Constant refusals interpolating nothing across both tool boundaries, executable cures from fixed vocabulary; pinned by the raise-site population test, the no-resolved-form response sweep and the executable-cure ratchet |
 | T-26 | A canonical read materialises a withheld item's body before the gate, so a refusal's timing carries the body's size | I | High | Closed in 0.2.3 — bodyless `get_item_metadata`/`get_item_exact_metadata` gate the three read paths (`knowledge.get`, `_relation_is_visible`, `_may_surface`) on the pointer row, a body read only after a row clears the gate (GHSA-3f65 preserved). ADR-0032's write-intent surface adds a fourth consumer — `proposeChange`'s caller-scoped lookup (`current_revision`, renamed `current_item` in 0.5.1) — also body-free (`get_item_metadata`), closed on the write path at slice B4 (0.3.0) with a content-independent ~9 µs existence residual ~155× below the same floor. Size-independent **by construction**: `_ITEM_METADATA_SQL` projects only `knowledge_items` columns and materialises no body, pinned bidirectionally by the zero-body-read counters (`test_pre_gate_body_materialization.py`) and the explicit-column projection fact test (`test_gate_call_sites.py`, RED on a `SELECT *` or a revisions join — closing the counters' method-name-keyed blind spot). Corroborated out of band: refusal identical at 256 B and 8 MiB, ~175× below TB-1's 1.40 ms floor (work log 2026-09-16-t26-timing). A canonical-store body-materialisation channel, distinct from T-17a (derived-index statistics) and T-22 (a per-row count term, #338) |
 | T-27 | A distributed OKF bundle holds knowledge this deployment has since withdrawn | I | High | Accepted residual, recorded ([ADR-0037](../adr/0037-okf-is-the-knowledge-layer-interchange.md) *What this does not close* item 1). Four controls, three of them operator-side — the bundle is Index-class, `theurian_bundle_digest` makes staleness detectable by regenerate-and-compare, and the shipped guidance is regenerate-never-edit — and **one that travels**: the manifest's mandatory fixed-text holder notice. Export-side surface recorded in the entry: no bundle file carries SEC-15's safety triple (unowned); a body's rendered sections are not authenticated against the front matter ([#814](https://github.com/theurian/theurian/issues/814)); containment is at or under the canonical export target, with ancestor links followed and a dangling one's chain created — bounded to name occupation — and the check-to-use component race left with [#577](https://github.com/theurian/theurian/issues/577). The concurrent-merge face is closed by the atomic publish, not accepted |
-| T-28 | A content update re-asserts an existing item's governance labels, so an accepted proposal lowers its sensitivity or readmits it | T/I | High | Closed in 0.5.1 at draft and `accept` — GHSA-v2qg-23fc-7fqp; the replay-order face closed at `accept` in 0.5.2 — GHSA-wwq9-p8wq-5m68. Omitted labels inherit the item's own; a lower sensitivity and a retired item are refused at draft and by two `accept` floors comparing replayed state; `accept` never introduces or re-attributes a `permissiveMoves` row, and refuses a proposal the replay leaves looser than it set. The post-accept merge-order race and a hand-authored migration's replay-order inversion (`reorders`) are detected by `migrate validate`/`migrate apply`'s `permissiveMoves` and not prevented; nine open residuals and one closed, recorded in the entry |
+| T-28 | A content update re-asserts an existing item's governance labels, so an accepted proposal lowers its sensitivity or readmits it | T/I | High | Closed in 0.5.1 at draft and `accept` — GHSA-v2qg-23fc-7fqp — but for an in-place withdrawal to `draft` or `proposed` (residual 8). Omitted labels inherit the item's own; a lower sensitivity and a retired item are refused at draft and by two `accept` floors comparing replayed state; `accept` never introduces or re-attributes a report row (control 5), and 0.5.2 adds the end-state refusal (residual 10). The replay order — GHSA-wwq9-p8wq-5m68, the post-accept race and a hand-authored migration's inversion — is T-29. Seven open residuals, one closed and two moved to T-29, recorded in the entry |
+| T-29 | The replay order decides which of two reviewed label writes an item ends with, so a landed migration undoes what a later proposal set | T/I | Critical | Closed at `accept` in 0.5.2 — GHSA-wwq9-p8wq-5m68 — by T-28's control 5 and its residual 10's end-state refusal, but for an in-place withdrawal to `draft` or `proposed` (T-28 residual 8). Without `accept`, or after it, T-28 control 4 reports `reorders` rows and refuses nothing. Four open residuals, recorded in the entry: the post-accept race; two sanctioned operations, and any loosening with a larger id, merged against id order; and the tightening inversion ([#897](https://github.com/theurian/theurian/issues/897)) |
 
 ## Explicitly out of scope
 
