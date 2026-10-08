@@ -405,3 +405,79 @@ def test_the_dogfood_corpus_and_the_sample_project_report_no_rows(
     cli_ok("project", "register", "--project-id", "corpus")
 
     assert _rows() == []
+
+
+TIGHT = {"sensitivity": "confidential", "status": "deprecated"}
+
+
+def _label(face: str, migration_id: str, item_id: str, *, tight: bool) -> str:
+    if face == "sensitivity":
+        return reclassification(migration_id, item_id, TIGHT[face] if tight else "internal")
+    return (deprecation if tight else restoration)(migration_id, item_id)
+
+
+@pytest.mark.parametrize("face", FACES)
+def test_a_tightening_inversion_ends_tightened_and_reports_nothing(
+    face: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T-29 residual 4: the larger id's declassification or readmission replays first."""
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    steps = {
+        "first": (D1, depending_on(_label(face, D1, p.item_id, tight=True), ROOT_MIGRATION_ID)),
+        "undone": (LATE, _label(face, LATE, p.item_id, tight=False)),
+    }
+    if face == "sensitivity":  # C=D1, H=D2 raise; D=LATE declassifies; replay D, C, H
+        steps["higher"] = (D2, depending_on(reclassification(D2, p.item_id, "restricted"), D1))
+
+    rows = _validate_then_apply(p, **steps)
+
+    assert rows == ([], [])
+    assert item_row(p.root, p.item_id)[face] == (
+        "restricted" if steps.get("higher") else "deprecated"
+    )
+
+
+@pytest.mark.parametrize("variant", ["plain", "restated-and-depended-on", "restated-only"])
+@pytest.mark.parametrize("face", FACES)
+def test_a_loosening_with_a_larger_id_replays_last_with_no_row(
+    face: str, variant: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T-29 residual 3: P raises, the larger-id L lowers, no dependsOn: id order; X restates P."""
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    steps = {"raise": (D1, _label(face, D1, p.item_id, tight=True))}
+    if variant != "plain":
+        restate = depending_on(_label(face, D2, p.item_id, tight=True), ROOT_MIGRATION_ID)
+        steps["restate"] = (D2, restate)
+    lower = _label(face, LATE, p.item_id, tight=False)
+    steps["lower"] = (LATE, depending_on(lower, D2) if variant.endswith("on") else lower)
+
+    rows = _validate_then_apply(p, **steps)
+
+    assert rows == ([], [])
+    ends = (
+        TIGHT[face]
+        if variant == "restated-only"
+        else {"sensitivity": "internal", "status": "approved"}[face]
+    )
+    assert item_row(p.root, p.item_id)[face] == ends
+
+
+@pytest.mark.parametrize(
+    "repair_id", ["01K1AAAAAB01234567890ABCDE", HI2], ids=["smaller", "larger"]
+)
+@pytest.mark.parametrize("face", FACES)
+def test_the_repair_a_reorders_row_asks_for_holds_the_level_and_the_row_stays(
+    face: str, repair_id: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T-29 operator action 2: N declares dependsOn on M and sets A's level again."""
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    lowering = depending_on(_label(face, D1, p.item_id, tight=False), ROOT_MIGRATION_ID)
+    _validate_then_apply(p, a=(LATE, _label(face, LATE, p.item_id, tight=True)), m=(D1, lowering))
+    row = [(D1, p.item_id, face, *MOVE[face], LATE, "reorders")]
+    assert _rows() == row
+
+    write(p.root, repair_id, "n", depending_on(_label(face, repair_id, p.item_id, tight=True), D1))
+    cli_ok("migrate", "apply")
+
+    assert _rows() == row
+    assert item_row(p.root, p.item_id)[face] == TIGHT[face]
