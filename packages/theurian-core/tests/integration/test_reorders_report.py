@@ -30,6 +30,7 @@ from label_inheritance_support import (
     runner,
 )
 from replay_order_support import (
+    ACCEPTED,
     D1,
     D2,
     FACES,
@@ -407,12 +408,9 @@ def test_the_dogfood_corpus_and_the_sample_project_report_no_rows(
     assert _rows() == []
 
 
-TIGHT = {"sensitivity": "confidential", "status": "deprecated"}
-
-
 def _label(face: str, migration_id: str, item_id: str, *, tight: bool) -> str:
     if face == "sensitivity":
-        return reclassification(migration_id, item_id, TIGHT[face] if tight else "internal")
+        return reclassification(migration_id, item_id, ACCEPTED[face] if tight else "internal")
     return (deprecation if tight else restoration)(migration_id, item_id)
 
 
@@ -455,7 +453,7 @@ def test_a_loosening_with_a_larger_id_replays_last_with_no_row(
 
     assert rows == ([], [])
     ends = (
-        TIGHT[face]
+        ACCEPTED[face]
         if variant == "restated-only"
         else {"sensitivity": "internal", "status": "approved"}[face]
     )
@@ -480,4 +478,4 @@ def test_the_repair_a_reorders_row_asks_for_holds_the_level_and_the_row_stays(
     cli_ok("migrate", "apply")
 
     assert _rows() == row
-    assert item_row(p.root, p.item_id)[face] == TIGHT[face]
+    assert item_row(p.root, p.item_id)[face] == ACCEPTED[face]
