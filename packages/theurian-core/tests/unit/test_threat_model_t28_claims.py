@@ -189,7 +189,8 @@ def test_loosened_after_has_one_call_site_and_it_is_the_landed_overwrite_refusal
     refusal = next(
         n for n in ast.walk(tree) if getattr(n, "name", None) == "_refuse_a_landed_overwrite"
     )
-    inside = [n for n in ast.walk(refusal) if isinstance(n, ast.Name) and n.id == _END_STATE]
+    named = [getattr(n, "id", None) or getattr(n, "attr", None) for n in ast.walk(refusal)]
+    inside = [n for n in named if n == _END_STATE]
 
     assert _floor_calls((_END_STATE,)) == [(_FLOOR_SITE, _END_STATE)]
     assert len(inside) == 1, f"{_END_STATE} named {len(inside)} times in the refusal"
