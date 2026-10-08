@@ -8,6 +8,7 @@ marker where the docs, help texts, plugin and comments state them.
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import re
 from collections import Counter
 from pathlib import Path
@@ -18,6 +19,7 @@ from threat_model_claims import SPELLED_NUMBERS, entry_in, prose
 from write_lock_claims import REPO_ROOT
 
 from theurian import __version__
+from theurian.application import proposal_service
 from theurian.application.permissive_moves import MoveKind
 from theurian.cli import commands
 
@@ -99,7 +101,7 @@ def _population(key: re.Pattern[str], *, flat: bool = False) -> dict[str, int]:
 
 def test_the_largest_id_rule_is_stated_only_where_the_drift_pin_reads_it() -> None:
     """Measured 2026-10-09 with `git grep -c -i -E 'largest[- ]id' -- docs packages/theurian-core/src/theurian plugins packages/theurian-core/CHANGELOG.md`.
-    A new statement of the rule is a new site to pin, or an exemption to record."""
+    A new statement using `largest[- ]id` is a new site to pin; a reworded one outside the key is not caught."""
     expected = {
         _MIG: 1,
         _TM: 1,
@@ -120,6 +122,7 @@ _REFUSALS: Final = [
     "docs/adr/0027-accept-validates-before-it-moves.md|neither adds a row|nor changes which migration a held row says it undoes",
     f"{_ADR}|would add a row to that report|or re-attribute one it already holds",
     f"{_MIG}|adds or re-attributes no report row|re-attributes",
+    f"{_TM}|it refuses both a new row|a held row whose undoes the proposal would change",
     f"{_MIG}|would add a row the landed migrations alone do not report|{_UNDOES}",
     f"{_CHANGELOG}|would add a report row for that landed migration|{_UNDOES}",
     f"{_CHANGELOG}|would add a reorders row the landed migrations alone do not report|would make one the history already holds name a different migration in undoes",
@@ -133,11 +136,11 @@ _REFUSALS: Final = [
     f"plugins/claude-code/commands/propose.md|adds a row to the report|{_MOVES}",
 ]
 # fmt: on
-#: Not statements of when accept refuses: a recounted finding, and an ADR how-to.
-_NOT_REFUSALS: Final = {_ADR: 1, "docs/adr/README.md": 1}
+#: Not statements of when accept refuses: a recounted finding, an ADR how-to, and one released 0.5.2 CHANGELOG line naming a single half.
+_NOT_REFUSALS: Final = {_ADR: 1, "docs/adr/README.md": 1, _CHANGELOG: 1}
 #: The key: an add-half wording, in the flattened text of docs/, src/theurian, plugins/ and the Core CHANGELOG.
 _ADD_HALF = re.compile(
-    r"\b(?:would add|neither adds|to add|adds or re-attributes|adds? (?:a|an))\b(?: or re-attribute)?[^.;]{0,25}?\brows?\b|\bwould add or re-attribute\b"
+    r"\b(?:would add|neither adds|to add|adds or re-attributes|adds? (?:a|an))\b(?: or re-attribute)?[^.;]{0,25}?\brows?\b|\bwould add or re-attribute\b|\brows?\b[^.;]{0,25}\bwould add\b"
 )  # fmt: skip
 
 
@@ -153,8 +156,9 @@ def test_each_report_row_refusal_carries_both_halves_of_the_published_invariant(
 
 
 def test_the_published_invariant_stands_verbatim_and_no_add_half_is_unclassified() -> None:
-    """The population is every add-half hit: a pinned refusal or a recorded non-refusal."""
-    expected = Counter(s.split("|")[0] for s in _REFUSALS) + Counter(_NOT_REFUSALS)
+    """Every hit of `_ADD_HALF` is a pinned refusal or a recorded non-refusal; a refusal worded outside it is not caught."""
+    keyed = (s.split("|") for s in _REFUSALS)
+    expected = Counter(f[0] for f in keyed if _ADD_HALF.search(f[1])) + Counter(_NOT_REFUSALS)
 
     assert (
         f"it refuses a proposal whose replay would add a row to that report, or {_UNDOES}"
@@ -194,8 +198,9 @@ def test_the_residual_counts_agree_with_the_numbered_lists() -> None:
             r"(\w+) open residuals, (\w+) closed and (\w+) moved to t-29", _row("T-28")
         ).groups()
     ] == [len(t28) - 3, 1, 2]
-    assert n[_match(r"all (\w+) are open", _flat(entry_in(_read(_TM), "T-29")))[1]] == len(t29)
-    assert n[_match(r"(\w+) open residuals", _row("T-29"))[1]] == len(t29)
+    open29 = len([r for r in t29 if not r.startswith("**Closed in")])
+    assert n[_match(r"all (\w+) are open", _flat(entry_in(_read(_TM), "T-29")))[1]] == open29
+    assert n[_match(r"(\w+) open residuals", _row("T-29"))[1]] == open29
 
 
 def test_the_moved_residuals_and_their_dependson_qualifier_survive_the_move() -> None:
@@ -210,15 +215,18 @@ def test_the_moved_residuals_and_their_dependson_qualifier_survive_the_move() ->
 
 
 def test_every_move_kind_is_named_where_a_reader_looks_for_kinds() -> None:
+    """Each value is keyed on its kind context: `undoes` is also a field name."""
     texts = {
-        "kind row": _match(r"(?m)^\| `kind` \|.*$", _read(_MIG))[0],
         "plugin": _read(_PLUGIN),
         "validate help": commands.migrate_validate.__doc__ or "",
         "apply help": commands.migrate_apply.__doc__ or "",
     }
     for value in get_args(MoveKind):
+        assert re.search(rf"(?m)^\| `kind` \|.*`{value}`", _read(_MIG)), f"kind row lacks {value}"
         for name, text in texts.items():
-            assert re.search(rf"`(?:kind: )?{value}`|`kind: {value}", text), f"{name} lacks {value}"
+            assert re.search(
+                rf"`kind(?:` is `|: ){value}`|`{value}` otherwise", " ".join(text.split())
+            ), f"{name}: {value}"
 
 
 def test_the_adr_marker_for_loosens_agrees_with_the_census() -> None:
@@ -241,10 +249,45 @@ def test_the_adr_marker_for_loosens_agrees_with_the_census() -> None:
 
 def test_a_version_t_28_closes_in_has_a_changelog_heading_at_or_below_the_package() -> None:
     """T-28 residual 10 is "Closed in 0.5.2"; that must be a shipped version."""
-    closed = _match(r"closed in (\d+\.\d+\.\d+)", _flat(_residuals("T-28", "**A known cost")[-1]))[
-        1
-    ]
+    [item] = [r for r in _residuals("T-28", "**A known cost") if r.startswith("**Closed in")]
+    closed = _match(r"closed in (\d+\.\d+\.\d+)", _flat(item))[1]
     headings = re.findall(r"(?m)^## \[(\d+\.\d+\.\d+)\]", _read(_CHANGELOG))
 
     assert closed in headings
     assert [int(x) for x in closed.split(".")] <= [int(x) for x in re.findall(r"\d+", __version__)]
+
+
+def test_the_changelogs_quoted_refusal_messages_match_the_templates_that_produce_them() -> None:
+    """The fragments between each quote's `<placeholders>` are literals of its function."""
+    quotes = re.findall(
+        r'"(accepting this proposal would (?:make|let)[^"]*)"', _flat(_read(_CHANGELOG))
+    )
+    for fn, key in (
+        ("_refuse_a_reported_upsert", "undoing what this proposal sets"),
+        ("_refuse_a_landed_overwrite", "loosen what it sets"),
+    ):
+        source = re.sub(r'\{[^}]*\}|\bf"|"', "", inspect.getsource(getattr(proposal_service, fn)))
+        template = " ".join(_flat(source).replace("'", "").split())
+        found = [q for q in quotes if key in q]
+        assert found, key
+        for quote in found:
+            for fragment in re.split(r"<[^>]*>|…|the landed migration", quote):
+                assert " ".join(fragment.replace("'", "").split()) in template, (fn, fragment)
+
+
+def test_the_wave_one_texts_say_what_the_round_required() -> None:
+    """The repair names applicationOrder; the no-row sites name the operations; the grade reads as shipped."""
+    doc = _flat(_read(_TM)) + _flat(_read(_ADR))
+    actions = _flat(entry_in(_read(_TM), "T-29").split("**Operator actions.**", 1)[1])
+    repair = "dependson on the last migration in migrate validate's applicationorder that writes the field"
+    graded = "critical as shipped (ghsa-wwq9-p8wq-5m68)"
+    no_row = [
+        "a changesensitivity lowering or restoreitem with a larger id than a migration merged after it replays last, with no row",
+        "a changesensitivity lowering or restoreitem replaying last by its larger id",
+        "as for a landed changesensitivity lowering or restoreitem with a larger id than the proposal's",
+        "a dependson migration that tightens a label after a larger-id changesensitivity lowering or restoreitem",
+    ]
+
+    assert repair in actions and "dependson: [<the row's migrationid>]" not in actions
+    assert all(phrase in doc for phrase in no_row)
+    assert graded in _flat(_match(r"(?m)^#### T-29 .*$", _read(_TM))[0]) and graded in _row("T-29")
