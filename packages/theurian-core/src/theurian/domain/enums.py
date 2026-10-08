@@ -265,7 +265,8 @@ def may_surface(status: KnowledgeStatus, *, include_unapproved: bool) -> bool:
       end, leaves surfaceable an item it found non-surfaceable -- the accept
       floor's predicate for both (GHSA-v2qg-23fc-7fqp); the upsert lands either
       way. Read the other way round, it decides whether a label write withdrew
-      the item, which is a row's ``kind``.
+      the item, which is a row's ``kind``. Through ``loosened_after`` it also
+      decides ``_refuse_a_landed_overwrite``, ``accept``'s end-state refusal.
 
     The builder used to inline the two comparisons instead of calling this,
     which is one copy of a security rule too many -- ``knowledge.get`` having
