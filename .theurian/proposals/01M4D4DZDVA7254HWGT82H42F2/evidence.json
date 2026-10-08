@@ -1,0 +1,17 @@
+{
+  "proposalId": "01M4D4DZDVA7254HWGT82H42F2",
+  "migrationId": "01M4D4DZDVA7254HWGT82H42F3",
+  "itemId": "architecture.trigram-index-beside-the-word-index",
+  "agentId": "claude-code-theurian-docs",
+  "taskId": "832-reseed-six-drifted-twins",
+  "model": "claude-opus-5-5",
+  "reasoning": "Verbatim copy of the tracked ADR-0023 at f6b8a874. The tracked document is the source of truth. The revision this supersedes pins the body as it stood at f706329c, and 011441b3 (#820) moved the source since, so Theurian's own agents retrieve superseded text labelled approved and reviewed (no issue).",
+  "sourceAnchors": [
+    {
+      "provider": "git",
+      "sourceUri": "https://github.com/theurian/theurian.git",
+      "commitSha": "f6b8a874b2a77542f2f95e316478935bc0686db5",
+      "filePath": "docs/adr/0023-trigram-index-beside-the-word-index.md"
+    }
+  ]
+}

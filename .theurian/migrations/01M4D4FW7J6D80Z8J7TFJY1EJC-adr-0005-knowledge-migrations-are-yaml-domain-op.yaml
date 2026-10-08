@@ -1,0 +1,38 @@
+apiVersion: theurian.dev/v1
+id: 01M4D4FW7J6D80Z8J7TFJY1EJC
+createdAt: '2026-10-08T06:51:24+00:00'
+author: Takehide Uchida
+description: 'Re-seed the served ADR-0005 twin from its current source: the corpus pins docs/adr/0005-yaml-knowledge-migrations.md
+  as it stood at 266e6b66, and e5f8f64f (#852) moved the tracked document since (no issue).'
+operations:
+- op: createItem
+  itemId: architecture.yaml-knowledge-migrations
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.yaml-knowledge-migrations
+  revisionId: 01M4D4FW7J6D80Z8J7TFJY1EJD
+  expectedRevision: 01M1EVD67M9PAHGGXYS16TJ4SZ
+  contentFile: ../knowledge/architecture/yaml-knowledge-migrations.01M4D4FW7J6D80Z8J7TFJY1EJD.md
+  contentSha256: 1fa73ec8f31f6167f88f9b57a85373da45125a7efc67acef8eecf20ebccdc530
+  metadata:
+    title: 'ADR-0005: Knowledge migrations are YAML domain operations, not SQL'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0005
+    scope:
+      paths:
+      - packages/theurian-core/**
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: f6b8a874b2a77542f2f95e316478935bc0686db5
+      filePath: docs/adr/0005-yaml-knowledge-migrations.md

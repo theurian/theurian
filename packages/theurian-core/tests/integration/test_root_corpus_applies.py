@@ -56,8 +56,9 @@ drift sweep re-seeded another wave again. **How many is not recorded here**, for
 the reason :data:`_RESEED_PAYLOAD_MARKERS` states for its own population: the
 number moves with every re-seed, and a count narrated in prose goes stale on the
 first one nobody re-narrates. The entries of that constant, **together with
-:data:`_RESEEDED_ITEM`** -- carved out of the constant because the ``#414``
-assertions pin that item by hand -- are the live answer, and the census
+:data:`_RESEEDED_ITEM`** -- which the ``#414`` assertions pin by hand, and
+which also carries an entry since #832's re-seed, because those hand pins count
+the same in the body it superseded -- are the live answer, and the census
 assertion holds that *union* to exactly the set of items the **loaded migration
 set** gives more than one revision. The loaded set, not a store query: the two
 are measured identical (2026-09-05 on #557's branch, the store asked directly
@@ -327,19 +328,57 @@ _RESEED_PAYLOAD_MARKERS: Final[tuple[_PayloadMarker, ...]] = (
     # revert of that block, coordinated across body, migration anchor and evidence,
     # moves the count to 0 and reddens this pin.
     _PayloadMarker(ItemId("architecture.sqlite-is-a-derived-artifact"), "ADR-0030", 3),
-    _PayloadMarker(ItemId("architecture.yaml-knowledge-migrations"), "#245", 1),
+    # Re-measured 2026-10-08 for #832's re-seed: `#245` counts 1 in both the new
+    # body and the revision it replaced. `ADR-0039` counts 3 in the new body and 0
+    # at every earlier point (the two earlier corpus bodies and the source at each
+    # commit before e5f8f64f); all three sit in the closed-set amendment block.
+    _PayloadMarker(ItemId("architecture.yaml-knowledge-migrations"), "ADR-0039", 3),
     _PayloadMarker(ItemId("architecture.dependency-pinning-and-pre-1-0-isolation"), "`3.13`", 1),
     _PayloadMarker(ItemId("architecture.dco-over-cla"), "30/30", 1),
     _PayloadMarker(ItemId("architecture.state-hash-covers-the-working-tree"), "`contentSha256`", 1),
     _PayloadMarker(ItemId("architecture.sqlite-schema-versioning"), "#117", 3),
     _PayloadMarker(ItemId("architecture.single-writer-synchronous-in-m1"), "#497", 1),
     _PayloadMarker(ItemId("architecture.rank-fusion-over-score-normalisation"), "T-17a's", 1),
-    _PayloadMarker(ItemId("architecture.raptor-forest"), "#145", 1),
-    _PayloadMarker(ItemId("architecture.trigram-index-beside-the-word-index"), "#464", 2),
+    # Re-measured 2026-10-08 for #832's re-seed: `#145` counts 1 in both the new
+    # body and the revision it replaced. The test-name cite below counts 1 in the new
+    # body and 0 in all four earlier corpus bodies and at every source commit before
+    # 011441b3 that lacked it; `test_index_schema_v4.py::` is part of the token
+    # because the bare test name also counts 1 at earlier points.
+    _PayloadMarker(
+        ItemId("architecture.raptor-forest"),
+        "`tests/integration/test_index_schema_v4.py::test_a_node_row_does_not_move_a_leaf_chunks_bm25_score`",
+        1,
+    ),
+    # Re-measured 2026-10-08 for #832's re-seed: `#464` counts 2 in both the new
+    # body and the revision it replaced. The path-qualified test-name cite counts 1
+    # in the new body and 0 in both earlier corpus bodies and at every source
+    # commit before 011441b3; the bare test name counts 1 at all of them.
+    _PayloadMarker(
+        ItemId("architecture.trigram-index-beside-the-word-index"),
+        "`tests/integration/test_index_fallback.py::test_a_missing_table_raises_instead_of_answering_nothing`",
+        1,
+    ),
     _PayloadMarker(ItemId("architecture.a-purge-is-a-build"), "#499", 4),
-    _PayloadMarker(ItemId("architecture.ports-and-adapters"), "#553", 1),
+    # Re-measured 2026-10-08 for #832's re-seed: `#553` counts 1 in both the new
+    # body and the revision it replaced. "`def`s" counts 1 in the new body and 0 at
+    # every earlier point; it sits in the #832 amendment block of ADR-0003.
+    _PayloadMarker(ItemId("architecture.ports-and-adapters"), "`def`s", 1),
     _PayloadMarker(ItemId("architecture.state-hash-partitioned-databases"), "#497", 1),
     _PayloadMarker(ItemId("architecture.index-lives-in-its-own-database"), "#497", 1),
+    # Added 2026-10-08 for #832's re-seed, whose ADR-0011 twin gained its second
+    # revision. The path-qualified cite counts 1 in the new body and 0 in the body
+    # it replaced and at every source commit before 011441b3; the bare test name
+    # counts 1 in the replaced body.
+    _PayloadMarker(
+        ItemId("architecture.local-mcp-authentication"),
+        "`test_env_file_merge.py::test_an_end_marker_above_the_block_does_not_become_the_blocks_own_end`",
+        1,
+    ),
+    # Added 2026-10-08 for #832's re-seed. The #414 hand pins also count 1 in the
+    # superseded #416-era body, so a revert to it would satisfy them; "B5's" counts 1
+    # in the new body and 0 in both earlier corpus bodies and at every source commit
+    # before 76b9eba1.
+    _PayloadMarker(ItemId("architecture.ai-writes-produce-proposals"), "B5's", 1),
 )
 
 #: Frozen rather than ``datetime.now()``: a project row's ``registered_at`` is
@@ -669,8 +708,9 @@ def test_the_committed_root_corpus_applies_cleanly_to_an_empty_store(tmp_path: P
         f"{sorted(item.value for item in multi_revision - accounted)}. "
         f"Every item with more than one revision has had a payload replaced, so every one of "
         f"them needs a content pin -- add a _PayloadMarker measured against every point in "
-        f"its source document's history. {_RESEEDED_ITEM.value} is the exception because the "
-        f"#414 assertions above pin it by hand."
+        f"its source document's history. {_RESEEDED_ITEM.value} is counted as accounted for "
+        f"without an entry because the #414 assertions above pin it by hand; it carries "
+        f"one anyway, since those pins do not discriminate on their own (#832)."
     )
 
     checked: list[ItemId] = []

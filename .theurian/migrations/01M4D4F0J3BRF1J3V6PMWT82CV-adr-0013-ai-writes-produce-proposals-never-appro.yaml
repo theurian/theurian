@@ -1,0 +1,38 @@
+apiVersion: theurian.dev/v1
+id: 01M4D4F0J3BRF1J3V6PMWT82CV
+createdAt: '2026-10-08T06:50:56+00:00'
+author: Takehide Uchida
+description: 'Re-seed the served ADR-0013 twin from its current source: the corpus pins docs/adr/0013-ai-writes-produce-proposals.md
+  as it stood at 6b83be1e, and e262b36e (#698) then 76b9eba1 (#744) moved the tracked document since (#704).'
+operations:
+- op: createItem
+  itemId: architecture.ai-writes-produce-proposals
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.ai-writes-produce-proposals
+  revisionId: 01M4D4F0J3BRF1J3V6PMWT82CW
+  expectedRevision: 01M1B1XCAVJZKQQ6FWNADKRM69
+  contentFile: ../knowledge/architecture/ai-writes-produce-proposals.01M4D4F0J3BRF1J3V6PMWT82CW.md
+  contentSha256: 9f43f77bb7ee45df189911af6e505754bc48179abbb12d40d55613749fc83feb
+  metadata:
+    title: 'ADR-0013: AI writes produce proposals, never approved state'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0013
+    scope:
+      paths:
+      - packages/theurian-core/**
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: f6b8a874b2a77542f2f95e316478935bc0686db5
+      filePath: docs/adr/0013-ai-writes-produce-proposals.md

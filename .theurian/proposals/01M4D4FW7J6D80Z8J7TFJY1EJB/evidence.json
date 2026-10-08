@@ -1,0 +1,17 @@
+{
+  "proposalId": "01M4D4FW7J6D80Z8J7TFJY1EJB",
+  "migrationId": "01M4D4FW7J6D80Z8J7TFJY1EJC",
+  "itemId": "architecture.yaml-knowledge-migrations",
+  "agentId": "claude-code-theurian-docs",
+  "taskId": "832-reseed-six-drifted-twins",
+  "model": "claude-opus-5-5",
+  "reasoning": "Verbatim copy of the tracked ADR-0005 at f6b8a874. The tracked document is the source of truth. The revision this supersedes pins the body as it stood at 266e6b66, and e5f8f64f (#852) moved the source since, so Theurian's own agents retrieve superseded text labelled approved and reviewed (no issue).",
+  "sourceAnchors": [
+    {
+      "provider": "git",
+      "sourceUri": "https://github.com/theurian/theurian.git",
+      "commitSha": "f6b8a874b2a77542f2f95e316478935bc0686db5",
+      "filePath": "docs/adr/0005-yaml-knowledge-migrations.md"
+    }
+  ]
+}

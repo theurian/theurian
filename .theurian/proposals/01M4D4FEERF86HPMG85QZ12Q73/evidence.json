@@ -1,0 +1,17 @@
+{
+  "proposalId": "01M4D4FEERF86HPMG85QZ12Q73",
+  "migrationId": "01M4D4FEERF86HPMG85QZ12Q74",
+  "itemId": "architecture.ports-and-adapters",
+  "agentId": "claude-code-theurian-docs",
+  "taskId": "832-reseed-six-drifted-twins",
+  "model": "claude-opus-5-5",
+  "reasoning": "Verbatim copy of the tracked ADR-0003 at f6b8a874. The tracked document is the source of truth. The revision this supersedes pins the body as it stood at fffa6b18, and f6b8a874 (#860) moved the source since, so Theurian's own agents retrieve superseded text labelled approved and reviewed (#832).",
+  "sourceAnchors": [
+    {
+      "provider": "git",
+      "sourceUri": "https://github.com/theurian/theurian.git",
+      "commitSha": "f6b8a874b2a77542f2f95e316478935bc0686db5",
+      "filePath": "docs/adr/0003-ports-and-adapters.md"
+    }
+  ]
+}

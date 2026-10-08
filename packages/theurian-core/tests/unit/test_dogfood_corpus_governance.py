@@ -569,15 +569,22 @@ def _requires_git_objects(what: str) -> Index:
 #: one evidence file joined, so ``tracked_paths`` moved by three and the two
 #: item-level counts did not move at all -- the re-seed supersedes a revision of an
 #: item the corpus already held, and that item already had more than one.
+#: Moved on 2026-10-08 by #832's six-twin re-seed
+#: (https://github.com/theurian/theurian/issues/832): six migrations, six bodies and
+#: six evidence files joined, so ``tracked_migrations``, ``bodies`` and
+#: ``evidence_files`` each moved by six and ``tracked_paths`` by eighteen.
+#: ``distinct_items`` did not move: all six items were already in the corpus.
+#: ``multi_revision_items`` moved by one, because ADR-0011's twin was single-revision
+#: and got its second; the other five already had more than one.
 EXPECTED_CORPUS_POPULATION: Final[Mapping[str, int]] = MappingProxyType(
     {
-        "tracked_migrations": 49,
-        "bodies": 49,
-        "evidence_files": 49,
+        "tracked_migrations": 55,
+        "bodies": 55,
+        "evidence_files": 55,
         "gitkeep_placeholders": 3,
-        "tracked_paths": 150,
+        "tracked_paths": 168,
         "distinct_items": 26,
-        "multi_revision_items": 16,
+        "multi_revision_items": 17,
     }
 )
 

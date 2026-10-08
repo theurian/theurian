@@ -883,9 +883,10 @@ def test_a_population_key_carrying_an_unlisted_flag_is_refused_before_it_runs(
 def test_the_port_count_row_names_the_twins_current_revision() -> None:
     """RED means the roadmap names a revision of the twin that is no longer current.
 
-    The row records the #557 re-seed as ``migration X supersedes revision Y with
-    Z``, and all three are derived here from the tracked migrations rather than
-    trusted. The next re-seed of ``architecture.ports-and-adapters`` makes this
+    The row records the latest re-seed, #832's, as ``migration X supersedes
+    revision Y with Z`` -- #557's earlier one is recorded in the same shape, and
+    is history -- and all three are derived here from the tracked migrations
+    rather than trusted. The next re-seed of ``architecture.ports-and-adapters`` makes this
     RED, which is precisely when the row has to move: an audit row naming a
     superseded revision as the current one sends a reader to a body the default
     index does not serve.
