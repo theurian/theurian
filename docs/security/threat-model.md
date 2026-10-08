@@ -6981,20 +6981,25 @@ too. ADR-0032's amendment graded the post-accept race (residual 1) CRITICAL
 as a review finding, on that anchor, and records the decision to report it
 rather than refuse it.
 
-**Controls (0.5.2).** Each is stated once, in T-28, and pointed at here:
+**Controls (0.5.2).** Each is stated once, in T-28, and pointed at here; each
+symbol is in `application/proposal_service.py` unless another module is named:
 
-1. **T-28 control 5, at `accept`.** The advisory's face meets it first:
+1. **T-28 control 5, at `accept`** (`_refuse_a_reported_upsert`). The
+   advisory's face meets it first:
    `test_accept_refuses_a_replay_order_overwrite.py::test_accept_refuses_and_names_the_overwriting_migration_and_the_route`
    builds the advisory's history for both faces and asserts exit 1, an error
    naming the landed `dependsOn` migration, the item and the field in control
    5's words ("undoing what this proposal sets") and not the end-state
    refusal's, a remedy naming `dependsOn: [<that migration>]`, and nothing
    moved.
-2. **The end-state refusal, at `accept`, after control 5**: T-28 residual 10.
+2. **The end-state refusal, at `accept`, after control 5**
+   (`_refuse_a_landed_overwrite`, with
+   `application/permissive_moves.py :: loosened_after`): T-28 residual 10.
    It also refuses where control 5 has no row, as for a landed loosening with
    a larger id than the proposal's.
-3. **T-28 control 4's `kind: "reorders"` rows**, for a migration merged as a
-   file, or after an accept, by the rule
+3. **T-28 control 4's `kind: "reorders"` rows**
+   (`application/permissive_moves.py :: _reordered`), for a migration merged
+   as a file, or after an accept, by the rule
    [the migration format](../protocol/migrations.md#permissive-moves-are-reported-not-refused)
    states under `reorders`. They refuse nothing and move no exit code.
 
