@@ -18,7 +18,9 @@ from typing import Any
 
 import pytest
 from label_inheritance_support import (
+    ITEM_ID,
     ROOT_MIGRATION_ID,
+    ROOT_REVISION_ID,
     SORTS_AFTER_A_DRAFT,
     LabelledProject,
     cli_ok,
@@ -27,6 +29,7 @@ from label_inheritance_support import (
     item_row,
     labelled_project,
     reclassification,
+    root_migration,
     runner,
 )
 from replay_order_support import (
@@ -460,22 +463,84 @@ def test_a_loosening_with_a_larger_id_replays_last_with_no_row(
     assert item_row(p.root, p.item_id)[face] == ends
 
 
+HI5 = "7ZZZZZZZZZ01234567890ABC05"
+#: Migrations after M, each depending on the one before it and restating the lowered level.
+CHAINS = {"alone": (), "same-round": (HI5,), "deep": (D2, HI5)}
+
+
+def _repair_target(row_migration: str, writers: tuple[str, ...]) -> str:
+    """The last migration in applicationOrder that writes the field: the row's, if none follows."""
+    return (row_migration, *writers)[-1]
+
+
+@pytest.mark.parametrize("chain", CHAINS)
 @pytest.mark.parametrize(
     "repair_id", ["01K1AAAAAB01234567890ABCDE", HI2], ids=["smaller", "larger"]
 )
 @pytest.mark.parametrize("face", FACES)
 def test_the_repair_a_reorders_row_asks_for_holds_the_level_and_the_row_stays(
-    face: str, repair_id: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    face: str, repair_id: str, chain: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """T-29 operator action 2: N declares dependsOn on M and sets A's level again."""
+    """T-29 operator action 2: N sets A's level again, depending on the last writer after M.
+
+    Depending on M alone leaves a migration that depends on M, and replays after N, serving
+    the lowered level.
+    """
     p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
     lowering = depending_on(_label(face, D1, p.item_id, tight=False), ROOT_MIGRATION_ID)
-    _validate_then_apply(p, a=(LATE, _label(face, LATE, p.item_id, tight=True)), m=(D1, lowering))
+    steps = {"a": (LATE, _label(face, LATE, p.item_id, tight=True)), "m": (D1, lowering)}
+    for before, writer in zip((D1, *CHAINS[chain]), CHAINS[chain], strict=False):
+        restated = depending_on(_label(face, writer, p.item_id, tight=False), before)
+        steps[f"w{writer[-2:]}"] = (writer, restated)
+    _validate_then_apply(p, **steps)
     row = [(D1, p.item_id, face, *MOVE[face], LATE, "reorders")]
     assert _rows() == row
 
-    write(p.root, repair_id, "n", depending_on(_label(face, repair_id, p.item_id, tight=True), D1))
+    target = _repair_target(D1, CHAINS[chain])
+    write(
+        p.root, repair_id, "n", depending_on(_label(face, repair_id, p.item_id, tight=True), target)
+    )
     cli_ok("migrate", "apply")
 
     assert _rows() == row
     assert item_row(p.root, p.item_id)[face] == ACCEPTED[face]
+
+
+def _upsert(migration_id: str, sensitivity: str) -> str:
+    """The root migration's upsert alone, re-id'd: restates the current revision's labels."""
+    text = root_migration(
+        item_id=ITEM_ID, revision_id=ROOT_REVISION_ID, namespace="backend",
+        sensitivity=sensitivity, trust_level="reviewed", status="approved",
+    ).replace(ROOT_MIGRATION_ID, migration_id)  # fmt: skip
+    return text[: text.index("  - op: createItem")] + text[text.index("  - op: upsertRevision") :]
+
+
+def test_a_larger_id_upsert_loosening_merged_against_id_order_is_reported_as_undoes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """0.5.1's upsert row: the larger-id L lowers what P raised, so L undoes P; no inversion."""
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    steps = {
+        "raise": (D1, _label("sensitivity", D1, p.item_id, tight=True)),
+        "l": (LATE, _upsert(LATE, "internal")),
+    }
+
+    validated, applied = _validate_then_apply(p, **steps)
+
+    row = [(LATE, p.item_id, "sensitivity", "confidential", "internal", D1, "undoes")]
+    assert (validated, applied) == (row, row)
+
+
+def test_an_upsert_raise_undone_by_a_larger_id_sanctioned_lowering_has_no_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    steps = {
+        "raise": (D1, _upsert(D1, "confidential")),
+        "l": (LATE, _label("sensitivity", LATE, p.item_id, tight=False)),
+    }
+
+    rows = _validate_then_apply(p, **steps)
+
+    assert rows == ([], [])
+    assert item_row(p.root, p.item_id)["sensitivity"] == "internal"
