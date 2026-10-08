@@ -33,27 +33,14 @@ That is the general guard the static rule cannot be: whatever the engine
 enforces that nobody has hand-modelled yet, this still catches, the day it is
 added to the engine.
 
-**A third, content-shaped check, and why the first two are not enough.** The
-adversarial re-confirmation reproduced the gap directly (2026-08-31, before
-#832): reverting the ADR-0013 re-seed's *payload* -- the body bytes and the
-migration's ``contentSha256``, ids kept, not its ``expectedRevision`` pin --
-left the whole suite green at the same test count, because both the
-revision-id equality above and the static chain rule key on *identifiers*, and
-a reverted payload still carries the seed's own identifiers. Content, not an
-id, is what actually moved; the applied store's current body for the re-seeded
-item is therefore also checked for the corrected claim (``#414`` and the
-wording it introduced) and against neither retracted pattern the source ADR corrected
-(``reports proposal age``, ``warns past a threshold``). Before #832 that
-check alone caught the revert. Since #832 made the ``01M4D4F0J3BRF1J3V6PMWT82CW``
-body current, the superseded #416-era body (``01M1B1XCAVJZKQQ6FWNADKRM69``)
-carries ``#414`` and ``owed, not`` once each as well, so reverting the
-*current* payload to it passes those two substrings and is caught by the
-``"B5's"`` entry of :data:`_RESEED_PAYLOAD_MARKERS` (0 occurrences there, 1 in
-the current body). Content-shaped rather
-than revision-id-shaped, deliberately: an id-keyed check stops distinguishing
-the correction from the retraction the moment either is reverted while ids
-stay pinned, and a *future*, legitimate re-seed changes the current revision
-id again without this test's other assertions changing at all.
+**A third, content-shaped check.** The applied store's current body for the
+re-seeded item is checked for the corrected claim (``#414`` and ``owed, not``)
+and against neither retracted pattern the source ADR corrected
+(``reports proposal age``, ``warns past a threshold``). The superseded
+#416-era body (``01M1B1XCAVJZKQQ6FWNADKRM69``) carries ``#414`` and
+``owed, not`` once each as well, so a revert of the current payload to it passes
+those two substrings and is caught by the ``"B5's"`` entry of
+:data:`_RESEED_PAYLOAD_MARKERS`.
 
 **The same class recurs, and every re-seed pays the same toll.** #199 unit C's
 second wave (#471) re-seeded three more items the same way #416 re-seeded
@@ -69,10 +56,8 @@ asked directly by ``SELECT item_id ... GROUP BY item_id HAVING COUNT(*) > 1``),
 and what ties them is the nothing-was-skipped assertion the same test makes
 first -- every loaded migration applied, so every ``upsertRevision`` the loaded
 set folds is a revision row the store holds. The #440 round's ADV-RC MEDIUM-1
-lesson generalises to every one of them, but **only at one revert depth**, and saying
-so precisely is the point -- an earlier version of this paragraph claimed the
-whole class was invisible to everything else, and the adversarial round
-measured that false. Three depths, measured 2026-09-02:
+lesson generalises to every one of them, but **only at one revert depth**. Three depths,
+measured 2026-09-02:
 
 - **body + ``contentSha256``.** Caught already, by
   ``test_dogfood_corpus_governance.py``'s
@@ -220,9 +205,7 @@ class _PayloadMarker:
 #: One entry per re-seeded item: a literal token its *current* body carries a
 #: measured number of times, where no earlier state of that item's source
 #: document carries it the same number of times -- pre-empted from the ADV-RC
-#: MEDIUM-1 class the #440 round found (a reverted re-seed payload leaves the
-#: whole suite green at the same test count, because a revision-id check alone
-#: cannot tell a correction from a reverted one).
+#: MEDIUM-1 class the #440 round found.
 #:
 #: **Three-point measured, not two -- this round's own lesson.** A round-one
 #: version of this pin keyed on ``write.lock``/``ADR-0025``, measured only
@@ -560,7 +543,7 @@ def test_the_committed_root_corpus_applies_cleanly_to_an_empty_store(tmp_path: P
     (:data:`_RESEED_PAYLOAD_MARKERS`): the same content-shaped pin, carried by
     every re-seed rather than only by the one a round happened to reproduce.
     Each turns its own item's re-seed commit RED when that commit's payload is
-    reverted, and nothing else's -- see the entries' docstring for the
+    reverted -- see the entries' docstring for the
     per-point counts behind each token, for why an equality on the count and
     not a membership test is what ships, and for the two earlier versions of
     this pin (a two-point general-word marker, then a presence-only one) that
@@ -656,11 +639,8 @@ def test_the_committed_root_corpus_applies_cleanly_to_an_empty_store(tmp_path: P
     assert "#414" in body and "owed, not" in body, (
         f"the applied body for {_RESEEDED_ITEM.value} (revision {current_revision}) does not "
         f"carry the #414 correction ('#414' and 'owed, not' both expected as substrings). "
-        f"Before #832, reverting the re-seed's payload (body bytes plus contentSha256, ids "
-        f"kept) left every other assertion in this test green and only this check red. "
-        f"Since #832 it reads the current body, which the superseded #416-era body also "
-        f"matches on both substrings, so a revert to that body is caught by the "
-        f'"B5\'s" marker below instead.'
+        f"The superseded #416-era body matches both, so a revert to it is caught by the "
+        f'"B5\'s" marker below.'
     )
     assert "reports proposal age" not in body, (
         f"the applied body for {_RESEEDED_ITEM.value} (revision {current_revision}) still "

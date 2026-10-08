@@ -75,7 +75,7 @@ actually said. A repo-wide walker over this wording would still go RED on that
 file. Recorded rather than closed, and recorded here because a reader who greps
 the tree for the old sentence finds the superseded body and needs to know why it
 stays. The scan below is still deliberately not widened over the corpus to check
-either body: it holds the ADR document itself, and the corpus twins are the
+the bodies: it holds the ADR document itself, and the corpus twins are the
 governance suite's claim, not this one's.
 
 **Neither half is a closure argument.** The prose test is a regression pin over

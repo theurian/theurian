@@ -52,9 +52,8 @@ document it snapshots is ``tools/corpus_drift.py``'s.
 twice, so it states which side of the frozen corpus each walk reaches.
 
 - The population walk is ``git grep`` under the row's own pathspec, and
-  ``.theurian/knowledge/`` is **IN** -- that is the point of the measurement,
-  since two of the eleven lines are the re-seeded twin's body and two more are
-  the superseded revision's. The row's stated exclusion,
+  ``.theurian/knowledge/`` is **IN** -- that is the point of the measurement.
+  The row's stated exclusion,
   ``:!packages/theurian-core/tests/``, is applied because the row applies it,
   not because this module has an opinion about it.
 - The migrations walk is ``git ls-files --cached`` over ``*.yaml`` **directly**
