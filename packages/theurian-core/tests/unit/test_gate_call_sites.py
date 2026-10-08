@@ -232,7 +232,10 @@ DISCLOSURE_GATE = may_disclose.__name__
 #:     and ``test_a_restored_item_survives_the_replay_a_later_apply_forces``);
 #:   - the permissive-move report decides which replayed upserts the engine names as
 #:     readmitting an item their migration leaves readmitted at its end (GHSA-v2qg-23fc-7fqp)
-#:     (``test_permissive_move_report.py``'s race and control tests).
+#:     (``test_permissive_move_report.py``'s race and control tests), and, since GHSA-wwq9
+#:     (0.5.2), whether ``accept`` lands a proposal: ``loosened_after`` reads the same
+#:     predicate in ``_refuse_a_landed_overwrite``
+#:     (``test_accept_refuses_a_replay_order_overwrite.py``).
 STATUS_GATE_CALL_SITES = {
     ("application/index_builder.py", "IndexBuilder._build"),
     ("application/migration_engine.py", "revisions_to_purge"),
