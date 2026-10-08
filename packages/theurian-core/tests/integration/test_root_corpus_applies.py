@@ -657,9 +657,10 @@ def test_the_committed_root_corpus_applies_cleanly_to_an_empty_store(tmp_path: P
         f"the applied body for {_RESEEDED_ITEM.value} (revision {current_revision}) does not "
         f"carry the #414 correction ('#414' and 'owed, not' both expected as substrings). "
         f"Before #832, reverting the re-seed's payload (body bytes plus contentSha256, ids "
-        f"kept) left every other assertion green and only this check red. Since #832 it reads "
-        f"the current body, which the superseded #416-era body also matches on both "
-        f'substrings, so a revert to that body is caught by the "B5\'s" marker below instead.'
+        f"kept) left every other assertion in this test green and only this check red. "
+        f"Since #832 it reads the current body, which the superseded #416-era body also "
+        f"matches on both substrings, so a revert to that body is caught by the "
+        f'"B5\'s" marker below instead.'
     )
     assert "reports proposal age" not in body, (
         f"the applied body for {_RESEEDED_ITEM.value} (revision {current_revision}) still "
