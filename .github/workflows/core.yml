@@ -288,7 +288,10 @@ jobs:
     # 35 -> 40 with the suite step's 15 -> 20: each time the job ceiling had
     # become exactly the step sum, so the overhead above would have made the
     # job fire first and the step budgets unreachable.
-    timeout-minutes: 40
+    #
+    # 2026-10-08: 40 -> 45 with the suite step's 20 -> 25 (10 + 25 + 5 plus
+    # overhead stays under the job ceiling). Stopgap for #643.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
         with:
@@ -329,8 +332,15 @@ jobs:
       # step that reports a hung sandbox as a failed suite is the one thing
       # this budget exists to prevent, so it is sized off the measurement
       # with margin, not off runner luck. The durable fix is a faster suite.
+      #
+      # 2026-10-08: 20 -> 25. Runner variance crossed ~8% headroom on a
+      # prose-only diff: step durations 12.4, 13.7, 15.0, 15.8, 17.7, 18.0,
+      # 18.1, 18.3 min (runs 37742031132, 37619183994, 37749832099,
+      # 37745174915, 37730922535, 37730754916, 37733739856, 37749838629)
+      # and 20.2 min TIMED OUT (run 37747729558, c6cb5d05). Stopgap; the
+      # durable fix is #643 (trim or parallelize the no-network suite).
       - name: Run the suite with no network access
-        timeout-minutes: 20
+        timeout-minutes: 25
         run: |
           # Resolved in the outer shell: `sudo` resets PATH, so the inner shell
           # cannot find uv on its own.
