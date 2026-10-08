@@ -260,11 +260,13 @@ STATUS_GATE_CALL_SITES = {
     # `may_surface` holds.
     ("application/item_labels.py", "readmitted_items"),
     ("application/proposal_service.py", "_refuse_a_retired_item"),
-    # The permissive-move report (GHSA-v2qg-23fc-7fqp): `MigrationEngine.apply`
+    # The permissive-move report (GHSA-v2qg-23fc-7fqp, GHSA-wwq9): `MigrationEngine.apply`
     # records each upsert that itself moves an item from non-surfaceable to
     # surfaceable, when the upsert's migration leaves surfaceable at its end an item
-    # it found non-surfaceable. `_loosens` decides both, by the accept floor's
-    # predicate; nothing it decides changes what the store holds.
+    # it found non-surfaceable, and, as `reorders`, any label write that ends a field
+    # below the level a larger-id writer left it. `_loosens` decides those rows by the
+    # accept floor's predicate and, through `loosened_after`, `accept`'s end-state
+    # refusal (`_refuse_a_landed_overwrite`): whether a proposal lands.
     ("application/permissive_moves.py", "_loosens"),
 }
 
@@ -275,6 +277,11 @@ STATUS_GATE_WRITER_SITES = {
     ("application/migration_engine.py", "revisions_to_purge"),
     ("application/okf_export.py", "OkfExporter._walk"),
     ("application/item_labels.py", "readmitted_items"),
+    # Since GHSA-wwq9 (0.5.2) `_loosens` decides, through `loosened_after` in
+    # `_refuse_a_landed_overwrite`, which proposals `theurian propose accept` lets into
+    # `.theurian/migrations/`, as `readmitted_items` does. It also still decides what the
+    # engine's apply report returns.
+    ("application/permissive_moves.py", "_loosens"),
 }
 STATUS_GATE_READER_SITES = {
     ("application/visibility.py", "CanonicalVisibility._may_surface"),
@@ -283,9 +290,6 @@ STATUS_GATE_READER_SITES = {
     ("mcp/tools.py", "register.knowledge_get"),
     ("mcp/tools.py", "register._draft_only_proposals.current_item"),
     ("application/proposal_service.py", "_refuse_a_retired_item"),
-    # A reader: it decides what the engine's apply report returns, and the upsert it
-    # reports lands whatever it decides.
-    ("application/permissive_moves.py", "_loosens"),
 }
 
 #: Every place the product consults the disclosure gate, as
