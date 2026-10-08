@@ -1,7 +1,7 @@
-"""T-28's two code facts, read from the syntax tree.
+"""T-28's three code facts, read from the syntax tree.
 
-``docs/security/threat-model.md``'s T-28 rests its residuals on two facts about
-the source, and neither moves a sentence of the entry when it stops being true:
+``docs/security/threat-model.md``'s T-28 rests its residuals on three facts about
+the source, and none moves a sentence of the entry when it stops being true:
 
 1. The accept floors are one call each. ``lowered_sensitivities`` and
    ``readmitted_items`` (``application/item_labels.py``) are called once in the
@@ -16,6 +16,9 @@ the source, and neither moves a sentence of the entry when it stops being true:
    ``test_reorders_report.py`` holds, and ``accept`` refuses a proposal introducing
    one. A further producer changes which operations are reported, what T-28's
    residuals 5 and 10 and the CHANGELOG state.
+3. The end-state refusal is one decision: ``loosened_after``
+   (``application/permissive_moves.py``) is called once in the package, inside
+   ``application/proposal_service.py :: _refuse_a_landed_overwrite``.
 
 **Fact side only.** The prose side of the entry is not pinned here.
 
@@ -53,6 +56,7 @@ pytestmark = pytest.mark.unit
 _SRC: Final = REPO_ROOT / "packages" / "theurian-core" / "src" / "theurian"
 _FLOORS: Final = ("lowered_sensitivities", "readmitted_items")
 _FLOOR_SITE: Final = "application/proposal_service.py"
+_END_STATE: Final = "loosened_after"
 _MOVES: Final = _SRC / "application" / "permissive_moves.py"
 _WRITERS: Final = "LabelWriters"
 _SOURCE_OF_ROWS: Final = "_loosened"
@@ -74,7 +78,7 @@ _ADDERS: Final = frozenset(
 )
 
 
-def _floor_calls() -> list[tuple[str, str]]:
+def _floor_calls(names: tuple[str, ...] = _FLOORS) -> list[tuple[str, str]]:
     found: list[tuple[str, str]] = []
     for path in sorted(_SRC.rglob("*.py")):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
@@ -82,7 +86,7 @@ def _floor_calls() -> list[tuple[str, str]]:
                 continue
             callee = node.func
             name = callee.id if isinstance(callee, ast.Name) else getattr(callee, "attr", None)
-            if name in _FLOORS:
+            if name in names:
                 found.append((path.relative_to(_SRC).as_posix(), name))
     return found
 
@@ -176,6 +180,20 @@ def test_each_accept_floor_has_one_call_site_and_it_is_in_the_proposal_service()
         f"expected exactly one call of each of {_FLOORS} in the package, in "
         f"{_FLOOR_SITE}; found {calls}"
     )
+
+
+def test_loosened_after_has_one_call_site_and_it_is_the_landed_overwrite_refusal() -> None:
+    """RED means ``loosened_after`` is called from another module, twice, no longer, or
+    outside ``_refuse_a_landed_overwrite``: a second end-state refusal T-28 omits."""
+    tree = ast.parse((_SRC / _FLOOR_SITE).read_text(encoding="utf-8"))
+    refusal = next(
+        n for n in ast.walk(tree) if getattr(n, "name", None) == "_refuse_a_landed_overwrite"
+    )
+    named = [getattr(n, "id", None) or getattr(n, "attr", None) for n in ast.walk(refusal)]
+    inside = [n for n in named if n == _END_STATE]
+
+    assert _floor_calls((_END_STATE,)) == [(_FLOOR_SITE, _END_STATE)]
+    assert len(inside) == 1, f"{_END_STATE} named {len(inside)} times in the refusal"
 
 
 def test_only_upserted_and_wrote_add_a_row_source_to_label_writers() -> None:

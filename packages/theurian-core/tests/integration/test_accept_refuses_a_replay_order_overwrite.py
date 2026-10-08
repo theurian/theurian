@@ -286,3 +286,44 @@ def test_a_landed_dependson_migration_that_leaves_the_proposals_predicate_alone_
     code, payload = cli("propose", "accept", draft(p, face)["proposalId"])
 
     assert code == 0, payload
+
+
+def test_accept_refuses_a_raise_that_would_re_attribute_a_held_reorders_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """core-v0.5.1 CHANGELOG: accept "refuses a proposal ... that would make a row the history
+    already holds name a different migration in ``undoes``".
+
+    M's ``reorders`` row undoes the landed raise; the proposal's larger id would make M undo
+    the proposal instead. The row's key without ``undoes`` is unchanged, so only that half
+    of the invariant refuses it.
+    """
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    landed_raise, lower, raise_back = "01K1DDDDDD01234567890ABCDE", D1, D2
+    write(p.root, landed_raise, "raise", reclassification(landed_raise, p.item_id, "confidential"))
+    lowering = depending_on(reclassification(lower, p.item_id, "internal"), ROOT_MIGRATION_ID)
+    write(p.root, lower, "lower", lowering)
+    again = depending_on(reclassification(raise_back, p.item_id, "confidential"), lower)
+    write(p.root, raise_back, "raise-back", again)
+    cli_ok("migrate", "apply")
+    code, drafted = cli_propose(
+        p, p.item_id, "--expected-revision", p.revision_id, "--sensitivity", "confidential"
+    )
+    assert code == 0, drafted
+    held = [
+        (r["migrationId"], r["field"], r["kind"], r["undoes"])
+        for r in cli_ok("migrate", "validate")["permissiveMoves"]
+    ]
+    assert held == [(lower, "sensitivity", "reorders", landed_raise)]
+    before = landing_zone(p.root)
+
+    code, payload = cli("propose", "accept", drafted["proposalId"])
+
+    assert code == 1, payload
+    assert all(named in str(payload["error"]) for named in (lower, p.item_id, "sensitivity"))
+    assert REPORT_CHECK in str(payload["error"]), payload
+    assert END_STATE_CHECK not in str(payload["error"]), payload
+    assert landing_zone(p.root) == before, "a refused accept moved files"
+    cli_ok("migrate", "apply")
+    rows = cli_ok("migrate", "validate")["permissiveMoves"]
+    assert [(r["migrationId"], r["undoes"]) for r in rows] == [(lower, landed_raise)]

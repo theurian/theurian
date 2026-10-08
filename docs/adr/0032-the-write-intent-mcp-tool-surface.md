@@ -335,7 +335,12 @@ stated beside the number so a reader can attack the key and not only the count.
 > sensitivity, a lower class by `DISCLOSURE_ORDER` — decided at
 > `application/permissive_moves.py :: _loosens`, which
 > `test_gate_call_sites.py` registers in `STATUS_GATE_READER_SITES`: it decides
-> what the report returns, and the upsert lands whatever it decides. An item
+> what the report returns, and the upsert lands whatever it decides.
+> **Amended 2026-10-08:** since GHSA-wwq9-p8wq-5m68 `_loosens` also decides
+> `accept`'s end-state refusal
+> (`application/permissive_moves.py :: loosened_after`), so it decides whether
+> a proposal lands, not only what the report returns, and
+> `test_gate_call_sites.py` registers it in `STATUS_GATE_WRITER_SITES`. An item
 > absent at its migration's start is never compared, and only upserts are
 > reported, never the sanctioned `deprecateItem`, `restoreItem` and
 > `changeSensitivity`. A row carries `migrationId`, `itemId`, `field`, `before`
@@ -384,6 +389,10 @@ stated beside the number so a reader can attack the key and not only the count.
 > `reorders` row and refuse nothing, because the report never moves an exit
 > code (*Decided: a report, not a refusal*, above) and a refusal would stop
 > histories that already apply; an ordering fix is to follow in its own ADR.
+> **Amended 2026-10-08:** no such ADR exists;
+> [#897](https://github.com/theurian/theurian/issues/897) records the option
+> and its costs, and the GHSA-wwq9-p8wq-5m68 amendment before *Context* why it
+> was not taken.
 >
 > **`kind` is decided by the change's effect, not its operation.** The report
 > first decided it by operation type: a `deprecateItem` or `changeSensitivity`
@@ -1178,6 +1187,86 @@ stated beside the number so a reader can attack the key and not only the count.
 > says why, and what that means for a hand-written update. When the default
 > lowers the item, the permissive-move report names it as `lowers`
 > (`::test_an_upsert_omitting_sensitivity_lowers_what_the_create_item_set`).
+
+> **Amended by GHSA-wwq9-p8wq-5m68 (2026-10-08).** The GHSA-v2qg amendment
+> above rested on an unstated premise: that the label a later proposal sets is
+> the label the replay ends on, unless a migration with a later id changes it.
+> On that premise it left the sanctioned operations out of `permissiveMoves`,
+> and nothing at `accept` compared the label the proposal set with the one the
+> replay ends on.
+>
+> **What implementing it revealed.** `MigrationSet._topological_order`
+> (`domain/migration.py`) replays a migration that declares `dependsOn` after
+> every one that declares none, whatever the ids. So a landed
+> `changeSensitivity` or `restoreItem` with a smaller id, declaring
+> `dependsOn`, undid the raise or deprecation of a proposal accepted after it,
+> and `knowledge.get` served what the proposal withheld. The face, measured on
+> `core-v0.5.1`, and its grade are T-29 in
+> [the threat model](../security/threat-model.md).
+>
+> **Decided: refuse at `accept` by end state, report the inversion, keep the
+> order.** The refusals are T-28's control 5 and its residual 10, and the
+> `reorders` row is stated under that name in
+> [the migration format](../protocol/migrations.md#permissive-moves-are-reported-not-refused);
+> none is restated here. What changed for callers, the honest histories
+> `accept` now refuses included, is in the 0.5.2 CHANGELOG's two *Changed*
+> entries, both marked BREAKING. `_loosens` now decides whether a proposal
+> lands as well, as the dated note in *Decided: a report, not a refusal* above
+> records.
+>
+> **The two checks are not to be unified.** The 2026-10-06 note above records
+> what each would miss under the other's rule. The report has to define an
+> inversion against an order, so attribution is its definition; `accept` has
+> to answer whether the label a reviewer approved is the label served, and
+> only the end state answers that. The advisory's face is held by both, so
+> `test_replay_order_serves_an_overwritten_label.py::test_an_accepted_label_is_not_overwritten_by_a_migration_that_declares_dependson`,
+> which builds it, does not catch a change that removes either one; T-29's
+> *What holds it* records, measured on 8d7e2f09, which tests do.
+>
+> **Considered and not taken: (C), change the order.** A priority Kahn sort,
+> taking the smallest-id ready migration one at a time instead of whole
+> rounds, replays in id order wherever `dependsOn` allows, and would remove
+> the inversion rather than refuse and report it. Its costs:
+>
+> 1. **Served labels can move on upgrade with no migration changing**, in any
+>    history that interleaves `dependsOn` and root migrations on a shared
+>    field.
+> 2. **`MIGRATION_ENGINE_VERSION` must bump.**
+>    [ADR-0007](0007-state-hash-partitioned-databases.md) puts the engine
+>    version in the state hash "so that an engine change invalidates cached
+>    state instead of silently reinterpreting it".
+> 3. **[ADR-0039](0039-closed-set-extension-compatibility.md) decision 6 does
+>    not admit it as written.** A bump that changes what an earlier-version
+>    document does is permitted "only with a recorded argument that no reader
+>    of the canonical state observes the difference", and a new order changes
+>    served labels, so that argument cannot be made. What is left is an
+>    `apiVersion` bump for documents written under the new order, or an
+>    amendment of decision 6.
+> 4. **The serve path does not check which build wrote a state database**
+>    ([#853](https://github.com/theurian/theurian/issues/853)), so one the old
+>    order built is served until `migrate apply` runs.
+> 5. **[ADR-0005](0005-yaml-knowledge-migrations.md) decision 3**,
+>    "`dependsOn` is topologically sorted", moves with it.
+>
+> It would also leave two things open: a landed migration with a larger id
+> still replays after a fresh draft, because id order is then the contract;
+> and the post-accept race, T-29 residual 1, is unchanged. Migrations
+> declaring `dependsOn`, counted on main at 8d7e2f09 on 2026-10-08 by
+> `grep -l '^dependsOn:'` over each `migrations/` directory: 0 of the dogfood
+> corpus's 49; 1 of `examples/sample-project`'s 2, which sorts after its
+> dependency and writes a different item; 0 of 38 and 0 of 6 in the two eval
+> fixture sets. [#897](https://github.com/theurian/theurian/issues/897) tracks
+> (C), gated on #853; adopting it changes what upgraded projects serve, so it
+> is the maintainer's call.
+>
+> **The tightening inversion is the recorded cost of keeping the order.**
+> `reorders` is loosening-only, so a `dependsOn` migration that tightens a
+> label after a larger-id `changeSensitivity` lowering or `restoreItem`
+> (`application/permissive_moves.py :: LabelWrite`) wins with no row and no
+> refusal. Nothing
+> is disclosed; a reviewed declassification or readmission is lost silently.
+> T-29 residual 4 records it, measured. It is the clearest argument for (C),
+> whose order follows ids in both directions wherever `dependsOn` allows.
 
 ## Context
 

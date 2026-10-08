@@ -18,17 +18,22 @@ from typing import Any
 
 import pytest
 from label_inheritance_support import (
+    ITEM_ID,
     ROOT_MIGRATION_ID,
+    ROOT_REVISION_ID,
     SORTS_AFTER_A_DRAFT,
     LabelledProject,
     cli_ok,
     cli_propose,
     deprecation,
+    item_row,
     labelled_project,
     reclassification,
+    root_migration,
     runner,
 )
 from replay_order_support import (
+    ACCEPTED,
     D1,
     D2,
     FACES,
@@ -231,6 +236,106 @@ def test_a_field_the_attributed_migration_wrote_twice_is_attributed_at_its_last_
     assert _rows() == [(D2, p.item_id, "sensitivity", "internal", "public", LATE, "reorders")]
 
 
+def _validate_then_apply(
+    p: LabelledProject, **migrations: tuple[str, str]
+) -> tuple[list[tuple[Any, ...]], list[tuple[Any, ...]]]:
+    """Write each ``name=(id, text)``; the rows ``validate`` then ``apply`` report."""
+    for name, (migration_id, text) in migrations.items():
+        write(p.root, migration_id, name, text)
+    validated = _rows()
+    return validated, _shape(cli_ok("migrate", "apply")["permissiveMoves"])
+
+
+def _twice(migration_id: str, item_id: str, first: str, then: str) -> str:
+    """One migration writing the class ``first``, then ``then``."""
+    return reclassification(migration_id, item_id, first) + (
+        f"  - op: changeSensitivity\n    itemId: {item_id}\n"
+        f"    sensitivity: {then}\n    reason: restated\n"
+    )
+
+
+def test_a_migration_is_judged_against_the_writer_before_it_not_one_replaying_after_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GHSA-wwq9: "the field's largest-id writer" is read before the migration replays.
+
+    Z (the largest id) replays after M and raises the field past A's level. Read globally
+    Z is the attribution and M, found below Z's level, is no row; the engine names A.
+    """
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    raise_ = reclassification(D2, p.item_id, "confidential")
+    lower = depending_on(reclassification(D1, p.item_id, "internal"), ROOT_MIGRATION_ID)
+    raise_more = depending_on(reclassification(LATE, p.item_id, "restricted"), D1)
+
+    validated, applied = _validate_then_apply(
+        p, raise_=(D2, raise_), lower=(D1, lower), raise_more=(LATE, raise_more)
+    )
+
+    expected = [(D1, p.item_id, "sensitivity", "confidential", "internal", D2, "reorders")]
+    assert validated == expected
+    assert applied == expected
+
+
+def test_a_lowering_a_smaller_id_migration_raises_back_within_itself_is_no_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rows are decided at the migration's end: its intermediate lowering is not one."""
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    raise_ = reclassification(D2, p.item_id, "confidential")
+    lower_and_back = depending_on(
+        _twice(D1, p.item_id, "internal", "confidential"), ROOT_MIGRATION_ID
+    )
+
+    validated, applied = _validate_then_apply(p, raise_=(D2, raise_), lower=(D1, lower_and_back))
+
+    assert validated == []
+    assert applied == []
+
+
+def test_the_attribution_is_the_largest_id_writer_not_the_last_to_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """W (largest id) replays first, N (smaller, still above M) writes after it: M undoes W.
+
+    A smaller-id write never takes the attribution (R1), so N's later replay does not
+    move it.
+    """
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    first = reclassification(LATE, p.item_id, "confidential")
+    later = depending_on(reclassification(D2, p.item_id, "restricted"), ROOT_MIGRATION_ID)
+    lower = depending_on(reclassification(D1, p.item_id, "internal"), D2)
+
+    validated, applied = _validate_then_apply(p, w=(LATE, first), n=(D2, later), m=(D1, lower))
+
+    expected = [(D1, p.item_id, "sensitivity", "restricted", "internal", LATE, "reorders")]
+    assert validated == expected
+    assert applied == expected
+
+
+def test_a_reorders_rows_after_is_not_the_label_the_item_is_served_with(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A further lowering is no second row, so read the item's current label, not ``after``.
+
+    T-28 residual 5 and ``docs/protocol/migrations.md``'s ``reorders`` section: the row
+    records the migration's own end (``confidential``), and a later lowering that found
+    the field below the attributed level leaves it ``internal`` unreported.
+    """
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    raise_ = reclassification(LATE, p.item_id, "restricted")
+    first = depending_on(reclassification(D1, p.item_id, "confidential"), ROOT_MIGRATION_ID)
+    further = depending_on(reclassification(D2, p.item_id, "internal"), D1)
+
+    validated, applied = _validate_then_apply(
+        p, raise_=(LATE, raise_), first=(D1, first), further=(D2, further)
+    )
+
+    expected = [(D1, p.item_id, "sensitivity", "restricted", "confidential", LATE, "reorders")]
+    assert validated == expected
+    assert applied == expected
+    assert item_row(p.root, p.item_id)["sensitivity"] == "internal"
+
+
 def _update_then_deprecation(p: LabelledProject, writer: str, *, edge: bool) -> str:
     """An update accepted while the item is live, then ``writer`` deprecates it; the update's id."""
     code, drafted = cli_propose(p, p.item_id, "--expected-revision", p.revision_id)
@@ -304,3 +409,138 @@ def test_the_dogfood_corpus_and_the_sample_project_report_no_rows(
     cli_ok("project", "register", "--project-id", "corpus")
 
     assert _rows() == []
+
+
+def _label(face: str, migration_id: str, item_id: str, *, tight: bool) -> str:
+    if face == "sensitivity":
+        return reclassification(migration_id, item_id, ACCEPTED[face] if tight else "internal")
+    return (deprecation if tight else restoration)(migration_id, item_id)
+
+
+@pytest.mark.parametrize("face", FACES)
+def test_a_tightening_inversion_ends_tightened_and_reports_nothing(
+    face: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T-29 residual 4: the larger id's declassification or readmission replays first."""
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    steps = {
+        "first": (D1, depending_on(_label(face, D1, p.item_id, tight=True), ROOT_MIGRATION_ID)),
+        "undone": (LATE, _label(face, LATE, p.item_id, tight=False)),
+    }
+    if face == "sensitivity":  # C=D1, H=D2 raise; D=LATE declassifies; replay D, C, H
+        steps["higher"] = (D2, depending_on(reclassification(D2, p.item_id, "restricted"), D1))
+
+    rows = _validate_then_apply(p, **steps)
+
+    assert rows == ([], [])
+    assert item_row(p.root, p.item_id)[face] == (
+        "restricted" if steps.get("higher") else "deprecated"
+    )
+
+
+@pytest.mark.parametrize("variant", ["plain", "restated-and-depended-on", "restated-only"])
+@pytest.mark.parametrize("face", FACES)
+def test_a_loosening_with_a_larger_id_replays_last_with_no_row(
+    face: str, variant: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T-29 residual 3: P raises, the larger-id L lowers, no dependsOn: id order; X restates P."""
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    steps = {"raise": (D1, _label(face, D1, p.item_id, tight=True))}
+    if variant != "plain":
+        restate = depending_on(_label(face, D2, p.item_id, tight=True), ROOT_MIGRATION_ID)
+        steps["restate"] = (D2, restate)
+    lower = _label(face, LATE, p.item_id, tight=False)
+    steps["lower"] = (LATE, depending_on(lower, D2) if variant.endswith("on") else lower)
+
+    rows = _validate_then_apply(p, **steps)
+
+    assert rows == ([], [])
+    ends = (
+        ACCEPTED[face]
+        if variant == "restated-only"
+        else {"sensitivity": "internal", "status": "approved"}[face]
+    )
+    assert item_row(p.root, p.item_id)[face] == ends
+
+
+HI5 = "7ZZZZZZZZZ01234567890ABC05"
+#: Migrations after M, each depending on the one before it and restating the lowered level.
+CHAINS = {"alone": (), "same-round": (HI5,), "deep": (D2, HI5)}
+
+
+def _repair_target(row_migration: str, writers: tuple[str, ...]) -> str:
+    """The last migration in applicationOrder that writes the field: the row's, if none follows."""
+    return (row_migration, *writers)[-1]
+
+
+@pytest.mark.parametrize("chain", CHAINS)
+@pytest.mark.parametrize(
+    "repair_id", ["01K1AAAAAB01234567890ABCDE", HI2], ids=["smaller", "larger"]
+)
+@pytest.mark.parametrize("face", FACES)
+def test_the_repair_a_reorders_row_asks_for_holds_the_level_and_the_row_stays(
+    face: str, repair_id: str, chain: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T-29 operator action 2: N sets A's level again, depending on the last writer after M.
+
+    Depending on M alone leaves a migration that depends on M, and replays after N, serving
+    the lowered level.
+    """
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    lowering = depending_on(_label(face, D1, p.item_id, tight=False), ROOT_MIGRATION_ID)
+    steps = {"a": (LATE, _label(face, LATE, p.item_id, tight=True)), "m": (D1, lowering)}
+    for before, writer in zip((D1, *CHAINS[chain]), CHAINS[chain], strict=False):
+        restated = depending_on(_label(face, writer, p.item_id, tight=False), before)
+        steps[f"w{writer[-2:]}"] = (writer, restated)
+    _validate_then_apply(p, **steps)
+    row = [(D1, p.item_id, face, *MOVE[face], LATE, "reorders")]
+    assert _rows() == row
+
+    target = _repair_target(D1, CHAINS[chain])
+    write(
+        p.root, repair_id, "n", depending_on(_label(face, repair_id, p.item_id, tight=True), target)
+    )
+    cli_ok("migrate", "apply")
+
+    assert _rows() == row
+    assert item_row(p.root, p.item_id)[face] == ACCEPTED[face]
+
+
+def _upsert(migration_id: str, sensitivity: str) -> str:
+    """The root migration's upsert alone, re-id'd: restates the current revision's labels."""
+    text = root_migration(
+        item_id=ITEM_ID, revision_id=ROOT_REVISION_ID, namespace="backend",
+        sensitivity=sensitivity, trust_level="reviewed", status="approved",
+    ).replace(ROOT_MIGRATION_ID, migration_id)  # fmt: skip
+    return text[: text.index("  - op: createItem")] + text[text.index("  - op: upsertRevision") :]
+
+
+def test_a_larger_id_upsert_loosening_merged_against_id_order_is_reported_as_undoes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """0.5.1's upsert row: the larger-id L lowers what P raised, so L undoes P; no inversion."""
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    steps = {
+        "raise": (D1, _label("sensitivity", D1, p.item_id, tight=True)),
+        "l": (LATE, _upsert(LATE, "internal")),
+    }
+
+    validated, applied = _validate_then_apply(p, **steps)
+
+    row = [(LATE, p.item_id, "sensitivity", "confidential", "internal", D1, "undoes")]
+    assert (validated, applied) == (row, row)
+
+
+def test_an_upsert_raise_undone_by_a_larger_id_sanctioned_lowering_has_no_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    steps = {
+        "raise": (D1, _upsert(D1, "confidential")),
+        "l": (LATE, _label("sensitivity", LATE, p.item_id, tight=False)),
+    }
+
+    rows = _validate_then_apply(p, **steps)
+
+    assert rows == ([], [])
+    assert item_row(p.root, p.item_id)["sensitivity"] == "internal"
