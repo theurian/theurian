@@ -6903,7 +6903,7 @@ and the tenth is closed.
     it, whatever the landed operation or id
     (`application/permissive_moves.py :: loosened_after`, called from
     `proposal_service.py :: _refuse_a_landed_overwrite`), unless control 5,
-    which runs first, refuses it for the `reorders` row it would add.
+    which runs first, refuses it.
     `test_accept_refuses_a_replay_order_overwrite.py::test_a_restatement_after_the_proposal_hides_no_later_loosening`
     holds it for a raise to `confidential` undone by a landed
     `changeSensitivity` back to `internal`, and a deprecation undone by a
