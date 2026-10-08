@@ -24,6 +24,7 @@ from label_inheritance_support import (
     cli_ok,
     cli_propose,
     deprecation,
+    item_row,
     labelled_project,
     reclassification,
     runner,
@@ -229,6 +230,106 @@ def test_a_field_the_attributed_migration_wrote_twice_is_attributed_at_its_last_
     cli_ok("migrate", "apply")
 
     assert _rows() == [(D2, p.item_id, "sensitivity", "internal", "public", LATE, "reorders")]
+
+
+def _validate_then_apply(
+    p: LabelledProject, **migrations: tuple[str, str]
+) -> tuple[list[tuple[Any, ...]], list[tuple[Any, ...]]]:
+    """Write each ``name=(id, text)``; the rows ``validate`` then ``apply`` report."""
+    for name, (migration_id, text) in migrations.items():
+        write(p.root, migration_id, name, text)
+    validated = _rows()
+    return validated, _shape(cli_ok("migrate", "apply")["permissiveMoves"])
+
+
+def _twice(migration_id: str, item_id: str, first: str, then: str) -> str:
+    """One migration writing the class ``first``, then ``then``."""
+    return reclassification(migration_id, item_id, first) + (
+        f"  - op: changeSensitivity\n    itemId: {item_id}\n"
+        f"    sensitivity: {then}\n    reason: restated\n"
+    )
+
+
+def test_a_migration_is_judged_against_the_writer_before_it_not_one_replaying_after_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GHSA-wwq9: "the field's largest-id writer" is read before the migration replays.
+
+    Z (the largest id) replays after M and raises the field past A's level. Read globally
+    Z is the attribution and M, found below Z's level, is no row; the engine names A.
+    """
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    raise_ = reclassification(D2, p.item_id, "confidential")
+    lower = depending_on(reclassification(D1, p.item_id, "internal"), ROOT_MIGRATION_ID)
+    raise_more = depending_on(reclassification(LATE, p.item_id, "restricted"), D1)
+
+    validated, applied = _validate_then_apply(
+        p, raise_=(D2, raise_), lower=(D1, lower), raise_more=(LATE, raise_more)
+    )
+
+    expected = [(D1, p.item_id, "sensitivity", "confidential", "internal", D2, "reorders")]
+    assert validated == expected
+    assert applied == expected
+
+
+def test_a_lowering_a_smaller_id_migration_raises_back_within_itself_is_no_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rows are decided at the migration's end: its intermediate lowering is not one."""
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    raise_ = reclassification(D2, p.item_id, "confidential")
+    lower_and_back = depending_on(
+        _twice(D1, p.item_id, "internal", "confidential"), ROOT_MIGRATION_ID
+    )
+
+    validated, applied = _validate_then_apply(p, raise_=(D2, raise_), lower=(D1, lower_and_back))
+
+    assert validated == []
+    assert applied == []
+
+
+def test_the_attribution_is_the_largest_id_writer_not_the_last_to_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """W (largest id) replays first, N (smaller, still above M) writes after it: M undoes W.
+
+    A smaller-id write never takes the attribution (R1), so N's later replay does not
+    move it.
+    """
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    first = reclassification(LATE, p.item_id, "confidential")
+    later = depending_on(reclassification(D2, p.item_id, "restricted"), ROOT_MIGRATION_ID)
+    lower = depending_on(reclassification(D1, p.item_id, "internal"), D2)
+
+    validated, applied = _validate_then_apply(p, w=(LATE, first), n=(D2, later), m=(D1, lower))
+
+    expected = [(D1, p.item_id, "sensitivity", "restricted", "internal", LATE, "reorders")]
+    assert validated == expected
+    assert applied == expected
+
+
+def test_a_reorders_rows_after_is_not_the_label_the_item_is_served_with(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A further lowering is no second row, so read the item's current label, not ``after``.
+
+    T-28 residual 5 and ``docs/protocol/migrations.md``'s ``reorders`` section: the row
+    records the migration's own end (``confidential``), and a later lowering that found
+    the field below the attributed level leaves it ``internal`` unreported.
+    """
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    raise_ = reclassification(LATE, p.item_id, "restricted")
+    first = depending_on(reclassification(D1, p.item_id, "confidential"), ROOT_MIGRATION_ID)
+    further = depending_on(reclassification(D2, p.item_id, "internal"), D1)
+
+    validated, applied = _validate_then_apply(
+        p, raise_=(LATE, raise_), first=(D1, first), further=(D2, further)
+    )
+
+    expected = [(D1, p.item_id, "sensitivity", "restricted", "confidential", LATE, "reorders")]
+    assert validated == expected
+    assert applied == expected
+    assert item_row(p.root, p.item_id)["sensitivity"] == "internal"
 
 
 def _update_then_deprecation(p: LabelledProject, writer: str, *, edge: bool) -> str:
