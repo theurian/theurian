@@ -6947,7 +6947,7 @@ the replay order is not the order the migrations were reviewed in.** Named by
 its root cause: `MigrationSet._topological_order` (`domain/migration.py`)
 replays in Kahn rounds, each sorted by migration id. So a migration that
 declares `dependsOn` replays after every one that declares none, whatever the
-ids, and migrations no `dependsOn` separates replay in id order, whatever
+ids, and within one round of the sort migrations replay in id order, whatever
 order they merged in. No diff shows which of two writes replays last. T-28
 holds what a drafted update asserts about an item's labels; this entry holds
 the order the writes replay in. The function's body is the same at
