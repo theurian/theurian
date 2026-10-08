@@ -34,16 +34,22 @@ enforces that nobody has hand-modelled yet, this still catches, the day it is
 added to the engine.
 
 **A third, content-shaped check, and why the first two are not enough.** The
-adversarial re-confirmation reproduced the gap directly: ``git revert
---no-commit d515bef`` (the ADR-0013 re-seed's *payload* -- the body and the
-migration's ``contentSha256``, not its ``expectedRevision`` pin) leaves the
-whole suite green at the same test count, because both the revision-id
-equality above and the static chain rule key on *identifiers*, and a reverted
-payload still carries the seed's own identifiers. Content, not an id, is what
-actually moved; the applied store's current body for the re-seeded item is
-therefore also checked for the corrected claim (``#414`` and the wording it
-introduced) and against neither retracted pattern the source ADR corrected
-(``reports proposal age``, ``warns past a threshold``). Content-shaped rather
+adversarial re-confirmation reproduced the gap directly (2026-08-31, before
+#832): reverting the ADR-0013 re-seed's *payload* -- the body bytes and the
+migration's ``contentSha256``, ids kept, not its ``expectedRevision`` pin --
+left the whole suite green at the same test count, because both the
+revision-id equality above and the static chain rule key on *identifiers*, and
+a reverted payload still carries the seed's own identifiers. Content, not an
+id, is what actually moved; the applied store's current body for the re-seeded
+item is therefore also checked for the corrected claim (``#414`` and the
+wording it introduced) and against neither retracted pattern the source ADR corrected
+(``reports proposal age``, ``warns past a threshold``). Before #832 that
+check alone caught the revert. Since #832 made the ``01M4D4F0J3BRF1J3V6PMWT82CW``
+body current, the superseded #416-era body (``01M1B1XCAVJZKQQ6FWNADKRM69``)
+carries ``#414`` and ``owed, not`` once each as well, so reverting the
+*current* payload to it passes those two substrings and is caught by the
+``"B5's"`` entry of :data:`_RESEED_PAYLOAD_MARKERS` (0 occurrences there, 1 in
+the current body). Content-shaped rather
 than revision-id-shaped, deliberately: an id-keyed check stops distinguishing
 the correction from the retraction the moment either is reverted while ids
 stay pinned, and a *future*, legitimate re-seed changes the current revision
@@ -181,8 +187,9 @@ MIGRATIONS_DIRECTORY: Final = REPO_ROOT / ".theurian" / "migrations"
 #: figures afterwards, and moved them in the live record rather than here.
 MINIMUM_KNOWLEDGE_ITEMS: Final = 26
 
-#: The item whose current revision and applied body the ``#414`` assertions
-#: check by hand, after a from-empty apply.
+#: The item the by-hand assertions check after a from-empty apply: its
+#: ``current_revision_id`` equals ``current_revision_in`` of the loaded set, and
+#: its current body carries ``#414`` and ``owed, not`` and neither retracted claim.
 _RESEEDED_ITEM: Final = ItemId("architecture.ai-writes-produce-proposals")
 
 
@@ -248,8 +255,9 @@ class _PayloadMarker:
 #: substrings rather than one contiguous phrase). An issue reference is one
 #: instance of that property rather than the only one, which matters because
 #: several items carry no ``#NNN`` whose count is unique to their current
-#: text; those are keyed on a backticked identifier or a measured figure the
-#: same correction introduced. How many is not recorded here -- it moves with
+#: text; those are keyed on whatever token the same correction introduced -- a
+#: backticked identifier or test cite, a measured figure, an ADR number or a
+#: possessive phrase (``T-17a's``, ``B5's``). How many is not recorded here -- it moves with
 #: every re-seed, and the entries below are the live answer.
 #:
 #: **The two twins that waited have landed.** ADR-0022
@@ -337,8 +345,8 @@ _RESEED_PAYLOAD_MARKERS: Final[tuple[_PayloadMarker, ...]] = (
     # Re-measured 2026-10-08 for #832's re-seed: `#145` counts 1 in both the new
     # body and the revision it replaced. The test-name cite below counts 1 in the new
     # body and 0 in all four earlier corpus bodies and at every source commit before
-    # 011441b3; the token starts `tests/integration/…`, because the bare test name
-    # also counts 1 at earlier points.
+    # 011441b3; the token is path-qualified, because the bare test name also
+    # counts 1 at earlier points.
     _PayloadMarker(
         ItemId("architecture.raptor-forest"),
         "`tests/integration/test_index_schema_v4.py::test_a_node_row_does_not_move_a_leaf_chunks_bm25_score`",
@@ -648,9 +656,10 @@ def test_the_committed_root_corpus_applies_cleanly_to_an_empty_store(tmp_path: P
     assert "#414" in body and "owed, not" in body, (
         f"the applied body for {_RESEEDED_ITEM.value} (revision {current_revision}) does not "
         f"carry the #414 correction ('#414' and 'owed, not' both expected as substrings). "
-        f"`git revert --no-commit d515bef` -- the re-seed's payload, not its expectedRevision "
-        f"pin -- leaves every other assertion in this test green at the same revision id; "
-        f"this is the check ADV-RC MEDIUM-1 asked for that would not."
+        f"Before #832, reverting the re-seed's payload (body bytes plus contentSha256, ids "
+        f"kept) left every other assertion green and only this check red. Since #832 it reads "
+        f"the current body, which the superseded #416-era body also matches on both "
+        f'substrings, so a revert to that body is caught by the "B5\'s" marker below instead.'
     )
     assert "reports proposal age" not in body, (
         f"the applied body for {_RESEEDED_ITEM.value} (revision {current_revision}) still "

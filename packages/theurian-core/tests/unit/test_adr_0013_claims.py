@@ -53,14 +53,19 @@ must not be told it covers more than it does.
 
 **Two named files, and the corpus twin is deliberately not one of them.**
 ``.theurian/knowledge/architecture/ai-writes-produce-proposals.<ulid>.md`` now
-glob-matches two revision bodies of this ADR, not one. The **served** revision --
-re-seeded through ``propose``/``accept`` in
-https://github.com/theurian/theurian/issues/416 -- carries the corrected text and
-no longer carries the uncorrected sentence: a reader of ``knowledge.get`` on that
-item sees the same "owed, not shipped" wording this file pins. The
+glob-matches every revision body of this ADR, not one (three, measured
+2026-10-08 at ``e11d0352``, a commit on #903's branch and not on ``main``, with
+``ls`` over the ``ai-writes-produce-proposals.*`` glob).
+The **served** revision is the latest re-seed's, ``01M4D4F0J3BRF1J3V6PMWT82CW``
+(https://github.com/theurian/theurian/issues/832); it carries the corrected text
+and no longer carries the uncorrected sentence: a reader of ``knowledge.get`` on
+that item sees the same "owed, not shipped" wording this file pins. The
 **superseded** body,
 ``ai-writes-produce-proposals.01M0D5GZD9VSWC2JNVH51P8K3P.md``, still carries the
-uncorrected sentence, byte-frozen as history rather than left there by drift.
+uncorrected sentence, byte-frozen as history rather than left there by drift. (The
+other superseded body, ``01M1B1XCAVJZKQQ6FWNADKRM69``, is the one
+https://github.com/theurian/theurian/issues/416 re-seeded through
+``propose``/``accept``; it carries the corrected sentence.)
 That is correct *for its own anchor* and required by replay-from-empty (FR-K4):
 the dogfood corpus is held byte-identical to its source anchor commit by
 ``test_dogfood_corpus_governance.py::test_every_pinned_body_is_byte_identical_to_its_source_anchor_commit``,
