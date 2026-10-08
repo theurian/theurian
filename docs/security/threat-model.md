@@ -6877,12 +6877,12 @@ and the tenth is closed.
 5. **A hand-authored migration runs no floor, by design.** `migrate apply`
    applies what was merged. Its upserts are reported; a sanctioned
    `restoreItem` or `changeSensitivity` only as `reorders` (0.5.2), by control
-   4's rule, and in id order not at all (residual 9); none is prevented, for the
+   4's rule, and in id order not at all (T-29 residual 2); none is prevented, for the
    reason ADR-0032's 2026-10-06 amendment records. A `reorders` row's `after`
    is where its own migration left the field, and a further lowering that
    starts below the attributed level is not another such row, so read the
    item's current label, not `after`.
-6. **Moved to T-29, its residual 1:** the post-accept race.
+6. **Moved to T-29, its residual 1:** the post-accept race (2026-10-08).
 7. **One migration is one reviewed diff.** A migration that withdraws and
    re-asserts an item, or lowers and restores it, nets out and is not
    reported: its end is no looser than its start, and its reviewer saw both
@@ -6894,7 +6894,7 @@ and the tenth is closed.
    `approved` alone. So the race, or a `dependsOn` replay, can put such an item
    back in front of a default caller with no row.
 9. **Moved to T-29, its residual 2:** two sanctioned label operations merged
-   against their id order.
+   against their id order (2026-10-08).
 10. **Closed in 0.5.2.** An accept whose withdrawal or raise a landed sanctioned
     operation with a later migration id undoes was accepted, with no report
     row. `accept` now refuses it on the field's end state: exit 1 and nothing
@@ -6937,7 +6937,7 @@ and `review.generateKnowledgeCandidate` and `theurian okf import` name
 floors do not compare; a write-intent tool that reaches `changeSensitivity` or
 `restoreItem`; an `accept` path that lands a proposal without both replays; a
 served path that returns `permissiveMoves`, whose rows name labels an item
-held before it was loosened; or the race reached without a human merging both
+held before it was loosened; T-29 holds the race reached without a human merging both
 migrations.
 
 #### T-29 — The replay order decides which of two reviewed label writes an item ends with, so a landed migration undoes what a later proposal set (Tampering / Information disclosure, **Critical** as shipped (GHSA-wwq9-p8wq-5m68) — closed at `accept` in 0.5.2, but for an in-place withdrawal to `draft` or `proposed` (T-28 residual 8); without `accept`, or after it, reported at most and never refused)
