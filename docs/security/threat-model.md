@@ -6995,8 +6995,10 @@ symbol is in `application/proposal_service.py` unless another module is named:
 2. **The end-state refusal, at `accept`, after control 5**
    (`_refuse_a_landed_overwrite`, with
    `application/permissive_moves.py :: loosened_after`): T-28 residual 10.
-   It also refuses where control 5 has no row, as for a landed loosening with
-   a larger id than the proposal's.
+   It also refuses where control 5 has no row, as for a landed
+   `changeSensitivity` lowering or `restoreItem` with a larger id than the
+   proposal's (of `application/permissive_moves.py :: LabelWrite`, the two
+   that can loosen); for an `upsertRevision` there, control 5 has the row.
 3. **T-28 control 4's `kind: "reorders"` rows**
    (`application/permissive_moves.py :: _reordered`), for a migration merged
    as a file, or after an accept, by the rule
@@ -7042,9 +7044,10 @@ for migration ids that sort that way.
    whatever order they merged in, and neither is an upsert. It is the same
    ordering root cause as residual 1, outside the upsert class the report
    covers. With a `dependsOn`, see T-28 residual 5 and `reorders`.
-3. **A loosening with a larger id than a migration merged after it replays
-   last, with no row.** P (id 100), merged after L (id 300), raises an
-   `internal` item to `confidential`, and L lowers it to `internal`, neither
+3. **A `changeSensitivity` lowering or `restoreItem` with a larger id than a
+   migration merged after it replays last, with no row.** P (id 100), merged
+   after L (id 300), raises an `internal` item to `confidential`, and L, a
+   `changeSensitivity`, lowers it to `internal`, neither
    declaring `dependsOn`: they replay P, L, the item ends `internal`, and
    `permissiveMoves` is `[]`, since L is simply the later id and there is no
    inversion for `reorders` to see. With X (id 200, `dependsOn` the root)
@@ -7053,9 +7056,11 @@ for migration ids that sort that way.
    the item ends `confidential`. The status face, a deprecation undone by a
    `restoreItem`, ends `approved` with `[]` both ways, and `deprecated` when L
    declares none. Measured on main at 8d7e2f09 on 2026-10-08, through the CLI.
-   It generalises residual 2 to any operation in P's place. Accepted rather
-   than merged as a file, P is refused by the end-state refusal: measured the
-   same way, a drafted raise (or deprecation), then a larger-id lowering (or
+   It generalises residual 2 to any operation in P's place; an
+   `upsertRevision` in L's place is reported, `kind: undoes` (the migration
+   format's *What is reported*). Accepted rather than merged as a file, P is
+   refused by the end-state refusal: measured the same way, a drafted raise
+   (or deprecation), then a larger-id `changeSensitivity` lowering (or
    `restoreItem`) with no `dependsOn`, exits 1 in that refusal's words, naming
    L, with nothing moved.
 4. **A tightening inversion is neither refused nor reported**: `reorders`
@@ -8080,7 +8085,7 @@ fix.
 | T-26 | A canonical read materialises a withheld item's body before the gate, so a refusal's timing carries the body's size | I | High | Closed in 0.2.3 — bodyless `get_item_metadata`/`get_item_exact_metadata` gate the three read paths (`knowledge.get`, `_relation_is_visible`, `_may_surface`) on the pointer row, a body read only after a row clears the gate (GHSA-3f65 preserved). ADR-0032's write-intent surface adds a fourth consumer — `proposeChange`'s caller-scoped lookup (`current_revision`, renamed `current_item` in 0.5.1) — also body-free (`get_item_metadata`), closed on the write path at slice B4 (0.3.0) with a content-independent ~9 µs existence residual ~155× below the same floor. Size-independent **by construction**: `_ITEM_METADATA_SQL` projects only `knowledge_items` columns and materialises no body, pinned bidirectionally by the zero-body-read counters (`test_pre_gate_body_materialization.py`) and the explicit-column projection fact test (`test_gate_call_sites.py`, RED on a `SELECT *` or a revisions join — closing the counters' method-name-keyed blind spot). Corroborated out of band: refusal identical at 256 B and 8 MiB, ~175× below TB-1's 1.40 ms floor (work log 2026-09-16-t26-timing). A canonical-store body-materialisation channel, distinct from T-17a (derived-index statistics) and T-22 (a per-row count term, #338) |
 | T-27 | A distributed OKF bundle holds knowledge this deployment has since withdrawn | I | High | Accepted residual, recorded ([ADR-0037](../adr/0037-okf-is-the-knowledge-layer-interchange.md) *What this does not close* item 1). Four controls, three of them operator-side — the bundle is Index-class, `theurian_bundle_digest` makes staleness detectable by regenerate-and-compare, and the shipped guidance is regenerate-never-edit — and **one that travels**: the manifest's mandatory fixed-text holder notice. Export-side surface recorded in the entry: no bundle file carries SEC-15's safety triple (unowned); a body's rendered sections are not authenticated against the front matter ([#814](https://github.com/theurian/theurian/issues/814)); containment is at or under the canonical export target, with ancestor links followed and a dangling one's chain created — bounded to name occupation — and the check-to-use component race left with [#577](https://github.com/theurian/theurian/issues/577). The concurrent-merge face is closed by the atomic publish, not accepted |
 | T-28 | A content update re-asserts an existing item's governance labels, so an accepted proposal lowers its sensitivity or readmits it | T/I | High | Closed in 0.5.1 at draft and `accept` — GHSA-v2qg-23fc-7fqp — but for an in-place withdrawal to `draft` or `proposed` (residual 8). Omitted labels inherit the item's own; a lower sensitivity and a retired item are refused at draft and by two `accept` floors comparing replayed state; `accept` never introduces or re-attributes a report row (control 5), and 0.5.2 adds the end-state refusal (residual 10). The replay order — GHSA-wwq9-p8wq-5m68, the post-accept race and a hand-authored migration's inversion — is T-29. Seven open residuals, one closed and two moved to T-29, recorded in the entry |
-| T-29 | The replay order decides which of two reviewed label writes an item ends with, so a landed migration undoes what a later proposal set | T/I | Critical | Closed at `accept` in 0.5.2 — GHSA-wwq9-p8wq-5m68 — by T-28's control 5 and its residual 10's end-state refusal, but for an in-place withdrawal to `draft` or `proposed` (T-28 residual 8). Without `accept`, or after it, T-28 control 4 reports `reorders` rows and refuses nothing. Four open residuals, recorded in the entry: the post-accept race; two sanctioned operations, and any loosening with a larger id, merged against id order; and the tightening inversion ([#897](https://github.com/theurian/theurian/issues/897)) |
+| T-29 | The replay order decides which of two reviewed label writes an item ends with, so a landed migration undoes what a later proposal set | T/I | Critical | Closed at `accept` in 0.5.2 — GHSA-wwq9-p8wq-5m68 — by T-28's control 5 and its residual 10's end-state refusal, but for an in-place withdrawal to `draft` or `proposed` (T-28 residual 8). Without `accept`, or after it, T-28 control 4 reports `reorders` rows and refuses nothing. Four open residuals, recorded in the entry: the post-accept race; two sanctioned operations merged against id order, and a `changeSensitivity` lowering or `restoreItem` replaying last by its larger id; and the tightening inversion ([#897](https://github.com/theurian/theurian/issues/897)) |
 
 ## Explicitly out of scope
 

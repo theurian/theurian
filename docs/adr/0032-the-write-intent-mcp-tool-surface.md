@@ -1261,7 +1261,9 @@ stated beside the number so a reader can attack the key and not only the count.
 >
 > **The tightening inversion is the recorded cost of keeping the order.**
 > `reorders` is loosening-only, so a `dependsOn` migration that tightens a
-> label after a larger-id loosening wins with no row and no refusal. Nothing
+> label after a larger-id `changeSensitivity` lowering or `restoreItem`
+> (`application/permissive_moves.py :: LabelWrite`) wins with no row and no
+> refusal. Nothing
 > is disclosed; a reviewed declassification or readmission is lost silently.
 > T-29 residual 4 records it, measured. It is the clearest argument for (C),
 > whose order follows ids in both directions wherever `dependsOn` allows.
