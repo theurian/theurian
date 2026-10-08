@@ -148,6 +148,9 @@ def _refusal_names(
     propose`` is no route for any of them.
     """
     error = str(payload.get("error", ""))
+    assert "undoing what this proposal sets" in error, (
+        payload
+    )  # the report check's, not the end-state's
     for named in (landed_id, *names):
         assert named in error, (named, payload)
     if moved is not None:
