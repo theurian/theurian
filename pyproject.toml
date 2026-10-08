@@ -16,11 +16,11 @@ dev = [
     # A development dependency only. It is absent from the published wheel's
     # `dependencies` and from every extra, so nothing a user installs gains it.
     "hypothesis==6.168.3",
-    "mypy==2.3.1",
+    "mypy==2.4.0",
     "pytest-asyncio==1.4.0",
     "pytest-cov==7.1.0",
     "pytest==9.1.1",
-    "ruff==0.16.9",
+    "ruff==0.16.10",
     "types-jsonschema==4.26.0.20260518",
     "types-pyyaml==6.0.12.20260906",
     # `[all]` so a single `uv sync` at the repo root gives contributors the
