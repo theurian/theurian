@@ -435,7 +435,7 @@ jobs:
       # before the required reviewer has seen anything. `v8` is a lightweight
       # tag the upstream repository can move. (Nothing else in this repository
       # is digest-pinned yet; that is a larger change than this PR.)
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: release-artifacts
           path: artifacts
@@ -646,7 +646,7 @@ jobs:
     steps:
       # Digest-pinned for the same reason as in `draft-release`: this job holds
       # `id-token: write`, which mints the credential PyPI trusts.
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: release-artifacts
           path: artifacts
