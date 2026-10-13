@@ -7153,10 +7153,18 @@ report exactly one row: the `dependsOn` migration's, `kind: reorders`,
 2. To repair a `reorders` row whose `undoes` set the level meant to hold,
    read the last migration in `migrate validate`'s `applicationOrder` that
    writes the row's field: often the row's `migrationId`, but read it, never
-   assume it. If it sets that field at or above the row's `before` (for
-   `status`, retires the item), leave it. Otherwise merge a new migration
+   assume it. What it writes is the level it leaves the item's field at when
+   it replays: an `upsertRevision` writes both fields, `sensitivity` as
+   `internal` if it omits it. If it sets that field at or above the row's
+   `before` (for `status`, retires the item), leave it. Only `deprecated`,
+   `superseded` and `rejected` retire it; a write to `draft` or `proposed`
+   does not. Otherwise merge a new migration
    that sets the row's `before` again and declares `dependsOn` on that
-   migration. Do not decide this by `knowledge.get`: it withholds an item for
+   migration. Repair with the operation that writes only the row's field:
+   `changeSensitivity` for `sensitivity`, `deprecateItem` for `status`,
+   which retires it again. An `upsertRevision` writes every label, so a
+   stale label in it undoes a write to the other field that replays before
+   it. Do not decide this by `knowledge.get`: it withholds an item for
    either field, and at any level above the ceiling. Any other migration that
    writes the field and replays after the repair's dependency can replay
    after the repair. A repair depending on the row's migration alone left the
