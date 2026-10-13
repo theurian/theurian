@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import Final, get_args
 
 import pytest
-from threat_model_claims import SPELLED_NUMBERS, entry_in, prose
+from record_sentences import sentences
+from threat_model_claims import SPELLED_NUMBERS, entry, entry_in, prose
 from write_lock_claims import REPO_ROOT
 
 from theurian import __version__
@@ -84,17 +85,16 @@ def test_each_statement_of_the_reorders_rule_carries_its_conditions(
     assert _flat(phrase) in region, f"{name} lost {cond}: {phrase!r} not in {region!r}"
 
 
-def _population(key: re.Pattern[str], *, flat: bool = False) -> dict[str, int]:
-    files = [
-        p
-        for r in ("docs", _SRC, "plugins")
-        for p in (ROOT / r).rglob("*")
-        if p.suffix in {".md", ".py"}
-    ]
-    texts = {
-        p.relative_to(ROOT).as_posix(): p.read_text(encoding="utf-8")
-        for p in [*files, ROOT / _CHANGELOG]
+def _texts(roots: tuple[str, ...], suffixes: set[str]) -> dict[str, str]:
+    """The Core CHANGELOG and every file under *roots* with one of *suffixes*, by repo-relative path."""
+    paths = [p for r in roots for p in (ROOT / r).rglob("*") if p.suffix in suffixes]
+    return {p.relative_to(ROOT).as_posix(): p.read_text(encoding="utf-8") for p in paths} | {
+        _CHANGELOG: _read(_CHANGELOG)
     }
+
+
+def _population(key: re.Pattern[str], *, flat: bool = False) -> dict[str, int]:
+    texts = _texts(("docs", _SRC, "plugins"), {".md", ".py"})
     counts = {rel: len(key.findall(_flat(t) if flat else t)) for rel, t in texts.items()}
     return {rel: n for rel, n in sorted(counts.items()) if n}
 
@@ -278,8 +278,7 @@ def test_the_changelogs_quoted_refusal_messages_match_the_templates_that_produce
         ("_refuse_a_landed_overwrite", "loosen what it sets"),
     ):
         source = inspect.getsource(getattr(proposal_service, fn))
-        if singular := re.search(r'landed = "([^"]*)" if', source):
-            source = source.replace("{landed}", singular[1])
+        source = source.replace("{landed}", _match(r'landed = "([^"]*)" if', source)[1])
         source = re.sub(r'\{[^}]*\}|\bf"|"', "", source)
         template = " ".join(_flat(source).replace("'", "").split())
         found = [q for q in quotes if key in q]
@@ -289,13 +288,15 @@ def test_the_changelogs_quoted_refusal_messages_match_the_templates_that_produce
                 assert " ".join(fragment.replace("'", "").split()) in template, (fn, fragment)
 
 
-def _t29() -> str:
-    return entry_in(_read(_TM), "T-29")
-
-
 def _between(raw: str, start: str, end: str) -> str:
     assert raw.count(start) == 1, f"{start!r} occurs {raw.count(start)} times"
     return raw.split(start, 1)[1].split(end, 1)[0]
+
+
+def _wwq9_amendment() -> str:
+    return _between(
+        _read(_ADR), "**Amended by GHSA-wwq9-p8wq-5m68 (2026-10-08).**", "**Amended by GHSA-fjqq"
+    )
 
 
 def _items(block: str) -> list[str]:
@@ -303,7 +304,7 @@ def _items(block: str) -> list[str]:
 
 
 def _actions() -> list[str]:
-    return _items(_between(_t29(), "**Operator actions.**", "**What would reopen"))
+    return _items(_between(entry("T-29"), "**Operator actions.**", "**What would reopen"))
 
 
 def test_the_repair_rule_names_the_last_writer_in_applicationorder_and_says_to_read_it() -> None:
@@ -353,7 +354,7 @@ def test_action_three_names_every_landed_writer_in_replay_order() -> None:
 def test_the_severity_premise_names_the_residuals_that_need_a_human_merge() -> None:
     """Residual 4 is reached through `accept` with a hand-edited `dependsOn`, so "every residual
     needs a human to merge" overstates the premise the grade rests on."""
-    severity = _flat(_between(_t29(), "**Severity:", "**Controls (0.5.2)"))
+    severity = _GRADE_SITES["severity paragraph"]()
 
     assert "residuals 1 to 3 need a human to merge the migrations without accept" in severity
     assert (
@@ -366,7 +367,9 @@ def test_the_severity_premise_names_the_residuals_that_need_a_human_merge() -> N
 _GRADE_SITES: Final = {
     "heading": lambda: _flat(_match(r"(?m)^#### T-29 .*$", _read(_TM))[0]),
     "summary row": lambda: _row("T-29"),
-    "severity paragraph": lambda: _flat(_between(_t29(), "**Severity:", "**Controls (0.5.2)")),
+    "severity paragraph": lambda: _flat(
+        _between(entry("T-29"), "**Severity:", "**Controls (0.5.2)")
+    ),
 }
 
 
@@ -381,7 +384,7 @@ def test_t_29_is_graded_critical_as_shipped_and_high_after_0_5_2_at_each_site(si
 
 
 def test_every_t_29_residual_is_stated_open_in_both_releases() -> None:
-    residuals = _flat(_between(_t29(), "**Residuals.**", "1. **"))
+    residuals = _flat(_between(entry("T-29"), "**Residuals.**", "1. **"))
 
     assert residuals.startswith("all four are open in 0.5.2 and 0.5.3.")
 
@@ -418,8 +421,8 @@ def test_control_two_points_at_where_the_larger_id_refusal_is_measured() -> None
     """Control 2 once predicted which check meets a landed write first ("control 5 has the
     row"); the prediction was stated where it was not measured and was false for a restating
     history."""
-    controls = _between(_t29(), "**Controls (0.5.2).**", "**What holds it.**")
-    second = _items(controls[controls.index("1. ") :])[1]
+    controls = _between(entry("T-29"), "**Controls (0.5.2).**", "**What holds it.**")
+    second = _items(controls)[1]
 
     assert "is stated where it was measured: t-28 control 5 and residual 10" in second
     assert "has the row" not in second and "has no row" not in second
@@ -427,13 +430,7 @@ def test_control_two_points_at_where_the_larger_id_refusal_is_measured() -> None
 
 def test_the_adr_names_the_tightening_inversion_without_the_no_row_wording() -> None:
     """The amendment points at T-29 residual 4 for what each history ends at and reports."""
-    amendment = _flat(
-        _between(
-            _read(_ADR),
-            "**Amended by GHSA-wwq9-p8wq-5m68 (2026-10-08).**",
-            "**Amended by GHSA-fjqq",
-        )
-    )
+    amendment = _flat(_wwq9_amendment())
 
     assert (
         "a dependson migration that tightens a label can replay after a larger-id changesensitivity lowering or restoreitem, and reorders covers the loosening direction only. t-29 residual 4 records the histories measured"
@@ -482,17 +479,6 @@ _E8C7_ADR_PARAGRAPH: Final = """\
 """
 
 
-def _sentences(text: str) -> list[str]:
-    return re.split(r"(?<=\.)\s+", _flat(text))
-
-
-def _markdown_texts() -> dict[str, str]:
-    paths = [p for r in ("docs", "plugins") for p in (ROOT / r).rglob("*.md")]
-    return {p.relative_to(ROOT).as_posix(): p.read_text(encoding="utf-8") for p in paths} | {
-        _CHANGELOG: _read(_CHANGELOG)
-    }
-
-
 #: The key: a sentence naming one check (`control 5`, `report check`, `end-state refusal`) and
 #: a speaks-first verb. It reads the flattened sentences of docs/, plugins/ and the Core
 #: CHANGELOG; a prediction worded with neither term (or in src/) is not caught.
@@ -509,7 +495,7 @@ def _predictions(texts: dict[str, str]) -> list[tuple[str, str]]:
     return [
         (rel, sentence)
         for rel, text in texts.items()
-        for sentence in _sentences(text)
+        for sentence in sentences(_flat(text))
         if _CHECK_NAME.search(sentence) and _SPEAKS_FIRST.search(sentence)
     ]
 
@@ -531,7 +517,7 @@ def test_every_sentence_predicting_which_check_speaks_first_is_ruled_with_its_co
     condition, and it was false for a history that restates a label. A prediction of which check
     meets a landed write first holds only on the histories it states, so each one in the
     docs is listed with the condition it keeps stating; a new or unconditioned one is RED."""
-    hits = _predictions(_markdown_texts())
+    hits = _predictions(_texts(("docs", "plugins"), {".md"}))
 
     assert _unruled(hits) == []
     assert len(hits) == len(_PREDICTIONS_RULED), "an allowlist entry matches no sentence"
@@ -553,7 +539,7 @@ _TEST_CITE = re.compile(r"::test_")
 #: which is how the e8c7be23 control 2 sentence used it.
 _POINTER = re.compile(r"\bt-2\d\b")
 _EXISTENTIAL = re.compile(r"\bcan\b")
-_HISTORY = re.compile(r"\bthey replay\b|\bends?\b")
+_HISTORY = re.compile(r"\bends?\b")
 _MEASURED = re.compile(r"measured on .{1,60}? on 20\d\d-\d\d-\d\d")
 #: sentence start | why it is not anchored by a rule above
 _NO_ROW_HISTORY: Final = [
@@ -567,9 +553,9 @@ def _no_row_unanchored(raw: str) -> list[str]:
     stripped = re.sub(r"(?m)^\s*(?:#:?|>) ?", "", raw)
     unanchored = []
     for unit in re.split(r"\n\s*\n|\n(?=\d+\. )", stripped):
-        sentences = _sentences(re.sub(r"^\s*\d+\. ", "", unit))
+        found = sentences(_flat(re.sub(r"^\s*\d+\. ", "", unit)))
         cited = bool(_TEST_CITE.search(_flat(unit)))
-        for sentence in sentences:
+        for sentence in found:
             if not _ROW_OUTCOME.search(sentence):
                 continue
             anchored = (
@@ -583,22 +569,14 @@ def _no_row_unanchored(raw: str) -> list[str]:
     return unanchored
 
 
-def _no_row_sites() -> str:
-    adr = _between(
-        _read(_ADR), "**Amended by GHSA-wwq9-p8wq-5m68 (2026-10-08).**", "**Amended by GHSA-fjqq"
-    )
-    return _t29() + "\n\n" + adr
-
-
 def test_every_sentence_stating_a_row_outcome_in_t_29_and_the_adr_is_anchored() -> None:
-    """The no-row wording sat unanchored at three sites and was false at two: a sentence stating
-    a row outcome (`no row|no report|reports nothing|[]|is not reported|neither refused nor
-    reported`) in T-29 or in ADR-0032's GHSA-wwq9 amendment must (a) cite a `::test_`, (b)
+    """The no-row wording sat unanchored at three sites and was false at two: a sentence
+    `_ROW_OUTCOME` matches in T-29 or in ADR-0032's GHSA-wwq9 amendment must (a) cite a `::test_`, (b)
     point at a `T-2N` entry, (c) be existential ("can") in an item or paragraph that cites a
-    `::test_`, or (d) walk a history ("they replay", "ends"), in an
+    `::test_`, or (d) walk a history ("ends"), in an
     item that cites a `::test_` and a dated "Measured on"; or be a recorded 0.5.1 sentence. A
     generalisation worded as a walk, or appended to a recorded sentence, is not caught."""
-    unanchored = _no_row_unanchored(_no_row_sites())
+    unanchored = _no_row_unanchored(entry("T-29") + "\n\n" + _wwq9_amendment())
 
     recorded = tuple(h.split("|")[0] for h in _NO_ROW_HISTORY)
 

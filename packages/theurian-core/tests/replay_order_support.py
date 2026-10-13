@@ -107,7 +107,9 @@ def declare_dependency(p: LabelledProject, drafted: dict[str, Any], *ids: str) -
     staged.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
 
 
-def get_is_withheld(p: LabelledProject) -> bool:
+def get_is_withheld(p: LabelledProject, **extra: object) -> bool:
+    """Whether ``knowledge.get`` refuses the item; *extra* joins its arguments."""
+    arguments = {"projectId": "demo", "itemId": p.item_id, **extra}
     with mcp_session(build_server(p.registry), p.root.parent / "wire") as call:
-        answer = call("knowledge.get", {"projectId": "demo", "itemId": p.item_id})
+        answer = call("knowledge.get", arguments)
     return bool(answer["result"]["isError"])

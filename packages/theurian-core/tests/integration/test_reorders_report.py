@@ -32,7 +32,6 @@ from label_inheritance_support import (
     root_migration,
     runner,
 )
-from mcp_wire_session import mcp_session
 from replay_order_support import (
     ACCEPTED,
     D1,
@@ -41,13 +40,13 @@ from replay_order_support import (
     declare_dependency,
     depending_on,
     draft,
+    get_is_withheld,
     history,
     restoration,
     write,
 )
 
 from theurian.cli.main import app
-from theurian.daemon.runner import build_server
 
 pytestmark = pytest.mark.integration
 
@@ -476,8 +475,7 @@ def _repair_target(chain: str, *later: str) -> str:
     return str([m for m in cli_ok("migrate", "validate")["applicationOrder"] if m in writes][-1])
 
 
-REPAIR_IDS = ["01K1AAAAAB01234567890ABCDE", HI2]
-REPAIR_LABELS = ["smaller", "larger"]
+REPAIRS = {"smaller": "01K1AAAAAB01234567890ABCDE", "larger": HI2}
 
 
 def _lowered(p: LabelledProject, face: str, chain: str) -> list[tuple[Any, ...]]:
@@ -505,8 +503,8 @@ def _repaired(p: LabelledProject, face: str, repair_id: str, chain: str, *, last
 
 
 @pytest.mark.parametrize("face", FACES)
-@pytest.mark.parametrize("repair_id", REPAIR_IDS, ids=REPAIR_LABELS)
-@pytest.mark.parametrize("chain", list(CHAINS))
+@pytest.mark.parametrize("repair_id", REPAIRS.values(), ids=list(REPAIRS))
+@pytest.mark.parametrize("chain", CHAINS)
 def test_the_repair_a_reorders_row_asks_for_holds_the_level_and_the_row_stays(
     face: str, repair_id: str, chain: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -523,7 +521,7 @@ def test_the_repair_a_reorders_row_asks_for_holds_the_level_and_the_row_stays(
 
 
 @pytest.mark.parametrize("face", FACES)
-@pytest.mark.parametrize("repair_id", REPAIR_IDS, ids=REPAIR_LABELS)
+@pytest.mark.parametrize("repair_id", REPAIRS.values(), ids=list(REPAIRS))
 @pytest.mark.parametrize("chain", ["same-round", "deep", "descending"])
 def test_a_repair_depending_on_the_rows_migration_alone_leaves_a_chain_loose(
     face: str, repair_id: str, chain: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -576,19 +574,10 @@ def test_an_upsert_raise_undone_by_a_larger_id_sanctioned_lowering_has_no_row(
     assert item_row(p.root, p.item_id)["sensitivity"] == "internal"
 
 
-def _withheld(p: LabelledProject, *, include_unapproved: bool = False) -> bool:
-    """Whether ``knowledge.get`` refuses the item, at the default ceiling."""
-    arguments: dict[str, object] = {"projectId": "demo", "itemId": p.item_id}
-    if include_unapproved:
-        arguments["includeUnapproved"] = True
-    with mcp_session(build_server(p.registry), p.root.parent / "wire") as call:
-        return bool(call("knowledge.get", arguments)["result"]["isError"])
-
-
 HI6 = "7ZZZZZZZZZ01234567890ABC06"
 
 
-@pytest.mark.parametrize("chain", list(CHAINS))
+@pytest.mark.parametrize("chain", CHAINS)
 def test_a_reorders_row_a_later_tightening_already_holds_needs_no_repair(
     chain: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -603,7 +592,7 @@ def test_a_reorders_row_a_later_tightening_already_holds_needs_no_repair(
     write(p.root, HI6, "tighten", tighten)
     cli_ok("migrate", "apply")
 
-    held = (_rows(), item_row(p.root, p.item_id)["sensitivity"], _withheld(p))
+    held = (_rows(), item_row(p.root, p.item_id)["sensitivity"], get_is_withheld(p))
 
     assert held == (row, "restricted", True)
     repair = reclassification(HI2, p.item_id, "confidential")
@@ -619,14 +608,14 @@ def _withdrawn_in_place(p: LabelledProject, depends_on: str) -> None:
     """An ``upsertRevision`` to ``draft``: a new revision over the root's, with its own body."""
     body = p.root / ".theurian/knowledge/architecture"
     (body / "auth-policy-l.md").write_bytes((body / "auth-policy.md").read_bytes())
-    text = root_migration(
-        item_id=ITEM_ID, revision_id=NEW_REVISION, namespace="backend",
-        sensitivity="internal", trust_level="reviewed", status="draft",
-    ).replace(ROOT_MIGRATION_ID, SORTS_AFTER_A_DRAFT)  # fmt: skip
-    text = text[: text.index("  - op: createItem")] + text[text.index("  - op: upsertRevision") :]
-    text = text.replace("auth-policy.md", "auth-policy-l.md").replace(
-        f"    revisionId: {NEW_REVISION}\n",
-        f"    revisionId: {NEW_REVISION}\n    expectedRevision: {ROOT_REVISION_ID}\n",
+    text = (
+        _upsert(SORTS_AFTER_A_DRAFT, "internal")
+        .replace("status: approved", "status: draft")
+        .replace("auth-policy.md", "auth-policy-l.md")
+        .replace(
+            f"    revisionId: {ROOT_REVISION_ID}\n",
+            f"    revisionId: {NEW_REVISION}\n    expectedRevision: {ROOT_REVISION_ID}\n",
+        )
     )
     write(p.root, SORTS_AFTER_A_DRAFT, "to-draft", depending_on(text, depends_on))
     cli_ok("migrate", "apply")
@@ -660,5 +649,5 @@ def test_a_repair_guard_needs_include_unapproved_after_an_in_place_withdrawal(
     labels = item_row(p.root, p.item_id)
     assert (labels["status"], labels["sensitivity"]) == ("draft", "internal")
     assert _rows() == row
-    assert _withheld(p) is True
-    assert _withheld(p, include_unapproved=True) is False
+    assert get_is_withheld(p) is True
+    assert get_is_withheld(p, includeUnapproved=True) is False
