@@ -331,20 +331,22 @@ jobs:
       # over: 90% progress at 895s before the 900s cap killed the step (job
       # 107975349094, 2026-09-25), a projected ~994s (~16.6 min) full run. A
       # step that reports a hung sandbox as a failed suite is the one thing
-      # this budget exists to prevent. The durable fix is a faster suite.
+      # this budget exists to prevent. The faster suite is #643, below.
       #
       # 2026-10-08: 20 -> 25, serial series: 12.4-18.3 min (runs 37742031132,
       # 37619183994, 37749832099, 37745174915, 37730922535, 37730754916,
       # 37733739856, 37749838629) and 20.2 min TIMED OUT (run 37747729558,
-      # c6cb5d05). Main's serial run 38055100740 took 849.62s; the 8-run
-      # serial range was 724-1087s.
+      # c6cb5d05).
       #
-      # #643: the step now runs `-n 4`. Cap kept at 25, sized from PR #924's
+      # #643: serial baseline, the 8 most recent green main runs (38055100740
+      # through 37341962993), step durations 861, 1052, 1087, 1077, 822, 881,
+      # 735 and 724s. The step now runs `-n 4`. Cap kept at 25, sized from PR #924's
       # CI, run 38363120459 (attempts 2-3 are reruns of this job only, same
       # commit f59a7eb4): 452s (job 115181779131), 273s (job 115194001100),
       # 456s (job 115196115424); 10553 passed, 98 skipped, 1 xfailed each.
       # 25 min is 3.3x the 456s maximum, inside the "roughly 3-4x p95,
-      # minimum 10" rule of tests/ci/test_job_timeouts.py. 10 is not
+      # minimum 10" rule of tests/ci/test_job_timeouts.py (the max of three
+      # as a p95 stand-in; the rule is stated for jobs). 10 is not
       # restored: 456s is 76% of 600s, too thin for a 273-456s spread. Three
       # samples is a small series; re-size from further runs, not from this
       # comment.
