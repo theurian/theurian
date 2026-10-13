@@ -1262,14 +1262,14 @@ stated beside the number so a reader can attack the key and not only the count.
 > (C), gated on #853; adopting it changes what upgraded projects serve, so it
 > is the maintainer's call.
 >
-> **The tightening inversion is the recorded cost of keeping the order.**
-> `reorders` is loosening-only, so a `dependsOn` migration that tightens a
-> label after a larger-id `changeSensitivity` lowering or `restoreItem`
-> (`application/permissive_moves.py :: LabelWrite`) wins with no row and no
-> refusal. Nothing
-> is disclosed; a reviewed declassification or readmission is lost silently.
-> T-29 residual 4 records it, measured. It is the clearest argument for (C),
-> whose order follows ids in both directions wherever `dependsOn` allows.
+> **The tightening inversion is the recorded cost of keeping the order.** A
+> `dependsOn` migration that tightens a label can replay after a larger-id
+> `changeSensitivity` lowering or `restoreItem`, and `reorders` covers the
+> loosening direction only. T-29 residual 4 records the histories measured,
+> merged as files and through `accept` with a hand-edited `dependsOn`, and
+> what each ends at, reports and discloses. It is the clearest argument for
+> (C), whose order follows ids in both directions wherever `dependsOn`
+> allows.
 
 > **Amended by GHSA-fjqq-grr7-53cc (2026-10-08).** At all three of
 > `_redraft_remedy`'s call sites the remedy now names in `dependsOn` every

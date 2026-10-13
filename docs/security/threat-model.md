@@ -7075,7 +7075,7 @@ for migration ids that sort that way.
    ordering root cause as residual 1, outside the upsert class the report
    covers. With a `dependsOn`, see T-28 residual 5 and `reorders`.
 3. **A `changeSensitivity` lowering or `restoreItem` with a larger id than a
-   migration merged after it replays last, with no row.** P (id 100), merged
+   migration merged after it can replay last, with no row.** P (id 100), merged
    after L (id 300), raises an `internal` item to `confidential`, and L, a
    `changeSensitivity`, lowers it to `internal`, neither
    declaring `dependsOn`: they replay P, L, the item ends `internal`, and
@@ -7089,12 +7089,16 @@ for migration ids that sort that way.
    `test_reorders_report.py::test_a_loosening_with_a_larger_id_replays_last_with_no_row` holds the three histories, both faces, at `[]` and those ends.
    It generalises residual 2 to any operation in P's place; an
    `upsertRevision` in L's place is reported, `kind: undoes` (the migration
-   format's *What is reported*). Accepted rather than merged as a file, P is
-   refused by the end-state refusal: measured the same way, a drafted raise
-   (or deprecation), then a larger-id `changeSensitivity` lowering (or
-   `restoreItem`) with no `dependsOn`, exits 1 in that refusal's words, naming
-   L, with nothing moved.
-4. **A tightening inversion is neither refused nor reported**: `reorders`
+   format's *What is reported*). With L declaring `dependsOn` on P and a
+   raise or deprecation E, with an id larger than L's, replaying between
+   them, L is a `reorders` row naming E
+   (`::test_validate_and_apply_report_the_dependson_migration_as_reordering_the_later_id`).
+   Accepted rather than merged as a file, a P drafted as an update of a
+   `confidential` item or as a deprecation exits 1 in the end-state refusal's
+   words, with nothing moved
+   (`test_accept_refuses_a_replay_order_overwrite.py::test_a_tightening_inversion_is_accepted_when_the_proposal_declares_dependson`,
+   before its edit).
+4. **A tightening inversion can be neither refused nor reported**: `reorders`
    covers the loosening direction only. On an `internal` item, C (id 100,
    `dependsOn` the root) raises it to `confidential`, H (id 200, `dependsOn`
    C) to `restricted`, and D (id 300, none) declassifies it to `internal`;
