@@ -313,25 +313,82 @@ def test_the_repair_rule_names_the_last_writer_in_applicationorder_and_says_to_r
     repair = _actions()[1]
 
     assert (
-        "declares dependson on the last migration in migrate validate's applicationorder that writes the field: often the row's migrationid, but read it, never assume it."
+        "read the last migration in migrate validate's applicationorder that writes the row's field: often the row's migrationid, but read it, never assume it."
+        in repair
+    )
+    assert (
+        "otherwise merge a new migration that sets the row's before again and declares dependson on that migration."
         in repair
     )
     assert "dependson: [<the row's migrationid>]" not in repair
     assert "is enough" not in repair
 
 
-def test_the_repair_guard_and_confirmation_each_serve_the_item_through_includeunapproved() -> None:
+def test_action_two_decides_leave_it_from_applicationorder_and_the_rows_before() -> None:
+    """`knowledge.get` answers jointly over status and sensitivity against one ceiling, so it is
+    no evidence of the row's own field
+    (`test_reorders_report.py::test_a_withheld_item_is_no_evidence_of_the_rows_field_level`);
+    the guard reads the writer the repair rule already reads, against the row's `before`."""
+    repair = _actions()[1]
+
+    assert (
+        "if it sets that field at or above the row's before (for status, retires the item), leave it."
+        in repair
+    )
+    assert (
+        "do not decide this by knowledge.get: it withholds an item for either field, and at any level above the ceiling."
+        in repair
+    )
+    assert repair.index("applicationorder") < repair.index("leave it") < repair.index("otherwise")
+
+
+#: Words that make a sentence a decision to repair or to leave a row alone.
+_DECISION = re.compile(r"leave it|repair|re-apply|still serves|already withholds")
+#: The opening of T-29 action 2 as it stood at 990cdf12 (`git show 990cdf12:docs/security/threat-model.md`),
+#: before 754675ec read the guard from applicationOrder; cut after the guard's two sentences.
+_990C_GUARD: Final = """\
+2. To repair a `reorders` row whose `undoes` set the level meant to hold: if
+   `knowledge.get`, called at the default ceiling, with
+   `includeUnapproved: true`, already withholds the
+   item, leave it: a later migration holds a tighter label. If it still
+   serves the item, merge a new migration that sets that level again
+"""
+
+
+def _knowledge_get_decisions(actions: list[str]) -> list[str]:
+    return [
+        sentence
+        for action in actions
+        for sentence in sentences(action)
+        if "knowledge.get" in sentence and _DECISION.search(sentence)
+    ]
+
+
+def test_no_operator_action_pairs_knowledge_get_with_a_repair_decision() -> None:
+    """Key: a sentence of T-29's operator actions naming `knowledge.get` and one of `_DECISION`.
+    A decision worded without those terms, or split across two sentences, is not caught."""
+    assert _knowledge_get_decisions(_actions()) == []
+
+
+def test_the_knowledge_get_decision_key_hits_the_guard_that_stood_at_990cdf12() -> None:
+    """Positive control: `_990C_GUARD` fed to the same key yields its guard sentence."""
+    [hit] = _knowledge_get_decisions(_items(_990C_GUARD))
+
+    assert "already withholds the item, leave it" in hit
+
+
+def test_the_confirmation_says_what_knowledge_get_shows_and_what_it_does_not() -> None:
     """Without `includeUnapproved: true` an item an in-place withdrawal left `draft` reads as
-    withheld whether or not the repair held (`test_reorders_report.py::test_a_repair_guard_needs_include_unapproved_after_an_in_place_withdrawal`),
+    withheld whether or not the repair held (`test_reorders_report.py::test_a_repair_confirmation_needs_include_unapproved_after_an_in_place_withdrawal`),
     and the report keeps naming the row after a repair, so neither it nor the label confirms one."""
     repair = _actions()[1]
 
     assert (
-        "if knowledge.get, called at the default ceiling, with includeunapproved: true, already withholds the item, leave it"
+        "confirm after migrate apply, never by the report: in a fresh migrate validate, no migration that writes the field follows the repair in applicationorder, which shows the replay order, not the level served."
         in repair
     )
     assert (
-        "confirm after migrate apply, never by the report: in a fresh migrate validate, no migration that writes the field follows the repair in applicationorder; and knowledge.get at the default ceiling, with includeunapproved: true, withholds the item."
+        "knowledge.get at the default ceiling, with includeunapproved: true, shows only whether the item is served there, not which field withholds it or at what level."
         in repair
     )
     for stale in ("for a status repair", "the item's label", "no longer reported"):
@@ -351,17 +408,30 @@ def test_action_three_names_every_landed_writer_in_replay_order() -> None:
     assert not [a for a in actions if "expect a second refusal" in a or "last took the field" in a]
 
 
-def test_the_severity_premise_names_the_residuals_that_need_a_human_merge() -> None:
-    """Residual 4 is reached through `accept` with a hand-edited `dependsOn`, so "every residual
-    needs a human to merge" overstates the premise the grade rests on."""
+def test_the_severity_premise_grounds_residual_one_on_the_adr_decision_not_on_a_merge() -> None:
+    """Residual 1's status face is reached with both migrations accepted, so "residuals 1 to 3
+    need a human to merge the migrations without `accept`" was false for it; its High is
+    ADR-0032's decision to report rather than refuse. Residual 4 is reached through `accept` too."""
     severity = _GRADE_SITES["severity paragraph"]()
 
-    assert "residuals 1 to 3 need a human to merge the migrations without accept" in severity
+    assert (
+        "records the decision to report it rather than refuse it; that decision holds residual 1 at high."
+        in severity
+    )
+    assert (
+        "its status face is reached with both migrations accepted, each on a base without the other:"
+        in severity
+    )
+    assert (
+        "its sensitivity face was not reached that way: two theurian propose updates conflict on expectedrevision."
+        in severity
+    )
+    assert "residuals 2 and 3 need a hand-authored migration, which runs no accept." in severity
     assert (
         "residual 4 is reached through accept too, with a hand-edited dependson, and discloses nothing there"
         in severity
     )
-    assert "every residual open after 0.5.2 needs a human to merge" not in severity
+    assert "need a human to merge" not in severity
 
 
 _GRADE_SITES: Final = {

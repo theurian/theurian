@@ -622,10 +622,10 @@ def _withdrawn_in_place(p: LabelledProject, depends_on: str) -> None:
 
 
 @pytest.mark.parametrize("face", FACES)
-def test_a_repair_guard_needs_include_unapproved_after_an_in_place_withdrawal(
+def test_a_repair_confirmation_needs_include_unapproved_after_an_in_place_withdrawal(
     face: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Why action 2's guard and confirmation call `knowledge.get` with `includeUnapproved: true`.
+    """Why action 2's confirmation calls `knowledge.get` with `includeUnapproved: true`.
 
     A later in-place withdrawal to `draft` depending on the row's migration leaves the row
     reported and the item `draft`: the default `knowledge.get` withholds it whether or not a
