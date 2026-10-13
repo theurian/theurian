@@ -298,6 +298,40 @@ def test_a_landed_dependson_migration_that_leaves_the_proposals_predicate_alone_
     assert code == 0, payload
 
 
+@pytest.mark.parametrize("face", FACES)
+def test_a_tightening_inversion_is_accepted_when_the_proposal_declares_dependson(
+    face: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T-29 residual 4's accept face, reached with a ``dependsOn`` hand-edited into the staged file.
+
+    The 0.5.3 remedy's redraft route is not what this drives.
+    """
+    p = labelled_project(
+        tmp_path, monkeypatch, sensitivity="confidential" if face == "sensitivity" else "internal"
+    )
+    if face == "sensitivity":
+        code, drafted = cli_propose(p, p.item_id, "--expected-revision", p.revision_id)
+        assert code == 0, drafted
+        loosening = reclassification(SORTS_AFTER_A_DRAFT, p.item_id, "internal")
+    else:
+        drafted = draft(p, face)
+        loosening = restoration(SORTS_AFTER_A_DRAFT, p.item_id)
+    write(p.root, SORTS_AFTER_A_DRAFT, "loosen", loosening)
+    cli_ok("migrate", "apply")
+    before = landing_zone(p.root)
+    code, refused = cli("propose", "accept", drafted["proposalId"])
+    assert code == 1 and END_STATE_CHECK in str(refused["error"]), refused
+    assert landing_zone(p.root) == before, "a refused accept moved files"
+
+    declare_dependency(p, drafted, ROOT_MIGRATION_ID)
+    cli_ok("propose", "accept", drafted["proposalId"])
+    cli_ok("migrate", "apply")
+
+    assert item_row(p.root, p.item_id)[face] == ACCEPTED[face]
+    assert cli_ok("migrate", "validate")["permissiveMoves"] == []
+    assert get_is_withheld(p)
+
+
 _SITES = (("end-state", "sensitivity"), ("end-state", "status"), ("landed-row", "sensitivity"))
 
 
