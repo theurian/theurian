@@ -7135,10 +7135,20 @@ for migration ids that sort that way.
    undone by a `restoreItem` the same way: a repair depending on id 100, with
    an id larger than both or smaller than both, ends the item `confidential`,
    or `deprecated` (`::test_the_repair_a_reorders_row_asks_for_holds_the_level_and_the_row_stays`).
-3. Follow an `accept` refusal's remedy, and expect a second refusal on a
-   `dependsOn` chain: the remedy names the migration that last took the field
-   below, not the last one leaving it loose
-   ([#898](https://github.com/theurian/theurian/issues/898)).
+3. Follow an `accept` refusal's remedy. From 0.5.3 it names in `dependsOn`, in
+   replay order, every landed migration that writes a refused field and
+   replays after the proposal's, and a proposal no drafting tool redrafts whole
+   is edited in its own migration file and accepted again (T-28 control 5;
+   [the migration format](../protocol/migrations.md#permissive-moves-are-reported-not-refused)).
+   If that re-accept is refused by the lowering or readmission floor, a landed
+   migration already sets the item the refusal names tighter than the
+   proposal does: remove that item's operation from the migration file and
+   accept again, or delete the proposal if it was the only operation. The
+   floor's remedy does not say so; T-28 residual 11 records what was measured,
+   and [#915](https://github.com/theurian/theurian/issues/915) tracks the fix.
+   On 0.5.1 and 0.5.2, follow
+   [GHSA-fjqq-grr7-53cc](https://github.com/theurian/theurian/security/advisories/GHSA-fjqq-grr7-53cc)'s
+   Workarounds instead.
 
 **What would reopen or widen it.** An `accept` path that lands a proposal
 without control 5 and the end-state refusal; a write-intent tool that reaches
