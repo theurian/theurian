@@ -7142,26 +7142,25 @@ report exactly one row: the `dependsOn` migration's, `kind: reorders`,
 1. Before merging any migration that declares `dependsOn` and lowers a class
    or restores an item, run `theurian migrate validate` and read any
    `reorders` row.
-2. To repair a `reorders` row whose `undoes` set the level meant to hold: if
-   `knowledge.get`, called at the default ceiling, with
-   `includeUnapproved: true`, already withholds the
-   item, leave it: a later migration holds a tighter label. If it still
-   serves the item, merge a new migration that sets that level again and
-   declares `dependsOn` on the last migration in `migrate validate`'s
-   `applicationOrder` that writes the field: often the row's `migrationId`,
-   but read it, never assume it. Any other migration that writes the field
-   and replays after the repair's dependency can replay after the repair.
-   With writers restating the lowered level that depend on the row's
-   migration, directly or down a chain, a repair depending on the row's
-   migration alone, with an id smaller or larger than the row's, left the
-   item loose
+2. To repair a `reorders` row whose `undoes` set the level meant to hold,
+   read the last migration in `migrate validate`'s `applicationOrder` that
+   writes the row's field: often the row's `migrationId`, but read it, never
+   assume it. If it sets that field at or above the row's `before` (for
+   `status`, retires the item), leave it. Otherwise merge a new migration
+   that sets the row's `before` again and declares `dependsOn` on that
+   migration. Do not decide this by `knowledge.get`: it withholds an item for
+   either field, and at any level above the ceiling. Any other migration that
+   writes the field and replays after the repair's dependency can replay
+   after the repair. A repair depending on the row's migration alone left the
+   item loose behind a writer restating the lowered level that depends on
+   that migration with a larger id than the repair's, or down a chain from it
    (`test_reorders_report.py::test_a_repair_depending_on_the_rows_migration_alone_leaves_a_chain_loose`).
    Confirm after `migrate apply`, never by the report: in a fresh
    `migrate validate`, no migration that writes the field follows the repair
-   in `applicationOrder`; and `knowledge.get` at the default ceiling, with
-   `includeUnapproved: true`, withholds the item. The
-   first shows the replay order, not the level served; the second shows the
-   item withheld, not at which level. The row is still reported, as there is
+   in `applicationOrder`, which shows the replay order, not the level served.
+   `knowledge.get` at the default ceiling, with `includeUnapproved: true`,
+   shows only whether the item is served there, not which field withholds it
+   or at what level. The row is still reported, as there is
    no way to acknowledge one (T-28's known cost). Measured on main at
    8d7e2f09 on 2026-10-08 through the CLI, for a `changeSensitivity` to
    `confidential` (id 300) undone by one back to `internal` (id 100,
