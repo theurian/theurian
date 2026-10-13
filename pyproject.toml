@@ -20,8 +20,8 @@ dev = [
     "pytest-asyncio==1.4.0",
     "pytest-cov==7.1.0",
     "pytest==9.1.1",
-    "ruff==0.16.10",
-    "types-jsonschema==4.26.0.20260518",
+    "ruff==0.17.0",
+    "types-jsonschema==4.26.0.20261006",
     "types-pyyaml==6.0.12.20260906",
     # `[all]` so a single `uv sync` at the repo root gives contributors the
     # daemon, vector, and telemetry extras that the full test suite exercises.
