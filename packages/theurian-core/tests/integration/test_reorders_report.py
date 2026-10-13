@@ -13,9 +13,8 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-from collections.abc import Callable
 from pathlib import Path
-from typing import Any, TypeVar, cast
+from typing import Any
 
 import pytest
 from label_inheritance_support import (
@@ -475,18 +474,8 @@ def _repair_target(chain: str) -> str:
     return str([m for m in cli_ok("migrate", "validate")["applicationOrder"] if m in writes][-1])
 
 
-_Test = TypeVar("_Test", bound=Callable[..., Any])
-
-
-def _repairs(chains: list[str]) -> Callable[[_Test], _Test]:
-    def mark(test: _Test) -> _Test:
-        ids = ["smaller", "larger"]
-        repair_ids = ["01K1AAAAAB01234567890ABCDE", HI2]
-        test = pytest.mark.parametrize("chain", chains)(test)
-        test = pytest.mark.parametrize("repair_id", repair_ids, ids=ids)(test)
-        return cast(_Test, pytest.mark.parametrize("face", FACES)(test))
-
-    return mark
+REPAIR_IDS = ["01K1AAAAAB01234567890ABCDE", HI2]
+REPAIR_LABELS = ["smaller", "larger"]
 
 
 def _repaired(p: LabelledProject, face: str, repair_id: str, chain: str, *, last: bool) -> None:
@@ -507,7 +496,9 @@ def _repaired(p: LabelledProject, face: str, repair_id: str, chain: str, *, last
         assert _rows() == row
 
 
-@_repairs(list(CHAINS))
+@pytest.mark.parametrize("face", FACES)
+@pytest.mark.parametrize("repair_id", REPAIR_IDS, ids=REPAIR_LABELS)
+@pytest.mark.parametrize("chain", list(CHAINS))
 def test_the_repair_a_reorders_row_asks_for_holds_the_level_and_the_row_stays(
     face: str, repair_id: str, chain: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -523,7 +514,9 @@ def test_the_repair_a_reorders_row_asks_for_holds_the_level_and_the_row_stays(
     assert item_row(p.root, p.item_id)[face] == ACCEPTED[face]
 
 
-@_repairs(["same-round", "deep", "descending"])
+@pytest.mark.parametrize("face", FACES)
+@pytest.mark.parametrize("repair_id", REPAIR_IDS, ids=REPAIR_LABELS)
+@pytest.mark.parametrize("chain", ["same-round", "deep", "descending"])
 def test_a_repair_depending_on_the_rows_migration_alone_leaves_a_chain_loose(
     face: str, repair_id: str, chain: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
