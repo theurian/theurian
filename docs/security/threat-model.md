@@ -7090,9 +7090,15 @@ report exactly one row: the `dependsOn` migration's, `kind: reorders`,
    `restoreItem`, ends `approved` with `[]` both ways, and `deprecated` when L
    declares none. Measured on main at 8d7e2f09 on 2026-10-08, through the CLI.
    `test_reorders_report.py::test_a_loosening_with_a_larger_id_replays_last_with_no_row` holds the three histories, both faces, at `[]` and those ends.
-   It generalises residual 2 to any operation in P's place; an
-   `upsertRevision` in L's place is reported, `kind: undoes` (the migration
-   format's *What is reported*). With L declaring `dependsOn` on P and a
+   It generalises residual 2 to the operations measured in P's place: a
+   `changeSensitivity` raise or a deprecation, in all three histories
+   (`::test_a_loosening_with_a_larger_id_replays_last_with_no_row`), and an
+   `upsertRevision` raise to `confidential`, in the first history only, which
+   L leaves `internal` with `[]`
+   (`test_reorders_report.py::test_an_upsert_raise_undone_by_a_larger_id_sanctioned_lowering_has_no_row`).
+   No other operation in P's place was measured. An `upsertRevision` in L's
+   place is reported, `kind: undoes` (the migration format's *What is
+   reported*). With L declaring `dependsOn` on P and a
    raise or deprecation E, with an id larger than L's, replaying between
    them, L is a `reorders` row naming E
    (`::test_validate_and_apply_report_the_dependson_migration_as_reordering_the_later_id`).
