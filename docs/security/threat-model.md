@@ -7133,21 +7133,34 @@ for migration ids that sort that way.
 1. Before merging any migration that declares `dependsOn` and lowers a class
    or restores an item, run `theurian migrate validate` and read any
    `reorders` row.
-2. To repair a `reorders` row whose `undoes` set the level meant to hold,
-   merge a new migration that sets that level again and declares `dependsOn`
-   on the last migration in `migrate validate`'s `applicationOrder` that
-   writes the field: often the row's `migrationId`, but read it, never assume
-   it. Another migration that writes the field and also depends on the row's,
-   with a larger id or further down a chain, replays after a repair that
-   depends on the row's alone, and the item stays loose. Confirm by the
-   item's label, or by `knowledge.get`, after `migrate apply`, never by the
-   report: the row is still reported, as there is no way to acknowledge one
-   (T-28's known cost). Measured on main at 8d7e2f09 on 2026-10-08 through
-   the CLI, for a `changeSensitivity` to `confidential` (id 300) undone by one
-   back to `internal` (id 100, `dependsOn` the root), and for a deprecation
-   undone by a `restoreItem` the same way: a repair depending on id 100, with
-   an id larger than both or smaller than both, ends the item `confidential`,
-   or `deprecated` (`::test_the_repair_a_reorders_row_asks_for_holds_the_level_and_the_row_stays`).
+2. To repair a `reorders` row whose `undoes` set the level meant to hold: if
+   `knowledge.get`, called at the default ceiling, already withholds the
+   item, leave it: a later migration holds a tighter label. If it still
+   serves the item, merge a new migration that sets that level again and
+   declares `dependsOn` on the last migration in `migrate validate`'s
+   `applicationOrder` that writes the field: often the row's `migrationId`,
+   but read it, never assume it. Any other migration that writes the field
+   and replays after the repair's dependency can replay after the repair.
+   With writers restating the lowered level that depend on the row's
+   migration, directly or down a chain, a repair depending on the row's
+   migration alone, with an id smaller or larger than the row's, left the
+   item loose
+   (`test_reorders_report.py::test_a_repair_depending_on_the_rows_migration_alone_leaves_a_chain_loose`).
+   Confirm after `migrate apply`, never by the report: in a fresh
+   `migrate validate`, no migration that writes the field follows the repair
+   in `applicationOrder`; and `knowledge.get` at the default ceiling, with
+   `includeUnapproved: true` for a status repair, withholds the item. The
+   first shows the replay order, not the level served; the second shows the
+   item withheld, not at which level. The row is still reported, as there is
+   no way to acknowledge one (T-28's known cost). Measured on main at
+   8d7e2f09 on 2026-10-08 through the CLI, for a `changeSensitivity` to
+   `confidential` (id 300) undone by one back to `internal` (id 100,
+   `dependsOn` the root), and for a deprecation undone by a `restoreItem` the
+   same way: a repair depending on id 100, with an id larger than both or
+   smaller than both, ends the item `confidential`, or `deprecated`.
+   `::test_the_repair_a_reorders_row_asks_for_holds_the_level_and_the_row_stays`
+   holds those ends and the row, and the same behind the chains above for a
+   repair depending on the last writer `applicationOrder` lists.
 3. Follow an `accept` refusal's remedy. From 0.5.3 it names in `dependsOn`, in
    replay order, every landed migration that writes a refused field and
    replays after the proposal's, and a proposal no drafting tool redrafts whole
