@@ -422,3 +422,183 @@ def test_the_adr_names_the_tightening_inversion_without_the_no_row_wording() -> 
         in amendment
     )
     assert "wins with no row" not in amendment
+
+
+# Verbatim from the GHSA-wwq9 record as it stood at e8c7be23, the head of #901 before its wave
+# reworded these sites (`git show e8c7be23:docs/security/threat-model.md`, lines 7023-7029 and
+# 7075-7087; `e8c7be23:docs/adr/0032-the-write-intent-mcp-tool-surface.md`, lines 1265-1272).
+# Embedded because a squash-merge leaves that commit reachable only through the PR ref.
+_E8C7_CONTROL_2: Final = """\
+2. **The end-state refusal, at `accept`, after control 5**
+   (`_refuse_a_landed_overwrite`, with
+   `application/permissive_moves.py :: loosened_after`): T-28 residual 10.
+   It also refuses where control 5 has no row, as for a landed
+   `changeSensitivity` lowering or `restoreItem` with a larger id than the
+   proposal's (of `application/permissive_moves.py :: LabelWrite`, the two
+   that can loosen); for an `upsertRevision` there, control 5 has the row.
+"""
+_E8C7_RESIDUAL_3: Final = """\
+3. **A `changeSensitivity` lowering or `restoreItem` with a larger id than a
+   migration merged after it replays last, with no row.** P (id 100), merged
+   after L (id 300), raises an `internal` item to `confidential`, and L, a
+   `changeSensitivity`, lowers it to `internal`, neither
+   declaring `dependsOn`: they replay P, L, the item ends `internal`, and
+   `permissiveMoves` is `[]`, since L is simply the later id and there is no
+   inversion for `reorders` to see. With X (id 200, `dependsOn` the root)
+   restating `confidential` and L declaring `dependsOn` on X, they replay P,
+   X, L, with the same end and `[]`; if L declares none, X replays last and
+   the item ends `confidential`. The status face, a deprecation undone by a
+   `restoreItem`, ends `approved` with `[]` both ways, and `deprecated` when L
+   declares none. Measured on main at 8d7e2f09 on 2026-10-08, through the CLI.
+   `test_reorders_report.py::test_a_loosening_with_a_larger_id_replays_last_with_no_row` holds the three histories, both faces, at `[]` and those ends.
+"""
+_E8C7_ADR_PARAGRAPH: Final = """\
+> **The tightening inversion is the recorded cost of keeping the order.**
+> `reorders` is loosening-only, so a `dependsOn` migration that tightens a
+> label after a larger-id `changeSensitivity` lowering or `restoreItem`
+> (`application/permissive_moves.py :: LabelWrite`) wins with no row and no
+> refusal. Nothing
+> is disclosed; a reviewed declassification or readmission is lost silently.
+> T-29 residual 4 records it, measured. It is the clearest argument for (C),
+> whose order follows ids in both directions wherever `dependsOn` allows.
+"""
+
+
+def _sentences(text: str) -> list[str]:
+    return re.split(r"(?<=\.)\s+", _flat(text))
+
+
+def _markdown_texts() -> dict[str, str]:
+    paths = [p for r in ("docs", "plugins") for p in (ROOT / r).rglob("*.md")]
+    return {p.relative_to(ROOT).as_posix(): p.read_text(encoding="utf-8") for p in paths} | {
+        _CHANGELOG: _read(_CHANGELOG)
+    }
+
+
+#: The key: a sentence naming one check (`control 5`, `report check`, `end-state refusal`) and
+#: a speaks-first verb. It reads the flattened sentences of docs/, plugins/ and the Core
+#: CHANGELOG; a prediction worded with neither term (or in src/) is not caught.
+_CHECK_NAME = re.compile(r"control 5|report check|end-state refusal")
+_SPEAKS_FIRST = re.compile(r"has the row|speaks|refuses first|runs first|meets it first")
+#: file | sentence start | a condition the sentence must keep stating | the ruling
+_PREDICTIONS_RULED: Final = [
+    f"{_TM}|accept now refuses it on the field's end state|when the union replay leaves a status or sensitivity the proposal wrote looser|T-28 residual 10's 'unless control 5, which runs first' is released text; its condition presupposes the union replay applies, so it is not false",
+    f"{_TM}|the advisory's face meets it first|builds the advisory's history for both faces|T-29 control 1: the prediction is for the advisory's history, and the cited test builds it",
+]
+
+
+def _predictions(texts: dict[str, str]) -> list[tuple[str, str]]:
+    return [
+        (rel, sentence)
+        for rel, text in texts.items()
+        for sentence in _sentences(text)
+        if _CHECK_NAME.search(sentence) and _SPEAKS_FIRST.search(sentence)
+    ]
+
+
+def _unruled(hits: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    ruled = [r.split("|") for r in _PREDICTIONS_RULED]
+    return [
+        (rel, sentence)
+        for rel, sentence in hits
+        if not any(
+            rel == f and sentence.startswith(start) and condition in sentence
+            for f, start, condition, _ in ruled
+        )
+    ]
+
+
+def test_every_sentence_predicting_which_check_speaks_first_is_ruled_with_its_conditions() -> None:
+    """T-29 control 2 said "for an `upsertRevision` there, control 5 has the row" with no
+    condition, and it was false for a history that restates a label. A prediction of which check
+    meets a landed write first holds only on the histories it states, so each one in the
+    docs is listed with the condition it keeps stating; a new or unconditioned one is RED."""
+    hits = _predictions(_markdown_texts())
+
+    assert _unruled(hits) == []
+    assert len(hits) == len(_PREDICTIONS_RULED), "an allowlist entry matches no sentence"
+
+
+def test_the_prediction_key_hits_the_clause_that_escaped_it_at_e8c7be23() -> None:
+    """Positive control: `_predictions` fed T-29 control 2 as it stood hits the clause, unruled."""
+    hits = _unruled(_predictions({_TM: _E8C7_CONTROL_2}))
+
+    assert len(hits) == 1
+    assert "for an upsertrevision there, control 5 has the row" in hits[0][1]
+
+
+_ROW_OUTCOME = re.compile(
+    r"no row|no report|reports nothing|\[\]|is not reported|neither refused nor reported"
+)
+_TEST_CITE = re.compile(r"::test_")
+#: Entry-qualified only: a bare `control 5` or `residual 4` names a sibling in the same entry,
+#: which is how the e8c7be23 control 2 sentence used it.
+_POINTER = re.compile(r"\bt-2\d\b")
+_EXISTENTIAL = re.compile(r"\bcan\b")
+_HISTORY = re.compile(r"\bthey replay\b|\bends?\b")
+_MEASURED = re.compile(r"measured on .{1,60}? on 20\d\d-\d\d-\d\d")
+#: sentence start | why it is not anchored by a rule above
+_NO_ROW_HISTORY: Final = [
+    "on an internal item, a landed changesensitivity to confidential|0.5.1 behaviour, measured on core-v0.5.1 (the paragraph)",
+    "the landed lowering is a sanctioned operation|0.5.1 behaviour: 0.5.1 never reported it",
+    "a merge approves only what its diff shows|0.5.1 behaviour: 'in 0.5.1' is in the sentence",
+]
+
+
+def _no_row_unanchored(raw: str) -> list[str]:
+    stripped = re.sub(r"(?m)^\s*(?:#:?|>) ?", "", raw)
+    unanchored = []
+    for unit in re.split(r"\n\s*\n|\n(?=\d+\. )", stripped):
+        sentences = _sentences(re.sub(r"^\s*\d+\. ", "", unit))
+        cited = bool(_TEST_CITE.search(_flat(unit)))
+        for sentence in sentences:
+            if not _ROW_OUTCOME.search(sentence):
+                continue
+            anchored = (
+                _TEST_CITE.search(sentence)
+                or _POINTER.search(sentence)
+                or (_EXISTENTIAL.search(sentence) and cited)
+                or (cited and _HISTORY.search(sentence) and _MEASURED.search(_flat(unit)))
+            )
+            if not anchored:
+                unanchored.append(sentence)
+    return unanchored
+
+
+def _no_row_sites() -> str:
+    adr = _between(
+        _read(_ADR), "**Amended by GHSA-wwq9-p8wq-5m68 (2026-10-08).**", "**Amended by GHSA-fjqq"
+    )
+    return _t29() + "\n\n" + adr
+
+
+def test_every_sentence_stating_a_row_outcome_in_t_29_and_the_adr_is_anchored() -> None:
+    """The no-row wording sat unanchored at three sites and was false at two: a sentence stating
+    a row outcome (`no row|no report|reports nothing|[]|is not reported|neither refused nor
+    reported`) in T-29 or in ADR-0032's GHSA-wwq9 amendment must (a) cite a `::test_`, (b)
+    point at a `T-2N` entry, (c) be existential ("can") in an item or paragraph that cites a
+    `::test_`, or (d) walk a history ("they replay", "ends"), in an
+    item that cites a `::test_` and a dated "Measured on"; or be a recorded 0.5.1 sentence. A
+    generalisation worded as a walk, or appended to a recorded sentence, is not caught."""
+    unanchored = _no_row_unanchored(_no_row_sites())
+
+    recorded = tuple(h.split("|")[0] for h in _NO_ROW_HISTORY)
+
+    assert [s for s in unanchored if not s.startswith(recorded)] == []
+    assert len(unanchored) == len(recorded), "a recorded 0.5.1 sentence is no longer hit"
+
+
+@pytest.mark.parametrize(
+    ("raw", "sentence"),
+    [
+        (_E8C7_RESIDUAL_3, "replays last, with no row."),
+        (_E8C7_CONTROL_2, "control 5 has no row"),
+        (_E8C7_ADR_PARAGRAPH, "wins with no row and no refusal."),
+    ],
+    ids=["residual 3 heading", "control 2", "ADR paragraph"],
+)
+def test_the_no_row_key_hits_the_three_sites_the_wave_reworded(raw: str, sentence: str) -> None:
+    """Positive control: each site as it stood at e8c7be23 is unanchored under the same classifier."""
+    [hit, *_] = _no_row_unanchored(raw)
+
+    assert sentence in hit
