@@ -7023,10 +7023,9 @@ symbol is in `application/proposal_service.py` unless another module is named:
 2. **The end-state refusal, at `accept`, after control 5**
    (`_refuse_a_landed_overwrite`, with
    `application/permissive_moves.py :: loosened_after`): T-28 residual 10.
-   It also refuses where control 5 has no row, as for a landed
-   `changeSensitivity` lowering or `restoreItem` with a larger id than the
-   proposal's (of `application/permissive_moves.py :: LabelWrite`, the two
-   that can loosen); for an `upsertRevision` there, control 5 has the row.
+   Which check refuses a landed write with a larger id than the proposal's
+   is stated where it was measured: T-28 control 5 and residual 10, and
+   *What holds it* below.
 3. **T-28 control 4's `kind: "reorders"` rows**
    (`application/permissive_moves.py :: _reordered`), for a migration merged
    as a file, or after an accept, by the rule
