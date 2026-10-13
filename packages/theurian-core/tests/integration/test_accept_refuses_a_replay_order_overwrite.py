@@ -672,3 +672,52 @@ def test_accept_refuses_a_raise_that_would_re_attribute_a_held_reorders_row(
     cli_ok("migrate", "apply")
     rows = cli_ok("migrate", "validate")["permissiveMoves"]
     assert [(r["migrationId"], r["undoes"]) for r in rows] == [(lower, landed_raise)]
+
+
+def _accepted_without_the_other(
+    p: LabelledProject, first: dict[str, Any], second: dict[str, Any], aside: Path
+) -> None:
+    """Accept *first*, then *second* with *first*'s migration out of the tree: two PRs' bases."""
+    cli_ok("propose", "accept", first["proposalId"])
+    migrations = p.root / ".theurian/migrations"
+    landed = sorted(migrations.glob(f"{first['migrationId']}*"))
+    assert landed
+    aside.mkdir()
+    for file in landed:
+        file.rename(aside / file.name)
+    cli_ok("propose", "accept", second["proposalId"])
+    for file in landed:
+        (aside / file.name).rename(migrations / file.name)
+
+
+@pytest.mark.parametrize("face", FACES)
+def test_two_accepts_on_separate_bases_reach_the_post_accept_race(
+    face: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T-29 residual 1's High does not rest on a merge without `accept`.
+
+    Its status face is reached with both migrations accepted, each on a base without the
+    other. The sensitivity face is not: two `theurian propose` updates of one revision conflict
+    on `expectedRevision` at `migrate apply`. The Severity paragraph states both, and grounds
+    the High on ADR-0032's decision to report rather than refuse.
+    """
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    first = draft(p, face)
+    time.sleep(0.01)  # ULIDs sort by millisecond: the second proposal's id must be larger
+    code, second = cli_propose(p, p.item_id, "--expected-revision", p.revision_id)
+    assert code == 0, second
+    assert first["migrationId"] < second["migrationId"]
+    _accepted_without_the_other(p, first, second, tmp_path / "aside")
+
+    code, applied = cli("migrate", "apply")
+
+    if face == "sensitivity":
+        assert code != 0, applied
+        assert str(applied["error"]).startswith(f"Revision conflict on {p.item_id}"), applied
+        assert item_row(p.root, p.item_id)["current_revision_id"] == p.revision_id
+        return
+    assert code == 0, applied
+    undoes = [(r["migrationId"], r["kind"], r["undoes"]) for r in applied["permissiveMoves"]]
+    assert undoes == [(second["migrationId"], "undoes", first["migrationId"])]
+    assert item_row(p.root, p.item_id)["status"] == "approved"
+    assert get_is_withheld(p) is False
