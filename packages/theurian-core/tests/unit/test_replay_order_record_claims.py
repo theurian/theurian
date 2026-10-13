@@ -180,24 +180,20 @@ def test_the_residual_counts_agree_with_the_numbered_lists() -> None:
     t28, t29 = _residuals("T-28", "**A known cost"), _residuals("T-29", "**The same root cause")
     moved = [i for i, r in enumerate(t28, 1) if r.startswith("**Moved to T-29")]
     closed = [i for i, r in enumerate(t28, 1) if r.startswith("**Closed in")]
-    sentence = _match(
-        r"(\w+) are open in 0\.5\.2: the (\w+) and the (\w+) moved to t-29, and the (\w+) is closed",
+    header = _match(
+        r"all but the (\w+) are open in 0\.5\.3, the (\w+) new in it",
         _flat(entry_in(_read(_TM), "T-28")),
     )
-    ordinal = {"sixth": 6, "ninth": 9, "tenth": 10}
+    row = _match(
+        r"(\w+) open residuals and (\w+) closed, recorded in the entry, (\w+) of the open ones by pointer to t-29",
+        _row("T-28"),
+    )
+    ordinal = {"ninth": 9, "tenth": 10, "eleventh": 11, "twelfth": 12}
     n = SPELLED_NUMBERS
 
     assert (moved, closed) == ([6, 9], [10])
-    assert (n[sentence[1]], [ordinal[w] for w in sentence.group(2, 3, 4)]) == (
-        len(t28) - 3,
-        [6, 9, 10],
-    )
-    assert [
-        n[w]
-        for w in _match(
-            r"(\w+) open residuals, (\w+) closed and (\w+) moved to t-29", _row("T-28")
-        ).groups()
-    ] == [len(t28) - 3, 1, 2]
+    assert [ordinal[w] for w in header.group(1, 2)] == [closed[0], len(t28)]
+    assert [n[w] for w in row.groups()] == [len(t28) - len(closed), len(closed), len(moved)]
     open29 = len([r for r in t29 if not r.startswith("**Closed in")])
     assert n[_match(r"all (\w+) are open", _flat(entry_in(_read(_TM), "T-29")))[1]] == open29
     assert n[_match(r"(\w+) open residuals", _row("T-29"))[1]] == open29
