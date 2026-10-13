@@ -6901,8 +6901,11 @@ it there.
    a `dependsOn` replay, is neither refused nor reported.** Both predicates read
    `may_surface(…, include_unapproved=True)`, under which `draft`, `proposed`
    and `approved` are all surfaceable, while the default serving flag serves
-   `approved` alone. So the race, or a `dependsOn` replay, can put such an item
-   back in front of a default caller with no row.
+   `approved` alone. So the post-accept race (T-29 residual 1), or a
+   `dependsOn` replay, can put such an item back in front of a default caller
+   with no row
+   (`test_t28_residual_8_gap.py::test_a_restore_after_a_larger_id_withdrawal_to_an_unapproved_status_is_no_row`
+   for the replay).
 9. **Moved to T-29, its residual 2:** two sanctioned label operations merged
    against their id order (2026-10-08).
 10. **Closed in 0.5.2.** An accept whose withdrawal or raise a landed sanctioned
@@ -6964,8 +6967,8 @@ and `review.generateKnowledgeCandidate` and `theurian okf import` name
 floors do not compare; a write-intent tool that reaches `changeSensitivity` or
 `restoreItem`; an `accept` path that lands a proposal without both replays; a
 served path that returns `permissiveMoves`, whose rows name labels an item
-held before it was loosened; T-29 holds the race reached without a human merging both
-migrations.
+held before it was loosened; or the post-accept race, T-29 residual 1, reached
+without a human merging both migrations.
 
 #### T-29 — The replay order decides which of two reviewed label writes an item ends with, so a landed migration undoes what a later proposal set (Tampering / Information disclosure, **Critical** as shipped (GHSA-wwq9-p8wq-5m68), High after 0.5.2 — closed at `accept` in 0.5.2, but for an in-place withdrawal to `draft` or `proposed` (T-28 residual 8); without `accept`, or after it, reported at most and never refused)
 

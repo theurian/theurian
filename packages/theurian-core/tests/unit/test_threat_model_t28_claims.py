@@ -184,9 +184,11 @@ def test_each_accept_floor_has_one_call_site_and_it_is_in_the_proposal_service()
 
 
 def test_loosened_after_is_called_once_in_each_of_the_two_refusals_and_nowhere_else() -> None:
-    """RED means ``loosened_after`` is called from another module or function, or no
-    longer once in each of ``_refuse_a_landed_overwrite`` and ``_refuse_a_reported_upsert``:
-    a third end-state decision T-28 omits."""
+    """RED means ``loosened_after`` is not called exactly twice in the package, both in
+    ``application/proposal_service.py``, or not named once in each of
+    ``_refuse_a_landed_overwrite`` and ``_refuse_a_reported_upsert``: a third end-state
+    decision T-28 omits. ``_floor_calls`` matches a call by that name, bare or as an
+    attribute; one through an alias or ``getattr`` is outside it."""
     tree = ast.parse((_SRC / _FLOOR_SITE).read_text(encoding="utf-8"))
     sites = ("_refuse_a_landed_overwrite", "_refuse_a_reported_upsert")
     inside = {}
