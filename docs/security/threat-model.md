@@ -7008,8 +7008,15 @@ proposal withheld at the default ceiling with no refusal and no row: withheld
 content reached a caller in the default configuration, the advisory's grade
 too. ADR-0032's amendment graded the post-accept race (residual 1) CRITICAL
 as a review finding, on that anchor, and records the decision to report it
-rather than refuse it. Residuals 1 to 3 need a human to merge the migrations
-without `accept`; 0.5.2's T-28 text graded that High, and the grade is kept.
+rather than refuse it; that decision holds residual 1 at High. Its status
+face is reached with both migrations accepted, each on a base without the
+other: a deprecation drafted with `knowledge.generateMigrationDraft` and an
+update drafted with `theurian propose` (measured on 0.5.3 on 2026-10-13; no
+test holds it yet). Its sensitivity face was not reached that way: two
+`theurian propose` updates conflict on `expectedRevision`. Residuals 2 and 3
+need a hand-authored migration, which runs no `accept`. 0.5.2's T-28 text
+grounded High on `accept` refusing the advisory's face and on its residual
+5: a hand-authored migration, detected, not prevented.
 Residual 4 is reached through `accept` too, with a hand-edited `dependsOn`,
 and discloses nothing there: the item ends withheld
 (`test_accept_refuses_a_replay_order_overwrite.py::test_a_tightening_inversion_is_accepted_when_the_proposal_declares_dependson`).
@@ -7115,7 +7122,8 @@ report exactly one row: the `dependsOn` migration's, `kind: reorders`,
    `[]`. A deprecation (id 100, `dependsOn` the root) replaying after a
    `restoreItem` (id 300, none) ends `deprecated` with `[]`. Measured on main
    at 8d7e2f09 on 2026-10-08, through the CLI.
-   `::test_a_tightening_inversion_ends_tightened_and_reports_nothing` holds both histories at `[]` and those ends.
+   `test_reorders_report.py::test_a_tightening_inversion_ends_tightened_and_reports_nothing`
+   holds both histories at `[]` and those ends.
    `test_reorders_report.py::test_a_tightening_inversion_is_not_reported`
    pins `[]` for a status history of that shape, two deprecations, the second
    declaring `dependsOn` on the first, and a larger-id `restoreItem`, and
@@ -7190,8 +7198,8 @@ without control 5 and the end-state refusal; a write-intent tool that reaches
 `changeSensitivity` or `restoreItem`; a change to the replay order, such as
 #897's, while a state database the old order built is still served
 ([#853](https://github.com/theurian/theurian/issues/853)), so that `accept`
-compares an order other than the one served; or a residual reached without a
-human merging both migrations.
+compares an order other than the one served; or a new route that serves what
+a proposal withheld without a human merge.
 
 #### T-18 — A reused revision id resolves an approved item to a withheld item's body (Information disclosure, **Critical** — closed in 0.1.0.dev3)
 
