@@ -15,11 +15,10 @@ them: they are the work, not bloat.
 **A test that cannot fail is worse than no test**, because it reports safety
 that does not exist: a breaking change to the `knowledge.search` response shape
 once passed all 964 tests, because all nineteen that exercised the tool took an
-untested fallback path.
-
-So: after writing a test for behaviour X, **break X in the source, run the test,
-confirm it fails, and revert.** Report that you did it. If a test survives its
-subject being broken, the test is wrong, not the mutation.
+untested fallback path. So: after writing a test for behaviour X, **break X in
+the source, run the test, confirm it fails, and revert.** Report that you did
+it. If a test survives its subject being broken, the test is wrong, not the
+mutation.
 
 **Mutation runs get their own tree.** `tools/mutate.py` copies the checkout;
 never break-and-revert inside a tree another agent is editing, and in a tree
@@ -92,11 +91,12 @@ quotes from production code, grep the tree: zero hits outside your own file
 means the quote is stale, so replace it with what is there now. (Burned in from
 #449's round.)
 
-Your report carries a table pairing each sentence that describes a mechanism, in
-a test docstring or comment you add or edit, with the line that holds it (a code
-line `path:line`, or a measurement pasted in the report); a report without that
-table is returned. (Burned in from [#903's
-ruling](https://github.com/theurian/theurian/pull/903#issuecomment-6055200718).)
+Your report carries a table pairing each sentence of test prose (docstrings,
+comments and assertion messages) describing what the code or tests do, whether
+your diff touched it or your change moved what it describes, with the line that
+holds it (`path:line`, or a measurement pasted in the report), and names the key
+you used to search for the untouched ones; a report without that table is
+returned. (Burned in from #903's rounds 1–3; ruled on #921.)
 
 ## This project's specific traps
 
@@ -107,7 +107,7 @@ ruling](https://github.com/theurian/theurian/pull/903#issuecomment-6055200718).)
 - **Never touch the developer's real machine.** Redirect `HOME` and
   `THEURIAN_DATA_DIR`. A test once wrote into the real `~/.claude.json`; assert
   the real config is untouched when testing anything that shells out.
-- **Determinism.** Pin any dict order and freeze any clock a result depends on.
+- **Determinism.** If a result depends on dict order or the wall clock, pin it.
 
 ## Before you report done
 
@@ -115,10 +115,10 @@ While iterating, run your file's scope (`uv run python -m pytest
 packages/theurian-core/tests/<path> -q` or `-k <pattern>`), not the whole
 suite. Run the full suite once, just before the first push that opens the Draft
 PR; after that CI runs it on every push, so a habitual local re-run only burns
-wall clock and breeds machine-contention flakes. State which scope ran in your
-report — an unqualified "GREEN" means the full suite, and claiming it from a
-narrow run is a false report. Report, in the caller's language: what you added,
-the mutation proving each new test can fail, and any coverage gap you left open.
+wall clock and breeds machine-contention flakes. Report, in the caller's
+language: what you added, which scope ran (an unqualified "GREEN" means the full
+suite; claiming it from a narrow run is a false report), the mutation proving
+each new test can fail, any coverage gap you left open, and the re-tense table.
 
 ## A costless-removal claim is a shape claim
 
