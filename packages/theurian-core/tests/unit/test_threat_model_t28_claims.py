@@ -17,8 +17,9 @@ the source, and none moves a sentence of the entry when it stops being true:
    one. A further producer changes which operations are reported, what T-28's
    residuals 5 and 10 and the CHANGELOG state.
 3. The end-state refusal is one decision: ``loosened_after``
-   (``application/permissive_moves.py``) is called once in the package, inside
-   ``application/proposal_service.py :: _refuse_a_landed_overwrite``.
+   (``application/permissive_moves.py``) is called twice in the package, once in each
+   of ``application/proposal_service.py :: _refuse_a_landed_overwrite`` and
+   ``_refuse_a_reported_upsert`` (its refused-field set, since 0.5.3).
 
 **Fact side only.** The prose side of the entry is not pinned here.
 
@@ -182,18 +183,20 @@ def test_each_accept_floor_has_one_call_site_and_it_is_in_the_proposal_service()
     )
 
 
-def test_loosened_after_has_one_call_site_and_it_is_the_landed_overwrite_refusal() -> None:
-    """RED means ``loosened_after`` is called from another module, twice, no longer, or
-    outside ``_refuse_a_landed_overwrite``: a second end-state refusal T-28 omits."""
+def test_loosened_after_is_called_once_in_each_of_the_two_refusals_and_nowhere_else() -> None:
+    """RED means ``loosened_after`` is called from another module or function, or no
+    longer once in each of ``_refuse_a_landed_overwrite`` and ``_refuse_a_reported_upsert``:
+    a third end-state decision T-28 omits."""
     tree = ast.parse((_SRC / _FLOOR_SITE).read_text(encoding="utf-8"))
-    refusal = next(
-        n for n in ast.walk(tree) if getattr(n, "name", None) == "_refuse_a_landed_overwrite"
-    )
-    named = [getattr(n, "id", None) or getattr(n, "attr", None) for n in ast.walk(refusal)]
-    inside = [n for n in named if n == _END_STATE]
+    sites = ("_refuse_a_landed_overwrite", "_refuse_a_reported_upsert")
+    inside = {}
+    for site in sites:
+        fn = next(n for n in ast.walk(tree) if getattr(n, "name", None) == site)
+        named = [getattr(n, "id", None) or getattr(n, "attr", None) for n in ast.walk(fn)]
+        inside[site] = named.count(_END_STATE)
 
-    assert _floor_calls((_END_STATE,)) == [(_FLOOR_SITE, _END_STATE)]
-    assert len(inside) == 1, f"{_END_STATE} named {len(inside)} times in the refusal"
+    assert _floor_calls((_END_STATE,)) == [(_FLOOR_SITE, _END_STATE)] * 2
+    assert inside == dict.fromkeys(sites, 1)
 
 
 def test_only_upserted_and_wrote_add_a_row_source_to_label_writers() -> None:
