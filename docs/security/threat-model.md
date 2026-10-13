@@ -7011,8 +7011,9 @@ as a review finding, on that anchor, and records the decision to report it
 rather than refuse it; that decision holds residual 1 at High. Its status
 face is reached with both migrations accepted, each on a base without the
 other: a deprecation drafted with `knowledge.generateMigrationDraft` and an
-update drafted with `theurian propose` (measured on 0.5.3 on 2026-10-13; no
-test holds it yet). Its sensitivity face was not reached that way: two
+update drafted with `theurian propose` (measured on 0.5.3 on 2026-10-13;
+`test_accept_refuses_a_replay_order_overwrite.py::test_two_accepts_on_separate_bases_reach_the_post_accept_race`).
+Its sensitivity face was not reached that way: two
 `theurian propose` updates conflict on `expectedRevision`. Residuals 2 and 3
 need a hand-authored migration, which runs no `accept`. 0.5.2's T-28 text
 grounded High on `accept` refusing the advisory's face and on its residual

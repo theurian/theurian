@@ -14,7 +14,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import pytest
 from label_inheritance_support import (
@@ -40,6 +40,7 @@ from replay_order_support import (
     declare_dependency,
     depending_on,
     draft,
+    get_is_withheld,
     history,
     restoration,
     write,
@@ -468,18 +469,17 @@ HI5 = "7ZZZZZZZZZ01234567890ABC05"
 CHAINS = {"alone": (), "same-round": (HI5,), "deep": (D2, HI5), "descending": (HI5, D2)}
 
 
-def _repair_target(chain: str) -> str:
+def _repair_target(chain: str, *later: str) -> str:
     """The last migration in applicationOrder that writes the field: M's, if none follows."""
-    writes = {LATE, D1, *CHAINS[chain]}
+    writes = {LATE, D1, *CHAINS[chain], *later}
     return str([m for m in cli_ok("migrate", "validate")["applicationOrder"] if m in writes][-1])
 
 
-REPAIR_IDS = ["01K1AAAAAB01234567890ABCDE", HI2]
-REPAIR_LABELS = ["smaller", "larger"]
+REPAIRS = {"smaller": "01K1AAAAAB01234567890ABCDE", "larger": HI2}
 
 
-def _repaired(p: LabelledProject, face: str, repair_id: str, chain: str, *, last: bool) -> None:
-    """A history where M lowers what A raised, a chain restates it, then N raises it again."""
+def _lowered(p: LabelledProject, face: str, chain: str) -> list[tuple[Any, ...]]:
+    """A history where M lowers what A raised and a chain restates it; the one row it reports."""
     lowering = depending_on(_label(face, D1, p.item_id, tight=False), ROOT_MIGRATION_ID)
     steps = {"a": (LATE, _label(face, LATE, p.item_id, tight=True)), "m": (D1, lowering)}
     for before, writer in zip((D1, *CHAINS[chain]), CHAINS[chain], strict=False):
@@ -488,6 +488,12 @@ def _repaired(p: LabelledProject, face: str, repair_id: str, chain: str, *, last
     _validate_then_apply(p, **steps)
     row = [(D1, p.item_id, face, *MOVE[face], LATE, "reorders")]
     assert _rows() == row
+    return row
+
+
+def _repaired(p: LabelledProject, face: str, repair_id: str, chain: str, *, last: bool) -> None:
+    """A history where M lowers what A raised, a chain restates it, then N raises it again."""
+    row = _lowered(p, face, chain)
     target = _repair_target(chain) if last else D1
     repair = depending_on(_label(face, repair_id, p.item_id, tight=True), target)
     write(p.root, repair_id, "n", repair)
@@ -497,8 +503,8 @@ def _repaired(p: LabelledProject, face: str, repair_id: str, chain: str, *, last
 
 
 @pytest.mark.parametrize("face", FACES)
-@pytest.mark.parametrize("repair_id", REPAIR_IDS, ids=REPAIR_LABELS)
-@pytest.mark.parametrize("chain", list(CHAINS))
+@pytest.mark.parametrize("repair_id", REPAIRS.values(), ids=list(REPAIRS))
+@pytest.mark.parametrize("chain", CHAINS)
 def test_the_repair_a_reorders_row_asks_for_holds_the_level_and_the_row_stays(
     face: str, repair_id: str, chain: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -515,7 +521,7 @@ def test_the_repair_a_reorders_row_asks_for_holds_the_level_and_the_row_stays(
 
 
 @pytest.mark.parametrize("face", FACES)
-@pytest.mark.parametrize("repair_id", REPAIR_IDS, ids=REPAIR_LABELS)
+@pytest.mark.parametrize("repair_id", REPAIRS.values(), ids=list(REPAIRS))
 @pytest.mark.parametrize("chain", ["same-round", "deep", "descending"])
 def test_a_repair_depending_on_the_rows_migration_alone_leaves_a_chain_loose(
     face: str, repair_id: str, chain: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -566,3 +572,201 @@ def test_an_upsert_raise_undone_by_a_larger_id_sanctioned_lowering_has_no_row(
 
     assert rows == ([], [])
     assert item_row(p.root, p.item_id)["sensitivity"] == "internal"
+
+
+HI6 = "7ZZZZZZZZZ01234567890ABC06"
+HI7 = "7ZZZZZZZZZ01234567890ABC07"
+#: How tight a label is: the guard compares the last writer's level with the row's ``before``.
+RANK = {"internal": 0, "confidential": 1, "restricted": 2, "approved": 0, "deprecated": 1}
+
+
+def _set(migration_id: str, item_id: str, level: str) -> str:
+    if level in ("approved", "deprecated"):
+        return (restoration if level == "approved" else deprecation)(migration_id, item_id)
+    return reclassification(migration_id, item_id, level)
+
+
+def _guard_leaves_it(writers: dict[str, str], before: str) -> tuple[str, bool]:
+    """Action 2's guard: the last of *writers* in applicationOrder, and whether it leaves it."""
+    order = cli_ok("migrate", "validate")["applicationOrder"]
+    last = [m for m in order if m in writers][-1]
+    return last, RANK[writers[last]] >= RANK[before]
+
+
+@pytest.mark.parametrize("chain", CHAINS)
+def test_a_reorders_row_a_later_tightening_already_holds_needs_no_repair(
+    chain: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T-29 operator action 2's guard says leave it: the last writer holds a tighter label.
+
+    The row stays reported. A repair following the rule, `confidential` depending on the last
+    writer, loosens the `restricted` the later migration set: the hazard the guard prevents.
+    `knowledge.get` at `includeUnapproved: true` agrees here, but the guard does not rest on it.
+    """
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    row = _lowered(p, "sensitivity", chain)
+    tighten = depending_on(reclassification(HI6, p.item_id, "restricted"), _repair_target(chain))
+    write(p.root, HI6, "tighten", tighten)
+    cli_ok("migrate", "apply")
+    writers = {LATE: "confidential", D1: "internal", **dict.fromkeys(CHAINS[chain], "internal")}
+
+    held = (
+        _rows(),
+        item_row(p.root, p.item_id)["sensitivity"],
+        _guard_leaves_it({**writers, HI6: "restricted"}, "confidential"),
+        get_is_withheld(p),
+        get_is_withheld(p, includeUnapproved=True),
+    )
+
+    assert held == (row, "restricted", (HI6, True), True, True)
+    repair = reclassification(HI2, p.item_id, "confidential")
+    write(p.root, HI2, "repair", depending_on(repair, _repair_target(chain, HI6)))
+    cli_ok("migrate", "apply")
+    assert item_row(p.root, p.item_id)["sensitivity"] == "confidential"
+
+
+class _Step(NamedTuple):
+    migration_id: str
+    level: str
+    depends_on: str = ""
+
+
+class _History(NamedTuple):
+    """A raises the row's field, M lowers it declaring dependsOn on the root; *other* writes the
+    other field and *readmit* later undoes it; the end is read at *ceiling*."""
+
+    sensitivity: str
+    a: _Step
+    m: _Step
+    other: _Step | None = None
+    readmit: _Step | None = None
+    ceiling: str | None = None
+
+
+_ROOT = ROOT_MIGRATION_ID
+_HISTORIES = {
+    "restricted lowered to confidential": _History(
+        "internal",
+        _Step(LATE, "restricted"),
+        _Step(D1, "confidential", _ROOT),
+        ceiling="confidential",
+    ),
+    "status row on a confidential item": _History(
+        "confidential",
+        _Step(LATE, "deprecated"),
+        _Step(D1, "approved", _ROOT),
+        ceiling="confidential",
+    ),
+    "sensitivity row, item retired later": _History(
+        "internal",
+        _Step(LATE, "confidential"),
+        _Step(D1, "internal", _ROOT),
+        _Step(HI6, "deprecated", D1),
+        _Step(HI7, "approved", HI6),
+    ),
+    "status row, item raised later": _History(
+        "internal",
+        _Step(LATE, "deprecated"),
+        _Step(D1, "approved", _ROOT),
+        _Step(HI6, "restricted", D1),
+        _Step(HI7, "internal", HI6),
+    ),
+}
+
+
+def _write_step(p: LabelledProject, step: _Step) -> None:
+    text = _set(step.migration_id, p.item_id, step.level)
+    write(
+        p.root,
+        step.migration_id,
+        "w",
+        depending_on(text, step.depends_on) if step.depends_on else text,
+    )
+
+
+@pytest.mark.parametrize("repaired", [False, True], ids=["left", "repaired"])
+@pytest.mark.parametrize("case", _HISTORIES)
+def test_a_withheld_item_is_no_evidence_of_the_rows_field_level(
+    case: str, repaired: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GHSA-wwq9 round three: `knowledge.get` withholds an item for either label field, at any
+    level above its ceiling, so action 2's guard cannot read it as the row's own field holding.
+
+    In each history it answers "withheld" while the last writer of the row's field sits below
+    the row's `before`. The structural guard says repair; leaving the row serves the item once
+    the later readmission lands, and the repair keeps it withheld.
+    """
+    h = _HISTORIES[case]
+    p = labelled_project(tmp_path, monkeypatch, sensitivity=h.sensitivity)
+    for step in (h.a, h.m, *([h.other] if h.other else [])):
+        _write_step(p, step)
+    cli_ok("migrate", "apply")
+    field = "status" if h.a.level in ("approved", "deprecated") else "sensitivity"
+    row = [(D1, p.item_id, field, h.a.level, h.m.level, LATE, "reorders")]
+    writers = {h.a.migration_id: h.a.level, h.m.migration_id: h.m.level}
+    last, leaves_it = _guard_leaves_it(writers, h.a.level)
+
+    seen = (_rows(), get_is_withheld(p, includeUnapproved=True), leaves_it)
+
+    assert seen == (row, True, False)
+    if repaired:
+        fix = _set(HI2, p.item_id, h.a.level)
+        write(p.root, HI2, "repair", depending_on(fix, last))
+        cli_ok("migrate", "apply")
+    if h.readmit:
+        _write_step(p, h.readmit)
+        cli_ok("migrate", "apply")
+    assert _rows() == row
+    assert get_is_withheld(p, ceiling=h.ceiling) is repaired
+
+
+NEW_REVISION = "01K1EEEREV01234567890ABCDE"
+
+
+def _withdrawn_in_place(p: LabelledProject, depends_on: str) -> None:
+    """An ``upsertRevision`` to ``draft``: a new revision over the root's, with its own body."""
+    body = p.root / ".theurian/knowledge/architecture"
+    (body / "auth-policy-l.md").write_bytes((body / "auth-policy.md").read_bytes())
+    text = (
+        _upsert(SORTS_AFTER_A_DRAFT, "internal")
+        .replace("status: approved", "status: draft")
+        .replace("auth-policy.md", "auth-policy-l.md")
+        .replace(
+            f"    revisionId: {ROOT_REVISION_ID}\n",
+            f"    revisionId: {NEW_REVISION}\n    expectedRevision: {ROOT_REVISION_ID}\n",
+        )
+    )
+    write(p.root, SORTS_AFTER_A_DRAFT, "to-draft", depending_on(text, depends_on))
+    cli_ok("migrate", "apply")
+
+
+@pytest.mark.parametrize("face", FACES)
+def test_a_repair_confirmation_needs_include_unapproved_after_an_in_place_withdrawal(
+    face: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Why action 2's confirmation calls `knowledge.get` with `includeUnapproved: true`.
+
+    A later in-place withdrawal to `draft` depending on the row's migration leaves the row
+    reported and the item `draft`: the default `knowledge.get` withholds it whether or not a
+    repair holds, and only `includeUnapproved: true` serves it. Measured on 0.5.3 and on
+    core-v0.5.1 for both faces.
+    """
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    if face == "status":
+        write(p.root, LATE, "deprecate", deprecation(LATE, p.item_id))
+        restore = depending_on(restoration(D1, p.item_id), ROOT_MIGRATION_ID)
+        write(p.root, D1, "restore", restore)
+        cli_ok("migrate", "apply")
+        row = [(D1, p.item_id, "status", "deprecated", "approved", LATE, "reorders")]
+    else:
+        land_late(p, "sensitivity")
+        row = [(D2, p.item_id, "sensitivity", "confidential", "internal", LATE, "reorders")]
+    assert _rows() == row
+
+    _withdrawn_in_place(p, row[0][0])
+
+    labels = item_row(p.root, p.item_id)
+    assert (labels["status"], labels["sensitivity"]) == ("draft", "internal")
+    assert _rows() == row
+    assert get_is_withheld(p) is True
+    assert get_is_withheld(p, includeUnapproved=True) is False
