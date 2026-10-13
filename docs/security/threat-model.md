@@ -7058,8 +7058,8 @@ deprecation), and asserts that `migrate apply` and `migrate validate` each
 report exactly one row: the `dependsOn` migration's, `kind: reorders`,
 `undoes` naming the larger id.
 
-**Residuals.** All four are open in 0.5.2. Ids written 100 < 200 < 300 stand
-for migration ids that sort that way.
+**Residuals.** All four are open in 0.5.2 and 0.5.3. Ids written
+100 < 200 < 300 stand for migration ids that sort that way.
 
 1. **The post-accept race is detected, not prevented, and no exit code
    moves** (T-28 residual 6 until this entry). A withdrawal merged after an
