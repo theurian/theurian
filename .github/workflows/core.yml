@@ -353,7 +353,7 @@ jobs:
               ip link set lo up
               echo '--- interfaces visible to the tests ---'
               ip -brief addr
-              exec '$uv_path' run --frozen --no-sync pytest -m 'not e2e' -q
+              exec '$uv_path' run --frozen --no-sync pytest -n 4 -m 'not e2e' -q
             "
 
       - name: Prove the sandbox actually blocks network
