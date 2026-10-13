@@ -17,7 +17,9 @@ from label_inheritance_support import (
     reclassification,
 )
 
+from theurian.application.authorization import ServingProfile, StaticAuthorizationProvider
 from theurian.daemon.runner import build_server
+from theurian.domain.enums import Sensitivity
 
 from mcp_wire_session import mcp_session  # isort: skip
 
@@ -107,9 +109,12 @@ def declare_dependency(p: LabelledProject, drafted: dict[str, Any], *ids: str) -
     staged.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
 
 
-def get_is_withheld(p: LabelledProject, **extra: object) -> bool:
-    """Whether ``knowledge.get`` refuses the item; *extra* joins its arguments."""
+def get_is_withheld(p: LabelledProject, *, ceiling: str | None = None, **extra: object) -> bool:
+    """Whether ``knowledge.get`` refuses the item at *ceiling*, default if None."""
+    grant = None
+    if ceiling is not None:
+        grant = StaticAuthorizationProvider(ServingProfile(Sensitivity(ceiling))).deployment_grant()
     arguments = {"projectId": "demo", "itemId": p.item_id, **extra}
-    with mcp_session(build_server(p.registry), p.root.parent / "wire") as call:
+    with mcp_session(build_server(p.registry, grant), p.root.parent / "wire") as call:
         answer = call("knowledge.get", arguments)
     return bool(answer["result"]["isError"])

@@ -14,7 +14,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import pytest
 from label_inheritance_support import (
@@ -575,30 +575,149 @@ def test_an_upsert_raise_undone_by_a_larger_id_sanctioned_lowering_has_no_row(
 
 
 HI6 = "7ZZZZZZZZZ01234567890ABC06"
+HI7 = "7ZZZZZZZZZ01234567890ABC07"
+#: How tight a label is: the guard compares the last writer's level with the row's ``before``.
+RANK = {"internal": 0, "confidential": 1, "restricted": 2, "approved": 0, "deprecated": 1}
+
+
+def _set(migration_id: str, item_id: str, level: str) -> str:
+    if level in ("approved", "deprecated"):
+        return (restoration if level == "approved" else deprecation)(migration_id, item_id)
+    return reclassification(migration_id, item_id, level)
+
+
+def _guard_leaves_it(writers: dict[str, str], before: str) -> tuple[str, bool]:
+    """Action 2's guard: the last of *writers* in applicationOrder, and whether it leaves it."""
+    order = cli_ok("migrate", "validate")["applicationOrder"]
+    last = [m for m in order if m in writers][-1]
+    return last, RANK[writers[last]] >= RANK[before]
 
 
 @pytest.mark.parametrize("chain", CHAINS)
 def test_a_reorders_row_a_later_tightening_already_holds_needs_no_repair(
     chain: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """T-29 operator action 2's guard: a later migration holds a tighter label than the row's.
+    """T-29 operator action 2's guard says leave it: the last writer holds a tighter label.
 
     The row stays reported. A repair following the rule, `confidential` depending on the last
     writer, loosens the `restricted` the later migration set: the hazard the guard prevents.
+    `knowledge.get` at `includeUnapproved: true` agrees here, but the guard does not rest on it.
     """
     p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
     row = _lowered(p, "sensitivity", chain)
     tighten = depending_on(reclassification(HI6, p.item_id, "restricted"), _repair_target(chain))
     write(p.root, HI6, "tighten", tighten)
     cli_ok("migrate", "apply")
+    writers = {LATE: "confidential", D1: "internal", **dict.fromkeys(CHAINS[chain], "internal")}
 
-    held = (_rows(), item_row(p.root, p.item_id)["sensitivity"], get_is_withheld(p))
+    held = (
+        _rows(),
+        item_row(p.root, p.item_id)["sensitivity"],
+        _guard_leaves_it({**writers, HI6: "restricted"}, "confidential"),
+        get_is_withheld(p),
+        get_is_withheld(p, includeUnapproved=True),
+    )
 
-    assert held == (row, "restricted", True)
+    assert held == (row, "restricted", (HI6, True), True, True)
     repair = reclassification(HI2, p.item_id, "confidential")
     write(p.root, HI2, "repair", depending_on(repair, _repair_target(chain, HI6)))
     cli_ok("migrate", "apply")
     assert item_row(p.root, p.item_id)["sensitivity"] == "confidential"
+
+
+class _Step(NamedTuple):
+    migration_id: str
+    level: str
+    depends_on: str = ""
+
+
+class _History(NamedTuple):
+    """A raises the row's field, M lowers it declaring dependsOn on the root; *other* writes the
+    other field and *readmit* later undoes it; the end is read at *ceiling*."""
+
+    sensitivity: str
+    a: _Step
+    m: _Step
+    other: _Step | None = None
+    readmit: _Step | None = None
+    ceiling: str | None = None
+
+
+_ROOT = ROOT_MIGRATION_ID
+_HISTORIES = {
+    "restricted lowered to confidential": _History(
+        "internal",
+        _Step(LATE, "restricted"),
+        _Step(D1, "confidential", _ROOT),
+        ceiling="confidential",
+    ),
+    "status row on a confidential item": _History(
+        "confidential",
+        _Step(LATE, "deprecated"),
+        _Step(D1, "approved", _ROOT),
+        ceiling="confidential",
+    ),
+    "sensitivity row, item retired later": _History(
+        "internal",
+        _Step(LATE, "confidential"),
+        _Step(D1, "internal", _ROOT),
+        _Step(HI6, "deprecated", D1),
+        _Step(HI7, "approved", HI6),
+    ),
+    "status row, item raised later": _History(
+        "internal",
+        _Step(LATE, "deprecated"),
+        _Step(D1, "approved", _ROOT),
+        _Step(HI6, "restricted", D1),
+        _Step(HI7, "internal", HI6),
+    ),
+}
+
+
+def _write_step(p: LabelledProject, step: _Step) -> None:
+    text = _set(step.migration_id, p.item_id, step.level)
+    write(
+        p.root,
+        step.migration_id,
+        "w",
+        depending_on(text, step.depends_on) if step.depends_on else text,
+    )
+
+
+@pytest.mark.parametrize("repaired", [False, True], ids=["left", "repaired"])
+@pytest.mark.parametrize("case", _HISTORIES)
+def test_a_withheld_item_is_no_evidence_of_the_rows_field_level(
+    case: str, repaired: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GHSA-wwq9 round three: `knowledge.get` withholds an item for either label field, at any
+    level above its ceiling, so action 2's guard cannot read it as the row's own field holding.
+
+    In each history it answers "withheld" while the last writer of the row's field sits below
+    the row's `before`. The structural guard says repair; leaving the row serves the item once
+    the later readmission lands, and the repair keeps it withheld.
+    """
+    h = _HISTORIES[case]
+    p = labelled_project(tmp_path, monkeypatch, sensitivity=h.sensitivity)
+    for step in (h.a, h.m, *([h.other] if h.other else [])):
+        _write_step(p, step)
+    cli_ok("migrate", "apply")
+    field = "status" if h.a.level in ("approved", "deprecated") else "sensitivity"
+    row = [(D1, p.item_id, field, h.a.level, h.m.level, LATE, "reorders")]
+    writers = {h.a.migration_id: h.a.level, h.m.migration_id: h.m.level}
+    last, leaves_it = _guard_leaves_it(writers, h.a.level)
+
+    seen = (_rows(), get_is_withheld(p, includeUnapproved=True), leaves_it)
+
+    assert seen == (row, True, False)
+    if repaired:
+        fix = _set(HI2, p.item_id, h.a.level)
+        write(p.root, HI2, "repair", depending_on(fix, last))
+        cli_ok("migrate", "apply")
+    if h.readmit:
+        _write_step(p, h.readmit)
+        cli_ok("migrate", "apply")
+    assert _rows() == row
+    assert get_is_withheld(p, ceiling=h.ceiling) is repaired
 
 
 NEW_REVISION = "01K1EEEREV01234567890ABCDE"
