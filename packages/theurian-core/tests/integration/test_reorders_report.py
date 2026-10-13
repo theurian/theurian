@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar, cast
 
 import pytest
 from label_inheritance_support import (
@@ -465,19 +466,48 @@ def test_a_loosening_with_a_larger_id_replays_last_with_no_row(
 
 HI5 = "7ZZZZZZZZZ01234567890ABC05"
 #: Migrations after M, each depending on the one before it and restating the lowered level.
-CHAINS = {"alone": (), "same-round": (HI5,), "deep": (D2, HI5)}
+CHAINS = {"alone": (), "same-round": (HI5,), "deep": (D2, HI5), "descending": (HI5, D2)}
 
 
-def _repair_target(row_migration: str, writers: tuple[str, ...]) -> str:
-    """The last migration in applicationOrder that writes the field: the row's, if none follows."""
-    return (row_migration, *writers)[-1]
+def _repair_target(chain: str) -> str:
+    """The last migration in applicationOrder that writes the field: M's, if none follows."""
+    writes = {LATE, D1, *CHAINS[chain]}
+    return str([m for m in cli_ok("migrate", "validate")["applicationOrder"] if m in writes][-1])
 
 
-@pytest.mark.parametrize("chain", CHAINS)
-@pytest.mark.parametrize(
-    "repair_id", ["01K1AAAAAB01234567890ABCDE", HI2], ids=["smaller", "larger"]
-)
-@pytest.mark.parametrize("face", FACES)
+_Test = TypeVar("_Test", bound=Callable[..., Any])
+
+
+def _repairs(chains: list[str]) -> Callable[[_Test], _Test]:
+    def mark(test: _Test) -> _Test:
+        ids = ["smaller", "larger"]
+        repair_ids = ["01K1AAAAAB01234567890ABCDE", HI2]
+        test = pytest.mark.parametrize("chain", chains)(test)
+        test = pytest.mark.parametrize("repair_id", repair_ids, ids=ids)(test)
+        return cast(_Test, pytest.mark.parametrize("face", FACES)(test))
+
+    return mark
+
+
+def _repaired(p: LabelledProject, face: str, repair_id: str, chain: str, *, last: bool) -> None:
+    """A history where M lowers what A raised, a chain restates it, then N raises it again."""
+    lowering = depending_on(_label(face, D1, p.item_id, tight=False), ROOT_MIGRATION_ID)
+    steps = {"a": (LATE, _label(face, LATE, p.item_id, tight=True)), "m": (D1, lowering)}
+    for before, writer in zip((D1, *CHAINS[chain]), CHAINS[chain], strict=False):
+        restated = depending_on(_label(face, writer, p.item_id, tight=False), before)
+        steps[f"w{writer[-2:]}"] = (writer, restated)
+    _validate_then_apply(p, **steps)
+    row = [(D1, p.item_id, face, *MOVE[face], LATE, "reorders")]
+    assert _rows() == row
+    target = _repair_target(chain) if last else D1
+    repair = depending_on(_label(face, repair_id, p.item_id, tight=True), target)
+    write(p.root, repair_id, "n", repair)
+    cli_ok("migrate", "apply")
+    if last:
+        assert _rows() == row
+
+
+@_repairs(list(CHAINS))
 def test_the_repair_a_reorders_row_asks_for_holds_the_level_and_the_row_stays(
     face: str, repair_id: str, chain: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -487,23 +517,22 @@ def test_the_repair_a_reorders_row_asks_for_holds_the_level_and_the_row_stays(
     the lowered level.
     """
     p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
-    lowering = depending_on(_label(face, D1, p.item_id, tight=False), ROOT_MIGRATION_ID)
-    steps = {"a": (LATE, _label(face, LATE, p.item_id, tight=True)), "m": (D1, lowering)}
-    for before, writer in zip((D1, *CHAINS[chain]), CHAINS[chain], strict=False):
-        restated = depending_on(_label(face, writer, p.item_id, tight=False), before)
-        steps[f"w{writer[-2:]}"] = (writer, restated)
-    _validate_then_apply(p, **steps)
-    row = [(D1, p.item_id, face, *MOVE[face], LATE, "reorders")]
-    assert _rows() == row
 
-    target = _repair_target(D1, CHAINS[chain])
-    write(
-        p.root, repair_id, "n", depending_on(_label(face, repair_id, p.item_id, tight=True), target)
-    )
-    cli_ok("migrate", "apply")
+    _repaired(p, face, repair_id, chain, last=True)
 
-    assert _rows() == row
     assert item_row(p.root, p.item_id)[face] == ACCEPTED[face]
+
+
+@_repairs(["same-round", "deep", "descending"])
+def test_a_repair_depending_on_the_rows_migration_alone_leaves_a_chain_loose(
+    face: str, repair_id: str, chain: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The failure the rule "depend on the last writer" prevents: the chain replays after N."""
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+
+    _repaired(p, face, repair_id, chain, last=False)
+
+    assert item_row(p.root, p.item_id)[face] == MOVE[face][1]
 
 
 def _upsert(migration_id: str, sensitivity: str) -> str:
