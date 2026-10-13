@@ -40,9 +40,11 @@ Apply pending knowledge migrations to the canonical store.
 - If validation reports a **dependency cycle**, list the cycle.
 - If `permissiveMoves` is not empty in the output of `migrate validate` or
   `migrate apply`, show the user every row. A row is one `status` or
-  `sensitivity` that a new revision in `migrationId` loosened on `itemId`, from
-  `before` to `after`. `undoes` is the migration that, before `migrationId`,
-  last changed whether the item may be served, or its sensitivity class; a
+  `sensitivity` that `migrationId` loosened on `itemId`, from `before` to
+  `after`. For `kind: undoes` and `kind: lowers`, a new revision in
+  `migrationId` loosened it, and `undoes` is the migration that, before
+  `migrationId`, last changed whether the item may be served, or its
+  sensitivity class; a
   move between two retired statuses (deprecated, superseded, rejected) is not
   a change. `kind: undoes` means that change withdrew the field: it retired
   the item or raised its sensitivity class, whatever write made it, a revision
