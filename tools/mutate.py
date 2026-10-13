@@ -192,12 +192,35 @@ come back GREEN. If the tree is already RED, every KILLED verdict in the batch
 is meaningless, and without the control that is invisible. It runs as an
 ordinary job, so with two or more workers it costs almost no wall clock.
 
-**No ``pytest-xdist``.** Evaluated and rejected; do not re-evaluate it from
-scratch. It is not a dependency, the e2e tests take real ports via
-``_free_port()``, spawn subprocesses and shell out to ``lsof``, and
-``test_mcp_tools.py``'s ``three_indexes`` fixture builds three real projects at
-module scope at roughly 2.9 s per corpus. If it is ever wanted it needs
-``--dist=loadscope``, and it needs these isolated trees first.
+**``pytest-xdist``.** Recorded at #32 (2026-08-05):
+
+    **No ``pytest-xdist``.** Evaluated and rejected; do not re-evaluate it from
+    scratch. It is not a dependency, the e2e tests take real ports via
+    ``_free_port()``, spawn subprocesses and shell out to ``lsof``, and
+    ``test_mcp_tools.py``'s ``three_indexes`` fixture builds three real projects
+    at module scope at roughly 2.9 s per corpus. If it is ever wanted it needs
+    ``--dist=loadscope``, and it needs these isolated trees first.
+
+#924 (issue #643) supersedes this for CI's offline step,
+``pytest -n 4 -m 'not e2e'``: measured locally, 1479.27 s serial against
+419.34 s at ``-n 4``
+(https://github.com/theurian/theurian/issues/643#issuecomment-6140093192).
+Against each reason:
+
+- *Ports.* The ``_free_port()`` in the offline selection is integration
+  ``test_daemon.py``'s; the e2e copies are outside ``-m 'not e2e'``. Over the 48
+  test files that bind a port, name 7419/7420 or use a fixed path, serial and
+  ``-n 4`` outcomes do not differ, and the offline job passed at ``-n 4`` on four
+  CI runs (run 38363120459's three attempts and run 38368615621).
+- *Subprocesses and ``lsof``.* The same evidence covers subprocesses. The only
+  ``lsof`` call is in e2e ``test_daemon_single_instance.py``, outside the step.
+- *Module-scope fixtures.* Summed per-test time is unchanged: 1462.9 s serial,
+  1442.9 s at ``-n 4``.
+- *``--dist=loadscope``.* The workflow passes no ``--dist``, so those CI runs
+  used the default ``load``.
+
+The harness itself still does not pass ``-n`` (``mutate_run._suite_argv``); its
+parallelism is ``--workers`` across copied trees.
 
 The port hazard is the reason to keep ``--workers`` modest. ``_free_port()``
 binds port 0, reads the number and closes the socket, so concurrent suites can
