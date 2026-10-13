@@ -7144,7 +7144,7 @@ report exactly one row: the `dependsOn` migration's, `kind: reorders`,
    `reorders` row.
 2. To repair a `reorders` row whose `undoes` set the level meant to hold: if
    `knowledge.get`, called at the default ceiling, with
-   `includeUnapproved: true` for a status repair, already withholds the
+   `includeUnapproved: true`, already withholds the
    item, leave it: a later migration holds a tighter label. If it still
    serves the item, merge a new migration that sets that level again and
    declares `dependsOn` on the last migration in `migrate validate`'s
@@ -7159,7 +7159,7 @@ report exactly one row: the `dependsOn` migration's, `kind: reorders`,
    Confirm after `migrate apply`, never by the report: in a fresh
    `migrate validate`, no migration that writes the field follows the repair
    in `applicationOrder`; and `knowledge.get` at the default ceiling, with
-   `includeUnapproved: true` for a status repair, withholds the item. The
+   `includeUnapproved: true`, withholds the item. The
    first shows the replay order, not the level served; the second shows the
    item withheld, not at which level. The row is still reported, as there is
    no way to acknowledge one (T-28's known cost). Measured on main at
