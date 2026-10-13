@@ -7137,7 +7137,8 @@ report exactly one row: the `dependsOn` migration's, `kind: reorders`,
    or restores an item, run `theurian migrate validate` and read any
    `reorders` row.
 2. To repair a `reorders` row whose `undoes` set the level meant to hold: if
-   `knowledge.get`, called at the default ceiling, already withholds the
+   `knowledge.get`, called at the default ceiling, with
+   `includeUnapproved: true` for a status repair, already withholds the
    item, leave it: a later migration holds a tighter label. If it still
    serves the item, merge a new migration that sets that level again and
    declares `dependsOn` on the last migration in `migrate validate`'s
