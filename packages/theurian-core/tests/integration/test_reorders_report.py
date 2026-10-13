@@ -32,6 +32,7 @@ from label_inheritance_support import (
     root_migration,
     runner,
 )
+from mcp_wire_session import mcp_session
 from replay_order_support import (
     ACCEPTED,
     D1,
@@ -46,6 +47,7 @@ from replay_order_support import (
 )
 
 from theurian.cli.main import app
+from theurian.daemon.runner import build_server
 
 pytestmark = pytest.mark.integration
 
@@ -468,9 +470,9 @@ HI5 = "7ZZZZZZZZZ01234567890ABC05"
 CHAINS = {"alone": (), "same-round": (HI5,), "deep": (D2, HI5), "descending": (HI5, D2)}
 
 
-def _repair_target(chain: str) -> str:
+def _repair_target(chain: str, *later: str) -> str:
     """The last migration in applicationOrder that writes the field: M's, if none follows."""
-    writes = {LATE, D1, *CHAINS[chain]}
+    writes = {LATE, D1, *CHAINS[chain], *later}
     return str([m for m in cli_ok("migrate", "validate")["applicationOrder"] if m in writes][-1])
 
 
@@ -478,8 +480,8 @@ REPAIR_IDS = ["01K1AAAAAB01234567890ABCDE", HI2]
 REPAIR_LABELS = ["smaller", "larger"]
 
 
-def _repaired(p: LabelledProject, face: str, repair_id: str, chain: str, *, last: bool) -> None:
-    """A history where M lowers what A raised, a chain restates it, then N raises it again."""
+def _lowered(p: LabelledProject, face: str, chain: str) -> list[tuple[Any, ...]]:
+    """A history where M lowers what A raised and a chain restates it; the one row it reports."""
     lowering = depending_on(_label(face, D1, p.item_id, tight=False), ROOT_MIGRATION_ID)
     steps = {"a": (LATE, _label(face, LATE, p.item_id, tight=True)), "m": (D1, lowering)}
     for before, writer in zip((D1, *CHAINS[chain]), CHAINS[chain], strict=False):
@@ -488,6 +490,12 @@ def _repaired(p: LabelledProject, face: str, repair_id: str, chain: str, *, last
     _validate_then_apply(p, **steps)
     row = [(D1, p.item_id, face, *MOVE[face], LATE, "reorders")]
     assert _rows() == row
+    return row
+
+
+def _repaired(p: LabelledProject, face: str, repair_id: str, chain: str, *, last: bool) -> None:
+    """A history where M lowers what A raised, a chain restates it, then N raises it again."""
+    row = _lowered(p, face, chain)
     target = _repair_target(chain) if last else D1
     repair = depending_on(_label(face, repair_id, p.item_id, tight=True), target)
     write(p.root, repair_id, "n", repair)
@@ -566,3 +574,91 @@ def test_an_upsert_raise_undone_by_a_larger_id_sanctioned_lowering_has_no_row(
 
     assert rows == ([], [])
     assert item_row(p.root, p.item_id)["sensitivity"] == "internal"
+
+
+def _withheld(p: LabelledProject, *, include_unapproved: bool = False) -> bool:
+    """Whether ``knowledge.get`` refuses the item, at the default ceiling."""
+    arguments: dict[str, object] = {"projectId": "demo", "itemId": p.item_id}
+    if include_unapproved:
+        arguments["includeUnapproved"] = True
+    with mcp_session(build_server(p.registry), p.root.parent / "wire") as call:
+        return bool(call("knowledge.get", arguments)["result"]["isError"])
+
+
+HI6 = "7ZZZZZZZZZ01234567890ABC06"
+
+
+@pytest.mark.parametrize("chain", list(CHAINS))
+def test_a_reorders_row_a_later_tightening_already_holds_needs_no_repair(
+    chain: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T-29 operator action 2's guard: a later migration holds a tighter label than the row's.
+
+    The row stays reported. A repair following the rule, `confidential` depending on the last
+    writer, loosens the `restricted` the later migration set: the hazard the guard prevents.
+    """
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    row = _lowered(p, "sensitivity", chain)
+    tighten = depending_on(reclassification(HI6, p.item_id, "restricted"), _repair_target(chain))
+    write(p.root, HI6, "tighten", tighten)
+    cli_ok("migrate", "apply")
+
+    held = (_rows(), item_row(p.root, p.item_id)["sensitivity"], _withheld(p))
+
+    assert held == (row, "restricted", True)
+    repair = reclassification(HI2, p.item_id, "confidential")
+    write(p.root, HI2, "repair", depending_on(repair, _repair_target(chain, HI6)))
+    cli_ok("migrate", "apply")
+    assert item_row(p.root, p.item_id)["sensitivity"] == "confidential"
+
+
+NEW_REVISION = "01K1EEEREV01234567890ABCDE"
+
+
+def _withdrawn_in_place(p: LabelledProject, depends_on: str) -> None:
+    """An ``upsertRevision`` to ``draft``: a new revision over the root's, with its own body."""
+    body = p.root / ".theurian/knowledge/architecture"
+    (body / "auth-policy-l.md").write_bytes((body / "auth-policy.md").read_bytes())
+    text = root_migration(
+        item_id=ITEM_ID, revision_id=NEW_REVISION, namespace="backend",
+        sensitivity="internal", trust_level="reviewed", status="draft",
+    ).replace(ROOT_MIGRATION_ID, SORTS_AFTER_A_DRAFT)  # fmt: skip
+    text = text[: text.index("  - op: createItem")] + text[text.index("  - op: upsertRevision") :]
+    text = text.replace("auth-policy.md", "auth-policy-l.md").replace(
+        f"    revisionId: {NEW_REVISION}\n",
+        f"    revisionId: {NEW_REVISION}\n    expectedRevision: {ROOT_REVISION_ID}\n",
+    )
+    write(p.root, SORTS_AFTER_A_DRAFT, "to-draft", depending_on(text, depends_on))
+    cli_ok("migrate", "apply")
+
+
+@pytest.mark.parametrize("face", FACES)
+def test_a_repair_guard_needs_include_unapproved_after_an_in_place_withdrawal(
+    face: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Why action 2's guard and confirmation call `knowledge.get` with `includeUnapproved: true`.
+
+    A later in-place withdrawal to `draft` depending on the row's migration leaves the row
+    reported and the item `draft`: the default `knowledge.get` withholds it whether or not a
+    repair holds, and only `includeUnapproved: true` serves it. Measured on 0.5.3 and on
+    core-v0.5.1 for both faces.
+    """
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    if face == "status":
+        write(p.root, LATE, "deprecate", deprecation(LATE, p.item_id))
+        restore = depending_on(restoration(D1, p.item_id), ROOT_MIGRATION_ID)
+        write(p.root, D1, "restore", restore)
+        cli_ok("migrate", "apply")
+        row = [(D1, p.item_id, "status", "deprecated", "approved", LATE, "reorders")]
+    else:
+        land_late(p, "sensitivity")
+        row = [(D2, p.item_id, "sensitivity", "confidential", "internal", LATE, "reorders")]
+    assert _rows() == row
+
+    _withdrawn_in_place(p, row[0][0])
+
+    labels = item_row(p.root, p.item_id)
+    assert (labels["status"], labels["sensitivity"]) == ("draft", "internal")
+    assert _rows() == row
+    assert _withheld(p) is True
+    assert _withheld(p, include_unapproved=True) is False
