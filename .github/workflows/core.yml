@@ -290,7 +290,8 @@ jobs:
     # job fire first and the step budgets unreachable.
     #
     # 2026-10-08: 40 -> 45 with the suite step's 20 -> 25 (10 + 25 + 5 plus
-    # overhead stays under the job ceiling). Stopgap for #643.
+    # overhead stays under the job ceiling). Unchanged by #643's `-n 4`: 10 +
+    # 25 + 5 + 1 = 41 still needs the ceiling above it.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
@@ -330,17 +331,25 @@ jobs:
       # over: 90% progress at 895s before the 900s cap killed the step (job
       # 107975349094, 2026-09-25), a projected ~994s (~16.6 min) full run. A
       # step that reports a hung sandbox as a failed suite is the one thing
-      # this budget exists to prevent. The durable fix is a faster suite.
+      # this budget exists to prevent. The faster suite is #643, below.
       #
-      # 2026-10-08: 20 -> 25. Runner variance crossed ~8% headroom on a
-      # prose-only diff: step durations 12.4, 13.7, 15.0, 15.8, 17.7, 18.0,
-      # 18.1, 18.3 min (runs 37742031132, 37619183994, 37749832099,
-      # 37745174915, 37730922535, 37730754916, 37733739856, 37749838629)
-      # and 20.2 min TIMED OUT (run 37747729558, c6cb5d05). Stopgap; the
-      # durable fix is #643 (trim or parallelize the no-network suite).
-      # 25 is a stopgap inside the observed spread (12.4-18.1 min on the same
-      # 10480 tests; the timed-out run projected ~20.4), not a margin sized
-      # off the measurement: another timeout is possible before #643 lands.
+      # 2026-10-08: 20 -> 25, serial series: 12.4-18.3 min (runs 37742031132,
+      # 37619183994, 37749832099, 37745174915, 37730922535, 37730754916,
+      # 37733739856, 37749838629) and 20.2 min TIMED OUT (run 37747729558,
+      # c6cb5d05).
+      #
+      # #643: serial baseline, the 8 most recent green main runs (38055100740
+      # through 37341962993), step durations 861, 1052, 1087, 1077, 822, 881,
+      # 735 and 724s. The step now runs `-n 4`. Cap kept at 25, sized from PR #924's
+      # CI, run 38363120459 (attempts 2-3 are reruns of this job only, same
+      # commit f59a7eb4): 452s (job 115181779131), 273s (job 115194001100),
+      # 456s (job 115196115424); 10553 passed, 98 skipped, 1 xfailed each.
+      # 25 min is 3.3x the 456s maximum, inside the "roughly 3-4x p95,
+      # minimum 10" rule of tests/ci/test_job_timeouts.py (the max of three
+      # as a p95 stand-in; the rule is stated for jobs). 10 is not
+      # restored: 456s is 76% of 600s, too thin for a 273-456s spread. Three
+      # samples is a small series; re-size from further runs, not from this
+      # comment.
       - name: Run the suite with no network access
         timeout-minutes: 25
         run: |
@@ -353,7 +362,7 @@ jobs:
               ip link set lo up
               echo '--- interfaces visible to the tests ---'
               ip -brief addr
-              exec '$uv_path' run --frozen --no-sync pytest -m 'not e2e' -q
+              exec '$uv_path' run --frozen --no-sync pytest -n 4 -m 'not e2e' -q
             "
 
       - name: Prove the sandbox actually blocks network
