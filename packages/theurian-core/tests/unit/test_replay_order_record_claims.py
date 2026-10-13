@@ -271,19 +271,154 @@ def test_the_changelogs_quoted_refusal_messages_match_the_templates_that_produce
                 assert " ".join(fragment.replace("'", "").split()) in template, (fn, fragment)
 
 
-def test_the_wave_one_texts_say_what_the_round_required() -> None:
-    """The repair names applicationOrder; the no-row sites name the operations; the grade reads as shipped."""
-    doc = _flat(_read(_TM)) + _flat(_read(_ADR))
-    actions = _flat(entry_in(_read(_TM), "T-29").split("**Operator actions.**", 1)[1])
-    repair = "dependson on the last migration in migrate validate's applicationorder that writes the field"
-    graded = "critical as shipped (ghsa-wwq9-p8wq-5m68)"
-    no_row = [
-        "a changesensitivity lowering or restoreitem with a larger id than a migration merged after it replays last, with no row",
-        "a changesensitivity lowering or restoreitem replaying last by its larger id",
-        "as for a landed changesensitivity lowering or restoreitem with a larger id than the proposal's",
-        "a dependson migration that tightens a label after a larger-id changesensitivity lowering or restoreitem",
-    ]
+def _t29() -> str:
+    return entry_in(_read(_TM), "T-29")
 
-    assert repair in actions and "dependson: [<the row's migrationid>]" not in actions
-    assert all(phrase in doc for phrase in no_row)
-    assert graded in _flat(_match(r"(?m)^#### T-29 .*$", _read(_TM))[0]) and graded in _row("T-29")
+
+def _between(raw: str, start: str, end: str) -> str:
+    assert raw.count(start) == 1, f"{start!r} occurs {raw.count(start)} times"
+    return raw.split(start, 1)[1].split(end, 1)[0]
+
+
+def _items(block: str) -> list[str]:
+    return [_flat(item) for item in re.split(r"(?m)^\d+\. ", block)[1:]]
+
+
+def _actions() -> list[str]:
+    return _items(_between(_t29(), "**Operator actions.**", "**What would reopen"))
+
+
+def test_the_repair_rule_names_the_last_writer_in_applicationorder_and_says_to_read_it() -> None:
+    """A repair depending on the row's migration alone left a chain loose; a reader told "the
+    row's `migrationId` is enough" repeats that."""
+    repair = _actions()[1]
+
+    assert (
+        "declares dependson on the last migration in migrate validate's applicationorder that writes the field: often the row's migrationid, but read it, never assume it."
+        in repair
+    )
+    assert "dependson: [<the row's migrationid>]" not in repair
+    assert "is enough" not in repair
+
+
+def test_the_repair_guard_and_confirmation_each_serve_the_item_through_includeunapproved() -> None:
+    """Without `includeUnapproved: true` an item an in-place withdrawal left `draft` reads as
+    withheld whether or not the repair held (`test_reorders_report.py::test_a_repair_guard_needs_include_unapproved_after_an_in_place_withdrawal`),
+    and the report keeps naming the row after a repair, so neither it nor the label confirms one."""
+    repair = _actions()[1]
+
+    assert (
+        "if knowledge.get, called at the default ceiling, with includeunapproved: true, already withholds the item, leave it"
+        in repair
+    )
+    assert (
+        "confirm after migrate apply, never by the report: in a fresh migrate validate, no migration that writes the field follows the repair in applicationorder; and knowledge.get at the default ceiling, with includeunapproved: true, withholds the item."
+        in repair
+    )
+    for stale in ("for a status repair", "the item's label", "no longer reported"):
+        assert stale not in repair
+
+
+def test_action_three_names_every_landed_writer_in_replay_order() -> None:
+    """0.5.3's remedy names every landed writer of a refused field that replays after the
+    proposal's (GHSA-fjqq-grr7-53cc), not the one that last took the field."""
+    actions = _actions()
+
+    assert (
+        "every landed migration that writes a refused field and replays after the proposal's"
+        in actions[2]
+    )
+    assert "in replay order" in actions[2]
+    assert not [a for a in actions if "expect a second refusal" in a or "last took the field" in a]
+
+
+def test_the_severity_premise_names_the_residuals_that_need_a_human_merge() -> None:
+    """Residual 4 is reached through `accept` with a hand-edited `dependsOn`, so "every residual
+    needs a human to merge" overstates the premise the grade rests on."""
+    severity = _flat(_between(_t29(), "**Severity:", "**Controls (0.5.2)"))
+
+    assert "residuals 1 to 3 need a human to merge the migrations without accept" in severity
+    assert (
+        "residual 4 is reached through accept too, with a hand-edited dependson, and discloses nothing there"
+        in severity
+    )
+    assert "every residual open after 0.5.2 needs a human to merge" not in severity
+
+
+_GRADE_SITES: Final = {
+    "heading": lambda: _flat(_match(r"(?m)^#### T-29 .*$", _read(_TM))[0]),
+    "summary row": lambda: _row("T-29"),
+    "severity paragraph": lambda: _flat(_between(_t29(), "**Severity:", "**Controls (0.5.2)")),
+}
+
+
+@pytest.mark.parametrize("site", _GRADE_SITES)
+def test_t_29_is_graded_critical_as_shipped_and_high_after_0_5_2_at_each_site(site: str) -> None:
+    """The grade is read at the heading, the summary row and the Severity paragraph; one site
+    drifting to another grade leaves a reader the wrong one depending on where they land."""
+    text = _GRADE_SITES[site]()
+
+    assert "critical as shipped (ghsa-wwq9-p8wq-5m68)" in text
+    assert "high after 0.5.2" in text
+
+
+def test_every_t_29_residual_is_stated_open_in_both_releases() -> None:
+    residuals = _flat(_between(_t29(), "**Residuals.**", "1. **"))
+
+    assert residuals.startswith("all four are open in 0.5.2 and 0.5.3.")
+
+
+def test_residual_three_says_the_larger_id_replay_can_end_with_no_row() -> None:
+    """The no-row claim is held at its own site: it is an existential over the operations
+    measured in P's place, not a statement about any loosening."""
+    [_, _, third, _] = _residuals("T-29", "**The same root cause")
+
+    assert _flat(third).startswith(
+        "a changesensitivity lowering or restoreitem with a larger id than a migration merged after it can replay last, with no row."
+    )
+
+
+def test_residual_four_says_a_tightening_inversion_can_be_neither_refused_nor_reported() -> None:
+    """Through `accept` with a hand-edited `dependsOn` it is accepted, so the claim is
+    existential and carries its accept face."""
+    [_, _, _, fourth] = _residuals("T-29", "**The same root cause")
+    fourth = _flat(fourth)
+
+    assert fourth.startswith("a tightening inversion can be neither refused nor reported:")
+    assert "with dependson on the root hand-edited into the staged file it exits 0" in fourth
+
+
+def test_the_t_29_summary_row_names_only_the_larger_id_lowering_it_measured() -> None:
+    """The row states the operations measured in P's place; "any loosening" was not measured."""
+    row = _row("T-29")
+
+    assert "a changesensitivity lowering or restoreitem replaying last by its larger id" in row
+    assert "and any loosening with a larger id" not in row
+
+
+def test_control_two_points_at_where_the_larger_id_refusal_is_measured() -> None:
+    """Control 2 once predicted which check meets a landed write first ("control 5 has the
+    row"); the prediction was stated where it was not measured and was false for a restating
+    history."""
+    controls = _between(_t29(), "**Controls (0.5.2).**", "**What holds it.**")
+    second = _items(controls[controls.index("1. ") :])[1]
+
+    assert "is stated where it was measured: t-28 control 5 and residual 10" in second
+    assert "has the row" not in second and "has no row" not in second
+
+
+def test_the_adr_names_the_tightening_inversion_without_the_no_row_wording() -> None:
+    """The amendment points at T-29 residual 4 for what each history ends at and reports."""
+    amendment = _flat(
+        _between(
+            _read(_ADR),
+            "**Amended by GHSA-wwq9-p8wq-5m68 (2026-10-08).**",
+            "**Amended by GHSA-fjqq",
+        )
+    )
+
+    assert (
+        "a dependson migration that tightens a label can replay after a larger-id changesensitivity lowering or restoreitem, and reorders covers the loosening direction only. t-29 residual 4 records the histories measured"
+        in amendment
+    )
+    assert "wins with no row" not in amendment
