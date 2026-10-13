@@ -171,6 +171,10 @@ def _row(threat_id: str) -> str:
     return _flat(_match(rf"(?m)^\| {threat_id} \|.*$", _read(_TM))[0])
 
 
+#: A residual leaves the open count by being marked closed or fixed in a version.
+_CLOSED: Final = re.compile(r"\*\*(?:Closed|Fixed) in")
+
+
 def _residuals(threat_id: str, stop: str) -> list[str]:
     block = entry_in(_read(_TM), threat_id).split("**Residuals.**", 1)[1].split(stop, 1)[0]
     return re.split(r"(?m)^\d+\. ", block)[1:]
@@ -179,7 +183,7 @@ def _residuals(threat_id: str, stop: str) -> list[str]:
 def test_the_residual_counts_agree_with_the_numbered_lists() -> None:
     t28, t29 = _residuals("T-28", "**A known cost"), _residuals("T-29", "**The same root cause")
     moved = [i for i, r in enumerate(t28, 1) if r.startswith("**Moved to T-29")]
-    closed = [i for i, r in enumerate(t28, 1) if r.startswith("**Closed in")]
+    closed = [i for i, r in enumerate(t28, 1) if _CLOSED.match(r)]
     header = _match(
         r"all but the (\w+) are open in 0\.5\.3, the (\w+) new in it",
         _flat(entry_in(_read(_TM), "T-28")),
@@ -194,7 +198,7 @@ def test_the_residual_counts_agree_with_the_numbered_lists() -> None:
     assert (moved, closed) == ([6, 9], [10])
     assert [ordinal[w] for w in header.group(1, 2)] == [closed[0], len(t28)]
     assert [n[w] for w in row.groups()] == [len(t28) - len(closed), len(closed), len(moved)]
-    open29 = len([r for r in t29 if not r.startswith("**Closed in")])
+    open29 = len([r for r in t29 if not _CLOSED.match(r)])
     assert n[_match(r"all (\w+) are open", _flat(entry_in(_read(_TM), "T-29")))[1]] == open29
     assert n[_match(r"(\w+) open residuals", _row("T-29"))[1]] == open29
 
@@ -243,18 +247,29 @@ def test_the_adr_marker_for_loosens_agrees_with_the_census() -> None:
     assert "status_gate_reader_sites" not in amended
 
 
-def test_a_version_t_28_closes_in_has_a_changelog_heading_at_or_below_the_package() -> None:
-    """T-28 residual 10 is "Closed in 0.5.2"; that must be a shipped version."""
-    [item] = [r for r in _residuals("T-28", "**A known cost") if r.startswith("**Closed in")]
-    closed = _match(r"closed in (\d+\.\d+\.\d+)", _flat(item))[1]
+def test_a_version_a_residual_closes_in_is_shipped() -> None:
+    """T-28 residual 10 is "Closed in 0.5.2"; every closed residual of T-28 and T-29 must name a
+    version with a CHANGELOG heading, at or below the package's."""
+    closed = [
+        item
+        for threat_id, stop in (("T-28", "**A known cost"), ("T-29", "**The same root cause"))
+        for item in _residuals(threat_id, stop)
+        if _CLOSED.match(item)
+    ]
     headings = re.findall(r"(?m)^## \[(\d+\.\d+\.\d+)\]", _read(_CHANGELOG))
+    shipped = [int(x) for x in re.findall(r"\d+", __version__)]
 
-    assert closed in headings
-    assert [int(x) for x in closed.split(".")] <= [int(x) for x in re.findall(r"\d+", __version__)]
+    assert closed
+    for item in closed:
+        version = _match(r"(?:closed|fixed) in (\d+\.\d+\.\d+)", _flat(item))[1]
+        assert version in headings, version
+        assert [int(x) for x in version.split(".")] <= shipped, version
 
 
 def test_the_changelogs_quoted_refusal_messages_match_the_templates_that_produce_them() -> None:
-    """The fragments between each quote's `<placeholders>` are literals of its function."""
+    """Pins released quotes against live templates: the fragments between each quote's
+    `<placeholders>` are literals of its function. A template change retires this test in that
+    change, because released notes are not amended."""
     quotes = re.findall(
         r'"(accepting this proposal would (?:make|let)[^"]*)"', _flat(_read(_CHANGELOG))
     )
@@ -262,12 +277,15 @@ def test_the_changelogs_quoted_refusal_messages_match_the_templates_that_produce
         ("_refuse_a_reported_upsert", "undoing what this proposal sets"),
         ("_refuse_a_landed_overwrite", "loosen what it sets"),
     ):
-        source = re.sub(r'\{[^}]*\}|\bf"|"', "", inspect.getsource(getattr(proposal_service, fn)))
+        source = inspect.getsource(getattr(proposal_service, fn))
+        if singular := re.search(r'landed = "([^"]*)" if', source):
+            source = source.replace("{landed}", singular[1])
+        source = re.sub(r'\{[^}]*\}|\bf"|"', "", source)
         template = " ".join(_flat(source).replace("'", "").split())
         found = [q for q in quotes if key in q]
         assert found, key
         for quote in found:
-            for fragment in re.split(r"<[^>]*>|…|the landed migration", quote):
+            for fragment in re.split(r"<[^>]*>|…", quote):
                 assert " ".join(fragment.replace("'", "").split()) in template, (fn, fragment)
 
 
