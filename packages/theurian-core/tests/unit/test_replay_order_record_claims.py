@@ -556,7 +556,7 @@ _CHECK_NAME = re.compile(r"control 5|report check|end-state refusal")
 _SPEAKS_FIRST = re.compile(r"has the row|speaks|refuses first|runs first|meets it first")
 #: file | sentence start | a condition the sentence must keep stating | the ruling
 _PREDICTIONS_RULED: Final = [
-    f"{_TM}|accept now refuses it on the field's end state|when the union replay leaves a status or sensitivity the proposal wrote looser|T-28 residual 10's 'unless control 5, which runs first' is released text; its condition presupposes the union replay applies, so it is not false",
+    f"{_TM}|accept now refuses it on the field's end state|when the union replay leaves a status or sensitivity the proposal wrote looser|every earlier check refuses a different cause: the union replay a revision conflict; the floors a lowering or readmission the proposal itself writes, which in residual 10's shape — the proposal raises or withdraws the field — cannot be this item's",
     f"{_TM}|the advisory's face meets it first|builds the advisory's history for both faces|T-29 control 1: the prediction is for the advisory's history, and the cited test builds it",
 ]
 
