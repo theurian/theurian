@@ -218,17 +218,35 @@ If those operations staged body files that no kept operation uses, ", delete
 the body files those operations drafted, `<proposal dir>/<file>`" follows the
 first `<proposal dir>/`, each `<file>` made of segments of ASCII letters,
 digits, `.`, `_` and `-`, none `.` or `..`, and resolving inside that
-directory. If a body path fails that, or if `_one_name`, the helper the
+directory. If a body path fails that or its file identity cannot be read
+beside a kept body, or if `_one_name`, the helper the
 refusal messages use, would redact an id or a body path as secret-shaped, or
 cut a body path past 200 characters, the cure is "delete `<proposal dir>/`."
 alone
 (`test_floor_remedy_routing.py::test_a_remedy_never_prints_an_id_the_refusals_message_redacts`
-holds it for ids). By the user's decision only unit tests reach the path
+holds it for ids). Otherwise it lists every refused id and every body only
+those operations use
+([#940](https://github.com/theurian/theurian/issues/940)), a body counting as
+used when a kept operation reads the same file by `(st_dev, st_ino)`, so a
+hard link or a case variant of a kept body is not listed. By the user's
+decision only unit tests reach the path
 condition ([#939](https://github.com/theurian/theurian/issues/939)): a
 backtick, whitespace, an escape character or a `..` segment, and a symlink
 leaving the directory, each get the directory-only cure
 (`::test_a_body_path_outside_the_plain_grammar_leaves_the_directory_only_cure`,
-`::test_a_symlink_inside_the_proposal_directory_pointing_outside_it_is_not_named`).
+`::test_a_symlink_inside_the_proposal_directory_pointing_outside_it_is_not_named`),
+and they alone reach the identity rule
+(`::test_a_hard_linked_pair_is_one_body_and_the_shared_file_is_not_listed`,
+`::test_a_case_variant_spelling_of_a_kept_body_is_not_listed_for_deletion`,
+skipped on a case-sensitive filesystem, and
+`::test_an_identity_that_cannot_be_read_gives_the_directory_only_cure`).
+Where a removed `upsertRevision` names a body and the refusal does not name
+its item as readmitted, the cure ends "To keep a removed content update for an
+item that is not withdrawn, draft it again afterwards with `theurian propose`;
+its own refusal names the --expected-revision it needs."
+([#937](https://github.com/theurian/theurian/issues/937);
+`test_accept_floor_remedy_followed_literally.py::test_a_lowering_cure_then_its_redraft_line_ends_at_the_new_revision_and_a_label_no_lower`
+follows it).
 
 ### An `upsertRevision` re-labels the item
 
@@ -675,8 +693,12 @@ GHSA-v2qg-23fc-7fqp amendment records what was measured for it.
 `test_floor_remedy_routing.py::test_no_remedy_prints_a_dependson_token_outside_the_migration_id_grammar`
 reads every module-level string of `item_labels.py`, and every floor and
 revision-conflict remedy it builds for ten kind sets, and asserts that each
-`` `dependsOn: [...]` `` code span holds migration ids only.
-`::test_a_content_only_proposal_keeps_the_content_remedy` asserts that a
+`` `dependsOn: [...]` `` code span holds migration ids only. Its stub passes
+no migration document, so none of its revision-conflict remedies prints that
+span; the race remedy's is held by
+`test_race_remedy_followed_literally.py::test_giving_the_refused_migration_the_printed_revision_and_writer_lands_its_revision`,
+which reads it as exactly the landed migration's id.
+`test_floor_remedy_routing.py::test_a_content_only_proposal_keeps_the_content_remedy` asserts that a
 proposal whose kinds are a subset of `createItem` and `upsertRevision` gets a
 remedy naming `theurian propose` and no removal.
 `test_accept_floor_remedy_followed_literally.py` follows the removal as
