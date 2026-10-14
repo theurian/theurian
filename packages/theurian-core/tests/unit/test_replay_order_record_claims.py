@@ -415,35 +415,44 @@ def _unlink(text: str) -> str:
 
 def test_action_three_states_the_removal_cure_the_floor_now_prints() -> None:
     """Before #929 the floor's remedy said nothing of the removal and the record sent the reader
-    to a tracker; #929 prints the cure, so the record states what it names and where the
-    measured shapes are."""
+    to a tracker; #929 prints the cure, so the record states what it names, including the body
+    files only the removed operations use, and where the measured shapes are."""
     action = _actions()[2]
 
     for sentence in (
-        "remove every operation on that item from the migration file and accept again, or delete the proposal if those were all its operations.",
-        "the floor's remedy names those operations and the proposal's directory.",
-        "t-28 residual 11 records the shapes measured: the proposal's own item and a co-carried one.",
+        "remove every operation whose itemid is that item from the migration file, delete the body files only those operations use, and accept again, or delete the proposal if those were all its operations.",
+        "the floor's remedy names those operations, any such body file and the proposal's directory, or the directory alone when a name would be redacted or cut.",
+        "t-28 residual 11 records the shapes measured; on this route, the proposal's own item behind a landed tightener (test_floor_remedy_reaccept.py::test_a_reaccept_the_floor_refuses_is_cured_by_the_printed_removal)",
     ):
         assert sentence in _unlink(action), action
     for stale in (
         "the floor's remedy does not say so",
         "tracks the fix",
         "remove that item's operation",
+        "remove every operation on that item",
+        "names those operations and the proposal's directory.",
+        "the proposal's own item and a co-carried one",
     ):
         assert stale not in action
 
 
 def test_residual_eleven_states_the_kind_routed_floor_and_the_measured_cure() -> None:
-    """The residual used to say the cure was "printed nowhere" and the fix was "to be fixed next";
-    both are false once the floor routes by what the proposal carries (#929), and a reader acting
-    on the old words would be told no cure exists."""
+    """The residual used to say the cure was "printed nowhere", that it "leaves the item withheld"
+    and that the own item "is accepted without reaching the floor"; the cure leaves each item at
+    its landed label, which one landed internal and approved serves, and two shapes of the own
+    item do reach the floor. A reader acting on the old words would be told no cure exists, or
+    that following it is safe for every label."""
     raw = _unlink(_flat(_residuals("T-28", "**A known cost")[10]))
 
     for sentence in (
         "since #929, after 0.5.3, the floor routes its remedy by what the proposal carries",
         "a proposal of createitem and upsertrevision alone keeps the content path's remedy.",
-        "any other is told to remove every operation on each item the refusal names from its own migration file and accept again, or to delete the proposal directory if those are all its operations.",
-        "followed literally, that cure leaves the item the floor names withheld, for the proposal's own item and for a co-carried one, each measured on a proposal refused at its first accept.",
+        "any other is told to remove each operation whose itemid is an item the refusal names from its own migration file, delete any body file the remedy lists, and accept again, or to delete the proposal directory if those are all its operations or if the cure would print an id or body path the refusal's message redacts or cuts",
+        "followed literally, the cure leaves each item it names at its landed label, and that label decides whether it is served: one landed internal and approved is served at the default ceiling",
+        "in each suite test cited next, the item the cure names ends confidential or deprecated, and the test asserts it withheld.",
+        "refused by the lowering floor at a re-accept",
+        "with the tightener's id newer than the draft the re-accept exits 0 without reaching a floor; older, it is refused by the lowering floor",
+        "behind an older tightener declaring no dependson, the lowering floor refuses the first accept, run without a kept raise",
         "a refusal, not a disclosure.",
     ):
         assert sentence in raw, sentence
@@ -452,6 +461,9 @@ def test_residual_eleven_states_the_kind_routed_floor_and_the_measured_cure() ->
         "to be fixed next",
         "no cure was measured",
         "tracked on its own issue",
+        "remove every operation on each item",
+        "that cure leaves the item the floor names withheld",
+        "accepted without reaching the floor and stays withheld",
     ):
         assert stale not in raw
 
