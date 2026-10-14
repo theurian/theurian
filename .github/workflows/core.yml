@@ -177,13 +177,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     # #861 (3655950f) raised 30 to 45 as a stopgap; the step now runs `-n 4`
     # (#643, #932). Sized from runs 38494012447 and 38501477400 (#932 has the
-    # table): ubuntu 792-1068 s, macOS 754-1122 s, max 1122 s (job
+    # table): ubuntu 792-1068 s, macOS 912-1122 s (green legs), max 1122 s (job
     # 115649193714). 60 min is 3.2x that max, inside the rule in
     # tests/ci/test_job_timeouts.py ("roughly 3-4x p95, minimum 10"). The cap
     # rises although the suite got faster because 45 never met the rule: the
-    # serial `--cov` step took up to 2221 s, so 45 was 1.2x. This is the first
-    # cap sized by the rule. The log prints no vCPU count; `-n 4` matches the
-    # offline step. Re-check: `gh api repos/theurian/theurian/actions/jobs/<job-id>/logs`
+    # serial `--cov` step took up to 2221 s, so 45 was 1.2x. #109 (66f2e025)
+    # sized 30 by this rule; #861's 45 was a stopgap below it. The log prints no
+    # vCPU count; `-n 4` matches the offline step. Re-check: `gh api repos/theurian/theurian/actions/jobs/<job-id>/logs`
     # or `gh run view <run-id> --attempt <n> --json jobs`.
     # This is the job the liveness guard in `RetrievalService._visible_ranking`
     # protects (docs/work-logs and #16): a regression that removes the guard

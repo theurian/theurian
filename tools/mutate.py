@@ -201,14 +201,13 @@ ordinary job, so with two or more workers it costs almost no wall clock.
     at module scope at roughly 2.9 s per corpus. If it is ever wanted it needs
     ``--dist=loadscope``, and it needs these isolated trees first.
 
-#924 and #643 supersede this for the two ``core.yml`` steps that pass ``-n 4``:
-the offline step, ``pytest -n 4 -m 'not e2e'``, and the ``test`` job's ``--cov``
-step on ubuntu and macOS, ``pytest -n 4 -m "not e2e" --cov``. Measured locally,
+#924 (the offline step) and #932 (the ``test`` job's ``--cov`` step), under #643,
+supersede this for the two ``core.yml`` steps that pass ``-n 4``:
+``pytest -n 4 -m 'not e2e'`` and, on ubuntu and macOS,
+``pytest -n 4 -m "not e2e" --cov``. Measured locally,
 the offline selection took 1479.27 s serial against 419.34 s at ``-n 4``
-(https://github.com/theurian/theurian/issues/643#issuecomment-6140093192); the
-``--cov`` step took 573.78 s at ``-n 4``, with 5 failures that reproduce serially
-(a resident daemon on 7419 and a broken local ``claude`` shim) and TOTAL
-coverage 95.35%. Against each reason:
+(https://github.com/theurian/theurian/issues/643#issuecomment-6140093192).
+Against each reason:
 
 - *Ports.* The ``_free_port()`` in the offline selection is integration
   ``test_daemon.py``'s; the e2e copies are outside ``-m 'not e2e'``. Over the 48
