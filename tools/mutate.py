@@ -218,9 +218,16 @@ Against each reason:
   38501477400: 12 ``Tests`` legs (6 ubuntu, 6 macOS) at ``-n 4 --cov``. Eleven
   had outcome counts equal to serial; the twelfth, job 115642594537, failed on a
   git auto-maintenance race in a test fixture, fixed in 4b5b7d54 (#938 tracks
-  the class). One xdist-only failure mode is open: process-wide ``tracemalloc``
-  peak tests may be charged for the worker's execnet thread (#943, a hypothesis,
-  seen once on the offline step, job 115649193719).
+  the class). One xdist-only failure mode was recorded open here, a hypothesis
+  seen once on the offline step (job 115649193719): process-wide
+  ``tracemalloc`` peak tests may be charged for the worker's execnet thread.
+  #943 reproduced it -- the receiver thread allocates about 40.6 B per index of
+  each ``runtests`` message in the window -- and
+  ``test_request_memory_model.py``'s chunked-transient arm, whose margin was
+  under one message, now measures in a child interpreter (PR #947, closing
+  #943). On 2026-10-14 the other in-process peak tests held by margin, except
+  ``test_purged_build_quantities.py``'s pin, whose only guard under xdist is
+  min-of-5; #946 tracks that bound as unproven.
 - *Subprocesses and ``lsof``.* The same evidence covers subprocesses. The only
   ``lsof`` call is in e2e ``test_daemon_single_instance.py``, outside the step.
 - *Module-scope fixtures.* Summed per-test time is unchanged: 1462.9 s serial,
