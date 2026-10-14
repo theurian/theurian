@@ -9,8 +9,9 @@ from __future__ import annotations
 import ast
 import re
 import string
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final
+from typing import Any, Final, cast
 
 import pytest
 from floor_remedy_support import TRACKED_LOCATION
@@ -23,17 +24,23 @@ from theurian.application.item_labels import (
     DECLASSIFY_REMEDY,
     DRAFT_AGAIN_CLAUSE,
     READMIT_REMEDY,
+    CurrentItem,
+    ItemLabels,
 )
 from theurian.application.proposal_service import (
     _MAX_NAME_CHARS,
     _PRINTABLE_BODY_PATH,
     _REFUSED_TO_CONTENT_PATH,
+    ProposalService,
     _BodyMove,
     _floor_refusal,
     _removal_cure,
 )
-from theurian.domain.enums import KnowledgeStatus, Sensitivity
-from theurian.domain.identifiers import ItemId
+from theurian.domain.enums import KnowledgeStatus, Sensitivity, TrustLevel
+from theurian.domain.errors import RevisionConflictError
+from theurian.domain.identifiers import ItemId, MigrationId, RevisionId
+from theurian.domain.migration import Migration, UpsertRevision
+from theurian.domain.values import ContentHash
 
 pytestmark = pytest.mark.unit
 
@@ -44,6 +51,11 @@ _ITEM = ItemId("architecture.a")
 
 def _flat(rel: str) -> str:
     return re.sub(r"\s+", " ", (REPO_ROOT / rel).read_text(encoding="utf-8"))
+
+
+def _unquoted(rel: str) -> str:
+    """A record's text with blockquote markers dropped and whitespace collapsed."""
+    return re.sub(r"\s+", " ", re.sub(r"(?m)^> ?", "", (REPO_ROOT / rel).read_text("utf-8")))
 
 
 def _residual_eleven() -> str:
@@ -175,6 +187,8 @@ def test_residual_eleven_names_the_label_the_default_ceiling_serves() -> None:
     assert said, "residual 11 no longer states which landed label is served"
 
     assert said[1] == DEFAULT_CEILING.value == Sensitivity.INTERNAL.value
+    profile = re.search(r"serving profile \(ceiling `(\w+)`, no grant\)", _residual_eleven())
+    assert profile and profile[1] == DEFAULT_CEILING.value
 
 
 def _body_move(name: str, item: ItemId) -> _BodyMove:
@@ -349,3 +363,84 @@ def test_migrations_md_lists_the_characters_and_segments_the_body_path_grammar_a
     assert probed == chars
     assert excluded == segments
     assert not [n for n in nested if _PRINTABLE_BODY_PATH.fullmatch(n)]
+
+
+_REV = RevisionId("01K1AAAREV01234567890ABCDE")
+_EARLY, _LATE = "01K1BBBBBB01234567890ABCDE", "7ZZZZZZZZZ01234567890ABCDE"
+
+
+def _race_remedy(
+    monkeypatch: pytest.MonkeyPatch,
+    kinds: frozenset[str],
+    document: dict,  # type: ignore[type-arg]
+    landed: tuple[Migration, ...] = (),
+) -> str:
+    labels = ItemLabels(
+        Sensitivity.INTERNAL, TrustLevel.REVIEWED, "backend", KnowledgeStatus.APPROVED
+    )
+    monkeypatch.setattr(ProposalService, "_landed_set_alone", lambda *_: (None, {_ITEM: labels}))
+    service = ProposalService.__new__(ProposalService)
+    service._current_item = lambda _: CurrentItem(_REV, labels)
+    service._current_revision = None
+    service._landed_migrations = lambda: landed
+    error = RevisionConflictError(_ITEM, None, _REV)
+    where = TRACKED_LOCATION
+    refusal = service._union_refusal(
+        where, Path("m.yaml"), ("L1",), error, kinds, document=document
+    )
+    return refusal.remedy or ""
+
+
+def test_the_adr_quotes_the_race_remedy_fragments_the_code_builds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The amendment's quoted `_edit_cure` fragments, each compared with the remedy built for
+    one upsert (the revision) and for two (#950, the message's value)."""
+    note = _unquoted(_ADR).split("Amended 2026-10-14 ([#931]", 1)[1]
+    quoted = re.search(r'prints the revision .*?: "(.*?)", and on the content route "(.*?)",', note)
+    reports = re.search(r'keeps "(.*?)":', note)
+    assert quoted and reports, "the amendment no longer quotes the race remedy"
+    fill = {"<rev>": _REV.value, "<dir>": TRACKED_LOCATION.relative}
+    edit, redraft = (re.sub("|".join(fill), lambda m: fill[m[0]], q) for q in quoted.groups())
+    one = {"operations": [{"op": "upsertRevision", "itemId": _ITEM.value, "revisionId": "R1"}]}
+    two = {"operations": [*one["operations"], {**one["operations"][0], "revisionId": "R2"}]}
+
+    content = _race_remedy(monkeypatch, frozenset({"upsertRevision"}), one)
+    other = _race_remedy(monkeypatch, frozenset({"changeSensitivity"}), one)
+    twice = _race_remedy(monkeypatch, frozenset({"upsertRevision"}), two)
+
+    assert edit in content and redraft in content and edit in other
+    assert reports[1] in twice and "expectedRevision: " not in twice
+    depends = re.search(r'edit adds "(and `dependsOn: \[<id>\]`, so it replays .*?)"\.', note)
+    assert depends, "the amendment no longer quotes the dependsOn clause"
+    writer = Migration(
+        migration_id=MigrationId(_LATE),
+        created_at=datetime(2026, 8, 2, tzinfo=UTC),
+        author="a",
+        operations=(UpsertRevision(_ITEM, _REV, "../knowledge/a.md", cast("Any", None)),),
+        checksum=ContentHash.of_text(_LATE),
+    )
+    first = {"id": _EARLY, **one}
+
+    after = _race_remedy(monkeypatch, frozenset({"upsertRevision"}), first, (writer,))
+
+    assert depends[1].replace("<id>", _LATE) in after
+
+
+@pytest.mark.parametrize(
+    ("record", "pattern"),
+    [
+        (_MIG, r'the cure ends "(.*?)" \(\[#937\]'),
+        (_ADR, r'The removal cure now ends "(.*?)" where'),
+    ],
+    ids=["migrations.md", "adr-0032"],
+)
+def test_a_record_quotes_the_redraft_sentence_the_removal_cure_ends_with(
+    record: str, pattern: str
+) -> None:
+    quoted = re.search(pattern, _unquoted(record))
+    assert quoted, "the redraft sentence is no longer quoted"
+
+    cure = _removal_cure([_ITEM], TRACKED_LOCATION, [_body_move("body.md", _ITEM)])
+
+    assert cure.endswith(quoted[1])
