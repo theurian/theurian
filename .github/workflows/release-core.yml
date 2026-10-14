@@ -86,7 +86,10 @@ jobs:
     name: Format, lint, types, tests
     runs-on: ubuntu-latest
     # Runs the FULL suite (no marker filter, e2e included, no --cov). The cap
-    # went 10 -> 30 at the 0.2.0 cut (#641) and 30 -> 65 in #933. Job seconds
+    # went 10 -> 30 at the 0.2.0 cut (#641) and 30 -> 65 in #933.
+    # #641: 480 s of 600 s at 0.1.0, ~28% growth by 0.2.0.
+    # #861 (3655950f) kept 30 as "sized from this job's own run", the single
+    # 0.5.0 run below; #933 found that sizing outgrown by the series. Job seconds
     # per cut, re-check with `gh run view <id> --json jobs`:
     #   core-v0.2.3  35044467348   636
     #   core-v0.3.0  35088727565   824
