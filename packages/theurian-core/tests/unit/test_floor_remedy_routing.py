@@ -162,7 +162,9 @@ def test_a_proposal_no_content_draft_can_redo_is_told_to_remove_the_refused_item
 
     assert _named_ids(remedy) == [i.value for i in ids], remedy
     assert _cure(ids, where) in remedy, remedy
-    assert remedy.startswith("Nothing has moved. To leave the landed state alone, "), remedy
+    assert remedy.startswith("Nothing has moved. To keep those items at their landed labels, "), (
+        remedy
+    )
     assert (DECLASSIFY_REMEDY in remedy) is bool(lowered), remedy
     assert (READMIT_REMEDY in remedy) is bool(readmitted), remedy
     assert not [p for p in _CONTENT_PATH_PHRASES if p in remedy], remedy
@@ -192,7 +194,7 @@ def test_a_retired_items_conflict_for_a_non_content_proposal_is_cured_by_removal
     remedy = _union_remedy(monkeypatch, kinds, retired=True)
 
     assert remedy == (
-        "Nothing has moved. To leave the landed state alone, "
+        "Nothing has moved. To keep those items at their landed labels, "
         + _cure([_A], _WHERE)
         + " "
         + READMIT_REMEDY

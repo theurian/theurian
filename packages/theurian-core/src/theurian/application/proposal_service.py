@@ -4743,7 +4743,7 @@ def _is_content_only(kinds: frozenset[str]) -> bool:
 
 def _removal_remedy(item_ids: list[ItemId], location: _ProposalLocation, *tails: str) -> str:
     """The landed-state-untouched removal cure, then the remedies for what the replay changed."""
-    lead = "Nothing has moved. To leave the landed state alone, "
+    lead = "Nothing has moved. To keep those items at their landed labels, "
     return " ".join([lead + _removal_cure(item_ids, location), *tails])
 
 

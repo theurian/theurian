@@ -363,7 +363,10 @@ def test_a_retired_items_conflict_is_cured_by_removal_and_the_item_stays_retired
 ) -> None:
     p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
     drafted, refusal = _conflict(p, retired=True, keep=keep)
-    assert "Nothing has moved. To leave the landed state alone, remove every" in refusal["remedy"]
+    assert (
+        "Nothing has moved. To keep those items at their landed labels, remove every"
+        in refusal["remedy"]
+    )
 
     (_kept_cure if keep else _delete_cure)(p, drafted, refusal)
 
