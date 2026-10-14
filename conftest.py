@@ -23,7 +23,7 @@ and in every xdist worker, so collection and subprocesses inherit it. An inherit
 
 Residual, measured on git 2.47.1: git unsets ``GIT_CONFIG_COUNT`` for the far side
 of a local transport (``unset GIT_CONFIG_COUNT GIT_PREFIX; 'git-receive-pack ...'``),
-so the bare remote of a local push still spawns maintenance. Four files push
+so the bare remote of a local push still spawns maintenance. Four files push (at ba2c80a9)
 (``test_findings_build_cli``, ``test_findings_builder``, ``test_git_trailer_source``
 and e2e ``test_daemon_single_instance``); none hashes, walks or stats the remote
 (key: ``rglob(|os.walk(|iterdir(|filecmp|hashlib|.stat()|_hash_tree``, read per hit).
@@ -31,7 +31,8 @@ A test that compares a push remote's bytes must set the config in that remote. A
 explicit ``env=`` built without ``os.environ`` is another blind spot; every one
 among the 21 direct files derives from ``os.environ``. A third: an environment copied
 from ``os.environ`` that drops ``GIT_CONFIG_COUNT`` or every ``GIT_*`` (key: ``git grep -n
--E 'startswith.*GIT_|GIT_CONFIG_COUNT' -- packages tests tools``): ``trailer_source.py``,
+-E 'startswith.*GIT_|GIT_CONFIG_COUNT' ba2c80a9 -- packages tests tools``):
+``trailer_source.py``,
 ``command_population.py``, ``tools/corpus_drift.py``, ``tools/mutate.py``,
 ``test_dogfood_corpus_governance.py``, ``adr_0038_support.py`` and
 ``adr_0039_support.py``. All seven run read-only git (log, ls-files, rev-parse, grep,
