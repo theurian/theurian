@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import re
+from pathlib import Path
 from typing import Final
 
 import pytest
@@ -22,7 +23,13 @@ from theurian.application.item_labels import (
     READMIT_REMEDY,
 )
 from theurian.application.authorization import DEFAULT_CEILING
-from theurian.application.proposal_service import _REFUSED_TO_CONTENT_PATH, _floor_refusal
+from theurian.application.proposal_service import (
+    _MAX_NAME_CHARS,
+    _REFUSED_TO_CONTENT_PATH,
+    _BodyMove,
+    _floor_refusal,
+    _removal_cure,
+)
 from theurian.domain.enums import KnowledgeStatus, Sensitivity
 from theurian.domain.identifiers import ItemId
 
@@ -166,3 +173,78 @@ def test_residual_eleven_names_the_label_the_default_ceiling_serves() -> None:
     assert said, "residual 11 no longer states which landed label is served"
 
     assert said[1] == DEFAULT_CEILING.value == Sensitivity.INTERNAL.value
+
+
+def _body_move(name: str, item: ItemId) -> _BodyMove:
+    source = Path(TRACKED_LOCATION.directory, name)
+    return _BodyMove(source, source, b"", False, None, item.value)
+
+
+def test_migrations_md_quotes_the_body_files_clause_the_removal_cure_prints() -> None:
+    """A reader told to delete the body files "those operations drafted" is following the clause
+    the cure prints; a doc quote that drifted would name a different file set or position."""
+    where = TRACKED_LOCATION
+    quoted = re.search(
+        r'body files that no kept operation uses, "(.*?)" follows the first', _flat(_MIG)
+    )
+    assert quoted, "the body-files clause is no longer quoted"
+    clause = quoted[1].replace("<proposal dir>/<file>", f"{where.relative}/body.md")
+
+    cure = _removal_cure([_ITEM], where, [_body_move("body.md", _ITEM)])
+
+    assert f"in {where.relative}/{clause}, then run" in cure
+
+
+def test_a_body_file_another_items_operation_still_uses_is_not_named_for_deletion() -> None:
+    """The doc's "no kept operation uses" bounds the clause: deleting a shared body would break the
+    kept operation that reads it."""
+    other = ItemId("architecture.b")
+    shared = _body_move("shared.md", _ITEM)
+
+    cure = _removal_cure([_ITEM], TRACKED_LOCATION, [shared, _body_move("shared.md", other)])
+
+    assert "body files" not in cure
+
+
+def test_migrations_md_quotes_the_directory_only_cure_a_redacted_id_leaves() -> None:
+    """The fallback prints no id, so an operator is never handed a secret-shaped one; a doc quote
+    that drifted from it would describe a cure the floor does not print."""
+    where = TRACKED_LOCATION
+    secret = ItemId("sk-" + "a1b2c3d4e5f6" * 4)
+    quoted = re.search(r'the cure is "(.*?)" alone', _flat(_MIG))
+    assert quoted, "the directory-only cure is no longer quoted"
+    quote = quoted[1].replace("`<proposal dir>/`", where.relative + "/")
+
+    refusal = _floor_refusal(
+        ((secret, Sensitivity.CONFIDENTIAL, Sensitivity.INTERNAL),),
+        (),
+        frozenset({"changeSensitivity"}),
+        where,
+    )
+
+    assert refusal is not None
+    assert refusal.remedy.startswith(
+        f"Nothing has moved. To keep those items at their landed labels, {quote} "
+    )
+    assert secret.value not in refusal.remedy
+
+
+def test_migrations_md_states_the_cut_length_the_code_cuts_a_body_path_at() -> None:
+    """The record says a body path "past 200 characters" is cut; the number is
+    `_MAX_NAME_CHARS`, so the record moves with it or goes RED."""
+    said = re.search(r"cut a body path past (\d+) characters", _flat(_MIG))
+    assert said, "the cut length is no longer stated"
+
+    assert int(said[1]) == _MAX_NAME_CHARS
+
+
+def test_a_body_path_past_the_cut_length_gets_the_delete_only_cure() -> None:
+    """The cut half of the directory-only fallback has its own branch: a path the refusal would
+    cut is never printed, so the cure names nothing. A path exactly at the length is printed."""
+    where = TRACKED_LOCATION
+    room = _MAX_NAME_CHARS - len(where.relative) - 1
+    at_the_limit = _removal_cure([_ITEM], where, [_body_move("b" * room, _ITEM)])
+    past_it = _removal_cure([_ITEM], where, [_body_move("b" * (room + 1), _ITEM)])
+
+    assert "delete the body files" in at_the_limit
+    assert past_it == f"delete {where.relative}/."
