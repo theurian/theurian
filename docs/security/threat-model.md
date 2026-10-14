@@ -6934,7 +6934,8 @@ it there.
     serving profile (ceiling `internal`, no grant) where that label is
     `confidential` or `deprecated`, as in each shape the tests cited below build;
     `knowledge.get` serves a `confidential` item at a declared `confidential`
-    ceiling (measured on 2026-10-14). In 0.5.3 it prints the content path's remedy
+    ceiling (`test_reorders_report.py::test_a_withheld_item_is_no_evidence_of_the_rows_field_level`,
+    unrepaired case "status row on a confidential item"). In 0.5.3 it prints the content path's remedy
     (`application/item_labels.py :: ACCEPT_LOWERING_REMEDY`, `:: DRAFT_AGAIN_CLAUSE`,
     `:: ACCEPT_READMISSION_REMEDY`): a lowering or readmission, then "draft the
     update again with `theurian propose` rather than accepting this proposal
@@ -6953,8 +6954,8 @@ it there.
     that directory ([the migration format](../protocol/migrations.md#operations)
     quotes it; by the user's decision, only unit tests reach that last
     condition, [#939](https://github.com/theurian/theurian/issues/939)).
-    Where a removed `upsertRevision` names a body and the refusal does not
-    readmit its item, the cure adds a line to draft that update again with
+    Where a removed `upsertRevision` names a body of an item the landed set does not
+    hold `deprecated`, `superseded` or `rejected`, the cure adds a line to redraft that update with
     `theurian propose` ([#937](https://github.com/theurian/theurian/issues/937)).
     Followed literally, the cure leaves each item it names at its landed
     label, and that label decides whether it is served: one landed `internal`
@@ -7252,7 +7253,7 @@ report exactly one row: the `dependsOn` migration's, `kind: reorders`,
    it ([the migration format](../protocol/migrations.md#operations) defines
    plain). Which bodies only those operations use is decided by file identity,
    so a hard link or a case variant of a kept body is not listed
-   ([#944](https://github.com/theurian/theurian/issues/944)); T-28 residual 11
+   ([#944](https://github.com/theurian/theurian/issues/944)), and T-28 residual 11
    says when the cure adds a line to draft a removed content update again.
    T-28 residual 11 records the shapes measured; on this
    route, the one measured is the proposal's own item behind a landed tightener

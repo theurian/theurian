@@ -240,13 +240,15 @@ and they alone reach the identity rule
 `::test_a_case_variant_spelling_of_a_kept_body_is_not_listed_for_deletion`,
 skipped on a case-sensitive filesystem, and
 `::test_an_identity_that_cannot_be_read_gives_the_directory_only_cure`).
-Where a removed `upsertRevision` names a body and the refusal does not name
-its item as readmitted, the cure ends "To keep a removed content update for an
+Unless the cure is the directory alone, where a removed `upsertRevision` names
+a body of an item the landed set does not hold `deprecated`, `superseded` or
+`rejected`, the cure ends "To keep a removed content update for an
 item that is not withdrawn, draft it again afterwards with `theurian propose`;
-its own refusal names the --expected-revision it needs."
+if it refuses, its refusal names the --expected-revision it needs."
 ([#937](https://github.com/theurian/theurian/issues/937);
 `test_accept_floor_remedy_followed_literally.py::test_a_lowering_cure_then_its_redraft_line_ends_at_the_new_revision_and_a_label_no_lower`
-follows it).
+follows it; `::test_a_readmission_cure_prints_no_redraft_line_because_propose_refuses_a_retired_item`
+and `::test_a_lowering_of_a_landed_deprecated_item_prints_no_redraft_line` assert it absent).
 
 ### An `upsertRevision` re-labels the item
 
