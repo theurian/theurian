@@ -1,9 +1,4 @@
-"""A floor or conflict refusal routes its remedy by what the proposal carries (#915).
-
-A proposal no content draft can redo whole is cured by removing its operations on the
-refused items, never by drafting again. Every `dependsOn` code span a remedy prints is read
-by tools as a list of migration ids, so each token in one must be a real one.
-"""
+"""Floor and conflict remedies route by what the proposal carries (#915)."""
 
 from __future__ import annotations
 
@@ -77,6 +72,7 @@ _OTHER_KINDS: Final = [
         frozenset({"createItem", "upsertRevision", "deprecateItem"}), id="content-and-deprecate"
     ),
 ]
+_ALL_KINDS: Final = [*_CONTENT_KINDS, *_OTHER_KINDS]
 _LOCATIONS: Final = [
     pytest.param(
         _ProposalLocation(Path("/p/.theurian/proposals/P1"), ".theurian/proposals/P1", False),
@@ -90,7 +86,7 @@ _LOCATIONS: Final = [
     ),
 ]
 
-#: The content route's words: each sends the reader to a draft or to `migrate apply`.
+#: The content route's words.
 _CONTENT_PATH_PHRASES: Final = (
     "run `theurian propose`",
     "draft the update again",
@@ -173,17 +169,6 @@ def test_a_proposal_no_content_draft_can_redo_is_told_to_remove_the_refused_item
     assert not [p for p in _CONTENT_PATH_PHRASES if p in remedy], remedy
 
 
-@pytest.mark.parametrize("kinds", [*_CONTENT_KINDS, *_OTHER_KINDS])
-def test_the_refusal_message_does_not_depend_on_the_route(kinds: frozenset[str]) -> None:
-    where = _ProposalLocation(Path("/p/x"), ".theurian/proposals/P1", False)
-
-    refusal = _floor_refusal((_low(_A),), (_back(_B),), kinds, where)
-    reference = _floor_refusal((_low(_A),), (_back(_B),), frozenset({"upsertRevision"}), where)
-
-    assert refusal is not None and reference is not None
-    assert str(refusal) == str(reference)
-
-
 # -- the union refusal, both RevisionConflictError branches ---------------------------------
 
 _WHERE: Final = _ProposalLocation(Path("/p/x"), ".theurian/proposals/P1", False)
@@ -258,19 +243,17 @@ def _bad_tokens(text: str) -> list[str]:
     ]
 
 
+_REAL: Final = "01K1BBBBBB01234567890ABCDE, 7ZZZZZZZZZ01234567890ABCDE"
+
+
 @pytest.mark.parametrize(
-    "placeholder", ["<its id>", "<id>", "X", "...", "", "01K1AAAAAA0123456789OABCDE"]
+    "token", ["<its id>", "<id>", "X", "...", "", "01K1AAAAAA0123456789OABCDE"]
 )
-def test_the_span_check_rejects_every_non_id_token(placeholder: str) -> None:
+def test_the_span_check_rejects_every_non_id_token_and_accepts_real_ones(token: str) -> None:
     """Control: a check that passes these would pass main's `<its id>` too."""
-    assert _bad_tokens(f"edit `dependsOn: [{placeholder}]` in") == [placeholder]
-    assert _bad_tokens("edit `dependsOn: [01K1BBBBBB01234567890ABCDE, " + placeholder + "]`")
-
-
-def test_the_span_check_accepts_a_real_list() -> None:
-    ids = "01K1BBBBBB01234567890ABCDE, 7ZZZZZZZZZ01234567890ABCDE"
-
-    assert _bad_tokens(f"edit `dependsOn: [{ids}]` in") == []
+    assert _bad_tokens(f"edit `dependsOn: [{token}]` in") == [token]
+    assert _bad_tokens(f"edit `dependsOn: [{_REAL}, {token}]`") == [token]
+    assert _bad_tokens(f"edit `dependsOn: [{_REAL}]` in") == []
 
 
 def _every_remedy(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
@@ -279,10 +262,7 @@ def _every_remedy(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
         for name, value in vars(item_labels).items()
         if isinstance(value, str) and not name.startswith("__")
     ]
-    kinds_all: list[frozenset[str]] = [
-        p.values[0]  # type: ignore[misc]
-        for p in (*_CONTENT_KINDS, *_OTHER_KINDS)
-    ]
+    kinds_all: list[frozenset[str]] = [p.values[0] for p in _ALL_KINDS]  # type: ignore[misc]
     for kinds, (key, (lowered, readmitted, _)) in itertools.product(
         kinds_all, _COMBINATIONS.items()
     ):

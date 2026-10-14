@@ -1,19 +1,14 @@
 """A floor or conflict remedy, followed exactly as printed, ends where it says (#915).
 
-``follow_removal_cure`` reads the ids and the directory out of the remedy's own words and
-does what they say, so a remedy that omits an id, names a wrong directory or promises a
-state it does not reach fails here and not in a reader's project. Every proposal here is
-non-content: ``theurian propose`` cannot redraft it, so removal is the only cure printed.
+``follow_removal_cure`` reads the ids and directory out of the remedy's own words and acts
+on them, so a remedy that omits an id or names a wrong directory fails here. Every proposal
+is non-content, so removal is the only cure printed.
 
-Own-item floor faces by route x field, each driven or measured unreachable:
-
-- non-content, sensitivity: a landed tightener (F1), a deliberate lowering (F4).
-- non-content, status: a deliberate ``restoreItem`` (F5), both fields at once (F7).
-  ``[restoreItem, deprecateItem]`` of the proposal's own item is unreachable for the
-  readmission floor: its last write retires the item, so no replay leaves it readmitted.
-  ``test_a_restore_then_deprecate_of_a_retired_item_is_named_by_no_floor`` measured it with
-  and without a landed restore replaying after the proposal: accept exits 0 both times.
-- content, sensitivity and status: the two ``keeps_the_content_remedy`` tests.
+Own-item floor faces by route x field: non-content sensitivity is F1 and F4, status is F5
+and F7. ``[restoreItem, deprecateItem]`` of the proposal's own item is unreachable for the
+readmission floor (its last write retires the item); the ``named_by_no_floor`` test measured
+it with and without a landed restore replaying after the proposal: accept exits 0 both
+times. Content sensitivity and status are the two ``keeps_the_content_remedy`` tests.
 """
 
 from __future__ import annotations
@@ -26,7 +21,6 @@ from typing import Any
 import pytest
 import yaml
 from floor_remedy_support import (
-    Followed,
     follow_removal_cure,
     mcp_draft,
     with_operations,
@@ -62,7 +56,6 @@ from theurian.application.item_labels import ACCEPT_LOWERING_REMEDY, ACCEPT_READ
 pytestmark = pytest.mark.integration
 
 LOWERS, READMITS = "would lower the sensitivity of", "would readmit"
-THIRD_ITEM = "architecture.third"
 
 
 def _op(kind: str, item: str, **fields: str) -> dict[str, str]:
@@ -79,7 +72,7 @@ def _non_content(p: LabelledProject, *operations: dict[str, str]) -> dict[str, A
 
 
 def _land_item(p: LabelledProject, item: str, number: int) -> None:
-    """A second approved ``internal`` item with a revision, so ``knowledge.get`` can withhold it."""
+    """An approved ``internal`` item with a revision, which ``knowledge.get`` can withhold."""
     mid, revision = f"01K1AAAAA{number}01234567890ABCDE", f"01K1AAAAB{number}01234567890ABCDE"
     (p.root / f".theurian/knowledge/architecture/i{number}.md").write_text(BODY)
     text = root_migration(
@@ -113,11 +106,10 @@ def _delete_cure(p: LabelledProject, drafted: dict[str, Any], refusal: dict[str,
     cli_ok("migrate", "apply")
 
 
-def _kept_cure(p: LabelledProject, drafted: dict[str, Any], refusal: dict[str, Any]) -> Followed:
+def _kept_cure(p: LabelledProject, drafted: dict[str, Any], refusal: dict[str, Any]) -> None:
     cure = follow_removal_cure(p, drafted, str(refusal["remedy"]))
     assert not cure.deleted and cure.code == 0, cure
     cli_ok("migrate", "apply")
-    return cure
 
 
 def test_a_tightener_that_is_the_only_operation_is_cured_by_deleting_the_proposal(
@@ -138,7 +130,7 @@ def test_a_tightener_that_is_the_only_operation_is_cured_by_deleting_the_proposa
 def test_a_tightener_beside_a_kept_raise_is_cured_by_removing_only_its_operation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """F1 with a second item's raise kept: it lands, and both items are withheld."""
+    """F1 with a second item's raise kept."""
     p = labelled_project(tmp_path, monkeypatch, sensitivity="public")
     _land_item(p, OTHER_ITEM, 1)
     drafted = _non_content(p, _set(p.item_id, "internal"), _set(OTHER_ITEM, "confidential"))
@@ -172,7 +164,7 @@ def test_a_co_carried_items_older_label_is_cured_by_removing_that_items_operatio
 def test_a_co_carried_readmission_is_cured_by_removing_its_operation_and_the_item_stays_retired(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """F3: the proposal's own raise lands; the item it would have restored stays withdrawn."""
+    """F3."""
     p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
     _land_item(p, OTHER_ITEM, 1)
     land_deprecation(p.root, SORTS_BEFORE_A_DRAFT, OTHER_ITEM)
@@ -226,13 +218,13 @@ def test_a_lowering_and_a_readmission_of_two_items_is_cured_by_removing_both_and
     """F6: the cure names both items, and a third item's raise is not discarded with them."""
     p = labelled_project(tmp_path, monkeypatch, sensitivity="confidential")
     _land_item(p, OTHER_ITEM, 1)
-    _land_item(p, THIRD_ITEM, 2)
+    _land_item(p, "architecture.third", 2)
     land_deprecation(p.root, SORTS_BEFORE_A_DRAFT, OTHER_ITEM)
     drafted = _non_content(
         p,
         _set(p.item_id, "internal"),
         _op("restoreItem", OTHER_ITEM),
-        _set(THIRD_ITEM, "confidential"),
+        _set("architecture.third", "confidential"),
     )
     refusal = _refused(drafted, says=READMITS)
     assert LOWERS in refusal["error"], refusal
@@ -241,8 +233,8 @@ def test_a_lowering_and_a_readmission_of_two_items_is_cured_by_removing_both_and
 
     assert item_row(p.root, p.item_id)["sensitivity"] == "confidential"
     assert item_row(p.root, OTHER_ITEM)["status"] == "deprecated"
-    assert item_row(p.root, THIRD_ITEM)["sensitivity"] == "confidential"
-    assert get_is_withheld(p, itemId=THIRD_ITEM)
+    assert item_row(p.root, "architecture.third")["sensitivity"] == "confidential"
+    assert get_is_withheld(p, itemId="architecture.third")
 
 
 @pytest.mark.parametrize(
@@ -251,11 +243,7 @@ def test_a_lowering_and_a_readmission_of_two_items_is_cured_by_removing_both_and
 def test_a_restore_then_deprecate_of_a_retired_item_is_named_by_no_floor(
     landed_restore_after: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Measured: the item is retired before and after, so the readmission floor has no row.
-
-    With a landed ``restoreItem`` replaying after the proposal the loosening check speaks
-    first; its ``dependsOn`` remedy, taken, then accepts too.
-    """
+    """Measured: the item is retired before and after, so the readmission floor has no row."""
     p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
     drafted = _non_content(p, _op("restoreItem", p.item_id), _op("deprecateItem", p.item_id))
     land_deprecation(p.root, SORTS_BEFORE_A_DRAFT, p.item_id)
@@ -273,7 +261,8 @@ def test_a_restore_then_deprecate_of_a_retired_item_is_named_by_no_floor(
 
 
 def _staged(p: LabelledProject, drafted: dict[str, Any]) -> Path:
-    return p.root / drafted["proposalDirectory"] / drafted["migrationFile"]
+    staged: Path = p.root / drafted["proposalDirectory"] / drafted["migrationFile"]
+    return staged
 
 
 def _mixed_update(p: LabelledProject, *, with_deprecation: bool) -> dict[str, Any]:
