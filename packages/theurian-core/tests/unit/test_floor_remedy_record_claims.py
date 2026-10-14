@@ -248,3 +248,29 @@ def test_a_body_path_past_the_cut_length_gets_the_delete_only_cure() -> None:
 
     assert "delete the body files" in at_the_limit
     assert past_it == f"delete {where.relative}/."
+
+
+_CHANGELOG = "packages/theurian-core/CHANGELOG.md"
+
+
+def _unreleased_915_entry() -> str:
+    """The `[Unreleased]` `### Fixed` bullet naming issue 915, whitespace-flattened."""
+    text = (REPO_ROOT / _CHANGELOG).read_text(encoding="utf-8")
+    fixed = text.split("## [Unreleased]", 1)[1].split("\n## [", 1)[0].split("### Fixed", 1)[1]
+    bullets = [b for b in re.split(r"(?m)^- ", fixed) if "/issues/915)" in b]
+    assert len(bullets) == 1, f"{len(bullets)} Unreleased Fixed bullets cite #915"
+    return re.sub(r"\s+", " ", bullets[0])
+
+
+def test_the_changelog_entry_states_which_body_files_the_cure_names_and_its_fallback() -> None:
+    """A reader of the release notes decides what to delete from the entry; "the body files only
+    those operations drafted" is what keeps a shared body out of the deletion, and the redact-or-cut
+    fallback is the case where the cure names no file."""
+    entry = _unreleased_915_entry()
+
+    assert "delete the body files only those operations drafted" in entry
+    assert re.search(
+        r"says to delete the directory instead where an id or body path it would print is one "
+        r"an error message redacts or cuts",
+        entry,
+    )
