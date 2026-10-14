@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from floor_remedy_support import TRACKED_LOCATION
 
 from theurian.application.item_labels import (
     ACCEPT_LOWERING_REMEDY,
@@ -25,7 +26,7 @@ def _remedy(
     lowered: tuple[tuple[ItemId, Sensitivity, Sensitivity], ...],
     readmitted: tuple[tuple[ItemId, KnowledgeStatus, KnowledgeStatus], ...],
 ) -> str:
-    refusal = _floor_refusal(lowered, readmitted)
+    refusal = _floor_refusal(lowered, readmitted, frozenset({"upsertRevision"}), TRACKED_LOCATION)
     assert refusal is not None
     return refusal.remedy or ""
 
@@ -79,7 +80,9 @@ def test_every_remedy_that_sends_the_reader_to_a_migration_says_to_draft_again_n
 #: A fresh draft carries no ``dependsOn`` and ``theurian propose`` has no option for
 #: one, and a landed id can sort after the drafting clock, so the draft replays after
 #: the migration only when ``dependsOn`` is edited in by hand, whatever that migration declares.
-_DEPENDS_ON_CLAUSE = "edit `dependsOn: [<its id>]` into the new draft's migration file."
+_DEPENDS_ON_CLAUSE = (
+    "edit that migration's id into the `dependsOn` of the new draft's migration file."
+)
 
 
 @pytest.mark.parametrize("remedy", _refusal_remedies())
