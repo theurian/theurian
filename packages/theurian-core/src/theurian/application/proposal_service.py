@@ -4843,16 +4843,22 @@ def _removal_cure(
     proposals directory plus a validated ULID.
     """
     removed = {item_id.value for item_id in item_ids}
+    delete_all = "delete " + location.relative + "/"
     shared = {m.source for m in moves if m.item_id not in removed}
     sources = [m.source for m in moves if m.item_id in removed and m.source not in shared]
     relatives = [_printable_body(source, location.directory) for source in sources]
     bodies = sorted(location.relative + "/" + r for r in relatives if r is not None)
-    delete_all = "delete " + location.relative + "/"
     if None in relatives or any(_one_name(name) != repr(name) for name in (*removed, *bodies)):
         return delete_all + "."
     operations = " and ".join(
         "every operation whose `itemId` is `" + item_id.value + "`" for item_id in item_ids
     )
+    redraft = ""
+    if any(m.item_id in removed for m in moves):
+        redraft = (
+            " To keep a removed content update, draft it again afterwards with "
+            "`theurian propose`; its own refusal names the --expected-revision it needs."
+        )
     drafted = ""
     if bodies:
         drafted = (
@@ -4868,6 +4874,7 @@ def _removal_cure(
         + ", then run `theurian propose accept` again; if those are all of its operations, "
         + delete_all
         + " instead."
+        + redraft
     )
 
 
