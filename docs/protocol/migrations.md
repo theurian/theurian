@@ -206,14 +206,20 @@ one above.
 
 A proposal carrying any operation besides `createItem` and `upsertRevision` is
 one `theurian propose` cannot draft, so neither floor's remedy sends it there.
-It reads "Nothing has moved. To leave the landed state alone, remove every
-operation whose `itemId` is `<id>` from this proposal's migration file in
+It reads "Nothing has moved. To keep those items at their landed labels, remove
+every operation whose `itemId` is `<id>` from this proposal's migration file in
 `<proposal dir>/`, then run `theurian propose accept` again; if those are all
 of its operations, delete `<proposal dir>/` instead.", with an "every
 operation whose `itemId` is" clause for each refused item, then the
 hand-written `changeSensitivity` for a lowering and `restoreItem` for a
 readmission
 (`test_floor_remedy_routing.py::test_a_proposal_no_content_draft_can_redo_is_told_to_remove_the_refused_items_operations`).
+If those operations staged body files that no kept operation uses, ", delete
+the body files those operations drafted, `<proposal dir>/<file>`" follows the
+first `<proposal dir>/`. If an id or a body path is one the message redacts as
+secret-shaped, the cure is "delete `<proposal dir>/`." alone
+(`test_floor_remedy_routing.py::test_a_remedy_never_prints_an_id_the_refusals_message_redacts`
+holds it for ids).
 
 ### An `upsertRevision` re-labels the item
 
@@ -666,23 +672,32 @@ proposal whose kinds are a subset of `createItem` and `upsertRevision` gets a
 remedy naming `theurian propose` and no removal.
 `test_accept_floor_remedy_followed_literally.py` follows the removal as
 printed: it removes the operations whose `itemId` the remedy names from the
-file in the directory it names, deletes that directory when none would be
-left, and otherwise runs `theurian propose accept` again. Each proposal is
+file in the directory it names, deletes each body file the remedy lists,
+deletes that directory when no operation would be left, and otherwise runs
+`theurian propose accept` again. Each proposal whose cure it follows is
 refused at its first accept.
 `test_accept_floor_remedy_followed_literally.py::test_a_tightener_that_is_the_only_operation_is_cured_by_deleting_the_proposal`,
 `::test_a_deliberate_lowering_is_cured_by_deleting_the_proposal_and_nothing_moves`
 and
 `::test_a_deliberate_readmission_is_cured_by_deleting_the_proposal_and_the_item_stays_retired`
 assert the directory gone, the landed migrations unchanged, and the item at
-its landed label and withheld from `knowledge.get`.
+its landed `confidential` or `deprecated` and withheld from `knowledge.get` at
+the default ceiling.
 `::test_a_tightener_beside_a_kept_raise_is_cured_by_removing_only_its_operation`,
 `::test_a_co_carried_items_older_label_is_cured_by_removing_that_items_operation`,
 `::test_a_co_carried_readmission_is_cured_by_removing_its_operation_and_the_item_stays_retired`
 and
 `::test_a_mixed_proposal_is_cured_by_removing_every_operation_on_the_refused_item`,
 whose proposal carries `createItem`, `upsertRevision` and another item's
-`deprecateItem`, assert that the re-accept exits 0 and, after
-`migrate apply`, the refused item at its landed label and withheld.
+`deprecateItem`, assert that accepting again exits 0, the directory holds
+`evidence.json` alone and, after `migrate apply`, the refused item at its
+landed `confidential` or `deprecated` and withheld.
+`test_floor_remedy_reaccept.py::test_a_reaccept_the_floor_refuses_is_cured_by_the_printed_removal`
+follows the same removal where the lowering floor refuses a re-accept, made
+after a replay-order refusal's `dependsOn` was edited in, with the landed
+tightener's id newer and older than the draft, with and without another
+item's raise kept: the refused item, and a kept one, end `confidential` and
+withheld.
 `::test_a_content_update_lowering_its_item_keeps_the_content_remedy` and
 `::test_a_content_update_readmitting_its_item_keeps_the_content_remedy` are the
 controls: an update `theurian propose` drafted gets `ACCEPT_LOWERING_REMEDY`
