@@ -2022,6 +2022,12 @@ class ProposalService:
             kinds,
             location,
             moves,
+            # The landed status is what `theurian propose` reads, not what the refusal names.
+            retired=[
+                i
+                for i, labels in held.items()
+                if not may_surface(labels.status, include_unapproved=True)
+            ],
         )
         if refusal is not None:
             raise refusal
@@ -4615,12 +4621,14 @@ def _write_file(destination: Path, data: bytes, *, exclusive: bool) -> None:
         opened.write(data)
 
 
-def _floor_refusal(
+def _floor_refusal(  # noqa: PLR0913 -- `retired` is keyword-only
     lowered: tuple[tuple[ItemId, Sensitivity, Sensitivity], ...],
     readmitted: tuple[tuple[ItemId, KnowledgeStatus, KnowledgeStatus], ...],
     kinds: frozenset[str],
     location: _ProposalLocation,
     moves: Sequence[_BodyMove] = (),
+    *,
+    retired: Sequence[ItemId] = (),
 ) -> ProposalError | None:
     """The accept refusal for what the replay changed, naming every cause at once.
 
@@ -4647,7 +4655,7 @@ def _floor_refusal(
                 moves,
                 *([DECLASSIFY_REMEDY] if lowered else []),
                 *([READMIT_REMEDY] if readmitted else []),
-                retired=[change[0] for change in readmitted],
+                retired=[*retired, *(change[0] for change in readmitted)],
             ),
         )
     remedies: list[str] = []
