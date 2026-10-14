@@ -6945,10 +6945,9 @@ it there.
     from its own migration file and accept again, or to delete the proposal
     directory if those are all its operations.
     Followed literally, that cure leaves the item the floor names withheld,
-    for the proposal's own item and for a co-carried one
-    (`test_accept_floor_remedy_followed_literally.py`, each proposal refused at
-    its first accept). For the own item, deleting the directory leaves the
-    landed, tighter label
+    for the proposal's own item and for a co-carried one, each measured on a
+    proposal refused at its first accept. For the own item, deleting the
+    directory leaves the landed, tighter label
     (`test_accept_floor_remedy_followed_literally.py::test_a_tightener_that_is_the_only_operation_is_cured_by_deleting_the_proposal`),
     and with another item's operation kept the re-accept exits 0
     (`::test_a_tightener_beside_a_kept_raise_is_cured_by_removing_only_its_operation`).
@@ -7215,9 +7214,9 @@ report exactly one row: the `dependsOn` migration's, `kind: reorders`,
    proposal does: remove every operation on that item from the migration file
    and accept again, or delete the proposal if those were all its operations.
    Since [#929](https://github.com/theurian/theurian/pull/929), after 0.5.3,
-   the floor's remedy names those operations and that directory. T-28
-   residual 11 records the shapes measured: the proposal's own item and a
-   co-carried one.
+   the floor's remedy names those operations and the proposal's directory.
+   T-28 residual 11 records the shapes measured: the proposal's own item and
+   a co-carried one.
    On 0.5.1 and 0.5.2, follow
    [GHSA-fjqq-grr7-53cc](https://github.com/theurian/theurian/security/advisories/GHSA-fjqq-grr7-53cc)'s
    Workarounds instead.
