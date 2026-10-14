@@ -2218,7 +2218,7 @@ class ProposalService:
                 remedy=(
                     "Another change to this item landed first. Nothing has moved, so either "
                     + edit
-                    + ", or draft the change again with --expected-revision "
+                    + ", or draft the change again with --expected-revision"
                     + revision
                     + f" and delete {location.relative}/."
                 ),
@@ -2241,20 +2241,20 @@ class ProposalService:
         landed writer of that revision, so the edit also names that writer in
         ``dependsOn``.
         """
-        current = self._current_item(error.item_id)
-        revision = None if current is None else current.revision_id
-        if revision is None:
-            return (
-                "give the proposal's own migration the expectedRevision the item holds",
-                "the item's current revision",
-            )
-        edit = f"give the proposal's own migration `expectedRevision: {revision.value}`"
-        own = {
+        reported = "give the proposal's own migration the expectedRevision the message reports"
+        own = [
             r
             for _, op in _mappings_in(document.get("operations"), set())
             if op.get("op") == "upsertRevision" and op.get("itemId") == error.item_id.value
             if isinstance(r := op.get("revisionId"), str)
-        }
+        ]
+        # #950: with two upserts of the item the store can hold this proposal's own earlier
+        # revision, which no landed writer wrote, so only the message's value can be followed.
+        current = self._current_item(error.item_id) if len(own) <= 1 else None
+        revision = None if current is None else current.revision_id
+        if revision is None:
+            return reported, ""
+        edit = f"give the proposal's own migration `expectedRevision: {revision.value}`"
         if error.actual is not None and error.actual.value in own:
             writers = [
                 m.migration_id.value
@@ -2269,7 +2269,7 @@ class ProposalService:
                     " and `dependsOn: [" + ", ".join(writers) + "]`, so it replays after the "
                     "migration that wrote it"
                 )
-        return edit, revision.value
+        return edit, " " + revision.value
 
     def _landed_set_refusal(self, error: BaseException) -> ApprovedSetUnusableError:
         """The refusal for a fault that predates this proposal.

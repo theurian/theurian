@@ -232,7 +232,7 @@ def test_a_proposal_that_conflicts_with_itself_is_cured_by_the_revision_its_mess
     code, payload = cli("propose", "accept", drafted["proposalId"])
     assert (
         code == 1
-        and "give the proposal's own migration the expectedRevision the item holds"
+        and "give the proposal's own migration the expectedRevision the message reports"
         in payload["remedy"]
     ), payload
     held = re.search(r"store holds (\S+)", payload["error"])
