@@ -16,13 +16,13 @@ from floor_remedy_support import TRACKED_LOCATION
 from threat_model_claims import SPELLED_NUMBERS, entry_in
 from write_lock_claims import REPO_ROOT
 
+from theurian.application.authorization import DEFAULT_CEILING
 from theurian.application.item_labels import (
     ACCEPT_READMISSION_REMEDY,
     DECLASSIFY_REMEDY,
     DRAFT_AGAIN_CLAUSE,
     READMIT_REMEDY,
 )
-from theurian.application.authorization import DEFAULT_CEILING
 from theurian.application.proposal_service import (
     _MAX_NAME_CHARS,
     _REFUSED_TO_CONTENT_PATH,
