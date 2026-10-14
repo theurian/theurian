@@ -179,6 +179,22 @@ def _peak_of(work: Callable[[], object]) -> int:
     A ``gc.collect`` first, because a collection landing inside the window frees
     memory the peak has already counted and makes the reading depend on when the
     last test happened to allocate.
+
+    **"This call" is a window, not a thread**: ``tracemalloc`` traces every
+    thread, so under pytest-xdist the window is also charged for the worker's
+    execnet receiver thread -- about 40.6 B per test index of each ``runtests``
+    message landing in it, with nothing bounding how many land (#943, measured
+    2026-10-14 at 0fe33d23 on pytest-xdist 3.8.0,
+    https://github.com/theurian/theurian/issues/943#issuecomment-6163370420).
+    Every arm calling this therefore holds by margin, not by construction: its
+    tolerance less its deviation, read from the failure messages with
+    ``TOLERANCE = 0``. The smallest, family (ii)'s, read about 380 KB that day,
+    about nine times the largest message a worker could then receive. That
+    message carries at most ``pending // nodes // 2`` indices, ``pending`` being
+    the items not yet sent (``xdist/scheduler/load.py:190-207``): about 42 KB at
+    the offline selection's ~11,000 items on ``-n 4``, a size that moves with
+    the suite and the worker count. The chunked-transient arm's margin was
+    3,892 B, under one message, so that arm measures in a child interpreter.
     """
     gc.collect()
     tracemalloc.start()
@@ -191,9 +207,7 @@ def _peak_of(work: Callable[[], object]) -> int:
 
 
 #: Run in a fresh interpreter so the window holds this arm's allocations and
-#: nothing else. Under pytest-xdist the worker's execnet receiver thread
-#: allocates inside an in-process ``tracemalloc`` window whenever the controller
-#: sends a ``runtests`` message (about 40.6 B per index in it, #943).
+#: nothing else; :func:`_peak_of` records why an in-process window cannot (#943).
 _CHUNKED_PEAK_CHILD: Final = """
 import gc, json, sys, tracemalloc
 from theurian.mcp import validation
@@ -578,9 +592,10 @@ def test_the_chunked_transient_is_not_charged_for_another_threads_allocations() 
     """Another thread's allocations must not move the arm's reading (#943).
 
     Under pytest-xdist a receiver thread allocates in the worker while a test
-    runs; an in-process window charged the arm for it and a 3.9 KB margin went
-    red. A 64 KB hold exceeds the largest single xdist message at today's suite
-    size (about 42 KB).
+    runs; an in-process window charged the arm for it, and the arm went red
+    once on CI (see :func:`_peak_of`). Here four threads allocate and free a
+    64 KiB ``bytearray`` in a loop across the second reading -- more than one
+    ``runtests`` message at the 2026-10-14 suite size, about 42 KB.
     """
     baseline = _chunked_peak_in_child()
     # Four threads so one is always waiting for the GIL when the window opens.
