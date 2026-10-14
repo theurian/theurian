@@ -140,6 +140,7 @@ from theurian.domain.migration import (
     CreateItem,
     DeprecateItem,
     Migration,
+    MigrationSet,
     OperationKind,
     RestoreItem,
     UpsertRevision,
@@ -2023,11 +2024,7 @@ class ProposalService:
             location,
             moves,
             # The landed status is what `theurian propose` reads, not what the refusal names.
-            retired=[
-                i
-                for i, labels in held.items()
-                if not may_surface(labels.status, include_unapproved=True)
-            ],
+            retired=[i for i, labels in held.items() if _is_retired(labels)],
         )
         if refusal is not None:
             raise refusal
@@ -2242,10 +2239,7 @@ class ProposalService:
     ) -> tuple[str, str]:
         """The clause giving this proposal's upsert the landed revision, and that revision.
 
-        The revision is the item's current one in the landed set alone. When
-        ``error.actual`` is one of this proposal's own revisions it replays before the
-        landed writer of that revision, so the edit also names that writer in
-        ``dependsOn``.
+        The revision is the item's current one in the landed set alone.
         """
         reported = "give the proposal's own migration the expectedRevision the message reports"
         own = [
@@ -2256,25 +2250,25 @@ class ProposalService:
         ]
         # #950: with two upserts of the item the store can hold this proposal's own earlier
         # revision, which no landed writer wrote, so only the message's value can be followed.
-        current = self._current_item(error.item_id) if len(own) <= 1 else None
-        if current is None or current.revision_id is None:
+        if len(own) > 1:
             return reported, ""
-        revision = current.revision_id
+        if self._current_revision is not None:
+            revision = self._current_revision(error.item_id)
+        else:
+            current = self._current_item(error.item_id)
+            revision = None if current is None else current.revision_id
+        if revision is None:
+            return reported, ""
         edit = f"give the proposal's own migration `expectedRevision: {revision.value}`"
-        if error.actual is not None and error.actual.value in own:
-            writers = [
-                m.migration_id.value
-                for m in self._landed_migrations()
-                if any(
-                    isinstance(o, UpsertRevision) and o.revision_id == revision
-                    for o in m.operations
-                )
-            ]
-            if writers:
-                edit += (
-                    " and `dependsOn: [" + ", ".join(writers) + "]`, so it replays after the "
-                    "migration that wrote it"
-                )
+        # `dependsOn` is printed when the engine's own order puts the landed writer after
+        # this proposal. Rejected keys: `error.actual` (misses a proposal between two landed
+        # writers) and an unconditional `dependsOn` (moves the proposal in the normal order).
+        writers = _writers_after_incoming(document, tuple(self._landed_migrations()), revision)
+        if writers:
+            edit += (
+                " and `dependsOn: [" + ", ".join(writers) + "]`, so it replays after the "
+                "migration that wrote it"
+            )
         return edit, " " + revision.value
 
     def _landed_set_refusal(self, error: BaseException) -> ApprovedSetUnusableError:
@@ -4693,6 +4687,38 @@ def _writes(migration: Migration, item_id: ItemId, field: str) -> bool:
     )
 
 
+def _writers_after_incoming(
+    document: Mapping[str, object], landed: tuple[Migration, ...], revision: RevisionId
+) -> list[str]:
+    """Landed writers of ``revision`` that replay after this proposal, in the engine's order.
+
+    The order is :meth:`MigrationSet.ordered` over the landed set plus a stand-in for the
+    proposal that carries only its id and ``dependsOn``. If that order cannot be built,
+    every writer is named: an extra ``dependsOn`` is cured by the same edit.
+    """
+    writers = [
+        m
+        for m in landed
+        if any(isinstance(o, UpsertRevision) and o.revision_id == revision for o in m.operations)
+    ]
+    names = [m.migration_id.value for m in writers]
+    incoming = _migration_id_or_none(document.get("id"))
+    depends = document.get("dependsOn")
+    if incoming is None or not writers:
+        return names
+    try:
+        deps = tuple(MigrationId(d) for d in depends) if isinstance(depends, list) else ()
+        stand_in = replace(writers[0], migration_id=incoming, depends_on=deps)
+        order = [m.migration_id for m in MigrationSet.ordered((*landed, stand_in))]
+    except (TheurianError, TypeError):
+        return names
+    return [
+        n
+        for n, m in zip(names, writers, strict=True)
+        if order.index(m.migration_id) > order.index(incoming)
+    ]
+
+
 def _writers_replaying_after(
     incoming: MigrationId | None,
     fields: set[tuple[ItemId, str]],
@@ -4901,7 +4927,7 @@ def _removal_cure(
         redraft = (
             " To keep a removed content update for an item that is not withdrawn, draft it "
             "again afterwards with "
-            "`theurian propose`; its own refusal names the --expected-revision it needs."
+            "`theurian propose`; if it refuses, its refusal names the --expected-revision it needs."
         )
     drafted = ""
     if bodies:
@@ -4997,6 +5023,15 @@ def _refuse_a_retired_item(current: ItemLabels) -> None:
     """
     if not may_surface(current.status, include_unapproved=True):
         raise ProposalError(RETIRED_ITEM_MESSAGE, remedy=READMIT_REMEDY)
+
+
+def _is_retired(labels: ItemLabels) -> bool:
+    """Asked of `_refuse_a_retired_item`, so the status gate keeps one reader here."""
+    try:
+        _refuse_a_retired_item(labels)
+    except ProposalError:
+        return True
+    return False
 
 
 def _refuse_a_lower_sensitivity(request: ProposalRequest, current: ItemLabels) -> None:

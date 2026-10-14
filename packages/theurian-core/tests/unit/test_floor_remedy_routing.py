@@ -189,6 +189,7 @@ def _union_remedy(
     monkeypatch.setattr(ProposalService, "_landed_set_alone", lambda *_: (None, held))
     service = ProposalService.__new__(ProposalService)
     service._current_item = lambda _: CurrentItem(_REVISION, held[item])
+    service._current_revision = None
     service._landed_migrations = lambda: ()
     error = RevisionConflictError(item, None, _REVISION)
 
