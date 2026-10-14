@@ -111,6 +111,9 @@ def _delete_cure(p: LabelledProject, drafted: dict[str, Any], refusal: dict[str,
 def _kept_cure(p: LabelledProject, drafted: dict[str, Any], refusal: dict[str, Any]) -> None:
     cure = follow_removal_cure(p, drafted, str(refusal["remedy"]))
     assert not cure.deleted and cure.code == 0, cure
+    folder = p.root / drafted["proposalDirectory"]
+    left = sorted(str(f.relative_to(folder)) for f in folder.rglob("*") if f.is_file())
+    assert left == ["evidence.json"], left
     cli_ok("migrate", "apply")
 
 

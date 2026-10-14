@@ -26,6 +26,7 @@ TRACKED_LOCATION = _ProposalLocation(Path("/p/x"), ".theurian/proposals/P1", Fal
 
 _NAMED_IDS = re.compile(r"every operation whose `itemId` is `([^`]+)`")
 _FILE_IN = re.compile(r"migration file in (\S+)/,")
+_BODIES = re.compile(r"delete the body file those operations drafted, ((?:`[^`]+`(?: and )?)+)")
 _DELETE = re.compile(r"if those are all of its operations, delete (\S+)/ instead\.")
 
 
@@ -33,14 +34,20 @@ def follow_removal_cure(p: LabelledProject, drafted: dict[str, Any], remedy: str
     """Perform the removal cure a remedy prints, reading nothing but the remedy.
 
     The ids and the directory are parsed out of its words; the operations removed are
-    exactly those whose ``itemId`` is a parsed id; with none left the parsed directory is
-    deleted, else ``theurian propose accept`` runs again for ``drafted``.
+    exactly those whose ``itemId`` is a parsed id and every body file it lists is deleted;
+    with none left the parsed directory is deleted, else ``theurian propose accept`` runs
+    again for ``drafted``.
     """
     ids = _NAMED_IDS.findall(remedy)
     in_file, delete = _FILE_IN.search(remedy), _DELETE.search(remedy)
     assert ids and in_file and delete and in_file[1] == delete[1], remedy
     folder = p.root / in_file[1]
     assert folder.is_dir(), remedy
+    if "delete the body file" in remedy:
+        listed = _BODIES.search(remedy)
+        assert listed, remedy
+        for body in re.findall(r"`([^`]+)`", listed[1]):
+            (p.root / body).unlink()
     (staged,) = folder.glob("*.yaml")
     document = yaml.safe_load(staged.read_text(encoding="utf-8"))
     document["operations"] = [o for o in document["operations"] if o.get("itemId") not in ids]
