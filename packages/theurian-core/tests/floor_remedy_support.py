@@ -26,7 +26,7 @@ TRACKED_LOCATION = _ProposalLocation(Path("/p/x"), ".theurian/proposals/P1", Fal
 
 _NAMED_IDS = re.compile(r"every operation whose `itemId` is `([^`]+)`")
 _FILE_IN = re.compile(r"migration file in (\S+)/,")
-_BODIES = re.compile(r"delete the body file those operations drafted, ((?:`[^`]+`(?: and )?)+)")
+_BODIES = re.compile(r"delete the body files those operations drafted, ((?:`[^`]+`(?: and )?)+)")
 _DELETE = re.compile(r"if those are all of its operations, delete (\S+)/ instead\.")
 
 

@@ -4783,7 +4783,7 @@ def _removal_cure(
     drafted = ""
     if bodies:
         drafted = (
-            ", delete the body file those operations drafted, `" + "` and `".join(bodies) + "`"
+            ", delete the body files those operations drafted, `" + "` and `".join(bodies) + "`"
         )
     return (
         "remove "
