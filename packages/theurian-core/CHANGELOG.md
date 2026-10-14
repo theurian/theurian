@@ -17,7 +17,9 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 - For remedy parsers: the race remedy prints `expectedRevision: <rev>`,
   on the content route `--expected-revision <rev>` and, when the landed
   writer of `<rev>` replays after the proposal,
-  `dependsOn: [<id>]`; the removal cure can end with a redraft sentence.
+  `dependsOn: [<id>]`, for one `upsertRevision` of the raced item with a landed
+  revision of it, and otherwise "the expectedRevision the message reports"; the
+  removal cure can end with a redraft sentence.
 
 ### Fixed
 
@@ -38,10 +40,12 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   No `accept` remedy prints the placeholder `dependsOn: [<its id>]` any
   more: the content-path remedies say to edit that migration's id into the new
   draft's `dependsOn`. The messages and exit codes do not change.
-- **A race remedy's edit, followed as printed, lands whether the proposal's id
-  sorts before, between or after the ids of the revision's landed writers**
+- **A race remedy's edit, followed as printed, clears the revision conflict,
+  measured with one and two landed writers of the revision**
   ([#931](https://github.com/theurian/theurian/issues/931)), for a proposal with
   one `upsertRevision` of the raced item; with two it names no revision (#950).
+  The printed `dependsOn` can move the proposal past a landed label change made
+  after the draft, and the re-accept is then refused by the lowering floor (#953).
 - **The removal cure says a removed content update can be drafted again**
   ([#937](https://github.com/theurian/theurian/issues/937)); short of the directory alone it keeps every
   refused id and body path (#940), but not a kept operation's body reached by

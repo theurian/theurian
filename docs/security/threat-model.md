@@ -6951,11 +6951,13 @@ it there.
     those are all its operations, if `_one_name`, the helper the refusal
     messages use, would redact or cut an id or body path the cure would name,
     or if a body path is outside `_PRINTABLE_BODY_PATH` or resolves outside
-    that directory ([the migration format](../protocol/migrations.md#operations)
-    quotes it; by the user's decision, only unit tests reach that last
-    condition, [#939](https://github.com/theurian/theurian/issues/939)).
-    Where a removed `upsertRevision` names a body of an item the landed set does not
-    hold `deprecated`, `superseded` or `rejected`, the cure adds a line to redraft that update with
+    that directory, or if a file identity cannot be read beside a kept body
+    ([the migration format](../protocol/migrations.md#operations) quotes it; by
+    the user's decision, only unit tests reach those last two conditions,
+    [#939](https://github.com/theurian/theurian/issues/939)).
+    Unless the cure is the directory alone, where a removed `upsertRevision`
+    names a body of an item the landed set does not hold `deprecated`,
+    `superseded` or `rejected`, the cure adds a line to redraft that update with
     `theurian propose` ([#937](https://github.com/theurian/theurian/issues/937)).
     Followed literally, the cure leaves each item it names at its landed
     label, and that label decides whether it is served: one landed `internal`
