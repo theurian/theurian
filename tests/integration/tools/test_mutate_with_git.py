@@ -91,6 +91,9 @@ def _checkout(root: Path) -> None:
     _git("init", "-q", str(root))
     _git("-C", str(root), "config", "user.email", "mutate-tests@example.invalid")
     _git("-C", str(root), "config", "user.name", "mutate tests")
+    # `commit` detaches `git maintenance run --auto`, which can create
+    # objects/maintenance.lock mid-hash (core.yml run 38494012447, job 115642594537).
+    _git("-C", str(root), "config", "maintenance.auto", "false")
     (root / "docs").mkdir()
     (root / "docs" / "tracked.md").write_text("run `theurian init`\n", encoding="utf-8")
     (root / "docs" / "untracked.md").write_text("run `theurian init`\n", encoding="utf-8")
