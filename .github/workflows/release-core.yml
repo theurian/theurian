@@ -85,16 +85,25 @@ jobs:
   quality:
     name: Format, lint, types, tests
     runs-on: ubuntu-latest
-    # 30 rather than 10, resized at the 0.2.0 cut: this job runs the FULL
-    # suite (no marker filter, e2e included) and measured 480s of a 600s
-    # ceiling at the 0.1.0 tag; the same selection grew ~28% by 0.2.0, which
-    # is the coin-flip margin that killed core.yml's no-network step at that
-    # cut. 30 is sized from this job's own run: at the core-v0.5.0 cut (run
-    # 36406228594) the job took 15m46s, its `uv run pytest -q` step 15m13s
-    # (`gh run view 36406228594 --json jobs`). core.yml's `test` job runs
-    # `-m "not e2e" --cov` and is sized separately. A hang backstop, not a
-    # ceiling the healthy runtime brushes.
-    timeout-minutes: 30
+    # Runs the FULL suite (no marker filter, e2e included, no --cov). The cap
+    # went 10 -> 30 at the 0.2.0 cut (#641) and 30 -> 65 in #933. Job seconds
+    # per cut, re-check with `gh run view <id> --json jobs`:
+    #   core-v0.2.3  35044467348   636
+    #   core-v0.3.0  35088727565   824
+    #   core-v0.4.0  35438874572   854
+    #   core-v0.5.0  36406228594   946
+    #   core-v0.5.1  37246361135   796
+    #   core-v0.5.2  37623325665  1231
+    #   core-v0.5.3  38057252717  1273
+    # 65 min = 3.06x the 1273 s max: the roughly 3-4x rule, smallest multiple
+    # of 5. Not taken: an e2e-aware split (`-n 4 -m 'not e2e'`, then serial
+    # `-m e2e`) -- it moves the pin on "uv run pytest -q" in
+    # test_release_publication_guards.py, and needs #32's e2e reasons
+    # (tools/mutate.py docstring) answered for e2e; #924 superseded them for
+    # `-m 'not e2e'` only. core.yml's `test` job (`-n 4 -m "not e2e" --cov`)
+    # is sized separately. A hang backstop, not a ceiling the healthy runtime
+    # brushes.
+    timeout-minutes: 65
     steps:
       - uses: actions/checkout@v7
         with:
