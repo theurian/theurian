@@ -879,6 +879,14 @@ def test_the_corpus_population_matches_its_recorded_expectation() -> None:
         ),
     }
 
+    unrecorded = sorted(measured.keys() - EXPECTED_CORPUS_POPULATION.keys())
+    unmeasured = sorted(EXPECTED_CORPUS_POPULATION.keys() - measured.keys())
+    assert not unrecorded and not unmeasured, (
+        f"measured keys with no EXPECTED_CORPUS_POPULATION entry: {unrecorded}; "
+        f"EXPECTED_CORPUS_POPULATION keys that are not measured: {unmeasured} -- "
+        f"a deleted entry would otherwise stop being checked, silently."
+    )
+
     for key, expected in EXPECTED_CORPUS_POPULATION.items():
         assert measured[key] == expected, (
             f"{key} measured {measured[key]}, EXPECTED_CORPUS_POPULATION records {expected} -- "
