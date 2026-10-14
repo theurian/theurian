@@ -211,7 +211,8 @@ def _union_remedy(  # noqa: PLR0913 -- the shapes a conflict can take
 def test_a_race_over_one_upsert_with_no_landed_revision_names_no_revision(
     kinds: frozenset[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The one-upsert no-revision fallback, which no integration shape reaches: a revision
+    """The one-upsert no-revision fallback: no test drives it end to end. In production a
+    hand-edited `expectedRevision` on an item with no landed revision reaches it; a revision
     printed here would be one the landed set does not hold."""
     one = {"operations": [{"op": "upsertRevision", "itemId": _A.value, "revisionId": "R1"}]}
 

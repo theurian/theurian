@@ -1,9 +1,9 @@
 """Each alternative the race remedy prints, followed as printed, lands the item (#931, #937).
 
-The race is two drafts of one revision: ``land_first`` says whether the one that lands has the
-larger or the smaller proposal id, so the refused proposal replays first or second. The
-population every test below parametrizes is land_first x route (content, non-content: a content
-draft plus a hand-added ``changeSensitivity`` of a second item) x landed applied or not.
+The race is drafts of one revision. The edit and revision-name tests parametrize the refused
+proposal's position before, between or after the landed revision writers; the redraft and
+removal tests parametrize two orders. Routes: content, or non-content (a content draft plus a
+hand-added ``changeSensitivity`` of a second item); landed applied or not.
 Nothing here derives a value the remedy does not print.
 """
 
