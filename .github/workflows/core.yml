@@ -214,7 +214,7 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: uv sync --frozen
       - name: Unit and integration tests
-        run: uv run pytest -m "not e2e" --cov --cov-report=xml --cov-report=term
+        run: uv run pytest -n 4 -m "not e2e" --cov --cov-report=xml --cov-report=term
       - name: Contract tests against the installed CLI
         run: uv run pytest -m contract -v
       - uses: actions/upload-artifact@v7
