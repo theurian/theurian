@@ -216,8 +216,9 @@ readmission
 (`test_floor_remedy_routing.py::test_a_proposal_no_content_draft_can_redo_is_told_to_remove_the_refused_items_operations`).
 If those operations staged body files that no kept operation uses, ", delete
 the body files those operations drafted, `<proposal dir>/<file>`" follows the
-first `<proposal dir>/`. If the message would redact an id or a body path as
-secret-shaped, or cut a body path past 200 characters, the cure is
+first `<proposal dir>/`. If `_one_name`, the helper the refusal messages use,
+would redact an id or a body path as secret-shaped, or cut a body path past
+200 characters, the cure is
 "delete `<proposal dir>/`." alone
 (`test_floor_remedy_routing.py::test_a_remedy_never_prints_an_id_the_refusals_message_redacts`
 holds it for ids).

@@ -6945,8 +6945,8 @@ it there.
     Any other is told to remove each operation whose `itemId` is an item the
     refusal names from its own migration file, delete any body file the
     remedy lists, and accept again, or to delete the proposal directory if
-    those are all its operations or if the cure would print an id or body
-    path the refusal's message redacts or cuts
+    those are all its operations or if `_one_name`, the helper the refusal
+    messages use, would redact or cut an id or body path the cure would name
     ([the migration format](../protocol/migrations.md#operations) quotes it).
     Followed literally, the cure leaves each item it names at its landed
     label, and that label decides whether it is served: one landed `internal`
@@ -6964,8 +6964,9 @@ it there.
     that cure was also measured on 0.5.2 and 0.5.3. Refused by the lowering
     floor at a re-accept, after the `dependsOn` a replay-order refusal named
     is edited in, the own item stays `confidential` behind a landed tightener
-    declaring `dependsOn` on a landed revision, with the tightener's id newer
-    and older than the draft, with and without another item's raise kept
+    whose `dependsOn` names the landed migration revising that item, with the
+    tightener's id newer and older than the draft, with and without another
+    item's raise kept
     (`test_floor_remedy_reaccept.py::test_a_reaccept_the_floor_refuses_is_cured_by_the_printed_removal`).
     On 0.5.2, GHSA-fjqq-grr7-53cc's Workarounds, followed for that re-accept
     shape, end the own item `confidential` and withheld, with and without a
@@ -7237,7 +7238,7 @@ report exactly one row: the `dependsOn` migration's, `kind: reorders`,
    the floor's remedy names those operations, any such body file and the
    proposal's directory, or the directory alone when a name would be
    redacted or cut. T-28 residual 11 records the shapes measured; on this
-   route, the proposal's own item behind a landed tightener
+   route, the one measured is the proposal's own item behind a landed tightener
    (`test_floor_remedy_reaccept.py::test_a_reaccept_the_floor_refuses_is_cured_by_the_printed_removal`).
    On 0.5.1 and 0.5.2, follow
    [GHSA-fjqq-grr7-53cc](https://github.com/theurian/theurian/security/advisories/GHSA-fjqq-grr7-53cc)'s
