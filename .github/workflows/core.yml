@@ -225,6 +225,13 @@ jobs:
         with:
           name: coverage
           path: coverage.xml
+      # The ubuntu name `coverage` is a contract for its consumers, so macOS
+      # uploads under its own name; the legs can then be compared per file.
+      - uses: actions/upload-artifact@v7
+        if: matrix.os == 'macos-latest'
+        with:
+          name: coverage-macos
+          path: coverage.xml
 
   # ADVISORY -- ADR-0036 decision 4, Phase A slice S4b. The roadmap's Phase A
   # Exit-criteria row: "A baseline report is committed and CI reports
