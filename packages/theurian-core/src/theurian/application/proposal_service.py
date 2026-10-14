@@ -2189,7 +2189,13 @@ class ProposalService:
                         return ProposalError(message, remedy=ACCEPT_READMISSION_REMEDY)
                     return ProposalError(
                         message,
-                        remedy=_removal_remedy([error.item_id], location, moves, READMIT_REMEDY),
+                        remedy=_removal_remedy(
+                            [error.item_id],
+                            location,
+                            moves,
+                            READMIT_REMEDY,
+                            retired=[error.item_id],
+                        ),
                     )
             # The revision and the writer come from the landed set alone, never from
             # `error`: when this proposal replays first the error is raised on the landed
@@ -4641,6 +4647,7 @@ def _floor_refusal(
                 moves,
                 *([DECLASSIFY_REMEDY] if lowered else []),
                 *([READMIT_REMEDY] if readmitted else []),
+                retired=[change[0] for change in readmitted],
             ),
         )
     remedies: list[str] = []
@@ -4807,11 +4814,15 @@ def _is_content_only(kinds: frozenset[str]) -> bool:
 
 
 def _removal_remedy(
-    item_ids: list[ItemId], location: _ProposalLocation, moves: Sequence[_BodyMove], *tails: str
+    item_ids: list[ItemId],
+    location: _ProposalLocation,
+    moves: Sequence[_BodyMove],
+    *tails: str,
+    retired: Sequence[ItemId] = (),
 ) -> str:
     """The landed-labels-untouched removal cure, then the remedies for what the replay changed."""
     lead = "Nothing has moved. To keep those items at their landed labels, "
-    return " ".join([lead + _removal_cure(item_ids, location, moves), *tails])
+    return " ".join([lead + _removal_cure(item_ids, location, moves, retired), *tails])
 
 
 #: A printable body path: plain segments of ASCII word characters, dot and hyphen, so no
@@ -4841,7 +4852,10 @@ def _file_identity(path: Path) -> tuple[int, int] | None:
 
 
 def _removal_cure(
-    item_ids: list[ItemId], location: _ProposalLocation, moves: Sequence[_BodyMove]
+    item_ids: list[ItemId],
+    location: _ProposalLocation,
+    moves: Sequence[_BodyMove],
+    retired: Sequence[ItemId] = (),
 ) -> str:
     """The clause curing a refusal of items the proposal cannot be redrafted around.
 
@@ -4873,9 +4887,12 @@ def _removal_cure(
         "every operation whose `itemId` is `" + item_id.value + "`" for item_id in item_ids
     )
     redraft = ""
-    if any(m.item_id in removed for m in moves):
+    # No line for a retired item: `theurian propose` refuses it without naming a revision.
+    gone = {item_id.value for item_id in retired}
+    if any(m.item_id in removed - gone for m in moves):
         redraft = (
-            " To keep a removed content update, draft it again afterwards with "
+            " To keep a removed content update for an item that is not withdrawn, draft it "
+            "again afterwards with "
             "`theurian propose`; its own refusal names the --expected-revision it needs."
         )
     drafted = ""

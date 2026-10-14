@@ -171,7 +171,7 @@ def test_a_retired_item_with_a_revision_is_not_sent_to_the_revision_conflict_rem
     assert code == 1, payload
     assert f"Revision conflict on {ITEM_ID}" in str(payload.get("error", "")), payload
     assert "restoreItem" in _remedy(payload), payload
-    assert "give the proposal's own migration the expectedRevision" not in _remedy(payload), payload
+    assert "give the proposal's own migration `expectedRevision:" not in _remedy(payload), payload
     assert landing_zone(project.root) == before, "a refused accept moved files"
 
 
