@@ -21,6 +21,7 @@ from theurian.application.item_labels import (
     DRAFT_AGAIN_CLAUSE,
     READMIT_REMEDY,
 )
+from theurian.application.authorization import DEFAULT_CEILING
 from theurian.application.proposal_service import _REFUSED_TO_CONTENT_PATH, _floor_refusal
 from theurian.domain.enums import KnowledgeStatus, Sensitivity
 from theurian.domain.identifiers import ItemId
@@ -153,3 +154,15 @@ def test_migrations_md_counts_the_kind_sets_the_routing_test_builds() -> None:
     assert said, "the kind-set count is no longer stated"
 
     assert SPELLED_NUMBERS[said[1]] == _routing_kind_sets()
+
+
+def test_residual_eleven_names_the_label_the_default_ceiling_serves() -> None:
+    """The residual's "one landed `internal` and `approved` is served at the default ceiling" is
+    the claim that following the cure does not always leave an item withheld; it holds only
+    while the ceiling is `internal`."""
+    said = re.search(
+        r"one landed `(\w+)` and `approved` is served at the default ceiling", _residual_eleven()
+    )
+    assert said, "residual 11 no longer states which landed label is served"
+
+    assert said[1] == DEFAULT_CEILING.value == Sensitivity.INTERNAL.value

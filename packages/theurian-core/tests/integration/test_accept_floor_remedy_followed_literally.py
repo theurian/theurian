@@ -398,3 +398,19 @@ def test_a_raced_revision_is_cured_by_the_expected_revision_the_message_reports(
     code, accepted = cli("propose", "accept", drafted["proposalId"])
 
     assert code == 0, accepted
+
+
+def test_a_tightener_that_lands_internal_is_cured_to_a_label_the_default_ceiling_serves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Residual 11 says the cure leaves each item at its landed label, and that one landed
+    `internal` and `approved` is served; "leaves the item withheld" is false for this shape."""
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="public")
+    drafted = _non_content(p, _set(p.item_id, "public"))
+    land_reclassification(p.root, SORTS_BEFORE_A_DRAFT, p.item_id, "internal")
+    refusal = _refused(drafted, says=LOWERS)
+
+    _delete_cure(p, drafted, refusal)
+
+    assert item_row(p.root, p.item_id)["sensitivity"] == "internal"
+    assert not get_is_withheld(p)
