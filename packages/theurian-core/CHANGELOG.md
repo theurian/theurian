@@ -12,7 +12,22 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **`theurian propose accept`'s floor and revision-conflict remedies no longer
+  send a proposal `theurian propose` cannot draft back to `theurian propose`**
+  ([#915](https://github.com/theurian/theurian/issues/915)). The lowering and
+  readmission refusals, and both branches of the revision-conflict refusal,
+  now choose their remedy by the operation kinds the proposal carries, as the
+  replay-order remedy already did. A proposal carrying any kind besides
+  `createItem` and `upsertRevision`, such as a `changeSensitivity`,
+  `restoreItem` or `deprecateItem`, is told to remove every operation whose
+  `itemId` names a refused item from its own migration file and run
+  `theurian propose accept` again, or to delete the proposal directory if
+  those were all its operations. No `accept` remedy prints the placeholder
+  `dependsOn: [<its id>]` any more: the content-path remedies say to edit that
+  migration's id into the new draft's `dependsOn`. The messages and exit codes
+  do not change.
 
 ## [0.5.3] - 2026-10-08
 
