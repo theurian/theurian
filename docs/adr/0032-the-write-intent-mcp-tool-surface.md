@@ -1351,12 +1351,14 @@ stated beside the number so a reader can attack the key and not only the count.
 > refusal, route their remedy by what the proposal carries
 > (`proposal_service.py :: _is_content_only`). A proposal of `createItem` and
 > `upsertRevision` alone keeps its remedy; any other is told to remove every
-> operation whose `itemId` is a refused item from its own migration file and
-> accept again, or to delete the proposal directory if those are all its
-> operations. A raced revision's remedy keeps, on both routes, the
-> alternative of giving the proposal's own migration the `expectedRevision`
-> the message reports, which does not work for a proposal that replays before
-> the change that won the race ([#931](https://github.com/theurian/theurian/issues/931)).
+> operation whose `itemId` is a refused item from its own migration file,
+> delete any body file the remedy lists, and accept again, or to delete the
+> proposal directory if those are all its operations or if the cure would
+> print an id or body path the refusal's message redacts. A raced revision's
+> remedy keeps, on both routes, the alternative of giving the proposal's own
+> migration the `expectedRevision` the message reports, which does not work
+> for a proposal that replays before the change that won the race
+> ([#931](https://github.com/theurian/theurian/issues/931)).
 > `DRAFT_AGAIN_CLAUSE` and `ACCEPT_READMISSION_REMEDY` no longer print
 > `` `dependsOn: [<its id>]` ``, a code span shaped as a `dependsOn` list that
 > holds no migration id; they end "edit that migration's id into the
@@ -1366,7 +1368,8 @@ stated beside the number so a reader can attack the key and not only the count.
 > asserted then; it now asserts the new ending. `test_floor_remedy_routing.py`
 > holds the routing, and `test_accept_floor_remedy_followed_literally.py`
 > follows the printed removal to its end state for floor refusals and both
-> conflict branches;
+> conflict branches, and `test_floor_remedy_reaccept.py` for a floor refusal
+> at a re-accept;
 > [the migration format](../protocol/migrations.md#permissive-moves-are-reported-not-refused)
 > states what its floor tests assert.
 
