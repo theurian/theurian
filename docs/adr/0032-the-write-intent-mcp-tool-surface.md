@@ -1368,8 +1368,8 @@ stated beside the number so a reader can attack the key and not only the count.
 > asserted then; it now asserts the new ending. `test_floor_remedy_routing.py`
 > holds the routing, and `test_accept_floor_remedy_followed_literally.py`
 > follows the printed removal to its end state for floor refusals and both
-> conflict branches, and `test_floor_remedy_reaccept.py` for a floor refusal
-> at a re-accept;
+> conflict branches, and `test_floor_remedy_reaccept.py` for the lowering
+> floor's refusal of a re-accept;
 > [the migration format](../protocol/migrations.md#permissive-moves-are-reported-not-refused)
 > states what its floor tests assert.
 
