@@ -1360,7 +1360,8 @@ stated beside the number so a reader can attack the key and not only the count.
 > revision's remedy keeps, on both routes, the alternative of giving the
 > proposal's own migration the `expectedRevision` the message reports, which
 > does not work for a proposal that replays before the change that won the race
-> ([#931](https://github.com/theurian/theurian/issues/931)).
+> ([#931](https://github.com/theurian/theurian/issues/931)). (Superseded below,
+> 2026-10-14, for a proposal with one `upsertRevision` of the raced item.)
 > `DRAFT_AGAIN_CLAUSE` and `ACCEPT_READMISSION_REMEDY` no longer print
 > `` `dependsOn: [<its id>]` ``, a code span shaped as a `dependsOn` list that
 > holds no migration id; they end "edit that migration's id into the
@@ -1376,6 +1377,56 @@ stated beside the number so a reader can attack the key and not only the count.
 > floor's refusal of a re-accept;
 > [the migration format](../protocol/migrations.md#permissive-moves-are-reported-not-refused)
 > states what its floor tests assert.
+>
+> **Amended 2026-10-14 ([#931](https://github.com/theurian/theurian/issues/931)).**
+> For a proposal with one `upsertRevision` of the raced item, the race remedy
+> now prints the revision (`proposal_service.py :: ProposalService._edit_cure`):
+> "give the proposal's own migration `expectedRevision: <rev>`", and on the
+> content route "draft the change again with --expected-revision <rev> and
+> delete <dir>/.", `<rev>` being the item's current revision in the landed set
+> alone. A proposal with the smaller id replays before the landed migration
+> that wrote `<rev>`, so the conflict is raised on that migration and the
+> message reports the proposal's own revision; the edit then adds "and
+> `dependsOn: [<id>]`, so it replays after the migration that wrote it".
+> Rejected: dropping the edit in that order, which leaves the non-content route
+> only the removal cure, and that drops the item's content update. With more
+> than one `upsertRevision` of the item, or no revision for it in the landed
+> set, the remedy names no revision and keeps "the expectedRevision the message
+> reports": the store can then hold the proposal's own earlier revision, which
+> no landed migration wrote ([#950](https://github.com/theurian/theurian/issues/950)).
+> The removal cure now ends "To keep a removed content update for an item that
+> is not withdrawn, draft it again afterwards with `theurian propose`; its own
+> refusal names the --expected-revision it needs." where a removed
+> `upsertRevision` names a body and the refusal does not pass its item as
+> readmitted or retired, and not with the directory-only cure
+> ([#937](https://github.com/theurian/theurian/issues/937)). Unless it is the
+> directory alone, the cure lists every refused id and every body only those
+> operations use, the bodies bounded by `MAX_UPSERT_OPERATIONS`, refused before
+> `_body_moves` reads one; a cap was rejected because past it the
+> directory-only cure discards the kept operations
+> ([#940](https://github.com/theurian/theurian/issues/940)). A body counts as
+> one a kept operation uses by file identity (`st_dev`, `st_ino`), as
+> `_body_moves` keys it, so a hard link or a case variant of a kept body is not
+> listed; an identity that cannot be read beside a kept body leaves "delete
+> <dir>/." alone ([#944](https://github.com/theurian/theurian/issues/944)).
+> Over one `upsertRevision` of the raced item, the landed draft's id larger or
+> smaller, and the landed set applied or not,
+> `test_race_remedy_followed_literally.py::test_giving_the_refused_migration_the_printed_revision_and_writer_lands_its_revision`
+> follows the edit on the content route and a non-content one (another item's
+> `changeSensitivity` added): `dependsOn` is printed when, and only when, the
+> landed id is larger, it holds that migration's id alone, and the proposal's
+> revision is current after `migrate apply`;
+> `::test_the_revision_the_remedy_names_is_the_one_the_landed_draft_wrote`
+> asserts each revision printed is the landed draft's; and
+> `::test_redrafting_with_the_printed_revision_after_deleting_the_proposal_lands_the_redraft`
+> (content route) and
+> `::test_the_printed_removal_cure_then_its_redraft_line_ends_at_the_new_revision`
+> (non-content route) follow the other alternative to the redraft's revision.
+> `::test_a_two_upsert_proposal_over_a_landed_revision_gets_the_message_reports_wording`
+> holds the #950 wording on the content route. `test_floor_remedy_routing.py`
+> holds the redraft line's condition and the lists, and the identity rule in
+> unit tests only, by the user's decision
+> ([#939](https://github.com/theurian/theurian/issues/939)).
 
 ## Context
 
