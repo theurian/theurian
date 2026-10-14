@@ -4694,7 +4694,8 @@ def _writers_after_incoming(
 
     The order is :meth:`MigrationSet.ordered` over the landed set plus a stand-in for the
     proposal that carries only its id and ``dependsOn``. If that order cannot be built,
-    every writer is named: an extra ``dependsOn`` is cured by the same edit.
+    every writer is named: that clears the revision conflict, and it can move the proposal
+    past unrelated landed migrations (#953).
     """
     writers = [
         m
