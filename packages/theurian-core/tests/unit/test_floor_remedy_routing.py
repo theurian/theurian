@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 import os
 import re
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Final
 
@@ -181,21 +182,43 @@ def test_a_proposal_no_content_draft_can_redo_is_told_to_remove_the_refused_item
 _REVISION: Final = RevisionId("01K1AAAREV01234567890ABCDE")
 
 
-def _union_remedy(
-    monkeypatch: pytest.MonkeyPatch, kinds: frozenset[str], *, retired: bool, item: ItemId = _A
+def _union_remedy(  # noqa: PLR0913 -- the shapes a conflict can take
+    monkeypatch: pytest.MonkeyPatch,
+    kinds: frozenset[str],
+    *,
+    retired: bool,
+    item: ItemId = _A,
+    revision: RevisionId | None = _REVISION,
+    document: Mapping[str, object] | None = None,
 ) -> str:
     status = KnowledgeStatus.DEPRECATED if retired else KnowledgeStatus.APPROVED
     held = {item: ItemLabels(Sensitivity.INTERNAL, TrustLevel.REVIEWED, "backend", status)}
     monkeypatch.setattr(ProposalService, "_landed_set_alone", lambda *_: (None, held))
     service = ProposalService.__new__(ProposalService)
-    service._current_item = lambda _: CurrentItem(_REVISION, held[item])
+    service._current_item = lambda _: CurrentItem(revision, held[item])
     service._current_revision = None
     service._landed_migrations = lambda: ()
     error = RevisionConflictError(item, None, _REVISION)
 
-    refusal = service._union_refusal(_WHERE, Path("m.yaml"), ("L1",), error, kinds)
+    refusal = service._union_refusal(
+        _WHERE, Path("m.yaml"), ("L1",), error, kinds, document=document or {}
+    )
 
     return refusal.remedy or ""
+
+
+@pytest.mark.parametrize("kinds", [frozenset({"upsertRevision"}), frozenset({"changeSensitivity"})])
+def test_a_race_over_one_upsert_with_no_landed_revision_names_no_revision(
+    kinds: frozenset[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one-upsert no-revision fallback, which no integration shape reaches: a revision
+    printed here would be one the landed set does not hold."""
+    one = {"operations": [{"op": "upsertRevision", "itemId": _A.value, "revisionId": "R1"}]}
+
+    remedy = _union_remedy(monkeypatch, kinds, retired=False, revision=None, document=one)
+
+    assert "the expectedRevision the message reports" in remedy, remedy
+    assert not re.search(r"expectedRevision: [0-9A-HJKMNP-TV-Z]{26}", remedy), remedy
 
 
 _SECRET: Final = ItemId("sk-" + "a1b2c3d4e5f6" * 4)
