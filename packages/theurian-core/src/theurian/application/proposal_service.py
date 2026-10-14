@@ -2173,12 +2173,7 @@ class ProposalService:
                         return ProposalError(message, remedy=ACCEPT_READMISSION_REMEDY)
                     return ProposalError(
                         message,
-                        remedy=(
-                            "Nothing has moved. To leave the landed state alone, "
-                            + _removal_cure([error.item_id], location)
-                            + " "
-                            + READMIT_REMEDY
-                        ),
+                        remedy=_removal_remedy([error.item_id], location, READMIT_REMEDY),
                     )
             if not content_only:
                 return ProposalError(
@@ -4576,13 +4571,11 @@ def _floor_refusal(
         item_ids = list(dict.fromkeys(change[0] for change in (*lowered, *readmitted)))
         return ProposalError(
             message,
-            remedy=" ".join(
-                [
-                    "Nothing has moved. To leave the landed state alone, "
-                    + _removal_cure(item_ids, location)
-                ]
-                + ([DECLASSIFY_REMEDY] if lowered else [])
-                + ([READMIT_REMEDY] if readmitted else [])
+            remedy=_removal_remedy(
+                item_ids,
+                location,
+                *([DECLASSIFY_REMEDY] if lowered else []),
+                *([READMIT_REMEDY] if readmitted else []),
             ),
         )
     remedies: list[str] = []
@@ -4746,6 +4739,12 @@ def _refuse_a_landed_overwrite(
 def _is_content_only(kinds: frozenset[str]) -> bool:
     """Whether a content draft (``theurian propose``) can redo a proposal of these kinds whole."""
     return kinds <= {k.value for k in _REFUSED_TO_CONTENT_PATH}
+
+
+def _removal_remedy(item_ids: list[ItemId], location: _ProposalLocation, *tails: str) -> str:
+    """The landed-state-untouched removal cure, then the remedies for what the replay changed."""
+    lead = "Nothing has moved. To leave the landed state alone, "
+    return " ".join([lead + _removal_cure(item_ids, location), *tails])
 
 
 def _removal_cure(item_ids: list[ItemId], location: _ProposalLocation) -> str:
