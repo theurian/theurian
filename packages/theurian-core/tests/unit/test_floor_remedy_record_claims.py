@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import re
+import string
 from pathlib import Path
 from typing import Final
 
@@ -25,6 +26,7 @@ from theurian.application.item_labels import (
 )
 from theurian.application.proposal_service import (
     _MAX_NAME_CHARS,
+    _PRINTABLE_BODY_PATH,
     _REFUSED_TO_CONTENT_PATH,
     _BodyMove,
     _floor_refusal,
@@ -265,7 +267,8 @@ def _unreleased_915_entry() -> str:
 def test_the_changelog_entry_states_which_body_files_the_cure_names_and_its_fallback() -> None:
     """A reader of the release notes decides what to delete from the entry; "the body files only
     those operations drafted" is what keeps a shared body out of the deletion, and the redact-or-cut
-    fallback is the case where the cure names no file."""
+    fallback and the containment fallback (a body path that is not a plain path inside the
+    proposal directory) are the two cases where the cure names no file."""
     entry = _unreleased_915_entry()
 
     assert "delete the body files only those operations drafted" in entry
@@ -274,3 +277,75 @@ def test_the_changelog_entry_states_which_body_files_the_cure_names_and_its_fall
         r"an error message redacts or cuts",
         entry,
     )
+    assert "or where a body path is not a plain path inside the proposal directory" in entry, entry
+
+
+_ADR = "docs/adr/0032-the-write-intent-mcp-tool-surface.md"
+
+
+def _lowered(text: str) -> str:
+    """Whitespace-flattened, blockquote markers and code backticks dropped, lower-cased."""
+    text = re.sub(r"(?m)^\s*> ?", "", text)
+    return re.sub(r"\s+", " ", text.replace("`", "")).lower()
+
+
+def _adr_915_note() -> str:
+    """The ADR-0032 note headed `Amended 2026-10-14` citing #915, up to the next section."""
+    text = (REPO_ROOT / _ADR).read_text(encoding="utf-8")
+    head = "**Amended 2026-10-14 ([#915]"
+    assert text.count(head) == 1
+    return _lowered(text.split(head, 1)[1].split("\n## ", 1)[0])
+
+
+def test_migrations_md_states_the_body_path_condition_and_not_the_message_redaction_wording() -> (
+    None
+):
+    """The directory-only fallback fires on the path condition and on `_one_name`; the superseded
+    wording blamed "the message" for a body path, but no refusal message prints one."""
+    text = _lowered(_flat(_MIG))
+
+    assert (
+        "made of segments of ascii letters, digits, ., _ and -, none . or .., and resolving "
+        "inside that directory" in text
+    )
+    assert "if a body path fails that" in text
+    assert "if the message would redact" not in text
+
+
+def test_the_adr_note_states_the_path_gate_and_not_the_message_redaction_wording() -> None:
+    """The ADR note is the decision record of the fallback's triggers; the superseded wording
+    named a gate (the message) that never saw a body path."""
+    note = _adr_915_note()
+
+    assert "outside _printable_body_path or resolves outside that directory" in note
+    assert "the refusal's message redacts or cuts" not in note
+
+
+def _doc_grammar() -> tuple[set[str], set[str]]:
+    """The characters and the excluded segments migrations.md lists for a plain body path."""
+    said = re.search(
+        r"segments of ASCII letters, digits, `(.)`, `(.)` and `(.)`, none `(\.+)` or `(\.+)`",
+        _flat(_MIG),
+    )
+    assert said, "migrations.md no longer lists the plain-path grammar in this shape"
+    chars = set(string.ascii_letters + string.digits) | set(said.group(1, 2, 3))
+    return chars, set(said.group(4, 5))
+
+
+def test_migrations_md_lists_the_characters_and_segments_the_body_path_grammar_allows() -> None:
+    """The doc is what an operator checks a path against; a widened grammar would print paths the
+    doc calls unplain, and a narrowed one would fall back where the doc promises a file name.
+    Both sets are probed from the compiled pattern, not read from its source."""
+    probed = {
+        chr(c)
+        for c in range(128)
+        if chr(c) != "/" and _PRINTABLE_BODY_PATH.fullmatch(f"a{chr(c)}a")
+    }
+    excluded = {seg for seg in (".", "..", "...") if not _PRINTABLE_BODY_PATH.fullmatch(seg)}
+    nested = [f"a/{seg}/b" for seg in (".", "..")] + [f"{seg}/a" for seg in (".", "..")]
+
+    chars, segments = _doc_grammar()
+
+    assert probed == chars
+    assert excluded == segments
+    assert not [n for n in nested if _PRINTABLE_BODY_PATH.fullmatch(n)]
