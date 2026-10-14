@@ -69,7 +69,9 @@ the unit tests free of it.
 
 from __future__ import annotations
 
+import ast
 import gc
+import inspect
 import json
 import os
 import subprocess
@@ -624,3 +626,32 @@ def test_the_chunked_transient_is_not_charged_for_another_threads_allocations() 
         sys.setswitchinterval(switch)
 
     assert perturbed == baseline
+
+
+def test_the_chunked_arm_takes_its_peak_from_the_child_helper() -> None:
+    """The arm's ``peak`` must come from ``_chunked_peak_in_child``, never ``_peak_of`` (#943).
+
+    The helper's own test cannot see the arm reverting to the in-process window.
+    The key is the arm's source: the value assigned to ``peak`` is a call of the
+    helper, and ``_peak_of`` is not called anywhere in the function. A rename,
+    alias or indirection of either call is outside the key.
+    """
+    arm = ast.parse(
+        inspect.getsource(test_the_chunked_transient_stays_under_its_ceiling_at_the_worst_leaf)
+    )
+    assigned = [
+        node.value
+        for node in ast.walk(arm)
+        if isinstance(node, ast.Assign)
+        and [t.id for t in node.targets if isinstance(t, ast.Name)] == ["peak"]
+    ]
+    called = {
+        n.func.id for n in ast.walk(arm) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+    }
+
+    assert len(assigned) == 1
+    assert (
+        isinstance(assigned[0], ast.Call)
+        and getattr(assigned[0].func, "id", None) == "_chunked_peak_in_child"
+    )
+    assert "_peak_of" not in called
