@@ -73,7 +73,7 @@ import ast
 import gc
 import inspect
 import json
-import os
+import site
 import subprocess
 import sys
 import threading
@@ -219,64 +219,63 @@ def _peak_of(work: Callable[[], object]) -> int:
 #: Run in a fresh interpreter so the window holds this arm's allocations and
 #: nothing else; :func:`_peak_of` records why an in-process window cannot (#943).
 _CHUNKED_PEAK_CHILD: Final = """
-import gc, json, sys, tracemalloc
+import json, sys
+sys.path[:0] = json.loads(sys.argv[1])
+import gc, tracemalloc
 from theurian.mcp import validation
 from theurian.mcp.validation import MAX_PARAMS_RENDERED_CHARS, _CHUNK_CODE_POINTS, _chunked_width
 
-filler, tail = json.loads(sys.argv[1])
+filler, tail = json.loads(sys.argv[2])
 leaf = filler * (_CHUNK_CODE_POINTS * 40 - 1) + tail
-report = {
-    "file": validation.__file__,
-    "trace": sys.gettrace() is not None,
-    "profile": sys.getprofile() is not None,
-    "monitoring": [i for i in range(6) if sys.monitoring.get_tool(i) is not None],
-    "tracing": tracemalloc.is_tracing(),
-    "threads": len(sys._current_frames()),
-}
 gc.collect()
 tracemalloc.start()
 tracemalloc.reset_peak()
 held = _chunked_width(leaf, MAX_PARAMS_RENDERED_CHARS)
-report["peak"] = tracemalloc.get_traced_memory()[1]
+peak = tracemalloc.get_traced_memory()[1]
 tracemalloc.stop()
-print(json.dumps(report))
+flags = sys.flags
+print(json.dumps({"file": validation.__file__, "isolated": flags.isolated, "no_site": flags.no_site,
+                  "dont_write_bytecode": flags.dont_write_bytecode, "peak": peak}))
 """
-
-#: ``-I`` ignores ``PYTHON*`` variables and the cwd and user site, but
-#: site-packages' ``a1_coverage.pth`` still reads these two and would start coverage.
-_CHILD_ENV_DROPPED: Final = ("COVERAGE_PROCESS_START", "COVERAGE_PROCESS_CONFIG")
 
 
 def _refuse_unclean(report: dict[str, object], parent_file: str) -> None:
-    """Raise unless ``report`` came from the parent's ``theurian`` in a quiet child."""
+    for flag, spawned_with in (
+        ("isolated", "-I"),
+        ("no_site", "-S"),
+        ("dont_write_bytecode", "-B"),
+    ):
+        assert report[flag] == 1, f"the child ran without {spawned_with} (sys.flags.{flag} is 0)"
     assert report["file"] == parent_file, (
         f"the child imported theurian from {report['file']}, not {parent_file}"
-    )
-    assert not report["trace"], "the child started under a tracer (sys.gettrace() is set)"
-    assert not report["profile"], "the child started under a profiler (sys.getprofile() is set)"
-    assert not report["monitoring"], (
-        f"the child started with sys.monitoring tools {report['monitoring']} in use"
-    )
-    assert not report["tracing"], "the child started with tracemalloc already tracing"
-    assert report["threads"] == 1, (
-        f"the child started with {report['threads']} threads running, not 1"
     )
 
 
 def _chunked_peak_in_child() -> int:
-    """Peak of ``_chunked_width`` over the worst leaf, measured in a child interpreter.
+    """Peak of ``_chunked_width`` over the worst leaf, in a child that runs nothing else.
 
-    The child runs under ``-I`` with the coverage variables removed, and reports
-    what it started with before the window opens. This refuses a report that
-    shows another ``theurian`` than this process's, a ``sys.settrace`` tracer, a
-    ``sys.setprofile`` profiler, any ``sys.monitoring`` tool, tracemalloc already
-    tracing, or more than one thread holding a Python frame. It cannot see an
-    allocation from a non-Python thread, nor anything started after the report.
+    The invariant: before the window, only the interpreter and the child script
+    run. ``-I`` drops ``PYTHON*`` variables and the cwd; ``-S`` stops ``site``, so
+    no ``.pth`` or ``sitecustomize`` executes (coverage's included); the paths come
+    from the parent as arguments. ``-B`` writes no bytecode into the tree, which
+    ``tools/mutate.py`` relies on. The child reports ``sys.flags.isolated``, ``no_site`` and
+    ``dont_write_bytecode`` and the ``validation.__file__`` it imported; the parent
+    refuses any that is off or foreign.
     """
-    env = {k: v for k, v in os.environ.items() if k not in _CHILD_ENV_DROPPED}
+    from theurian.mcp import validation
+
+    paths = [str(Path(validation.__file__).parents[2]), *site.getsitepackages()]
     done = subprocess.run(  # noqa: S603 - argv is module-owned, never user input
-        [sys.executable, "-I", "-c", _CHUNKED_PEAK_CHILD, json.dumps([NARROW_ASTRAL, WIDE_ASTRAL])],
-        env=env,
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-B",
+            "-c",
+            _CHUNKED_PEAK_CHILD,
+            json.dumps(paths),
+            json.dumps([NARROW_ASTRAL, WIDE_ASTRAL]),
+        ],
         capture_output=True,
         text=True,
         check=False,
@@ -287,8 +286,6 @@ def _chunked_peak_in_child() -> int:
         report = json.loads(done.stdout)
     except json.JSONDecodeError as err:
         raise AssertionError(f"the child's stdout is not JSON: {done.stdout!r}") from err
-
-    from theurian.mcp import validation
 
     _refuse_unclean(report, validation.__file__)
     return int(report["peak"])
@@ -689,34 +686,39 @@ def test_the_chunked_arm_takes_its_peak_from_the_child_helper() -> None:
     assert "_peak_of" not in called
 
 
-_CLEAN: Final = {
-    "file": "/x/validation.py",
-    "trace": False,
-    "profile": False,
-    "monitoring": [],
-    "tracing": False,
-    "threads": 1,
-}
+_FLAGS: Final = {"isolated": 1, "no_site": 1, "dont_write_bytecode": 1, "file": "/x/validation.py"}
 
 
 @pytest.mark.parametrize(
     ("change", "words"),
     [
+        ({"isolated": 0}, r"without -I"),
+        ({"no_site": 0}, r"without -S"),
+        ({"dont_write_bytecode": 0}, r"without -B"),
         ({"file": "/other/validation.py"}, "imported theurian from /other"),
-        ({"trace": True}, r"sys\.gettrace"),
-        ({"profile": True}, r"sys\.getprofile"),
-        ({"monitoring": [1]}, r"sys\.monitoring tools \[1\]"),
-        ({"tracing": True}, "tracemalloc already tracing"),
-        ({"threads": 2}, "2 threads running"),
     ],
 )
 def test_an_unclean_child_report_is_refused_naming_its_cause(
     change: dict[str, object], words: str
 ) -> None:
-    """Each guard of the child's start state refuses on its own cause (#943)."""
     with pytest.raises(AssertionError, match=words):
-        _refuse_unclean({**_CLEAN, **change}, "/x/validation.py")
+        _refuse_unclean({**_FLAGS, **change}, "/x/validation.py")
 
 
 def test_a_clean_child_report_is_accepted() -> None:
-    _refuse_unclean(dict(_CLEAN), "/x/validation.py")
+    _refuse_unclean(dict(_FLAGS), "/x/validation.py")
+
+
+def test_a_hostile_sitecustomize_in_site_packages_does_not_reach_the_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The spawn itself, not a crafted report, keeps site-time code out of the window (#943)."""
+    baseline = _chunked_peak_in_child()
+    (tmp_path / "sitecustomize.py").write_text(
+        "import sys, threading\nsys.settrace(lambda *a: None)\n"
+        "threading.Thread(target=lambda: bytearray(10**6), daemon=True).start()\n"
+    )
+    real = site.getsitepackages()
+    monkeypatch.setattr(site, "getsitepackages", lambda: [str(tmp_path), *real])
+
+    assert _chunked_peak_in_child() == baseline
