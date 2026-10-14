@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import itertools
+import os
 import re
 from pathlib import Path
 from typing import Final
 
 import pytest
+from floor_remedy_support import _BODIES, _NAMED_IDS
 from floor_remedy_support import TRACKED_LOCATION as _WHERE
 
 from theurian.application import item_labels
@@ -20,6 +22,7 @@ from theurian.application.item_labels import (
     ItemLabels,
 )
 from theurian.application.proposal_service import (
+    _MAX_NAMES_LISTED,
     ProposalService,
     _BodyMove,
     _floor_refusal,
@@ -408,3 +411,149 @@ def test_no_remedy_prints_a_dependson_token_outside_the_migration_id_grammar(
     names = {name for name, _ in remedies}
     assert {"DRAFT_AGAIN_CLAUSE", "ACCEPT_READMISSION_REMEDY"} <= names
     assert [(name, _bad_tokens(text)) for name, text in remedies if _bad_tokens(text)] == []
+
+
+# -- the removal cure's redraft line (#937), its lists (#940) and its shared bodies (#944) ----
+
+_REDRAFT: Final = "draft it again afterwards with `theurian propose`"
+
+
+def _body_of(directory: Path, name: str, item: ItemId) -> _BodyMove:
+    directory.mkdir(exist_ok=True)
+    source = directory / name
+    source.write_text(name)
+    return _BodyMove(source, source, b"", False, None, item.value)
+
+
+def _located(tmp_path: Path) -> _ProposalLocation:
+    return _ProposalLocation(tmp_path / "P1", ".theurian/proposals/P1", False)
+
+
+@pytest.mark.parametrize(
+    ("owners", "removed", "retired", "printed"),
+    [
+        pytest.param([_A], [_A], [], True, id="removed-upsert-of-a-live-item"),
+        pytest.param([_A, _B], [_A, _B], [_B], True, id="a-live-item-beside-a-retired-one"),
+        pytest.param([_A], [_A], [_A], False, id="the-only-removed-upsert-is-retired"),
+        pytest.param([_A, _C], [_A], [_A], False, id="a-kept-upsert-does-not-count"),
+        pytest.param([_C], [_A], [], False, id="the-removed-item-has-no-upsert"),
+    ],
+)
+def test_the_redraft_line_is_printed_for_a_removed_upsert_of_an_item_that_is_not_withdrawn(
+    owners: list[ItemId],
+    removed: list[ItemId],
+    retired: list[ItemId],
+    printed: bool,
+    tmp_path: Path,
+) -> None:
+    """`theurian propose` refuses a withdrawn item without naming a revision, so the line
+    would send the follower into a dead end (#937)."""
+    moves = [_body_of(tmp_path / "P1", f"{o.value}.md", o) for o in owners]
+
+    cure = _removal_cure(removed, _located(tmp_path), moves, retired)
+
+    assert (_REDRAFT in cure) is printed, cure
+
+
+def test_no_redraft_line_is_printed_when_no_operation_removed_is_an_upsert(
+    tmp_path: Path,
+) -> None:
+    assert _REDRAFT not in _removal_cure([_A], _located(tmp_path), [])
+
+
+@pytest.mark.parametrize("kinds", [frozenset({"changeSensitivity"}), frozenset({"restoreItem"})])
+def test_the_readmission_floor_passes_its_readmitted_items_as_retired(
+    kinds: frozenset[str], tmp_path: Path
+) -> None:
+    move = _body_of(tmp_path / "P1", "a.md", _A)
+
+    readmission = _floor_refusal((), (_back(_A),), kinds, _located(tmp_path), [move])
+    lowering = _floor_refusal((_low(_A),), (), kinds, _located(tmp_path), [move])
+
+    assert readmission is not None and lowering is not None
+    assert _REDRAFT not in (readmission.remedy or "")
+    assert _REDRAFT in (lowering.remedy or "")
+
+
+def test_the_cure_lists_every_refused_id_and_body_past_the_names_listed_bound(
+    tmp_path: Path,
+) -> None:
+    """#940: a follower who is shown a prefix leaves the rest in the proposal."""
+    items = [ItemId(f"architecture.i{n}") for n in range(_MAX_NAMES_LISTED + 3)]
+    directory = tmp_path / "P1"
+    moves = [_body_of(directory, f"{i.value}.md", i) for i in items]
+
+    cure = _removal_cure(items, _located(tmp_path), moves)
+
+    listed = _BODIES.search(cure)
+    assert listed is not None, cure
+    assert _NAMED_IDS.findall(cure) == [i.value for i in items]
+    assert re.findall(r"`([^`]+)`", listed[1]) == sorted(
+        f".theurian/proposals/P1/{i.value}.md" for i in items
+    )
+
+
+def _case_folds(tmp_path: Path) -> bool:
+    (tmp_path / "CaseProbe").write_text("x")
+    return (tmp_path / "caseprobe").exists()
+
+
+_REFUSED_BODY = ".theurian/proposals/P1/refused.md"
+
+
+def test_a_body_a_kept_operation_also_reads_is_not_listed_for_deletion_beside_a_distinct_one(
+    tmp_path: Path,
+) -> None:
+    """Positive control for the two tests below: a refused body nobody keeps is listed."""
+    directory = tmp_path / "P1"
+    moves = [_body_of(directory, "refused.md", _A), _body_of(directory, "kept.md", _B)]
+
+    cure = _removal_cure([_A], _located(tmp_path), moves)
+
+    assert f"`{_REFUSED_BODY}`" in cure, cure
+
+
+def test_a_hard_linked_pair_is_one_body_and_the_shared_file_is_not_listed(tmp_path: Path) -> None:
+    """#944: two spellings of one inode; deleting either is deleting the kept operation's body."""
+    directory = tmp_path / "P1"
+    kept = _body_of(directory, "kept.md", _B)
+    os.link(kept.source, directory / "refused.md")
+    refused = _BodyMove(
+        directory / "refused.md", directory / "refused.md", b"", False, None, "architecture.a"
+    )
+
+    cure = _removal_cure([_A], _located(tmp_path), [refused, kept])
+
+    assert _REFUSED_BODY not in cure and "delete the body file" not in cure, cure
+    assert "every operation whose `itemId` is `architecture.a`" in cure, cure
+
+
+def test_a_case_variant_spelling_of_a_kept_body_is_not_listed_for_deletion(
+    tmp_path: Path,
+) -> None:
+    if not _case_folds(tmp_path):
+        pytest.skip("the temporary filesystem is case-sensitive: no second spelling exists")
+    directory = tmp_path / "P1"
+    kept = _body_of(directory, "Kept.md", _B)
+    variant = directory / "kept.md"
+    refused = _BodyMove(variant, variant, b"", False, None, "architecture.a")
+
+    cure = _removal_cure([_A], _located(tmp_path), [refused, kept])
+
+    assert "kept.md" not in cure, cure
+
+
+@pytest.mark.parametrize("unreadable", ["kept", "refused"])
+def test_an_identity_that_cannot_be_read_gives_the_directory_only_cure(
+    unreadable: str, tmp_path: Path
+) -> None:
+    """Failing closed: without both identities the cure cannot rule out a shared body."""
+    directory = tmp_path / "P1"
+    refused = _body_of(directory, "refused.md", _A)
+    kept = _body_of(directory, "kept.md", _B)
+    gone = {"kept": kept, "refused": refused}[unreadable]
+    gone.source.unlink()
+
+    cure = _removal_cure([_A], _located(tmp_path), [refused, kept])
+
+    assert cure == f"delete {_located(tmp_path).relative}/."
