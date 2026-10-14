@@ -47,6 +47,7 @@ from label_inheritance_support import (
     root_migration,
 )
 from replay_order_support import (
+    D2,
     OTHER_ITEM,
     declare_dependency,
     draft,
@@ -479,6 +480,34 @@ def test_a_readmission_cure_prints_no_redraft_line_because_propose_refuses_a_ret
     with_operations(p, drafted, [*operations, _set(OTHER_ITEM, "confidential")])
     land_deprecation(p.root, SORTS_BEFORE_A_DRAFT, p.item_id)
     refusal = _refused(drafted, says=READMITS)
+    assert "draft it again afterwards" not in refusal["remedy"], refusal
+
+    _kept_cure(p, drafted, refusal)
+
+    assert item_row(p.root, p.item_id)["status"] == "deprecated"
+    code, bare = cli_propose(p, p.item_id)
+    assert code == 2 and "restoreItem" in str(bare.get("remedy")), bare
+
+
+def test_a_lowering_of_a_landed_deprecated_item_prints_no_redraft_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The line keys on the landed status: this refusal is the lowering floor alone, since the
+    upsert keeps `status: deprecated`, yet `theurian propose` refuses the item as retired."""
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    _land_item(p, OTHER_ITEM, 1)
+    code, drafted = cli_propose(p, p.item_id, "--expected-revision", p.revision_id)
+    assert code == 0, drafted
+    staged = staged_migration(p, drafted)
+    document = yaml.safe_load(staged.read_text(encoding="utf-8"))
+    for operation in document["operations"]:
+        if operation["op"] == "upsertRevision":
+            operation["metadata"]["status"] = "deprecated"
+    with_operations(p, drafted, [*document["operations"], _set(OTHER_ITEM, "confidential")])
+    land_reclassification(p.root, SORTS_BEFORE_A_DRAFT, p.item_id, "confidential")
+    land_deprecation(p.root, D2, p.item_id)
+    refusal = _refused(drafted, says=LOWERS)
+    assert READMITS not in refusal["error"], refusal
     assert "draft it again afterwards" not in refusal["remedy"], refusal
 
     _kept_cure(p, drafted, refusal)
