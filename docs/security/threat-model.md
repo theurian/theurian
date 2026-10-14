@@ -6941,24 +6941,42 @@ it there.
     the floor routes its remedy by what the proposal carries
     (`application/proposal_service.py :: _is_content_only`). A proposal of
     `createItem` and `upsertRevision` alone keeps the content path's remedy.
-    Any other is told to remove every operation on each item the refusal names
-    from its own migration file and accept again, or to delete the proposal
-    directory if those are all its operations.
-    Followed literally, that cure leaves the item the floor names withheld,
-    for the proposal's own item and for a co-carried one, each measured on a
-    proposal refused at its first accept. For the own item, deleting the
-    directory leaves the landed, tighter label
+    Any other is told to remove each operation whose `itemId` is an item the
+    refusal names from its own migration file, delete any body file the
+    remedy lists, and accept again, or to delete the proposal directory if
+    those are all its operations or if the cure would print an id or body
+    path the refusal's message redacts
+    ([the migration format](../protocol/migrations.md#operations) quotes it).
+    Followed literally, the cure leaves each item it names at its landed
+    label, and that label decides whether it is served: one landed `internal`
+    and `approved` is served at the default ceiling
+    (`application/authorization.py :: DEFAULT_CEILING`). In each test cited
+    next, the item the cure names ends `confidential` or `deprecated`, and
+    the test asserts it withheld. Refused at its first accept, the proposal's
+    own item stays `confidential` when the cure deletes the directory
     (`test_accept_floor_remedy_followed_literally.py::test_a_tightener_that_is_the_only_operation_is_cured_by_deleting_the_proposal`),
-    and with another item's operation kept the re-accept exits 0
+    and accepting again exits 0 with another item's raise kept
     (`::test_a_tightener_beside_a_kept_raise_is_cured_by_removing_only_its_operation`).
-    For a co-carried item the re-accept exits 0
+    For a co-carried item accepting again exits 0
     (`::test_a_co_carried_items_older_label_is_cured_by_removing_that_items_operation`,
     `::test_a_co_carried_readmission_is_cured_by_removing_its_operation_and_the_item_stays_retired`);
-    that cure was also measured on 0.5.2 and 0.5.3. On 0.5.2, following
-    GHSA-fjqq-grr7-53cc's Workarounds, the own-item shape is accepted without
-    reaching the floor and stays withheld (#929's *Deferred claims*, with a
-    re-check script). A refusal, not a disclosure. Not naming a tighter
-    migration at all is [#898](https://github.com/theurian/theurian/issues/898).
+    that cure was also measured on 0.5.2 and 0.5.3. Refused at a re-accept,
+    after the `dependsOn` a replay-order refusal named is edited in, the own
+    item stays `confidential` behind a landed tightener declaring `dependsOn`
+    on a landed revision, with the tightener's id newer and older than the
+    draft, with and without another item's raise kept
+    (`test_floor_remedy_reaccept.py::test_a_reaccept_the_floor_refuses_is_cured_by_the_printed_removal`).
+    On 0.5.2, GHSA-fjqq-grr7-53cc's Workarounds, followed for that re-accept
+    shape, end the own item `confidential` and withheld, with and without a
+    kept raise: with the tightener's id newer than the draft the re-accept
+    exits 0 without reaching a floor; older, it is refused by the lowering
+    floor and the Workarounds' floor bullet is followed. Behind an older
+    tightener declaring no `dependsOn`, the lowering floor refuses the first
+    accept, run without a kept raise
+    ([#929](https://github.com/theurian/theurian/pull/929)'s
+    *Deferred claims*, with a re-check script). A refusal, not a disclosure.
+    Not naming a tighter migration at all is
+    [#898](https://github.com/theurian/theurian/issues/898).
 
 **A known cost, not a residual of the fix.** There is no way to acknowledge a
 row. A history that already holds a reported upsert, the original defect's
@@ -7211,12 +7229,15 @@ report exactly one row: the `dependsOn` migration's, `kind: reorders`,
    [the migration format](../protocol/migrations.md#permissive-moves-are-reported-not-refused)).
    If that re-accept is refused by the lowering or readmission floor, a landed
    migration already sets the item the refusal names tighter than the
-   proposal does: remove every operation on that item from the migration file
-   and accept again, or delete the proposal if those were all its operations.
+   proposal does: remove every operation whose `itemId` is that item from the
+   migration file, delete the body files only those operations use, and
+   accept again, or delete the proposal if those were all its operations.
    Since [#929](https://github.com/theurian/theurian/pull/929), after 0.5.3,
-   the floor's remedy names those operations and the proposal's directory.
-   T-28 residual 11 records the shapes measured: the proposal's own item and
-   a co-carried one.
+   the floor's remedy names those operations, any such body file and the
+   proposal's directory, or the directory alone when a name would be
+   redacted. T-28 residual 11 records the shapes measured; on this route,
+   the proposal's own item behind a landed tightener
+   (`test_floor_remedy_reaccept.py::test_a_reaccept_the_floor_refuses_is_cured_by_the_printed_removal`).
    On 0.5.1 and 0.5.2, follow
    [GHSA-fjqq-grr7-53cc](https://github.com/theurian/theurian/security/advisories/GHSA-fjqq-grr7-53cc)'s
    Workarounds instead.
