@@ -175,17 +175,20 @@ jobs:
   test:
     name: Tests (${{ matrix.os }}, py${{ matrix.python }})
     runs-on: ${{ matrix.os }}
-    # Stopgap: 30 min was too tight. Ubuntu / macos took 29m02s / 28m42s on
-    # main at 612b141f (run 36679166472) and 22m18s / 25m23s at 0d405b47 (run
-    # 36684955725); on the PR #852 head (run 36722037864) both legs were
-    # cancelled at the 30 min cap. Re-check: `gh run view <run-id> --json jobs`.
-    # 45 is deliberately below tests/ci/test_job_timeouts.py's sizing rule
-    # ("roughly 3-4x p95, minimum 10") until #643 lands; do not "correct" it to
-    # the rule. The durable fix, a faster or split suite, is owed by #643.
+    # #861 (3655950f) raised 30 to 45 as a stopgap; the step now runs `-n 4`
+    # (#643, #932). Sized from runs 38494012447 and 38501477400 (#932 has the
+    # table): ubuntu 792-1068 s, macOS 754-1122 s, max 1122 s (job
+    # 115649193714). 60 min is 3.2x that max, inside the rule in
+    # tests/ci/test_job_timeouts.py ("roughly 3-4x p95, minimum 10"). The cap
+    # rises although the suite got faster because 45 never met the rule: the
+    # serial `--cov` step took up to 2221 s, so 45 was 1.2x. This is the first
+    # cap sized by the rule. The log prints no vCPU count; `-n 4` matches the
+    # offline step. Re-check: `gh api repos/theurian/theurian/actions/jobs/<job-id>/logs`
+    # or `gh run view <run-id> --attempt <n> --json jobs`.
     # This is the job the liveness guard in `RetrievalService._visible_ranking`
     # protects (docs/work-logs and #16): a regression that removes the guard
     # hangs this job, not fails it.
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:

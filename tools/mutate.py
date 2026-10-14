@@ -215,8 +215,13 @@ coverage 95.35%. Against each reason:
   test files that bind a port, name 7419/7420 or use a fixed path, serial and
   ``-n 4`` outcomes do not differ, and the offline job passed at ``-n 4`` on four
   ubuntu CI runs without ``--cov`` (run 38363120459's three attempts and run
-  38368615621). The macOS and ``--cov`` evidence is the CI series of the PR that
-  widened this record.
+  38368615621). The macOS and ``--cov`` evidence is #932's runs 38494012447 and
+  38501477400: 12 ``Tests`` legs (6 ubuntu, 6 macOS) at ``-n 4 --cov``. Eleven
+  had outcome counts equal to serial; the twelfth, job 115642594537, failed on a
+  git auto-maintenance race in a test fixture, fixed in 4b5b7d54 (#938 tracks
+  the class). One xdist-only failure mode is open: process-wide ``tracemalloc``
+  peak tests may be charged for the worker's execnet thread (#943, a hypothesis,
+  seen once on the offline step, job 115649193719).
 - *Subprocesses and ``lsof``.* The same evidence covers subprocesses. The only
   ``lsof`` call is in e2e ``test_daemon_single_instance.py``, outside the step.
 - *Module-scope fixtures.* Summed per-test time is unchanged: 1462.9 s serial,
