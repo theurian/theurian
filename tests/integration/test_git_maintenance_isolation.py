@@ -1,4 +1,6 @@
-"""The suite's git never spawns ``git maintenance run --auto`` (#938).
+"""A git run with an environment inherited from the test process never spawns
+``git maintenance run --auto`` (#938); the far side of a local push
+(receive-pack) still does, see the repo-root ``conftest.py``.
 
 The detached child writes ``objects/maintenance.lock`` after the command returns,
 racing any test that byte-compares a repository it just committed in (#932).

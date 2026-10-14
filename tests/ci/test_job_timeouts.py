@@ -25,8 +25,9 @@ One relation is also asserted (#907): a job whose steps carry their own
 `timeout-minutes` must have a job ceiling of at least the step sum plus one
 minute of checkout/setup overhead. That pins no number, it compares two numbers
 in the same file, so #109's reason (an honest runtime change would fail a pinned
-value) does not reach it: raising a step budget without the job ceiling is the
-only way to fail it, and that change makes the step budgets unreachable.
+value) does not reach it: it fails when the job ceiling falls below the step
+sum plus one, by whichever number moves (a step budget raised, a step added, the
+ceiling lowered), and each of those leaves a step budget unreachable.
 
 A job whose top level carries `uses:` instead of `runs-on:` calls a reusable
 workflow, and GitHub does not accept `timeout-minutes` on that caller job --

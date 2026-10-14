@@ -1,10 +1,12 @@
 """Suite-wide: turn off git auto-maintenance for every repository the suite builds (#938).
 
-After a commit, merge, fetch, ... git (>= 2.29) spawns a detached
+After a commit, merge, fetch, ... git spawns a detached
 ``git maintenance run --auto`` that writes ``objects/maintenance.lock`` after the
 command has returned. A test that byte-compares or hashes a repository it just
 committed in raced it (#932, core.yml run 38494012447); one fixture was fixed
 locally (``test_mutate_with_git.py``), this covers the class.
+The spawn was observed with GIT_TRACE on git 2.47.1 (Homebrew) and Apple git 2.54.0
+(per #938's body).
 
 The ``GIT_CONFIG_COUNT`` / ``GIT_CONFIG_KEY_<n>`` / ``GIT_CONFIG_VALUE_<n>`` trio is
 used because the other placements lose: a ``GIT_CONFIG_GLOBAL`` session file is
