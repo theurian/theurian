@@ -6930,18 +6930,58 @@ it there.
     tighter than the proposal, or leave unnamed one that has raised or
     withdrawn another item the proposal carries. The lowering or readmission
     floor then refuses, correctly: nothing moves, so every item keeps its
-    landed label, and the one the refusal names is withheld in each shape
-    measured. It prints the content path's remedy
+    landed label, and the one the refusal names is withheld where that label
+    is `confidential` or `deprecated`, as in each shape the tests cited below
+    build. In 0.5.3 it prints the content path's remedy
     (`application/item_labels.py :: ACCEPT_LOWERING_REMEDY`, `:: DRAFT_AGAIN_CLAUSE`,
     `:: ACCEPT_READMISSION_REMEDY`): a lowering or readmission, then "draft the
     update again with `theurian propose` rather than accepting this proposal
-    again", wrong for a proposal that tool cannot draft. For the other item,
-    removing its operation from the proposal's migration file and accepting
-    again works (measured on 0.5.2 and 0.5.3) and is printed nowhere; for the
-    tighter migration no cure was measured. A refusal, not a disclosure. These
-    remedies have assumed a `theurian propose` update since 0.5.1; tracked on
-    its own issue, filed at publication, to be fixed next. Not naming a tighter
-    migration at all is [#898](https://github.com/theurian/theurian/issues/898).
+    again", wrong for a proposal that tool cannot draft. These remedies have
+    assumed a `theurian propose` update since 0.5.1.
+    Since [#929](https://github.com/theurian/theurian/pull/929), after 0.5.3,
+    the floor routes its remedy by what the proposal carries
+    (`application/proposal_service.py :: _is_content_only`). A proposal of
+    `createItem` and `upsertRevision` alone keeps the content path's remedy.
+    Any other is told to remove each operation whose `itemId` is an item the
+    refusal names from its own migration file, delete any body file the
+    remedy lists, and accept again, or to delete the proposal directory if
+    those are all its operations, if `_one_name`, the helper the refusal
+    messages use, would redact or cut an id or body path the cure would name,
+    or if a body path is outside `_PRINTABLE_BODY_PATH` or resolves outside
+    that directory ([the migration format](../protocol/migrations.md#operations)
+    quotes it; by the user's decision, only unit tests reach that last
+    condition, [#939](https://github.com/theurian/theurian/issues/939)).
+    Followed literally, the cure leaves each item it names at its landed
+    label, and that label decides whether it is served: one landed `internal`
+    and `approved` is served at the default ceiling
+    (`application/authorization.py :: DEFAULT_CEILING`). In each suite test
+    cited next, the item the cure names ends `confidential` or `deprecated`,
+    and the test asserts it withheld. Refused at its first accept, the proposal's
+    own item stays `confidential` when the cure deletes the directory
+    (`test_accept_floor_remedy_followed_literally.py::test_a_tightener_that_is_the_only_operation_is_cured_by_deleting_the_proposal`),
+    and accepting again exits 0 with another item's raise kept
+    (`::test_a_tightener_beside_a_kept_raise_is_cured_by_removing_only_its_operation`).
+    For a co-carried item accepting again exits 0
+    (`::test_a_co_carried_items_older_label_is_cured_by_removing_that_items_operation`,
+    `::test_a_co_carried_readmission_is_cured_by_removing_its_operation_and_the_item_stays_retired`);
+    that cure was also measured on 0.5.2 and 0.5.3. Refused by the lowering
+    floor at a re-accept, after the `dependsOn` a replay-order refusal named
+    is edited in, the own item stays `confidential` behind a landed tightener
+    whose `dependsOn` names the landed migration revising that item, with the
+    tightener's id newer and older than the draft, with and without another
+    item's raise kept
+    (`test_floor_remedy_reaccept.py::test_a_reaccept_the_floor_refuses_is_cured_by_the_printed_removal`).
+    On 0.5.2, GHSA-fjqq-grr7-53cc's Workarounds, followed for that re-accept
+    shape, end the own item `confidential` and withheld, with and without a
+    kept raise: with the tightener's id newer than the draft the re-accept
+    exits 0 without reaching a floor; older, it is refused by the lowering
+    floor and the Workarounds' floor bullet is followed. Behind an older
+    tightener declaring no `dependsOn`, the lowering floor refuses the first
+    accept, run without a kept raise
+    ([#929](https://github.com/theurian/theurian/pull/929)'s
+    *Deferred claims*, with a re-check script). A refusal, not a disclosure.
+    Not naming a tighter migration at all is
+    [#898](https://github.com/theurian/theurian/issues/898).
 
 **A known cost, not a residual of the fix.** There is no way to acknowledge a
 row. A history that already holds a reported upsert, the original defect's
@@ -7194,10 +7234,18 @@ report exactly one row: the `dependsOn` migration's, `kind: reorders`,
    [the migration format](../protocol/migrations.md#permissive-moves-are-reported-not-refused)).
    If that re-accept is refused by the lowering or readmission floor, a landed
    migration already sets the item the refusal names tighter than the
-   proposal does: remove that item's operation from the migration file and
-   accept again, or delete the proposal if it was the only operation. The
-   floor's remedy does not say so; T-28 residual 11 records what was measured,
-   and [#915](https://github.com/theurian/theurian/issues/915) tracks the fix.
+   proposal does: remove every operation whose `itemId` is that item from the
+   migration file, delete the body files only those operations use inside
+   the proposal's directory, and accept again, or delete the proposal if
+   those were all its operations.
+   Since [#929](https://github.com/theurian/theurian/pull/929), after 0.5.3,
+   the floor's remedy names those operations, any such body file at a plain
+   path inside that directory, and the directory, or the directory alone when
+   a name would be redacted or cut or a body path is not a plain path inside
+   it ([the migration format](../protocol/migrations.md#operations) defines
+   plain). T-28 residual 11 records the shapes measured; on this
+   route, the one measured is the proposal's own item behind a landed tightener
+   (`test_floor_remedy_reaccept.py::test_a_reaccept_the_floor_refuses_is_cured_by_the_printed_removal`).
    On 0.5.1 and 0.5.2, follow
    [GHSA-fjqq-grr7-53cc](https://github.com/theurian/theurian/security/advisories/GHSA-fjqq-grr7-53cc)'s
    Workarounds instead.

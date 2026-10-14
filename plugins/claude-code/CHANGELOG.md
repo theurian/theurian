@@ -32,8 +32,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   landed migration replaying after it would undo, whether that adds a row to
   the report or changes which migration a row already there says it undoes.
   Once a reclassification or a readmission lands, the update is drafted again,
-  not accepted again, with `dependsOn: [<its id>]` edited into the new draft's
-  migration file: `theurian propose` has no option for it, and only `dependsOn`
+  not accepted again, with that migration's id edited into the new draft's
+  `dependsOn`: `theurian propose` has no option for it, and only `dependsOn`
   places the new draft after that migration. For a landed migration's undo, the
   fix is a migration routed by everything the refused proposal carries: a
   fresh `theurian propose` when all of it is content,
@@ -64,6 +64,16 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`/theurian:migrate` defines `kind: reorders`**, the `permissiveMoves` row
   Core 0.5.2 adds for GHSA-wwq9-p8wq-5m68; when a row arises is stated in
   the command itself. Core 0.5.1 and earlier never print it.
+- **`/theurian:propose` routes a floor refusal's cure by what the proposal
+  carries**, as Core does after 0.5.3
+  ([#915](https://github.com/theurian/theurian/issues/915)). An update the
+  command drafted is still drafted again. A proposal carrying anything but
+  content is not: its `remedy` says to remove every operation whose `itemId`
+  is a refused item from the proposal's own migration file, delete any body
+  file it lists, and accept again. Once the user agrees, that is done, or, if
+  no operation would be left or the `remedy` names only the directory, the
+  proposal directory is deleted. Core 0.5.1 to 0.5.3 print the
+  `theurian propose` remedy for every proposal a floor refuses.
 
 ### Added
 

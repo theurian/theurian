@@ -276,10 +276,6 @@ _UNGATED_BY_CONSTRUCTION: Final[Mapping[tuple[str, str], str]] = {
         "the caller's own --item-id on this invocation, not third-party content"
     ),
     ("_ambiguous_locations", "location.relative"): "built from a validated ULID",
-    ("_removal_cure", "location.relative"): "built from a validated ULID",
-    ("_removal_cure", "m.source.relative_to(location.directory).as_posix()"): (
-        "the whole f-string is checked by `_one_name` before it is printed"
-    ),
     ("_evidence_indeterminate", "location.relative"): "built from a validated ULID",
     ("_evidence_unscannable", "location.relative"): "built from a validated ULID",
     ("_require_directory", "location.relative"): "built from a validated ULID",
@@ -438,12 +434,20 @@ def _interpolations() -> list[tuple[int, str, str]]:
     interpolation and the two error constructors above, so seven other ways to
     put a value into a string would pass it: ``%``-formatting, ``str.format``,
     ``str.join``, ``+`` concatenation, ``string.Template``, ``textwrap`` over a
-    built value, and a message assembled in a list and joined at the end. Two
-    ``+`` sites are live: ``_redraft_remedy`` joins MigrationIds (grammar-pinned by
-    ``test_no_remedy_prints_a_dependson_token_outside_the_migration_id_grammar``) and
-    ``_removal_cure`` joins ItemIds it first checks against ``_names``
-    (``test_a_remedy_never_prints_an_id_the_refusals_message_redacts``). The
-    end-to-end tests below would catch another such edit; neither alone is the guard.
+    built value, and a message assembled in a list and joined at the end. None of the
+    seven is walked, ``str.join`` and list-assembled messages included.
+
+    The ``+`` sites that add a value no gated helper produced, keyed as a chain of
+    ``+`` holding a string literal and a non-literal operand in ``proposal_service.py``:
+    ``_redraft_remedy`` (MigrationIds, grammar-pinned by
+    ``test_no_remedy_prints_a_dependson_token_outside_the_migration_id_grammar``; and
+    ``location.relative``) and ``_removal_cure`` (ItemIds checked by ``_one_name``, pinned
+    by ``test_a_remedy_never_prints_an_id_the_refusals_message_redacts``; body paths
+    checked by ``_printable_body`` and ``_one_name``, pinned by
+    ``test_a_body_path_outside_the_plain_grammar_leaves_the_directory_only_cure``; and
+    ``location.relative``). ``_floor_refusal`` and ``_union_refusal`` concatenate already
+    gated output. The end-to-end tests below would catch another such edit; neither
+    alone is the guard.
 
     Each is returned with the function that encloses it, because the allowlist is
     keyed on the pair -- see :data:`_UNGATED_BY_CONSTRUCTION` for what a
