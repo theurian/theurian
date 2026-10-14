@@ -185,18 +185,26 @@ def _peak_of(work: Callable[[], object]) -> int:
     **"This call" is a window, not a thread**: ``tracemalloc`` traces every
     thread, so under pytest-xdist the window is also charged for the worker's
     execnet receiver thread -- about 40.6 B per test index of each ``runtests``
-    message landing in it, with nothing bounding how many land (#943, measured
-    2026-10-14 at 0fe33d23 on pytest-xdist 3.8.0,
+    message landing in it (#943, measured 2026-10-14 at 0fe33d23 on
+    pytest-xdist 3.8.0,
     https://github.com/theurian/theurian/issues/943#issuecomment-6163370420).
-    Every arm calling this therefore holds by margin, not by construction: its
-    tolerance less its deviation, read from the failure messages with
-    ``TOLERANCE = 0``. The smallest, family (ii)'s, read about 380 KB that day,
-    about nine times the largest message a worker could then receive. That
-    message carries at most ``pending // nodes // 2`` indices, ``pending`` being
-    the items not yet sent (``xdist/scheduler/load.py:190-207``): about 42 KB at
-    the offline selection's ~11,000 items on ``-n 4``, a size that moves with
-    the suite and the worker count. The chunked-transient arm's margin was
-    3,892 B, under one message, so that arm measures in a child interpreter.
+    Under stock ``--dist load``, with no worker crash and no crash-item or rerun
+    plugin, at most one ``runtests`` refill and one index-free ``shutdown`` land
+    during one test call
+    (https://github.com/theurian/theurian/issues/946#issuecomment-6164106442).
+    A refill carries at most ``pending // nodes // 2`` indices
+    (``xdist/scheduler/load.py:190-207``), and ``pending`` is largest at the
+    first refill, once ``items // nodes // 4`` per node have gone out
+    (``:288-295``): at the offline selection's ~11,000 items on ``-n 4``, about
+    8,252 // 4 // 2 = 1,031 indices, or about 42 KB, a size that moves with the
+    suite and the worker count. Every arm calling this clears that about nine
+    times over: the smallest margin, family (ii)'s ``plain_ascii``, read 382,640
+    to 383,053 B over three runs that day -- its tolerance less the deviation
+    its ``<= TOLERANCE`` line prints with ``TOLERANCE = 0``. Outside that scope
+    the arms hold by margin, not by construction. The chunked-transient arm's
+    margin was 3,892 B, under one message, so that arm measures in a child
+    interpreter, which no worker thread reaches in or out of that scope and
+    which reads the same on every leg.
     """
     gc.collect()
     tracemalloc.start()
