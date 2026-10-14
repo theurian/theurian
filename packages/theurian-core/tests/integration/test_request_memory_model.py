@@ -69,8 +69,15 @@ the unit tests free of it.
 
 from __future__ import annotations
 
+import ast
 import gc
+import inspect
 import json
+import shutil
+import site
+import subprocess
+import sys
+import threading
 import tracemalloc
 from collections.abc import Callable
 from pathlib import Path
@@ -84,7 +91,6 @@ from theurian.daemon.runner import build_server
 from theurian.mcp.validation import (
     _CHUNK_CODE_POINTS,
     MAX_PARAMS_RENDERED_CHARS,
-    _chunked_width,
     _rendered_width,
 )
 
@@ -176,6 +182,33 @@ def _peak_of(work: Callable[[], object]) -> int:
     A ``gc.collect`` first, because a collection landing inside the window frees
     memory the peak has already counted and makes the reading depend on when the
     last test happened to allocate.
+
+    **"This call" is a window, not a thread**: ``tracemalloc`` traces every
+    thread, so under pytest-xdist the window is also charged for the worker's
+    execnet receiver thread -- about 40.6 B per test index of each ``runtests``
+    message landing in it (#943, measured 2026-10-14 at 0fe33d23 on
+    pytest-xdist 3.8.0,
+    https://github.com/theurian/theurian/issues/943#issuecomment-6163370420).
+    Under stock ``--dist load``, with no worker crash and no crash-item or rerun
+    plugin, at most one ``runtests`` refill and one index-free ``shutdown`` land
+    during one test call
+    (https://github.com/theurian/theurian/issues/946#issuecomment-6164106442).
+    A refill carries at most ``pending // nodes // 2`` indices
+    (``xdist/scheduler/load.py:190-207``), and ``pending`` is largest at the
+    first refill, once ``items // nodes // 4`` per node have gone out
+    (``:288-295``): at the offline selection's ~11,000 items on ``-n 4``, about
+    8,252 // 4 // 2 = 1,031 indices, or about 42 KB, a size that moves with the
+    suite and the worker count. Every arm calling this clears that about nine
+    times over: the smallest margin, family (ii)'s ``plain_ascii``, read 382,640
+    to 383,053 B over three runs that day -- its tolerance less the deviation
+    pytest's assertion introspection prints in full on the ``assert … <= 0``
+    line with ``TOLERANCE = 0``, not the two-decimal ratio in the arm's own
+    message. Outside that scope the arms hold by margin, not by construction.
+    The chunked-transient arm's margin was 3,892 B, under one message, so that
+    arm measures in a child interpreter (:func:`_chunked_peak_in_child`), which
+    no worker thread reaches in or out of that scope. On macOS on 2026-10-14
+    the child read 360,652 B serially, at ``-n 4`` and with the parent under
+    ``coverage --branch``; no ubuntu reading is recorded.
     """
     gc.collect()
     tracemalloc.start()
@@ -185,6 +218,84 @@ def _peak_of(work: Callable[[], object]) -> int:
     tracemalloc.stop()
     del held
     return peak
+
+
+#: Run in a fresh interpreter so the window holds this arm's allocations and
+#: nothing else; :func:`_peak_of` records why an in-process window cannot (#943).
+_CHUNKED_PEAK_CHILD: Final = """
+import json, sys
+sys.path[:0] = json.loads(sys.argv[1])
+import gc, tracemalloc
+from theurian.mcp import validation
+from theurian.mcp.validation import MAX_PARAMS_RENDERED_CHARS, _CHUNK_CODE_POINTS, _chunked_width
+
+filler, tail = json.loads(sys.argv[2])
+leaf = filler * (_CHUNK_CODE_POINTS * 40 - 1) + tail
+gc.collect()
+tracemalloc.start()
+tracemalloc.reset_peak()
+held = _chunked_width(leaf, MAX_PARAMS_RENDERED_CHARS)
+peak = tracemalloc.get_traced_memory()[1]
+tracemalloc.stop()
+flags = sys.flags
+print(json.dumps({"file": validation.__file__, "isolated": flags.isolated, "no_site": flags.no_site,
+                  "dont_write_bytecode": flags.dont_write_bytecode, "peak": peak}))
+"""
+
+
+def _refuse_unclean(report: dict[str, object], parent_file: str) -> None:
+    for flag, spawned_with in (
+        ("isolated", "-I"),
+        ("no_site", "-S"),
+        ("dont_write_bytecode", "-B"),
+    ):
+        assert report[flag] == 1, f"the child ran without {spawned_with} (sys.flags.{flag} is 0)"
+    assert report["file"] == parent_file, (
+        f"the child imported theurian from {report['file']}, not {parent_file}"
+    )
+
+
+def _chunked_peak_in_child(
+    flags: tuple[str, ...] = ("-I", "-S", "-B"), first_path: str | None = None
+) -> int:
+    """Peak of ``_chunked_width`` over the worst leaf, in a child that runs nothing else.
+
+    The invariant: before the window, only the interpreter and the child script
+    run. ``-I`` drops ``PYTHON*`` variables and the cwd; ``-S`` stops ``site``, so
+    no ``.pth`` or ``sitecustomize`` executes (coverage's included); the paths come
+    from the parent as arguments. ``-B`` writes no bytecode into the tree, which
+    ``tools/mutate.py`` relies on. The child reports ``sys.flags.isolated``, ``no_site`` and
+    ``dont_write_bytecode`` and the ``validation.__file__`` it imported; the parent
+    refuses any that is off or foreign. ``flags`` and ``first_path`` exist so the
+    tests can remove a flag or plant a foreign tree and watch the refusal.
+    """
+    from theurian.mcp import validation
+
+    paths = [str(Path(validation.__file__).parents[2]), *site.getsitepackages()]
+    if first_path is not None:
+        paths.insert(0, first_path)
+    done = subprocess.run(  # noqa: S603 - argv is module-owned, never user input
+        [
+            sys.executable,
+            *flags,
+            "-c",
+            _CHUNKED_PEAK_CHILD,
+            json.dumps(paths),
+            json.dumps([NARROW_ASTRAL, WIDE_ASTRAL]),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    assert done.returncode == 0, f"the child exited {done.returncode}: {done.stderr}"
+    try:
+        report = json.loads(done.stdout)
+    except json.JSONDecodeError as err:
+        raise AssertionError(f"the child's stdout is not JSON: {done.stdout!r}") from err
+
+    _refuse_unclean(report, validation.__file__)
+    return int(report["peak"])
 
 
 def _kind_bytes(query: str) -> int:
@@ -494,10 +605,9 @@ def test_the_chunked_transient_stays_under_its_ceiling_at_the_worst_leaf() -> No
     what this admits by exactly the factor the record says it should. The margin
     is the two ``str`` object headers the payload arithmetic does not count.
     """
-    leaf = NARROW_ASTRAL * (_CHUNK_CODE_POINTS * 40 - 1) + WIDE_ASTRAL
     ceiling = _CHUNK_CODE_POINTS * (10 + 1) * 4
 
-    peak = _peak_of(lambda: _chunked_width(leaf, MAX_PARAMS_RENDERED_CHARS))
+    peak = _chunked_peak_in_child()
 
     assert peak <= ceiling + 4096, (
         f"the chunked transient peaks at {peak} bytes over a leaf of non-printable astral "
@@ -513,3 +623,93 @@ def test_the_chunked_transient_stays_under_its_ceiling_at_the_worst_leaf() -> No
         f"one that is too generous -- which is how `* 10 * 4` survived on a dense-U+007F "
         f"leaf measuring 0.11x of it"
     )
+
+
+def test_the_chunked_transient_is_not_charged_for_another_threads_allocations() -> None:
+    """Another thread's allocations must not move the child's reading (#943).
+
+    Under pytest-xdist a receiver thread allocates in the worker while a test
+    runs; an in-process window charged the arm for it, and the arm went red
+    once on CI (see :func:`_peak_of`). Here four threads allocate and free a
+    64 KiB ``bytearray`` in a loop across the second reading -- more than one
+    ``runtests`` message at the 2026-10-14 suite size, about 42 KB. This holds
+    :func:`_chunked_peak_in_child`, not the arm's use of it.
+    """
+    baseline = _chunked_peak_in_child()
+    # Four threads so one is always waiting for the GIL when the window opens.
+    stop = threading.Event()
+    running = threading.Event()
+
+    def allocate() -> None:
+        while not stop.is_set():
+            running.set()
+            held = bytearray(64 * 1024)
+            del held
+
+    noisy = [threading.Thread(target=allocate, daemon=True) for _ in range(4)]
+    switch = sys.getswitchinterval()
+    try:
+        sys.setswitchinterval(1e-6)
+        for thread in noisy:
+            thread.start()
+        assert running.wait(timeout=5)
+        perturbed = _chunked_peak_in_child()
+    finally:
+        stop.set()
+        for thread in noisy:
+            if thread.is_alive():
+                thread.join()
+        sys.setswitchinterval(switch)
+
+    assert perturbed == baseline
+
+
+def test_the_chunked_arm_takes_its_peak_from_the_child_helper() -> None:
+    """The arm's ``peak`` must come from ``_chunked_peak_in_child``, never ``_peak_of`` (#943).
+
+    The helper's own test cannot see the arm reverting to the in-process window.
+    The key is the arm's source: the value assigned to ``peak`` is a call of the
+    helper, and ``_peak_of`` is not called anywhere in the function. A rename,
+    alias or indirection of either call is outside the key.
+    """
+    arm = ast.parse(
+        inspect.getsource(test_the_chunked_transient_stays_under_its_ceiling_at_the_worst_leaf)
+    )
+    assigned = [
+        node.value
+        for node in ast.walk(arm)
+        if isinstance(node, ast.Assign)
+        and [t.id for t in node.targets if isinstance(t, ast.Name)] == ["peak"]
+    ]
+    called = {
+        n.func.id for n in ast.walk(arm) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+    }
+
+    assert len(assigned) == 1
+    assert (
+        isinstance(assigned[0], ast.Call)
+        and getattr(assigned[0].func, "id", None) == "_chunked_peak_in_child"
+    )
+    assert "_peak_of" not in called
+
+
+@pytest.mark.parametrize("flag", ["-I", "-S", "-B"])
+def test_a_child_spawned_without_an_isolation_flag_is_refused(flag: str) -> None:
+    """Drives the spawn, the child's report and the parent's refusal together (#943)."""
+    flags = tuple(f for f in ("-I", "-S", "-B") if f != flag)
+
+    with pytest.raises(AssertionError, match=f"without {flag}"):
+        _chunked_peak_in_child(flags)
+
+
+def test_a_child_that_imports_another_theurian_is_refused(tmp_path: Path) -> None:
+    from theurian.mcp import validation
+
+    shutil.copytree(
+        Path(validation.__file__).parents[1],
+        tmp_path / "theurian",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+
+    with pytest.raises(AssertionError, match="imported theurian from"):
+        _chunked_peak_in_child(first_path=str(tmp_path))
