@@ -155,10 +155,11 @@ cannot approve knowledge"** rule below, not the front-matter
       draft's id need not sort after that migration's, and only `dependsOn`
       puts it after, so without it the new draft can replay before that
       migration too. A proposal carrying anything but content is not drafted
-      again: the `remedy` names every operation on a refused item, and once
-      the user agrees, those are removed from the proposal's own migration
-      file and it is accepted again, or, if no operation would be left, the
-      proposal directory is deleted. It also refuses one
+      again: the `remedy` says to remove every operation whose `itemId` is a
+      refused item from the proposal's own migration file, delete any body
+      file it lists, and accept again. Once the user agrees, that is done, or,
+      if no operation would be left or the `remedy` names only the directory,
+      the proposal directory is deleted. It also refuses one
       that a landed migration replaying after it would undo, whether that adds
       a row to the report, changes which migration a row already there says
       it undoes, or only leaves what it sets looser: an update drafted before a

@@ -68,9 +68,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   carries**, as Core does after 0.5.3
   ([#915](https://github.com/theurian/theurian/issues/915)). An update the
   command drafted is still drafted again. A proposal carrying anything but
-  content is not: its `remedy` names every operation on a refused item, and
-  once the user agrees, those are removed from the proposal's own migration
-  file and it is accepted again, or, if no operation would be left, the
+  content is not: its `remedy` says to remove every operation whose `itemId`
+  is a refused item from the proposal's own migration file, delete any body
+  file it lists, and accept again. Once the user agrees, that is done, or, if
+  no operation would be left or the `remedy` names only the directory, the
   proposal directory is deleted. Core 0.5.1 to 0.5.3 print the
   `theurian propose` remedy for every proposal a floor refuses.
 
