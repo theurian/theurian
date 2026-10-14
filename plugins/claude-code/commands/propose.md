@@ -159,7 +159,9 @@ cannot approve knowledge"** rule below, not the front-matter
       refused item from the proposal's own migration file, delete any body
       file it lists, and accept again. Once the user agrees, that is done, or,
       if no operation would be left or the `remedy` names only the directory,
-      the proposal directory is deleted. It also refuses one
+      the proposal directory is deleted. Where the `remedy` adds that a removed
+      content update can be drafted again with `theurian propose`, offer that
+      draft; its own refusal names the `--expected-revision`. It also refuses one
       that a landed migration replaying after it would undo, whether that adds
       a row to the report, changes which migration a row already there says
       it undoes, or only leaves what it sets looser: an update drafted before a

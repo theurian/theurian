@@ -74,6 +74,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   no operation would be left or the `remedy` names only the directory, the
   proposal directory is deleted. Core 0.5.1 to 0.5.3 print the
   `theurian propose` remedy for every proposal a floor refuses.
+- **`/theurian:propose` offers the redraft a removal cure names** for a
+  removed content update, as unreleased Core prints it
+  ([#937](https://github.com/theurian/theurian/issues/937)).
 
 ### Added
 
