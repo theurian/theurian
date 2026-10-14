@@ -382,18 +382,21 @@ def test_a_raced_revision_is_cured_by_removing_the_items_operations(
     assert item_row(p.root, p.item_id)["status"] == "approved"
 
 
-def test_a_raced_revision_is_cured_by_the_expected_revision_the_message_reports(
+def test_a_raced_revision_is_cured_by_the_printed_expected_revision_and_depends_on(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
     drafted, refusal = _conflict(p, retired=False, keep=False)
-    reported = re.search(r"store holds (\S+)", str(refusal["error"]))
-    assert reported and "give the proposal's own migration `expectedRevision:" in refusal["remedy"]
+    printed = re.search(r"`expectedRevision: (\w{26})`", refusal["remedy"])
+    writers = re.search(r"`dependsOn: \[([^\]]*)\]`", refusal["remedy"])
+    assert printed, refusal["remedy"]
     document = yaml.safe_load(staged_migration(p, drafted).read_text(encoding="utf-8"))
     for operation in document["operations"]:
         if operation["op"] == "upsertRevision":
-            operation["expectedRevision"] = reported[1]
-    with_operations(p, drafted, document["operations"])
+            operation["expectedRevision"] = printed[1]
+    if writers:
+        document["dependsOn"] = writers[1].split(", ")
+    staged_migration(p, drafted).write_text(yaml.safe_dump(document, sort_keys=False))
 
     code, accepted = cli("propose", "accept", drafted["proposalId"])
 
