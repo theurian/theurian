@@ -6945,14 +6945,14 @@ it there.
     refusal names from its own migration file, delete any body file the
     remedy lists, and accept again, or to delete the proposal directory if
     those are all its operations or if the cure would print an id or body
-    path the refusal's message redacts
+    path the refusal's message redacts or cuts
     ([the migration format](../protocol/migrations.md#operations) quotes it).
     Followed literally, the cure leaves each item it names at its landed
     label, and that label decides whether it is served: one landed `internal`
     and `approved` is served at the default ceiling
-    (`application/authorization.py :: DEFAULT_CEILING`). In each test cited
-    next, the item the cure names ends `confidential` or `deprecated`, and
-    the test asserts it withheld. Refused at its first accept, the proposal's
+    (`application/authorization.py :: DEFAULT_CEILING`). In each suite test
+    cited next, the item the cure names ends `confidential` or `deprecated`,
+    and the test asserts it withheld. Refused at its first accept, the proposal's
     own item stays `confidential` when the cure deletes the directory
     (`test_accept_floor_remedy_followed_literally.py::test_a_tightener_that_is_the_only_operation_is_cured_by_deleting_the_proposal`),
     and accepting again exits 0 with another item's raise kept
@@ -7235,8 +7235,8 @@ report exactly one row: the `dependsOn` migration's, `kind: reorders`,
    Since [#929](https://github.com/theurian/theurian/pull/929), after 0.5.3,
    the floor's remedy names those operations, any such body file and the
    proposal's directory, or the directory alone when a name would be
-   redacted. T-28 residual 11 records the shapes measured; on this route,
-   the proposal's own item behind a landed tightener
+   redacted or cut. T-28 residual 11 records the shapes measured; on this
+   route, the proposal's own item behind a landed tightener
    (`test_floor_remedy_reaccept.py::test_a_reaccept_the_floor_refuses_is_cured_by_the_printed_removal`).
    On 0.5.1 and 0.5.2, follow
    [GHSA-fjqq-grr7-53cc](https://github.com/theurian/theurian/security/advisories/GHSA-fjqq-grr7-53cc)'s
