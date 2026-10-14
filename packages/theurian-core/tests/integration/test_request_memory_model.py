@@ -589,13 +589,14 @@ def test_the_chunked_transient_stays_under_its_ceiling_at_the_worst_leaf() -> No
 
 
 def test_the_chunked_transient_is_not_charged_for_another_threads_allocations() -> None:
-    """Another thread's allocations must not move the arm's reading (#943).
+    """Another thread's allocations must not move the child's reading (#943).
 
     Under pytest-xdist a receiver thread allocates in the worker while a test
     runs; an in-process window charged the arm for it, and the arm went red
     once on CI (see :func:`_peak_of`). Here four threads allocate and free a
     64 KiB ``bytearray`` in a loop across the second reading -- more than one
-    ``runtests`` message at the 2026-10-14 suite size, about 42 KB.
+    ``runtests`` message at the 2026-10-14 suite size, about 42 KB. This holds
+    :func:`_chunked_peak_in_child`, not the arm's use of it.
     """
     baseline = _chunked_peak_in_child()
     # Four threads so one is always waiting for the GIL when the window opens.
