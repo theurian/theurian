@@ -71,6 +71,10 @@ from __future__ import annotations
 
 import gc
 import json
+import os
+import subprocess
+import sys
+import threading
 import tracemalloc
 from collections.abc import Callable
 from pathlib import Path
@@ -84,7 +88,6 @@ from theurian.daemon.runner import build_server
 from theurian.mcp.validation import (
     _CHUNK_CODE_POINTS,
     MAX_PARAMS_RENDERED_CHARS,
-    _chunked_width,
     _rendered_width,
 )
 
@@ -185,6 +188,63 @@ def _peak_of(work: Callable[[], object]) -> int:
     tracemalloc.stop()
     del held
     return peak
+
+
+#: Run in a fresh interpreter so the window holds this arm's allocations and
+#: nothing else. Under pytest-xdist the worker's execnet receiver thread
+#: allocates inside an in-process ``tracemalloc`` window whenever the controller
+#: sends a ``runtests`` message (about 40.6 B per index in it, #943).
+_CHUNKED_PEAK_CHILD: Final = """
+import gc, json, sys, tracemalloc
+from theurian.mcp import validation
+from theurian.mcp.validation import MAX_PARAMS_RENDERED_CHARS, _CHUNK_CODE_POINTS, _chunked_width
+
+filler, tail = json.loads(sys.argv[1])
+leaf = filler * (_CHUNK_CODE_POINTS * 40 - 1) + tail
+tracer, tracing = sys.gettrace(), tracemalloc.is_tracing()
+gc.collect()
+tracemalloc.start()
+tracemalloc.reset_peak()
+held = _chunked_width(leaf, MAX_PARAMS_RENDERED_CHARS)
+peak = tracemalloc.get_traced_memory()[1]
+tracemalloc.stop()
+print(json.dumps({"file": validation.__file__, "traced": tracer is not None,
+                  "tracing": tracing, "peak": peak}))
+"""
+
+_CHILD_ENV_DROPPED: Final = (
+    "PYTHONTRACEMALLOC",
+    "COVERAGE_PROCESS_START",
+    "COVERAGE_PROCESS_CONFIG",
+)
+
+
+def _chunked_peak_in_child() -> int:
+    """Peak of ``_chunked_width`` over the worst leaf, measured in a child interpreter.
+
+    Refuses to report a peak from a child that imports another ``theurian``
+    than this process's, starts under a tracer, or starts already tracing --
+    each would make the figure measure something other than this code, untraced.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in _CHILD_ENV_DROPPED}
+    done = subprocess.run(  # noqa: S603 - argv is module-owned, never user input
+        [sys.executable, "-c", _CHUNKED_PEAK_CHILD, json.dumps([NARROW_ASTRAL, WIDE_ASTRAL])],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    )
+    report = json.loads(done.stdout)
+
+    from theurian.mcp import validation
+
+    assert report["file"] == validation.__file__, (
+        f"the child imported theurian from {report['file']}, not {validation.__file__}"
+    )
+    assert not report["traced"], "the child started under a tracer (sys.gettrace() is set)"
+    assert not report["tracing"], "the child started with tracemalloc already tracing"
+    return int(report["peak"])
 
 
 def _kind_bytes(query: str) -> int:
@@ -494,10 +554,9 @@ def test_the_chunked_transient_stays_under_its_ceiling_at_the_worst_leaf() -> No
     what this admits by exactly the factor the record says it should. The margin
     is the two ``str`` object headers the payload arithmetic does not count.
     """
-    leaf = NARROW_ASTRAL * (_CHUNK_CODE_POINTS * 40 - 1) + WIDE_ASTRAL
     ceiling = _CHUNK_CODE_POINTS * (10 + 1) * 4
 
-    peak = _peak_of(lambda: _chunked_width(leaf, MAX_PARAMS_RENDERED_CHARS))
+    peak = _chunked_peak_in_child()
 
     assert peak <= ceiling + 4096, (
         f"the chunked transient peaks at {peak} bytes over a leaf of non-printable astral "
@@ -513,3 +572,39 @@ def test_the_chunked_transient_stays_under_its_ceiling_at_the_worst_leaf() -> No
         f"one that is too generous -- which is how `* 10 * 4` survived on a dense-U+007F "
         f"leaf measuring 0.11x of it"
     )
+
+
+def test_the_chunked_transient_is_not_charged_for_another_threads_allocations() -> None:
+    """Another thread's allocations must not move the arm's reading (#943).
+
+    Under pytest-xdist a receiver thread allocates in the worker while a test
+    runs; an in-process window charged the arm for it and a 3.9 KB margin went
+    red. A 64 KB hold exceeds the largest single xdist message at today's suite
+    size (about 42 KB).
+    """
+    baseline = _chunked_peak_in_child()
+    # Four threads so one is always waiting for the GIL when the window opens.
+    stop = threading.Event()
+    running = threading.Event()
+
+    def allocate() -> None:
+        while not stop.is_set():
+            running.set()
+            held = bytearray(64 * 1024)
+            del held
+
+    noisy = [threading.Thread(target=allocate) for _ in range(4)]
+    switch = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    for thread in noisy:
+        thread.start()
+    try:
+        assert running.wait(timeout=5)
+        perturbed = _chunked_peak_in_child()
+    finally:
+        stop.set()
+        for thread in noisy:
+            thread.join()
+        sys.setswitchinterval(switch)
+
+    assert perturbed == baseline
