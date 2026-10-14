@@ -75,6 +75,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import re
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from itertools import chain
@@ -4758,24 +4759,41 @@ def _removal_remedy(
     return " ".join([lead + _removal_cure(item_ids, location, moves), *tails])
 
 
+#: A printable body path: plain segments of ASCII word characters, dot and hyphen, so no
+#: backtick, whitespace, control character, leading slash or `.`/`..` segment survives.
+_PRINTABLE_BODY_PATH: Final = re.compile(
+    r"(?!\.\.?(?:/|$))[A-Za-z0-9._-]+(?:/(?!\.\.?(?:/|$))[A-Za-z0-9._-]+)*"
+)
+
+
+def _printable_body(source: Path, directory: Path) -> str | None:
+    """``source`` relative to ``directory`` if it is printable and resolves inside it."""
+    try:
+        relative = source.relative_to(directory).as_posix()
+    except ValueError:
+        return None
+    if not _PRINTABLE_BODY_PATH.fullmatch(relative):
+        return None
+    return relative if source.resolve().is_relative_to(directory.resolve()) else None
+
+
 def _removal_cure(
     item_ids: list[ItemId], location: _ProposalLocation, moves: Sequence[_BodyMove]
 ) -> str:
     """The clause curing a refusal of items the proposal cannot be redrafted around.
 
-    Ids and body paths are gated like :func:`_names`: if any would be redacted or cut, the
-    one cure naming nothing is left. ``location.relative`` is the configured proposals
-    directory plus a validated ULID.
+    Ids and body paths are gated like :func:`_names`: if any would be redacted or cut, or a
+    body path is outside :data:`_PRINTABLE_BODY_PATH` or resolves outside the proposal
+    directory, the one cure naming nothing is left. ``location.relative`` is the configured
+    proposals directory plus a validated ULID.
     """
     removed = {item_id.value for item_id in item_ids}
     shared = {m.source for m in moves if m.item_id not in removed}
-    bodies = sorted(
-        f"{location.relative}/{m.source.relative_to(location.directory).as_posix()}"
-        for m in moves
-        if m.item_id in removed and m.source not in shared
-    )
+    sources = [m.source for m in moves if m.item_id in removed and m.source not in shared]
+    relatives = [_printable_body(source, location.directory) for source in sources]
+    bodies = sorted(location.relative + "/" + r for r in relatives if r is not None)
     delete_all = "delete " + location.relative + "/"
-    if any(_one_name(name) != repr(name) for name in (*removed, *bodies)):
+    if None in relatives or any(_one_name(name) != repr(name) for name in (*removed, *bodies)):
         return delete_all + "."
     operations = " and ".join(
         "every operation whose `itemId` is `" + item_id.value + "`" for item_id in item_ids
