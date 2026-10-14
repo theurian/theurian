@@ -6930,8 +6930,9 @@ it there.
     tighter than the proposal, or leave unnamed one that has raised or
     withdrawn another item the proposal carries. The lowering or readmission
     floor then refuses, correctly: nothing moves, so every item keeps its
-    landed label, and the one the refusal names is withheld in each shape
-    measured. In 0.5.3 it prints the content path's remedy
+    landed label, and the one the refusal names is withheld where that label
+    is `confidential` or `deprecated`, as in each shape the tests cited below
+    build. In 0.5.3 it prints the content path's remedy
     (`application/item_labels.py :: ACCEPT_LOWERING_REMEDY`, `:: DRAFT_AGAIN_CLAUSE`,
     `:: ACCEPT_READMISSION_REMEDY`): a lowering or readmission, then "draft the
     update again with `theurian propose` rather than accepting this proposal
