@@ -1341,6 +1341,34 @@ stated beside the number so a reader can attack the key and not only the count.
 > tightener and co-carried shapes would still land unchecked; and no longer
 > naming tighteners, a convergence improvement on the accept route (#898), not
 > this fix.
+>
+> **Amended 2026-10-14 ([#915](https://github.com/theurian/theurian/issues/915)).**
+> The floor refusals in the tightener and co-carried rows above printed the
+> content path's remedy, "draft the update again with `theurian propose`",
+> which cannot draft such a proposal. Since
+> [#929](https://github.com/theurian/theurian/pull/929) the lowering and
+> readmission floors, and both revision-conflict branches of `accept`'s union
+> refusal, route their remedy by what the proposal carries
+> (`proposal_service.py :: _is_content_only`). A proposal of `createItem` and
+> `upsertRevision` alone keeps its remedy; any other is told to remove every
+> operation whose `itemId` is a refused item from its own migration file and
+> accept again, or to delete the proposal directory if those are all its
+> operations. A raced revision's remedy keeps, on both routes, the
+> alternative of giving the proposal's own migration the `expectedRevision`
+> the message reports, which does not work for a proposal that replays before
+> the change that won the race ([#931](https://github.com/theurian/theurian/issues/931)).
+> `DRAFT_AGAIN_CLAUSE` and `ACCEPT_READMISSION_REMEDY` no longer print
+> `` `dependsOn: [<its id>]` ``, a code span shaped as a `dependsOn` list that
+> holds no migration id; they end "edit that migration's id into the
+> `dependsOn` of the new draft's migration file." The quotations of the older
+> clause above are its wording on their dates, and what
+> `test_floor_refusal_remedy.py::test_every_remedy_that_says_to_draft_again_says_to_edit_dependson_in`
+> asserted then; it now asserts the new ending. `test_floor_remedy_routing.py`
+> holds the routing, and `test_accept_floor_remedy_followed_literally.py`
+> follows the printed removal to its end state for floor refusals and both
+> conflict branches;
+> [the migration format](../protocol/migrations.md#permissive-moves-are-reported-not-refused)
+> states what its floor tests assert.
 
 ## Context
 
