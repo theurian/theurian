@@ -269,7 +269,8 @@ _REAL: Final = "01K1BBBBBB01234567890ABCDE, 7ZZZZZZZZZ01234567890ABCDE"
 
 
 @pytest.mark.parametrize(
-    "token", ["<its id>", "<id>", "X", "...", "", "01K1AAAAAA0123456789OABCDE"]
+    "token",
+    ["<its id>", "<id>", "X", "...", "", "01K1AAAAAA0123456789OABCDE"],  # invalid-ulid
 )
 def test_the_span_check_rejects_every_non_id_token_and_accepts_real_ones(token: str) -> None:
     """Control: a check that passes these would pass main's `<its id>` too."""
