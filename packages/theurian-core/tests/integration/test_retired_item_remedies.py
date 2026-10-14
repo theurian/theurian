@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from floor_remedy_support import retired_after_a_race
 from git_harness import commit_migrations
 from label_inheritance_support import (
     EVIDENCE,
@@ -172,6 +173,24 @@ def test_a_retired_item_with_a_revision_is_not_sent_to_the_revision_conflict_rem
     assert f"Revision conflict on {ITEM_ID}" in str(payload.get("error", "")), payload
     assert "restoreItem" in _remedy(payload), payload
     assert "give the proposal's own migration `expectedRevision:" not in _remedy(payload), payload
+    assert landing_zone(project.root) == before, "a refused accept moved files"
+
+
+def test_a_retired_item_whose_revision_writer_replays_after_the_proposal_is_not_sent_to_the_edit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reversed order: the proposal has the smaller id, so the conflict is raised on the
+    landed revision writer, and a retirement landed after it."""
+    project = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    refused = retired_after_a_race(project)
+    before = landing_zone(project.root)
+
+    code, payload = cli("propose", "accept", refused["proposalId"])
+
+    assert code == 1, payload
+    assert f"Revision conflict on {ITEM_ID}" in str(payload.get("error", "")), payload
+    assert "restoreItem" in _remedy(payload), payload
+    assert "expectedRevision" not in _remedy(payload), payload
     assert landing_zone(project.root) == before, "a refused accept moved files"
 
 

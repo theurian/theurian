@@ -4,11 +4,21 @@ from __future__ import annotations
 
 import re
 import shutil
+import time
 from pathlib import Path
 from typing import Any, NamedTuple
 
 import yaml
-from label_inheritance_support import EVIDENCE, UPDATED_BODY, LabelledProject, cli
+from label_inheritance_support import (
+    EVIDENCE,
+    SORTS_AFTER_A_DRAFT,
+    UPDATED_BODY,
+    LabelledProject,
+    cli,
+    cli_ok,
+    cli_propose,
+    land_deprecation,
+)
 
 from theurian.application.proposal_service import _ProposalLocation
 from theurian.daemon.runner import build_server
@@ -95,3 +105,22 @@ def mcp_draft(p: LabelledProject) -> dict[str, Any]:
     assert answer["result"]["isError"] is False, answer
     drafted: dict[str, Any] = answer["result"]["structuredContent"]
     return drafted
+
+
+def retired_after_a_race(p: LabelledProject) -> dict[str, Any]:
+    """Draft P, then land a later draft Q and a retirement with a larger id; P is returned.
+
+    P replays before Q, so the union's conflict is raised on the landed Q, not on P.
+    """
+    drafts = []
+    for _ in range(2):
+        code, drafted = cli_propose(
+            p, p.item_id, "--expected-revision", p.revision_id, "--sensitivity", "internal"
+        )
+        assert code == 0, drafted
+        drafts.append(drafted)
+        time.sleep(0.05)  # ULIDs sort by millisecond
+    cli_ok("propose", "accept", drafts[1]["proposalId"])
+    cli_ok("migrate", "apply")
+    land_deprecation(p.root, SORTS_AFTER_A_DRAFT, p.item_id)
+    return drafts[0]

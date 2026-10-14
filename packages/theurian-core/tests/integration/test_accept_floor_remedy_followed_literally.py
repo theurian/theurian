@@ -26,6 +26,7 @@ import yaml
 from floor_remedy_support import (
     follow_removal_cure,
     mcp_draft,
+    retired_after_a_race,
     staged_migration,
     with_operations,
 )
@@ -412,3 +413,76 @@ def test_a_tightener_that_lands_internal_is_cured_to_a_label_the_default_ceiling
 
     assert item_row(p.root, p.item_id)["sensitivity"] == "internal"
     assert not get_is_withheld(p)
+
+
+def test_a_retired_items_reversed_order_conflict_is_cured_by_removal_and_the_item_stays_retired(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC4, the order `_conflict(retired=True)` does not build: the proposal replays first."""
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    _land_item(p, OTHER_ITEM, 1)
+    drafted = retired_after_a_race(p)
+    operations = yaml.safe_load(staged_migration(p, drafted).read_text(encoding="utf-8"))[
+        "operations"
+    ]
+    with_operations(p, drafted, [*operations, _set(OTHER_ITEM, "confidential")])
+    refusal = _refused(drafted, says="Revision conflict")
+    assert "To keep those items at their landed labels, remove every" in refusal["remedy"]
+
+    _kept_cure(p, drafted, refusal)
+
+    assert item_row(p.root, p.item_id)["status"] == "deprecated"
+    assert item_row(p.root, OTHER_ITEM)["sensitivity"] == "confidential"
+
+
+def _redraft_by_the_printed_line(p: LabelledProject, refusal: dict[str, Any]) -> dict[str, Any]:
+    """A bare `theurian propose`, then the --expected-revision its refusal names."""
+    assert "draft it again afterwards with `theurian propose`" in refusal["remedy"], refusal
+    code, bare = cli_propose(p, p.item_id)
+    named = re.search(r"--expected-revision ([0-9A-HJKMNP-TV-Z]{26})", str(bare.get("remedy")))
+    assert code == 2 and named, bare
+    code, redraft = cli_propose(p, p.item_id, "--expected-revision", named[1])
+    assert code == 0, redraft
+    return redraft
+
+
+def test_a_lowering_cure_then_its_redraft_line_ends_at_the_new_revision_and_a_label_no_lower(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#937: the cure removed the content update with the refused item; the line restores it."""
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    drafted = _mixed_update(p, with_deprecation=True)
+    refusal = _refused(drafted, says=LOWERS)
+    _kept_cure(p, drafted, refusal)
+    assert item_row(p.root, p.item_id)["current_revision_id"] == p.revision_id
+
+    redraft = _redraft_by_the_printed_line(p, refusal)
+    cli_ok("propose", "accept", redraft["proposalId"])
+    cli_ok("migrate", "apply")
+
+    row = item_row(p.root, p.item_id)
+    assert row["current_revision_id"] == redraft["revisionId"]
+    assert row["sensitivity"] == "confidential"
+
+
+def test_a_readmission_cure_prints_no_redraft_line_because_propose_refuses_a_retired_item(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#937: the line is absent for a retired item, and the bare `theurian propose` shows why."""
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    _land_item(p, OTHER_ITEM, 1)
+    code, drafted = cli_propose(p, p.item_id, "--expected-revision", p.revision_id)
+    assert code == 0, drafted
+    operations = yaml.safe_load(staged_migration(p, drafted).read_text(encoding="utf-8"))[
+        "operations"
+    ]
+    with_operations(p, drafted, [*operations, _set(OTHER_ITEM, "confidential")])
+    land_deprecation(p.root, SORTS_BEFORE_A_DRAFT, p.item_id)
+    refusal = _refused(drafted, says=READMITS)
+    assert "draft it again afterwards" not in refusal["remedy"], refusal
+
+    _kept_cure(p, drafted, refusal)
+
+    assert item_row(p.root, p.item_id)["status"] == "deprecated"
+    code, bare = cli_propose(p, p.item_id)
+    assert code == 2 and "restoreItem" in str(bare.get("remedy")), bare
