@@ -217,8 +217,10 @@ Against each reason:
   38368615621). The macOS and ``--cov`` evidence is #932's runs 38494012447 and
   38501477400: 12 ``Tests`` legs (6 ubuntu, 6 macOS) at ``-n 4 --cov``. Eleven
   had outcome counts equal to serial; the twelfth, job 115642594537, failed on a
-  git auto-maintenance race in a test fixture, fixed in 4b5b7d54 (#938 tracks
-  the class). One xdist-only failure mode was recorded open here, a hypothesis
+  git auto-maintenance race in a test fixture, fixed in 4b5b7d54 (the repo-root
+  ``conftest.py`` of #938 then closed the class by turning ``maintenance.auto``
+  off suite-wide for inherited environments, except in a local push's bare
+  remote). One xdist-only failure mode was recorded open here, a hypothesis
   seen once on the offline step (job 115649193719): process-wide
   ``tracemalloc`` peak tests may be charged for the worker's execnet thread.
   #943 reproduced it -- the receiver thread allocates about 40.6 B per index of
