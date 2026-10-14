@@ -1450,7 +1450,9 @@ class ProposalService:
         candidate, union = self._refuse_unless_the_union_applies(
             location, migration_file, migration_bytes, document, moves
         )
-        held_moves = self._refuse_an_effective_lowering(candidate, union.items)
+        held_moves = self._refuse_an_effective_lowering(
+            candidate, union.items, _kinds_of(document), location
+        )
         landed = tuple(self._landed_migrations())
         _refuse_a_reported_upsert(location, document, held_moves, union, landed)
         # Second, so every refusal the report check makes keeps its words: this adds the
@@ -1945,10 +1947,16 @@ class ProposalService:
             # proposal would send the author to edit a file that is correct.
             raise
         except (TheurianError, OSError) as exc:
-            raise self._union_refusal(location, migration_file, landed, exc) from exc
+            raise self._union_refusal(
+                location, migration_file, landed, exc, _kinds_of(document)
+            ) from exc
 
     def _refuse_an_effective_lowering(
-        self, candidate: CandidateMigrationSet, union: ReplayedItems
+        self,
+        candidate: CandidateMigrationSet,
+        union: ReplayedItems,
+        kinds: frozenset[str],
+        location: _ProposalLocation,
     ) -> tuple[PermissiveMove, ...]:
         """Refuse a proposal after whose replay an existing item is less sensitive or readmitted.
 
@@ -1999,7 +2007,9 @@ class ProposalService:
                 ),
             ) from exc
         held = held_replay.items
-        refusal = _floor_refusal(lowered_sensitivities(held, union), readmitted_items(held, union))
+        refusal = _floor_refusal(
+            lowered_sensitivities(held, union), readmitted_items(held, union), kinds, location
+        )
         if refusal is not None:
             raise refusal
         return held_replay.moves
@@ -2127,6 +2137,7 @@ class ProposalService:
         migration_file: Path,
         landed: tuple[str, ...],
         error: BaseException,
+        kinds: frozenset[str],
     ) -> ProposalError:
         """Turn a refused rehearsal into a refusal a reader can act on.
 
@@ -2144,6 +2155,7 @@ class ProposalService:
             f"Accepting this proposal would leave .theurian/migrations/ unable to apply: "
             f"{_their_words(error)}"
         )
+        content_only = _is_content_only(kinds)
         if isinstance(error, RevisionConflictError):
             # The racing face (#307): this proposal claimed a revision that was
             # free when it was drafted and is not free now. Re-drafting is the
@@ -2157,7 +2169,27 @@ class ProposalService:
                 try:
                     _refuse_a_retired_item(held_item)
                 except ProposalError:
-                    return ProposalError(message, remedy=ACCEPT_READMISSION_REMEDY)
+                    if content_only:
+                        return ProposalError(message, remedy=ACCEPT_READMISSION_REMEDY)
+                    return ProposalError(
+                        message,
+                        remedy=(
+                            "Nothing has moved. To leave the landed state alone, "
+                            + _removal_cure([error.item_id], location)
+                            + " "
+                            + READMIT_REMEDY
+                        ),
+                    )
+            if not content_only:
+                return ProposalError(
+                    message,
+                    remedy=(
+                        "Another change to this item landed first. Nothing has moved, so either "
+                        "give the proposal's own migration the expectedRevision the message "
+                        "reports and run `theurian propose accept` again, or "
+                        + _removal_cure([error.item_id], location)
+                    ),
+                )
             return ProposalError(
                 message,
                 remedy=(
@@ -4522,14 +4554,39 @@ def _write_file(destination: Path, data: bytes, *, exclusive: bool) -> None:
 def _floor_refusal(
     lowered: tuple[tuple[ItemId, Sensitivity, Sensitivity], ...],
     readmitted: tuple[tuple[ItemId, KnowledgeStatus, KnowledgeStatus], ...],
+    kinds: frozenset[str],
+    location: _ProposalLocation,
 ) -> ProposalError | None:
-    """The accept refusal for what the replay changed, naming every cause at once."""
+    """The accept refusal for what the replay changed, naming every cause at once.
+
+    A proposal no content draft can redo whole is cured by removing its operations on
+    the named items, never by drafting again.
+    """
     causes: list[str] = []
-    remedies: list[str] = []
     if lowered:
         causes.append(
             f"lower the sensitivity of {_names([describe_lowering(*change) for change in lowered])}"
         )
+    if readmitted:
+        causes.append(f"readmit {_names([describe_readmission(*change) for change in readmitted])}")
+    if not causes:
+        return None
+    message = "Accepting this proposal would " + " and would ".join(causes) + "."
+    if not _is_content_only(kinds):
+        item_ids = list(dict.fromkeys(change[0] for change in (*lowered, *readmitted)))
+        return ProposalError(
+            message,
+            remedy=" ".join(
+                [
+                    "Nothing has moved. To leave the landed state alone, "
+                    + _removal_cure(item_ids, location)
+                ]
+                + ([DECLASSIFY_REMEDY] if lowered else [])
+                + ([READMIT_REMEDY] if readmitted else [])
+            ),
+        )
+    remedies: list[str] = []
+    if lowered:
         # A re-draft is refused for a readmitted item, so the re-draft remedy stays
         # only while some lowered item is not also readmitted.
         readmitted_ids = {change[0] for change in readmitted}
@@ -4538,17 +4595,11 @@ def _floor_refusal(
         else:
             remedies.append(ACCEPT_LOWERING_REMEDY)
     if readmitted:
-        causes.append(f"readmit {_names([describe_readmission(*change) for change in readmitted])}")
         remedies.append(READMIT_REMEDY if lowered else ACCEPT_READMISSION_REMEDY)
         if lowered and ACCEPT_LOWERING_REMEDY not in remedies:
             # Both migrations are hand-authored; the proposal replays before either.
             remedies.append(DRAFT_AGAIN_CLAUSE)
-    if not causes:
-        return None
-    return ProposalError(
-        "Accepting this proposal would " + " and would ".join(causes) + ".",
-        remedy=" ".join(remedies),
-    )
+    return ProposalError(message, remedy=" ".join(remedies))
 
 
 _STATUS_WRITERS = (CreateItem, UpsertRevision, DeprecateItem, RestoreItem)
@@ -4692,6 +4743,29 @@ def _refuse_a_landed_overwrite(
     )
 
 
+def _is_content_only(kinds: frozenset[str]) -> bool:
+    """Whether a content draft (``theurian propose``) can redo a proposal of these kinds whole."""
+    return kinds <= {k.value for k in _REFUSED_TO_CONTENT_PATH}
+
+
+def _removal_cure(item_ids: list[ItemId], location: _ProposalLocation) -> str:
+    """The clause curing a refusal of items the proposal cannot be redrafted around.
+
+    Built by concatenation: the ids are validated ItemIds, the rest constants.
+    """
+    operations = " and ".join(
+        "every operation whose `itemId` is `" + item_id.value + "`" for item_id in item_ids
+    )
+    return (
+        "remove "
+        + operations
+        + " from this proposal's migration file in "
+        + location.relative
+        + "/, then run `theurian propose accept` again; if those are all of its operations, "
+        "delete " + location.relative + "/ instead."
+    )
+
+
 def _kinds_of(document: Mapping[str, object]) -> frozenset[str]:
     return frozenset(
         op
@@ -4717,7 +4791,7 @@ def _redraft_remedy(
     """
     depends = "`dependsOn: [" + ", ".join(m.migration_id.value for m in after) + "]`"
     only_through = " only through its `dependsOn`"
-    if kinds <= {k.value for k in _REFUSED_TO_CONTENT_PATH}:
+    if _is_content_only(kinds):
         route = (
             "Draft this change again with `theurian propose`, so it replays after "
             + after_what

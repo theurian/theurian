@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from theurian.application.item_labels import (
@@ -9,7 +11,7 @@ from theurian.application.item_labels import (
     ACCEPT_READMISSION_REMEDY,
     DRAFT_AGAIN_CLAUSE,
 )
-from theurian.application.proposal_service import _floor_refusal
+from theurian.application.proposal_service import _floor_refusal, _ProposalLocation
 from theurian.domain.enums import KnowledgeStatus, Sensitivity
 from theurian.domain.identifiers import ItemId
 
@@ -20,12 +22,15 @@ _LOWERED_B = (_B, Sensitivity.CONFIDENTIAL, Sensitivity.INTERNAL)
 _READMITTED_A = (_A, KnowledgeStatus.DEPRECATED, KnowledgeStatus.APPROVED)
 
 
+_LOCATION = _ProposalLocation(Path("/p/.theurian/proposals/P1"), ".theurian/proposals/P1", False)
+
+
 def _remedy(
     *,
     lowered: tuple[tuple[ItemId, Sensitivity, Sensitivity], ...],
     readmitted: tuple[tuple[ItemId, KnowledgeStatus, KnowledgeStatus], ...],
 ) -> str:
-    refusal = _floor_refusal(lowered, readmitted)
+    refusal = _floor_refusal(lowered, readmitted, frozenset({"upsertRevision"}), _LOCATION)
     assert refusal is not None
     return refusal.remedy or ""
 
@@ -79,7 +84,9 @@ def test_every_remedy_that_sends_the_reader_to_a_migration_says_to_draft_again_n
 #: A fresh draft carries no ``dependsOn`` and ``theurian propose`` has no option for
 #: one, and a landed id can sort after the drafting clock, so the draft replays after
 #: the migration only when ``dependsOn`` is edited in by hand, whatever that migration declares.
-_DEPENDS_ON_CLAUSE = "edit `dependsOn: [<its id>]` into the new draft's migration file."
+_DEPENDS_ON_CLAUSE = (
+    "edit that migration's id into the `dependsOn` of the new draft's migration file."
+)
 
 
 @pytest.mark.parametrize("remedy", _refusal_remedies())

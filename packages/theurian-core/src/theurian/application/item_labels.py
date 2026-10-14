@@ -81,8 +81,8 @@ DECLASSIFY_REMEDY = (
 DRAFT_AGAIN_CLAUSE = (
     "Once that migration lands, draft the update again with `theurian propose` rather than "
     "accepting this proposal again: its migration id predates it and replays before it, "
-    "and only `dependsOn` places the new draft after it, so edit `dependsOn: [<its id>]` "
-    "into the new draft's migration file."
+    "and only `dependsOn` places the new draft after it, so edit that migration's id into "
+    "the `dependsOn` of the new draft's migration file."
 )
 
 #: The remedy ``accept`` gives for a lowering. One cause per step, because a
@@ -129,8 +129,8 @@ ACCEPT_READMISSION_REMEDY = (
     + READMIT_REMEDY
     + " Once it lands, draft the update again with `theurian propose` rather than accepting "
     "this proposal again: its migration id predates the restoreItem and replays before it, "
-    "and only `dependsOn` places the new draft after it, so edit `dependsOn: [<its id>]` "
-    "into the new draft's migration file."
+    "and only `dependsOn` places the new draft after it, so edit that migration's id into "
+    "the `dependsOn` of the new draft's migration file."
 )
 
 
