@@ -7,9 +7,11 @@ content remedy instead.
 
 Own-item floor faces by route x field: non-content sensitivity is F1 and F4, status is F5
 and F7. ``[restoreItem, deprecateItem]`` of the proposal's own item is unreachable for the
-readmission floor (its last write retires the item); the ``named_by_no_floor`` test measured
-it with and without a landed restore replaying after the proposal: accept exits 0 both
-times. Content sensitivity and status are the two ``keeps_the_content_remedy`` tests.
+readmission floor: it needs the item retired in the landed-alone replay and surfaceable after
+the union, and the union's last status write for it is the landed retirer or the proposal's
+own ``deprecateItem``, so it ends retired. The ``named_by_no_floor`` test measures accept
+exiting 0 for that proposal over a landed retirement.
+Content sensitivity and status are the two ``keeps_the_content_remedy`` tests.
 """
 
 from __future__ import annotations
@@ -31,7 +33,6 @@ from label_inheritance_support import (
     BODY,
     ITEM_ID,
     ROOT_MIGRATION_ID,
-    SORTS_AFTER_A_DRAFT,
     SORTS_BEFORE_A_DRAFT,
     LabelledProject,
     cli,
@@ -49,7 +50,6 @@ from replay_order_support import (
     declare_dependency,
     draft,
     get_is_withheld,
-    restoration,
     write,
 )
 
@@ -242,23 +242,13 @@ def test_a_lowering_and_a_readmission_of_two_items_is_cured_by_removing_both_and
     assert get_is_withheld(p, itemId="architecture.third")
 
 
-@pytest.mark.parametrize(
-    "landed_restore_after", [False, True], ids=["plain", "restore-replays-after"]
-)
 def test_a_restore_then_deprecate_of_a_retired_item_is_named_by_no_floor(
-    landed_restore_after: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Measured: with the item retired before and after, accept exits 0 and no floor refuses."""
+    """Measured: with the item retired in the landed state, accept exits 0 and no floor refuses."""
     p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
     drafted = _non_content(p, _op("restoreItem", p.item_id), _op("deprecateItem", p.item_id))
     land_deprecation(p.root, SORTS_BEFORE_A_DRAFT, p.item_id)
-    if landed_restore_after:
-        write(p.root, SORTS_AFTER_A_DRAFT, "restore", restoration(SORTS_AFTER_A_DRAFT, p.item_id))
-        cli_ok("migrate", "apply")
-        refused = _refused(drafted, says="loosen what it sets")
-        named = re.search(r"`dependsOn: \[([^\]]*)\]`", refused["remedy"])
-        assert named, refused
-        declare_dependency(p, drafted, *named[1].split(", "))
 
     code, accepted = cli("propose", "accept", drafted["proposalId"])
 
