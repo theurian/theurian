@@ -1,43 +1,41 @@
-"""Suite-wide: turn off git auto-maintenance in repositories built under an inherited env (#938).
+"""Suite-wide: turn off git auto-maintenance for git commands that inherit the test env (#938).
 
 After a commit, merge, fetch, ... git spawns a detached
 ``git maintenance run --auto`` that writes ``objects/maintenance.lock`` after the
 command has returned. A test that byte-compares or hashes a repository it just
 committed in raced it (#932, core.yml run 38494012447); one fixture was fixed
 locally (``test_mutate_with_git.py``), this covers the class except the residual
-below.
-The spawn was observed with GIT_TRACE on git 2.47.1 (Homebrew) and Apple git 2.54.0
-(per #938's body).
+below. The spawn was observed with GIT_TRACE on git 2.47.1 (Homebrew) and Apple git
+2.54.0 (per #938's body).
 
 The ``GIT_CONFIG_COUNT`` / ``GIT_CONFIG_KEY_<n>`` / ``GIT_CONFIG_VALUE_<n>`` trio is
 used because the other placements lose: a ``GIT_CONFIG_GLOBAL`` session file is
-overridden by the 17 test-tree files that pin ``GIT_CONFIG_GLOBAL`` (to ``os.devnull``
-or an absent file) or drop it (``git grep -l GIT_CONFIG_GLOBAL``, minus three non-test
-files), and a per-fixture ``git config`` is enumerative (21 files spawn git directly,
-key: an AST scan for Call nodes whose callee name or arguments contain ``git`` plus a
-literal in {commit, merge, fetch, am, rebase, pull, cherry-pick, push, gc,
-maintenance}; plus shared helpers with 50, 25 and 11 importers; all counts at
-ba2c80a9). ``pytest_configure`` runs in the controller
+overridden by the test-tree files that pin ``GIT_CONFIG_GLOBAL`` (to ``os.devnull`` or
+an absent file) or drop it, and a per-fixture ``git config`` is enumerative over the
+direct callers and the shared helpers. ``pytest_configure`` runs in the controller
 and in every xdist worker, so collection and subprocesses inherit it. An inherited
 ``GIT_CONFIG_COUNT`` is appended to, never overwritten.
 
-Residual, measured on git 2.47.1: git unsets ``GIT_CONFIG_COUNT`` for the far side
-of a local transport (``unset GIT_CONFIG_COUNT GIT_PREFIX; 'git-receive-pack ...'``),
-so the bare remote of a local push still spawns maintenance. Four files push (at ba2c80a9)
-(``test_findings_build_cli``, ``test_findings_builder``, ``test_git_trailer_source``
-and e2e ``test_daemon_single_instance``); none hashes, walks or stats the remote
-(key: ``rglob(|os.walk(|iterdir(|filecmp|hashlib|.stat()|_hash_tree``, read per hit).
-A test that compares a push remote's bytes must set the config in that remote. An
-explicit ``env=`` built without ``os.environ`` is another blind spot; every one
-among the 21 direct files derives from ``os.environ``. A third: an environment copied
-from ``os.environ`` that drops ``GIT_CONFIG_COUNT`` or every ``GIT_*`` (key: ``git grep -n
--E 'startswith.*GIT_|GIT_CONFIG_COUNT' ba2c80a9 -- packages tests tools``):
-``trailer_source.py``,
-``command_population.py``, ``tools/corpus_drift.py``, ``tools/mutate.py``,
-``test_dogfood_corpus_governance.py``, ``adr_0038_support.py`` and
-``adr_0039_support.py``. All seven run read-only git (log, ls-files, rev-parse, grep,
-show), which never starts auto-maintenance; a scrubbing helper that ran commit, merge
-or fetch would reintroduce the race.
+Residual, git commands that do not inherit the trio:
+
+(a) The far side of a local transport: git unsets ``GIT_CONFIG_COUNT`` for it
+(``unset GIT_CONFIG_COUNT GIT_PREFIX; 'git-receive-pack ...'``), so receive-pack in
+a local push's bare remote still spawns maintenance. Four files push at ba2c80a9:
+``test_findings_build_cli``, ``test_findings_builder``, ``test_git_trailer_source``
+and e2e ``test_daemon_single_instance``; none hashes, walks or stats the remote.
+Key:
+``git grep -l -F -e '_git(' --and -e '"push"' ba2c80a9 -- packages/theurian-core/tests tests``
+
+(b) An explicit ``env=`` built without ``os.environ``.
+
+(c) An environment copied from ``os.environ`` that drops ``GIT_CONFIG_COUNT`` or every
+``GIT_*``: ``trailer_source.py``, ``command_population.py``, ``tools/corpus_drift.py``,
+``tools/mutate.py``, ``test_dogfood_corpus_governance.py``, ``adr_0038_support.py``
+and ``adr_0039_support.py``; all seven run only read commands. Key:
+``git grep -l -E 'startswith.*GIT_|GIT_CONFIG_COUNT' ba2c80a9 -- packages tests tools``
+
+A test that compares the bytes of a repository a command in (a)-(c) touches must set
+``maintenance.auto false`` in that repository itself.
 """
 
 from __future__ import annotations
