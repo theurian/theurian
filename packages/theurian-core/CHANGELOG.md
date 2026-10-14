@@ -12,6 +12,12 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Changed
+
+- For remedy parsers: the race remedy prints `expectedRevision: <rev>`,
+  `--expected-revision <rev>` and, when the proposal replays first,
+  `dependsOn: [<id>]`; the removal cure can end with a redraft sentence.
+
 ### Fixed
 
 - **`theurian propose accept`'s floor and revision-conflict remedies no longer
@@ -31,6 +37,13 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   No `accept` remedy prints the placeholder `dependsOn: [<its id>]` any
   more: the content-path remedies say to edit that migration's id into the new
   draft's `dependsOn`. The messages and exit codes do not change.
+- **A race remedy followed as printed lands the change in either replay order**
+  ([#931](https://github.com/theurian/theurian/issues/931)), for a proposal with
+  one `upsertRevision` of the raced item; with two it names no revision (#950).
+- **The removal cure says a removed content update can be drafted again**
+  ([#937](https://github.com/theurian/theurian/issues/937)); it keeps every
+  refused id and body path (#940), but not a kept operation's body reached by
+  a second spelling, such as a hard link (#944).
 
 ## [0.5.3] - 2026-10-08
 
