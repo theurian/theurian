@@ -6949,7 +6949,7 @@ it there.
     (`test_accept_floor_remedy_followed_literally.py`, each proposal refused at
     its first accept). For the own item, deleting the directory leaves the
     landed, tighter label
-    (`::test_a_tightener_that_is_the_only_operation_is_cured_by_deleting_the_proposal`),
+    (`test_accept_floor_remedy_followed_literally.py::test_a_tightener_that_is_the_only_operation_is_cured_by_deleting_the_proposal`),
     and with another item's operation kept the re-accept exits 0
     (`::test_a_tightener_beside_a_kept_raise_is_cured_by_removing_only_its_operation`).
     For a co-carried item the re-accept exits 0
