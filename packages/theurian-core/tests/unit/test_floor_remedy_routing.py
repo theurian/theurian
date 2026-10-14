@@ -263,6 +263,7 @@ _ESCAPING: Final = {
     "space": "zzmark x.md",
     "newline": "zzmark\nx.md",
     "escape-char": "zzmark\x1b[2Kx.md",
+    "secret-shaped": "sk-" + "a1b2c3d4e5f6" * 4 + ".md",
 }
 
 
@@ -276,7 +277,7 @@ def test_a_body_path_outside_the_plain_grammar_leaves_the_directory_only_cure(
     cure, directory_only = _body_cure(tmp_path, name)
 
     assert cure == directory_only
-    assert "zzmark" not in cure, cure
+    assert "zzmark" not in cure and "sk-" not in cure, cure
 
 
 def test_an_absolute_body_path_outside_the_proposal_directory_is_not_named(
