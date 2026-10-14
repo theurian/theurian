@@ -420,9 +420,9 @@ def test_action_three_states_the_removal_cure_the_floor_now_prints() -> None:
     action = _actions()[2]
 
     for sentence in (
-        "remove every operation whose itemid is that item from the migration file, delete the body files only those operations use, and accept again, or delete the proposal if those were all its operations.",
-        "the floor's remedy names those operations, any such body file and the proposal's directory, or the directory alone when a name would be redacted or cut.",
-        "t-28 residual 11 records the shapes measured; on this route, the proposal's own item behind a landed tightener (test_floor_remedy_reaccept.py::test_a_reaccept_the_floor_refuses_is_cured_by_the_printed_removal)",
+        "remove every operation whose itemid is that item from the migration file, delete the body files only those operations use inside the proposal's directory, and accept again, or delete the proposal if those were all its operations.",
+        "the floor's remedy names those operations, any such body file at a plain path inside that directory, and the directory, or the directory alone when a name would be redacted or cut or a body path is not a plain path inside it (the migration format defines plain).",
+        "t-28 residual 11 records the shapes measured; on this route, the one measured is the proposal's own item behind a landed tightener (test_floor_remedy_reaccept.py::test_a_reaccept_the_floor_refuses_is_cured_by_the_printed_removal)",
     ):
         assert sentence in _unlink(action), action
     for stale in (
@@ -432,6 +432,8 @@ def test_action_three_states_the_removal_cure_the_floor_now_prints() -> None:
         "remove every operation on that item",
         "names those operations and the proposal's directory.",
         "the proposal's own item and a co-carried one",
+        "delete the body files only those operations use, and",
+        "on this route, the proposal's own item behind",
     ):
         assert stale not in action
 
@@ -447,7 +449,7 @@ def test_residual_eleven_states_the_kind_routed_floor_and_the_measured_cure() ->
     for sentence in (
         "since #929, after 0.5.3, the floor routes its remedy by what the proposal carries",
         "a proposal of createitem and upsertrevision alone keeps the content path's remedy.",
-        "any other is told to remove each operation whose itemid is an item the refusal names from its own migration file, delete any body file the remedy lists, and accept again, or to delete the proposal directory if those are all its operations or if the cure would print an id or body path the refusal's message redacts or cuts",
+        "any other is told to remove each operation whose itemid is an item the refusal names from its own migration file, delete any body file the remedy lists, and accept again, or to delete the proposal directory if those are all its operations, if _one_name, the helper the refusal messages use, would redact or cut an id or body path the cure would name, or if a body path is outside _printable_body_path or resolves outside that directory",
         "followed literally, the cure leaves each item it names at its landed label, and that label decides whether it is served: one landed internal and approved is served at the default ceiling",
         "in each suite test cited next, the item the cure names ends confidential or deprecated, and the test asserts it withheld.",
         "refused by the lowering floor at a re-accept",
@@ -464,6 +466,9 @@ def test_residual_eleven_states_the_kind_routed_floor_and_the_measured_cure() ->
         "remove every operation on each item",
         "that cure leaves the item the floor names withheld",
         "accepted without reaching the floor and stays withheld",
+        "the refusal's message redacts or cuts",
+        "is withheld in each shape measured",
+        "declaring dependson on a landed revision",
     ):
         assert stale not in raw
 
