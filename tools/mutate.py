@@ -201,9 +201,11 @@ ordinary job, so with two or more workers it costs almost no wall clock.
     at module scope at roughly 2.9 s per corpus. If it is ever wanted it needs
     ``--dist=loadscope``, and it needs these isolated trees first.
 
-#924 (issue #643) supersedes this for CI's offline step,
-``pytest -n 4 -m 'not e2e'``: measured locally, 1479.27 s serial against
-419.34 s at ``-n 4``
+#924 (the offline step) and #932 (the ``test`` job's ``--cov`` step), under #643,
+supersede this for the two ``core.yml`` steps that pass ``-n 4``:
+``pytest -n 4 -m 'not e2e'`` and, on ubuntu and macOS,
+``pytest -n 4 -m "not e2e" --cov``. Measured locally,
+the offline selection took 1479.27 s serial against 419.34 s at ``-n 4``
 (https://github.com/theurian/theurian/issues/643#issuecomment-6140093192).
 Against each reason:
 
@@ -211,13 +213,20 @@ Against each reason:
   ``test_daemon.py``'s; the e2e copies are outside ``-m 'not e2e'``. Over the 48
   test files that bind a port, name 7419/7420 or use a fixed path, serial and
   ``-n 4`` outcomes do not differ, and the offline job passed at ``-n 4`` on four
-  CI runs (run 38363120459's three attempts and run 38368615621).
+  ubuntu CI runs without ``--cov`` (run 38363120459's three attempts and run
+  38368615621). The macOS and ``--cov`` evidence is #932's runs 38494012447 and
+  38501477400: 12 ``Tests`` legs (6 ubuntu, 6 macOS) at ``-n 4 --cov``. Eleven
+  had outcome counts equal to serial; the twelfth, job 115642594537, failed on a
+  git auto-maintenance race in a test fixture, fixed in 4b5b7d54 (#938 tracks
+  the class). One xdist-only failure mode is open: process-wide ``tracemalloc``
+  peak tests may be charged for the worker's execnet thread (#943, a hypothesis,
+  seen once on the offline step, job 115649193719).
 - *Subprocesses and ``lsof``.* The same evidence covers subprocesses. The only
   ``lsof`` call is in e2e ``test_daemon_single_instance.py``, outside the step.
 - *Module-scope fixtures.* Summed per-test time is unchanged: 1462.9 s serial,
   1442.9 s at ``-n 4``.
-- *``--dist=loadscope``.* The workflow passes no ``--dist``, so those CI runs
-  used the default ``load``.
+- *``--dist=loadscope``.* The workflow passes no ``--dist``, so the steps
+  use the default ``load``.
 
 The harness itself still does not pass ``-n`` (``mutate_run._suite_argv``); its
 parallelism is ``--workers`` across copied trees.
