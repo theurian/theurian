@@ -144,15 +144,21 @@ cannot approve knowledge"** rule below, not the front-matter
       invariants only applying can check, a revision's source anchor and a reused
       revision id among them. And it refuses a proposal whose replay would lower
       an item's sensitivity or bring a deprecated, superseded or rejected item
-      back; the `remedy` names the hand-authored migration that does either.
-      Once a migration bringing the item back or reclassifying it lands, the
-      update is drafted again, not accepted again: the old proposal's migration
-      replays before it, so `migrate validate` would report its revision, and `accept` refuses
-      a proposal whose own revision that report would name. Edit
-      `dependsOn: [<its id>]` into the new draft's migration file, since
-      `theurian propose` has no option for it: the new draft's id need not sort
-      after that migration's, and only `dependsOn` puts it after, so without it
-      the new draft can replay before that migration too. It also refuses one
+      back; the `remedy` names the hand-authored migration that does either,
+      and its cure depends on what the proposal carries. For an update this
+      command drafted, once a migration bringing the item back or reclassifying
+      it lands, the update is drafted again, not accepted again: the old
+      proposal's migration replays before it, so `migrate validate` would
+      report its revision, and `accept` refuses a proposal whose own revision
+      that report would name. Edit that migration's id into the new draft's
+      `dependsOn`, since `theurian propose` has no option for it: the new
+      draft's id need not sort after that migration's, and only `dependsOn`
+      puts it after, so without it the new draft can replay before that
+      migration too. A proposal carrying anything but content is not drafted
+      again: the `remedy` names every operation on a refused item, and once
+      the user agrees, those are removed from the proposal's own migration
+      file and it is accepted again, or, if no operation would be left, the
+      proposal directory is deleted. It also refuses one
       that a landed migration replaying after it would undo, whether that adds
       a row to the report, changes which migration a row already there says
       it undoes, or only leaves what it sets looser: an update drafted before a
