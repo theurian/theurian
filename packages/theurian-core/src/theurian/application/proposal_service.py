@@ -4763,8 +4763,8 @@ def _removal_cure(
 ) -> str:
     """The clause curing a refusal of items the proposal cannot be redrafted around.
 
-    Ids and body paths are gated like :func:`_names`: if any would be redacted, the one
-    cure naming nothing is left. ``location.relative`` is the configured proposals
+    Ids and body paths are gated like :func:`_names`: if any would be redacted or cut, the
+    one cure naming nothing is left. ``location.relative`` is the configured proposals
     directory plus a validated ULID.
     """
     removed = {item_id.value for item_id in item_ids}
