@@ -1,4 +1,4 @@
-"""Suite-wide: turn off git auto-maintenance for git commands that inherit the test env (#938).
+"""Suite-wide: put maintenance.auto=false in the environment git inherits from pytest (#938).
 
 After a commit, merge, fetch, ... git spawns a detached
 ``git maintenance run --auto`` that writes ``objects/maintenance.lock`` after the
