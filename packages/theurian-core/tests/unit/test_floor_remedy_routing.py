@@ -175,16 +175,38 @@ def test_a_proposal_no_content_draft_can_redo_is_told_to_remove_the_refused_item
 _REVISION: Final = RevisionId("01K1AAAREV01234567890ABCDE")
 
 
-def _union_remedy(monkeypatch: pytest.MonkeyPatch, kinds: frozenset[str], *, retired: bool) -> str:
+def _union_remedy(
+    monkeypatch: pytest.MonkeyPatch, kinds: frozenset[str], *, retired: bool, item: ItemId = _A
+) -> str:
     status = KnowledgeStatus.DEPRECATED if retired else KnowledgeStatus.APPROVED
-    held = {_A: ItemLabels(Sensitivity.INTERNAL, TrustLevel.REVIEWED, "backend", status)}
+    held = {item: ItemLabels(Sensitivity.INTERNAL, TrustLevel.REVIEWED, "backend", status)}
     monkeypatch.setattr(ProposalService, "_landed_set_alone", lambda *_: (None, held))
     service = ProposalService.__new__(ProposalService)
-    error = RevisionConflictError(_A, None, _REVISION)
+    error = RevisionConflictError(item, None, _REVISION)
 
     refusal = service._union_refusal(_WHERE, Path("m.yaml"), ("L1",), error, kinds)
 
     return refusal.remedy or ""
+
+
+_SECRET: Final = ItemId("sk-" + "a1b2c3d4e5f6" * 4)
+
+
+@pytest.mark.parametrize("route", ["lowered", "readmitted", "retired-conflict"])
+@pytest.mark.parametrize("ids", [[_SECRET], [_SECRET, _A]], ids=["alone", "beside-a-clean-id"])
+def test_a_remedy_never_prints_an_id_the_refusals_message_redacts(
+    route: str, ids: list[ItemId], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Under secretScan warn|off the cure once printed a secret-shaped id whole."""
+    kinds = frozenset({"changeSensitivity"})
+    if route == "retired-conflict":
+        remedy = _union_remedy(monkeypatch, kinds, retired=True, item=_SECRET)
+    else:
+        low = tuple(map(_low, ids)) if route == "lowered" else ()
+        remedy = _remedy(low, tuple(map(_back, ids)) if not low else (), kinds, _WHERE)
+
+    assert not [i.value for i in ids if i.value in remedy], remedy
+    assert f"landed labels, delete {_WHERE.relative}/." in remedy, remedy
 
 
 @pytest.mark.parametrize("kinds", _OTHER_PARAMS)
