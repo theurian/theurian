@@ -1354,10 +1354,10 @@ stated beside the number so a reader can attack the key and not only the count.
 > operation whose `itemId` is a refused item from its own migration file,
 > delete any body file the remedy lists, and accept again, or to delete the
 > proposal directory if those are all its operations or if the cure would
-> print an id or body path the refusal's message redacts. A raced revision's
-> remedy keeps, on both routes, the alternative of giving the proposal's own
-> migration the `expectedRevision` the message reports, which does not work
-> for a proposal that replays before the change that won the race
+> print an id or body path the refusal's message redacts or cuts. A raced
+> revision's remedy keeps, on both routes, the alternative of giving the
+> proposal's own migration the `expectedRevision` the message reports, which
+> does not work for a proposal that replays before the change that won the race
 > ([#931](https://github.com/theurian/theurian/issues/931)).
 > `DRAFT_AGAIN_CLAUSE` and `ACCEPT_READMISSION_REMEDY` no longer print
 > `` `dependsOn: [<its id>]` ``, a code span shaped as a `dependsOn` list that
