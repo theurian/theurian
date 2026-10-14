@@ -244,3 +244,37 @@ def test_a_proposal_that_conflicts_with_itself_is_cured_by_the_revision_its_mess
     cli_ok("migrate", "apply")
 
     assert item_row(p.root, OTHER_ITEM)["current_revision_id"] == second["revisionId"]
+
+
+def test_a_two_upsert_proposal_over_a_landed_revision_gets_the_message_reports_wording(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#950: its own first upsert is the revision the store holds, so a landed-writer edit
+    (`expectedRevision: <R0>` and `dependsOn`) is a cure that exits 1."""
+    p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
+    drafted = _draft(p)
+    operations = yaml.safe_load(staged_migration(p, drafted).read_text(encoding="utf-8"))[
+        "operations"
+    ]
+    first = next(o for o in operations if o["op"] == "upsertRevision")
+    body = p.root / drafted["bodyFile"]
+    shutil.copy(body, body.with_name("second.md"))
+    second = {
+        **first,
+        "revisionId": "01K1AAAREV99999999999ABCDE",
+        "contentFile": "../knowledge/architecture/second.md",
+    }
+    with_operations(p, drafted, [*operations, second])
+
+    code, payload = cli("propose", "accept", drafted["proposalId"])
+
+    remedy = str(payload["remedy"])
+    assert code == 1 and "the expectedRevision the message reports" in remedy, payload
+    assert "dependsOn" not in remedy and not _EXPECT.search(remedy), remedy
+    held = re.search(r"store holds (\S+)", payload["error"])
+    assert held, payload
+    second["expectedRevision"] = held[1]
+    with_operations(p, drafted, [first, second])
+    cli_ok("propose", "accept", drafted["proposalId"])
+    cli_ok("migrate", "apply")
+    assert _current(p) == second["revisionId"]
