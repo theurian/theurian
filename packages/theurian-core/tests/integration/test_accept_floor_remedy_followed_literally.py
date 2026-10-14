@@ -386,9 +386,7 @@ def test_a_raced_revision_is_cured_by_the_expected_revision_the_message_reports(
     p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
     drafted, refusal = _conflict(p, retired=False, keep=False)
     reported = re.search(r"store holds (\S+)", str(refusal["error"]))
-    assert (
-        reported and "give the proposal's own migration the expectedRevision" in refusal["remedy"]
-    )
+    assert reported and "give the proposal's own migration `expectedRevision:" in refusal["remedy"]
     document = yaml.safe_load(staged_migration(p, drafted).read_text(encoding="utf-8"))
     for operation in document["operations"]:
         if operation["op"] == "upsertRevision":

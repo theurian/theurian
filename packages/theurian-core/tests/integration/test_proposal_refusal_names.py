@@ -260,6 +260,7 @@ _UNGATED_BY_CONSTRUCTION: Final[Mapping[tuple[str, str], str]] = {
     ("_require_migration", "proposal_id.value"): "ProposalId, an anchored ULID",
     ("_unreadable", "proposal_id.value"): "ProposalId, an anchored ULID",
     ("refuse", "proposal_id.value"): "ProposalId, an anchored ULID",
+    ("_edit_cure", "revision.value"): "RevisionId, an anchored ULID",
     ("_refuse_if_migration_present", "migration_id.value"): "MigrationId, an anchored ULID",
     ("_no_migration_error", "recorded.value"): "MigrationId, an anchored ULID",
     ("_refuse_a_reported_upsert", "row.migration_id.value"): "MigrationId, an anchored ULID",

@@ -16,6 +16,7 @@ from theurian.application.item_labels import (
     ACCEPT_READMISSION_REMEDY,
     DECLASSIFY_REMEDY,
     READMIT_REMEDY,
+    CurrentItem,
     ItemLabels,
 )
 from theurian.application.proposal_service import (
@@ -184,6 +185,8 @@ def _union_remedy(
     held = {item: ItemLabels(Sensitivity.INTERNAL, TrustLevel.REVIEWED, "backend", status)}
     monkeypatch.setattr(ProposalService, "_landed_set_alone", lambda *_: (None, held))
     service = ProposalService.__new__(ProposalService)
+    service._current_item = lambda _: CurrentItem(_REVISION, held[item])
+    service._landed_migrations = lambda: ()
     error = RevisionConflictError(item, None, _REVISION)
 
     refusal = service._union_refusal(_WHERE, Path("m.yaml"), ("L1",), error, kinds)
@@ -330,7 +333,7 @@ def test_a_raced_revision_for_a_non_content_proposal_offers_the_edit_or_the_remo
 
     assert remedy == (
         "Another change to this item landed first. Nothing has moved, so either give the "
-        "proposal's own migration the expectedRevision the message reports and run "
+        f"proposal's own migration `expectedRevision: {_REVISION.value}`, then run "
         "`theurian propose accept` again, or " + _cure([_A], _WHERE)
     )
     assert "--expected-revision" not in remedy and "draft the change again" not in remedy
@@ -344,7 +347,7 @@ def test_the_content_proposals_conflict_remedies_are_unchanged(
     raced = _union_remedy(monkeypatch, kinds, retired=False)
 
     assert retired == ACCEPT_READMISSION_REMEDY
-    assert "draft the change again with --expected-revision and delete" in raced
+    assert f"draft the change again with --expected-revision {_REVISION.value} and delete" in raced
     assert "every operation whose" not in raced
 
 

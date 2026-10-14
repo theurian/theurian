@@ -80,6 +80,7 @@ from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from itertools import chain
 from pathlib import Path, PurePosixPath
+from types import MappingProxyType
 from typing import Final, NoReturn
 
 import yaml
@@ -1949,7 +1950,13 @@ class ProposalService:
             raise
         except (TheurianError, OSError) as exc:
             raise self._union_refusal(
-                location, migration_file, landed, exc, _kinds_of(document), moves=moves
+                location,
+                migration_file,
+                landed,
+                exc,
+                _kinds_of(document),
+                document=document,
+                moves=moves,
             ) from exc
 
     def _refuse_an_effective_lowering(
@@ -2145,6 +2152,7 @@ class ProposalService:
         error: BaseException,
         kinds: frozenset[str],
         *,
+        document: Mapping[str, object] = MappingProxyType({}),
         moves: tuple[_BodyMove, ...] = (),
     ) -> ProposalError:
         """Turn a refused rehearsal into a refusal a reader can act on.
@@ -2183,13 +2191,19 @@ class ProposalService:
                         message,
                         remedy=_removal_remedy([error.item_id], location, moves, READMIT_REMEDY),
                     )
+            # The revision and the writer come from the landed set alone, never from
+            # `error`: when this proposal replays first the error is raised on the landed
+            # migration and its `actual` is this proposal's own revision. Rejected: dropping
+            # the edit cure in that order -- it leaves the non-content route only the
+            # removal cure, which drops that item's content update.
+            edit, revision = self._edit_cure(error, document)
             if not content_only:
                 return ProposalError(
                     message,
                     remedy=(
                         "Another change to this item landed first. Nothing has moved, so either "
-                        "give the proposal's own migration the expectedRevision the message "
-                        "reports and run `theurian propose accept` again, or "
+                        + edit
+                        + ", then run `theurian propose accept` again, or "
                         + _removal_cure([error.item_id], location, moves)
                     ),
                 )
@@ -2197,9 +2211,10 @@ class ProposalService:
                 message,
                 remedy=(
                     "Another change to this item landed first. Nothing has moved, so either "
-                    "give the proposal's own migration the expectedRevision the message "
-                    "reports, or draft the change again with --expected-revision and delete "
-                    f"{location.relative}/."
+                    + edit
+                    + ", or draft the change again with --expected-revision "
+                    + revision
+                    + f" and delete {location.relative}/."
                 ),
             )
         return ProposalError(
@@ -2209,6 +2224,46 @@ class ProposalService:
                 "it again. Nothing has moved and the proposal's own files are intact."
             ),
         )
+
+    def _edit_cure(
+        self, error: RevisionConflictError, document: Mapping[str, object]
+    ) -> tuple[str, str]:
+        """The clause giving this proposal's upsert the landed revision, and that revision.
+
+        The revision is the item's current one in the landed set alone. When
+        ``error.actual`` is one of this proposal's own revisions it replays before the
+        landed writer of that revision, so the edit also names that writer in
+        ``dependsOn``.
+        """
+        current = self._current_item(error.item_id)
+        revision = None if current is None else current.revision_id
+        if revision is None:
+            return (
+                "give the proposal's own migration the expectedRevision the item holds",
+                "the item's current revision",
+            )
+        edit = f"give the proposal's own migration `expectedRevision: {revision.value}`"
+        own = {
+            r
+            for _, op in _mappings_in(document.get("operations"), set())
+            if op.get("op") == "upsertRevision" and op.get("itemId") == error.item_id.value
+            if isinstance(r := op.get("revisionId"), str)
+        }
+        if error.actual is not None and error.actual.value in own:
+            writers = [
+                m.migration_id.value
+                for m in self._landed_migrations()
+                if any(
+                    isinstance(o, UpsertRevision) and o.revision_id == revision
+                    for o in m.operations
+                )
+            ]
+            if writers:
+                edit += (
+                    " and `dependsOn: [" + ", ".join(writers) + "]`, so it replays after the "
+                    "migration that wrote it"
+                )
+        return edit, revision.value
 
     def _landed_set_refusal(self, error: BaseException) -> ApprovedSetUnusableError:
         """The refusal for a fault that predates this proposal.
