@@ -217,49 +217,72 @@ from theurian.mcp.validation import MAX_PARAMS_RENDERED_CHARS, _CHUNK_CODE_POINT
 
 filler, tail = json.loads(sys.argv[1])
 leaf = filler * (_CHUNK_CODE_POINTS * 40 - 1) + tail
-tracer, tracing = sys.gettrace(), tracemalloc.is_tracing()
+report = {
+    "file": validation.__file__,
+    "trace": sys.gettrace() is not None,
+    "profile": sys.getprofile() is not None,
+    "monitoring": [i for i in range(6) if sys.monitoring.get_tool(i) is not None],
+    "tracing": tracemalloc.is_tracing(),
+    "threads": len(sys._current_frames()),
+}
 gc.collect()
 tracemalloc.start()
 tracemalloc.reset_peak()
 held = _chunked_width(leaf, MAX_PARAMS_RENDERED_CHARS)
-peak = tracemalloc.get_traced_memory()[1]
+report["peak"] = tracemalloc.get_traced_memory()[1]
 tracemalloc.stop()
-print(json.dumps({"file": validation.__file__, "traced": tracer is not None,
-                  "tracing": tracing, "peak": peak}))
+print(json.dumps(report))
 """
 
-_CHILD_ENV_DROPPED: Final = (
-    "PYTHONTRACEMALLOC",
-    "COVERAGE_PROCESS_START",
-    "COVERAGE_PROCESS_CONFIG",
-)
+#: ``-I`` ignores ``PYTHON*`` variables and the cwd and user site, but
+#: site-packages' ``a1_coverage.pth`` still reads these two and would start coverage.
+_CHILD_ENV_DROPPED: Final = ("COVERAGE_PROCESS_START", "COVERAGE_PROCESS_CONFIG")
+
+
+def _refuse_unclean(report: dict[str, object], parent_file: str) -> None:
+    """Raise unless ``report`` came from the parent's ``theurian`` in a quiet child."""
+    assert report["file"] == parent_file, (
+        f"the child imported theurian from {report['file']}, not {parent_file}"
+    )
+    assert not report["trace"], "the child started under a tracer (sys.gettrace() is set)"
+    assert not report["profile"], "the child started under a profiler (sys.getprofile() is set)"
+    assert not report["monitoring"], (
+        f"the child started with sys.monitoring tools {report['monitoring']} in use"
+    )
+    assert not report["tracing"], "the child started with tracemalloc already tracing"
+    assert report["threads"] == 1, (
+        f"the child started with {report['threads']} threads running, not 1"
+    )
 
 
 def _chunked_peak_in_child() -> int:
     """Peak of ``_chunked_width`` over the worst leaf, measured in a child interpreter.
 
-    Refuses to report a peak from a child that imports another ``theurian``
-    than this process's, starts under a tracer, or starts already tracing --
-    each would make the figure measure something other than this code, untraced.
+    The child runs under ``-I`` with the coverage variables removed, and reports
+    what it started with before the window opens. This refuses a report that
+    shows another ``theurian`` than this process's, a ``sys.settrace`` tracer, a
+    ``sys.setprofile`` profiler, any ``sys.monitoring`` tool, tracemalloc already
+    tracing, or more than one thread holding a Python frame. It cannot see an
+    allocation from a non-Python thread, nor anything started after the report.
     """
     env = {k: v for k, v in os.environ.items() if k not in _CHILD_ENV_DROPPED}
     done = subprocess.run(  # noqa: S603 - argv is module-owned, never user input
-        [sys.executable, "-c", _CHUNKED_PEAK_CHILD, json.dumps([NARROW_ASTRAL, WIDE_ASTRAL])],
+        [sys.executable, "-I", "-c", _CHUNKED_PEAK_CHILD, json.dumps([NARROW_ASTRAL, WIDE_ASTRAL])],
         env=env,
         capture_output=True,
         text=True,
-        check=True,
+        check=False,
         timeout=60,
     )
-    report = json.loads(done.stdout)
+    assert done.returncode == 0, f"the child exited {done.returncode}: {done.stderr}"
+    try:
+        report = json.loads(done.stdout)
+    except json.JSONDecodeError as err:
+        raise AssertionError(f"the child's stdout is not JSON: {done.stdout!r}") from err
 
     from theurian.mcp import validation
 
-    assert report["file"] == validation.__file__, (
-        f"the child imported theurian from {report['file']}, not {validation.__file__}"
-    )
-    assert not report["traced"], "the child started under a tracer (sys.gettrace() is set)"
-    assert not report["tracing"], "the child started with tracemalloc already tracing"
+    _refuse_unclean(report, validation.__file__)
     return int(report["peak"])
 
 
@@ -611,18 +634,19 @@ def test_the_chunked_transient_is_not_charged_for_another_threads_allocations() 
             held = bytearray(64 * 1024)
             del held
 
-    noisy = [threading.Thread(target=allocate) for _ in range(4)]
+    noisy = [threading.Thread(target=allocate, daemon=True) for _ in range(4)]
     switch = sys.getswitchinterval()
-    sys.setswitchinterval(1e-6)
-    for thread in noisy:
-        thread.start()
     try:
+        sys.setswitchinterval(1e-6)
+        for thread in noisy:
+            thread.start()
         assert running.wait(timeout=5)
         perturbed = _chunked_peak_in_child()
     finally:
         stop.set()
         for thread in noisy:
-            thread.join()
+            if thread.is_alive():
+                thread.join()
         sys.setswitchinterval(switch)
 
     assert perturbed == baseline
@@ -655,3 +679,36 @@ def test_the_chunked_arm_takes_its_peak_from_the_child_helper() -> None:
         and getattr(assigned[0].func, "id", None) == "_chunked_peak_in_child"
     )
     assert "_peak_of" not in called
+
+
+_CLEAN: Final = {
+    "file": "/x/validation.py",
+    "trace": False,
+    "profile": False,
+    "monitoring": [],
+    "tracing": False,
+    "threads": 1,
+}
+
+
+@pytest.mark.parametrize(
+    ("change", "words"),
+    [
+        ({"file": "/other/validation.py"}, "imported theurian from /other"),
+        ({"trace": True}, r"sys\.gettrace"),
+        ({"profile": True}, r"sys\.getprofile"),
+        ({"monitoring": [1]}, r"sys\.monitoring tools \[1\]"),
+        ({"tracing": True}, "tracemalloc already tracing"),
+        ({"threads": 2}, "2 threads running"),
+    ],
+)
+def test_an_unclean_child_report_is_refused_naming_its_cause(
+    change: dict[str, object], words: str
+) -> None:
+    """Each guard of the child's start state refuses on its own cause (#943)."""
+    with pytest.raises(AssertionError, match=words):
+        _refuse_unclean({**_CLEAN, **change}, "/x/validation.py")
+
+
+def test_a_clean_child_report_is_accepted() -> None:
+    _refuse_unclean(dict(_CLEAN), "/x/validation.py")
