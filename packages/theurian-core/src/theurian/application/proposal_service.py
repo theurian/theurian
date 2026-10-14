@@ -4832,6 +4832,14 @@ def _printable_body(source: Path, directory: Path) -> str | None:
     return relative if source.resolve().is_relative_to(directory.resolve()) else None
 
 
+def _file_identity(path: Path) -> tuple[int, int] | None:
+    try:
+        info = path.stat()
+    except OSError:
+        return None
+    return (info.st_dev, info.st_ino)
+
+
 def _removal_cure(
     item_ids: list[ItemId], location: _ProposalLocation, moves: Sequence[_BodyMove]
 ) -> str:
@@ -4841,11 +4849,22 @@ def _removal_cure(
     body path is outside :data:`_PRINTABLE_BODY_PATH` or resolves outside the proposal
     directory, the one cure naming nothing is left. ``location.relative`` is the configured
     proposals directory plus a validated ULID.
+
+    Every refused id and body path is kept (#940): a follower needs each one, the body list is
+    bounded by ``MAX_UPSERT_OPERATIONS``, which is refused before :meth:`_body_moves` reads
+    anything, and a cap was rejected because past it a directory-only cure discards the kept
+    operations.
     """
     removed = {item_id.value for item_id in item_ids}
     delete_all = "delete " + location.relative + "/"
-    shared = {m.source for m in moves if m.item_id not in removed}
-    sources = [m.source for m in moves if m.item_id in removed and m.source not in shared]
+    # A body is shared by file identity, as `_body_moves` keys it: two spellings of one
+    # file must not list it for deletion. With a kept body, an identity that cannot be read
+    # on either side fails closed to the directory-only cure, which names no file.
+    shared = {_file_identity(m.source) for m in moves if m.item_id not in removed}
+    sources = [m.source for m in moves if m.item_id in removed]
+    if shared and (None in shared or any(_file_identity(s) is None for s in sources)):
+        return delete_all + "."
+    sources = [s for s in sources if _file_identity(s) not in shared]
     relatives = [_printable_body(source, location.directory) for source in sources]
     bodies = sorted(location.relative + "/" + r for r in relatives if r is not None)
     if None in relatives or any(_one_name(name) != repr(name) for name in (*removed, *bodies)):
