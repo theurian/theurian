@@ -1,8 +1,9 @@
 """A floor or conflict remedy, followed exactly as printed, ends where it says (#915).
 
 ``follow_removal_cure`` reads the ids and directory out of the remedy's own words and acts
-on them, so a remedy that omits an id or names a wrong directory fails here. Every proposal
-is non-content, so removal is the only cure printed.
+on them, so a remedy that omits an id or names a wrong directory fails here. The non-content
+proposals are cured by following the printed removal; the two content controls assert the
+content remedy instead.
 
 Own-item floor faces by route x field: non-content sensitivity is F1 and F4, status is F5
 and F7. ``[restoreItem, deprecateItem]`` of the proposal's own item is unreachable for the
@@ -183,7 +184,7 @@ def test_a_co_carried_readmission_is_cured_by_removing_its_operation_and_the_ite
 def test_a_deliberate_lowering_is_cured_by_deleting_the_proposal_and_nothing_moves(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """F4: the remedy also prints the declassification route, but following it is not required."""
+    """F4: a lowering nobody landed a tightener for is cured by deleting the proposal."""
     p = labelled_project(tmp_path, monkeypatch, sensitivity="confidential")
     drafted = _non_content(p, _set(p.item_id, "internal"))
     refusal = _refused(drafted, says=LOWERS)
@@ -198,7 +199,7 @@ def test_a_deliberate_lowering_is_cured_by_deleting_the_proposal_and_nothing_mov
 def test_a_deliberate_readmission_is_cured_by_deleting_the_proposal_and_the_item_stays_retired(
     lowers: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """F5, and F7 when the same item is also lowered: one cure names the item once."""
+    """F5, and F7 when the same item is also lowered: deleting the proposal cures both."""
     label = "confidential" if lowers else "internal"
     p = labelled_project(tmp_path, monkeypatch, sensitivity=label)
     land_deprecation(p.root, SORTS_BEFORE_A_DRAFT, p.item_id)
@@ -244,7 +245,7 @@ def test_a_lowering_and_a_readmission_of_two_items_is_cured_by_removing_both_and
 def test_a_restore_then_deprecate_of_a_retired_item_is_named_by_no_floor(
     landed_restore_after: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Measured: the item is retired before and after, so the readmission floor has no row."""
+    """Measured: with the item retired before and after, accept exits 0 and no floor refuses."""
     p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
     drafted = _non_content(p, _op("restoreItem", p.item_id), _op("deprecateItem", p.item_id))
     land_deprecation(p.root, SORTS_BEFORE_A_DRAFT, p.item_id)
@@ -294,7 +295,7 @@ def test_a_mixed_proposal_is_cured_by_removing_every_operation_on_the_refused_it
 def test_a_content_update_lowering_its_item_keeps_the_content_remedy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The control for F8: without the hand-added operation it can be redrafted whole."""
+    """The control for F8: without the hand-added operation the content remedy is printed."""
     p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
     drafted = _mixed_update(p, with_deprecation=False)
 
@@ -334,8 +335,8 @@ def _conflict(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """A non-content proposal over a conflicting revision; ``keep`` adds an ``addAlias`` elsewhere.
 
-    ``retired``: the item is withdrawn by the landed set and drafted over MCP, which answers
-    it like an absent id. Otherwise two drafts claim one revision and the first lands.
+    ``retired``: the item is withdrawn by the landed set and drafted over MCP without an
+    ``expectedRevision``. Otherwise two drafts claim one revision and the first lands.
     """
     _land_item(p, OTHER_ITEM, 1)
     if retired:
