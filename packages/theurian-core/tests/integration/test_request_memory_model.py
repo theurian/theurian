@@ -201,11 +201,14 @@ def _peak_of(work: Callable[[], object]) -> int:
     suite and the worker count. Every arm calling this clears that about nine
     times over: the smallest margin, family (ii)'s ``plain_ascii``, read 382,640
     to 383,053 B over three runs that day -- its tolerance less the deviation
-    its ``<= TOLERANCE`` line prints with ``TOLERANCE = 0``. Outside that scope
-    the arms hold by margin, not by construction. The chunked-transient arm's
-    margin was 3,892 B, under one message, so that arm measures in a child
-    interpreter, which no worker thread reaches in or out of that scope and
-    which reads the same on every leg.
+    pytest's assertion introspection prints in full on the ``assert … <= 0``
+    line with ``TOLERANCE = 0``, not the two-decimal ratio in the arm's own
+    message. Outside that scope the arms hold by margin, not by construction.
+    The chunked-transient arm's margin was 3,892 B, under one message, so that
+    arm measures in a child interpreter (:func:`_chunked_peak_in_child`), which
+    no worker thread reaches in or out of that scope. On macOS on 2026-10-14
+    the child read 360,652 B serially, at ``-n 4`` and with the parent under
+    ``coverage --branch``; no ubuntu reading is recorded.
     """
     gc.collect()
     tracemalloc.start()
