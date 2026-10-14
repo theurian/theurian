@@ -40,6 +40,8 @@ _DEPENDS, _DELETE = re.compile(r"`dependsOn: \[([^\]]*)\]`"), re.compile(r"and d
 _REDRAFT = "draft it again afterwards with `theurian propose`"
 
 ORDERS = pytest.mark.parametrize("land_first", ["larger", "smaller"])
+#: The refused proposal's id before, after or between the landed revision writers.
+POSITIONS = pytest.mark.parametrize("land_first", ["larger", "smaller", "between"])
 APPLIED = pytest.mark.parametrize("applied", [True, False], ids=["applied", "unapplied"])
 ROUTES = pytest.mark.parametrize("noncontent", [False, True], ids=["content", "non-content"])
 
@@ -76,10 +78,22 @@ def _race(
             create_other("01K1AAAAAB01234567890ABCDE", OTHER_ITEM),
         )
         cli_ok("migrate", "apply")
-    first = _draft(p)
-    time.sleep(0.05)  # ULIDs sort by millisecond
-    second = _draft(p)
-    landed, refused = (second, first) if land_first == "larger" else (first, second)
+    drafts = []
+    for _ in range(3 if land_first == "between" else 2):
+        drafts.append(_draft(p))
+        time.sleep(0.05)  # ULIDs sort by millisecond
+    if land_first == "between":
+        early, refused, landed = drafts
+        steps = yaml.safe_load(staged_migration(p, landed).read_text(encoding="utf-8"))[
+            "operations"
+        ]
+        for step in steps:
+            if step["op"] == "upsertRevision":
+                step["expectedRevision"] = staged_upsert(p.root, early)["revisionId"]
+        with_operations(p, landed, steps)
+        cli_ok("propose", "accept", early["proposalId"])
+    else:
+        landed, refused = (drafts[1], drafts[0]) if land_first == "larger" else drafts
     if noncontent:
         operations = yaml.safe_load(staged_migration(p, refused).read_text(encoding="utf-8"))[
             "operations"
@@ -104,7 +118,7 @@ def _current(p: LabelledProject) -> str:
     return str(item_row(p.root, p.item_id)["current_revision_id"])
 
 
-@ORDERS
+@POSITIONS
 @APPLIED
 @ROUTES
 def test_giving_the_refused_migration_the_printed_revision_and_writer_lands_its_revision(
@@ -114,12 +128,13 @@ def test_giving_the_refused_migration_the_printed_revision_and_writer_lands_its_
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """RED before #931 in the `larger` order: the printed `expectedRevision` alone replays the
-    refused migration first and conflicts with the landed one on its own revision."""
+    """Population: the proposal's position before (`larger`), after (`smaller`) or between
+    (`between`) the landed writers of the named revision. `dependsOn` is printed exactly when
+    that writer replays after the proposal; without it the edit conflicts on the writer."""
     r = _race(tmp_path, monkeypatch, land_first, noncontent, applied)
     revision, writers = _EXPECT.search(r.remedy), _DEPENDS.search(r.remedy)
     assert revision, r.remedy
-    assert (writers is not None) == (land_first == "larger"), r.remedy
+    assert (writers is not None) == (land_first != "smaller"), r.remedy
     own = staged_upsert(r.project.root, r.refused)["revisionId"]
     staged = staged_migration(r.project, r.refused)
     document = yaml.safe_load(staged.read_text(encoding="utf-8"))
@@ -137,7 +152,7 @@ def test_giving_the_refused_migration_the_printed_revision_and_writer_lands_its_
     assert _current(r.project) == own
 
 
-@ORDERS
+@POSITIONS
 @APPLIED
 @ROUTES
 def test_the_revision_the_remedy_names_is_the_one_the_landed_draft_wrote(
@@ -147,7 +162,8 @@ def test_the_revision_the_remedy_names_is_the_one_the_landed_draft_wrote(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The landed draft's own revisionId, read from its migration file before it landed."""
+    """The landed draft's own revisionId, read from its migration file before it landed; for
+    `between` the second writer's."""
     r = _race(tmp_path, monkeypatch, land_first, noncontent, applied)
 
     named = set(_EXPECT.findall(r.remedy) + _FLAG.findall(r.remedy))
@@ -204,8 +220,8 @@ def test_the_printed_removal_cure_then_its_redraft_line_ends_at_the_new_revision
 def test_a_proposal_that_conflicts_with_itself_is_cured_by_the_revision_its_message_reports(
     created: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Reachability of `_edit_cure`'s no-revision fallback: nothing landed for the item, so the
-    remedy prints no revision and the message's `store holds` value is the only one to follow."""
+    """Two upserts of the item and no revision landed for it: this reaches the #950 two-upsert
+    guard, not the no-revision fallback. The message's `store holds` value is the one to follow."""
     p = labelled_project(tmp_path, monkeypatch, sensitivity="internal")
     if created:
         write(
