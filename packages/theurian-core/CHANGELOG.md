@@ -27,7 +27,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   or to delete the proposal directory if those were all its operations. The
   remedy names those body files, and says to delete the directory instead
   where an id or body path it would print is one an error message redacts or
-  cuts. No `accept` remedy prints the placeholder `dependsOn: [<its id>]` any
+  cuts, or where a body path is not a plain path inside the proposal directory.
+  No `accept` remedy prints the placeholder `dependsOn: [<its id>]` any
   more: the content-path remedies say to edit that migration's id into the new
   draft's `dependsOn`. The messages and exit codes do not change.
 
