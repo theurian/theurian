@@ -152,7 +152,8 @@ words: read what they name in `.theurian/migrations/` and make the set replay
 on its own — `theurian migrate apply` runs the same replay; `theurian migrate
 validate` still reports such a set valid, because its verdict does not rest on
 a replay, and its `permissiveMovesUnavailable` says the set does not replay —
-then accept again. A refused lowering names one step per cause:
+then accept again. For a proposal of `createItem` and `upsertRevision` alone,
+a refused lowering names one step per cause:
 `theurian migrate apply` if the served state lags the landed migrations, which
 is how a draft made over MCP comes to carry a stale label; otherwise a new
 draft that names the item's current sensitivity or omits it; and, to lower the
@@ -161,7 +162,8 @@ migration lands, the update is drafted again with `theurian propose` rather
 than this proposal accepted again, because its migration id predates the
 migration and replays before it
 (`test_floor_refusal_remedy.py::test_every_remedy_that_sends_the_reader_to_a_migration_says_to_draft_again_not_accept_again`),
-and to edit `dependsOn: [<its id>]` into the new draft's migration file
+and to "edit that migration's id into the `dependsOn` of the new draft's
+migration file"
 (`::test_every_remedy_that_says_to_draft_again_says_to_edit_dependson_in`). A
 fresh draft declares no `dependsOn`, and its id need not sort after that
 migration's: a migration declaring `dependsOn` replays after every one that
@@ -201,6 +203,17 @@ items, so nothing is readmitted, and merging the proposal is the approval.
 [ADR-0032](../adr/0032-the-write-intent-mcp-tool-surface.md)'s
 GHSA-v2qg-23fc-7fqp amendment names the tests that hold this paragraph and the
 one above.
+
+A proposal carrying any operation besides `createItem` and `upsertRevision` is
+one `theurian propose` cannot draft, so neither floor's remedy sends it there.
+It reads "Nothing has moved. To leave the landed state alone, remove every
+operation whose `itemId` is `<id>` from this proposal's migration file in
+`<proposal dir>/`, then run `theurian propose accept` again; if those are all
+of its operations, delete `<proposal dir>/` instead.", with an "every
+operation whose `itemId` is" clause for each refused item, then the
+hand-written `changeSensitivity` for a lowering and `restoreItem` for a
+readmission
+(`test_floor_remedy_routing.py::test_a_proposal_no_content_draft_can_redo_is_told_to_remove_the_refused_items_operations`).
 
 ### An `upsertRevision` re-labels the item
 
@@ -548,22 +561,24 @@ no id order places a fresh draft after them. A fresh draft declaring no
 `dependsOn` can replay before a landed migration, for instance one whose id
 sorts after the drafting clock (a hand-chosen id, a staged id edited before
 `accept`, or a collaborator's clock running ahead), and be refused again; a
-migration declaring `dependsOn: [<id>]` replays after `<id>`. The floor
-refusals' remedies say the same: once the `restoreItem` or `changeSensitivity`
-they name lands, draft the update again rather than accept the refused proposal
-again, since its migration id predates that migration, and edit
-`dependsOn: [<its id>]` into the new draft's migration file.
+migration declaring `dependsOn: [<id>]` replays after `<id>`. For a proposal
+of `createItem` and `upsertRevision` alone, the floor refusals' remedies say
+the same: once the `restoreItem` or `changeSensitivity` they name lands, draft
+the update again rather than accept the refused proposal again, since its
+migration id predates that migration, and edit that migration's id into the
+`dependsOn` of the new draft's migration file.
 `test_floor_refusal_remedy.py::test_every_remedy_that_sends_the_reader_to_a_migration_says_to_draft_again_not_accept_again`
-builds the remedy for a lowering, for a readmission, for both on one item, and
-for two lowerings of which one item is also readmitted, reads
-`ACCEPT_LOWERING_REMEDY` itself, and asserts that each says
-`theurian propose`, "rather than accepting" and "this proposal again".
+builds the remedy of an `upsertRevision` proposal for a lowering, for a
+readmission, for both on one item, and for two lowerings of which one item is
+also readmitted, reads `ACCEPT_LOWERING_REMEDY` itself, and asserts that each
+says `theurian propose`, "rather than accepting" and "this proposal again".
 
 The third route goes back through `accept` because `theurian migrate apply`
 re-checks nothing. `accept` runs its floors, the report check and the end-state
 check on the edited migration, so a redraft that would still leave an item
 looser is refused, not served. It keeps the staged id, which is safe because
-`dependsOn`, not the id, places it (above).
+`dependsOn`, not the id, places it (above). A floor refusing it there names the
+removal [under Operations](#operations), not a fresh draft.
 
 `test_accept_never_introduces_a_report_row.py::test_a_withdrawals_remedy_routes_to_the_migration_draft_tool_not_the_content_path`
 refuses a staged `deprecateItem` behind a landed update that declares no
@@ -633,13 +648,45 @@ listing every landed id passed, and no "later migration id"; and
 `::test_every_landed_migration_is_listed_in_the_clause_in_the_order_given`
 that three ids are listed in the order passed.
 `test_floor_refusal_remedy.py::test_every_remedy_that_says_to_draft_again_says_to_edit_dependson_in`
-asserts the floor remedies' `dependsOn` sentence, and no "declares", in the
-same five remedies as the draft-again test above, and
+asserts the content route's `dependsOn` sentence, "edit that migration's id
+into the `dependsOn` of the new draft's migration file.", and no "declares", in
+the same five remedies as the draft-again test above, and
 `::test_the_draft_again_constants_carry_the_dependson_clause` that
 `DRAFT_AGAIN_CLAUSE` and `ACCEPT_READMISSION_REMEDY` end with it and carry no
 "declares". No test reaches the `theurian propose` route through a landed
 migration's row; [ADR-0032](../adr/0032-the-write-intent-mcp-tool-surface.md)'s
 GHSA-v2qg-23fc-7fqp amendment records what was measured for it.
+
+`test_floor_remedy_routing.py::test_no_remedy_prints_a_dependson_token_outside_the_migration_id_grammar`
+reads every module-level string of `item_labels.py`, and every floor and
+revision-conflict remedy it builds for ten kind sets, and asserts that each
+`` `dependsOn: [...]` `` code span holds migration ids only.
+`::test_a_content_only_proposal_keeps_the_content_remedy` asserts that a
+proposal whose kinds are a subset of `createItem` and `upsertRevision` gets a
+remedy naming `theurian propose` and no removal.
+`test_accept_floor_remedy_followed_literally.py` follows the removal as
+printed: it removes the operations whose `itemId` the remedy names from the
+file in the directory it names, deletes that directory when none would be
+left, and otherwise runs `theurian propose accept` again. Each proposal is
+refused at its first accept.
+`test_accept_floor_remedy_followed_literally.py::test_a_tightener_that_is_the_only_operation_is_cured_by_deleting_the_proposal`,
+`::test_a_deliberate_lowering_is_cured_by_deleting_the_proposal_and_nothing_moves`
+and
+`::test_a_deliberate_readmission_is_cured_by_deleting_the_proposal_and_the_item_stays_retired`
+assert the directory gone, the landed migrations unchanged, and the item at
+its landed label and withheld from `knowledge.get`.
+`::test_a_tightener_beside_a_kept_raise_is_cured_by_removing_only_its_operation`,
+`::test_a_co_carried_items_older_label_is_cured_by_removing_that_items_operation`,
+`::test_a_co_carried_readmission_is_cured_by_removing_its_operation_and_the_item_stays_retired`
+and
+`::test_a_mixed_proposal_is_cured_by_removing_every_operation_on_the_refused_item`,
+whose proposal carries `createItem`, `upsertRevision` and another item's
+`deprecateItem`, assert that the re-accept exits 0 and, after
+`migrate apply`, the refused item at its landed label and withheld.
+`::test_a_content_update_lowering_its_item_keeps_the_content_remedy` and
+`::test_a_content_update_readmitting_its_item_keeps_the_content_remedy` are the
+controls: an update `theurian propose` drafted gets `ACCEPT_LOWERING_REMEDY`
+or `ACCEPT_READMISSION_REMEDY` exactly.
 
 `test_accept_refuses_a_reported_upsert.py::test_accepting_a_proposal_that_replays_before_a_landed_restore_is_refused_and_moves_nothing`
 drafts over MCP for a create-only `deprecated` item, has the first accept
