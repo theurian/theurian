@@ -21,6 +21,13 @@ justifies a different one, for no safety this file exists to buy. What must
 never regress is silence: a job with no `timeout-minutes` key at all is
 exactly the shape of the defect #104 reported, whether it is job 1 or job 25.
 
+One relation is also asserted (#907): a job whose steps carry their own
+`timeout-minutes` must have a job ceiling of at least the step sum plus one
+minute of checkout/setup overhead. That pins no number, it compares two numbers
+in the same file, so #109's reason (an honest runtime change would fail a pinned
+value) does not reach it: raising a step budget without the job ceiling is the
+only way to fail it, and that change makes the step budgets unreachable.
+
 A job whose top level carries `uses:` instead of `runs-on:` calls a reusable
 workflow, and GitHub does not accept `timeout-minutes` on that caller job --
 the timeout has to live inside the reusable workflow's own job definitions
@@ -90,3 +97,48 @@ def test_no_job_currently_calls_a_reusable_workflow() -> None:
     ]
 
     assert reusable_callers == []
+
+
+#: Checkout/setup overhead the job ceiling must leave above the step budgets:
+#: measured <= 0.35 min (core.yml's `offline` comment) and <= 0.23 min over nine
+#: runs (#906), rounded up to a whole minute.
+_OVERHEAD_MINUTES = 1
+
+
+def _jobs_with_step_budgets() -> list[tuple[str, str, Any, list[Any]]]:
+    population = []
+    for workflow in _workflow_files():
+        for job_id, job in _jobs(workflow).items():
+            steps = job.get("steps") or []
+            budgets = [step["timeout-minutes"] for step in steps if "timeout-minutes" in step]
+            if budgets:
+                population.append((workflow.name, job_id, job.get("timeout-minutes"), budgets))
+    return population
+
+
+def test_no_job_ceiling_is_tighter_than_its_step_budgets_plus_overhead() -> None:
+    """A job ceiling at or below the step sum fires before the step budgets can,
+    so the step-level timeouts become unreachable (#641, #906, #907).
+    """
+    population = _jobs_with_step_budgets()
+    assert population, (
+        "no job in any workflow carries step-level timeout-minutes, so this test "
+        "checks nothing; if the step budgets were removed deliberately, delete "
+        "this test with them."
+    )
+
+    not_ints = [
+        f"{workflow}:{job_id} job={ceiling!r} steps={budgets!r}"
+        for workflow, job_id, ceiling, budgets in population
+        if not all(type(v) is int for v in [ceiling, *budgets])
+    ]
+    assert not_ints == [], f"timeout-minutes that is not an int, cannot be compared: {not_ints}"
+
+    too_tight = [
+        f"{workflow}:{job_id} ceiling={ceiling} step sum={sum(budgets)}"
+        for workflow, job_id, ceiling, budgets in population
+        if ceiling < sum(budgets) + _OVERHEAD_MINUTES
+    ]
+    assert too_tight == [], (
+        f"job timeout-minutes must be >= step sum + {_OVERHEAD_MINUTES}: {too_tight}"
+    )
