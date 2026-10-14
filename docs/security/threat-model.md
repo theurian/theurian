@@ -6960,11 +6960,11 @@ it there.
     For a co-carried item accepting again exits 0
     (`::test_a_co_carried_items_older_label_is_cured_by_removing_that_items_operation`,
     `::test_a_co_carried_readmission_is_cured_by_removing_its_operation_and_the_item_stays_retired`);
-    that cure was also measured on 0.5.2 and 0.5.3. Refused at a re-accept,
-    after the `dependsOn` a replay-order refusal named is edited in, the own
-    item stays `confidential` behind a landed tightener declaring `dependsOn`
-    on a landed revision, with the tightener's id newer and older than the
-    draft, with and without another item's raise kept
+    that cure was also measured on 0.5.2 and 0.5.3. Refused by the lowering
+    floor at a re-accept, after the `dependsOn` a replay-order refusal named
+    is edited in, the own item stays `confidential` behind a landed tightener
+    declaring `dependsOn` on a landed revision, with the tightener's id newer
+    and older than the draft, with and without another item's raise kept
     (`test_floor_remedy_reaccept.py::test_a_reaccept_the_floor_refuses_is_cured_by_the_printed_removal`).
     On 0.5.2, GHSA-fjqq-grr7-53cc's Workarounds, followed for that re-accept
     shape, end the own item `confidential` and withheld, with and without a
