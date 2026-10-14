@@ -225,9 +225,13 @@ Against each reason:
   each ``runtests`` message in the window -- and
   ``test_request_memory_model.py``'s chunked-transient arm, whose margin was
   under one message, now measures in a child interpreter (PR #947, closing
-  #943). On 2026-10-14 the other in-process peak tests held by margin, except
-  ``test_purged_build_quantities.py``'s pin, whose only guard under xdist is
-  min-of-5; #946 tracks that bound as unproven.
+  #943). Under stock ``--dist load``, with no worker crash and no crash-item or
+  rerun plugin, at most one refill and one ``shutdown`` land during one test
+  call, and on 2026-10-14 the other in-process peak tests but one cleared that
+  by margin. The one, ``test_purged_build_quantities.py``'s pin, is guarded
+  under xdist only by min-of-5: #946 first recorded that guard as an unproven
+  bound, then found it sufficient under the same scope and closed as not a
+  defect.
 - *Subprocesses and ``lsof``.* The same evidence covers subprocesses. The only
   ``lsof`` call is in e2e ``test_daemon_single_instance.py``, outside the step.
 - *Module-scope fixtures.* Summed per-test time is unchanged: 1462.9 s serial,
