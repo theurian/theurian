@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import re
 import shutil
+from pathlib import Path
 from typing import Any, NamedTuple
 
 import yaml
 from label_inheritance_support import EVIDENCE, UPDATED_BODY, LabelledProject, cli
 
+from theurian.application.proposal_service import _ProposalLocation
 from theurian.daemon.runner import build_server
 
 from mcp_wire_session import mcp_session  # isort: skip
@@ -17,8 +19,10 @@ from mcp_wire_session import mcp_session  # isort: skip
 class Followed(NamedTuple):
     deleted: bool
     code: int
-    payload: Any
 
+
+#: A tracked proposal's location, for tests that need one and never touch the disk.
+TRACKED_LOCATION = _ProposalLocation(Path("/p/x"), ".theurian/proposals/P1", False)
 
 _NAMED_IDS = re.compile(r"every operation whose `itemId` is `([^`]+)`")
 _FILE_IN = re.compile(r"migration file in (\S+)/,")
@@ -42,23 +46,24 @@ def follow_removal_cure(p: LabelledProject, drafted: dict[str, Any], remedy: str
     document["operations"] = [o for o in document["operations"] if o.get("itemId") not in ids]
     if not document["operations"]:
         shutil.rmtree(folder)
-        return Followed(True, 0, {})
+        return Followed(True, 0)
     staged.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
-    return Followed(False, *cli("propose", "accept", drafted["proposalId"]))
+    return Followed(False, cli("propose", "accept", drafted["proposalId"])[0])
+
+
+def staged_migration(p: LabelledProject, drafted: dict[str, Any]) -> Path:
+    """The migration file a draft staged under its proposal directory."""
+    staged: Path = p.root / drafted["proposalDirectory"] / drafted["migrationFile"]
+    return staged
 
 
 def with_operations(
-    p: LabelledProject,
-    drafted: dict[str, Any],
-    operations: list[dict[str, Any]],
-    *depends_on: str,
+    p: LabelledProject, drafted: dict[str, Any], operations: list[dict[str, Any]]
 ) -> dict[str, Any]:
-    """Replace the operations of a staged proposal, and declare ``dependsOn`` if given."""
-    staged = p.root / drafted["proposalDirectory"] / drafted["migrationFile"]
+    """Replace the operations of a staged proposal."""
+    staged = staged_migration(p, drafted)
     document = yaml.safe_load(staged.read_text(encoding="utf-8"))
     document["operations"] = operations
-    if depends_on:
-        document["dependsOn"] = list(depends_on)
     staged.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
     return drafted
 

@@ -23,6 +23,7 @@ import yaml
 from floor_remedy_support import (
     follow_removal_cure,
     mcp_draft,
+    staged_migration,
     with_operations,
 )
 from label_inheritance_support import (
@@ -260,17 +261,14 @@ def test_a_restore_then_deprecate_of_a_retired_item_is_named_by_no_floor(
     assert code == 0, accepted
 
 
-def _staged(p: LabelledProject, drafted: dict[str, Any]) -> Path:
-    staged: Path = p.root / drafted["proposalDirectory"] / drafted["migrationFile"]
-    return staged
-
-
 def _mixed_update(p: LabelledProject, *, with_deprecation: bool) -> dict[str, Any]:
     """A ``theurian propose`` update that a smaller-id landed tightening makes a lowering."""
     _land_item(p, OTHER_ITEM, 1)
     code, drafted = cli_propose(p, p.item_id, "--expected-revision", p.revision_id)
     assert code == 0, drafted
-    operations = yaml.safe_load(_staged(p, drafted).read_text(encoding="utf-8"))["operations"]
+    operations = yaml.safe_load(staged_migration(p, drafted).read_text(encoding="utf-8"))[
+        "operations"
+    ]
     assert {o["op"] for o in operations} == {"createItem", "upsertRevision"}, operations
     if with_deprecation:
         with_operations(p, drafted, [*operations, _op("deprecateItem", OTHER_ITEM)])
@@ -348,7 +346,7 @@ def _conflict(
         time.sleep(0.01)  # ULIDs sort by millisecond: the refused draft must replay after
         drafted = cli_propose(p, p.item_id, "--expected-revision", p.revision_id)[1]
         land(first["proposalId"])
-    document = yaml.safe_load(_staged(p, drafted).read_text(encoding="utf-8"))
+    document = yaml.safe_load(staged_migration(p, drafted).read_text(encoding="utf-8"))
     aliases = [{"op": "addAlias", "alias": "probe.alias", "itemId": ITEM_ID}]
     aliases += [{"op": "addAlias", "alias": "probe.other", "itemId": OTHER_ITEM}] * keep
     with_operations(p, drafted, [*document["operations"], *aliases])
@@ -394,7 +392,7 @@ def test_a_raced_revision_is_cured_by_the_expected_revision_the_message_reports(
     assert (
         reported and "give the proposal's own migration the expectedRevision" in refusal["remedy"]
     )
-    document = yaml.safe_load(_staged(p, drafted).read_text(encoding="utf-8"))
+    document = yaml.safe_load(staged_migration(p, drafted).read_text(encoding="utf-8"))
     for operation in document["operations"]:
         if operation["op"] == "upsertRevision":
             operation["expectedRevision"] = reported[1]

@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
+from floor_remedy_support import TRACKED_LOCATION
 
 from theurian.application.item_labels import (
     ACCEPT_LOWERING_REMEDY,
     ACCEPT_READMISSION_REMEDY,
     DRAFT_AGAIN_CLAUSE,
 )
-from theurian.application.proposal_service import _floor_refusal, _ProposalLocation
+from theurian.application.proposal_service import _floor_refusal
 from theurian.domain.enums import KnowledgeStatus, Sensitivity
 from theurian.domain.identifiers import ItemId
 
@@ -22,15 +21,12 @@ _LOWERED_B = (_B, Sensitivity.CONFIDENTIAL, Sensitivity.INTERNAL)
 _READMITTED_A = (_A, KnowledgeStatus.DEPRECATED, KnowledgeStatus.APPROVED)
 
 
-_LOCATION = _ProposalLocation(Path("/p/.theurian/proposals/P1"), ".theurian/proposals/P1", False)
-
-
 def _remedy(
     *,
     lowered: tuple[tuple[ItemId, Sensitivity, Sensitivity], ...],
     readmitted: tuple[tuple[ItemId, KnowledgeStatus, KnowledgeStatus], ...],
 ) -> str:
-    refusal = _floor_refusal(lowered, readmitted, frozenset({"upsertRevision"}), _LOCATION)
+    refusal = _floor_refusal(lowered, readmitted, frozenset({"upsertRevision"}), TRACKED_LOCATION)
     assert refusal is not None
     return refusal.remedy or ""
 

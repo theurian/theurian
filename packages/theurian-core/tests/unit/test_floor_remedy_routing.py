@@ -5,9 +5,10 @@ from __future__ import annotations
 import itertools
 import re
 from pathlib import Path
-from typing import Any, Final
+from typing import Final
 
 import pytest
+from floor_remedy_support import TRACKED_LOCATION as _WHERE
 
 from theurian.application import item_labels
 from theurian.application.item_labels import (
@@ -56,26 +57,25 @@ _COMBINATIONS: Final = {
 }
 _COMBO_PARAMS: Final = [pytest.param(*value, id=key) for key, value in _COMBINATIONS.items()]
 
-_CONTENT_KINDS: Final = [
-    pytest.param(frozenset(), id="no-kinds"),
-    pytest.param(frozenset({"upsertRevision"}), id="upsert"),
-    pytest.param(frozenset({"createItem"}), id="create"),
-    pytest.param(frozenset({"createItem", "upsertRevision"}), id="create-and-upsert"),
-]
-_OTHER_KINDS: Final = [
-    pytest.param(frozenset({"changeSensitivity"}), id="change-sensitivity"),
-    pytest.param(frozenset({"restoreItem"}), id="restore"),
-    pytest.param(frozenset({"restoreItem", "deprecateItem"}), id="restore-and-deprecate"),
-    pytest.param(frozenset({"deprecateItem"}), id="deprecate"),
-    pytest.param(frozenset({"addAlias"}), id="alias"),
-    pytest.param(
-        frozenset({"createItem", "upsertRevision", "deprecateItem"}), id="content-and-deprecate"
-    ),
-]
-_ALL_KINDS: Final = [*_CONTENT_KINDS, *_OTHER_KINDS]
+_CONTENT_KINDS: Final = {
+    "no-kinds": frozenset[str](),
+    "upsert": frozenset({"upsertRevision"}),
+    "create": frozenset({"createItem"}),
+    "create-and-upsert": frozenset({"createItem", "upsertRevision"}),
+}
+_OTHER_KINDS: Final = {
+    "change-sensitivity": frozenset({"changeSensitivity"}),
+    "restore": frozenset({"restoreItem"}),
+    "restore-and-deprecate": frozenset({"restoreItem", "deprecateItem"}),
+    "deprecate": frozenset({"deprecateItem"}),
+    "alias": frozenset({"addAlias"}),
+    "content-and-deprecate": frozenset({"createItem", "upsertRevision", "deprecateItem"}),
+}
+_CONTENT_PARAMS: Final = [pytest.param(k, id=i) for i, k in _CONTENT_KINDS.items()]
+_OTHER_PARAMS: Final = [pytest.param(k, id=i) for i, k in _OTHER_KINDS.items()]
 _LOCATIONS: Final = [
     pytest.param(
-        _ProposalLocation(Path("/p/.theurian/proposals/P1"), ".theurian/proposals/P1", False),
+        _WHERE,
         id="tracked",
     ),
     pytest.param(
@@ -96,7 +96,9 @@ _CONTENT_PATH_PHRASES: Final = (
 )
 
 
-def _remedy(lowered: _Lowered, readmitted: _Readmitted, kinds: frozenset[str], where: Any) -> str:
+def _remedy(
+    lowered: _Lowered, readmitted: _Readmitted, kinds: frozenset[str], where: _ProposalLocation
+) -> str:
     refusal = _floor_refusal(lowered, readmitted, kinds, where)
     assert refusal is not None
     return refusal.remedy or ""
@@ -115,15 +117,13 @@ def _named_ids(remedy: str) -> list[str]:
     return re.findall(r"every operation whose `itemId` is `([^`]*)`", remedy)
 
 
-@pytest.mark.parametrize("kinds", _CONTENT_KINDS)
+@pytest.mark.parametrize("kinds", _CONTENT_PARAMS)
 @pytest.mark.parametrize(("lowered", "readmitted", "_ids"), _COMBO_PARAMS)
 def test_a_content_only_proposal_keeps_the_content_remedy(
     lowered: _Lowered, readmitted: _Readmitted, _ids: list[ItemId], kinds: frozenset[str]
 ) -> None:
     """A content draft can redo it whole, so removing operations would discard its change."""
-    where = _ProposalLocation(Path("/p/x"), ".theurian/proposals/P1", False)
-
-    remedy = _remedy(lowered, readmitted, kinds, where)
+    remedy = _remedy(lowered, readmitted, kinds, _WHERE)
 
     assert "every operation whose" not in remedy, remedy
     assert "delete .theurian/proposals/P1/ instead" not in remedy, remedy
@@ -132,11 +132,10 @@ def test_a_content_only_proposal_keeps_the_content_remedy(
 
 def test_the_content_route_still_says_what_the_non_content_route_must_not() -> None:
     """Positive control: the phrases the other tests forbid are the ones this route prints."""
-    where = _ProposalLocation(Path("/p/x"), ".theurian/proposals/P1", False)
     kinds = frozenset({"upsertRevision"})
 
-    lowering = _remedy((_low(_A),), (), kinds, where)
-    readmission = _remedy((), (_back(_A),), kinds, where)
+    lowering = _remedy((_low(_A),), (), kinds, _WHERE)
+    readmission = _remedy((), (_back(_A),), kinds, _WHERE)
 
     assert lowering == ACCEPT_LOWERING_REMEDY
     assert readmission == ACCEPT_READMISSION_REMEDY
@@ -145,7 +144,7 @@ def test_the_content_route_still_says_what_the_non_content_route_must_not() -> N
 
 
 @pytest.mark.parametrize("where", _LOCATIONS)
-@pytest.mark.parametrize("kinds", _OTHER_KINDS)
+@pytest.mark.parametrize("kinds", _OTHER_PARAMS)
 @pytest.mark.parametrize(("lowered", "readmitted", "ids"), _COMBO_PARAMS)
 def test_a_proposal_no_content_draft_can_redo_is_told_to_remove_the_refused_items_operations(
     lowered: _Lowered,
@@ -171,7 +170,6 @@ def test_a_proposal_no_content_draft_can_redo_is_told_to_remove_the_refused_item
 
 # -- the union refusal, both RevisionConflictError branches ---------------------------------
 
-_WHERE: Final = _ProposalLocation(Path("/p/x"), ".theurian/proposals/P1", False)
 _REVISION: Final = RevisionId("01K1AAAREV01234567890ABCDE")
 
 
@@ -187,7 +185,7 @@ def _union_remedy(monkeypatch: pytest.MonkeyPatch, kinds: frozenset[str], *, ret
     return refusal.remedy or ""
 
 
-@pytest.mark.parametrize("kinds", _OTHER_KINDS)
+@pytest.mark.parametrize("kinds", _OTHER_PARAMS)
 def test_a_retired_items_conflict_for_a_non_content_proposal_is_cured_by_removal_and_readmission(
     kinds: frozenset[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -201,7 +199,7 @@ def test_a_retired_items_conflict_for_a_non_content_proposal_is_cured_by_removal
     )
 
 
-@pytest.mark.parametrize("kinds", _OTHER_KINDS)
+@pytest.mark.parametrize("kinds", _OTHER_PARAMS)
 def test_a_raced_revision_for_a_non_content_proposal_offers_the_edit_or_the_removal(
     kinds: frozenset[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -215,7 +213,7 @@ def test_a_raced_revision_for_a_non_content_proposal_offers_the_edit_or_the_remo
     assert "--expected-revision" not in remedy and "draft the change again" not in remedy
 
 
-@pytest.mark.parametrize("kinds", _CONTENT_KINDS)
+@pytest.mark.parametrize("kinds", _CONTENT_PARAMS)
 def test_the_content_proposals_conflict_remedies_are_unchanged(
     kinds: frozenset[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -262,7 +260,7 @@ def _every_remedy(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
         for name, value in vars(item_labels).items()
         if isinstance(value, str) and not name.startswith("__")
     ]
-    kinds_all: list[frozenset[str]] = [p.values[0] for p in _ALL_KINDS]  # type: ignore[misc]
+    kinds_all = [*_CONTENT_KINDS.values(), *_OTHER_KINDS.values()]
     for kinds, (key, (lowered, readmitted, _)) in itertools.product(
         kinds_all, _COMBINATIONS.items()
     ):
