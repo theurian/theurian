@@ -20,8 +20,10 @@ from theurian.application.item_labels import (
 )
 from theurian.application.proposal_service import (
     ProposalService,
+    _BodyMove,
     _floor_refusal,
     _ProposalLocation,
+    _removal_cure,
 )
 from theurian.domain.enums import KnowledgeStatus, Sensitivity, TrustLevel
 from theurian.domain.errors import RevisionConflictError
@@ -207,6 +209,100 @@ def test_a_remedy_never_prints_an_id_the_refusals_message_redacts(
 
     assert not [i.value for i in ids if i.value in remedy], remedy
     assert f"landed labels, delete {_WHERE.relative}/." in remedy, remedy
+
+
+def _body_cure(tmp_path: Path, name: str, *, link_to: str | None = None) -> tuple[str, str]:
+    """The removal cure for one body ``name`` under a real proposal directory.
+
+    ``link_to`` makes ``name`` a symlink to that path. Returns the cure and the directory-only
+    cure for the same location.
+    """
+    directory = tmp_path / "P1"
+    directory.mkdir()
+    location = _ProposalLocation(directory, ".theurian/proposals/P1", False)
+    source = directory / name
+    if link_to is not None:
+        source.symlink_to(link_to)
+    move = _BodyMove(source, source, b"", False, None, _A.value)
+
+    return _removal_cure([_A], location, [move]), f"delete {location.relative}/."
+
+
+@pytest.mark.parametrize(
+    ("name", "shown"),
+    [
+        pytest.param("body.md", "body.md", id="flat"),
+        pytest.param("sub/dir/body.md", "sub/dir/body.md", id="nested"),
+        pytest.param("a..b/.hidden-1_x.md", "a..b/.hidden-1_x.md", id="dots-inside-a-segment"),
+    ],
+)
+def test_a_plain_body_path_inside_the_proposal_directory_is_named(
+    tmp_path: Path, name: str, shown: str
+) -> None:
+    """Positive control: the rows below are refused for their shape, not because every path is."""
+    cure, directory_only = _body_cure(tmp_path, name)
+
+    assert cure != directory_only, cure
+    assert f"delete the body files those operations drafted, `.theurian/proposals/P1/{shown}`" in (
+        cure
+    ), cure
+
+
+def test_a_symlink_that_stays_inside_the_proposal_directory_is_named(tmp_path: Path) -> None:
+    """Positive control for the containment row: only a link leaving the directory is refused."""
+    cure, directory_only = _body_cure(tmp_path, "link.md", link_to="real.md")
+
+    assert cure != directory_only, cure
+    assert "`.theurian/proposals/P1/link.md`" in cure, cure
+
+
+_ESCAPING: Final = {
+    "backtick": "zzmark`x.md",
+    "dotdot-leading": "../zzmark.md",
+    "dotdot-mid": "sub/../zzmark.md",
+    "space": "zzmark x.md",
+    "newline": "zzmark\nx.md",
+    "escape-char": "zzmark\x1b[2Kx.md",
+}
+
+
+@pytest.mark.parametrize("name", list(_ESCAPING.values()), ids=list(_ESCAPING))
+def test_a_body_path_outside_the_plain_grammar_leaves_the_directory_only_cure(
+    tmp_path: Path, name: str
+) -> None:
+    """The path is the contributor's own contentFile: a backtick closes the code span the
+    reader copies from, a `..` names a file outside the proposal, and a secret-shaped name
+    is what the refusal's message redacts (#915 security HIGH, #360)."""
+    cure, directory_only = _body_cure(tmp_path, name)
+
+    assert cure == directory_only
+    assert "zzmark" not in cure, cure
+
+
+def test_an_absolute_body_path_outside_the_proposal_directory_is_not_named(
+    tmp_path: Path,
+) -> None:
+    directory = tmp_path / "P1"
+    location = _ProposalLocation(directory, ".theurian/proposals/P1", False)
+    source = tmp_path / "zzmark-elsewhere" / "body.md"
+    move = _BodyMove(source, source, b"", False, None, _A.value)
+
+    cure = _removal_cure([_A], location, [move])
+
+    assert cure == f"delete {location.relative}/."
+    assert "zzmark" not in cure
+
+
+def test_a_symlink_inside_the_proposal_directory_pointing_outside_it_is_not_named(
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "zzmark-outside.md"
+    outside.write_text("x")
+
+    cure, directory_only = _body_cure(tmp_path, "zzmark-link.md", link_to=str(outside))
+
+    assert cure == directory_only
+    assert "zzmark" not in cure
 
 
 @pytest.mark.parametrize("kinds", _OTHER_PARAMS)
