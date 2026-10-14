@@ -6931,16 +6931,34 @@ it there.
     withdrawn another item the proposal carries. The lowering or readmission
     floor then refuses, correctly: nothing moves, so every item keeps its
     landed label, and the one the refusal names is withheld in each shape
-    measured. It prints the content path's remedy
+    measured. In 0.5.3 it prints the content path's remedy
     (`application/item_labels.py :: ACCEPT_LOWERING_REMEDY`, `:: DRAFT_AGAIN_CLAUSE`,
     `:: ACCEPT_READMISSION_REMEDY`): a lowering or readmission, then "draft the
     update again with `theurian propose` rather than accepting this proposal
-    again", wrong for a proposal that tool cannot draft. For the other item,
-    removing its operation from the proposal's migration file and accepting
-    again works (measured on 0.5.2 and 0.5.3) and is printed nowhere; for the
-    tighter migration no cure was measured. A refusal, not a disclosure. These
-    remedies have assumed a `theurian propose` update since 0.5.1; tracked on
-    its own issue, filed at publication, to be fixed next. Not naming a tighter
+    again", wrong for a proposal that tool cannot draft. These remedies have
+    assumed a `theurian propose` update since 0.5.1.
+    Since [#929](https://github.com/theurian/theurian/pull/929), after 0.5.3,
+    the floor routes its remedy by what the proposal carries
+    (`application/proposal_service.py :: _is_content_only`). A proposal of
+    `createItem` and `upsertRevision` alone keeps the content path's remedy.
+    Any other is told to remove every operation on each item the refusal names
+    from its own migration file and accept again, or to delete the proposal
+    directory if those are all its operations.
+    Followed literally, that cure leaves the item the floor names withheld,
+    for the proposal's own item and for a co-carried one
+    (`test_accept_floor_remedy_followed_literally.py`, each proposal refused at
+    its first accept). For the own item, deleting the directory leaves the
+    landed, tighter label
+    (`::test_a_tightener_that_is_the_only_operation_is_cured_by_deleting_the_proposal`),
+    and with another item's operation kept the re-accept exits 0
+    (`::test_a_tightener_beside_a_kept_raise_is_cured_by_removing_only_its_operation`).
+    For a co-carried item the re-accept exits 0
+    (`::test_a_co_carried_items_older_label_is_cured_by_removing_that_items_operation`,
+    `::test_a_co_carried_readmission_is_cured_by_removing_its_operation_and_the_item_stays_retired`);
+    that cure was also measured on 0.5.2 and 0.5.3. On 0.5.2, following
+    GHSA-fjqq-grr7-53cc's Workarounds, the own-item shape is accepted without
+    reaching the floor and stays withheld (#929's *Deferred claims*, with a
+    re-check script). A refusal, not a disclosure. Not naming a tighter
     migration at all is [#898](https://github.com/theurian/theurian/issues/898).
 
 **A known cost, not a residual of the fix.** There is no way to acknowledge a
@@ -7194,10 +7212,12 @@ report exactly one row: the `dependsOn` migration's, `kind: reorders`,
    [the migration format](../protocol/migrations.md#permissive-moves-are-reported-not-refused)).
    If that re-accept is refused by the lowering or readmission floor, a landed
    migration already sets the item the refusal names tighter than the
-   proposal does: remove that item's operation from the migration file and
-   accept again, or delete the proposal if it was the only operation. The
-   floor's remedy does not say so; T-28 residual 11 records what was measured,
-   and [#915](https://github.com/theurian/theurian/issues/915) tracks the fix.
+   proposal does: remove every operation on that item from the migration file
+   and accept again, or delete the proposal if those were all its operations.
+   Since [#929](https://github.com/theurian/theurian/pull/929), after 0.5.3,
+   the floor's remedy names those operations and that directory. T-28
+   residual 11 records the shapes measured: the proposal's own item and a
+   co-carried one.
    On 0.5.1 and 0.5.2, follow
    [GHSA-fjqq-grr7-53cc](https://github.com/theurian/theurian/security/advisories/GHSA-fjqq-grr7-53cc)'s
    Workarounds instead.
