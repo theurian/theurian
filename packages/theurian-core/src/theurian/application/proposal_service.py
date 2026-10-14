@@ -2257,9 +2257,9 @@ class ProposalService:
         # #950: with two upserts of the item the store can hold this proposal's own earlier
         # revision, which no landed writer wrote, so only the message's value can be followed.
         current = self._current_item(error.item_id) if len(own) <= 1 else None
-        revision = None if current is None else current.revision_id
-        if revision is None:
+        if current is None or current.revision_id is None:
             return reported, ""
+        revision = current.revision_id
         edit = f"give the proposal's own migration `expectedRevision: {revision.value}`"
         if error.actual is not None and error.actual.value in own:
             writers = [
@@ -4826,7 +4826,7 @@ def _removal_remedy(
     location: _ProposalLocation,
     moves: Sequence[_BodyMove],
     *tails: str,
-    retired: Sequence[ItemId] = (),
+    retired: Sequence[ItemId],
 ) -> str:
     """The landed-labels-untouched removal cure, then the remedies for what the replay changed."""
     lead = "Nothing has moved. To keep those items at their landed labels, "
@@ -4896,8 +4896,8 @@ def _removal_cure(
     )
     redraft = ""
     # No line for a retired item: `theurian propose` refuses it without naming a revision.
-    gone = {item_id.value for item_id in retired}
-    if any(m.item_id in removed - gone for m in moves):
+    live = removed - {item_id.value for item_id in retired}
+    if any(m.item_id in live for m in moves):
         redraft = (
             " To keep a removed content update for an item that is not withdrawn, draft it "
             "again afterwards with "
