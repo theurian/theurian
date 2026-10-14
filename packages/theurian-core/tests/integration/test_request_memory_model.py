@@ -73,6 +73,7 @@ import ast
 import gc
 import inspect
 import json
+import shutil
 import site
 import subprocess
 import sys
@@ -251,7 +252,9 @@ def _refuse_unclean(report: dict[str, object], parent_file: str) -> None:
     )
 
 
-def _chunked_peak_in_child() -> int:
+def _chunked_peak_in_child(
+    flags: tuple[str, ...] = ("-I", "-S", "-B"), first_path: str | None = None
+) -> int:
     """Peak of ``_chunked_width`` over the worst leaf, in a child that runs nothing else.
 
     The invariant: before the window, only the interpreter and the child script
@@ -260,17 +263,18 @@ def _chunked_peak_in_child() -> int:
     from the parent as arguments. ``-B`` writes no bytecode into the tree, which
     ``tools/mutate.py`` relies on. The child reports ``sys.flags.isolated``, ``no_site`` and
     ``dont_write_bytecode`` and the ``validation.__file__`` it imported; the parent
-    refuses any that is off or foreign.
+    refuses any that is off or foreign. ``flags`` and ``first_path`` exist so the
+    tests can remove a flag or plant a foreign tree and watch the refusal.
     """
     from theurian.mcp import validation
 
     paths = [str(Path(validation.__file__).parents[2]), *site.getsitepackages()]
+    if first_path is not None:
+        paths.insert(0, first_path)
     done = subprocess.run(  # noqa: S603 - argv is module-owned, never user input
         [
             sys.executable,
-            "-I",
-            "-S",
-            "-B",
+            *flags,
             "-c",
             _CHUNKED_PEAK_CHILD,
             json.dumps(paths),
@@ -686,39 +690,23 @@ def test_the_chunked_arm_takes_its_peak_from_the_child_helper() -> None:
     assert "_peak_of" not in called
 
 
-_FLAGS: Final = {"isolated": 1, "no_site": 1, "dont_write_bytecode": 1, "file": "/x/validation.py"}
+@pytest.mark.parametrize("flag", ["-I", "-S", "-B"])
+def test_a_child_spawned_without_an_isolation_flag_is_refused(flag: str) -> None:
+    """Drives the spawn, the child's report and the parent's refusal together (#943)."""
+    flags = tuple(f for f in ("-I", "-S", "-B") if f != flag)
+
+    with pytest.raises(AssertionError, match=f"without {flag}"):
+        _chunked_peak_in_child(flags)
 
 
-@pytest.mark.parametrize(
-    ("change", "words"),
-    [
-        ({"isolated": 0}, r"without -I"),
-        ({"no_site": 0}, r"without -S"),
-        ({"dont_write_bytecode": 0}, r"without -B"),
-        ({"file": "/other/validation.py"}, "imported theurian from /other"),
-    ],
-)
-def test_an_unclean_child_report_is_refused_naming_its_cause(
-    change: dict[str, object], words: str
-) -> None:
-    with pytest.raises(AssertionError, match=words):
-        _refuse_unclean({**_FLAGS, **change}, "/x/validation.py")
+def test_a_child_that_imports_another_theurian_is_refused(tmp_path: Path) -> None:
+    from theurian.mcp import validation
 
-
-def test_a_clean_child_report_is_accepted() -> None:
-    _refuse_unclean(dict(_FLAGS), "/x/validation.py")
-
-
-def test_a_hostile_sitecustomize_in_site_packages_does_not_reach_the_child(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The spawn itself, not a crafted report, keeps site-time code out of the window (#943)."""
-    baseline = _chunked_peak_in_child()
-    (tmp_path / "sitecustomize.py").write_text(
-        "import sys, threading\nsys.settrace(lambda *a: None)\n"
-        "threading.Thread(target=lambda: bytearray(10**6), daemon=True).start()\n"
+    shutil.copytree(
+        Path(validation.__file__).parents[1],
+        tmp_path / "theurian",
+        ignore=shutil.ignore_patterns("__pycache__"),
     )
-    real = site.getsitepackages()
-    monkeypatch.setattr(site, "getsitepackages", lambda: [str(tmp_path), *real])
 
-    assert _chunked_peak_in_child() == baseline
+    with pytest.raises(AssertionError, match="imported theurian from"):
+        _chunked_peak_in_child(first_path=str(tmp_path))
