@@ -1353,9 +1353,10 @@ stated beside the number so a reader can attack the key and not only the count.
 > `upsertRevision` alone keeps its remedy; any other is told to remove every
 > operation whose `itemId` is a refused item from its own migration file,
 > delete any body file the remedy lists, and accept again, or to delete the
-> proposal directory if those are all its operations or if `_one_name`, the
+> proposal directory if those are all its operations, if `_one_name`, the
 > helper the refusal messages use, would redact or cut an id or body path the
-> cure would name. A raced
+> cure would name, or if a body path is outside `_PRINTABLE_BODY_PATH` or
+> resolves outside that directory. A raced
 > revision's remedy keeps, on both routes, the alternative of giving the
 > proposal's own migration the `expectedRevision` the message reports, which
 > does not work for a proposal that replays before the change that won the race
@@ -1367,7 +1368,9 @@ stated beside the number so a reader can attack the key and not only the count.
 > clause above are its wording on their dates, and what
 > `test_floor_refusal_remedy.py::test_every_remedy_that_says_to_draft_again_says_to_edit_dependson_in`
 > asserted then; it now asserts the new ending. `test_floor_remedy_routing.py`
-> holds the routing, and `test_accept_floor_remedy_followed_literally.py`
+> holds the routing, and that body-path condition in unit tests only, by the
+> user's decision ([#939](https://github.com/theurian/theurian/issues/939));
+> `test_accept_floor_remedy_followed_literally.py`
 > follows the printed removal to its end state for floor refusals and both
 > conflict branches, and `test_floor_remedy_reaccept.py` for the lowering
 > floor's refusal of a re-accept;

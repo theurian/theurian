@@ -6945,9 +6945,12 @@ it there.
     Any other is told to remove each operation whose `itemId` is an item the
     refusal names from its own migration file, delete any body file the
     remedy lists, and accept again, or to delete the proposal directory if
-    those are all its operations or if `_one_name`, the helper the refusal
-    messages use, would redact or cut an id or body path the cure would name
-    ([the migration format](../protocol/migrations.md#operations) quotes it).
+    those are all its operations, if `_one_name`, the helper the refusal
+    messages use, would redact or cut an id or body path the cure would name,
+    or if a body path is outside `_PRINTABLE_BODY_PATH` or resolves outside
+    that directory ([the migration format](../protocol/migrations.md#operations)
+    quotes it; by the user's decision, only unit tests reach that last
+    condition, [#939](https://github.com/theurian/theurian/issues/939)).
     Followed literally, the cure leaves each item it names at its landed
     label, and that label decides whether it is served: one landed `internal`
     and `approved` is served at the default ceiling
@@ -7232,12 +7235,15 @@ report exactly one row: the `dependsOn` migration's, `kind: reorders`,
    If that re-accept is refused by the lowering or readmission floor, a landed
    migration already sets the item the refusal names tighter than the
    proposal does: remove every operation whose `itemId` is that item from the
-   migration file, delete the body files only those operations use, and
-   accept again, or delete the proposal if those were all its operations.
+   migration file, delete the body files only those operations use inside
+   the proposal's directory, and accept again, or delete the proposal if
+   those were all its operations.
    Since [#929](https://github.com/theurian/theurian/pull/929), after 0.5.3,
-   the floor's remedy names those operations, any such body file and the
-   proposal's directory, or the directory alone when a name would be
-   redacted or cut. T-28 residual 11 records the shapes measured; on this
+   the floor's remedy names those operations, any such body file at a plain
+   path inside that directory, and the directory, or the directory alone when
+   a name would be redacted or cut or a body path is not a plain path inside
+   it ([the migration format](../protocol/migrations.md#operations) defines
+   plain). T-28 residual 11 records the shapes measured; on this
    route, the one measured is the proposal's own item behind a landed tightener
    (`test_floor_remedy_reaccept.py::test_a_reaccept_the_floor_refuses_is_cured_by_the_printed_removal`).
    On 0.5.1 and 0.5.2, follow
