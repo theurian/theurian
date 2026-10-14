@@ -22,12 +22,14 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   replay-order remedy already did. A proposal carrying any kind besides
   `createItem` and `upsertRevision`, such as a `changeSensitivity`,
   `restoreItem` or `deprecateItem`, is told to remove every operation whose
-  `itemId` names a refused item from its own migration file and run
-  `theurian propose accept` again, or to delete the proposal directory if
-  those were all its operations. No `accept` remedy prints the placeholder
-  `dependsOn: [<its id>]` any more: the content-path remedies say to edit that
-  migration's id into the new draft's `dependsOn`. The messages and exit codes
-  do not change.
+  `itemId` names a refused item from its own migration file, delete the body
+  files only those operations drafted, and run `theurian propose accept` again,
+  or to delete the proposal directory if those were all its operations. The
+  remedy names those body files, and says to delete the directory instead
+  where an id or body path it would print is one an error message redacts or
+  cuts. No `accept` remedy prints the placeholder `dependsOn: [<its id>]` any
+  more: the content-path remedies say to edit that migration's id into the new
+  draft's `dependsOn`. The messages and exit codes do not change.
 
 ## [0.5.3] - 2026-10-08
 
