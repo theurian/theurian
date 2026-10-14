@@ -282,7 +282,6 @@ _UNGATED_BY_CONSTRUCTION: Final[Mapping[tuple[str, str], str]] = {
     ("_require_directory", "location.relative"): "built from a validated ULID",
     ("_secret_refusal", "location.relative"): "built from a validated ULID",
     ("_union_refusal", "location.relative"): "built from a validated ULID",
-    ("_refuse_a_reported_upsert", "location.relative"): "built from a validated ULID",
     ("_require_directory", "self._within_project(parent)"): (
         "a project-relative path of this module's own parent directories"
     ),
@@ -509,6 +508,14 @@ def test_the_reflection_finds_the_interpolations_it_claims_to_range_over() -> No
         function == "_read_within_project" and expression.startswith("_plain(")
         for _, function, expression in found
     ), "the walk no longer reaches an error constructor's arguments"
+
+
+def test_every_allowlisted_row_matches_an_interpolation_the_walk_reaches() -> None:
+    """A row matching nothing is an exemption nobody reads: it would silently cover the next
+    site that happens to spell the same pair (#942)."""
+    walked = {(function, expression) for _, function, expression in _interpolations()}
+
+    assert sorted(set(_UNGATED_BY_CONSTRUCTION) - walked) == []
 
 
 def test_every_interpolation_in_a_message_is_gated_or_recorded() -> None:
