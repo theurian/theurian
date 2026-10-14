@@ -6932,9 +6932,9 @@ it there.
     floor then refuses, correctly: nothing moves, so every item keeps its
     landed label, and the one the refusal names is withheld under the default
     serving profile (ceiling `internal`, no grant) where that label is
-    `confidential` or `deprecated`, as in each shape the tests cited below
-    build; a declared `confidential` ceiling serves a `confidential` item
-    (measured on 2026-10-14 through `knowledge.get`). In 0.5.3 it prints the content path's remedy
+    `confidential` or `deprecated`, as in each shape the tests cited below build;
+    `knowledge.get` serves a `confidential` item at a declared `confidential`
+    ceiling (measured on 2026-10-14). In 0.5.3 it prints the content path's remedy
     (`application/item_labels.py :: ACCEPT_LOWERING_REMEDY`, `:: DRAFT_AGAIN_CLAUSE`,
     `:: ACCEPT_READMISSION_REMEDY`): a lowering or readmission, then "draft the
     update again with `theurian propose` rather than accepting this proposal
@@ -6979,7 +6979,8 @@ it there.
     (`test_floor_remedy_reaccept.py::test_a_reaccept_the_floor_refuses_is_cured_by_the_printed_removal`).
     On 0.5.2, GHSA-fjqq-grr7-53cc's Workarounds, followed for that re-accept
     shape, end the own item `confidential` and withheld under the default
-    serving profile, with and without a kept raise: with the tightener's id newer than the draft the re-accept
+    serving profile, with and without a kept raise: with the tightener's id
+    newer than the draft the re-accept
     exits 0 without reaching a floor; older, it is refused by the lowering
     floor and the Workarounds' floor bullet is followed. Behind an older
     tightener declaring no `dependsOn`, the lowering floor refuses the first

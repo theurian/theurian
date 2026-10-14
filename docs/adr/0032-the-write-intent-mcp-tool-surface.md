@@ -1425,8 +1425,7 @@ stated beside the number so a reader can attack the key and not only the count.
 > `::test_a_two_upsert_proposal_over_a_landed_revision_gets_the_message_reports_wording`
 > holds the #950 wording on the content route. `test_floor_remedy_routing.py`
 > holds the redraft line's condition and the lists, and the identity rule in
-> unit tests only, by the user's decision
-> ([#939](https://github.com/theurian/theurian/issues/939)).
+> unit tests only by the user's decision ([#939](https://github.com/theurian/theurian/issues/939)).
 
 ## Context
 
