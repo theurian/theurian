@@ -355,7 +355,7 @@ def test_a_retired_items_conflict_for_a_non_content_proposal_is_cured_by_removal
     )
 
 
-def test_a_retired_item_with_a_body_is_not_offered_a_redraft(
+def test_a_retired_items_conflict_with_a_body_is_not_offered_a_redraft(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`theurian propose` refuses a retired item, so a redraft line would send the reader there."""
@@ -369,7 +369,7 @@ def test_a_retired_item_with_a_body_is_not_offered_a_redraft(
     )
 
     assert "`.theurian/proposals/P1/body.md`" in remedy, remedy
-    assert "draft it again afterwards with `theurian propose`" not in remedy, remedy
+    assert _REDRAFT not in remedy, remedy
 
 
 @pytest.mark.parametrize("kinds", _OTHER_PARAMS)
