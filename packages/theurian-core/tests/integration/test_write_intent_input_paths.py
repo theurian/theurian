@@ -22,17 +22,13 @@ from __future__ import annotations
 
 import json
 import pathlib
-import subprocess
-from collections.abc import Iterator
 from typing import Any, Final
 
 import pytest
-from typer.testing import CliRunner
-from write_intent_population import registered_write_intent_names
+from write_intent_population import demo_project, registered_write_intent_names  # noqa: F401
 
 from theurian.application.project_service import ProjectRegistry
 from theurian.application.proposal_service import V1_OPERATION_KINDS
-from theurian.cli.main import app
 from theurian.daemon.runner import build_server
 
 from mcp_wire_session import mcp_session  # isort: skip
@@ -71,25 +67,22 @@ _RECORDED: Final = {
 }
 _NO_DEREF: Final = "recorded, never dereferenced"
 _PATH_SHAPED: Final = {
-    ("knowledge.proposeChange", "sourceAnchors[].filePath"): _NO_DEREF,
-    ("knowledge.proposeChange", "sourceAnchors[].sourceUri"): _NO_DEREF,
-    ("knowledge.proposeChange", "scopePaths"): _NO_DEREF,
-    ("knowledge.proposeChange", "sourceAnchors[].repository"): _NO_DEREF,
-    ("review.generateKnowledgeCandidate", "sourceAnchors[].filePath"): _NO_DEREF,
-    ("review.generateKnowledgeCandidate", "sourceAnchors[].sourceUri"): _NO_DEREF,
-    ("review.generateKnowledgeCandidate", "scopePaths"): _NO_DEREF,
-    ("review.generateKnowledgeCandidate", "sourceAnchors[].repository"): _NO_DEREF,
+    **{
+        (tool, path): _NO_DEREF
+        for tool in ("knowledge.proposeChange", "review.generateKnowledgeCandidate")
+        for path in (
+            "sourceAnchors[].filePath",
+            "sourceAnchors[].sourceUri",
+            "sourceAnchors[].repository",
+            "scopePaths",
+        )
+    },
     ("review.generateKnowledgeCandidate", "repository"): "store lookup key, refused if unknown",
     ("review.generateKnowledgeCandidate", "fixCommit"): "git object id, pattern-confined",
 }
-_PATH_NAMES: Final = {
-    "filePath",
-    "sourceUri",
-    "scopePaths",
-    "repository",
-    "fixCommit",
-    "contentFile",
-}
+_PATH_NAMES: Final = frozenset(
+    ["filePath", "sourceUri", "scopePaths", "repository", "fixCommit", "contentFile"]
+)
 
 
 def property_paths(
@@ -127,7 +120,7 @@ def _tail(path: str) -> str:
 
 
 @pytest.fixture
-def server(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+def server(tmp_path: pathlib.Path) -> Any:
     return build_server(ProjectRegistry.default(tmp_path / "datadir"))
 
 
@@ -198,29 +191,6 @@ def test_no_v1_admitted_operation_declares_the_dereferenced_body_file() -> None:
 # -- dereference, driven with a canary ---------------------------------------
 
 
-def _cli(*args: str) -> None:
-    result = CliRunner().invoke(app, [*args, "--json"], catch_exceptions=False)
-    assert result.exit_code == 0, result.stdout + (result.stderr or "")
-
-
-@pytest.fixture
-def project(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[ProjectRegistry]:
-    root = tmp_path / "demo"
-    root.mkdir()
-    for args in (
-        ["git", "init", "-q", "-b", "main"],
-        ["git", "config", "user.email", "test@example.com"],
-        ["git", "config", "user.name", "Test"],
-    ):
-        subprocess.run(args, cwd=root, check=True, capture_output=True)  # noqa: S603
-    monkeypatch.setenv("THEURIAN_DATA_DIR", str(tmp_path / "datadir"))
-    monkeypatch.chdir(root)
-    _cli("init")
-    _cli("project", "register")
-    _cli("migrate", "apply")
-    yield ProjectRegistry.default(tmp_path / "datadir")
-
-
 _EVIDENCE_ARG: Final = {"agentId": "a", "taskId": "t", "model": "m", "reasoning": "r"}
 
 
@@ -238,13 +208,13 @@ def _written(tmp_path: pathlib.Path) -> bytes:
     )
 
 
-def _call(project: ProjectRegistry, tmp_path: pathlib.Path, tool: str, args: dict[str, Any]) -> Any:
-    with mcp_session(build_server(project), tmp_path / "data") as call:
+def _call(demo: ProjectRegistry, tmp_path: pathlib.Path, tool: str, args: dict[str, Any]) -> Any:
+    with mcp_session(build_server(demo), tmp_path / "data") as call:
         return call(tool, {"projectId": "demo", **args})["result"]
 
 
 def test_a_path_in_a_recorded_field_is_stored_as_text_and_never_read(
-    project: ProjectRegistry, tmp_path: pathlib.Path
+    demo: ProjectRegistry, tmp_path: pathlib.Path
 ) -> None:
     """Drives the scan's own positive control: the path *text* lands, its bytes do not.
     RED driver: the handler appending ``Path(scopePaths[0]).read_bytes()`` to the body,
@@ -255,7 +225,7 @@ def test_a_path_in_a_recorded_field_is_stored_as_text_and_never_read(
     canary = _canary(tmp_path)
 
     result = _call(
-        project,
+        demo,
         tmp_path,
         "knowledge.proposeChange",
         {
@@ -280,7 +250,7 @@ def test_a_path_in_a_recorded_field_is_stored_as_text_and_never_read(
 
 
 def test_a_v1_operation_path_is_stored_as_text_and_a_content_file_is_refused_unread(
-    project: ProjectRegistry, tmp_path: pathlib.Path
+    demo: ProjectRegistry, tmp_path: pathlib.Path
 ) -> None:
     """A v1 op's ``sourceUri`` lands as text; an ``upsertRevision`` ``contentFile`` is refused.
     RED driver, run at 6c3c2827: the handler appending ``Path(<first op's sourceUri>)
@@ -291,7 +261,7 @@ def test_a_v1_operation_path_is_stored_as_text_and_a_content_file_is_refused_unr
     upsert = {"op": "upsertRevision", "itemId": "architecture.x", "contentFile": canary}
 
     landed = _call(
-        project,
+        demo,
         tmp_path,
         "knowledge.generateMigrationDraft",
         {
@@ -301,7 +271,7 @@ def test_a_v1_operation_path_is_stored_as_text_and_a_content_file_is_refused_unr
     )
     after_landing = _written(tmp_path)
     refused = _call(
-        project,
+        demo,
         tmp_path,
         "knowledge.generateMigrationDraft",
         {
@@ -319,7 +289,7 @@ def test_a_v1_operation_path_is_stored_as_text_and_a_content_file_is_refused_unr
 
 @pytest.mark.parametrize("field", ["repository", "recordKey", "fixCommit"])
 def test_a_canary_path_in_a_candidate_lookup_field_is_refused_with_nothing_written(
-    project: ProjectRegistry, tmp_path: pathlib.Path, field: str
+    demo: ProjectRegistry, tmp_path: pathlib.Path, field: str
 ) -> None:
     canary = _canary(tmp_path)
     args: dict[str, Any] = {
@@ -340,7 +310,7 @@ def test_a_canary_path_in_a_candidate_lookup_field_is_refused_with_nothing_writt
     }
     before = _written(tmp_path)
 
-    result = _call(project, tmp_path, "review.generateKnowledgeCandidate", args)
+    result = _call(demo, tmp_path, "review.generateKnowledgeCandidate", args)
 
     assert result["isError"] is True, result
     assert _written(tmp_path) == before

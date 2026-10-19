@@ -27,18 +27,12 @@ import ast
 import asyncio
 import json
 import pathlib
-import subprocess
-from collections.abc import Iterator
 from typing import Any, Final
 
 import pytest
-from git_harness import commit_migrations
-from migration_fixtures import body_pin
-from typer.testing import CliRunner
-from write_intent_population import write_intent_names
+from write_intent_population import demo_project, write_intent_names  # noqa: F401
 
 from theurian.application.project_service import ProjectRegistry
-from theurian.cli.main import app
 from theurian.daemon.runner import build_server
 from theurian.domain.identifiers import ProposalId
 
@@ -112,70 +106,12 @@ def test_the_comparison_is_quiet_when_all_three_agree() -> None:
     assert not disagreements(names, names, names)
 
 
-_MIGRATION_ID: Final = "01K1AAAAAA01234567890ABCDE"
-_BODY: Final = "# Authentication policy\n\nEvery call carries a signed token.\n"
-_MIGRATION: Final = f"""apiVersion: theurian.dev/v1
-id: {_MIGRATION_ID}
-createdAt: 2026-08-02T10:00:00+09:00
-author: engineer@example.com
-operations:
-  - op: createItem
-    itemId: architecture.auth-policy
-    kind: architecture
-    namespace: backend
-    owner: platform-team
-  - op: upsertRevision
-    itemId: architecture.auth-policy
-    revisionId: 01K1AAAREV01234567890ABCDE
-    contentFile: ../knowledge/architecture/auth-policy.md
-    contentSha256: {body_pin(_BODY)}
-    metadata:
-      title: Authentication policy
-      contentType: text/markdown
-      kind: architecture
-      namespace: backend
-      status: approved
-      owner: platform-team
-      trustLevel: reviewed
-      sourceAnchors:
-        - provider: git
-          sourceUri: git://demo/auth-policy.md
-"""
 _EVIDENCE: Final = {
     "agentId": "claude-code",
     "taskId": "task-7",
     "model": "claude-opus-5",
     "reasoning": "The alias review settled that the item should be deprecated.",
 }
-
-
-def _cli(*args: str) -> None:
-    result = CliRunner().invoke(app, [*args, "--json"], catch_exceptions=False)
-    assert result.exit_code == 0, result.stdout + (result.stderr or "")
-
-
-@pytest.fixture
-def demo(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[ProjectRegistry]:
-    """A registered, built ``demo`` project with one approved item, via the real CLI."""
-    root = tmp_path / "demo"
-    root.mkdir()
-    for args in (
-        ["git", "init", "-q", "-b", "main"],
-        ["git", "config", "user.email", "test@example.com"],
-        ["git", "config", "user.name", "Test"],
-    ):
-        subprocess.run(args, cwd=root, check=True, capture_output=True)  # noqa: S603
-    monkeypatch.setenv("THEURIAN_DATA_DIR", str(tmp_path / "datadir"))
-    monkeypatch.chdir(root)
-
-    _cli("init")
-    (root / ".theurian/knowledge/architecture/auth-policy.md").write_text(_BODY)
-    (root / f".theurian/migrations/{_MIGRATION_ID}-auth.yaml").write_text(_MIGRATION)
-    _cli("project", "register")
-    commit_migrations()
-    _cli("migrate", "apply")
-
-    yield ProjectRegistry.default(tmp_path / "datadir")
 
 
 def _cell(fn: Any, name: str) -> Any:
