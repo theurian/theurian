@@ -214,7 +214,8 @@ def test_a_path_in_a_recorded_field_is_stored_as_text_and_never_read(
 ) -> None:
     """Drives the scan's own positive control: the path *text* lands, its bytes do not.
     RED driver: the handler appending ``Path(scopePaths[0]).read_bytes()`` to the body,
-    planted in a private copy and run against b5d9fcc7 (RED); the refused candidate
+    planted in a private copy (``body + Path(scopePaths[0]).read_text()`` after the
+    facade is built in ``proposeChange``) and run at 6c3c2827 (RED); the refused candidate
     lookups below see a read only if its bytes reach a written file.
     """
     canary = _canary(tmp_path)
