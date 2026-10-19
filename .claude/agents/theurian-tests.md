@@ -81,7 +81,6 @@ commit** — a defect you drove RED reads as before/after ("RED before the fix,
 GREEN after"), never present tense. For every string your prose quotes from
 production code, grep the tree: zero hits outside your own file means the quote
 is stale; replace it with what is there now. (Burned in from #449's round.)
-
 Your report carries a table pairing each sentence of test prose (docstrings,
 comments and assertion messages) describing what the code or tests do, whether
 your diff touched it or your change moved what it describes, with the line that
@@ -180,13 +179,14 @@ A universal ("every", "never", "only", "all", "no other") in any docstring,
 comment or assertion message, a conftest's included, stands beside a named test
 that goes RED when it is false, or a pasted measurement whose key is anchored at
 a commit `origin/main` reaches, else under the pull-request qualifier; otherwise
-narrow it to the members verified, state the mechanism, not the population, or
-delete it. No headline or summary claims reach its own docstring's residual
-excludes, and a fix to one sentence over a population re-reads its siblings in
-that commit. Worked example: the root `conftest.py` docstring at `6c3c2827`, its
-headline the mechanism, its residual's keys at `ba2c80a9`. Burned in after PR
-#949 caught it twice: F2 (a pin test's "never spawns"), then R1 H1, the
-headline's earlier "every repository" against the receive-pack residual, now (a)
+narrow it to the members verified, state the mechanism instead of the
+population, or delete it. No headline or summary claims reach its own
+docstring's residual excludes, and a fix to one sentence over a population
+re-reads its siblings in that commit. Worked example: the repo-root
+`conftest.py` docstring at `6c3c2827`, its headline the mechanism, its
+residual's keys at `ba2c80a9`. Burned in after PR #949 caught it twice: F2 (a
+pin test's "never spawns"), then R1 H1, the headline's earlier "every
+repository" against the receive-pack residual, (a) there
 ([record](https://github.com/theurian/theurian/pull/949#issuecomment-6166916376)).
 
 ## Prose on a pin's reach is a claim that the suite holds something
