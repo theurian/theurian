@@ -623,6 +623,22 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
         "issue as no issue. Like the four rows above it, a live run stops producing "
         "this one.",
     ),
+    (
+        "docs/adr/0032-the-write-intent-mcp-tool-surface.md",
+        "963",
+        "owns the same wording",
+        "correct -- open owner, snapshot-age false positive",
+        "ADR-0032's *Still owed* decision-2 bullet, corrected in place by #962, hands "
+        "the same false-by-name wording in two schema descriptions and the CHANGELOG "
+        "[0.3.0] entry to #963. #963 was filed 2026-10-19 and read OPEN on 2026-10-20 "
+        "(`gh issue view 963 --json state,createdAt`). It is absent from the "
+        "2026-09-03 snapshot because it postdates it, so the offline run reads a live "
+        "owner as no owner. Not an owner defect: the sentence is the recorded-owner "
+        "form this audit exists to require. The fragment sits on one source line and "
+        "occurs once in that file (`git grep -cF 'owns the same wording' -- "
+        "docs/adr/0032-*.md` answers 1). Like the #575 rows above, a live run stops "
+        "producing this one.",
+    ),
     # The #636 row that stood here is gone, and -- like the #586 row below -- not
     # because the tracker snapshot moved. It recorded
     # `packages/theurian-core/CHANGELOG.md` #636 `owns the fix and`, judged
