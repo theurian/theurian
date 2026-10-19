@@ -190,6 +190,8 @@ def _union_remedy(  # noqa: PLR0913 -- the shapes a conflict can take
     item: ItemId = _A,
     revision: RevisionId | None = _REVISION,
     document: Mapping[str, object] | None = None,
+    where: _ProposalLocation = _WHERE,
+    moves: tuple[_BodyMove, ...] = (),
 ) -> str:
     status = KnowledgeStatus.DEPRECATED if retired else KnowledgeStatus.APPROVED
     held = {item: ItemLabels(Sensitivity.INTERNAL, TrustLevel.REVIEWED, "backend", status)}
@@ -201,7 +203,7 @@ def _union_remedy(  # noqa: PLR0913 -- the shapes a conflict can take
     error = RevisionConflictError(item, None, _REVISION)
 
     refusal = service._union_refusal(
-        _WHERE, Path("m.yaml"), ("L1",), error, kinds, document=document or {}
+        where, Path("m.yaml"), ("L1",), error, kinds, document=document or {}, moves=moves
     )
 
     return refusal.remedy or ""
@@ -351,6 +353,23 @@ def test_a_retired_items_conflict_for_a_non_content_proposal_is_cured_by_removal
         + " "
         + READMIT_REMEDY
     )
+
+
+def test_a_retired_item_with_a_body_is_not_offered_a_redraft(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`theurian propose` refuses a retired item, so a redraft line would send the reader there."""
+    body = tmp_path / "body.md"
+    body.write_bytes(b"")
+    where = _ProposalLocation(tmp_path, ".theurian/proposals/P1", False)
+    move = _BodyMove(body, body, b"", False, None, _A.value)
+
+    remedy = _union_remedy(
+        monkeypatch, frozenset({"changeSensitivity"}), retired=True, where=where, moves=(move,)
+    )
+
+    assert "`.theurian/proposals/P1/body.md`" in remedy, remedy
+    assert "draft it again afterwards with `theurian propose`" not in remedy, remedy
 
 
 @pytest.mark.parametrize("kinds", _OTHER_PARAMS)
