@@ -9,11 +9,13 @@ dereference driven with a canary file, not on a name pattern.
 
 Reach: the schemas are ``schemas/mcp`` input schemas whose ``x-theurian-tool`` is a
 registered write-intent tool (:mod:`write_intent_population`). The closed set stops
-at ``knowledge.generateMigrationDraft``'s ``document``, an opaque object whose
-interior is not walked here. Canary drives cover ``knowledge.proposeChange``
-landing and ``review.generateKnowledgeCandidate``'s refused lookups; that tool's
-``scopePaths`` and ``sourceAnchors`` are not driven. The scan sees a canary's bytes
-only in a file under the test's ``tmp_path``.
+at ``knowledge.generateMigrationDraft``'s ``document``, an opaque object at that
+schema; its interior is covered separately, over ``migration.schema.json``'s
+operation definitions for the kinds in ``V1_OPERATION_KINDS``. Canary drives cover
+``knowledge.proposeChange`` and ``knowledge.generateMigrationDraft`` landing and
+``review.generateKnowledgeCandidate``'s refused lookups; that tool's ``scopePaths``
+and ``sourceAnchors`` are not driven. The scan sees a canary's bytes only in a file
+under the test's ``tmp_path``.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ from typer.testing import CliRunner
 from write_intent_population import registered_write_intent_names
 
 from theurian.application.project_service import ProjectRegistry
+from theurian.application.proposal_service import V1_OPERATION_KINDS
 from theurian.cli.main import app
 from theurian.daemon.runner import build_server
 
@@ -42,6 +45,7 @@ _BY_ID: Final = {
     for schema in (json.loads(p.read_text(encoding="utf-8")) for p in _SCHEMAS.rglob("*.json"))
     if "$id" in schema
 }
+_MIGRATION_ID: Final = "https://theurian.dev/schemas/migrations/migration.schema.json"
 _CANARY_BYTES: Final = b"CANARY-9f3b2c71-never-read"
 
 _CONTEXT: Final = "projectId snapshotId agentId taskId"
@@ -161,6 +165,36 @@ def test_each_path_shaped_member_carries_a_reason() -> None:
     assert shaped == set(_PATH_SHAPED)
 
 
+def _v1_operation_paths() -> dict[str, set[str]]:
+    migration = _BY_ID[_MIGRATION_ID]
+    return {
+        kind.value: property_paths(
+            migration["$defs"]["op" + kind.value[0].upper() + kind.value[1:]], migration
+        )
+        for kind in V1_OPERATION_KINDS
+    }
+
+
+def test_no_v1_admitted_operation_declares_the_dereferenced_body_file() -> None:
+    """``contentFile`` is dereferenced by ``accept``; at 6c3c2827 only ``opUpsertRevision``
+    declares it, and v1 does not admit that kind. RED driver, run at 6c3c2827:
+    ``upsertRevision`` added to ``V1_OPERATION_KINDS`` in a private copy.
+    """
+    paths = _v1_operation_paths()
+
+    assert len(paths) == len(V1_OPERATION_KINDS)
+    assert {kind for kind, found in paths.items() if "contentFile" in found} == set()
+    assert {
+        (kind, p) for kind, found in paths.items() for p in found if _tail(p) in _PATH_NAMES
+    } == {
+        ("registerSpecification", "sourceUri"),
+        ("removeEvidence", "sourceUri"),
+        ("addEvidence", "anchor.sourceUri"),
+        ("addEvidence", "anchor.filePath"),
+        ("addEvidence", "anchor.repository"),
+    }
+
+
 # -- dereference, driven with a canary ---------------------------------------
 
 
@@ -243,6 +277,44 @@ def test_a_path_in_a_recorded_field_is_stored_as_text_and_never_read(
     written = _written(tmp_path)
     assert canary.encode() in written
     assert _CANARY_BYTES not in written
+
+
+def test_a_v1_operation_path_is_stored_as_text_and_a_content_file_is_refused_unread(
+    project: ProjectRegistry, tmp_path: pathlib.Path
+) -> None:
+    """A v1 op's ``sourceUri`` lands as text; an ``upsertRevision`` ``contentFile`` is refused.
+    RED driver, run at 6c3c2827: the handler appending ``Path(<first op's sourceUri>)
+    .read_text()`` to the document's ``author`` before drafting, planted in a private copy.
+    """
+    canary = _canary(tmp_path)
+    evidence = {"op": "removeEvidence", "itemId": "architecture.x", "sourceUri": canary}
+    upsert = {"op": "upsertRevision", "itemId": "architecture.x", "contentFile": canary}
+
+    landed = _call(
+        project,
+        tmp_path,
+        "knowledge.generateMigrationDraft",
+        {
+            "document": {"author": "a@example.com", "operations": [evidence]},
+            "evidence": _EVIDENCE_ARG,
+        },
+    )
+    after_landing = _written(tmp_path)
+    refused = _call(
+        project,
+        tmp_path,
+        "knowledge.generateMigrationDraft",
+        {
+            "document": {"author": "a@example.com", "operations": [upsert]},
+            "evidence": _EVIDENCE_ARG,
+        },
+    )
+
+    assert landed["isError"] is False, landed
+    assert canary.encode() in after_landing
+    assert refused["isError"] is True, refused
+    assert _written(tmp_path) == after_landing
+    assert _CANARY_BYTES not in _written(tmp_path)
 
 
 @pytest.mark.parametrize("field", ["repository", "recordKey", "fixCommit"])
