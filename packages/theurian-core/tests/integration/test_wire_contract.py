@@ -57,6 +57,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 from migration_fixtures import body_pin
 from referencing import Registry, Resource
+from write_intent_population import registered_write_intent_names
 
 from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
 
@@ -1767,6 +1768,26 @@ def test_the_capabilities_response_is_a_property_of_the_build_and_not_of_a_proje
         "directory, so something it publishes is a function of deployment state "
         "rather than of the build -- which is exactly what a surface that resolves "
         "no project and passes no gate must not carry (ADR-0025)"
+    )
+
+
+@pytest.mark.integration
+def test_the_published_write_tools_flag_equals_whether_write_intent_tools_are_registered(
+    capabilities_response: dict[str, Any], tmp_path: pathlib.Path
+) -> None:
+    """The schema types ``writeTools`` as a bare boolean, so only a value check ties it
+    to the registrations; a build that flipped it either way kept every other test green.
+
+    The key is :mod:`write_intent_population`; it cannot see a write-intent tool that
+    does not close over the draft-only facade.
+    """
+    from theurian.application.project_service import ProjectRegistry
+    from theurian.daemon.runner import build_server
+
+    server = build_server(ProjectRegistry.default(tmp_path / "datadir"))
+
+    assert capabilities_response["capabilities"]["writeTools"] is bool(
+        registered_write_intent_names(server)
     )
 
 
