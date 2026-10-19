@@ -14,11 +14,12 @@ at ``knowledge.generateMigrationDraft``'s ``document``, an opaque object at that
 schema; its interior is covered separately, over ``migration.schema.json``'s
 operation definitions for the kinds in ``V1_OPERATION_KINDS``. Canary drives cover
 ``knowledge.proposeChange`` and ``knowledge.generateMigrationDraft`` landing, and
-``review.generateKnowledgeCandidate``'s refused ``repository``, ``recordKey`` and
-``fixCommit``; that tool's ``scopePaths`` and ``sourceAnchors`` are not driven. The
-scan sees a canary's bytes only in a file under the test's ``tmp_path`` or in the
-tool's response. The schema walk raises on any keyword outside ``_WALKED`` and
-``_INERT``, so a path added under one is refused rather than missed.
+``review.generateKnowledgeCandidate``'s refused ``repository`` and ``recordKey``
+(canary path) and its schema-refused path-shaped ``fixCommit`` (no canary file);
+that tool's ``scopePaths`` and ``sourceAnchors`` are not driven. The scan sees a
+canary's bytes only in a file under the test's ``tmp_path`` or in the tool's
+response. The schema walk raises on any keyword outside ``_WALKED`` and ``_INERT``,
+so a path added under one is refused rather than missed.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ import review_candidate_fixtures as corpus
 from review_candidate_project import ServedProject, served_project
 from write_intent_population import demo_project, registered_write_intent_names  # noqa: F401
 
+from theurian.application.candidate_generation import UNRESOLVED_RECORD_REFUSAL
 from theurian.application.project_service import ProjectRegistry
 from theurian.application.proposal_service import V1_OPERATION_KINDS
 from theurian.daemon.runner import build_server
@@ -263,8 +265,7 @@ def test_a_path_in_a_recorded_field_is_stored_as_text_and_never_read(
     """Drives the scan's own positive control: the path *text* lands, its bytes do not.
     RED driver: the handler appending ``Path(scopePaths[0]).read_bytes()`` to the body,
     planted in a private copy (``body + Path(scopePaths[0]).read_text()`` after the
-    facade is built in ``proposeChange``) and run at 6c3c2827 (RED); the refused candidate
-    lookups below see a read only if its bytes reach a written file.
+    facade is built in ``proposeChange``) and run at 6c3c2827 (RED).
     """
     canary = _canary(tmp_path)
 
@@ -380,30 +381,38 @@ def test_the_candidate_call_the_canary_drives_vary_is_a_control_that_lands(
 
 
 @pytest.mark.parametrize("field", ["repository", "recordKey"])
-def test_a_canary_path_in_a_candidate_lookup_key_is_refused_by_the_gate_unread(
+def test_a_canary_path_in_a_candidate_lookup_key_is_refused_by_the_resolve(
     served: ServedProject, tmp_path: pathlib.Path, field: str
 ) -> None:
-    """The refusal is the resolve's own ("theurian review build" cure), not the schema's.
-    RED driver, run at 6c3c2827: a read of ``repository``/``recordKey`` written to
-    ``leak.bin`` in the candidate handler before the gate, planted in a private copy.
+    """The refusal is the resolve's own constant, not the schema's or another gate's.
+    Sees a read only if its bytes reach a written file or the response. RED driver, run
+    at 6c3c2827: a handler that reads the ``repository``/``recordKey`` file and then
+    raises ``REVIEW_SEARCH_UNAVAILABLE_REFUSAL``, planted in a private copy.
     """
     canary = _canary(tmp_path)
 
     result = _candidate_call(served, tmp_path, **{field: canary})
 
     assert result["isError"] is True, result
-    assert "theurian review build" in result["content"][0]["text"], result
+    assert UNRESOLVED_RECORD_REFUSAL in result["content"][0]["text"], result
     assert _CANARY_BYTES not in _written(tmp_path)
     assert _CANARY_BYTES not in json.dumps(result).encode()
     assert served.proposals() == set()
 
 
-def test_a_canary_path_in_fix_commit_is_refused_by_its_pattern_naming_the_field(
+def test_a_path_shaped_fix_commit_is_refused_at_the_schema_naming_the_field(
     served: ServedProject, tmp_path: pathlib.Path
 ) -> None:
-    result = _candidate_call(served, tmp_path, fixCommit=_canary(tmp_path))
+    """A 40-character non-hex value passes ``maxLength`` and reaches the ``pattern``;
+    the SEC-12 refusal is asserted, not the promotion gate's own. RED driver, run at
+    6c3c2827: ``pattern`` and ``maxLength`` both removed from the candidate schema's
+    ``fixCommit`` in a private copy.
+    """
+    result = _candidate_call(served, tmp_path, fixCommit="/" + "g" * 39)
 
+    text = result["content"][0]["text"]
     assert result["isError"] is True, result
-    assert "fixCommit" in result["content"][0]["text"], result
-    assert _CANARY_BYTES not in _written(tmp_path)
+    assert "does not match this tool's published input schema" in text, text
+    assert "At fixCommit" in text, text
+    assert _CANARY_BYTES not in json.dumps(result).encode()
     assert served.proposals() == set()
