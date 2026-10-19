@@ -1,4 +1,6 @@
-"""The key for "a registered write-intent tool", shared by every test that needs the set.
+"""The key for "a registered write-intent tool", imported by the B4 write-intent pins
+(``test_wire_contract.py``, ``test_write_intent_facade_population.py``,
+``test_write_intent_input_paths.py``).
 
 A tool is write-intent when its body closes over ``_draft_only_proposals``, the
 per-call factory that hands it a ``DraftOnlyProposals`` facade (ADR-0032 decision

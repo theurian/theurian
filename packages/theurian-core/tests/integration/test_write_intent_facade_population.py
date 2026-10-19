@@ -139,8 +139,8 @@ def test_accept_reached_through_the_facades_captured_service_fails_closed(
     demo: ProjectRegistry,
 ) -> None:
     """The write surface's accept collaborators are wired to raise, not to no-op
-    (ADR-0032 decision 8); the unit walks never call them, so a backstop replaced
-    by ``return ()`` kept 259 tests green at 6c3c2827 (key: test_mcp_tools.py,
+    (ADR-0032 decision 8); a backstop replaced by ``return ()`` kept
+    259 tests green at 6c3c2827 (key: test_mcp_tools.py,
     test_write_intent_wire.py, test_write_intent_disclosure_oracle.py,
     unit/test_draft_only_proposals.py). RED driver: that mutant.
 

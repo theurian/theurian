@@ -97,28 +97,11 @@ _PATH_NAMES: Final = frozenset(
 #: implement (``patternProperties``, ``prefixItems``, ``if``, ...) is refused, not missed.
 _WALKED: Final = frozenset(["$ref", "allOf", "anyOf", "oneOf", "properties", "items", "$defs"])
 _INERT: Final = frozenset(
-    [
-        "type",
-        "description",
-        "title",
-        "enum",
-        "const",
-        "pattern",
-        "maxLength",
-        "minLength",
-        "minimum",
-        "maximum",
-        "minItems",
-        "maxItems",
-        "uniqueItems",
-        "required",
-        "format",
-        "default",
-        "examples",
-        "$id",
-        "$schema",
-        "x-theurian-tool",
-    ]
+    (  # noqa: SIM905
+        "type description title enum const pattern maxLength minLength minimum maximum "
+        "minItems maxItems uniqueItems required format default examples $id $schema "
+        "x-theurian-tool"
+    ).split()
 )
 _CLOSED_FLAGS: Final = ("additionalProperties", "unevaluatedProperties")
 
@@ -189,19 +172,10 @@ def test_the_walk_flags_a_widened_schema_and_follows_a_ref() -> None:
     assert property_paths(widened, widened) == {"x", "contentFile"}
 
 
-_APPLICATORS: Final = [
-    "patternProperties",
-    "prefixItems",
-    "dependentSchemas",
-    "if",
-    "then",
-    "else",
-    "contains",
-    "propertyNames",
-    "not",
-    "additionalProperties",
-    "unevaluatedProperties",
-]
+_APPLICATORS: Final = (  # noqa: SIM905
+    "patternProperties prefixItems dependentSchemas if then else contains propertyNames "
+    "not additionalProperties unevaluatedProperties"
+).split()
 
 
 @pytest.mark.parametrize("keyword", _APPLICATORS)
