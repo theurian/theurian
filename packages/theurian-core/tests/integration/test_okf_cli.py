@@ -258,7 +258,7 @@ def test_the_import_service_is_handed_the_draft_only_facade_and_not_the_service(
     """The OKF import is the second surface carrying ADR-0032 decision 8's promise.
 
     ``OkfImportService(drafts=service)  # type: ignore[arg-type]`` left this file
-    and ``test_okf_commands.py`` green at 6c3c2827 (23 passed); only mypy, without
+    and ``test_okf_commands.py`` green at 6c3c2827 (23 passed, those two files); mypy, without
     the ignore, caught it. RED driver: that mutant.
     """
     from theurian.application.proposal_service import ProposalService

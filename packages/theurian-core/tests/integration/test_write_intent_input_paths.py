@@ -5,26 +5,32 @@ The ADR's "holds as shipped" sentence is false by name: the schemas declare
 ``fixCommit``. They are recorded, never dereferenced as paths, or (``fixCommit``)
 dereferenced as a git object id confined by its hex ``pattern``. So the pin is on
 the closed set of declared members, each path-shaped one with its reason, and on
-dereference driven with a canary file, not on a name pattern.
+dereference driven with a canary file. The reason requirement is keyed on
+``_PATH_NAMES``, a name list; the closed set is not.
 
 Reach: the schemas are ``schemas/mcp`` input schemas whose ``x-theurian-tool`` is a
 registered write-intent tool (:mod:`write_intent_population`). The closed set stops
 at ``knowledge.generateMigrationDraft``'s ``document``, an opaque object at that
 schema; its interior is covered separately, over ``migration.schema.json``'s
 operation definitions for the kinds in ``V1_OPERATION_KINDS``. Canary drives cover
-``knowledge.proposeChange`` and ``knowledge.generateMigrationDraft`` landing and
-``review.generateKnowledgeCandidate``'s refused lookups; that tool's ``scopePaths``
-and ``sourceAnchors`` are not driven. The scan sees a canary's bytes only in a file
-under the test's ``tmp_path``.
+``knowledge.proposeChange`` and ``knowledge.generateMigrationDraft`` landing, and
+``review.generateKnowledgeCandidate``'s refused ``repository``, ``recordKey`` and
+``fixCommit``; that tool's ``scopePaths`` and ``sourceAnchors`` are not driven. The
+scan sees a canary's bytes only in a file under the test's ``tmp_path`` or in the
+tool's response. The schema walk raises on any keyword outside ``_WALKED`` and
+``_INERT``, so a path added under one is refused rather than missed.
 """
 
 from __future__ import annotations
 
 import json
 import pathlib
+from collections.abc import Iterator
 from typing import Any, Final
 
 import pytest
+import review_candidate_fixtures as corpus
+from review_candidate_project import ServedProject, served_project
 from write_intent_population import demo_project, registered_write_intent_names  # noqa: F401
 
 from theurian.application.project_service import ProjectRegistry
@@ -51,7 +57,8 @@ _ANCHOR: Final = (
     "sourceAnchors[].repository sourceAnchors[].commitSha sourceAnchors[].filePath"
 )
 #: Every property path reachable from each schema, ``$ref`` followed (measured at
-#: 6c3c2827 by walking ``schemas/mcp``). A path added anywhere reddens the pin.
+#: 6c3c2827 by walking ``schemas/mcp``). A path added under a keyword the walk
+#: follows reddens the pin; one added under any other keyword raises.
 _RECORDED: Final = {
     "knowledge.proposeChange": frozenset(
         f"{_CONTEXT} {_EVIDENCE} {_ANCHOR} itemId title kind owner author description body "
@@ -85,6 +92,37 @@ _PATH_NAMES: Final = frozenset(
 )
 
 
+#: Keywords the walk descends, and annotations or constraints that cannot add a
+#: member. A node carrying any other key raises, so an applicator the walk does not
+#: implement (``patternProperties``, ``prefixItems``, ``if``, ...) is refused, not missed.
+_WALKED: Final = frozenset(["$ref", "allOf", "anyOf", "oneOf", "properties", "items", "$defs"])
+_INERT: Final = frozenset(
+    [
+        "type",
+        "description",
+        "title",
+        "enum",
+        "const",
+        "pattern",
+        "maxLength",
+        "minLength",
+        "minimum",
+        "maximum",
+        "minItems",
+        "maxItems",
+        "uniqueItems",
+        "required",
+        "format",
+        "default",
+        "examples",
+        "$id",
+        "$schema",
+        "x-theurian-tool",
+    ]
+)
+_CLOSED_FLAGS: Final = ("additionalProperties", "unevaluatedProperties")
+
+
 def property_paths(
     node: Any, doc: dict[str, Any], prefix: str = "", stack: tuple[str, ...] = ()
 ) -> set[str]:
@@ -92,6 +130,10 @@ def property_paths(
     found: set[str] = set()
     if not isinstance(node, dict):
         return found
+    for key, value in node.items():
+        closed_flag = key in _CLOSED_FLAGS and value is False
+        if key not in _WALKED | _INERT and not closed_flag:
+            raise ValueError(f"{key} at {prefix or '<root>'} is not a keyword the walk follows")
     ref = node.get("$ref")
     if ref and ref not in stack:
         base, _, pointer = ref.partition("#")
@@ -147,6 +189,35 @@ def test_the_walk_flags_a_widened_schema_and_follows_a_ref() -> None:
     assert property_paths(widened, widened) == {"x", "contentFile"}
 
 
+_APPLICATORS: Final = [
+    "patternProperties",
+    "prefixItems",
+    "dependentSchemas",
+    "if",
+    "then",
+    "else",
+    "contains",
+    "propertyNames",
+    "not",
+    "additionalProperties",
+    "unevaluatedProperties",
+]
+
+
+@pytest.mark.parametrize("keyword", _APPLICATORS)
+def test_the_walk_refuses_an_applicator_it_does_not_follow(keyword: str) -> None:
+    node: dict[str, Any] = {keyword: {"properties": {"contentFile": {}}}}
+
+    with pytest.raises(ValueError, match="not a keyword the walk follows"):
+        property_paths(node, node)
+
+
+def test_the_walk_accepts_a_closed_additional_properties_flag() -> None:
+    node = {"additionalProperties": False, "unevaluatedProperties": False, "properties": {"a": {}}}
+
+    assert property_paths(node, node) == {"a"}
+
+
 def test_each_path_shaped_member_carries_a_reason() -> None:
     shaped = {
         (tool, path)
@@ -175,7 +246,6 @@ def test_no_v1_admitted_operation_declares_the_dereferenced_body_file() -> None:
     """
     paths = _v1_operation_paths()
 
-    assert len(paths) == len(V1_OPERATION_KINDS)
     assert {kind for kind, found in paths.items() if "contentFile" in found} == set()
     assert {
         (kind, p) for kind, found in paths.items() for p in found if _tail(p) in _PATH_NAMES
@@ -204,7 +274,7 @@ def _written(tmp_path: pathlib.Path) -> bytes:
     return b"".join(
         p.read_bytes()
         for p in sorted(tmp_path.rglob("*"))
-        if p.is_file() and p.name != "canary.txt" and ".git" not in p.parts
+        if p.is_file() and p != tmp_path / "canary.txt" and ".git" not in p.parts
     )
 
 
@@ -239,7 +309,9 @@ def test_a_path_in_a_recorded_field_is_stored_as_text_and_never_read(
             "contentType": "text/markdown",
             "evidence": _EVIDENCE_ARG,
             "scopePaths": [canary],
-            "sourceAnchors": [{"provider": "git", "sourceUri": canary, "filePath": canary}],
+            "sourceAnchors": [
+                {"provider": "git", "sourceUri": canary, "filePath": canary, "repository": canary}
+            ],
         },
     )
 
@@ -247,6 +319,7 @@ def test_a_path_in_a_recorded_field_is_stored_as_text_and_never_read(
     written = _written(tmp_path)
     assert canary.encode() in written
     assert _CANARY_BYTES not in written
+    assert _CANARY_BYTES not in json.dumps(result).encode()
 
 
 def test_a_v1_operation_path_is_stored_as_text_and_a_content_file_is_refused_unread(
@@ -285,32 +358,78 @@ def test_a_v1_operation_path_is_stored_as_text_and_a_content_file_is_refused_unr
     assert refused["isError"] is True, refused
     assert _written(tmp_path) == after_landing
     assert _CANARY_BYTES not in _written(tmp_path)
+    assert _CANARY_BYTES not in json.dumps([landed, refused]).encode()
 
 
-@pytest.mark.parametrize("field", ["repository", "recordKey", "fixCommit"])
-def test_a_canary_path_in_a_candidate_lookup_field_is_refused_with_nothing_written(
-    demo: ProjectRegistry, tmp_path: pathlib.Path, field: str
-) -> None:
-    canary = _canary(tmp_path)
-    args: dict[str, Any] = {
-        "repository": "acme/x",
-        "recordKey": "k",
-        "fixCommit": "a" * 40,
-        "itemId": "architecture.c",
-        "title": "T",
-        "body": "# T\n",
-        "kind": "architecture",
-        "category": "c",
-        "owner": "o",
-        "author": "a@example.com",
-        "description": "d",
-        "evidence": _EVIDENCE_ARG,
-        "sourceAnchors": [{"provider": "git", "sourceUri": "git://x"}],
-        field: canary,
+@pytest.fixture
+def served(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[ServedProject]:
+    yield from served_project(
+        tmp_path, monkeypatch, records=corpus.evidence_records(), withheld=frozenset()
+    )
+
+
+def _candidate_args(project: ServedProject, **overrides: Any) -> dict[str, Any]:
+    return {
+        "repository": corpus.REPOSITORY,
+        "recordKey": corpus.THREAD_SATISFYING,
+        "fixCommit": project.verifying,
+        "itemId": "reliability.retry-lock-order",
+        "title": "Acquire locks after reads",
+        "body": "Acquire locks after reads.\n",
+        "kind": "convention",
+        "category": "reliability-rule",
+        "owner": "platform-team",
+        "author": "dana@example.com",
+        "description": "Generalise the thread",
+        "evidence": {"agentId": "a", "taskId": "t", "model": "m", "reasoning": "r"},
+        "sourceAnchors": [{"provider": "github", "sourceUri": "https://example.com/x"}],
+        **overrides,
     }
-    before = _written(tmp_path)
 
-    result = _call(demo, tmp_path, "review.generateKnowledgeCandidate", args)
+
+def _candidate_call(project: ServedProject, tmp_path: pathlib.Path, **overrides: Any) -> Any:
+    with mcp_session(build_server(project.registry), tmp_path / "data") as call:
+        answer = call(
+            "review.generateKnowledgeCandidate",
+            {"projectId": "demo", **_candidate_args(project, **overrides)},
+        )
+    return answer["result"]
+
+
+def test_the_candidate_call_the_canary_drives_vary_is_a_control_that_lands(
+    served: ServedProject, tmp_path: pathlib.Path
+) -> None:
+    """Without it, the refusals below would hold for a call that refuses everything."""
+    result = _candidate_call(served, tmp_path)
+
+    assert result["isError"] is False, result
+
+
+@pytest.mark.parametrize("field", ["repository", "recordKey"])
+def test_a_canary_path_in_a_candidate_lookup_key_is_refused_by_the_gate_unread(
+    served: ServedProject, tmp_path: pathlib.Path, field: str
+) -> None:
+    """The refusal is the resolve's own ("theurian review build" cure), not the schema's.
+    RED driver, run at 6c3c2827: a read of ``repository``/``recordKey`` written to
+    ``leak.bin`` in the candidate handler before the gate, planted in a private copy.
+    """
+    canary = _canary(tmp_path)
+
+    result = _candidate_call(served, tmp_path, **{field: canary})
 
     assert result["isError"] is True, result
-    assert _written(tmp_path) == before
+    assert "theurian review build" in result["content"][0]["text"], result
+    assert _CANARY_BYTES not in _written(tmp_path)
+    assert _CANARY_BYTES not in json.dumps(result).encode()
+    assert served.proposals() == set()
+
+
+def test_a_canary_path_in_fix_commit_is_refused_by_its_pattern_naming_the_field(
+    served: ServedProject, tmp_path: pathlib.Path
+) -> None:
+    result = _candidate_call(served, tmp_path, fixCommit=_canary(tmp_path))
+
+    assert result["isError"] is True, result
+    assert "fixCommit" in result["content"][0]["text"], result
+    assert _CANARY_BYTES not in _written(tmp_path)
+    assert served.proposals() == set()

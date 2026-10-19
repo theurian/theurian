@@ -1775,8 +1775,9 @@ def test_the_capabilities_response_is_a_property_of_the_build_and_not_of_a_proje
 def test_the_published_write_tools_flag_equals_whether_write_intent_tools_are_registered(
     capabilities_response: dict[str, Any], tmp_path: pathlib.Path
 ) -> None:
-    """The schema types ``writeTools`` as a bare boolean, so only a value check ties it
-    to the registrations; a build that flipped it either way kept every other test green.
+    """The schema types ``writeTools`` as a bare boolean, so this file's own checks held
+    on either value; this pins the served value to the registrations. The source-level
+    coupling and the prose narrations of the flag are ``test_write_tools_flag_claims.py``'s.
 
     The key is :mod:`write_intent_population`; it cannot see a write-intent tool that
     does not close over the draft-only facade.
