@@ -238,3 +238,52 @@ def test_accept_reached_through_the_facades_captured_service_fails_closed(
         tree: _tree_bytes(root / ".theurian" / tree) for tree in ("knowledge", "migrations")
     }
     assert pending.is_dir()
+
+
+_SRC: Final = pathlib.Path(__file__).resolve().parents[2] / "src"
+#: The surfaces whose facade wiring a test drives: ``mcp/tools.py`` by the accept
+#: walk above, ``cli/okf_commands.py`` by ``test_okf_cli.py``'s wiring test.
+_DRIVEN_SITES: Final = {"theurian/mcp/tools.py": 1, "theurian/cli/okf_commands.py": 1}
+
+
+def construction_sites(sources: dict[str, str]) -> dict[str, int]:
+    """``DraftOnlyProposals(...)`` call nodes per file, by syntax tree."""
+    found: dict[str, int] = {}
+    for name, text in sources.items():
+        count = sum(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "DraftOnlyProposals"
+            for node in ast.walk(ast.parse(text))
+        )
+        if count:
+            found[name] = count
+    return found
+
+
+@pytest.mark.integration
+def test_every_facade_construction_site_is_one_a_wiring_test_drives() -> None:
+    """A third construction site means a third surface carrying the draft-only
+    promise, which needs its own test that goes RED when its wiring is replaced
+    (#708). Measured at 6c3c2827: 2 sites (key: ``git grep -n -F
+    'DraftOnlyProposals(' 6c3c2827 -- packages/theurian-core/src`` ->
+    mcp/tools.py:1975, cli/okf_commands.py:384). RED driver: a planted third
+    construction in a private copy.
+
+    Cannot see a facade built reflectively or under an alias.
+    """
+    sources = {
+        str(path.relative_to(_SRC)): path.read_text(encoding="utf-8")
+        for path in sorted(_SRC.rglob("*.py"))
+    }
+
+    assert construction_sites(sources) == _DRIVEN_SITES
+
+
+def test_the_site_scan_counts_a_call_and_ignores_a_mention() -> None:
+    sources = {
+        "a.py": "x = DraftOnlyProposals(s)\ny = DraftOnlyProposals(t)\n",
+        "b.py": '"""DraftOnlyProposals(s)"""\nclass DraftOnlyProposals: ...\n',
+    }
+
+    assert construction_sites(sources) == {"a.py": 2}
