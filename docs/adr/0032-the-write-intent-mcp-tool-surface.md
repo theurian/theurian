@@ -2258,7 +2258,7 @@ the property as it was written and states what actually holds it:
   property that item existed for — the flag cannot land half-moved — is held by
   the coupling pin and the e2e value assertion instead; the gap between the
   property and the instrument is recorded in *Still owed* rather than closed by
-  calling them the same thing.
+  calling them the same thing. (It has since landed; see the end of this list.)
 - **The prose sites that record the retiring meaning moved.** The registration
   commit moved `README.md`, `docs/index.md`, `docs/protocol/mcp-tools.md` and two
   rows of `docs/roadmap.md` — *An agent cannot change approved knowledge
@@ -2518,36 +2518,49 @@ the property as it was written and states what actually holds it:
   resolves to no loaded schema is refused at dispatch — rather than by being
   remembered. Owed there rather than here, and named here because this surface is
   the one that makes it mandatory.
-
-Still owed, with the milestone that will satisfy it:
-
-**The first three below are addressed to a slice and to no issue.** Measured
-2026-09-15, `gh issue list --state open --search "write-intent OR proposeChange
-OR generateMigrationDraft OR facade OR draft-only"` returns nothing that covers
-any of them, so this section is their only owner — a reader should treat that as
-the gap it is rather than assume a tracker entry exists. The last three each name
-their issue. (Open-question 5's timing measurement, formerly a fourth
-slice-addressed item here, landed at slice B4 and moved to the decision-6
-*Landed* entry above.)
-
-- **Slice B5 or later — a file path is refused by construction, and nothing
-  recomputes it (decision 2).** The property holds as shipped: neither published
-  input schema declares a path, URI, or reference field, and neither handler
-  signature has a path parameter. **What is owed is the check**, and the shape
-  matters — a refusal test would pin today's spelling of a rejection, while what
-  this needs is a structural test that no write-intent tool's input schema
-  declares a path-shaped field. Today the absence is held by review and by
-  ADR-0031's `unevaluatedProperties: false` refusing any key the schema does not
-  name, which stops a *caller* smuggling one and does nothing about a schema
-  someone widens.
-- **Slice B5 or later — a value-level wire-contract assertion on `writeTools`.**
+- **A value-level wire-contract assertion on `writeTools`.** Landed in
+  [#962](https://github.com/theurian/theurian/pull/962), after the slice:
+  `tests/integration/test_wire_contract.py::test_the_published_write_tools_flag_equals_whether_write_intent_tools_are_registered`.
   The *Landed* entry above records why: the conformance file's case is a type
   negative and the response schema types the field `boolean` with no `const`, so
   the conformance suite alone is green on either value. The coupling pin and the
   e2e value assertion hold the property; this closes the gap between the property
   and the instrument this ADR named.
-- **Slice B5 or later — the two halves of the operations-path entry that did not
-  land.** A test that a document drafted through `draft_from_document` produces a
+- **The facade's accept backstop fails closed (decision 8).** Landed in #962:
+  `tests/integration/test_write_intent_facade_population.py::test_accept_reached_through_the_facades_captured_service_fails_closed`
+  calls `accept` on the MCP facade's captured service and asserts the decision-8
+  `RuntimeError`, with `.theurian/knowledge` and `.theurian/migrations` unchanged.
+
+Still owed, with the milestone that will satisfy it:
+
+**Corrected in place: this said the slice-addressed items had no issue.** Measured
+2026-09-15, `gh issue list --state open --search "write-intent OR proposeChange
+OR generateMigrationDraft OR facade OR draft-only"` returned nothing that covered
+them; #700, #701 and #703 were filed that day. Each item below names its owner.
+(Open-question 5's timing measurement, formerly a fourth
+slice-addressed item here, landed at slice B4 and moved to the decision-6
+*Landed* entry above.)
+
+- **[#966](https://github.com/theurian/theurian/pull/966) — a file path is refused
+  by construction inside `knowledge.generateMigrationDraft`'s `document`
+  (decision 2).** The tool-level input schemas landed in #962:
+  `tests/integration/test_write_intent_input_paths.py` pins each one's declared
+  members (`_RECORDED`, with a reason per path-shaped one in `_PATH_SHAPED`) and
+  drives dereference with a canary file; its docstring states the reach. The
+  `document` interior, an opaque object at its schema, is #966's, stacked on #962.
+  **Corrected in place:** this entry said the property held because no input field
+  is named for a path, URI or reference. That was false: `sourceAnchors[]`'s
+  `sourceUri`, `filePath` and `repository`, `scopePaths` (also a handler
+  parameter) and, on `review.generateKnowledgeCandidate`, `repository` and
+  `fixCommit` are declared. The property is dereference: those members are
+  recorded and not read as paths where the test drives them, and `fixCommit` is
+  resolved as a git object id its schema `pattern` confines.
+  [#963](https://github.com/theurian/theurian/issues/963) owns the same wording in
+  two schema `description`s and the CHANGELOG `[0.3.0]` entry.
+- **[#703](https://github.com/theurian/theurian/issues/703) and
+  [#959](https://github.com/theurian/theurian/issues/959), in that order — the two
+  halves of the operations-path entry that did not land.** A test that a
+  document drafted through `draft_from_document` produces a
   proposal directory `theurian propose accept` accepts, driven through the
   shipped commands rather than asserted about the service; and a structural test
   that the entry imports no migration-loader symbol directly (ADR-0003). The

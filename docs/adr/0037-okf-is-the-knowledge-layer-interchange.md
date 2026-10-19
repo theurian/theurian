@@ -1544,25 +1544,35 @@ command's own surface through the real CLI.
   recorded beside them. The threat summary gains its row; item 1 carries the
   amendment that says so.
 
-Still owed, with the slice that will satisfy it:
+Landed after slice S3, in [#962](https://github.com/theurian/theurian/pull/962):
 
 - **Slice S3's residue: a structural pin that the import's own composition root
   is handed the draft-only facade**, which is what the discharged item above
   stops short of. `application/okf_import.py` names `accept` nowhere — `git grep
   -n accept -- packages/theurian-core/src/theurian/application/okf_import.py`
-  exits 1 with no output — and `OkfImportService.__init__` annotates its
-  collaborator as `DraftOnlyProposals`, so what carries the property today is
+  exited 1 with no output (rotted: at `6c3c2827` it exits 0 on two content-type
+  hits, `:341` and `:371`) — and `OkfImportService.__init__` annotates its
+  collaborator as `DraftOnlyProposals`, so what carried the property was
   mypy plus the facade's own in-isolation pins, neither of which reads
   `cli/okf_commands.py::_service`. The shape to copy is ADR-0032's, which has
   landed for the MCP server:
   `tests/integration/test_mcp_tools.py::test_the_object_a_write_intent_tool_is_handed_is_the_draft_only_facade`
   builds the server, reaches the object each write-intent tool closes over, and
   asserts its type is `DraftOnlyProposals`, that it is not a `ProposalService`,
-  and that it exposes no approved-state mover. **Still owed, and no milestone
-  currently owns it.** The owed-item cross-reference this bullet replaces read
+  and that it exposes no approved-state mover. **Owed with no owner until #708
+  took it.** The owed-item cross-reference this bullet replaces read
   *the same shape ADR-0032 and ADR-0035 owe*; ADR-0032's half is the landed test
   just named, and ADR-0035's items come due when its interactive-curation
-  mechanism lands.
+  mechanism lands. **Landed in #962.** The re-check is
+  `tests/integration/test_okf_cli.py::test_the_import_service_is_handed_the_draft_only_facade_and_not_the_service`,
+  RED when `_service` hands over the raw `ProposalService`, and
+  `tests/integration/test_write_intent_facade_population.py::test_every_facade_surface_is_one_a_wiring_test_drives`
+  holds the facade surfaces at 2 construction sites, 0 subclasses and 2 `drafts=`
+  consumers (measured at `6c3c2827`; its docstring carries the keys).
+
+Still owed, with the slice that will satisfy it:
+
+- **Slice S3's residue moved to *Landed after slice S3* above.**
 - **Nothing else. Slice S2's items moved to *Landed in slice S2* above**,
   including the prose one — the threat-model entry for the distributed-bundle
   residual, which landed as T-27 rather than as an amendment to an existing entry,
