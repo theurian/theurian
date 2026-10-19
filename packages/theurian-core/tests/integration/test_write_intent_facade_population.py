@@ -1,19 +1,24 @@
 """Three keys for "a write-intent tool" must name the same set.
 
-ADR-0032 decision 4: ``evidence`` is required on every write-intent call. The e2e
-session derives its write-intent tools from that (``"evidence"`` in the published
-input schema's ``required``), the draft-only walk in ``test_mcp_tools.py`` lists
-them by hand (``WRITE_INTENT_TOOLS``), and the facade key
-(:mod:`write_intent_population`) reads the registration. Each is a convention
-the others do not check (#711); the perturbations that drive this pin RED are one
-per pair, listed in the commit's review report.
+ADR-0032 decision 4, "Evidence requiredness is preserved over the wire, and it is
+already enforced twice" (``docs/adr/0032-the-write-intent-mcp-tool-surface.md``),
+puts ``evidence`` among the fields required on every write-intent call. The e2e
+session derives its write-intent tools from that (``"evidence"`` in the
+``required`` of the ``inputSchema`` that ``tools/list`` serves, which the SDK
+builds from the handler signature, not from the ``schemas/mcp`` files), the
+draft-only walk in ``test_mcp_tools.py`` lists them by hand
+(``WRITE_INTENT_TOOLS``), and the facade key (:mod:`write_intent_population`)
+reads the registration. Before this pin none of the three checked another (#711).
 
 Residual, not closed: a tool that drafts without the facade, requires no
 ``evidence`` and is absent from the hand list is seen by none of the three keys.
 
-``WRITE_INTENT_TOOLS`` is read from ``test_mcp_tools.py``'s source by syntax tree:
-the suite has no cross-test import, and importing a 9,000-line test module for one
-constant would run its collection.
+``WRITE_INTENT_TOOLS`` is read from ``test_mcp_tools.py``'s source by syntax tree.
+No test module imports another at 6c3c2827 (key: ``git grep -n -E
+'^from test_[a-zA-Z0-9_]+ import|^import test_[a-zA-Z0-9_]+' 6c3c2827 --
+packages/theurian-core/tests tests`` printed nothing), and ``test_mcp_tools.py``
+is 9646 lines at that commit (``wc -l``), so importing it for one constant would
+run its collection.
 """
 
 from __future__ import annotations
