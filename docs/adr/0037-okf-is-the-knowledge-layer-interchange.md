@@ -1568,7 +1568,9 @@ Landed after slice S3, in [#962](https://github.com/theurian/theurian/pull/962):
   RED when `_service` hands over the raw `ProposalService`, and
   `tests/integration/test_write_intent_facade_population.py::test_every_facade_surface_is_one_a_wiring_test_drives`
   holds the facade surfaces at 2 construction sites, 0 subclasses and 2 `drafts=`
-  consumers (measured at `6c3c2827`; its docstring carries the keys).
+  consumers (measured at `6c3c2827`; its docstring carries the keys for the sites
+  and the consumers, and the 0 subclasses is keyed only by its
+  `"subclasses": {}` assertion).
 
 Still owed, with the slice that will satisfy it:
 

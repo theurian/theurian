@@ -427,7 +427,7 @@ Still owed, with the milestone that brings the feature under test:
   that grew an `evidence` input would be demanded in the session's argument set
   and redden until somebody settled which it is. **Pinned since
   [#962](https://github.com/theurian/theurian/pull/962) (#711):**
-  `packages/theurian-core/tests/integration/test_write_intent_facade_population.py::test_the_four_write_intent_keys_name_the_same_tools`
+  `tests/integration/test_write_intent_facade_population.py::test_the_four_write_intent_keys_name_the_same_tools`
   asserts the evidence key names the same tools as the draft-only-facade key and
   the hand lists `WRITE_INTENT_TOOLS` and `_WRITE_INTENT_TOOL_NAMES`. Residual: a
   tool that drafts without the facade, requires no `evidence` and is in neither
