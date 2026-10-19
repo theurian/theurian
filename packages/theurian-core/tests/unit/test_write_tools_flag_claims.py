@@ -47,7 +47,7 @@ Record                                    What the flip falsified in it
 ``docs/roadmap.md``                       six, from the §0 preamble to the §6 principle row
 ``docs/security/threat-model.md``         T-12's *Controls* sentence
 ``docs/adr/0026``'s *Compliance* section  the two ``writeTools: false`` sentences re-tensed
-``daemon/server.py``'s tool-count comment the read-only framing and the ``mcp/tools.py:7`` count
+``daemon/server.py``'s tool-count comment the read-only framing (the count is pinned elsewhere)
 ``docs/adr/0029``                         the *known read-only tool set* clause
 ========================================= ======================================================
 
@@ -59,9 +59,10 @@ describing the read-only era. So the fact side is
 record must carry and which it must not. Flip the flag and all ten are RED until
 they are re-tensed; re-tense one backwards and it is RED until the flag moves.
 
-The daemon comment's ``mcp/tools.py:7`` fragment is forbidden as *read-only-era
-framing*, not as a count: the live tool count is pinned structurally, from the
-tree rather than from the prose, by
+The daemon comment's read-only-era framing is held out by the forbidden fragment
+"every tool registered today is read-side". Its ``mcp/tools.py:<n>`` count is not
+pinned here: the live tool count is pinned from the tree rather than from the
+prose by
 ``test_transport_body_cap.py::test_the_server_comment_states_the_live_at_tool_registration_count``.
 
 **Narrates, not mentions.** Many records name this flag; these ten tell a reader
@@ -539,10 +540,7 @@ _ERA_NARRATIONS: Final[tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]], 
             "the seven read-side tools sit far below this",
             "write-intent tools B4 registered, ``knowledge.proposeChange`` and",
         ),
-        (
-            "every tool registered today is read-side",
-            "answers ``mcp/tools.py:7``",
-        ),
+        ("every tool registered today is read-side",),
     ),
     (
         "docs/adr/0029-review-findings-are-governed-knowledge.md",
