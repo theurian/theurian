@@ -24,12 +24,12 @@ holding uncommitted work restore a perturbed file by COPY (`cp` to scratch, `cp`
 back), never with `git checkout --`, which discards uncommitted edits
 (CLAUDE.md's dev-machine section; PR #596's fix arc hit it live).
 **`tools/mutate.py`'s verdict path IS a full-suite run**, control included —
-never start it inside an assignment (PR #596's arc paid this twice): the
-orchestrator serializes full-suite and batch runs across lanes. Run
-`--prepare-tree` plus a scoped `pytest` selection in your own clone. A linked
-worktree shares `.git/config` and already sees `origin/main`: never there. In a
-`--single-branch` or `--depth` clone the control is red unless you first run
-`git remote set-branches --add origin main && git fetch origin main`.
+never start it inside an assignment (PR #596 paid this twice): the orchestrator
+serializes full-suite and batch runs across lanes. Run `--prepare-tree` plus a
+scoped `pytest` selection in your own clone. In a `--single-branch` or `--depth`
+clone the control is red unless you first run
+`git remote set-branches --add origin main && git fetch origin main`; never run
+that in a linked worktree: it shares `.git/config`, already sees `origin/main`.
 
 **A refused step is reported and the work stops there** — never worked around,
 never re-attempted by another route. Retry a transient classifier or
@@ -70,7 +70,7 @@ discharges (FR-*, SEC-*, T-*, ADR-*). A later reader must know whether an
 assertion may be relaxed. If it names no failure, requirement, incident, or
 invariant that justifies the assertion, omit it: no docstring beats a paraphrase
 of the test name. Arrange / Act / Assert, blank-line separated. One behaviour
-per test. Prefer a real object to a mock; mocks confirm only the calls you scripted, not behaviour.
+per test. Prefer a real object to a mock; mocks confirm only scripted calls.
 
 ## Re-tense prose written at RED time
 
