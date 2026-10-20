@@ -45,7 +45,7 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `anchor.repository`. These are recorded as text and not read as paths, and
   the two descriptions now name them. Held, to the reach of a byte scan, by
   `pytest packages/theurian-core/tests/integration/test_write_intent_input_paths.py -k 'stored_as_text or lands_as_text'`:
-  six drives send a canary file's path in those members, the four
+  the drives send a canary file's path in those members, the
   `knowledge.proposeChange` members in one call and each `document` member in
   its own, and assert that the path's text is in, and the canary's bytes are
   not in, the files under the test's tree outside `.git` other than the canary,
