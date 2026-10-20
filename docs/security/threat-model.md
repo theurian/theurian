@@ -7919,7 +7919,8 @@ title, body and evidence anchors are the *caller's* submission and not the
 stored record's text, though its `evidence.json` `candidate` block carries three
 unbounded stored-record strings (T-3) — the holds table above records what a planted record can
 still do, which is make an unearned thread clear the gate; the faces measured or identified so
-far: a key edited to another existing number in the same repository; a planted thread naming a
+far: a thread's own `state`, or its own pull request record's `merged` or `ciSuccessful`, edited;
+a key edited to another existing number in the same repository; a planted thread naming a
 pull request stored for the submitted repository; a repository name reused after a rename or
 deletion (identified in review, not reproduced: it needs GitHub)), and no published
 value on this path is priced over records the caller did
