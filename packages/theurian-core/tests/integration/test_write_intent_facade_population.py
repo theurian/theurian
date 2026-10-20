@@ -185,8 +185,7 @@ def test_accept_reached_through_the_facades_captured_service_fails_closed(
 
 
 _SRC: Final = pathlib.Path(__file__).resolve().parents[2] / "src"
-#: The surfaces whose facade wiring a test drives, each with the node id of that test.
-_DRIVEN: Final = {"theurian/mcp/tools.py": 1, "theurian/cli/okf_commands.py": 1}
+#: Each facade surface with the node id of the wiring test named for it.
 _WIRING_TESTS: Final = {
     "theurian/mcp/tools.py": (
         "test_write_intent_facade_population.py"
@@ -197,6 +196,7 @@ _WIRING_TESTS: Final = {
         "::test_the_import_service_is_handed_the_draft_only_facade_and_not_the_service"
     ),
 }
+_DRIVEN: Final = dict.fromkeys(_WIRING_TESTS, 1)
 
 
 def missing_tests(node_ids: list[str]) -> list[str]:
@@ -216,7 +216,8 @@ def _named(node: ast.expr) -> str | None:
 
 def facade_surfaces(sources: dict[str, str]) -> dict[str, dict[str, int]]:
     """Per kind, per file: ``DraftOnlyProposals(...)`` calls (plain or qualified),
-    subclasses of it, and calls passing ``drafts=``, by syntax tree."""
+    subclasses of it, and calls passing ``drafts=`` (keyword or a ``**{"drafts": ...}``
+    literal), by syntax tree."""
     found: dict[str, dict[str, int]] = {"sites": {}, "subclasses": {}, "consumers": {}}
     for name, text in sources.items():
         for node in ast.walk(ast.parse(text)):
@@ -254,8 +255,10 @@ def test_every_facade_surface_is_one_a_wiring_test_drives() -> None:
     -> mcp/tools.py:3546, cli/okf_commands.py:384). RED drivers: a planted third site,
     qualified site, subclass, and consumer, each in a private copy.
 
-    Each surface is paired with its wiring test's node id in ``_WIRING_TESTS``, and
-    the function must exist there; that it still drives the surface is not read.
+    ``_DRIVEN`` is derived from ``_WIRING_TESTS``, so this pin's own hold is that a
+    surface cannot be added to the census without a named, defined wiring test;
+    that the test still drives the surface is not read, and a rename of either
+    named test also fails ``test_doc_test_cites_collect.py``.
 
     Cannot see a facade built reflectively or under an alias, nor a consumer that
     takes it under another keyword or positionally, through ``**kwargs`` from a
@@ -271,7 +274,6 @@ def test_every_facade_surface_is_one_a_wiring_test_drives() -> None:
         "subclasses": {},
         "consumers": _DRIVEN,
     }
-    assert set(_WIRING_TESTS) == set(_DRIVEN)
     assert not missing_tests(list(_WIRING_TESTS.values()))
 
 

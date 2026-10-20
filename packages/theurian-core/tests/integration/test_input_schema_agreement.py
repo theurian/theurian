@@ -479,8 +479,9 @@ def test_tools_list_serves_each_tools_sdk_derived_parameters(
     server: MCPServer, tmp_path: Path
 ) -> None:
     """The relation above compares ``Tool.parameters``; a client reads ``tools/list``.
-    ADR-0013 ("what the key reads") takes them to be one object (``mcp==2.1.1``,
-    ``mcp/server/mcpserver/server.py:524``), and nothing else compared them.
+    ADR-0013 ("what the key reads") says the key reads the signature-built
+    ``inputSchema`` that ``tools/list`` serves; ``MCPServer.list_tools`` is what
+    hands it ``Tool.parameters``, and nothing else compared the two.
 
     Cannot see a difference that JSON serialization erases.
     """
