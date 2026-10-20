@@ -1314,7 +1314,8 @@ Still owed, with the milestone that will satisfy it:
   > path was refused; the command now opens `git -c core.precomposeunicode=false`. The byte-unequal
   > class deferred above stays fail-closed on purpose: normalising was rejected as fail-open,
   > as it verifies a commit touching only the anchor's twin (Ohm U+2126 for Omega U+03A9).
-  > Measured on macOS only; pinned by
+  > Measured on macOS only, at `true`, `false` and unset; pinned at `true` alone (the
+  > override makes the setting moot) by
   > `test_fix_commit_check_adapter.py::test_a_stored_path_byte_identical_to_an_nfd_tree_path_verifies_under_precompose` and its `-k normalization` cases.
 - **Slice B5 — at least one gate test is driven from a record the real adapter
   shape produces.** That is, a `ReviewResolution` built the way

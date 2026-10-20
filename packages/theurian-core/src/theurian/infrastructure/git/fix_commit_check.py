@@ -85,7 +85,9 @@ pathname byte-*equality* under Unicode normalization is a different root cause -
 ``precomposeunicode=true``, which rewrote an NFD pathspec to NFC and refused a
 valid fix whose stored path was byte-identical to an NFD tree path. NFC-stored
 versus NFD-tree stays a deliberate fail-closed residual (``TOUCHES_NOTHING_HERE``
-under every setting): every normalising alternative was rejected as fail-open,
+tested at ``precomposeunicode=true`` alone; the override makes the setting moot, and
+true, false and unset were each measured so on 2026-10-20 at 62a431c5, on the
+PR #976 branch): every normalising alternative was rejected as fail-open,
 because it verifies a commit that touched only the normalisation twin -- an
 Omega U+03A9 anchor verified by a commit touching the Ohm sign U+2126.
 

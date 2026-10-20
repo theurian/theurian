@@ -2195,8 +2195,9 @@ other's blind spots.
   that. NFC against NFD, either way round, stays `TOUCHES_NOTHING_HERE`, a
   deliberate fail-closed residual: every normalising alternative was rejected as
   fail-open, as it verifies a commit touching only the anchor's twin (Ohm U+2126
-  for an Omega U+03A9 anchor). Measured on macOS only; the fixed-face test skips
-  where git does not rewrite the pathspec. Re-check:
+  for an Omega U+03A9 anchor). Measured on macOS only, at `true`, `false` and unset;
+  the tests run at `true` alone (the override makes the setting moot), the
+  fixed-face one skipping where git does not rewrite the pathspec. Re-check:
   `uv run pytest packages/theurian-core/tests/integration/test_fix_commit_check_adapter.py -k "normalization or nfd"`.
 
   This entry said "two sites" and named the first two until 2026-09-02,
