@@ -247,17 +247,18 @@ jobs:
   # network. The live-`gh` tests in `test_github_adapter_e2e.py` are also
   # marked e2e; they stay covered at tags by release-core's `uv run pytest -q`.
   #
-  # The macOS leg is on trial: no CI series yet. A later commit keeps or drops
-  # it, citing the run ids.
+  # Both legs stay: macOS passed 3 of 3.
   #
-  # PROVISIONAL timeout-minutes: 15 for both legs, from one local run (126.7 s,
-  # macOS, `-m e2e` over the whole repo) at roughly 3-4x an assumed ~4 min CI
-  # wall time, inside the rule in tests/ci/test_job_timeouts.py. Re-size from
-  # the CI series.
+  # timeout-minutes: 10. Sized from core run 39380537417 (head 4ed85f70), job
+  # durations read per job id: ubuntu 118488405854 84 s, 118493910694 86 s,
+  # 118495257816 63 s; macOS 118488405901 98 s, 118494498115 108 s,
+  # 118495699879 100 s. 3x the 108 s max is 5.4 min, so the 10-minute floor in
+  # tests/ci/test_job_timeouts.py ("roughly 3-4x p95, minimum 10") governs. The
+  # provisional 15 is replaced.
   e2e:
     name: End-to-end tests (${{ matrix.os }}, py${{ matrix.python }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:

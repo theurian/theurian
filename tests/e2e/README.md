@@ -53,4 +53,4 @@ that job did not exist, and `core.yml`'s `test` and `offline` jobs *exclude* the
 marker (`-m "not e2e"`). The job runs `tests/e2e`, so the SEC-7 path- and
 symlink-containment cases, and the tests ADR-0002, ADR-0004, ADR-0011, ADR-0013
 and ADR-0016 each cite by name to discharge a compliance item, are now exercised
-on a pull request. Tracked as [#65](https://github.com/theurian/theurian/issues/65).
+on a pull request. Tracked as [#65](https://github.com/theurian/theurian/issues/65) (closed); the job landed with #634.
