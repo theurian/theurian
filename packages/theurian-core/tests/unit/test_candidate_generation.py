@@ -736,11 +736,14 @@ def test_parse_event_key_inverts_external_key(provider: str, repository: str, nu
 @example("github:o/r#000431")
 @example("github:o/r#431x")
 @example("github:o/r#431\n")
+@example("github:a:b#5")
+@example("github:o/r#0")
 @given(key=st.text())
 def test_parse_event_key_reads_only_what_external_key_would_render(key: str) -> None:
-    """The converse of the inverse test: a key that parses is exactly one ``external_key`` renders.
+    """The converse of the inverse test: a key that parses is its parsed event's ``external_key``.
 
-    A zero-padded `#000431` served as pull request 431, and a trailing `\n` or `x`
+    Except ``#0``, which renders as itself but which no ``ReviewEvent`` holds. A
+    zero-padded `#000431` served as pull request 431, and a trailing `\n` or `x`
     slipped past a prefix match (#748). The refusal for a too-wide run is allowed.
     """
     try:
@@ -749,7 +752,15 @@ def test_parse_event_key_reads_only_what_external_key_would_render(key: str) -> 
         return
     if parsed is not None:
         provider, repository, number = parsed
-        assert f"{provider}:{repository}#{number}" == key
+        if number:
+            event = dataclasses.replace(
+                _event(), provider=provider, repository=repository, number=number
+            )
+            assert event.external_key == key
+        else:
+            assert f"{provider}:{repository}#0" == key
+            with pytest.raises(InvariantViolationError):
+                dataclasses.replace(_event(), number=number)
 
 
 @pytest.mark.parametrize(
