@@ -34,9 +34,13 @@ point 1's "There is no other way to write, and ``CanonicalStore`` exposes no
 connection object", the single-interface claim that ADR-0018's Milestone 5
 amendment retracted and that
 https://github.com/theurian/theurian/issues/434 corrected in the write path's
-own docstrings. Both are frozen in the twin for the same reason and both leave
-on the same re-seed; citing the pair is what stops a reader who lands on :30
-concluding this module's derivation is about it.
+own docstrings. The two are in the twin for different reasons and did not leave
+together. Point 1's sentence is at :28-30 in every revision, the served one
+included, because ADR-0018 itself keeps it verbatim and retracts it in its
+Milestone 5 amendment, and a re-seed copies the ADR byte for byte. Point 2's
+clause was corrected in place and left the served revision on the #471 re-seed.
+Citing the pair is what stops a reader who lands on :30 concluding this module's
+derivation is about it.
 
 **That is why the derivation lives here rather than inside either pin.**
 ``tests/unit/test_adr_0018_claims.py`` and ``tests/unit/test_adr_0027_claims.py``

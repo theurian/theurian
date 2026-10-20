@@ -2095,9 +2095,11 @@ def test_no_record_of_the_nfs_exclusion_claims_anything_warns_about_it() -> None
     the file a later "quick start improvement" would helpfully add the mitigation
     to, having read the ADR's own account of ``doctor``.
 
-    Scoped to those two records. The governed corpus snapshot of ADR-0018 still
-    carries ``doctor`` "will warn about it" by design -- see the module docstring
-    -- so widening this to a tree scan would report that anchor as drift.
+    Scoped to those two records. Of the corpus twin's revisions, only the seed,
+    ``01M0D5H1ZW7YW97TFNBPVG7HB1``, carries ``doctor`` "will warn about it": it
+    is superseded but stays tracked and byte-pinned to its source anchor -- see
+    the module docstring -- so widening this to a tree scan would report that
+    anchor as drift.
 
     The scanned population is asserted before it is scanned, which is what stops
     a record that has lost its NFS paragraphs from passing as clean: a search over
