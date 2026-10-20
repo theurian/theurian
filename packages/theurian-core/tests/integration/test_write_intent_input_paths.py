@@ -27,7 +27,10 @@ file under the test's ``tmp_path`` (``.git`` excluded) or in the tool's response
 the ``stored_as_text`` and ``lands_as_text`` drives also refuse a call through one of
 the attributes ``_OPENERS`` patches whose first positional argument (``str``, ``bytes``
 or path-like) has the canary's ``os.path.realpath``, whatever the read then lands.
-Every other read is unseen; ``_refuse_opens_of`` gives examples. The schema walk raises on
+Every other read is unseen; ``_refuse_opens_of`` gives examples.
+That no handler reads one of these members another way is not held here: it rests on a
+source read of the handlers recorded in #995's round-three comment, and the gap is
+#1008. The schema walk raises on
 any keyword outside ``_WALKED`` and ``_INERT``, so a path added under one is refused
 rather than missed.
 """
