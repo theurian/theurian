@@ -10,16 +10,21 @@ https://github.com/theurian/theurian/issues/432 and
 https://github.com/theurian/theurian/issues/433 corrected them -- separately,
 because nothing tied the copy to the original.
 
-The third is the **served-corpus twin**,
-``.theurian/knowledge/architecture/single-writer-synchronous-in-m1.<ulid>.md:31``,
-which still carries the retracted wording and is meant to: the dogfood corpus is
-held byte-identical to its source anchor commit by
-``test_dogfood_corpus_governance.py::test_every_pinned_body_is_byte_identical_to_its_source_anchor_commit``,
-so only a governed re-seed can move it, and that re-seed is #199 unit C. It is
-outside both pins on purpose -- a scan that reached it would report the
-governance guard doing its job as drift. Recorded here rather than left to a
-reader who greps the tree for the old sentence, finds a third copy, and has to
-guess which of the three is the defect.
+The third is the **corpus twin**,
+``.theurian/knowledge/architecture/single-writer-synchronous-in-m1.<ulid>.md``,
+and it is outside both pins on purpose. Its **seed** revision,
+``01M0D5H1ZW7YW97TFNBPVG7HB1``, still carries the retracted wording at :31 and
+is meant to: it is superseded but stays tracked, and
+``test_dogfood_corpus_governance.py::test_every_pinned_body_is_byte_identical_to_its_source_anchor_commit``
+holds every revision a tracked migration declares byte-identical to its source
+anchor commit, so a re-seed supersedes that body rather than moving it. The
+**served** revision has carried the corrected clause since the #471 re-seed. A
+scan that reached the corpus would report the governance guard doing its job as
+drift on the seed, and the fix as the defect on any later revision whose
+correction note quotes the retracted phrase -- the trap
+:func:`find_lock_on_database` records for a file-wide call. Recorded here rather
+than left to a reader who greps the tree for the old sentence, finds a third
+copy, and has to guess which of the three is the defect.
 
 The line number is worth getting right because its neighbour carries a
 *different* retracted claim. Measured 2026-08-31 against
@@ -29,9 +34,13 @@ point 1's "There is no other way to write, and ``CanonicalStore`` exposes no
 connection object", the single-interface claim that ADR-0018's Milestone 5
 amendment retracted and that
 https://github.com/theurian/theurian/issues/434 corrected in the write path's
-own docstrings. Both are frozen in the twin for the same reason and both leave
-on the same re-seed; citing the pair is what stops a reader who lands on :30
-concluding this module's derivation is about it.
+own docstrings. The two are in the twin for different reasons and did not leave
+together. Point 1's sentence is at :28-30 in every revision, the served one
+included, because ADR-0018 itself keeps it verbatim and retracts it in its
+Milestone 5 amendment, and a re-seed copies the ADR byte for byte. Point 2's
+clause was corrected in place and left the served revision on the #471 re-seed.
+Citing the pair is what stops a reader who lands on :30 concluding this module's
+derivation is about it.
 
 **That is why the derivation lives here rather than inside either pin.**
 ``tests/unit/test_adr_0018_claims.py`` and ``tests/unit/test_adr_0027_claims.py``

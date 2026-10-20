@@ -84,13 +84,15 @@ it reads a paragraph, so the unbalanced fence fails naming the file instead of
 blinding the scan under it.
 
 **The corpus twin stays excluded, and its reason does not reach README.**
-``.theurian/knowledge/architecture/single-writer-synchronous-in-m1.<ulid>.md`` is
-held byte-identical to its source anchor commit by
-``test_dogfood_corpus_governance.py::test_every_pinned_body_is_byte_identical_to_its_source_anchor_commit``,
-so it still carries ``doctor`` "will warn about it" and only a governed re-seed
-(#199 unit C) can move it: a scan that reached it would report the governance
-guard doing its job as drift. ``README.md`` is under no such freeze, so nothing
-about the twin argues for leaving it unread.
+``.theurian/knowledge/architecture/single-writer-synchronous-in-m1.<ulid>.md``
+matches every revision of this item, and the **seed** revision,
+``01M0D5H1ZW7YW97TFNBPVG7HB1``, still carries ``doctor`` "will warn about it" at
+:95: it is superseded but stays tracked, and
+``test_dogfood_corpus_governance.py::test_every_pinned_body_is_byte_identical_to_its_source_anchor_commit``
+holds it byte-identical to its source anchor commit. The **served** revision has
+carried the correction since the #471 re-seed. A scan that reached the corpus
+would report the governance guard doing its job as drift. ``README.md`` is under
+no such freeze, so nothing about the twin argues for leaving it unread.
 
 The fact is read from **source text**, not from a call. There is nothing to
 invoke: the claim is about an absence, and an absence has no return value. A
@@ -200,12 +202,15 @@ nothing, so it is a third live record of *this* claim that no half below reads.
 That is a gap rather than a decision, recorded here and not closed: the scope
 this pin was written to is ADR-0018's Decision point 2 and ADR-0027's restatement
 of it.
-``.theurian/knowledge/architecture/single-writer-synchronous-in-m1.<ulid>.md``
-still carries the retracted sentence byte-identically. That is not drift: the
-dogfood corpus is held byte-identical to its source anchor commit by
-``test_dogfood_corpus_governance.py::test_every_pinned_body_is_byte_identical_to_its_source_anchor_commit``,
-so only a governed re-seed can move it -- tracked as #199 unit C. A repo-wide
-walker over this wording would go RED on that file on the day it was written.
+The **seed** revision of
+``.theurian/knowledge/architecture/single-writer-synchronous-in-m1.<ulid>.md``,
+``01M0D5H1ZW7YW97TFNBPVG7HB1``, still carries the retracted sentence at :31.
+That is not drift: the seed is superseded but stays tracked, and
+``test_dogfood_corpus_governance.py::test_every_pinned_body_is_byte_identical_to_its_source_anchor_commit``
+holds it byte-identical to its source anchor commit. The **served** revision has
+carried the corrected clause since the #471 re-seed. A repo-wide walker over
+this wording would go RED on the day it was written: on the seed's file for its
+:31, and on any later revision whose correction note quotes the retracted phrase.
 Recorded here because a reader who greps the tree for the old sentence finds it
 and needs to know why it stays.
 
@@ -2090,9 +2095,11 @@ def test_no_record_of_the_nfs_exclusion_claims_anything_warns_about_it() -> None
     the file a later "quick start improvement" would helpfully add the mitigation
     to, having read the ADR's own account of ``doctor``.
 
-    Scoped to those two records. The governed corpus snapshot of ADR-0018 still
-    carries ``doctor`` "will warn about it" by design -- see the module docstring
-    -- so widening this to a tree scan would report that anchor as drift.
+    Scoped to those two records. Of the corpus twin's revisions, only the seed,
+    ``01M0D5H1ZW7YW97TFNBPVG7HB1``, carries ``doctor`` "will warn about it": it
+    is superseded but stays tracked and byte-pinned to its source anchor -- see
+    the module docstring -- so widening this to a tree scan would report that
+    anchor as drift.
 
     The scanned population is asserted before it is scanned, which is what stops
     a record that has lost its NFS paragraphs from passing as clean: a search over

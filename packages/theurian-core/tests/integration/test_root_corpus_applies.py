@@ -321,9 +321,16 @@ _RESEED_PAYLOAD_MARKERS: Final[tuple[_PayloadMarker, ...]] = (
     _PayloadMarker(ItemId("architecture.yaml-knowledge-migrations"), "ADR-0039", 3),
     _PayloadMarker(ItemId("architecture.dependency-pinning-and-pre-1-0-isolation"), "`3.13`", 1),
     _PayloadMarker(ItemId("architecture.dco-over-cla"), "30/30", 1),
-    _PayloadMarker(ItemId("architecture.state-hash-covers-the-working-tree"), "`contentSha256`", 1),
+    # Re-measured 2026-10-20 for the #979 (#634) re-seed: `contentSha256` counts 1 in
+    # both the new body and the revision it replaced, so it stopped discriminating.
+    # `#979` counts 1 in the new body and 0 in all earlier corpus bodies and at every
+    # source commit before 502cd141; it sits in the compliance-section amendment block.
+    _PayloadMarker(ItemId("architecture.state-hash-covers-the-working-tree"), "#979", 1),
     _PayloadMarker(ItemId("architecture.sqlite-schema-versioning"), "#117", 3),
-    _PayloadMarker(ItemId("architecture.single-writer-synchronous-in-m1"), "#497", 1),
+    # Re-measured 2026-10-20 for the #979 (#634) re-seed: `#497` counts 1 in both the
+    # new body and the revision it replaced. `#979` counts 1 in the new body and 0 in
+    # all four earlier corpus bodies and at every source commit before 502cd141.
+    _PayloadMarker(ItemId("architecture.single-writer-synchronous-in-m1"), "#979", 1),
     _PayloadMarker(ItemId("architecture.rank-fusion-over-score-normalisation"), "T-17a's", 1),
     # Re-measured 2026-10-08 for #832's re-seed: `#145` counts 1 in both the new
     # body and the revision it replaced. The test-name cite below counts 1 in the new
