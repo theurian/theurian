@@ -758,7 +758,7 @@ def test_parse_event_key_reads_only_what_external_key_would_render(key: str) -> 
 def test_a_review_event_refuses_an_identity_external_key_cannot_round_trip(
     provider: str, repository: str
 ) -> None:
-    """An empty part or a `:` in the provider renders a key that parses as another identity (#748)."""
+    """An empty part or a `:` in the provider renders a key that parses wrongly (#748)."""
     with pytest.raises(InvariantViolationError):
         dataclasses.replace(_event(), provider=provider, repository=repository)
 

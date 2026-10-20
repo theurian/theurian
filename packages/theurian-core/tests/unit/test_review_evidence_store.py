@@ -1764,7 +1764,7 @@ def test_an_anchor_from_another_provider_is_refused() -> None:
 def test_a_landed_event_whose_provider_names_a_colon_refuses_as_evidence_error(
     tmp_path: Path,
 ) -> None:
-    """A clone-delivered colon provider must be an operator-readable refusal, not a traceback (#748).
+    """A clone-delivered colon provider refuses as an evidence error, not a traceback (#748).
 
     The file sits where its own (rewritten) identity derives, so the reader's
     path check passes and the refusal under test is ``ReviewEvent``'s.
@@ -1776,7 +1776,9 @@ def test_a_landed_event_whose_provider_names_a_colon_refuses_as_evidence_error(
     leaf = _review_root(tmp_path) / landed
     text = leaf.read_text(encoding="utf-8")
     assert '"provider": "github"' in text, "the fixture lost the payload spelling it rewrites"
-    leaf.write_text(text.replace('"provider": "github"', '"provider": "github:a"'), encoding="utf-8")
+    leaf.write_text(
+        text.replace('"provider": "github"', '"provider": "github:a"'), encoding="utf-8"
+    )
 
     with pytest.raises(ReviewEvidenceError, match="provider"):
         store.read_all()
