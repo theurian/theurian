@@ -20,7 +20,13 @@ intersects :class:`CandidateSubmission`'s fields with the gate's own, read live.
 of the thread, so the thread's record is resolved by the caller's key and the
 pull request's by the number parsed out of the thread's ``event_key`` -- through
 the *same* visibility resolve, so a withheld pull-request record refuses exactly
-as a withheld thread does.
+as a withheld thread does. A key that does not parse, or names another repository,
+refuses before that resolve; the record it returns must carry that ``event_key``,
+or the thread is read against a pull request that is not its own. ``external_key``
+is built from the record's own provider, repository and number, so that equality
+also binds the record's repository to the submitted one: ``ReviewEvent`` refuses a ``:`` provider.
+A same-repository renumbering (the key edited to another existing number)
+is not caught here; it stays a T-24 residual.
 
 **A record the resolve does not answer for refuses uniformly, and nothing is read
 on that path** (decision 5). Withheld and absent are the same answer by
@@ -50,7 +56,6 @@ three-way answer is collapsed here.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Final, final
@@ -59,16 +64,17 @@ from theurian.application.draft_only_proposals import DraftOnlyProposals
 from theurian.application.proposal_service import DraftedProposal, ProposalRequest
 from theurian.application.review_landing_gate import ReviewRecordPayload
 from theurian.domain.enums import KnowledgeKind, ReviewCommentCategory, ReviewThreadState
-from theurian.domain.errors import TheurianError
+from theurian.domain.errors import InvariantViolationError, TheurianError
 from theurian.domain.identifiers import ItemId, RevisionId
 from theurian.domain.ports.determinism import Clock
-from theurian.domain.proposal import Evidence
+from theurian.domain.proposal import CandidateProvenance, Evidence
 from theurian.domain.review import (
     FixCommitVerdict,
     KnowledgeCandidate,
     PromotionGate,
     ReviewEvent,
     ReviewThread,
+    parse_event_key,
 )
 from theurian.domain.review_ingest import bounded_quote
 from theurian.domain.review_search import untransportable_reason
@@ -91,14 +97,6 @@ VerifyFixCommit = Callable[[str, str], FixCommitVerdict]
 #: is here although the shipped adapter never emits it: the codec accepts one, so
 #: a clone-delivered evidence file can carry it (T-24).
 _EXCLUDED_STATES: Final = frozenset({ReviewThreadState.OUTDATED, ReviewThreadState.DISMISSED})
-
-#: The pull request's number at the end of a thread's ``event_key``
-#: (``provider:owner/name#number``), which is that record's own key. ``re.ASCII``
-#: for ``review_search_builder``'s load-bearing reason: ``event_key`` is
-#: author-controlled data a clone can deliver (T-24), and without the flag ``\d``
-#: ranges over every Unicode decimal, so a key ending in a fullwidth-digit number
-#: (U+FF10..U+FF19) parses to a record key no store holds rather than to nothing.
-_PULL_REQUEST_NUMBER: Final = re.compile(r"#(\d+)\Z", re.ASCII)
 
 #: What every record that does not arrive is refused with, and a **constant**: it
 #: interpolates nothing -- not the key, not the repository, nothing read from the
@@ -236,7 +234,9 @@ class CandidateGenerator:
         )
         # `local=False` is ADR-0013 point 7: `--local` writes into the managed
         # ignore block, where the human review FR-V4 relies on cannot reach it.
-        proposal = self._drafts.draft(_request(submission, candidate), local=False)
+        proposal = self._drafts.draft(
+            _request(submission, candidate, thread.event_key), local=False
+        )
         return GeneratedCandidate(candidate=candidate, proposal=proposal)
 
     def _thread(self, submission: CandidateSubmission) -> ReviewThread:
@@ -246,11 +246,15 @@ class CandidateGenerator:
         return record
 
     def _event(self, submission: CandidateSubmission, thread: ReviewThread) -> ReviewEvent:
-        number = _PULL_REQUEST_NUMBER.search(thread.event_key)
-        if number is None:
+        try:
+            parsed = parse_event_key(thread.event_key)
+        except InvariantViolationError:
+            raise _unresolved() from None
+        if parsed is None or parsed[1] != submission.repository:
             raise _unresolved()
-        record = self._record(submission, number.group(1))
-        if not isinstance(record, ReviewEvent):
+        record = self._record(submission, str(parsed[2]))
+        # The thread carries no provider: this equality is what binds it.
+        if not isinstance(record, ReviewEvent) or record.external_key != thread.event_key:
             raise _unresolved()
         return record
 
@@ -264,8 +268,10 @@ class CandidateGenerator:
 def _unresolved() -> CandidateGenerationError:
     """The shared refusal for a record that does not arrive.
 
-    Three shapes reach it: a key the resolve does not answer for, a stored record
-    whose kind is not the one its key promised, and -- once #575 creates the class
+    These shapes reach it: a key the resolve does not answer for, a stored record
+    whose kind is not the one its key promised, a thread whose ``event_key`` names
+    no pull request of the submitted repository, a pull request record that is not
+    the one that key names, and -- once #575 creates the class
     -- a withheld record, which the resolve answers for exactly as it answers for
     an absent one. They share a sentence because the difference between them is
     material the caller was not granted (decision 5). It takes no argument, which
@@ -371,7 +377,9 @@ def _refresh(submission: CandidateSubmission) -> str:
     )
 
 
-def _request(submission: CandidateSubmission, candidate: KnowledgeCandidate) -> ProposalRequest:
+def _request(
+    submission: CandidateSubmission, candidate: KnowledgeCandidate, event_key: str
+) -> ProposalRequest:
     """ADR-0033 decision 1's candidate-to-request table, applied.
 
     ``trust_level`` is the *candidate's*, fixed by its declaration
@@ -417,4 +425,14 @@ def _request(submission: CandidateSubmission, candidate: KnowledgeCandidate) -> 
         namespace=submission.namespace,
         expected_revision=submission.expected_revision,
         sensitivity_is_default=True,
+        candidate_provenance=CandidateProvenance(
+            repository=submission.repository,
+            record_key=candidate.source_thread_id,
+            event_key=event_key,
+            fix_commit=submission.fix_commit,
+            fix_commit_verdict=FixCommitVerdict.VERIFIED.value,
+            category=candidate.category.value,
+            candidate_id=candidate.candidate_id,
+            generated_at=candidate.generated_at.isoformat(),
+        ),
     )

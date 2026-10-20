@@ -33,12 +33,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
+import hypothesis
 import pytest
 from fakes.clock import FrozenClock
 from fakes.ids import SeededIdGenerator
+from hypothesis import example, given, settings
+from hypothesis import strategies as st
 
 from theurian.application.candidate_generation import (
-    _PULL_REQUEST_NUMBER,
     UNRESOLVED_RECORD_REFUSAL,
     CandidateGenerationError,
     CandidateGenerator,
@@ -58,6 +60,7 @@ from theurian.domain.enums import (
     Sensitivity,
     TrustLevel,
 )
+from theurian.domain.errors import InvariantViolationError
 from theurian.domain.identifiers import (
     AgentId,
     ItemId,
@@ -77,6 +80,7 @@ from theurian.domain.review import (
     ReviewParticipant,
     ReviewResolution,
     ReviewThread,
+    parse_event_key,
 )
 from theurian.domain.values import ContentHash, MediaType
 
@@ -683,34 +687,97 @@ def test_a_successful_ci_outcome_satisfies_the_gate() -> None:
 
 
 def test_the_pull_request_number_is_matched_ascii_only() -> None:
-    """LOW-4: the ``event_key`` number is parsed with ``\\d`` under ``re.ASCII`` (T-24).
+    """LOW-4: the ``event_key`` number is parsed with ASCII digits only (T-24).
 
-    ``_PULL_REQUEST_NUMBER`` parses the pull request number out of a stored
-    thread's ``event_key`` (``provider:owner/name#<number>``), and that key is
-    author-controlled data a clone can deliver. ``review_search_builder`` already
-    compiles its own ``#(\\d+)`` with ``re.ASCII`` and calls the flag load-bearing;
-    without it here ``\\d`` matches every Unicode decimal digit, so a key ending in
-    fullwidth ``#431`` (U+FF14 U+FF13 U+FF11) parses to a record key no store holds
-    -- inert today, but a silent divergence from the sibling a review file can reach.
+    ``parse_event_key`` reads the pull request number out of a stored thread's
+    ``event_key`` (``provider:owner/name#<number>``), and that key is
+    author-controlled data a clone can deliver. Without ASCII-only digits a key
+    ending in fullwidth ``#431`` (U+FF14 U+FF13 U+FF11) would parse to a record key
+    no store holds.
 
-    RED until the flag lands: without ``re.ASCII`` the fullwidth key matches. A
-    plain-ASCII number is the control -- it must keep parsing under the flag, or the
-    pin would be satisfied by a pattern that matched nothing.
+    RED if the parser admits fullwidth digits. A plain-ASCII key is the control:
+    it must keep parsing, or the pin would hold over a parser that matched nothing.
     """
-    # `#431` written with fullwidth digits (U+FF11/U+FF13/U+FF14) as escapes so the
-    # data is unambiguous to a reader and to RUF001; `\d` without `re.ASCII` matches them.
+    # `#431` written with fullwidth digits as escapes so the data is unambiguous
+    # to a reader and to RUF001.
     fullwidth = f"github:{REPOSITORY}#\uff14\uff13\uff11"
 
-    assert _PULL_REQUEST_NUMBER.search(fullwidth) is None, (
-        f"the pull-request-number pattern matched fullwidth digits in {fullwidth!r}. "
-        f"`review_search_builder` compiles the sibling pattern with `re.ASCII`; without "
-        f"it `\\d` ranges over every Unicode decimal, so a clone-delivered `event_key` "
-        f"parses to a key this store never held rather than to nothing."
+    assert parse_event_key(fullwidth) is None, (
+        f"{fullwidth!r} parsed: `\\d` ranges over every Unicode decimal, so a "
+        f"clone-delivered `event_key` would parse to a key this store never held."
     )
-    assert _PULL_REQUEST_NUMBER.search(f"github:{REPOSITORY}#431").group(1) == "431", (  # type: ignore[union-attr]
-        "an ordinary ASCII pull request number no longer parses, so the pin above would "
-        "hold over a pattern that matched nothing rather than one narrowed to ASCII"
+    assert parse_event_key(f"github:{REPOSITORY}#431") == ("github", REPOSITORY, 431), (
+        "an ordinary ASCII key no longer parses, so the pin above would hold over a "
+        "parser that matched nothing"
     )
+
+
+@example(provider="github", repository="a:b", number=5)
+@example(provider="github", repository="o/r", number=10**19 - 1)
+@example(provider="github", repository=" ", number=5)
+@given(
+    provider=st.text(st.characters(blacklist_characters=":"), min_size=1),
+    repository=st.text(st.characters(), min_size=1),
+    number=st.integers(1, 10**19 - 1),
+)
+def test_parse_event_key_inverts_external_key(provider: str, repository: str, number: int) -> None:
+    """A writer and reader that drift apart make every honest key read as foreign (#748).
+
+    The strategy draws ``ReviewEvent``'s domain, lone surrogates included, with numbers up to the
+    parser's 19 digits. The examples pin on every run the grammar (the provider holds no `:`, the
+    repository may, so `github:a:b#5` parses as `("github", "a:b", 5)`), the widest number and a
+    whitespace-only repository.
+    """
+    event = dataclasses.replace(_event(), provider=provider, repository=repository, number=number)
+
+    assert parse_event_key(event.external_key) == (provider, repository, number)
+
+
+@example("github:o/r#000431")
+@example("github:o/r#431x")
+@example("github:o/r#431\n")
+@example("github:a:b#5")
+@example("github:o/r#0")
+@example("github:o/r#05")
+@example(":o/r#5")
+@example("github:#5")
+@settings(deadline=None, derandomize=True, database=None, max_examples=400)
+@given(key=st.one_of(st.text(), st.from_regex(r"[^:]*:.*#[0-9]+", fullmatch=True)))
+def test_parse_event_key_reads_only_what_external_key_would_render(key: str) -> None:
+    """The converse of the inverse test: a key that parses is its parsed event's ``external_key``.
+
+    Except ``#0``, which renders as itself but which no ``ReviewEvent`` holds. A
+    zero-padded `#000431` served as pull request 431, and a trailing `\n` or `x`
+    slipped past a prefix match (#748). The refusal for a too-wide run is allowed.
+    """
+    try:
+        parsed = parse_event_key(key)
+    except InvariantViolationError:
+        hypothesis.event("refused")
+        return
+    hypothesis.event("unparsed" if parsed is None else "parsed")
+    if parsed is not None:
+        provider, repository, number = parsed
+        if number:
+            event = dataclasses.replace(
+                _event(), provider=provider, repository=repository, number=number
+            )
+            assert event.external_key == key
+        else:
+            assert f"{provider}:{repository}#0" == key
+            with pytest.raises(InvariantViolationError):
+                dataclasses.replace(_event(), number=number)
+
+
+@pytest.mark.parametrize(
+    ("provider", "repository"), [("", "o/r"), ("github:a", "o/r"), ("github", "")]
+)
+def test_a_review_event_refuses_an_identity_external_key_cannot_round_trip(
+    provider: str, repository: str
+) -> None:
+    """An empty part or a `:` in the provider renders a key that parses wrongly (#748)."""
+    with pytest.raises(InvariantViolationError):
+        dataclasses.replace(_event(), provider=provider, repository=repository)
 
 
 def test_the_submission_type_declares_no_gate_signal() -> None:
@@ -868,6 +935,100 @@ def test_a_pull_request_key_holding_a_record_of_another_kind_is_the_uniform_refu
         f"record of the wrong kind, and a withheld one -- are one refusal (decision 5), "
         f"and the alternative here is not a second sentence but an `AttributeError`."
     )
+
+
+def _event_key_corpus(event_key: str, stored_event: ReviewEvent) -> _Corpus:
+    """A thread whose ``event_key`` is ``event_key``, over a PR record under keys 431 and 0."""
+    thread = dataclasses.replace(_thread(_event()), event_key=event_key)
+    pull_request = {(REPOSITORY, key): EVENT_FILE for key in (str(PULL_REQUEST), "0")}
+    return _Corpus(
+        records={THREAD_FILE: thread, EVENT_FILE: stored_event},
+        paths={(REPOSITORY, THREAD_KEY): THREAD_FILE, **pull_request},
+    )
+
+
+_FOREIGN: Final = "evil/other"
+
+
+@pytest.mark.parametrize(
+    ("event_key", "stored_event"),
+    [
+        (f"github:{_FOREIGN}#431", _event()),
+        (f"gitlab:{REPOSITORY}#431", _event()),
+        ("not-a-key-at-all#431", _event()),
+        (
+            f"github:{_FOREIGN}#431",
+            dataclasses.replace(_event(), repository=_FOREIGN),
+        ),
+        (f"github:{REPOSITORY}#" + "9" * 20, _event()),
+        (f"github:{REPOSITORY}#0", _event()),
+    ],
+    ids=[
+        "foreign-repo-key",
+        "foreign-provider",
+        "not-a-key",
+        "foreign-key-and-payload",
+        "wider-than-the-column",
+        "zero",
+    ],
+)
+def test_a_pull_request_record_the_thread_does_not_name_is_the_uniform_refusal(
+    event_key: str, stored_event: ReviewEvent
+) -> None:
+    """#748 / T-24: the number is read off ``event_key`` but the record must be *that* PR.
+
+    The second resolve is keyed by the *submitted* repository and the number
+    alone, so a delivered thread whose ``event_key`` names another repository
+    would otherwise borrow the local #431's merged and green signals. In the first
+    case the local #431 is merged and green, so a regression to "trust whatever
+    the number resolves" LANDS rather than refusing for another reason. Key ``0``
+    resolves to that record too, so ``#0`` meets only the ``external_key`` equality.
+    A renumber inside the same repository is T-24's recorded residual and is not asserted.
+    """
+    verified: list[str] = []
+
+    def verify(commit: str, _path: str) -> FixCommitVerdict:
+        verified.append(commit)
+        return FixCommitVerdict.VERIFIED
+
+    drafts = _RecordingDrafts()
+    corpus = _event_key_corpus(event_key, stored_event)
+    generator = CandidateGenerator(
+        resolve_evidence_path=corpus.resolve,
+        read_record=corpus.read,
+        verify_fix_commit=verify,
+        drafts=DraftOnlyProposals(drafts),
+        clock=FrozenClock(),
+    )
+
+    with pytest.raises(CandidateGenerationError) as refusal:
+        generator.generate(_submission())
+
+    assert str(refusal.value) == UNRESOLVED_RECORD_REFUSAL
+    assert refusal.value.__context__ is None or refusal.value.__suppress_context__
+    assert verified == [], "the refusal came after the fix commit was verified"
+    assert drafts.requests == []
+
+
+def test_a_differently_cased_repository_ingested_consistently_still_lands() -> None:
+    """The #748 guard adds no refusal for a case variant main resolved.
+
+    The store's by-key lookup is an exact match, so a variant resolves only when
+    the thread, the PR record and the submission all spell it alike
+    (``landed_keys`` case-folds, the resolve does not). Driven against the guard's
+    two comparisons, both of which must be exact on a consistent spelling.
+    """
+    variant = "Theurian/Theurian"
+    event = dataclasses.replace(_event(), repository=variant)
+    corpus = _Corpus(
+        records={THREAD_FILE: _thread(event), EVENT_FILE: event},
+        paths={(variant, THREAD_KEY): THREAD_FILE, (variant, str(PULL_REQUEST)): EVENT_FILE},
+    )
+    drafts = _RecordingDrafts()
+
+    _generator(corpus, drafts).generate(_submission(repository=variant))
+
+    assert len(drafts.requests) == 1
 
 
 # ---------------------------------------------------------------------------

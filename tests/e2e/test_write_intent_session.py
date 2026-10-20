@@ -392,7 +392,8 @@ class _McpClient:
         return parsed
 
     def tool_schemas(self) -> dict[str, dict[str, Any]]:
-        """Every registered tool's published input schema, by name.
+        """Every registered tool's served ``inputSchema`` (the SDK's, built from the
+        handler signature, not the ``schemas/mcp`` files), by name.
 
         The schema rather than the name alone, because what makes a tool
         write-intent is visible in what it requires of a caller and is not
@@ -479,7 +480,7 @@ WRITE_INTENT_INPUT_KEY = "evidence"
 def _write_intent_tools(schemas: dict[str, dict[str, Any]]) -> set[str]:
     """Which registered tools are write-intent, derived rather than listed.
 
-    Keyed on the published input schema's ``required`` list, so the answer comes
+    Keyed on the served ``inputSchema``'s ``required`` list, so the answer comes
     from the daemon's own surface. A hand-written list here would reintroduce
     exactly the drift this replaces: it would be checked against itself.
     """
@@ -509,7 +510,7 @@ def test_a_session_calling_every_write_intent_tool_leaves_approved_knowledge_unc
     by exactly the calls made, which is where "AI proposes" lands.
 
     The session's coverage is the control, and it is **derived from the daemon**:
-    the write-intent tools are the registered ones whose published input schema
+    the write-intent tools are the registered ones whose served ``inputSchema``
     requires ``evidence`` (ADR-0032 decision 4), that set must equal the argument
     sets this module carries, and every member is called and asserted to have
     returned a distinct proposal id. A session that reached none of them would

@@ -903,7 +903,9 @@ for every surface that drafts a proposal:
 **Refusals.** A record key this installation's built review store does not answer
 for, a stored record whose kind is not the one its key promised, and — once
 private-repository ingestion creates the class — a withheld record are **one
-refusal**: what separates them is material the caller was not granted. *That
+refusal**: what separates them is material the caller was not granted. A thread
+whose `event_key` names another repository, another provider or no parseable
+pull request gets that same refusal, before the fix commit is checked. *That
 commit does not exist here* and *that commit touched nothing this thread names*
 are one refusal too, for the same reason one step over: the difference is a fact
 about the repository's contents rather than about the request. An unmet gate

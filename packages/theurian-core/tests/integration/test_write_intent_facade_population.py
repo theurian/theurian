@@ -12,7 +12,7 @@ list them by hand, and the facade key (:mod:`write_intent_population`)
 reads the registration. Before this pin none of the four checked another (#711).
 
 Residual, not closed: a tool that drafts without the facade, requires no
-``evidence`` and is absent from the hand list is seen by none of the four keys.
+``evidence`` and is absent from both hand lists is seen by none of the four keys.
 
 The two hand lists are read from their modules' source by syntax tree.
 No test module imports another at 6c3c2827 (key: ``git grep -n -E
@@ -47,11 +47,13 @@ def _hand_list(relative: str, name: str) -> frozenset[str]:
     """The ``frozenset({...})`` literal bound to *name*, read without importing the module."""
     path = pathlib.Path(__file__).parent / relative
     for node in ast.parse(path.read_text(encoding="utf-8")).body:
-        targets = node.targets if isinstance(node, ast.Assign) else [getattr(node, "target", None)]
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
         if any(isinstance(t, ast.Name) and t.id == name for t in targets) and isinstance(
-            node.value if hasattr(node, "value") else None, ast.Call
+            node.value, ast.Call
         ):
-            return frozenset(ast.literal_eval(node.value.args[0]))  # type: ignore[attr-defined]
+            return frozenset(ast.literal_eval(node.value.args[0]))
     raise AssertionError(f"{name} not found in {relative}")
 
 
@@ -183,9 +185,29 @@ def test_accept_reached_through_the_facades_captured_service_fails_closed(
 
 
 _SRC: Final = pathlib.Path(__file__).resolve().parents[2] / "src"
-#: The surfaces whose facade wiring a test drives: ``mcp/tools.py`` by the accept
-#: walk above, ``cli/okf_commands.py`` by ``test_okf_cli.py``'s wiring test.
-_DRIVEN: Final = {"theurian/mcp/tools.py": 1, "theurian/cli/okf_commands.py": 1}
+#: Each facade surface with the node id of the wiring test named for it.
+_WIRING_TESTS: Final = {
+    "theurian/mcp/tools.py": (
+        "test_write_intent_facade_population.py"
+        "::test_accept_reached_through_the_facades_captured_service_fails_closed"
+    ),
+    "theurian/cli/okf_commands.py": (
+        "test_okf_cli.py"
+        "::test_the_import_service_is_handed_the_draft_only_facade_and_not_the_service"
+    ),
+}
+_DRIVEN: Final = dict.fromkeys(_WIRING_TESTS, 1)
+
+
+def missing_tests(node_ids: list[str]) -> list[str]:
+    """Node ids (``file::function``, file beside this one) whose function is not defined."""
+    missing = []
+    for node_id in node_ids:
+        file, _, function = node_id.partition("::")
+        tree = ast.parse((pathlib.Path(__file__).parent / file).read_text(encoding="utf-8"))
+        if not any(isinstance(n, ast.FunctionDef) and n.name == function for n in ast.walk(tree)):
+            missing.append(node_id)
+    return missing
 
 
 def _named(node: ast.expr) -> str | None:
@@ -194,14 +216,26 @@ def _named(node: ast.expr) -> str | None:
 
 def facade_surfaces(sources: dict[str, str]) -> dict[str, dict[str, int]]:
     """Per kind, per file: ``DraftOnlyProposals(...)`` calls (plain or qualified),
-    subclasses of it, and calls passing ``drafts=``, by syntax tree."""
+    subclasses of it, and calls passing ``drafts=`` (keyword or a ``**{"drafts": ...}``
+    literal), by syntax tree."""
     found: dict[str, dict[str, int]] = {"sites": {}, "subclasses": {}, "consumers": {}}
     for name, text in sources.items():
         for node in ast.walk(ast.parse(text)):
             if isinstance(node, ast.Call):
                 if _named(node.func) == "DraftOnlyProposals":
                     found["sites"][name] = found["sites"].get(name, 0) + 1
-                if any(k.arg == "drafts" for k in node.keywords):
+                if any(
+                    k.arg == "drafts"
+                    or (
+                        k.arg is None
+                        and isinstance(k.value, ast.Dict)
+                        and any(
+                            isinstance(d, ast.Constant) and d.value == "drafts"
+                            for d in k.value.keys
+                        )
+                    )
+                    for k in node.keywords
+                ):
                     found["consumers"][name] = found["consumers"].get(name, 0) + 1
             elif isinstance(node, ast.ClassDef) and any(
                 _named(base) == "DraftOnlyProposals" for base in node.bases
@@ -221,8 +255,14 @@ def test_every_facade_surface_is_one_a_wiring_test_drives() -> None:
     -> mcp/tools.py:3546, cli/okf_commands.py:384). RED drivers: a planted third site,
     qualified site, subclass, and consumer, each in a private copy.
 
+    ``_DRIVEN`` is derived from ``_WIRING_TESTS``, so this pin's own hold is that a
+    surface cannot be added to the census without a named, defined wiring test;
+    that the test still drives the surface is not read, and a rename of either
+    named test also fails ``test_doc_test_cites_collect.py``.
+
     Cannot see a facade built reflectively or under an alias, nor a consumer that
-    takes it under another keyword or positionally.
+    takes it under another keyword or positionally, through ``**kwargs`` from a
+    non-literal mapping, or through a ``**{...}`` literal with a computed key.
     """
     sources = {
         str(path.relative_to(_SRC)): path.read_text(encoding="utf-8")
@@ -234,16 +274,29 @@ def test_every_facade_surface_is_one_a_wiring_test_drives() -> None:
         "subclasses": {},
         "consumers": _DRIVEN,
     }
+    assert not missing_tests(list(_WIRING_TESTS.values()))
+
+
+def test_a_wiring_test_that_is_renamed_is_reported_missing() -> None:
+    here = pathlib.Path(__file__).name
+
+    assert missing_tests([f"{here}::test_no_such_wiring_test"]) == [
+        f"{here}::test_no_such_wiring_test"
+    ]
+    assert not missing_tests([f"{here}::test_the_comparison_is_quiet_when_all_four_agree"])
 
 
 def test_the_surface_scan_counts_each_shape_and_ignores_a_mention() -> None:
     sources = {
-        "a.py": "x = DraftOnlyProposals(s)\ny = m.DraftOnlyProposals(t)\nf(drafts=x)\n",
+        "a.py": (
+            "x = DraftOnlyProposals(s)\ny = m.DraftOnlyProposals(t)\n"
+            "f(drafts=x)\ng(**{'drafts': x})\n"
+        ),
         "b.py": '"""DraftOnlyProposals(s)"""\nclass C(DraftOnlyProposals): ...\n',
     }
 
     assert facade_surfaces(sources) == {
         "sites": {"a.py": 2},
         "subclasses": {"b.py": 1},
-        "consumers": {"a.py": 1},
+        "consumers": {"a.py": 2},
     }

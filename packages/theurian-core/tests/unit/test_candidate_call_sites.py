@@ -338,3 +338,43 @@ def test_every_verify_consumer_checks_the_stored_path_is_transportable_first() -
         "such a value; a consumer reaching `verify` must too, before the encode, or the "
         "crash the guard prevents reaches the caller as `Error executing tool`."
     )
+
+
+def _enclosing_functions(tree: ast.AST) -> Iterator[tuple[str, ast.Call]]:
+    """Every call in ``tree`` with the name of the function it sits in (``""`` at module scope)."""
+
+    def walk(node: ast.AST, scope: str) -> Iterator[tuple[str, ast.Call]]:
+        for child in ast.iter_child_nodes(node):
+            inner = (
+                child.name if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef) else scope
+            )
+            if isinstance(child, ast.Call):
+                yield scope, child
+            yield from walk(child, inner)
+
+    yield from walk(tree, "")
+
+
+def test_exactly_one_site_in_the_shipped_tree_sets_candidate_provenance() -> None:
+    """#754: ``candidate`` in ``evidence.json`` means a gate-checked candidate wrote it.
+
+    1 producer, key: a call under ``src/theurian`` passing a ``candidate_provenance=``
+    keyword, or constructing ``ProposalRequest`` with positional arguments (which
+    could bind the field without naming it); measured 2026-10-20 at
+    ``candidate_generation._request``. A second producer is how a path that never
+    ran the gate comes to stamp a provenance block that reads as one that did.
+
+    Names only: ``**kwargs`` expansion or ``setattr`` pass this scan.
+    """
+    producers: list[tuple[str, str]] = []
+    for path in sorted(SRC.rglob("*.py")):
+        for scope, call in _enclosing_functions(_tree(path)):
+            named = any(keyword.arg == "candidate_provenance" for keyword in call.keywords)
+            target = call.func
+            constructs = (isinstance(target, ast.Name) and target.id == "ProposalRequest") or (
+                isinstance(target, ast.Attribute) and target.attr == "ProposalRequest"
+            )
+            if named or (constructs and call.args):
+                producers.append((path.relative_to(SRC).as_posix(), scope))
+
+    assert producers == [("application/candidate_generation.py", "_request")], producers

@@ -44,14 +44,38 @@ _EXTENSIONS: Final = {MARKDOWN.value: ".md", JSON.value: ".json", YAML.value: ".
 
 
 @dataclass(frozen=True, slots=True)
+class CandidateProvenance:
+    """The gate's inputs for a generated candidate, written to ``evidence.json``.
+
+    Inputs, not the result: a candidate that exists met its gate. ``record_key``,
+    ``event_key`` and the thread half of ``candidate_id`` are stored-record strings,
+    contributor-controlled and unbounded (T-24, #968); ``repository`` is the caller's. All are
+    escaped by the same ``json.dumps`` and secret scan as every other string in
+    that file.
+    """
+
+    repository: str
+    record_key: str
+    event_key: str
+    fix_commit: str
+    fix_commit_verdict: str
+    category: str
+    candidate_id: str
+    generated_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class Evidence:
     """Where a proposed change came from, and why its author believes it.
 
     Written to ``evidence.json``, and **every field here is read by the humans
-    reviewing the pull request rather than by Core**. Core reads exactly one key
-    of that file, and it is not one of these: ``propose`` also records the
-    migration id it minted, so ``propose accept`` can tell an accepted proposal
-    from an interrupted draft (#253). Nothing below is read by any code path.
+    reviewing the pull request rather than by Core**. Core reads two keys of that
+    file, neither of them one of these: ``migrationId`` and ``itemId``, which
+    ``propose accept`` checks against the migration set to tell an accepted
+    proposal from an interrupted draft (#253). The ``candidate`` key a generated
+    candidate's proposal carries (:class:`CandidateProvenance`) is written for the
+    human and read by no code path. Nor is anything below; ``accept``'s secret
+    scan reads the whole file as text, not by key (#361).
 
     None of it is a substitute for ``metadata.sourceAnchors``, which is what
     ``theurian migrate apply`` enforces (INV-8): a revision carrying rich

@@ -147,6 +147,7 @@ from theurian.domain.migration import (
 )
 from theurian.domain.ports import Clock, IdGenerator
 from theurian.domain.proposal import (
+    CandidateProvenance,
     Evidence,
     body_relative_path,
     is_generated_body_file_name,
@@ -658,6 +659,8 @@ class ProposalRequest:
     #: or not the item exists, and an item with a ``createItem`` and no revision
     #: cannot be told apart by ``expected_revision``.
     sensitivity_is_default: bool = False
+    #: Set only by ``CandidateGenerator``; every other entry point leaves it unset.
+    candidate_provenance: CandidateProvenance | None = None
 
     def __post_init__(self) -> None:
         # ADR-0013 point 5, on the generation path itself rather than only on
@@ -1023,7 +1026,13 @@ class ProposalService:
         evidence_file = directory / EVIDENCE_FILE
         evidence_file.write_text(
             json.dumps(
-                _evidence_document(request.evidence, proposal_id, migration_id, request.item_id),
+                _evidence_document(
+                    request.evidence,
+                    proposal_id,
+                    migration_id,
+                    request.item_id,
+                    request.candidate_provenance,
+                ),
                 indent=2,
             )
             + "\n",
@@ -5166,6 +5175,7 @@ def _evidence_document(
     proposal_id: ProposalId,
     migration_id: MigrationId,
     item_id: ItemId,
+    provenance: CandidateProvenance | None = None,
 ) -> dict[str, object]:
     """The origin record ADR-0013 point 5 requires, for a human to read.
 
@@ -5188,7 +5198,7 @@ def _evidence_document(
     ``metadata.sourceAnchors`` on the revision (INV-8) -- and neither list
     substitutes for the other.
     """
-    return _evidence_record(evidence, proposal_id, migration_id, item_id.value)
+    return _evidence_record(evidence, proposal_id, migration_id, item_id.value, provenance)
 
 
 def _operations_evidence_document(
@@ -5214,6 +5224,7 @@ def _evidence_record(
     proposal_id: ProposalId,
     migration_id: MigrationId,
     item_id_field: str | list[str],
+    provenance: CandidateProvenance | None = None,
 ) -> dict[str, object]:
     """The shared ``evidence.json`` shape for both generation paths.
 
@@ -5222,7 +5233,7 @@ def _evidence_record(
     :meth:`ProposalService.draft_from_document`. :func:`_evidence_item_ids` reads
     either.
     """
-    return {
+    record: dict[str, object] = {
         "proposalId": proposal_id.value,
         "migrationId": migration_id.value,
         "itemId": item_id_field,
@@ -5232,6 +5243,18 @@ def _evidence_record(
         "reasoning": evidence.reasoning,
         "sourceAnchors": [_anchor_document(anchor) for anchor in evidence.anchors],
     }
+    if provenance is not None:
+        record["candidate"] = {
+            "repository": provenance.repository,
+            "recordKey": provenance.record_key,
+            "eventKey": provenance.event_key,
+            "fixCommit": provenance.fix_commit,
+            "fixCommitVerdict": provenance.fix_commit_verdict,
+            "category": provenance.category,
+            "candidateId": provenance.candidate_id,
+            "generatedAt": provenance.generated_at,
+        }
+    return record
 
 
 def _to_yaml(document: Mapping[str, object]) -> str:

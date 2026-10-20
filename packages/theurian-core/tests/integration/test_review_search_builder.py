@@ -1835,17 +1835,18 @@ def test_a_last_seen_instant_that_cannot_be_expressed_in_utc_is_refused_by_name(
     assert "theurian review build" in excinfo.value.remedy
 
 
-def _with_event_key(paths: ProjectPaths, number: str) -> Path:
+def _with_event_key(paths: ProjectPaths, number: str, key: str | None = None) -> Path:
     """Rewrite the one landed record's ``eventKey`` to end ``#number``.
 
     A hand edit of the landed file rather than of the builder's own types,
-    because what these two cases assert is that a **file** on disk produces a
-    graded refusal: ``_pull_request_of`` parses the trailing ``#(\\d+)`` out of
-    exactly this string, so the file is the only place such a number can enter.
+    because what its callers assert is that a **file** on disk produces a
+    graded refusal: ``_pull_request_of`` reads the number by ``parse_event_key``'s
+    full match of exactly this string, so the file is the only place such a
+    number can enter.
     """
     landed = next(paths.review.rglob("*.json"))
     document = json.loads(landed.read_text(encoding="utf-8"))
-    document["record"]["eventKey"] = f"{PROVIDER}:{REPOSITORY}#{number}"
+    document["record"]["eventKey"] = key or f"{PROVIDER}:{REPOSITORY}#{number}"
     landed.write_text(json.dumps(document, indent=2), encoding="utf-8")
     return landed
 
@@ -1922,14 +1923,13 @@ _NON_ASCII_DIGIT_KEYS: Final[tuple[tuple[str, str, int], ...]] = (
 def test_a_non_ascii_digit_in_an_event_key_names_no_pull_request(
     tmp_path: Path, suffix: str, would_be: int
 ) -> None:
-    """``_EVENT_KEY_NUMBER``'s ``re.ASCII`` flag, which nothing drove.
+    """``parse_event_key``'s ASCII-only digits, which nothing drove.
 
-    The pattern's own note says why the flag is there: ``\\d`` matches every
-    Unicode decimal digit without it, ``int`` accepts them all, and the result
+    ``\\d`` would match every Unicode decimal digit, ``int`` accepts them all, and the result
     would be a pull-request number no provider issued -- attached to a real
     record, filterable, and indistinguishable on the wire from one GitHub gave.
     The premise is measured rather than argued: each suffix really does convert,
-    so a pattern without the flag really would produce that number.
+    so a parser admitting them really would produce that number.
 
     A landed file's ``eventKey`` is hand-edited, for the reason the sibling cases
     give: that string is the only place such a number can enter, because the
@@ -1941,7 +1941,7 @@ def test_a_non_ascii_digit_in_an_event_key_names_no_pull_request(
     the build succeeds and the column is empty.
     """
     assert int(suffix) == would_be, (
-        "the premise: `int` really converts this run, so a pattern without `re.ASCII` "
+        "the premise: `int` really converts this run, so a parser admitting non-ASCII digits "
         "really would store it as a pull-request number"
     )
     paths = _project(tmp_path)
@@ -1962,6 +1962,37 @@ def test_a_non_ascii_digit_in_an_event_key_names_no_pull_request(
 
 
 @pytest.mark.parametrize(
+    ("key", "expected"),
+    [
+        pytest.param(f"{PROVIDER}:{REPOSITORY}#431", 431, id="honest-key"),
+        pytest.param(f"{PROVIDER}:evil/other#431", None, id="foreign-repository"),
+        pytest.param(f"gitlab:{REPOSITORY}#431", None, id="foreign-provider"),
+        pytest.param("not-a-key#431", None, id="garbage-prefix"),
+        pytest.param(f"{PROVIDER}:{REPOSITORY}#5#431", None, id="repository-ending-in-hash-number"),
+    ],
+)
+def test_an_event_key_naming_another_repository_serves_no_pull_request(
+    tmp_path: Path, key: str, expected: int | None
+) -> None:
+    """#748 AC748-4: `pullRequest` is `null` unless the key names the record's own repository.
+
+    The published `pullRequest` description promises a key outside the recorded
+    format answers `null` rather than a guess; the builder once read the trailing
+    `#N` alone and served 431 for the four wrong keys (the last, a repository
+    running to the last `#`, would also read as 5 under a first-`#` split).
+    The honest key is the control.
+    """
+    paths = _project(tmp_path)
+    evidence = _landed(paths, _submission())
+    _with_event_key(paths, "", key)
+
+    store, _ = _build(paths, evidence, withheld=frozenset())
+
+    (stored,) = store.dump()
+    assert stored.pull_request == expected
+
+
+@pytest.mark.parametrize(
     "run",
     [
         pytest.param("9" * (sys.get_int_max_str_digits() + 1), id="all-nines"),
@@ -1973,11 +2004,13 @@ def test_the_over_range_refusal_never_renders_the_number_it_refuses(
 ) -> None:
     """RED means composing the refusal is itself the next crash.
 
-    ``_pull_request_of`` parses ``#(\\d+)``, so a hand-edited event key can carry
-    a number of any length, and CPython refuses to render an integer wider than
-    ``sys.get_int_max_str_digits()`` -- 4,300 digits by default. A refusal that
-    quoted the caller's number back would raise ``ValueError`` *inside the arm
-    building it*, which is the face ``mcp/findings._digits`` met. The bound is
+    A hand-edited event key can carry a digit run of any length;
+    ``parse_event_key`` takes the whole run in its full match and refuses one
+    wider than the digits of ``MAX_STORED_PULL_REQUEST`` before ``int``. CPython
+    refuses to convert or render an integer wider than
+    ``sys.get_int_max_str_digits()`` -- 4,300 digits by default -- so a refusal
+    that quoted the caller's number back would raise ``ValueError`` *inside the
+    arm building it*, which is the face ``mcp/findings._digits`` met. The bound is
     named instead, which is the part a reader acts on.
 
     **Two runs of the same width, and the second is #630's HIGH-1.** The guard

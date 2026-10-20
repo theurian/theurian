@@ -22,6 +22,17 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   a byte-equality check. NFC against NFD, either way round, stays refused:
   normalising would verify a commit touching only its twin. Linux is not measured.
 
+### Added
+
+- **A generated candidate's proposal records where it came from**
+  ([#754](https://github.com/theurian/theurian/issues/754)). `evidence.json`
+  gains a `candidate` object holding the gate's inputs: `repository`,
+  `recordKey`, `eventKey`, `fixCommit`, `fixCommitVerdict`, `category`,
+  `candidateId` and `generatedAt`. Only `review.generateKnowledgeCandidate`
+  writes it, and neither its response nor the migration schema changes. It is a
+  reviewer aid, not proof: a contributor can edit it like the rest of a
+  committed proposal directory.
+
 ### Changed
 
 - For remedy parsers: the race remedy prints `expectedRevision: <rev>`,
@@ -91,6 +102,17 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   ([#937](https://github.com/theurian/theurian/issues/937)); short of the directory alone it keeps every
   refused id and body path (#940), but not a kept operation's body reached by
   a second spelling, such as a hard link (#944).
+- **`review.generateKnowledgeCandidate` reads the pull request the thread
+  belongs to** ([#748](https://github.com/theurian/theurian/issues/748)). It
+  took merged and CI from the submitted repository's pull request numbered by
+  the end of the thread's `event_key`, ignoring the key's provider and
+  repository. A key naming another repository or provider, or no parseable pull
+  request, now gets the existing record refusal. A key edited to another number
+  in the same repository is still not caught.
+- **`review.search` serves `pullRequest: null` for a thread or submission whose
+  `event_key` names another repository or provider, or is not in the recorded
+  format** (#748), rather than the number at the end of the key. `#0` on the
+  record's own repository, or a run wider than 19 digits, still refuses the build.
 
 ## [0.5.3] - 2026-10-08
 

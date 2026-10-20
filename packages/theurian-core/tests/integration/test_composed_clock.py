@@ -19,8 +19,8 @@ from typing import Any, Final
 import pytest
 from fakes.clock import FrozenClock
 from git_harness import commit_migrations
-from mcp.types import CallToolResult
 from migration_fixtures import body_pin
+from tool_result import structured_payload
 from typer.testing import CliRunner
 
 from theurian.application.project_service import ProjectPaths, ProjectRegistry, read_active_state
@@ -134,10 +134,7 @@ async def _search(registry: ProjectRegistry, clock: Clock | None) -> dict[str, A
     result = await build_server(registry, search_clock=clock).call_tool(
         "knowledge.search", {"projectId": "demo", "query": "token"}
     )
-    assert isinstance(result, CallToolResult), result
-    structured: dict[str, Any] | None = result.structured_content
-    assert structured is not None, result
-    return structured
+    return structured_payload(result)
 
 
 def test_a_built_revision_is_stamped_by_the_composed_clock(project: Path) -> None:
