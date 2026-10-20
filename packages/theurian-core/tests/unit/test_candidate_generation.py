@@ -36,6 +36,8 @@ from typing import Final
 import pytest
 from fakes.clock import FrozenClock
 from fakes.ids import SeededIdGenerator
+from hypothesis import given
+from hypothesis import strategies as st
 
 from theurian.application.candidate_generation import (
     UNRESOLVED_RECORD_REFUSAL,
@@ -78,6 +80,7 @@ from theurian.domain.review import (
     ReviewThread,
     parse_event_key,
 )
+from theurian.domain.review_search import MAX_STORED_PULL_REQUEST
 from theurian.domain.values import ContentHash, MediaType
 
 pytestmark = pytest.mark.unit
@@ -706,6 +709,20 @@ def test_the_pull_request_number_is_matched_ascii_only() -> None:
         "an ordinary ASCII key no longer parses, so the pin above would hold over a "
         "parser that matched nothing"
     )
+
+
+@given(
+    provider=st.text(
+        st.characters(blacklist_characters=":", blacklist_categories=["Cs"]), min_size=1
+    ),
+    repository=st.text(st.characters(blacklist_categories=["Cs"]), min_size=1),
+    number=st.integers(1, MAX_STORED_PULL_REQUEST),
+)
+def test_parse_event_key_inverts_external_key(provider: str, repository: str, number: int) -> None:
+    """A writer and reader that drift apart make every honest key read as foreign (#748)."""
+    event = dataclasses.replace(_event(), provider=provider, repository=repository, number=number)
+
+    assert parse_event_key(event.external_key) == (provider, repository, number)
 
 
 def test_the_submission_type_declares_no_gate_signal() -> None:
