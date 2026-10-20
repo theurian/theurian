@@ -1330,6 +1330,16 @@ Still owed, with the milestone that will satisfy it:
   > records for this ADR's own framing: state a timing residual as a scaling
   > relationship measured under load with its instrument named, never as a
   > single-run fixed bound.
+
+  > **Amended in [#758](https://github.com/theurian/theurian/issues/758): an NFD anchor
+  > was refused on macOS.** There `git init` and `git clone` write `core.precomposeunicode=true`,
+  > and git rewrote an NFD pathspec to NFC, so an anchor byte-identical to the NFD tree
+  > path was refused; the command now opens `git -c core.precomposeunicode=false`. The byte-unequal
+  > class deferred above stays fail-closed on purpose: normalising was rejected as fail-open,
+  > as it verifies a commit touching only the anchor's twin (Ohm U+2126 for Omega U+03A9).
+  > Measured on macOS only, at `true`, `false` and unset; pinned at `true` alone (the
+  > override makes the setting moot) by
+  > `test_fix_commit_check_adapter.py::test_a_stored_path_byte_identical_to_an_nfd_tree_path_verifies_under_precompose` and its `-k normalization` cases.
 - **Slice B5 — at least one gate test is driven from a record the real adapter
   shape produces.** That is, a `ReviewResolution` built the way
   `review_provider.py` builds one, with `fix_commit` **absent**. What lets a

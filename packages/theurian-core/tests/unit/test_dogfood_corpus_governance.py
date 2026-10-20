@@ -580,13 +580,20 @@ def _requires_git_objects(what: str) -> Index:
 #: ``distinct_items`` did not move: all six items were already in the corpus.
 #: ``multi_revision_items`` moved by one, because ADR-0011's twin was single-revision
 #: and got its second; the other five already had more than one.
+#: Moved on 2026-10-20 by the ADR-0013 re-seed after #962: one migration, one body and
+#: one evidence file joined, so ``tracked_paths`` moved by three; the two item-level
+#: counts did not move, because the item already had more than one revision.
+#: Moved on 2026-10-20 by the ADR-0016 and ADR-0018 re-seed after #979 (#634): two
+#: migrations, two bodies and two evidence files joined, so each of the three moved by
+#: two and ``tracked_paths`` by six; the two item-level counts did not move, because
+#: both items already had more than one revision.
 EXPECTED_CORPUS_POPULATION: Final[Mapping[str, int]] = MappingProxyType(
     {
-        "tracked_migrations": 55,
-        "bodies": 55,
-        "evidence_files": 55,
+        "tracked_migrations": 58,
+        "bodies": 58,
+        "evidence_files": 58,
         "gitkeep_placeholders": 3,
-        "tracked_paths": 168,
+        "tracked_paths": 177,
         "distinct_items": 26,
         "multi_revision_items": 17,
     }

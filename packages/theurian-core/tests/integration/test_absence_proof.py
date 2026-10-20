@@ -303,6 +303,7 @@ from hypothesis import given, seed, settings
 from hypothesis import strategies as st
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 from migration_fixtures import body_pin
+from tool_result import structured_payload
 from typer.testing import CliRunner
 
 from theurian.application.authorization import (
@@ -1211,12 +1212,7 @@ def _call(
         return await build_server(registry, grant).call_tool(tool, arguments)
 
     result = asyncio.run(invoke())
-    structured = getattr(result, "structuredContent", None)
-    if structured is not None:
-        payload: dict[str, Any] = structured
-        return payload
-    loaded: dict[str, Any] = json.loads(result.content[0].text)
-    return loaded
+    return structured_payload(result)
 
 
 def _search(registry: ProjectRegistry, case: _Case, **arguments: Any) -> dict[str, Any]:
@@ -1641,6 +1637,9 @@ def test_no_published_value_varies_with_a_withheld_document(
     control = _search(pair.control, case, **arguments)
 
     _assert_the_pair_bites(pair, probe)
+    assert json.dumps(probe, sort_keys=True) == json.dumps(control, sort_keys=True), (
+        "the serialised responses differ, which equality of the parsed dicts hides (true is 1)"
+    )
     assert probe == control, (
         "every published value must equal what the same query returns against a "
         "corpus whose withheld documents say something else"

@@ -282,8 +282,9 @@ NETWORK_CLIENT_SITES = {
 #:   and not the bare-``git`` tier its ``cli/context.py`` sibling uses, because this
 #:   call gates a write. Timeout ``GIT_TIMEOUT_SECONDS`` (5s) on each.
 #: - ``infrastructure/git/fix_commit_check.py`` runs one command,
-#:   ``git --literal-pathspecs log --no-walk --first-parent -m --name-only
-#:   --format= -z --root --end-of-options <sha>^{commit} -- <file_path>``,
+#:   ``git -c core.precomposeunicode=false --literal-pathspecs log --no-walk
+#:   --first-parent -m --name-only --format= -z --root --end-of-options
+#:   <sha>^{commit} -- <file_path>``,
 #:   to answer whether the ``fixCommit`` a caller named is a commit here that
 #:   touched the file the stored review thread is anchored to (ADR-0033 decision
 #:   3's verification, which is what makes ``fix_commit_present`` a signal the
@@ -311,7 +312,8 @@ NETWORK_CLIENT_SITES = {
 #:   stored pathspec expression; the options terminator guards the token position
 #:   the funnel emptied; the path separator keeps an option shaped stored
 #:   ``filePath`` a pathspec; the root flag lets a first commit be a fix; and the
-#:   first parent and merge diff flags let a conflict resolving merge be one. The binary is
+#:   first parent and merge diff flags let a conflict resolving merge be one; the
+#:   precompose override keeps NFD path bytes on macOS, and twins stay refused (#758). The binary is
 #:   resolved to an absolute path -- ADR-0030 clause 5's tier, as its
 #:   ``committed_check.py`` sibling is, because this call gates a promotion
 #:   signal. Timeout ``GIT_TIMEOUT_SECONDS`` (5s).

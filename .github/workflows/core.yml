@@ -233,6 +233,71 @@ jobs:
           name: coverage-macos
           path: coverage.xml
 
+  # #634: `test` and `offline` select `-m "not e2e"`, so before this job no pull
+  # request check ran `tests/e2e` (a red e2e pin once went unnoticed through a
+  # full review round). `release-core.yml` already runs the whole suite,
+  # e2e included, on hosted ubuntu at every `core-v*` tag; this job closes the
+  # gap on pull requests and leaves that workflow alone.
+  #
+  # Serial on purpose: the e2e tests take real ports via `_free_port()` and shell
+  # out to `lsof` (the #32 reasons recorded in `tools/mutate.py`, which #643
+  # lifted only for the `-m "not e2e"` steps).
+  #
+  # Scoped to `tests/e2e` so the pull request gate does not touch the live
+  # network. The live-`gh` tests in `test_github_adapter_e2e.py` are also
+  # marked e2e; they skip in every CI context, because no job that runs
+  # them authenticates `gh` (release-core's quality job shows 5 skips at core-v0.5.3, run
+  # 38057252717, job 114228149935).
+  #
+  # Both legs stay: macOS passed 3 of 3.
+  #
+  # timeout-minutes: 10. Sized from core run 39380537417 (head 4ed85f70), job
+  # durations read per job id: ubuntu 118488405854 84 s, 118493910694 86 s,
+  # 118495257816 63 s; macOS 118488405901 98 s, 118494498115 108 s,
+  # 118495699879 100 s. 3x the 108 s max is 5.4 min, so the 10-minute floor in
+  # tests/ci/test_job_timeouts.py ("roughly 3-4x p95, minimum 10") governs.
+  e2e:
+    name: End-to-end tests (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          python-version: ${{ matrix.python }}
+      - run: uv sync --frozen
+      # Every e2e module skips itself when `theurian` is not on PATH; this gives
+      # that case a named failure before the suite runs (an all-skip run is
+      # also refused by the gate below, but only as a generic no-pass error).
+      - run: uv run theurian version --json
+      - name: End-to-end tests
+        shell: bash
+        # Fails unless every selected test passed: pytest's final summary line
+        # (`=== N passed, M skipped in Ts ===`) must match
+        # `^=+ .*[0-9]+ passed` and must not match
+        # `^=+ .*[0-9]+ (skipped|xfailed|xpassed)`; each is an outcome other
+        # than a plain pass: a skip did not run, an xfail did not pass, and an
+        # xpass passed against its own marker. `deselected` is marker selection and is accepted.
+        # No `-r` option here: `addopts` supplies `-ra`, and a second `-r`
+        # would replace it and drop the FAILED lines from the short summary.
+        run: |
+          uv run pytest tests/e2e -m e2e -v | tee e2e.log
+          if ! grep -Eq '^=+ .*[0-9]+ passed' e2e.log; then
+            echo "::error::No e2e test passed."
+            exit 1
+          fi
+          if grep -Eq '^=+ .*[0-9]+ (skipped|xfailed|xpassed)' e2e.log; then
+            echo "::error::An e2e test skipped, xfailed or xpassed; the gate accepts only passes."
+            exit 1
+          fi
+
   # ADVISORY -- ADR-0036 decision 4, Phase A slice S4b. The roadmap's Phase A
   # Exit-criteria row: "A baseline report is committed and CI reports
   # regressions against it." Whether this ever becomes a blocking gate is a

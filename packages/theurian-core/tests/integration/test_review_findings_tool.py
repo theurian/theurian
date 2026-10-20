@@ -47,6 +47,7 @@ import pytest
 from git_harness import commit_migrations
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 from migration_fixtures import body_pin
+from tool_result import structured_payload
 from typer.testing import CliRunner
 
 from theurian.application.project_service import (
@@ -359,13 +360,7 @@ def _land(registry: ProjectRegistry, load: FindingLoad = LANDED) -> SqliteReview
 async def _call(registry: ProjectRegistry, **arguments: Any) -> dict[str, Any]:
     """One `review.findings` call, returned as the payload a client sees."""
     result = await build_server(registry).call_tool("review.findings", arguments)
-    structured = getattr(result, "structuredContent", None)
-    if structured is not None:
-        payload: dict[str, Any] = structured
-        return payload
-    content: Any = result.content  # type: ignore[union-attr]
-    loaded: dict[str, Any] = json.loads(content[0].text)
-    return loaded
+    return structured_payload(result)
 
 
 async def _call_failing(registry: ProjectRegistry, **arguments: Any) -> str:

@@ -4,21 +4,25 @@ The ADR's "holds as shipped" sentence is false by name: the schemas declare
 ``sourceAnchors[].filePath``/``sourceUri``, ``scopePaths``, ``repository`` and
 ``fixCommit``. They are recorded, never dereferenced as paths, or (``fixCommit``)
 dereferenced as a git object id confined by its hex ``pattern``. So the pin is on
-the closed set of declared members, each path-shaped one with its reason, and on
-dereference driven with a canary file. The reason requirement is keyed on
-``_PATH_NAMES``, a name list; the closed set is not.
+the closed set of declared members, each path-shaped one with its reason, and, for
+the members listed under Reach, on dereference driven by the drives listed there. The reason
+requirement is keyed on ``_PATH_NAMES``, a name list; the closed set is not.
 
 Reach: the schemas are ``schemas/mcp`` input schemas whose ``x-theurian-tool`` is a
 registered write-intent tool (:mod:`write_intent_population`). The closed set stops
 at ``knowledge.generateMigrationDraft``'s ``document``, an opaque object at that
-schema; its interior is outside this file. Canary drives cover
-``knowledge.proposeChange`` landing, and
-``review.generateKnowledgeCandidate``'s refused ``repository`` and ``recordKey``
-(canary path) and its schema-refused path-shaped ``fixCommit`` (no canary file);
-that tool's ``scopePaths`` and ``sourceAnchors`` are not driven. The scan sees a
-canary's bytes only in a file under the test's ``tmp_path`` or in the tool's
-response. The schema walk raises on any keyword outside ``_WALKED`` and ``_INERT``,
-so a path added under one is refused rather than missed.
+schema; its interior is covered separately, over ``migration.schema.json``'s
+operation definitions for the kinds in ``V1_OPERATION_KINDS``, with the recorded
+path-shaped members in ``_V1_PATH_MEMBERS``, each driven, and a closed property
+set per kind in ``_V1_RECORDED``. Canary drives cover
+``knowledge.proposeChange`` landing, the ``_V1_PATH_MEMBERS`` landing through
+``knowledge.generateMigrationDraft``, an ``upsertRevision`` refused by the v1 gate,
+and ``review.generateKnowledgeCandidate``'s refused ``repository`` and ``recordKey``
+(canary path) and its schema-refused path-shaped ``fixCommit`` (no canary file).
+That tool's ``scopePaths`` and ``sourceAnchors`` are not driven (#965). The scan
+sees a canary's bytes only in a file under the test's ``tmp_path`` or in the
+tool's response. The schema walk raises on any keyword outside ``_WALKED`` and
+``_INERT``, so a path added under one is refused rather than missed.
 """
 
 from __future__ import annotations
@@ -35,6 +39,7 @@ from write_intent_population import demo_project, registered_write_intent_names 
 
 from theurian.application.candidate_generation import UNRESOLVED_RECORD_REFUSAL
 from theurian.application.project_service import ProjectRegistry
+from theurian.application.proposal_service import V1_OPERATION_KINDS
 from theurian.daemon.runner import build_server
 
 from mcp_wire_session import mcp_session  # isort: skip
@@ -47,6 +52,7 @@ _BY_ID: Final = {
     for schema in (json.loads(p.read_text(encoding="utf-8")) for p in _SCHEMAS.rglob("*.json"))
     if "$id" in schema
 }
+_MIGRATION_ID: Final = "https://theurian.dev/schemas/migrations/migration.schema.json"
 _CANARY_BYTES: Final = b"CANARY-9f3b2c71-never-read"
 
 _CONTEXT: Final = "projectId snapshotId agentId taskId"
@@ -202,10 +208,117 @@ def test_each_path_shaped_member_carries_a_reason() -> None:
     assert shaped == set(_PATH_SHAPED)
 
 
+#: The path-shaped members of the v1-admitted operations (key: the walk below over
+#: ``migration.schema.json``'s ``op*`` ``$defs`` for ``V1_OPERATION_KINDS``, at 6c3c2827).
+#: One source for the recorded-set assertion and for the canary drive, so a member
+#: cannot be recorded without a drive.
+_V1_PATH_MEMBERS: Final = (
+    ("registerSpecification", "sourceUri"),
+    ("removeEvidence", "sourceUri"),
+    ("addEvidence", "anchor.sourceUri"),
+    ("addEvidence", "anchor.filePath"),
+    ("addEvidence", "anchor.repository"),
+)
+_V1_BASE_OPS: Final = {
+    "registerSpecification": {
+        "op": "registerSpecification",
+        "specId": "architecture.spec-x",
+        "itemId": "architecture.auth-policy",
+        "sourceUri": "git://x",
+        "format": "text/markdown",
+    },
+    "removeEvidence": {
+        "op": "removeEvidence",
+        "itemId": "architecture.auth-policy",
+        "sourceUri": "git://x",
+    },
+    "addEvidence": {
+        "op": "addEvidence",
+        "itemId": "architecture.auth-policy",
+        "description": "d",
+        "anchor": {"provider": "git", "sourceUri": "git://x"},
+    },
+}
+
+
+def _v1_op_with(op: str, member: str, value: str) -> dict[str, Any]:
+    built: dict[str, Any] = json.loads(json.dumps(_V1_BASE_OPS[op]))
+    target = built["anchor"] if member.startswith("anchor.") else built
+    target[member.removeprefix("anchor.")] = value
+    return built
+
+
+def _v1_operation_paths() -> dict[str, set[str]]:
+    migration = _BY_ID[_MIGRATION_ID]
+    return {
+        kind.value: property_paths(
+            migration["$defs"]["op" + kind.value[0].upper() + kind.value[1:]], migration
+        )
+        for kind in V1_OPERATION_KINDS
+    }
+
+
+#: Every property path reachable from each v1-admitted operation's definition, ``$ref``
+#: followed (measured at 6c3c2827 over ``migration.schema.json``). A path added under a
+#: followed keyword reddens the closed-set test; the path-shaped ones are also keyed on
+#: ``_PATH_NAMES`` and must be in ``_V1_PATH_MEMBERS``.
+_V1_RECORDED: Final = {
+    kind: frozenset(paths.split())
+    for kind, paths in {
+        "addAlias": "alias itemId op",
+        "addEvidence": (
+            "anchor anchor.blobSha anchor.commitSha anchor.externalId anchor.filePath "
+            "anchor.lineEnd anchor.lineStart anchor.provider anchor.repository "
+            "anchor.sourceUri confidence description itemId op"
+        ),
+        "addRelation": "note op relationType sourceItemId targetItemId",
+        "changeOwner": "itemId op owner",
+        "deprecateItem": "itemId op reason supersededBy",
+        "registerSpecification": "format itemId op sourceUri specId status",
+        "removeAlias": "alias op",
+        "removeEvidence": "itemId op sourceUri",
+        "removeRelation": "op relationType sourceItemId targetItemId",
+        "supersedeSpecification": "op specId supersededBy",
+    }.items()
+}
+
+
+def test_a_v1_admitted_operation_declares_only_the_recorded_properties() -> None:
+    assert _v1_operation_paths() == _V1_RECORDED
+
+
+def test_no_v1_admitted_operation_declares_the_dereferenced_body_file() -> None:
+    """``contentFile`` is dereferenced by ``accept``; at 6c3c2827 only ``opUpsertRevision``
+    declares it, and v1 does not admit that kind. RED driver, run at 6c3c2827:
+    ``upsertRevision`` added to ``V1_OPERATION_KINDS`` in a private copy.
+    """
+    paths = _v1_operation_paths()
+
+    assert {kind for kind, found in paths.items() if "contentFile" in found} == set()
+
+
+def test_the_v1_path_members_are_the_recorded_set() -> None:
+    """RED driver, run at 6c3c2827: a ``filePath`` property added to ``opRemoveEvidence``."""
+    assert {
+        (kind, p)
+        for kind, found in _v1_operation_paths().items()
+        for p in found
+        if _tail(p) in _PATH_NAMES
+    } == set(_V1_PATH_MEMBERS)
+
+
 # -- dereference, driven with a canary ---------------------------------------
 
 
 _EVIDENCE_ARG: Final = {"agentId": "a", "taskId": "t", "model": "m", "reasoning": "r"}
+
+
+def _tree(tmp_path: pathlib.Path) -> set[str]:
+    return {
+        str(p.relative_to(tmp_path))
+        for p in tmp_path.rglob("*")
+        if p != tmp_path / "canary.txt" and ".git" not in p.parts
+    }
 
 
 def _canary(tmp_path: pathlib.Path) -> str:
@@ -263,6 +376,72 @@ def test_a_path_in_a_recorded_field_is_stored_as_text_and_never_read(
     assert canary.encode() in written
     assert _CANARY_BYTES not in written
     assert _CANARY_BYTES not in json.dumps(result).encode()
+
+
+def _draft(demo: ProjectRegistry, tmp_path: pathlib.Path, op: dict[str, Any]) -> Any:
+    return _call(
+        demo,
+        tmp_path,
+        "knowledge.generateMigrationDraft",
+        {
+            "document": {"author": "a@example.com", "operations": [op]},
+            "evidence": _EVIDENCE_ARG,
+        },
+    )
+
+
+@pytest.mark.parametrize(("op", "member"), _V1_PATH_MEMBERS)
+def test_a_v1_operation_path_lands_as_text_and_its_bytes_reach_no_file_or_response(
+    demo: ProjectRegistry, tmp_path: pathlib.Path, op: str, member: str
+) -> None:
+    """Each recorded v1 member lands as text. RED driver, run at 6c3c2827 per member: the
+    handler appending ``Path(<that member's value>).read_text()`` to the document's
+    ``author`` before drafting, planted in a private copy.
+    """
+    canary = _canary(tmp_path)
+
+    result = _draft(demo, tmp_path, _v1_op_with(op, member, canary))
+
+    written = _written(tmp_path)
+    assert result["isError"] is False, result
+    assert canary.encode() in written
+    assert _CANARY_BYTES not in written
+    assert _CANARY_BYTES not in json.dumps(result).encode()
+
+
+def test_an_upsert_revision_is_refused_by_the_v1_gate_and_adds_no_path(
+    demo: ProjectRegistry, tmp_path: pathlib.Path
+) -> None:
+    """The op is schema-complete, so only the gate refuses it. RED drivers, run at
+    6c3c2827: ``_refuse_operations_outside_the_v1_set`` patched to return ``()``; an empty
+    ``proposals/<id>/evidence.json`` created before the gate.
+    """
+    before = _tree(tmp_path)
+    op = {
+        "op": "upsertRevision",
+        "itemId": "architecture.x",
+        "revisionId": "01K1AAAREV01234567890ABCDE",
+        "contentFile": "../knowledge/architecture/x.md",
+        "contentSha256": "0" * 64,
+        "metadata": {
+            "title": "X",
+            "contentType": "text/markdown",
+            "kind": "architecture",
+            "namespace": "backend",
+            "status": "approved",
+            "owner": "platform-team",
+            "trustLevel": "reviewed",
+            "sourceAnchors": [{"provider": "git", "sourceUri": "git://x"}],
+        },
+    }
+
+    result = _draft(demo, tmp_path, op)
+
+    text = result["content"][0]["text"]
+    assert result["isError"] is True, result
+    assert "does not carry upsertRevision" in text, text
+    assert "knowledge.proposeChange" in text, text
+    assert _tree(tmp_path) == before
 
 
 @pytest.fixture

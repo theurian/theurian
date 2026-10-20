@@ -53,6 +53,7 @@ from typing import Any
 import pytest
 from git_harness import commit_migrations
 from migration_fixtures import body_pin
+from tool_result import structured_payload
 from typer.testing import CliRunner
 
 from theurian.application.project_service import ProjectPaths, ProjectRegistry, read_active_state
@@ -295,20 +296,13 @@ async def _call(registry: ProjectRegistry, tool: str, **arguments: Any) -> str:
         result = await build_server(registry).call_tool(tool, arguments)
     except Exception as exc:
         return str(exc)
-    structured = getattr(result, "structuredContent", None)
-    if structured is not None:
-        return json.dumps(structured, ensure_ascii=False)
-    return json.dumps([block.text for block in result.content], ensure_ascii=False)  # type: ignore[union-attr]
+    return json.dumps(structured_payload(result), ensure_ascii=False)
 
 
 async def _payload(registry: ProjectRegistry, tool: str, **arguments: Any) -> dict[str, Any]:
     """The same call as :func:`_call`, for the tests that read specific fields."""
     result = await build_server(registry).call_tool(tool, arguments)
-    structured = getattr(result, "structuredContent", None)
-    if structured is not None:
-        return dict(structured)
-    loaded: dict[str, Any] = json.loads(result.content[0].text)  # type: ignore[union-attr]
-    return loaded
+    return structured_payload(result)
 
 
 async def _everything(registry: ProjectRegistry) -> str:

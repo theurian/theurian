@@ -45,6 +45,7 @@ from typing import Any
 import pytest
 from git_harness import commit_migrations
 from migration_fixtures import body_pin
+from tool_result import structured_payload
 from typer.testing import CliRunner
 
 from theurian.application.index_builder import IndexBuilder, IndexRequest
@@ -464,13 +465,7 @@ def _make_the_published_build_look_pre_fix(project: Path) -> None:
 async def _mcp(registry: ProjectRegistry, tool: str, **arguments: Any) -> dict[str, Any]:
     """Call one MCP tool the way the transport does, and return its JSON payload."""
     result = await build_server(registry).call_tool(tool, {"projectId": "demo", **arguments})
-    structured = getattr(result, "structuredContent", None)
-    if structured is not None:
-        payload: dict[str, Any] = structured
-        return payload
-    content: Any = result.content  # type: ignore[union-attr]
-    loaded: dict[str, Any] = json.loads(content[0].text)
-    return loaded
+    return structured_payload(result)
 
 
 @pytest.mark.asyncio

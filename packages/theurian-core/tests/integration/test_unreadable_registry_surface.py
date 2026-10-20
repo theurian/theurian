@@ -25,6 +25,7 @@ from typing import Any, Final
 
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
+from tool_result import structured_payload
 from typer.testing import CliRunner
 
 from theurian.application.project_service import ProjectRegistry
@@ -86,13 +87,7 @@ def _write_registry(data_dir: Path, contents: dict[str, Any] | str) -> ProjectRe
 
 async def _call(registry: ProjectRegistry, tool: str, **arguments: Any) -> dict[str, Any]:
     result = await build_server(registry).call_tool(tool, arguments)
-    structured = getattr(result, "structuredContent", None)
-    if structured is not None:
-        payload: dict[str, Any] = structured
-        return payload
-    content: Any = result.content  # type: ignore[union-attr]
-    loaded: dict[str, Any] = json.loads(content[0].text)
-    return loaded
+    return structured_payload(result)
 
 
 async def _failing(registry: ProjectRegistry, tool: str, **arguments: Any) -> str:

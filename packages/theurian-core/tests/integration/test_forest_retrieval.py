@@ -54,6 +54,7 @@ from git_harness import commit_migrations
 from jsonschema import Draft202012Validator
 from migration_fixtures import body_pin
 from referencing import Registry, Resource
+from tool_result import structured_payload
 from typer.testing import CliRunner
 
 from theurian.application.project_service import (
@@ -218,26 +219,14 @@ class Built:
             result = await build_server(self.registry).call_tool(
                 "knowledge.search", {"projectId": "demo", "query": query, **arguments}
             )
-            structured = getattr(result, "structuredContent", None)
-            if structured is not None:
-                payload: dict[str, Any] = structured
-                return payload
-            content: Any = result.content  # type: ignore[union-attr]
-            loaded: dict[str, Any] = json.loads(content[0].text)
-            return loaded
+            return structured_payload(result)
 
         return asyncio.run(call())
 
     def capabilities(self) -> dict[str, Any]:
         async def call() -> dict[str, Any]:
             result = await build_server(self.registry).call_tool("system.capabilities", {})
-            structured = getattr(result, "structuredContent", None)
-            if structured is not None:
-                payload: dict[str, Any] = structured
-                return payload
-            content: Any = result.content  # type: ignore[union-attr]
-            loaded: dict[str, Any] = json.loads(content[0].text)
-            return loaded
+            return structured_payload(result)
 
         return asyncio.run(call())
 
