@@ -38,17 +38,18 @@ whose outcome is read off the exit code and the output.
 :func:`test_the_same_request_spawns_the_same_vector_whether_the_object_is_here_or_not`
 is the pin, and it is the one that was RED when this shape was chosen.
 
-**The one call is the git-2.30 ``log`` form, verdict-identical to the ``diff-tree``
-form it replaced.** Round-1 reached merge commits with
+**The one call is the git-2.30 ``log`` form, replacing a ``diff-tree`` form that
+needed git 2.31.** Round-1 reached merge commits with
 ``diff-tree --diff-merges=first-parent``; round-2 code review found that option
 is a git 2.31 feature while the documented floor is 2.30
 (``development.md``), so on a floor install it errors, the non-zero exit folds to
-``NO_SUCH_COMMIT``, and every valid ``fixCommit`` refuses (HIGH-1). The command is
-now ``git --literal-pathspecs log --no-walk --first-parent -m --name-only
---format= -z --root --end-of-options <sha>^{commit} -- <path>``, whose verdicts
-are byte-identical (measured, git 2.47.1, 2026-09-19) and whose newest token is
-``--end-of-options`` (2.24), at or below the floor -- ``-z`` predates it, as does
-the ``-c core.precomposeunicode=false`` pair #758 later prefixed.
+``NO_SUCH_COMMIT``, and every valid ``fixCommit`` refuses (HIGH-1). Its round-2
+replacement, ``git --literal-pathspecs log --no-walk --first-parent -m --name-only
+--format= --root --end-of-options <sha>^{commit} -- <path>``, gave verdicts
+byte-identical to the ``diff-tree`` form (measured, git 2.47.1, 2026-09-19); ``-z``
+(round 3) and the ``-c core.precomposeunicode=false`` pair (#758) came later and
+were not part of that measurement. The shipped command's newest token is
+``--end-of-options`` (2.24), at or below the floor -- ``-z`` and ``-c`` predate it.
 :func:`test_the_verify_command_uses_only_git_features_at_or_below_the_documented_floor`
 holds the whole command to the floor as a class, not the one retired flag.
 
@@ -137,8 +138,7 @@ justified by a ``rev-parse`` behaviour that no longer runs:
   :func:`test_the_git_vector_is_one_process_fixed_and_forecloses_an_option_a_path_and_magic`,
   which is now captured at an *admitted* sha because a refused one spawns
   nothing to capture.
-* ``--first-parent -m`` on ``log`` -- **load-bearing, and the only tokens here
-  that change a verdict for an honest input**. ``log`` shows nothing for a merge
+* ``--first-parent -m`` on ``log`` -- **load-bearing**. ``log`` shows nothing for a merge
   commit without ``-m``, so a conflict-resolving merge that introduced the
   thread's fix would answer ``TOUCHES_NOTHING_HERE`` -- a true fix, correctly
   named, refused. ``--first-parent`` is what makes that diff the branch it landed
@@ -149,8 +149,8 @@ justified by a ``rev-parse`` behaviour that no longer runs:
   diff's *some parent did*. This replaces round-1's
   ``diff-tree --diff-merges=first-parent``, whose option needs git 2.31, above the
   2.30 floor (HIGH-1).
-* ``-z`` after ``--format=`` -- **load-bearing, and the only token that changes a
-  verdict for an honest input with an unusual filename**. Without it git renders
+* ``-z`` after ``--format=`` -- **load-bearing: it changes a verdict for an honest
+  input with an unusual filename**. Without it git renders
   paths for humans: a CJK, quoted, backslash, control-char or embedded-newline
   name is quoted under ``core.quotePath`` and the output is newline-split, so the
   rendered line never equals the raw ``file_path`` and an honest fix is refused

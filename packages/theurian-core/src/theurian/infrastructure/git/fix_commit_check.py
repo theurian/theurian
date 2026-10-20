@@ -121,10 +121,11 @@ and 2.54.0, 2026-09-19:
   byte-identical NFD path only** (measured 2026-10-20, git 2.47.1 and 2.54.0, PR
   #976): under ``precomposeunicode=true``, which macOS ``git init`` writes, git
   rewrites the pathspec to NFC and never emits the byte-identical NFD entry.
-  Normalisation twins do not depend on it -- removed, byte membership still reads
-  each, NFC/NFD and Omega/Ohm either way round, ``TOUCHES_NOTHING_HERE`` -- and
-  fail-open through repository state (a shallow boundary, replace refs,
-  ``GIT_DIR``) is #981's, not closed here.
+  Normalisation twins do not depend on it -- removed, every twin still reads
+  ``TOUCHES_NOTHING_HERE``: an NFD anchor against an NFC tree reaches byte
+  membership and is refused there, while for NFC against NFD and Omega/Ohm either
+  way round git emits nothing -- and fail-open through repository state (a
+  shallow boundary, replace refs, ``GIT_DIR``) is #981's, not closed here.
   It must precede the subcommand.
 * ``--literal-pathspecs`` -- **defence in depth, subsumed by membership.** Against
   a commit touching only ``docs/notes.md``, the stored paths
@@ -138,8 +139,7 @@ and 2.54.0, 2026-09-19:
   on a ``diff-tree`` form (a first commit reports no files without it), so it
   guards a move back to one. Held by the captured-vector pin, since no ``log``
   behavioural case can tell.
-* ``--first-parent -m`` on ``log`` -- **load-bearing, and the only tokens here
-  that change a verdict for an honest input.** ``log`` shows nothing for a merge
+* ``--first-parent -m`` on ``log`` -- **load-bearing.** ``log`` shows nothing for a merge
   commit without ``-m``, so a conflict-resolving merge that introduced the fix read
   ``TOUCHES_NOTHING_HERE`` -- a true fix, correctly named, refused. ``--first-parent``
   makes the shown diff *this merge against the branch it landed on* rather than
@@ -174,8 +174,9 @@ holds the 2.30 floor as an allowlist rather than as a single flag's absence.
 decides a promotion signal and letting an inherited ``PATH`` choose the
 executable that answers it is the shape that clause refuses. It reaches no
 network -- ``log`` reads local object storage, names no remote and takes no
-URL -- except that in a partial clone git lazily fetches missing trees from the
-promisor remote (#981); it is on ``PROCESS_SPAWN_SITES`` only because it spawns a process.
+URL -- except that in a partial clone git lazily fetches missing objects (trees,
+and the blobs rename detection reads) from the promisor remote (#981); it is on
+``PROCESS_SPAWN_SITES`` because it spawns a process.
 """
 
 from __future__ import annotations
