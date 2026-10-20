@@ -942,8 +942,15 @@ _FOREIGN: Final = "evil/other"
             f"github:{_FOREIGN}#431",
             dataclasses.replace(_event(), repository=_FOREIGN),
         ),
+        (f"github:{REPOSITORY}#" + "9" * 20, _event()),
     ],
-    ids=["foreign-repo-key", "foreign-provider", "not-a-key", "foreign-key-and-payload"],
+    ids=[
+        "foreign-repo-key",
+        "foreign-provider",
+        "not-a-key",
+        "foreign-key-and-payload",
+        "wider-than-the-column",
+    ],
 )
 def test_a_pull_request_record_the_thread_does_not_name_is_the_uniform_refusal(
     event_key: str, stored_event: ReviewEvent
