@@ -39,7 +39,7 @@ and against neither retracted pattern the source ADR corrected
 (``reports proposal age``, ``warns past a threshold``). The superseded
 #416-era body (``01M1B1XCAVJZKQQ6FWNADKRM69``) carries ``#414`` and
 ``owed, not`` once each as well, so a revert of the current payload to it passes
-those two substrings and is caught by the ``"#962"`` entry of
+those two substrings and is caught by this item's entry of
 :data:`_RESEED_PAYLOAD_MARKERS`.
 
 **The same class recurs, and every re-seed pays the same toll.** #199 unit C's
@@ -640,8 +640,8 @@ def test_the_committed_root_corpus_applies_cleanly_to_an_empty_store(tmp_path: P
     assert "#414" in body and "owed, not" in body, (
         f"the applied body for {_RESEEDED_ITEM.value} (revision {current_revision}) does not "
         f"carry the #414 correction ('#414' and 'owed, not' both expected as substrings). "
-        f"The superseded #416-era body matches both, so a revert to it is caught by the "
-        f'"B5\'s" marker below.'
+        f"The superseded #416-era body matches both, so a revert to it is caught by this "
+        f"item's _RESEED_PAYLOAD_MARKERS entry."
     )
     assert "reports proposal age" not in body, (
         f"the applied body for {_RESEEDED_ITEM.value} (revision {current_revision}) still "

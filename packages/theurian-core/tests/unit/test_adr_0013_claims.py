@@ -56,16 +56,17 @@ must not be told it covers more than it does.
 glob-matches every revision body of this ADR, not one (three, measured
 2026-10-08 at ``e11d0352``, a commit on #903's branch and not on ``main``, with
 ``ls`` over the ``ai-writes-produce-proposals.*`` glob).
-The **served** revision is the latest re-seed's, ``01M4D4F0J3BRF1J3V6PMWT82CW``
-(https://github.com/theurian/theurian/issues/832); it carries the corrected text
+The **served** revision is the
+terminal ``upsertRevision`` of this item in migration application order; it
+carries the corrected text
 and no longer carries the uncorrected sentence: a reader of ``knowledge.get`` on
 that item sees the same "owed, not shipped" wording this file pins. The
 **superseded** body,
 ``ai-writes-produce-proposals.01M0D5GZD9VSWC2JNVH51P8K3P.md``, still carries the
-uncorrected sentence, byte-frozen as history rather than left there by drift. (The
-other superseded body, ``01M1B1XCAVJZKQQ6FWNADKRM69``, is the one
-https://github.com/theurian/theurian/issues/416 re-seeded through
-``propose``/``accept``; it carries the corrected sentence.)
+uncorrected sentence, byte-frozen as history rather than left there by drift. (Every
+later superseded body is a re-seed through ``propose``/``accept``, the first being
+https://github.com/theurian/theurian/issues/416's, ``01M1B1XCAVJZKQQ6FWNADKRM69``; it
+carries the corrected sentence.)
 That is correct *for its own anchor* and required by replay-from-empty (FR-K4):
 the dogfood corpus is held byte-identical to its source anchor commit by
 ``test_dogfood_corpus_governance.py::test_every_pinned_body_is_byte_identical_to_its_source_anchor_commit``,
