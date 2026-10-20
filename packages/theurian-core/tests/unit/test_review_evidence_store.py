@@ -1761,20 +1761,22 @@ def test_an_anchor_from_another_provider_is_refused() -> None:
         )
 
 
-def test_a_landed_event_whose_provider_was_rewritten_to_a_colon_refuses_as_evidence_error(
+def test_a_landed_event_whose_provider_names_a_colon_refuses_as_evidence_error(
     tmp_path: Path,
 ) -> None:
-    """A rewritten file must be an operator-readable refusal, not a traceback (#748).
+    """A clone-delivered colon provider must be an operator-readable refusal, not a traceback (#748).
 
-    `ReviewEvent` now refuses a `:` in the provider, so a clone-delivered file
-    carrying one must surface as ``ReviewEvidenceError`` on the graded read.
+    The file sits where its own (rewritten) identity derives, so the reader's
+    path check passes and the refusal under test is ``ReviewEvent``'s.
     """
     store = _store(tmp_path)
-    (landed,) = store.write([_event(number=42)], run=RUN_ONE)
+    event = _event(number=42)
+    anchor = replace(event.anchor, provider="github:a")
+    (landed,) = store.write([replace(event, provider="github:a", anchor=anchor)], run=RUN_ONE)
     leaf = _review_root(tmp_path) / landed
     text = leaf.read_text(encoding="utf-8")
-    assert '"provider": "github"' in text, "the fixture no longer carries the rewritten spelling"
+    assert '"provider": "github"' in text, "the fixture lost the payload spelling it rewrites"
     leaf.write_text(text.replace('"provider": "github"', '"provider": "github:a"'), encoding="utf-8")
 
-    with pytest.raises(ReviewEvidenceError):
+    with pytest.raises(ReviewEvidenceError, match="provider"):
         store.read_all()
