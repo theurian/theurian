@@ -159,6 +159,7 @@ from theurian.domain.proposal import (
 from theurian.domain.values import ContentHash, MediaType
 from theurian.security.content_secrets import MAX_FINDINGS, SecretFinding, scan_text
 from theurian.security.paths import (
+    MAX_SOURCE_FILE_BYTES,
     assert_no_symlink_escape,
     read_source_file,
     resolve_within_root,
@@ -953,7 +954,10 @@ class ProposalService:
         out.
 
         Raises:
-            ProposalError: If the request cannot be packaged, if an update omits
+            ProposalError: If the request cannot be packaged, if the body's UTF-8
+                encoding is larger than
+                :data:`~theurian.security.paths.MAX_SOURCE_FILE_BYTES` (the cap
+                ``accept`` reads it under), if an update omits
                 or misplaces its ``expectedRevision``, if a draft for an item the
                 injected lookup returns names a lower sensitivity than the item's
                 or the item is retired, if the built migration does not satisfy the published
@@ -961,6 +965,16 @@ class ProposalService:
                 ``--local`` draft cannot make ``.theurian/proposals-local/``
                 git-ignored. No proposal directory is written in any case.
         """
+        # First, because the lookups below may replay the landed set into a
+        # scratch directory (`current_item_in`): an over-cap body is refused
+        # having written nothing and replayed nothing.
+        body_bytes = request.body.encode("utf-8")
+        if len(body_bytes) > MAX_SOURCE_FILE_BYTES:
+            raise ProposalError(
+                f"The body is {len(body_bytes)} bytes in UTF-8, larger than "
+                f"{MAX_SOURCE_FILE_BYTES} bytes, so accept would refuse it.",
+                remedy="Split it into knowledge items a reviewer can read, and draft each one.",
+            )
         if self._current_revision is not None:
             # Before `current_item`, which may replay the whole landed set.
             try:
@@ -990,7 +1004,6 @@ class ProposalService:
         # directories are children of `.theurian/`, so the relative path is
         # exact by construction and stays POSIX-shaped on any platform.
         content_file = PurePosixPath("..", self._paths.knowledge.name, relative_body)
-        body_bytes = request.body.encode("utf-8")
         digest = ContentHash.of_bytes(body_bytes)
 
         document = _migration_document(
