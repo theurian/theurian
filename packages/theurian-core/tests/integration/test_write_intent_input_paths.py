@@ -16,12 +16,13 @@ operation definitions for the kinds in ``V1_OPERATION_KINDS``, with the recorded
 path-shaped members in ``_V1_PATH_MEMBERS``, each driven, and a closed property
 set per kind in ``_V1_RECORDED``. Canary drives cover
 ``knowledge.proposeChange`` landing, the ``_V1_PATH_MEMBERS`` landing through
-``knowledge.generateMigrationDraft``, an ``upsertRevision`` refused by the v1 gate,
-and ``review.generateKnowledgeCandidate``'s refused ``repository`` and ``recordKey``
-(canary path) and its schema-refused path-shaped ``fixCommit`` (no canary file).
-That tool's ``scopePaths`` and ``sourceAnchors`` are not driven (#965). The scan
-sees a canary's bytes only in a file under the test's ``tmp_path`` or in the
-tool's response. The schema walk raises on any keyword outside ``_WALKED`` and
+``knowledge.generateMigrationDraft``, and ``review.generateKnowledgeCandidate``'s
+refused ``repository`` and ``recordKey`` (canary path). Two drives carry no canary:
+an ``upsertRevision`` refused by the v1 gate (checked for paths and bytes written)
+and that tool's schema-refused path-shaped ``fixCommit``. That tool's ``scopePaths``
+and ``sourceAnchors`` are not driven (#965). The scan sees a canary's bytes only in a
+file under the test's ``tmp_path`` (``.git`` excluded) or in the tool's response.
+The schema walk raises on any keyword outside ``_WALKED`` and
 ``_INERT``, so a path added under one is refused rather than missed.
 """
 
@@ -97,9 +98,10 @@ _PATH_NAMES: Final = frozenset(
 )
 
 
-#: Keywords the walk descends, and annotations or constraints that cannot add a
-#: member. A node carrying any other key raises, so an applicator the walk does not
-#: implement (``patternProperties``, ``prefixItems``, ``if``, ...) is refused, not missed.
+#: Keywords the walk descends, and annotations, constraints and the ``$id``/``$schema``
+#: core keywords, none of which can add a member. A node carrying any other key raises,
+#: so an applicator the walk does not implement (``patternProperties``,
+#: ``prefixItems``, ``if``, ...) is refused, not missed.
 _WALKED: Final = frozenset(["$ref", "allOf", "anyOf", "oneOf", "properties", "items", "$defs"])
 _INERT: Final = frozenset(
     (  # noqa: SIM905
@@ -283,6 +285,11 @@ _V1_RECORDED: Final = {
 }
 
 
+_MIGRATION_MEMBERS: Final = frozenset(
+    ["apiVersion", "author", "createdAt", "dependsOn", "description", "id", "operations"]
+)
+
+
 def test_a_v1_admitted_operation_declares_only_the_recorded_properties() -> None:
     assert _v1_operation_paths() == _V1_RECORDED
 
@@ -305,6 +312,13 @@ def test_the_v1_path_members_are_the_recorded_set() -> None:
         for p in found
         if _tail(p) in _PATH_NAMES
     } == set(_V1_PATH_MEMBERS)
+
+
+def test_the_migration_document_declares_only_the_recorded_top_level_members() -> None:
+    """RED driver, run at 41484424: ``bodyPath`` added to the top-level ``properties`` of
+    ``migration.schema.json`` in a private copy.
+    """
+    assert set(_BY_ID[_MIGRATION_ID]["properties"]) == _MIGRATION_MEMBERS
 
 
 # -- dereference, driven with a canary ---------------------------------------
@@ -340,7 +354,7 @@ def _call(demo: ProjectRegistry, tmp_path: pathlib.Path, tool: str, args: dict[s
         return call(tool, {"projectId": "demo", **args})["result"]
 
 
-def test_a_path_in_a_recorded_field_is_stored_as_text_and_never_read(
+def test_a_path_in_a_recorded_field_is_stored_as_text_and_its_bytes_reach_no_file_or_response(
     demo: ProjectRegistry, tmp_path: pathlib.Path
 ) -> None:
     """Drives the scan's own positive control: the path *text* lands, its bytes do not.
@@ -414,9 +428,11 @@ def test_an_upsert_revision_is_refused_by_the_v1_gate_and_adds_no_path(
 ) -> None:
     """The op is schema-complete, so only the gate refuses it. RED drivers, run at
     6c3c2827: ``_refuse_operations_outside_the_v1_set`` patched to return ``()``; an empty
-    ``proposals/<id>/evidence.json`` created before the gate.
+    ``proposals/<id>/evidence.json`` created before the gate. Run at 41484424: an append to
+    the existing ``proposals/.gitkeep`` before the gate, which the path set alone misses.
     """
     before = _tree(tmp_path)
+    bytes_before = _written(tmp_path)
     op = {
         "op": "upsertRevision",
         "itemId": "architecture.x",
@@ -442,6 +458,7 @@ def test_an_upsert_revision_is_refused_by_the_v1_gate_and_adds_no_path(
     assert "does not carry upsertRevision" in text, text
     assert "knowledge.proposeChange" in text, text
     assert _tree(tmp_path) == before
+    assert _written(tmp_path) == bytes_before
 
 
 @pytest.fixture
@@ -522,5 +539,4 @@ def test_a_path_shaped_fix_commit_is_refused_at_the_schema_naming_the_field(
     assert result["isError"] is True, result
     assert "does not match this tool's published input schema" in text, text
     assert "At fixCommit" in text, text
-    assert _CANARY_BYTES not in json.dumps(result).encode()
     assert served.proposals() == set()
