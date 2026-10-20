@@ -1,10 +1,12 @@
-"""ADR-0032 decision 2 is not stated by field name (#963, #965 item 8, #995).
+"""Two false-claim classes in write-path prose, over one population (#963, #965 item 8, #995).
 
 ADR-0032 decision 2 is dereference: the daemon reads no write-intent input value as
 a path. Stating it as the absence of path-, URI- or reference-named fields or
 parameters is false, because the inputs declare such members (among them
 `scopePaths`, `sourceAnchors[]`'s `sourceUri` and `filePath`, the migration
 document's `sourceUri` and `anchor.filePath`) and record them without reading them.
+And caller text does reach a file name: `draft_from_document` names the migration
+file with a slug of the document's `description`.
 
 Population (`_population`): every `description` string at any depth in
 `schemas/mcp/*.schema.json`; every docstring (module, class, function, nested
@@ -47,6 +49,17 @@ _BY_NAME: Final = re.compile(
     rf"(?:\bpath{_SEP}UR[IL]s?(?:{_SEP}reference)?"
     r"|(?:\bno|\bwithout\s+an?|\bnot\s+\w+\s+an?|\bnever\s+\w+\s+an?)\s+path)"
     r"(?:-named|-shaped)?\s+(?:field|parameter)s?\b",
+    re.IGNORECASE,
+)
+
+_CALLER: Final = (
+    r"caller(?:[- ](?:controlled|supplied|chosen|authored))?\s+(?:text|strings?|input|values?)"
+)
+_FS: Final = r"(?:(?:the|a|any)\s+)?(?:file\s*system|file\s*names?|disk|paths?|director(?:y|ies))"
+_CALLER_TEXT_KEPT_OUT: Final = re.compile(
+    rf"\bnever\s+from\s+{_CALLER}"
+    rf"|\bno\s+{_CALLER}\s+(?:ever\s+)?reach(?:es)?\s+{_FS}"
+    rf"|\b{_CALLER}\s+(?:never|does\s+not|cannot)\s+reach(?:es)?\s+{_FS}",
     re.IGNORECASE,
 )
 
@@ -138,6 +151,34 @@ def test_no_live_sentence_states_decision_2_by_field_name() -> None:
     )
 
 
+def test_no_live_sentence_says_caller_text_reaches_no_file_name() -> None:
+    """Key (`_CALLER_TEXT_KEPT_OUT`, case-insensitive, across wraps): `never from`
+    caller text; or `no` caller text `reaches` a filesystem target; or caller text
+    `never`/`does not`/`cannot` `reach` one. Caller text is `caller`, optionally
+    `-controlled`/`-supplied`/`-chosen`/`-authored`, then `text`, `string`, `input` or
+    `value`; a target is `filesystem`, `file name`, `disk`, `path` or `directory`.
+    Population: as for decision 2, so ADR-0032 rides along with the schemas and
+    docstrings the class appeared in.
+
+    Measured: zero live hits at 43e681d7. RED drivers, each in a private worktree at
+    43e681d7 plus this file: the `generateMigrationDraft` schema file checked out from
+    f569a96a ("never from caller text"); `proposal_service.py` checked out from
+    f569a96a ("No caller-controlled string reaches the filesystem").
+
+    Blind: another subject ("user input", "anything the caller sends"), another target
+    ("the tree", "storage"), and the affirmative half alone ("named only by minted
+    ids"). `never from` caller text needs no target, so it also hits where the thing
+    minted is not a file name.
+    """
+    hits = _hits(_CALLER_TEXT_KEPT_OUT, _population())
+
+    assert not hits, (
+        "The migration file name carries a slug of the caller's description: say "
+        "where caller text reaches a file name, not that it never does (#995).\n"
+        + "\n".join(map(repr, hits))
+    )
+
+
 @pytest.mark.parametrize(
     "sentence",
     [
@@ -163,6 +204,30 @@ def test_the_by_name_key_catches_each_phrasing(sentence: str) -> None:
 )
 def test_the_by_name_key_passes_a_true_sentence(sentence: str) -> None:
     assert not _BY_NAME.search(sentence)
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "the proposal directory and migration filename are minted from ids the service "
+        "chooses, never from caller text",
+        "No caller-controlled string reaches the filesystem",
+        "Caller-supplied text never reaches a file\n    name",
+    ],
+)
+def test_the_caller_text_key_catches_each_phrasing(sentence: str) -> None:
+    assert _CALLER_TEXT_KEPT_OUT.search(sentence)
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "No caller value is used as a path, and caller text reaches a file name in one place.",
+        "so no caller-supplied text reaches the statement text",
+    ],
+)
+def test_the_caller_text_key_passes_a_true_sentence(sentence: str) -> None:
+    assert not _CALLER_TEXT_KEPT_OUT.search(sentence)
 
 
 def test_the_walk_and_the_live_filter_reach_each_planted_sentence(
