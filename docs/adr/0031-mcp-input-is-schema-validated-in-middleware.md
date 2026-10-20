@@ -709,7 +709,7 @@ Still owed, with the milestone that will satisfy it:
   classes still meet the bare `413` at a landed size the store would accept;
   that is recorded as an accepted residual on `MAX_REQUEST_BODY_BYTES` and in
   the threat model's SEC-12 entry, not owed to a milestone. (**The unit landed
-  on 2026-10-20, PR #1001; the pin is owed to
+  in PR #1001; the pin is owed to
   [#968](https://github.com/theurian/theurian/issues/968).** The `maxLength`
   stays a code-point over-approximation, and `ProposalService.draft` refuses a
   body whose UTF-8 is over `MAX_SOURCE_FILE_BYTES`, leaving the project unchanged:
@@ -1054,6 +1054,8 @@ class is closed across both seats rather than at the one this change touched.
 Finally, the stale test cite corrected above was found by review rather than by
 the suite: nothing checks that a test name an ADR cites still exists
 ([#692](https://github.com/theurian/theurian/issues/692)).
+(**Since routed:** the unit question to PR #1001, the envelope pin to
+[#968](https://github.com/theurian/theurian/issues/968); see *Still owed*.)
 
 **Addendum, 2026-09-15 — round two: three figures were measurements over a
 favourable instance, written down as bounds.** Appended rather than folded into

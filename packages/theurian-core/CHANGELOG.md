@@ -47,7 +47,10 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   and `theurian propose accept` then refused the proposal. New shape: `isError`
   with "The body is N bytes in UTF-8, larger than 8388608 bytes, so accept would
   refuse it.", and nothing written. `theurian propose --body-file` and
-  `theurian okf import` already refused such a file at read. The published
+  `theurian okf import` already refused such a regular file at read.
+  `--body-file` checked the file's size before reading it, so a FIFO, or a file
+  that grew during the read, got past that check
+  ([#1006](https://github.com/theurian/theurian/issues/1006)). The published
   `body` `maxLength` does not change.
 
 ### Fixed

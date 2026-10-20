@@ -2555,8 +2555,8 @@ the property as it was written and states what actually holds it:
   first — so the published `maxLength` is not the refusal a caller meets
   ([#699](https://github.com/theurian/theurian/issues/699)). The unit it counts
   is [#691](https://github.com/theurian/theurian/issues/691)'s. Both are recorded
-  in *Still owed* rather than read as discharged. (#691's landed on 2026-10-20,
-  PR #1001, and moved here from *Still owed*: `ProposalService.draft` refuses a
+  in *Still owed* rather than read as discharged. (#691's landed in PR #1001,
+  and moved here from *Still owed*: `ProposalService.draft` refuses a
   body over `MAX_SOURCE_FILE_BYTES` in UTF-8 —
   `test_proposal_service.py::test_a_body_over_the_byte_cap_is_refused_before_anything_is_written`
   for ASCII, astral and `--local` bodies, and over the wire for both tools
