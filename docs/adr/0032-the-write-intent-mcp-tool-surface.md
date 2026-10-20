@@ -2600,7 +2600,13 @@ the property as it was written and states what actually holds it:
   over the wire with a canary path whose text lands while its bytes reach
   neither a file under the test's tree outside `.git` nor the response, and
   drives an `upsertRevision` refused with the v1 gate's message and the tree
-  unchanged. This entry was moved here from *Still owed*.
+  outside `.git` unchanged. This entry was moved here from *Still owed*.
+
+  **Corrected in place.** This bullet's heading said: "Slice B5 or later — a
+  file path is refused by construction, and nothing recomputes it (decision
+  2)." Its last clause no longer holds: the tests named above pin the declared
+  members. The bullet's `upsertRevision` clause said "the tree unchanged"; that
+  test's comparison excludes `.git`, as the canary clause beside it says.
 
   **Corrected in place.** This bullet said: "The property holds as shipped:
   neither published input schema declares a path, URI, or reference field, and
@@ -2623,9 +2629,22 @@ the property as it was written and states what actually holds it:
   Today the absence is held by review and by ADR-0031's
   `unevaluatedProperties: false` refusing any key the schema does not name,
   which stops a *caller* smuggling one and does nothing about a schema someone
-  widens." Its last step does not hold: a test that no input schema declares a
-  path-shaped field would fail on the fields above, so the walk records them
-  instead of forbidding them.
+  widens." Its middle step does not hold: a structural test that no input schema
+  declares a path-shaped field would fail on the fields above, so the walk
+  records them instead of forbidding them. Nor does its last sentence. Its
+  premise is the absence corrected above, and its widening clause is superseded
+  by #962's walk:
+  `tests/integration/test_write_intent_input_paths.py::test_a_write_intent_schema_declares_only_the_recorded_properties`
+  compares the property paths of the three write-intent tools' input schemas,
+  `$ref` followed, with a closed recorded set each, and the walk raises on an
+  applicator keyword it does not descend, which
+  `tests/integration/test_write_intent_input_paths.py::test_the_walk_refuses_an_applicator_it_does_not_follow`
+  drives for eleven of them.
+
+  **Corrected in place.** This bullet said: "Its last step does not hold: a test
+  that no input schema declares a path-shaped field would fail on the fields
+  above, so the walk records them instead of forbidding them." The step it
+  refuted is the middle one, and the last sentence was left unexamined.
 - **The operations path's accept drive and its no-direct-loader-import
   property.** Recorded after the slice, with no new test:
   [#703](https://github.com/theurian/theurian/issues/703) and

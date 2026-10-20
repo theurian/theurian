@@ -30,6 +30,29 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `dependsOn: [<id>]`, for one `upsertRevision` of the raced item with a landed
   revision of it, and otherwise "the expectedRevision the message reports"; the
   removal cure can end with a redraft sentence.
+- **The `knowledge.proposeChange` and `knowledge.generateMigrationDraft` input
+  schemas name their path-shaped members instead of denying they exist**
+  ([#963](https://github.com/theurian/theurian/issues/963), ADR-0032 decision
+  2). This is a claim correction, not a contract change: only the two top-level
+  `description` annotations changed. `[0.3.0]`'s *Added* entry for these
+  schemas, below, says "There is no path, URI, or reference field anywhere in
+  either input". That was false when it shipped, and it is left standing as the
+  record of that release rather than edited. `knowledge.proposeChange` declares
+  `scopePaths` and `sourceAnchors[]`'s `sourceUri`, `filePath` and
+  `repository`. Inside `knowledge.generateMigrationDraft`'s `document`, the
+  admitted operations declare `registerSpecification`'s and `removeEvidence`'s
+  `sourceUri` and `addEvidence`'s `anchor.sourceUri`, `anchor.filePath` and
+  `anchor.repository`. These are recorded as text and not read as paths, and
+  the two descriptions now name them. Held, to the reach of a byte scan, by
+  `pytest packages/theurian-core/tests/integration/test_write_intent_input_paths.py -k 'stored_as_text or lands_as_text'`:
+  six drives send a canary file's path in those members, the four
+  `knowledge.proposeChange` members in one call and each `document` member in
+  its own, and assert that the path's text is in, and the canary's bytes are
+  not in, the files under the test's tree outside `.git` other than the canary,
+  and that the bytes are not in the response. The same `[0.3.0]` paragraph's
+  "That absence is a property of the two files as shipped and no test
+  recomputes it" shares the false premise; ADR-0032's *Compliance* records that
+  module's closed member sets as landed.
 
 ### Fixed
 
