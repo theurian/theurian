@@ -52,9 +52,9 @@ from typing import Any, Final
 import pytest
 from git_harness import commit_migrations
 from jsonschema import Draft202012Validator
-from mcp.types import CallToolResult
 from migration_fixtures import body_pin
 from referencing import Registry, Resource
+from tool_result import structured_payload
 from typer.testing import CliRunner
 
 from theurian.application.project_service import (
@@ -219,26 +219,14 @@ class Built:
             result = await build_server(self.registry).call_tool(
                 "knowledge.search", {"projectId": "demo", "query": query, **arguments}
             )
-            assert isinstance(result, CallToolResult)
-            structured = result.structured_content
-
-            assert structured is not None
-
-            payload: dict[str, Any] = structured
-            return payload
+            return structured_payload(result)
 
         return asyncio.run(call())
 
     def capabilities(self) -> dict[str, Any]:
         async def call() -> dict[str, Any]:
             result = await build_server(self.registry).call_tool("system.capabilities", {})
-            assert isinstance(result, CallToolResult)
-            structured = result.structured_content
-
-            assert structured is not None
-
-            payload: dict[str, Any] = structured
-            return payload
+            return structured_payload(result)
 
         return asyncio.run(call())
 

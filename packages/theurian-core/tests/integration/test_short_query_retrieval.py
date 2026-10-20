@@ -45,8 +45,8 @@ from typing import Any
 
 import pytest
 from git_harness import commit_migrations
-from mcp.types import CallToolResult
 from migration_fixtures import body_pin
+from tool_result import structured_payload
 from typer.testing import CliRunner
 
 from theurian.application.project_service import ProjectRegistry
@@ -174,13 +174,7 @@ async def _search(registry: ProjectRegistry, query: str) -> dict[str, Any]:
     result = await build_server(registry).call_tool(
         "knowledge.search", {"projectId": "demo", "query": query}
     )
-    assert isinstance(result, CallToolResult)
-    structured = result.structured_content
-
-    assert structured is not None
-
-    payload: dict[str, Any] = structured
-    return payload
+    return structured_payload(result)
 
 
 def _drop_the_index(registry: ProjectRegistry) -> None:

@@ -55,9 +55,9 @@ import pytest
 from git_harness import commit_migrations
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
-from mcp.types import CallToolResult
 from migration_fixtures import body_pin
 from referencing import Registry, Resource
+from tool_result import structured_payload
 from write_intent_population import registered_write_intent_names
 
 from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
@@ -244,13 +244,7 @@ async def _call_search(registry: Any, arguments: dict[str, Any]) -> dict[str, An
     result = await build_server(registry).call_tool(
         "knowledge.search", {"projectId": "demo", **arguments}
     )
-    assert isinstance(result, CallToolResult)
-    structured = result.structured_content
-
-    assert structured is not None
-
-    payload: dict[str, Any] = structured
-    return payload
+    return structured_payload(result)
 
 
 def _search(registry: Any, **arguments: Any) -> dict[str, Any]:
@@ -563,13 +557,7 @@ async def _call_project_list(registry: Any) -> dict[str, Any]:
     from theurian.daemon.runner import build_server
 
     result = await build_server(registry).call_tool("project.list", {})
-    assert isinstance(result, CallToolResult)
-    structured = result.structured_content
-
-    assert structured is not None
-
-    payload: dict[str, Any] = structured
-    return payload
+    return structured_payload(result)
 
 
 def _project_list_against(data_dir: pathlib.Path, entries: dict[str, Any]) -> dict[str, Any]:
@@ -802,13 +790,7 @@ async def _call_status(registry: Any, project_id: str) -> dict[str, Any]:
     from theurian.daemon.runner import build_server
 
     result = await build_server(registry).call_tool("knowledge.status", {"projectId": project_id})
-    assert isinstance(result, CallToolResult)
-    structured = result.structured_content
-
-    assert structured is not None
-
-    payload: dict[str, Any] = structured
-    return payload
+    return structured_payload(result)
 
 
 def _build_status_project(
@@ -1286,13 +1268,7 @@ async def _call_findings(registry: Any, **arguments: Any) -> dict[str, Any]:
     result = await build_server(registry).call_tool(
         "review.findings", {"projectId": "demo", **arguments}
     )
-    assert isinstance(result, CallToolResult)
-    structured = result.structured_content
-
-    assert structured is not None
-
-    payload: dict[str, Any] = structured
-    return payload
+    return structured_payload(result)
 
 
 @pytest.fixture(scope="module")
@@ -1565,13 +1541,7 @@ async def _call_review_search(registry: Any, **arguments: Any) -> dict[str, Any]
     result = await build_server(registry).call_tool(
         "review.search", {"projectId": "demo", **arguments}
     )
-    assert isinstance(result, CallToolResult)
-    structured = result.structured_content
-
-    assert structured is not None
-
-    payload: dict[str, Any] = structured
-    return payload
+    return structured_payload(result)
 
 
 @pytest.fixture(scope="module")
@@ -1717,13 +1687,7 @@ async def _call_capabilities(registry: Any) -> dict[str, Any]:
     from theurian.daemon.runner import build_server
 
     result = await build_server(registry).call_tool("system.capabilities", {})
-    assert isinstance(result, CallToolResult)
-    structured = result.structured_content
-
-    assert structured is not None
-
-    payload: dict[str, Any] = structured
-    return payload
+    return structured_payload(result)
 
 
 @pytest.mark.integration

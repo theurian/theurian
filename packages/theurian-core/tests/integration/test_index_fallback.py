@@ -71,8 +71,8 @@ from typing import Any
 
 import pytest
 from git_harness import commit_migrations
-from mcp.types import CallToolResult
 from migration_fixtures import body_pin
+from tool_result import structured_payload
 from typer.testing import CliRunner
 
 from theurian.application.authorization import (
@@ -291,13 +291,7 @@ async def _search_with(
     result = await build_server(registry, grant).call_tool(
         "knowledge.search", {"projectId": "demo", **arguments}
     )
-    assert isinstance(result, CallToolResult)
-    structured = result.structured_content
-
-    assert structured is not None
-
-    payload: dict[str, Any] = structured
-    return payload
+    return structured_payload(result)
 
 
 def _corrupt(database: Path, statement: str, parameters: tuple[Any, ...] = ()) -> None:

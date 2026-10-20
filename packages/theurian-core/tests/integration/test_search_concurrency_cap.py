@@ -42,8 +42,8 @@ import pytest
 from git_harness import commit_migrations
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
-from mcp.types import CallToolResult
 from migration_fixtures import body_pin
+from tool_result import structured_payload
 from typer.testing import CliRunner
 
 from theurian.application.project_service import ProjectRegistry
@@ -297,13 +297,7 @@ def registry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ProjectRegistry
 async def _call_on(server: MCPServer, tool: str, **arguments: Any) -> dict[str, Any]:
     """Invoke a tool and return its payload, mirroring ``test_mcp_tools._call_on``."""
     result = await server.call_tool(tool, arguments)
-    assert isinstance(result, CallToolResult)
-    structured = result.structured_content
-
-    assert structured is not None
-
-    payload: dict[str, Any] = structured
-    return payload
+    return structured_payload(result)
 
 
 async def _call_failing_on(server: MCPServer, tool: str, **arguments: Any) -> str:

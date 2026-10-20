@@ -42,8 +42,8 @@ from typing import Any
 
 import pytest
 from git_harness import commit_migrations
-from mcp.types import CallToolResult
 from migration_fixtures import body_pin
+from tool_result import structured_payload
 from typer.testing import CliRunner
 
 from theurian.application.project_service import (
@@ -548,12 +548,7 @@ async def _relations_of(data_dir: Path, item_id: str) -> list[dict[str, Any]]:
     """
     server = build_server(ProjectRegistry.default(data_dir), None)
     result: Any = await server.call_tool("knowledge.get", {"projectId": "demo", "itemId": item_id})
-    assert isinstance(result, CallToolResult)
-    structured = result.structured_content
-
-    assert structured is not None
-
-    payload = dict(structured)
+    payload = structured_payload(result)
     return [dict(row) for row in payload["relations"]]
 
 
@@ -836,13 +831,7 @@ async def _search(registry: ProjectRegistry, **arguments: Any) -> dict[str, Any]
     result = await build_server(registry, None).call_tool(
         "knowledge.search", {"projectId": "demo", **arguments}
     )
-    assert isinstance(result, CallToolResult)
-    structured = result.structured_content
-
-    assert structured is not None
-
-    payload: dict[str, Any] = structured
-    return payload
+    return structured_payload(result)
 
 
 def test_doctor_reports_the_published_builds_secret_as_degraded(planted: Path) -> None:
