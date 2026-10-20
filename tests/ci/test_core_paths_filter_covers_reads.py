@@ -2,13 +2,21 @@
 
 Why this file exists
 --------------------
-On a push or a pull request, `tests/ci` is selected by exactly one job:
-`core.yml`'s `-m "not e2e"` step. (`release-core.yml` runs the whole suite too,
-but on a `core-v*` tag -- after the change has landed, and on the release path
-rather than as a gate on the commit. `shared.yml` names individual files and
-`-m contract`, and reaches nothing here.) So a commit that touches a file one of
-these modules *reads* -- and nothing else -- runs none of the pins holding that
-file until a release.
+On a push or a pull request, `tests/ci` is selected by two jobs, both in
+`core.yml`: `test` (`uv run pytest -n 4 -m "not e2e" --cov ...`) and `offline`
+(`pytest -n 4 -m 'not e2e' -q`, inside its network namespace). `core.yml`'s
+`e2e` job runs `tests/e2e` only, and `-m contract` -- in `test` and in
+`shared.yml` -- selects nothing here: no `tests/ci` test is marked `contract`.
+(`release-core.yml` runs the whole suite too, but on a `core-v*` tag -- after
+the change has landed, and on the release path rather than as a gate on the
+commit. `shared.yml` and `plugin.yml` otherwise name individual files under
+`packages/`. Key: `git grep -n pytest -- .github/workflows/`.) The argument
+rests on the workflow, not the job count: both jobs sit under `core.yml`'s
+top-level `on.push.paths` and `on.pull_request.paths`, so that one filter
+decides whether either runs, and a commit that touches a file one of these
+modules *reads* -- and nothing else -- runs none of the pins holding that
+file until a release. A job selecting `tests/ci` from another workflow,
+under another filter, is what would change that.
 
 **The population, keyed before it is counted.** The key is a *distinct derived
 read pattern* -- one entry per pattern, not per reading module and not per probe
@@ -33,7 +41,7 @@ no `timeout-minutes` at all.
 The corpus this rule walks
 --------------------------
 Every `tests/ci/*.py`, this module included -- the whole population of modules
-that step runs out of this directory, joined by a new sibling *existing* rather
+those two jobs run out of this directory, joined by a new sibling *existing* rather
 than by being listed here. `tests/release/` and the rest of `tests/` are out of
 scope on purpose: `tests/**` already reaches them as subjects, and what they
 read is a separate question from the one #762 asked.

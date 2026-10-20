@@ -1,13 +1,23 @@
-"""`migrate apply`'s single critical section, pinned deterministically (#478).
+"""`migrate apply`'s lock confinement, pinned deterministically (#478).
 
-CI's required checks run `pytest -m "not e2e"` (`core.yml`), so
+`core.yml`'s `test` and `offline` jobs select `-m "not e2e"`, and its `e2e` job
+runs `tests/e2e` on pull requests (#634), so
 `tests/e2e/test_migrate_apply_concurrency.py` -- which drives two real OS
-processes racing a 50ms poll window -- gates nothing on a pull request
-(#485). This file is the compensating control: every test here is
-`integration`-marked, runs in-process through `typer.testing.CliRunner`
+processes racing a 50ms poll window -- now gates a pull request. Before that
+job (#485) this file was the compensating control. The e2e pair loop is
+timing-dependent by its own account (a pair that happens not to race still
+satisfies the invariant). This file is guaranteed to go red at pull-request
+time when `create_database` or `write_active_state` runs while nothing holds
+the write lock. It stays green on the two-hold shape #468's round two
+replaced -- the one hold split into two, each still covering its write --
+because the probe below sees that some hold covers each call, not that one
+hold covers both. That split is caught only when an e2e pair happens to race;
+the deterministic pin for the single hold is #987's. This file is the
+in-process control:
+every test here is `integration`-marked, runs in-process through `typer.testing.CliRunner`
 (the same pattern `test_cli_commands.py` uses), and is deterministic --
-no timing window, no race to win. It is what CI actually runs to hold
-#468's fix in place; the e2e test is the readable end-to-end proof that a
+no timing window, no race to win, so a red here names the lock, not the
+scheduler. The e2e test is the readable end-to-end proof that a
 real raced pair, over real OS processes, produces the same outcome.
 
 **How a test here proves a write only happens under the lock: probe at the
