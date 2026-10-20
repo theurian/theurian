@@ -328,7 +328,7 @@ def _apply_leaving_the_stale_build_published(root: Path) -> None:
 
 
 async def _call(registry: ProjectRegistry, tool: str, **arguments: Any) -> dict[str, Any]:
-    """Invoke a tool and return its payload, or ``{"_error": ...}``.
+    """Invoke a tool and return its payload.
 
     ``call_tool`` re-raises a failing tool as the SDK's own ``ToolError``; the
     transport is the layer that turns it into ``isError=True`` content. Both
@@ -5576,9 +5576,12 @@ DEPTH_CROWD = 55
 #: than restating whatever the implementation currently holds.
 DOCUMENTED_DEPTH = 50
 
-#: The two fields excluded from the comparisons below, and the only two.
+#: The two build-identity fields excluded from the comparisons below, beside
+#: `projectId`, which `test_a_withheld_document_changes_nothing_a_caller_can_see`
+#: also drops: it is the request echo (the schema says "Echoed from the
+#: request") and the two corpora are two projects.
 #:
-#: They name *which* build and *which* canonical state answered, and two
+#: The two named here name *which* build and *which* canonical state answered, and two
 #: separately created projects cannot share either: `indexBuildId` is a fresh
 #: ULID per build and `snapshotId` is a hash over content that differs by the
 #: withheld document itself. Excluding a field is how a comparison quietly gets
@@ -5829,9 +5832,9 @@ def three_indexes(
 ) -> _DepthProjects:
     """The same crowd, indexed three ways, in each writing system.
 
-    ``depth-probe``      the withheld document holds the credential
+    ``depth-probe-corp`` the withheld document holds the credential
     ``depth-same-shape`` the withheld document holds nothing worth stealing
-    ``depth-absent``     the document was never written at all
+    ``depth-absent-doc`` the document was never written at all
 
     Each writing system gets its own data directory, so the three project ids
     are the same in both and every test below can name them without knowing
@@ -5846,9 +5849,9 @@ def three_indexes(
     monkey.setenv("THEURIAN_DATA_DIR", str(base / "datadir"))
     try:
         for name, secret, holds in (
-            ("depth-probe", True, True),
+            ("depth-probe-corp", True, True),
             ("depth-same-shape", False, True),
-            ("depth-absent", False, False),
+            ("depth-absent-doc", False, False),
         ):
             root = base / name
             root.mkdir()
@@ -5909,19 +5912,19 @@ def test_the_depth_probe_reaches_the_withheld_document_inside_the_candidate_dept
     from theurian.infrastructure.sqlite.index_store import SqliteIndexStore
 
     corpus = three_indexes.corpus
-    root = Path(three_indexes.registry.load()["depth-probe"]["rootPath"])
+    root = Path(three_indexes.registry.load()["depth-probe-corp"]["rootPath"])
     (built,) = (root / ".theurian/state").glob("theurian-index-*.sqlite")
     index = SqliteIndexStore(built)
 
     words = index.search_lexical(
         corpus.query,
-        project_id="depth-probe",
+        project_id="depth-probe-corp",
         limit=DOCUMENTED_DEPTH,
         visible_sensitivities=EVERY_SENSITIVITY,
     ).rows
     trigrams = index.search_substring(
         corpus.query,
-        project_id="depth-probe",
+        project_id="depth-probe-corp",
         limit=DOCUMENTED_DEPTH,
         visible_sensitivities=EVERY_SENSITIVITY,
     ).rows
@@ -5938,7 +5941,7 @@ def test_the_depth_probe_reaches_the_withheld_document_inside_the_candidate_dept
     )
     crowd = index.search_substring(
         corpus.query,
-        project_id="depth-probe",
+        project_id="depth-probe-corp",
         limit=FIRST_PASS_DEPTH,
         visible_sensitivities=EVERY_SENSITIVITY,
     ).rows
@@ -5966,14 +5969,14 @@ async def test_the_three_projects_are_equally_behind_their_own_knowledge(
     alone — a real difference, nothing to do with the withheld document, and
     indistinguishable in the comparison below from the leak it is looking for.
 
-    So `depth-absent` is given an unrelated item after its build, purely to leave
+    So `depth-absent-doc` is given an unrelated item after its build, purely to leave
     it as far behind as the two that retired the runbook. That is a fixture
     detail nothing else would notice breaking: remove it and every equality
     assertion below starts failing for a reason that is not a security defect,
     and the obvious response is to relax the assertion. This says out loud which
     of the two it is.
     """
-    projects = ("depth-probe", "depth-same-shape", "depth-absent")
+    projects = ("depth-probe-corp", "depth-same-shape", "depth-absent-doc")
 
     answers = [
         await _call(
@@ -6005,14 +6008,14 @@ async def test_a_caller_who_asks_for_the_published_maximum_receives_it(
     passed, including the equality comparisons above — they compare two projects
     against each other, so a depth that truncates both truncates them equally.
 
-    Asked against `depth-absent`, which withholds nothing: this is a claim about
+    Asked against `depth-absent-doc`, which withholds nothing: this is a claim about
     reach, and mixing it with a corpus that has something to hide would put two
     effects on one measurement.
     """
     answer = await _call(
         three_indexes.registry,
         "knowledge.search",
-        projectId="depth-absent",
+        projectId="depth-absent-doc",
         query=three_indexes.corpus.query,
         limit=MAX_RESULTS,
         maxTokens=32_000,
@@ -6051,7 +6054,7 @@ async def test_the_default_budget_does_not_hand_back_the_whole_ranking(
     answer = await _call(
         three_indexes.registry,
         "knowledge.search",
-        projectId="depth-absent",
+        projectId="depth-absent-doc",
         query=three_indexes.corpus.query,
         limit=MAX_RESULTS,
     )
@@ -6063,7 +6066,7 @@ async def test_the_default_budget_does_not_hand_back_the_whole_ranking(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("control", ["depth-same-shape", "depth-absent"])
+@pytest.mark.parametrize("control", ["depth-same-shape", "depth-absent-doc"])
 @pytest.mark.parametrize(
     "arguments",
     [
@@ -6084,13 +6087,14 @@ async def test_a_withheld_document_changes_nothing_a_caller_can_see(
     read, one whose does not. Every published value must be equal — `count`,
     `usedTokens`, `droppedForBudget`, every hit's `fusedScore`, `foundBy`,
     `excerpt` and position, and the whole `retrieval` block bar the two build
-    identities named in `BUILD_IDENTITY`.
+    identities named in `BUILD_IDENTITY`. The one other exclusion is `projectId`,
+    the request echo; it is asserted to equal the project asked of, then dropped.
 
     Three earlier rounds compared a probe query against a control query and
     passed while a sibling channel stayed open, because a comparison of two
     queries is only as wide as the fields those two queries happen to move. This
     one has no such gap: the query is *identical*, so anything that differs
-    differs because of the withheld document and nothing else.
+    differs because of the withheld document or one of the three named exclusions.
 
     It is also the only shape in which the dense retriever can be asserted at
     all. Two different query strings legitimately produce different dense ranks
@@ -6130,7 +6134,7 @@ async def test_a_withheld_document_changes_nothing_a_caller_can_see(
     probe = await _call(
         three_indexes.registry,
         "knowledge.search",
-        projectId="depth-probe",
+        projectId="depth-probe-corp",
         query=query,
         **arguments,
     )
@@ -6146,7 +6150,6 @@ async def test_a_withheld_document_changes_nothing_a_caller_can_see(
     assert probe["results"] == other["results"], (
         "every field of every hit, including which chunk of a document was excerpted"
     )
-    assert probe["count"] == other["count"]
     assert probe["retrieval"].keys() == other["retrieval"].keys(), (
         "a field one build publishes and the other does not is the whole leak, "
         "not a difference in values"
@@ -6158,15 +6161,15 @@ async def test_a_withheld_document_changes_nothing_a_caller_can_see(
         "exactly the two fields the published contract exempts -- no more, and no fewer"
     )
 
+    assert probe["projectId"] == "depth-probe-corp"
+    assert other["projectId"] == control
+
     def _whole(payload: dict[str, Any]) -> str:
         retrieval = {k: v for k, v in payload["retrieval"].items() if k not in BUILD_IDENTITY}
-        # `projectId` echoes the request, and the two corpora are two projects.
-        return json.dumps({**payload, "projectId": None, "retrieval": retrieval}, sort_keys=True)
+        rest = {k: v for k, v in payload.items() if k != "projectId"}
+        return json.dumps({**rest, "retrieval": retrieval}, sort_keys=True)
 
-    assert _whole(probe) == _whole(other), (
-        "the whole response bar the echoed project id and the build identities, "
-        "so a top-level key nobody enumerated above is compared too"
-    )
+    assert _whole(probe) == _whole(other), "a top-level key nobody enumerated above differs"
 
 
 @pytest.mark.asyncio
@@ -6184,11 +6187,11 @@ async def test_the_build_identity_a_search_reports_does_not_vary_with_the_query(
     matching = await _call(
         three_indexes.registry,
         "knowledge.search",
-        projectId="depth-probe",
+        projectId="depth-probe-corp",
         query=three_indexes.corpus.query,
     )
     unrelated = await _call(
-        three_indexes.registry, "knowledge.search", projectId="depth-probe", query=NO_SUCH_TERM
+        three_indexes.registry, "knowledge.search", projectId="depth-probe-corp", query=NO_SUCH_TERM
     )
 
     assert {k: matching["retrieval"][k] for k in BUILD_IDENTITY} == {
@@ -6212,11 +6215,11 @@ async def test_a_stale_index_still_names_the_canonical_state_that_answered(
     decide whether their `knowledge.status` snapshot is still current would be
     told "yes" by an index that had not been rebuilt since.
     """
-    status = await _call(three_indexes.registry, "knowledge.status", projectId="depth-probe")
+    status = await _call(three_indexes.registry, "knowledge.status", projectId="depth-probe-corp")
     search = await _call(
         three_indexes.registry,
         "knowledge.search",
-        projectId="depth-probe",
+        projectId="depth-probe-corp",
         query=three_indexes.corpus.query,
     )
 
