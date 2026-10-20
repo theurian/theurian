@@ -2623,11 +2623,15 @@ the property as it was written and states what actually holds it:
   key the resolve refuses when unknown, and `fixCommit` is resolved as a git
   object id its schema `pattern` confines.
   [#963](https://github.com/theurian/theurian/issues/963) recorded the same
-  wording in two schema `description`s and the CHANGELOG `[0.3.0]` entry, and
-  [#995](https://github.com/theurian/theurian/pull/995) corrected both faces: it
-  replaced the wording in the two descriptions with the names of their
-  path-shaped members, and added a CHANGELOG *Changed* entry that names the
-  `[0.3.0]` sentence and leaves the released entry as it shipped.
+  wording in two schema `description`s and the CHANGELOG `[0.3.0]` entry.
+  [#995](https://github.com/theurian/theurian/pull/995) corrected those faces
+  and one #963 did not list, the `knowledge.proposeChange` handler docstring's
+  "There is no path parameter, by construction": it replaced the wording in the
+  two descriptions with the names of their path-shaped members, added a
+  CHANGELOG *Changed* entry that names the `[0.3.0]` sentence and leaves the
+  released entry as it shipped, and restated the docstring the same way: there
+  is no body-path parameter, and the path-shaped parameters it names are
+  recorded as text and not read as paths.
 
   The bullet's reasoning for the shape of the owed check is kept, because it is
   why #962 pins a closed set of declared members rather than a refusal:

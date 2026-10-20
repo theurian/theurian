@@ -51,8 +51,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   not in, the files under the test's tree outside `.git` other than the canary,
   and that the bytes are not in the response. The same `[0.3.0]` paragraph's
   "That absence is a property of the two files as shipped and no test
-  recomputes it" shares the false premise; ADR-0032's *Compliance* records that
-  module's closed member sets as landed.
+  recomputes it" shares the false premise; ADR-0032's *Compliance* records
+  `test_write_intent_input_paths.py`'s closed member sets as landed.
 
 ### Fixed
 
