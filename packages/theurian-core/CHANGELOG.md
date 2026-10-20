@@ -52,7 +52,15 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   and that the bytes are not in the response. The same `[0.3.0]` paragraph's
   "That absence is a property of the two files as shipped and no test
   recomputes it" shares the false premise; ADR-0032's *Compliance* records
-  `test_write_intent_input_paths.py`'s closed member sets as landed.
+  `test_write_intent_input_paths.py`'s closed member sets as landed. From
+  core-v0.3.0 through 0.5.3 the `knowledge.generateMigrationDraft` description
+  also said "the proposal directory and migration filename are minted from ids
+  the service chooses, never from caller text", added in e262b36e
+  ([#698](https://github.com/theurian/theurian/pull/698)); that was false, since
+  the migration file name carries a `[a-z0-9-]`, length-capped slug of the
+  document's `description` (`ProposalService.draft_from_document` and
+  `_slug_source` in `application/proposal_service.py`, `kebab_slug` in
+  `domain/proposal.py`), and the description now says so.
 
 ### Fixed
 
