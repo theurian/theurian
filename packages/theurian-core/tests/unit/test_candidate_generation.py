@@ -921,11 +921,12 @@ def test_a_pull_request_key_holding_a_record_of_another_kind_is_the_uniform_refu
 
 
 def _event_key_corpus(event_key: str, stored_event: ReviewEvent) -> _Corpus:
-    """A thread whose ``event_key`` is ``event_key``, over a PR record stored under #431."""
+    """A thread whose ``event_key`` is ``event_key``, over a PR record under keys 431 and 0."""
     thread = dataclasses.replace(_thread(_event()), event_key=event_key)
+    pull_request = {(REPOSITORY, key): EVENT_FILE for key in (str(PULL_REQUEST), "0")}
     return _Corpus(
         records={THREAD_FILE: thread, EVENT_FILE: stored_event},
-        paths={(REPOSITORY, THREAD_KEY): THREAD_FILE, (REPOSITORY, str(PULL_REQUEST)): EVENT_FILE},
+        paths={(REPOSITORY, THREAD_KEY): THREAD_FILE, **pull_request},
     )
 
 
@@ -943,6 +944,7 @@ _FOREIGN: Final = "evil/other"
             dataclasses.replace(_event(), repository=_FOREIGN),
         ),
         (f"github:{REPOSITORY}#" + "9" * 20, _event()),
+        (f"github:{REPOSITORY}#0", _event()),
     ],
     ids=[
         "foreign-repo-key",
@@ -950,6 +952,7 @@ _FOREIGN: Final = "evil/other"
         "not-a-key",
         "foreign-key-and-payload",
         "wider-than-the-column",
+        "zero",
     ],
 )
 def test_a_pull_request_record_the_thread_does_not_name_is_the_uniform_refusal(
@@ -961,8 +964,9 @@ def test_a_pull_request_record_the_thread_does_not_name_is_the_uniform_refusal(
     alone, so a delivered thread whose ``event_key`` names another repository
     would otherwise borrow the local #431's merged and green signals. In the first
     case the local #431 is merged and green, so a regression to "trust whatever
-    the number resolves" LANDS rather than refusing for another reason. A renumber
-    inside the same repository is T-24's recorded residual and is not asserted.
+    the number resolves" LANDS rather than refusing for another reason. Key ``0``
+    resolves to that record too, so ``#0`` meets only the ``external_key`` equality.
+    A renumber inside the same repository is T-24's recorded residual and is not asserted.
     """
     verified: list[str] = []
 
