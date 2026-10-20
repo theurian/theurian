@@ -233,6 +233,47 @@ jobs:
           name: coverage-macos
           path: coverage.xml
 
+  # #634: `test` and `offline` select `-m "not e2e"`, so before this job no pull
+  # request check ran `tests/e2e` (a red e2e pin once went unnoticed through a
+  # full review round). `release-core.yml` already runs the whole suite,
+  # e2e included, on hosted ubuntu at every `core-v*` tag; this job closes the
+  # gap on pull requests and leaves that workflow alone.
+  #
+  # Serial on purpose: the e2e tests take real ports via `_free_port()` and shell
+  # out to `lsof` (the #32 reasons recorded in `tools/mutate.py`, which #643
+  # lifted only for the `-m "not e2e"` steps).
+  #
+  # Scoped to `tests/e2e` so the pull request gate does not touch the live
+  # network. The live-`gh` tests in `test_github_adapter_e2e.py` are also
+  # marked e2e; they stay covered at tags by release-core's `uv run pytest -q`.
+  #
+  # The macOS leg is on trial: no CI series yet. A later commit keeps or drops
+  # it, citing the run ids.
+  #
+  # PROVISIONAL timeout-minutes: 15 for both legs, from one local run (126.7 s,
+  # macOS, `-m e2e` over the whole repo) at roughly 3-4x an assumed ~4 min CI
+  # wall time, inside the rule in tests/ci/test_job_timeouts.py. Re-size from
+  # the CI series.
+  e2e:
+    name: End-to-end tests (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          python-version: ${{ matrix.python }}
+      - run: uv sync --frozen
+      - name: End-to-end tests
+        run: uv run pytest tests/e2e -m e2e -v
+
   # ADVISORY -- ADR-0036 decision 4, Phase A slice S4b. The roadmap's Phase A
   # Exit-criteria row: "A baseline report is committed and CI reports
   # regressions against it." Whether this ever becomes a blocking gate is a
