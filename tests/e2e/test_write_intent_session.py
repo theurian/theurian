@@ -392,7 +392,8 @@ class _McpClient:
         return parsed
 
     def tool_schemas(self) -> dict[str, dict[str, Any]]:
-        """Every registered tool's published input schema, by name.
+        """Every registered tool's served ``inputSchema`` (the SDK's, built from the
+        handler signature, not the ``schemas/mcp`` files), by name.
 
         The schema rather than the name alone, because what makes a tool
         write-intent is visible in what it requires of a caller and is not
