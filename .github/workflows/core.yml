@@ -245,8 +245,8 @@ jobs:
   #
   # Scoped to `tests/e2e` so the pull request gate does not touch the live
   # network. The live-`gh` tests in `test_github_adapter_e2e.py` are also
-  # marked e2e; they skip in every CI context, because no job authenticates
-  # `gh` (release-core's quality job shows 5 skips at core-v0.5.3, run
+  # marked e2e; they skip in every CI context, because no job that runs
+  # them authenticates `gh` (release-core's quality job shows 5 skips at core-v0.5.3, run
   # 38057252717, job 114228149935).
   #
   # Both legs stay: macOS passed 3 of 3.
@@ -273,20 +273,27 @@ jobs:
           enable-cache: true
           python-version: ${{ matrix.python }}
       - run: uv sync --frozen
-      # Every e2e module skips itself when `theurian` is not on PATH; without
-      # this, a PATH or entry-point change is an all-skip green (30 skipped,
-      # exit 0, reproduced under `env -i`).
+      # Every e2e module skips itself when `theurian` is not on PATH; this gives
+      # that case a named failure before the suite runs (an all-skip run is
+      # also refused by the gate below, but only as a generic no-pass error).
       - run: uv run theurian version --json
       - name: End-to-end tests
         shell: bash
-        # Fails on any skip: pytest's final summary line (`=== N passed, M
-        # skipped in Ts ===`) must match `^=+ .*[0-9]+ passed` and must not
-        # match `^=+ .*[0-9]+ skipped`.
+        # Fails unless every selected test passed: pytest's final summary line
+        # (`=== N passed, M skipped in Ts ===`) must match
+        # `^=+ .*[0-9]+ passed` and must not match
+        # `^=+ .*[0-9]+ (skipped|xfailed|xpassed)`; each is a test that did not
+        # run to completion. `deselected` is marker selection and is accepted.
+        # No `-r` option here: `addopts` supplies `-ra`, and a second `-r`
+        # would replace it and drop the FAILED lines from the short summary.
         run: |
-          uv run pytest tests/e2e -m e2e -v -rs | tee e2e.log
-          grep -Eq '^=+ .*[0-9]+ passed' e2e.log
-          if grep -Eq '^=+ .*[0-9]+ skipped' e2e.log; then
-            echo "::error::An e2e test skipped; the gate does not accept skips."
+          uv run pytest tests/e2e -m e2e -v | tee e2e.log
+          if ! grep -Eq '^=+ .*[0-9]+ passed' e2e.log; then
+            echo "::error::No e2e test passed."
+            exit 1
+          fi
+          if grep -Eq '^=+ .*[0-9]+ (skipped|xfailed|xpassed)' e2e.log; then
+            echo "::error::An e2e test skipped, xfailed or xpassed; the gate accepts only passes."
             exit 1
           fi
 
