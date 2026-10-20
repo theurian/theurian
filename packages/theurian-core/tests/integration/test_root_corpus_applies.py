@@ -39,7 +39,7 @@ and against neither retracted pattern the source ADR corrected
 (``reports proposal age``, ``warns past a threshold``). The superseded
 #416-era body (``01M1B1XCAVJZKQQ6FWNADKRM69``) carries ``#414`` and
 ``owed, not`` once each as well, so a revert of the current payload to it passes
-those two substrings and is caught by the ``"B5's"`` entry of
+those two substrings and is caught by the ``"#962"`` entry of
 :data:`_RESEED_PAYLOAD_MARKERS`.
 
 **The same class recurs, and every re-seed pays the same toll.** #199 unit C's
@@ -240,7 +240,7 @@ class _PayloadMarker:
 #: several items carry no ``#NNN`` whose count is unique to their current
 #: text; those are keyed on whatever token the same correction introduced -- a
 #: backticked identifier or test cite, a measured figure, an ADR number or a
-#: possessive phrase (``T-17a's``, ``B5's``). How many is not recorded here -- it moves with
+#: possessive phrase (``T-17a's``). How many is not recorded here -- it moves with
 #: every re-seed, and the entries below are the live answer.
 #:
 #: **The two twins that waited have landed.** ADR-0022
@@ -360,11 +360,12 @@ _RESEED_PAYLOAD_MARKERS: Final[tuple[_PayloadMarker, ...]] = (
         "`test_env_file_merge.py::test_an_end_marker_above_the_block_does_not_become_the_blocks_own_end`",
         1,
     ),
-    # Added 2026-10-08 for #832's re-seed. The #414 hand pins also count 1 in the
-    # superseded #416-era body, so a revert to it would satisfy them; "B5's" counts 1
-    # in the new body and 0 in both earlier corpus bodies and at every source commit
-    # before 76b9eba1.
-    _PayloadMarker(ItemId("architecture.ai-writes-produce-proposals"), "B5's", 1),
+    # Re-measured 2026-10-20 for the re-seed after #962 (d2c2aa95): "B5's" counts 1
+    # in the new body and in the revision it replaced, so it stopped discriminating.
+    # "#962" counts 1 in the new body and 0 in all three earlier corpus bodies and at
+    # every one of the 11 source commits before d2c2aa95; it names the PR of the
+    # amendment whose absence a reverted payload would show.
+    _PayloadMarker(ItemId("architecture.ai-writes-produce-proposals"), "#962", 1),
 )
 
 #: Frozen rather than ``datetime.now()``: a project row's ``registered_at`` is

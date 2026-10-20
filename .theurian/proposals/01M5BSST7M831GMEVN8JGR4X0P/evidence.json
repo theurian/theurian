@@ -1,0 +1,17 @@
+{
+  "proposalId": "01M5BSST7M831GMEVN8JGR4X0P",
+  "migrationId": "01M5BSST7M831GMEVN8JGR4X0Q",
+  "itemId": "architecture.ai-writes-produce-proposals",
+  "agentId": "claude-code-theurian-tests",
+  "taskId": "reseed-adr-0013-twin-962",
+  "model": "claude-sonnet-5-5",
+  "reasoning": "Verbatim copy of the tracked ADR-0013 at d2c2aa95. The tracked document is the source of truth. The revision this supersedes pins the body as it stood at f6b8a874, and d2c2aa95 (#962) moved the source since, so Theurian own agents retrieve superseded text labelled approved and reviewed.",
+  "sourceAnchors": [
+    {
+      "provider": "git",
+      "sourceUri": "https://github.com/theurian/theurian.git",
+      "commitSha": "d2c2aa959c6f8c44932aee56871093557ac8c6e8",
+      "filePath": "docs/adr/0013-ai-writes-produce-proposals.md"
+    }
+  ]
+}
