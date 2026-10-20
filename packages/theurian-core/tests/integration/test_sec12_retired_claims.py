@@ -270,7 +270,7 @@ def test_the_t11_residual_no_longer_says_the_render_bound_is_unreachable() -> No
     claim.** ``docs/roadmap.md``'s SEC-12 *owed* cell said it too -- *"the
     reconciliation of ``MAX_PARAMS_RENDERED_CHARS`` with the transport's own
     4 MiB body cap"* -- and its corrected cell names no render-bound subject at
-    all, leading with #691's ``maxLength`` unit question instead. A
+    all, leading with #665's unread context keys instead. A
     parametrization that included it would look like two records held and be
     one, which is the reasoning ``test_sec12_shipped_claims.py``'s
     ``_REASSERTION_RECORDS`` already records for ``schemas/README.md``.

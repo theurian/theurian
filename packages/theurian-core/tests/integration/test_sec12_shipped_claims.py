@@ -376,12 +376,10 @@ def test_the_roadmap_sec_12_row_no_longer_reads_nothing_and_the_whole_control() 
     )
     assert owed != _RETIRED_OWED_CELL, (
         f"the roadmap's SEC-12 row owes `{_RETIRED_OWED_CELL}` again. What is owed "
-        f"is the residue the control left -- the unit a published `maxLength` on a "
-        f"write-intent `body` counts, since JSON Schema counts code points while the "
-        f"byte cap it transcribes is in landed bytes (#691); the three unread context "
-        f"keys (#665); and ADR-0032 decision 3's value-domain constraints -- not the "
-        f"control, which ships. The transport body-cap reconciliation was on that list "
-        f"until #669 closed it, and this message is not the record of what is owed: "
+        f"is the residue the control left -- the three unread context keys (#665) and a "
+        f"`body` bound no caller meets over the wire (#699) -- not the control, which "
+        f"ships. #669, slice B4 and #691 each took an item off that list, and this "
+        f"message is not the record of what is owed: "
         f"`docs/roadmap.md`'s own cell is, and it is what the cell says that decides"
     )
 
