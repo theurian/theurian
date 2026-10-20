@@ -12,7 +12,7 @@ cannot observe: not merely that the migration is refused, but that it is
 refused *before* the cost is spent.
 
 The deterministic, in-process twin of this proof (it runs in `core.yml`'s
-``test`` job, ``-m "not e2e"``) --
+``test`` and ``offline`` jobs, both ``-m "not e2e"``) --
 ``test_accept_refuses_a_proposal_past_the_operation_cap`` in
 ``test_proposal_service.py`` -- monkeypatches ``_body_moves`` to assert it is
 never entered once the cap is exceeded. This file measures the same property

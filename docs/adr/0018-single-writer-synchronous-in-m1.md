@@ -322,25 +322,29 @@ Still owed, with the issue or milestone that will satisfy it:
   ([#436](https://github.com/theurian/theurian/issues/436)).
 
   > **Amended in [#634](https://github.com/theurian/theurian/issues/634) (PR
-  > [#979](https://github.com/theurian/theurian/pull/979), 2026-10-20): three
-  > clauses of the paragraph above no longer hold, and a test now covers part
-  > of what it asks for.** The paragraph is left standing as the state of the
-  > evidence when it was written.
+  > [#979](https://github.com/theurian/theurian/pull/979), 2026-10-20): two
+  > clauses of the paragraph above no longer hold, a third is now only partly
+  > true, and a test now covers part of what it asks for.** The paragraph is
+  > left standing as the state of the evidence when it was written.
   >
-  > "No such test exists" and "the only concurrency tests in the repository are
-  > `tests/e2e/test_daemon_single_instance.py`'s two" have not been true since
+  > "The only concurrency tests in the repository are
+  > `tests/e2e/test_daemon_single_instance.py`'s two" has not been true since
   > [#478](https://github.com/theurian/theurian/pull/478) added
   > `tests/e2e/test_migrate_apply_concurrency.py` on 2026-09-01. Its one test,
   > `test_a_raced_migrate_apply_pair_never_crashes_and_leaves_consistent_state`,
   > starts two real `theurian migrate apply --json` processes against one
   > project behind a two-party barrier
-  > ([#468](https://github.com/theurian/theurian/issues/468)). "No CI job runs
-  > those either" was narrower than it read — `release-core.yml` runs the whole
-  > suite (`uv run pytest -q`, no marker filter) on a `core-v*` tag, after the
-  > change has landed — and since #634 a job runs them on pull requests too:
-  > `core.yml`'s `e2e` job runs `uv run pytest tests/e2e -m e2e -v -rs` on
-  > `ubuntu-latest` and `macos-latest`, and both modules named here are in its
-  > population.
+  > ([#468](https://github.com/theurian/theurian/issues/468)). That makes "No
+  > such test exists" only partly true: the test is not *such* a test — it is
+  > e2e rather than integration, it runs two writers rather than N, and it does
+  > not assert "no error" (the bullets below) — but it covers part of what one
+  > would. "No CI job runs those either" was narrower than it read —
+  > `release-core.yml` runs the whole suite (`uv run pytest -q`, no marker
+  > filter), but only on a `core-v*` tag or a manual dispatch, and neither gates
+  > a pull request — and since #634 a job runs them on pull requests too:
+  > `core.yml`'s `e2e` job runs `uv run pytest tests/e2e -m e2e -v | tee e2e.log`
+  > on `ubuntu-latest` and `macos-latest`, and both modules named here are in
+  > its population.
   >
   > Against what this bullet asks for, that test holds one part and not the
   > rest. Line numbers are `tests/e2e/test_migrate_apply_concurrency.py` at
@@ -371,14 +375,17 @@ Still owed, with the issue or milestone that will satisfy it:
   > So the bullet stays under Still owed: more than two writers and the
   > no-error outcome are not asserted by that test, and its serialisation
   > evidence depends on the scheduler producing a race. The deterministic check
-  > on the #468 fix is
+  > on part of the #468 fix is
   > `test_create_database_and_write_active_state_each_run_only_while_the_lock_is_held`
   > in `packages/theurian-core/tests/integration/test_migrate_apply_lock_confinement.py`:
   > in one process, with no race to win, it wraps `create_database` and
   > `write_active_state` with a non-blocking `flock` probe on the write lock and
   > asserts that both calls found the lock held. It runs in `core.yml`'s `test`
-  > and `offline` jobs (`-m "not e2e"`). It shows those two writes sit inside
-  > the lock; it does not run two writers.
+  > and `offline` jobs (`-m "not e2e"`). It shows that each of those two writes
+  > runs while the lock is held, not that one hold spans both — splitting the
+  > fix's single hold into two leaves it green
+  > ([#987](https://github.com/theurian/theurian/issues/987)) — and it does not
+  > run two writers.
   >
   > The owner this bullet names, #439, has been closed by a tracker sweep; its
   > closing comment calls it a "hardening/design idea with no committed
