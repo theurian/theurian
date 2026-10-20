@@ -282,8 +282,9 @@ jobs:
         # Fails unless every selected test passed: pytest's final summary line
         # (`=== N passed, M skipped in Ts ===`) must match
         # `^=+ .*[0-9]+ passed` and must not match
-        # `^=+ .*[0-9]+ (skipped|xfailed|xpassed)`; each is a test that did not
-        # run to completion. `deselected` is marker selection and is accepted.
+        # `^=+ .*[0-9]+ (skipped|xfailed|xpassed)`; each is an outcome other
+        # than a plain pass: a skip did not run, an xfail did not pass, and an
+        # xpass passed against its own marker. `deselected` is marker selection and is accepted.
         # No `-r` option here: `addopts` supplies `-ra`, and a second `-r`
         # would replace it and drop the FAILED lines from the short summary.
         run: |
