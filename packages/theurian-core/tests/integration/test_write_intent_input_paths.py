@@ -25,7 +25,9 @@ schema-refused path-shaped ``fixCommit``. That tool's ``scopePaths``
 and ``sourceAnchors`` are not driven (#996). The scan sees a canary's bytes only in a
 file under the test's ``tmp_path`` (``.git`` excluded) or in the tool's response;
 the ``stored_as_text`` and ``lands_as_text`` drives also see an in-process open of the
-canary through ``_OPENERS``, whatever the read then lands. The schema walk raises on
+canary by path (``str``, ``bytes`` or path-like, resolved from the working directory)
+through ``_OPENERS``, whatever the read then lands; ``_refuse_opens_of`` names what it
+is blind to. The schema walk raises on
 any keyword outside ``_WALKED`` and ``_INERT``, so a path added under one is refused
 rather than missed.
 """
@@ -390,17 +392,19 @@ def _refuse_opens_of(canary: str, monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
     The byte scan alone misses a handler that reads the file and lands a digest or
     an encoding of it (#995 adversarial M3). Blind: an opener bound before the patch
-    (``from builtins import open as o``), ``io.FileIO``, ``posix.open``, and a read
-    outside this process.
+    (``from builtins import open as o``), ``io.FileIO``, ``posix.open``, an int fd
+    given to ``open``, a name relative to ``dir_fd``, and a read outside this process.
     """
     target = os.path.realpath(canary)
     opened: list[str] = []
 
     def refusing(original: Any) -> Any:
         def opener(file: Any, *args: Any, **kwargs: Any) -> Any:
-            if isinstance(file, str | os.PathLike) and os.path.realpath(file) == target:
-                opened.append(os.fspath(file))
-                raise PermissionError(f"the canary was opened: {file}")
+            if isinstance(file, str | bytes | os.PathLike) and (
+                os.path.realpath(os.fsdecode(file)) == target
+            ):
+                opened.append(os.fsdecode(file))
+                raise PermissionError(f"the canary was opened: {os.fsdecode(file)}")
             return original(file, *args, **kwargs)
 
         return opener
@@ -414,7 +418,8 @@ def test_the_canary_guard_refuses_each_opener_by_real_path_and_passes_other_file
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """RED drivers, each at 43e681d7 plus this file: ``(io, "open")`` dropped from
-    ``_OPENERS``; the match made on ``os.fspath(file) == canary``, not the real path.
+    ``_OPENERS``; the match made on ``os.fspath(file) == canary``, not the real path;
+    the predicate back to ``str | os.PathLike``, which lets the bytes spellings through.
     """
     canary = _canary(tmp_path)
     other = tmp_path / "other.txt"
@@ -428,6 +433,9 @@ def test_the_canary_guard_refuses_each_opener_by_real_path_and_passes_other_file
         (pathlib.Path.open, pathlib.Path(spelled)),
         (pathlib.Path.read_bytes, pathlib.Path(spelled)),
         (pathlib.Path.read_text, pathlib.Path(spelled)),
+        (builtins.open, spelled.encode()),
+        (io.open, spelled.encode()),
+        (os.open, spelled.encode(), os.O_RDONLY),
     )
 
     for opener, *args in opens:
