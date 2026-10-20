@@ -82,7 +82,6 @@ from theurian.domain.review import (
     ReviewThread,
     parse_event_key,
 )
-from theurian.domain.review_search import MAX_STORED_PULL_REQUEST
 from theurian.domain.values import ContentHash, MediaType
 
 pytestmark = pytest.mark.unit
@@ -714,20 +713,18 @@ def test_the_pull_request_number_is_matched_ascii_only() -> None:
 
 
 @example(provider="github", repository="a:b", number=5)
-@example(provider="github", repository="o/r", number=MAX_STORED_PULL_REQUEST)
+@example(provider="github", repository="o/r", number=10**19 - 1)
 @given(
-    provider=st.text(
-        st.characters(blacklist_characters=":", blacklist_categories=["Cs"]), min_size=1
-    ),
-    repository=st.text(st.characters(blacklist_categories=["Cs"]), min_size=1),
-    number=st.integers(1, MAX_STORED_PULL_REQUEST),
+    provider=st.text(st.characters(blacklist_characters=":"), min_size=1),
+    repository=st.text(st.characters(), min_size=1),
+    number=st.integers(1, 10**19 - 1),
 )
 def test_parse_event_key_inverts_external_key(provider: str, repository: str, number: int) -> None:
     """A writer and reader that drift apart make every honest key read as foreign (#748).
 
-    The strategy's domain equals ``ReviewEvent``'s own validation. The examples pin the
-    grammar (the provider holds no `:`, the repository may, so `github:a:b#5` parses as
-    `("github", "a:b", 5)`) and the widest stored number, which random draws never reach.
+    The strategy draws ``ReviewEvent``'s domain, lone surrogates included, with numbers up to the
+    parser's 19 digits. The examples pin on every run the grammar (the provider holds no `:`, the
+    repository may, so `github:a:b#5` parses as `("github", "a:b", 5)`) and the widest number.
     """
     event = dataclasses.replace(_event(), provider=provider, repository=repository, number=number)
 
