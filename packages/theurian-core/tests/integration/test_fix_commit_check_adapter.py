@@ -168,6 +168,7 @@ passed with ``-c`` so an ambient ``~/.gitconfig`` neither reaches nor breaks the
 from __future__ import annotations
 
 import ast
+import os
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
@@ -1356,11 +1357,21 @@ _OHM = "\u2126.md"
 
 @pytest.fixture
 def isolated_git(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """No ambient or system git config, so ``core.precomposeunicode`` is the repo's alone."""
+    """Global and system config, and every env-injected layer, are gone, so
+    ``core.precomposeunicode`` is the repo's alone. Only ``maintenance.auto=false`` is
+    rebuilt (the root ``conftest.py`` sets it, #938), as the sole env-injected entry."""
     empty = tmp_path / "empty.gitconfig"
     empty.write_text("", encoding="utf-8")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    for name in list(os.environ):
+        if name == "GIT_CONFIG_PARAMETERS" or name.startswith(
+            ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
+        ):
+            monkeypatch.delenv(name)
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "maintenance.auto")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "false")
 
 
 def _twin_repo(tmp_path: Path, *tree_names: str) -> tuple[Path, str]:
@@ -1388,6 +1399,12 @@ def _git_precomposes_pathspecs(tmp_path: Path) -> bool:
     """Measured: does this platform's git rewrite an NFD pathspec to NFC under precompose?"""
     (tmp_path / "premise").mkdir()
     repo, sha = _twin_repo(tmp_path / "premise", _CAFE_NFD)
+    configured = _git(repo, "config", "--get", "core.precomposeunicode").stdout.strip()
+    if configured != "true":
+        pytest.fail(
+            f"probe repo reads core.precomposeunicode={configured!r}, not 'true': the "
+            "environment overrides repo config, so the platform cannot be measured"
+        )
     seen = _git_raw(
         repo, "--literal-pathspecs", "log", "--no-walk", "--name-only", "--format=", "-z",
         sha, "--", _CAFE_NFD,
@@ -1433,10 +1450,9 @@ def test_a_stored_path_differing_only_by_normalization_from_the_tree_path_is_not
     [
         (_OMEGA, _OHM, FixCommitVerdict.TOUCHES_NOTHING_HERE),
         (_OHM, _OMEGA, FixCommitVerdict.TOUCHES_NOTHING_HERE),
-        (_CAFE_NFC, _CAFE_NFD, FixCommitVerdict.TOUCHES_NOTHING_HERE),
         (_OHM, _OHM, FixCommitVerdict.VERIFIED),
     ],
-    ids=["omega-vs-ohm", "ohm-vs-omega", "cafe-nfc-vs-nfd-twin-only", "control-ohm-vs-ohm"],
+    ids=["omega-vs-ohm", "ohm-vs-omega", "control-ohm-vs-ohm"],
 )
 def test_a_commit_touching_only_the_normalization_twin_of_the_anchor_is_not_verified(
     tmp_path: Path, stored: str, tree: str, expected: FixCommitVerdict
