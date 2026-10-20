@@ -2582,6 +2582,9 @@ the property as it was written and states what actually holds it:
   the field `boolean` with no `const`, so the conformance file's type-negative
   case alone was green on either value, the gap this test closes. The coupling
   pin and the e2e value assertion hold the property beside it.
+
+  **Corrected in place.** This bullet's heading said, in *Still owed*: "Slice B5
+  or later — a value-level wire-contract assertion on `writeTools`."
 - **The facade's accept backstop fails closed (decision 8).** Landed in #962:
   `tests/integration/test_write_intent_facade_population.py::test_accept_reached_through_the_facades_captured_service_fails_closed`
   calls `accept` on the MCP facade's captured service and asserts the decision-8
@@ -2600,7 +2603,14 @@ the property as it was written and states what actually holds it:
   over the wire with a canary path whose text lands while its bytes reach
   neither a file under the test's tree outside `.git` nor the response, and
   drives an `upsertRevision` refused with the v1 gate's message and the tree
-  unchanged. This entry was moved here from *Still owed*.
+  outside `.git` unchanged. This entry was moved here from *Still owed*.
+
+  **Corrected in place.** This bullet's heading said, in *Still owed*: "Slice B5
+  or later — a file path is refused by construction, and nothing recomputes it
+  (decision 2)." Its last clause no longer holds: the tests named above pin the
+  declared members. The bullet's `upsertRevision` clause said "the tree
+  unchanged"; that test's comparison excludes `.git`, as the canary clause
+  beside it says.
 
   **Corrected in place.** This bullet said: "The property holds as shipped:
   neither published input schema declares a path, URI, or reference field, and
@@ -2612,8 +2622,16 @@ the property as it was written and states what actually holds it:
   test drives them, the candidate tool's `repository` is a review-store lookup
   key the resolve refuses when unknown, and `fixCommit` is resolved as a git
   object id its schema `pattern` confines.
-  [#963](https://github.com/theurian/theurian/issues/963) owns the same wording
-  in two schema `description`s and the CHANGELOG `[0.3.0]` entry.
+  [#963](https://github.com/theurian/theurian/issues/963) recorded the same
+  wording in two schema `description`s and the CHANGELOG `[0.3.0]` entry.
+  [#995](https://github.com/theurian/theurian/pull/995) corrected those faces
+  and one #963 did not list, the `knowledge.proposeChange` handler docstring's
+  "There is no path parameter, by construction": it replaced the wording in the
+  two descriptions with the names of their path-shaped members, added a
+  CHANGELOG *Changed* entry that names the `[0.3.0]` sentence and leaves the
+  released entry as it shipped, and restated the docstring the same way: there
+  is no body-path parameter, and the path-shaped parameters it names are
+  recorded as text and not read as paths.
 
   The bullet's reasoning for the shape of the owed check is kept, because it is
   why #962 pins a closed set of declared members rather than a refusal:
@@ -2623,9 +2641,24 @@ the property as it was written and states what actually holds it:
   Today the absence is held by review and by ADR-0031's
   `unevaluatedProperties: false` refusing any key the schema does not name,
   which stops a *caller* smuggling one and does nothing about a schema someone
-  widens." Its last step does not hold: a test that no input schema declares a
-  path-shaped field would fail on the fields above, so the walk records them
-  instead of forbidding them.
+  widens." Its middle step does not hold: a structural test that no input schema
+  declares a path-shaped field would fail on the fields above, so the walk
+  records them instead of forbidding them. Nor does its last sentence. Its
+  premise is the absence corrected above, and its widening clause is superseded
+  by #962's walk.
+  `tests/integration/test_write_intent_input_paths.py::test_a_write_intent_schema_declares_only_the_recorded_properties`
+  compares each recorded tool's input-schema property paths, `$ref` followed,
+  with a closed set;
+  `tests/integration/test_write_intent_input_paths.py::test_the_schemas_checked_are_the_registered_write_intent_tools`
+  holds the recorded tools equal to the registered write-intent tools; and
+  `tests/integration/test_write_intent_input_paths.py::test_the_walk_refuses_an_applicator_it_does_not_follow`
+  drives the walk's raise on applicator keywords it does not descend, in planted
+  nodes.
+
+  **Corrected in place.** This bullet said: "Its last step does not hold: a test
+  that no input schema declares a path-shaped field would fail on the fields
+  above, so the walk records them instead of forbidding them." The step it
+  refuted is the middle one, and the last sentence was left unexamined.
 - **The operations path's accept drive and its no-direct-loader-import
   property.** Recorded after the slice, with no new test:
   [#703](https://github.com/theurian/theurian/issues/703) and
@@ -2702,6 +2735,9 @@ the property as it was written and states what actually holds it:
   else." That was false when it was written: both layering tests (`261eff32`) and
   the `TID251` entry (`7562b41c`) predate the bullet, which was added in
   `e262b36e` (#698, 2026-09-16).
+
+  **Corrected in place.** This bullet's heading said, in *Still owed*: "Slice B5
+  or later — the two halves of the operations-path entry that did not land."
 
 Still owed, with the milestone that will satisfy it:
 

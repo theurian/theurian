@@ -1097,10 +1097,12 @@ class ProposalService:
         give this path a second validator the accept-time rehearsal is not
         holding.
 
-        No caller-controlled string reaches the filesystem: the proposal directory
-        is the minted proposal id, the migration file is the minted migration id
-        plus a kebab slug, and no admitted operation names a ``contentFile``, so
-        there is no body path to contain.
+        No caller value is used as a path, and caller text reaches a file name in
+        one place. The proposal directory is the minted proposal id; the migration
+        file is the minted migration id plus :func:`kebab_slug` of the document's
+        ``description`` (:func:`_slug_source`), reduced to ``[a-z0-9-]`` and capped
+        at ``MAX_SLUG_LENGTH``, or ``migration`` when that yields none. No admitted
+        operation names a ``contentFile``, so there is no body path to contain.
 
         Raises:
             ProposalError: If any operation is outside the v1 set, or a

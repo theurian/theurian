@@ -29,7 +29,7 @@ from theurian.domain.errors import MigrationError
 from theurian.domain.identifiers import AgentId, ItemId, MigrationId, ProjectId, TaskId
 from theurian.domain.migration import Migration, OperationKind
 from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY
-from theurian.domain.proposal import Evidence, is_migration_file_name
+from theurian.domain.proposal import Evidence, is_migration_file_name, kebab_slug
 from theurian.infrastructure.filesystem.migration_loader import (
     load_migrations,
     validate_migration_document,
@@ -141,6 +141,40 @@ def test_an_admitted_operation_lands_a_proposal(paths: ProjectPaths) -> None:
     # Only the migration and the evidence record -- no body: an operations
     # migration names no contentFile (ADR-0032 decision 3).
     assert _tree(drafted.directory) == {
+        drafted.migration_file.name,
+        "evidence.json",
+    }
+
+
+@pytest.mark.parametrize(
+    ("description", "slug"),
+    [
+        ("Caller Chosen ../../Etc Passwd", "caller-chosen-etc-passwd"),
+        ("署名付きトークンを持つ", "migration"),
+        ("Caller\nChosen", "caller-chosen"),
+        (" ", "migration"),
+        ("caf\udcffe", "caf-e"),
+        ("Caller " + "x" * 60, "caller-" + "x" * 41),
+    ],
+)
+def test_the_migration_file_is_named_by_the_minted_id_and_a_slug_of_the_description(
+    paths: ProjectPaths, description: str, slug: str
+) -> None:
+    """Holds the sentence the ``generateMigrationDraft`` schema description, the
+    ``draft_from_document`` docstring and the CHANGELOG ``[Unreleased]`` entry share
+    (#995 security H2): caller text reaches the file name as a ``[a-z0-9-]`` slug of
+    ``description``, capped at ``MAX_SLUG_LENGTH``, ``migration`` when none survives.
+    RED drivers, each at 43e681d7 plus this file: ``_slug_source`` returning the
+    ``author``; the ``draft_from_document`` fallback ``"draft"``; ``MAX_SLUG_LENGTH`` 64.
+    """
+    drafted = _service(paths).draft_from_document(
+        _document(_deprecate(), description=description), evidence=EVIDENCE
+    )
+
+    assert slug == kebab_slug(description, fallback="migration")
+    assert drafted.migration_file.parent == paths.proposals / drafted.proposal_id.value
+    assert drafted.migration_file.name == f"{drafted.migration_id.value}-{slug}.yaml"
+    assert _tree(paths.proposals / drafted.proposal_id.value) == {
         drafted.migration_file.name,
         "evidence.json",
     }

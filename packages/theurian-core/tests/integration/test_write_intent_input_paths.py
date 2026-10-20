@@ -23,14 +23,24 @@ an ``upsertRevision`` refused by the v1 gate (checked for paths and bytes writte
 ``review.generateKnowledgeCandidate``'s control call that lands, and its
 schema-refused path-shaped ``fixCommit``. That tool's ``scopePaths``
 and ``sourceAnchors`` are not driven (#996). The scan sees a canary's bytes only in a
-file under the test's ``tmp_path`` (``.git`` excluded) or in the tool's response.
-The schema walk raises on any keyword outside ``_WALKED`` and
-``_INERT``, so a path added under one is refused rather than missed.
+file under the test's ``tmp_path`` (``.git`` excluded) or in the tool's response;
+the ``stored_as_text`` and ``lands_as_text`` drives also refuse a call through one of
+the attributes ``_OPENERS`` patches whose first positional argument (``str``, ``bytes``
+or path-like) has the canary's ``os.path.realpath``, whatever the read then lands.
+Every other read is unseen; ``_refuse_opens_of`` gives examples.
+That no handler reads one of these members another way is not held here: it rests on a
+source read of the handlers recorded in #995's round-three comment, and the gap is
+#1008. The schema walk raises on
+any keyword outside ``_WALKED`` and ``_INERT``, so a path added under one is refused
+rather than missed.
 """
 
 from __future__ import annotations
 
+import builtins
+import io
 import json
+import os
 import pathlib
 from collections.abc import Iterator
 from typing import Any, Final
@@ -370,20 +380,103 @@ def _written(tmp_path: pathlib.Path) -> bytes:
     return b"".join(_written_by_path(tmp_path).values())
 
 
+_OPENERS: Final = (
+    (builtins, "open"),
+    (io, "open"),
+    (os, "open"),
+    (pathlib.Path, "open"),
+    (pathlib.Path, "read_bytes"),
+    (pathlib.Path, "read_text"),
+)
+
+
+def _refuse_opens_of(canary: str, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Make each of ``_OPENERS`` record, then refuse, a call whose first positional
+    argument (``str``, ``bytes`` or path-like) has the canary's ``os.path.realpath``.
+
+    The byte scan alone misses a handler that reads the file and lands a digest or an
+    encoding of it (#995 adversarial M3). The match is on a spelling, not on the file,
+    and only through the patched attributes, so every other read is unseen. Examples,
+    not a complete list: another name for the same file (a case variant on a
+    case-insensitive filesystem, a hard link), an int fd, a name relative to
+    ``dir_fd``, an opener outside ``_OPENERS`` or bound before the patch
+    (``io.FileIO``, ``_io.open``, ``io.open_code``, ``posix.open``, a C-level open such
+    as ``sqlite3.connect``), and a read outside this process.
+    """
+    target = os.path.realpath(canary)
+    opened: list[str] = []
+
+    def refusing(original: Any) -> Any:
+        def opener(file: Any, *args: Any, **kwargs: Any) -> Any:
+            if isinstance(file, str | bytes | os.PathLike) and (
+                os.path.realpath(os.fsdecode(file)) == target
+            ):
+                opened.append(os.fsdecode(file))
+                raise PermissionError(f"the canary was opened: {os.fsdecode(file)}")
+            return original(file, *args, **kwargs)
+
+        return opener
+
+    for owner, name in _OPENERS:
+        monkeypatch.setattr(owner, name, refusing(getattr(owner, name)))
+    return opened
+
+
+def test_the_canary_guard_refuses_each_opener_by_real_path_and_passes_other_files(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RED drivers, each at 43e681d7 plus this file: ``(io, "open")`` dropped from
+    ``_OPENERS``; the match made on ``os.fspath(file) == canary``, not the real path;
+    the predicate back to ``str | os.PathLike``, which lets the bytes spellings through.
+    """
+    canary = _canary(tmp_path)
+    other = tmp_path / "other.txt"
+    other.write_bytes(b"x")
+    opened = _refuse_opens_of(canary, monkeypatch)
+    spelled = f"{tmp_path}/./canary.txt"
+    opens: tuple[tuple[Any, ...], ...] = (
+        (builtins.open, spelled),
+        (io.open, spelled),
+        (os.open, spelled, os.O_RDONLY),
+        (pathlib.Path.open, pathlib.Path(spelled)),
+        (pathlib.Path.read_bytes, pathlib.Path(spelled)),
+        (pathlib.Path.read_text, pathlib.Path(spelled)),
+        (builtins.open, spelled.encode()),
+        (io.open, spelled.encode()),
+        (os.open, spelled.encode(), os.O_RDONLY),
+    )
+
+    for opener, *args in opens:
+        with pytest.raises(PermissionError):
+            opener(*args)
+
+    assert len(opened) == len(opens)
+    assert other.read_bytes() == b"x"
+
+
 def _call(demo: ProjectRegistry, tmp_path: pathlib.Path, tool: str, args: dict[str, Any]) -> Any:
     with mcp_session(build_server(demo), tmp_path / "data") as call:
         return call(tool, {"projectId": "demo", **args})["result"]
 
 
 def test_a_path_in_a_recorded_field_is_stored_as_text_and_its_bytes_reach_no_file_or_response(
-    demo: ProjectRegistry, tmp_path: pathlib.Path
+    demo: ProjectRegistry, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Drives the scan's own positive control: the path *text* lands, its bytes do not.
-    RED driver: the handler appending ``Path(scopePaths[0]).read_bytes()`` to the body,
-    planted in a private copy (``body + Path(scopePaths[0]).read_text()`` after the
-    facade is built in ``proposeChange``) and run at 6c3c2827 (RED).
+    """Each member carries its own spelling of the canary's path, none a substring of
+    another, so a member dropped or overwritten is missed by name (#995 code-review M1).
+    RED drivers, in a private copy at 43e681d7 plus this file: ``_wire_source_anchors``
+    building ``source_uri="git://dropped"``, ``repository=None``, ``file_path=None``;
+    the handler passing ``scope_paths`` as ``x + "#" + b64encode(Path(x).read_bytes())``.
+    Run at 6c3c2827: ``Path(scopePaths[0]).read_text()`` appended to the body.
     """
-    canary = _canary(tmp_path)
+    _canary(tmp_path)
+    spelled = {
+        "scopePaths": f"{tmp_path}/canary.txt",
+        "sourceUri": f"{tmp_path}/./canary.txt",
+        "filePath": f"{tmp_path}//canary.txt",
+        "repository": f"{tmp_path}/././canary.txt",
+    }
+    opened = _refuse_opens_of(spelled["scopePaths"], monkeypatch)
 
     result = _call(
         demo,
@@ -399,16 +492,22 @@ def test_a_path_in_a_recorded_field_is_stored_as_text_and_its_bytes_reach_no_fil
             "body": "# T\n",
             "contentType": "text/markdown",
             "evidence": _EVIDENCE_ARG,
-            "scopePaths": [canary],
+            "scopePaths": [spelled["scopePaths"]],
             "sourceAnchors": [
-                {"provider": "git", "sourceUri": canary, "filePath": canary, "repository": canary}
+                {
+                    "provider": "git",
+                    "sourceUri": spelled["sourceUri"],
+                    "filePath": spelled["filePath"],
+                    "repository": spelled["repository"],
+                }
             ],
         },
     )
 
+    assert opened == []
     assert result["isError"] is False, result
     written = _written(tmp_path)
-    assert canary.encode() in written
+    assert [m for m, path in spelled.items() if path.encode() not in written] == []
     assert _CANARY_BYTES not in written
     assert _CANARY_BYTES not in json.dumps(result).encode()
 
@@ -427,17 +526,24 @@ def _draft(demo: ProjectRegistry, tmp_path: pathlib.Path, op: dict[str, Any]) ->
 
 @pytest.mark.parametrize(("op", "member"), _V1_PATH_MEMBERS)
 def test_a_v1_operation_path_lands_as_text_and_its_bytes_reach_no_file_or_response(
-    demo: ProjectRegistry, tmp_path: pathlib.Path, op: str, member: str
+    demo: ProjectRegistry,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    op: str,
+    member: str,
 ) -> None:
     """Each recorded v1 member lands as text. RED driver, run at 6c3c2827 per member: the
     handler appending ``Path(<that member's value>).read_text()`` to the document's
-    ``author`` before drafting, planted in a private copy.
+    ``author`` before drafting, planted in a private copy. Run at 43e681d7 plus this file
+    per member: that value replaced by itself + ``"#"`` + its file's base64.
     """
     canary = _canary(tmp_path)
+    opened = _refuse_opens_of(canary, monkeypatch)
 
     result = _draft(demo, tmp_path, _v1_op_with(op, member, canary))
 
     written = _written(tmp_path)
+    assert opened == []
     assert result["isError"] is False, result
     assert canary.encode() in written
     assert _CANARY_BYTES not in written

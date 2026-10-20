@@ -623,22 +623,35 @@ SUSPECTS: Final[tuple[tuple[str, str, str, str, str], ...]] = (
         "issue as no issue. Like the four rows above it, a live run stops producing "
         "this one.",
     ),
-    (
-        "docs/adr/0032-the-write-intent-mcp-tool-surface.md",
-        "963",
-        "owns the same wording",
-        "correct -- open owner, snapshot-age false positive",
-        "ADR-0032's *Still owed* decision-2 bullet, corrected in place by #962, hands "
-        "the same false-by-name wording in two schema descriptions and the CHANGELOG "
-        "[0.3.0] entry to #963. #963 was filed 2026-10-19 and read OPEN on 2026-10-20 "
-        "(`gh issue view 963 --json state,createdAt`). It is absent from the "
-        "2026-09-03 snapshot because it postdates it, so the offline run reads a live "
-        "owner as no owner. Not an owner defect: the sentence is the recorded-owner "
-        "form this audit exists to require. The fragment sits on one source line and "
-        "occurs once in that file (`git grep -cF 'owns the same wording' -- "
-        "docs/adr/0032-*.md` answers 1). Like the #575 rows above, a live run stops "
-        "producing this one.",
-    ),
+    # The #963 row that stood here is gone, and -- like the #636 and #586 rows
+    # below -- not because the tracker snapshot moved. It recorded
+    # `docs/adr/0032-the-write-intent-mcp-tool-surface.md` #963 `owns the same
+    # wording`, judged `correct -- open owner, snapshot-age false positive`:
+    # ADR-0032's decision-2 *Landed* entry handed the false-by-name wording in two
+    # schema descriptions and the CHANGELOG `[0.3.0]` entry to #963, filed
+    # 2026-10-19 and so absent from the 2026-09-03 snapshot.
+    #
+    # **The owner discharged it, so the sentence that named it is gone.** #995,
+    # the pull request that closes #963, corrected both faces and rewrote the
+    # sentence as history: "[#963] recorded the same wording ... and [#995]
+    # corrected both faces". The fragment is no longer in that file (`git grep -cF
+    # 'owns the same wording' -- docs/adr/0032-*.md` exits 1), so the sweep
+    # produces no row and the entry would report in the *stale* direction; the
+    # row goes with the cite.
+    #
+    # **No row replaces it, measured rather than assumed.** Both cites sit in the
+    # one rewritten sentence, and `_in_owner_position` is False for each. Driven
+    # through :func:`classify` on that sentence as it stands, at the states each
+    # number can take::
+    #
+    #     #963  (absent from the tracker)  history    issue:closed  history
+    #           issue:open                 open owner
+    #     #995  (absent from the tracker)  history    pr:merged     history
+    #           pr:open                    open owner
+    #
+    # None is judged. The closed and merged states are the ones #995's own merge
+    # produces, and the clear does not rest on the `_HISTORICAL` over-clear this
+    # module measures above, because the owner key does not fire on either cite.
     # The #636 row that stood here is gone, and -- like the #586 row below -- not
     # because the tracker snapshot moved. It recorded
     # `packages/theurian-core/CHANGELOG.md` #636 `owns the fix and`, judged
