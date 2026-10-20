@@ -1483,8 +1483,10 @@ Still owed, with the milestone that will satisfy it:
   > `parse_event_key` (`domain/review.py`, the inverse of
   > `ReviewEvent.external_key`) reads the key: one that does not parse, or names
   > another repository, refuses before the resolve, and a resolved record whose
-  > `external_key` is not the thread's `event_key`, or whose repository is not
-  > the submission's, refuses after it. Both refusals are
+  > `external_key` is not the thread's `event_key` refuses after it. That one
+  > equality also binds the record's repository to the submission's wherever
+  > its provider holds no `:`, since `external_key` is built from the record's
+  > own provider, repository and number. Both refusals are
   > `UNRESOLVED_RECORD_REFUSAL`, this decision's constant, and both come before
   > the fix-commit verification.
   > `uv run pytest packages/theurian-core/tests/unit/test_candidate_generation.py -k "does_not_name"`

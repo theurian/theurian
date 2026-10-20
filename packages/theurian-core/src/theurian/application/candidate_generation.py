@@ -20,9 +20,12 @@ intersects :class:`CandidateSubmission`'s fields with the gate's own, read live.
 of the thread, so the thread's record is resolved by the caller's key and the
 pull request's by the number parsed out of the thread's ``event_key`` -- through
 the *same* visibility resolve, so a withheld pull-request record refuses exactly
-as a withheld thread does. The record it returns must carry that ``event_key`` and
-the submitted repository, or the thread is read against a pull request that is not
-its own. A same-repository renumbering (the key edited to another existing number)
+as a withheld thread does. A key that does not parse, or names another repository,
+refuses before that resolve; the record it returns must carry that ``event_key``,
+or the thread is read against a pull request that is not its own. ``external_key``
+is built from the record's own provider, repository and number, so that equality
+also binds the record's repository to the submitted one, for a provider without a ``:``.
+A same-repository renumbering (the key edited to another existing number)
 is not caught here; it stays a T-24 residual.
 
 **A record the resolve does not answer for refuses uniformly, and nothing is read
