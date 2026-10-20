@@ -36,7 +36,7 @@ from typing import Final
 import pytest
 from fakes.clock import FrozenClock
 from fakes.ids import SeededIdGenerator
-from hypothesis import given
+from hypothesis import example, given
 from hypothesis import strategies as st
 
 from theurian.application.candidate_generation import (
@@ -711,6 +711,7 @@ def test_the_pull_request_number_is_matched_ascii_only() -> None:
     )
 
 
+@example(provider="github", repository="a:b", number=5)
 @given(
     provider=st.text(
         st.characters(blacklist_characters=":", blacklist_categories=["Cs"]), min_size=1
@@ -719,7 +720,11 @@ def test_the_pull_request_number_is_matched_ascii_only() -> None:
     number=st.integers(1, MAX_STORED_PULL_REQUEST),
 )
 def test_parse_event_key_inverts_external_key(provider: str, repository: str, number: int) -> None:
-    """A writer and reader that drift apart make every honest key read as foreign (#748)."""
+    """A writer and reader that drift apart make every honest key read as foreign (#748).
+
+    The explicit example pins the grammar: the provider holds no `:` and the repository
+    may, so `github:a:b#5` parses as `("github", "a:b", 5)`.
+    """
     event = dataclasses.replace(_event(), provider=provider, repository=repository, number=number)
 
     assert parse_event_key(event.external_key) == (provider, repository, number)
