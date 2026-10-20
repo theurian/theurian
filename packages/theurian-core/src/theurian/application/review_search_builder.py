@@ -60,7 +60,6 @@ from theurian.domain.review import (
     parse_event_key,
 )
 from theurian.domain.review_search import (
-    MAX_STORED_PULL_REQUEST,
     ReviewSearchLoad,
     ReviewSearchRecord,
     ReviewTextChannel,
@@ -112,8 +111,6 @@ ListEvidenceFingerprints = Callable[[], Mapping[str, EvidenceFingerprint]]
 #: so this layer never names a file: an application service that knew where the
 #: store lives would be deciding a filesystem layout it has no business deciding.
 WriteReviewSearchStore = Callable[[ReviewSearchLoad], None]
-
-_MAX_NUMBER_DIGITS: Final = len(str(MAX_STORED_PULL_REQUEST))
 
 
 class ReviewSearchBuildError(TheurianError):
