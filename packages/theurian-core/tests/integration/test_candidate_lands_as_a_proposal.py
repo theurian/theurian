@@ -314,7 +314,7 @@ def test_the_candidate_block_in_evidence_json_holds_the_gate_inputs_and_survives
     run_cli("propose", "accept", payload["proposalId"])
     after = json.loads(evidence_file.read_text(encoding="utf-8"))
 
-    block = before["candidate"]
+    block = dict(before["candidate"])
     assert set(block) == CANDIDATE_KEYS, block
     assert datetime.fromisoformat(block.pop("generatedAt")).tzinfo is not None
     assert block == {

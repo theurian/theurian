@@ -1967,7 +1967,7 @@ def test_a_non_ascii_digit_in_an_event_key_names_no_pull_request(
         pytest.param(f"{PROVIDER}:evil/other#431", None, id="foreign-repository"),
         pytest.param(f"gitlab:{REPOSITORY}#431", None, id="foreign-provider"),
         pytest.param("not-a-key#431", None, id="garbage-prefix"),
-        pytest.param(f"{PROVIDER}:a#b/c#5", None, id="repository-containing-hash"),
+        pytest.param(f"{PROVIDER}:{REPOSITORY}#5#431", None, id="repository-ending-in-hash-number"),
     ],
 )
 def test_an_event_key_naming_another_repository_serves_no_pull_request(
@@ -1977,7 +1977,9 @@ def test_an_event_key_naming_another_repository_serves_no_pull_request(
 
     The published `pullRequest` description promises a key outside the recorded
     format answers `null` rather than a guess; the builder once read the trailing
-    `#N` alone and served 431 for all four wrong keys. The honest key is the control.
+    `#N` alone and served 431 for the four wrong keys (the last, a repository
+    running to the last `#`, would also read as 5 under a first-`#` split).
+    The honest key is the control.
     """
     paths = _project(tmp_path)
     evidence = _landed(paths, _submission())
