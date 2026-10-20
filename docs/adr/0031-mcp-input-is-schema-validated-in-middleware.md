@@ -684,7 +684,12 @@ Still owed, with the milestone that will satisfy it:
   tools, so the constraints and their driving cases are both owed at **slice
   B4**. What B2 owed here and delivered is the mechanism that will carry them,
   and the sweep that refuses a write-intent tool registered without a published
-  schema at all.
+  schema at all. (**No longer owed, 2026-10-20.** Slice B4 published both:
+  `test_write_intent_wire.py::test_duplicate_labels_are_refused_by_the_schema_over_the_wire`
+  drives `uniqueItems`, and `::test_the_body_size_bound_is_a_schema_constraint_on_the_body_key`
+  holds the `body` `maxLength` at `MAX_REQUEST_BODY_BYTES` code points against
+  the loaded schema. The byte cap itself is applied on the path with no file by
+  `ProposalService.draft` since PR #1001; see the next bullet.)
 - **The two caps are reconciled; what stays owed under this heading is narrower
   than the reconciliation was** —
   [#669](https://github.com/theurian/theurian/issues/669), landed. This bullet
@@ -703,7 +708,14 @@ Still owed, with the milestone that will satisfy it:
   ([#691](https://github.com/theurian/theurian/issues/691)). Two wire-escape
   classes still meet the bare `413` at a landed size the store would accept;
   that is recorded as an accepted residual on `MAX_REQUEST_BODY_BYTES` and in
-  the threat model's SEC-12 entry, not owed to a milestone.
+  the threat model's SEC-12 entry, not owed to a milestone. (**The unit landed
+  on 2026-10-20, PR #1001; the pin is owed to
+  [#968](https://github.com/theurian/theurian/issues/968).** The `maxLength`
+  stays a code-point over-approximation, and `ProposalService.draft` refuses a
+  body whose UTF-8 is over `MAX_SOURCE_FILE_BYTES`, leaving the project unchanged:
+  `test_proposal_service.py::test_a_body_over_the_byte_cap_is_refused_before_anything_is_written`
+  and `test_write_intent_input_paths.py::test_a_body_over_the_byte_cap_is_refused_on_the_wire_and_writes_nothing`.
+  The envelope pin moved to #968 with the sibling bounds it is computed from.)
 - **`snapshotId`, `agentId` and `taskId` are published, now enforced, and read by
   nothing** — [#665](https://github.com/theurian/theurian/issues/665), Phase B.
   They are decision 6's third exclusion, and the exclusion is held *equal* to the
