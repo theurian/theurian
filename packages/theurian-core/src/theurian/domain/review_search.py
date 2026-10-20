@@ -188,8 +188,8 @@ class ReviewSearchRecord:
                 "the value for a record whose pull request cannot be read."
             )
         # The over-range arm quotes both the bound and nothing else. The value is
-        # parsed out of a landed ``eventKey`` with `#(\d+)`, so a hand-edited file
-        # can carry one thousands of digits long, and rendering an integer past
+        # parsed out of a landed ``eventKey`` by `parse_event_key`, which refuses a run
+        # wider than 19 digits before `int`; rendering an integer past
         # `sys.get_int_max_str_digits()` raises *inside the refusal being built* --
         # the class `mcp/findings._digits` met (PR #504 round 1, R1-2 face ii).
         # The arm above may quote its value: it fires only below 1.
