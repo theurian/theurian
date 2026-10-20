@@ -119,7 +119,8 @@ _EVENT_KEY: Final = re.compile(r"([^:]+):(.+)#([0-9]+)", re.DOTALL)
 def parse_event_key(event_key: str) -> tuple[str, str, int] | None:
     """The inverse of :attr:`ReviewEvent.external_key`: ``(provider, repository, number)``.
 
-    ``None`` when the key is not in that format.
+    ``None`` when the key is not in that format; ``#0`` parses to 0, which no
+    ``ReviewEvent`` holds, and both callers refuse it.
 
     Raises:
         InvariantViolationError: If the digit run is wider than

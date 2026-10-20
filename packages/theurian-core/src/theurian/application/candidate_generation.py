@@ -24,7 +24,7 @@ as a withheld thread does. A key that does not parse, or names another repositor
 refuses before that resolve; the record it returns must carry that ``event_key``,
 or the thread is read against a pull request that is not its own. ``external_key``
 is built from the record's own provider, repository and number, so that equality
-also binds the record's repository to the submitted one, for a provider without a ``:``.
+also binds the record's repository to the submitted one: ``ReviewEvent`` refuses a ``:`` provider.
 A same-repository renumbering (the key edited to another existing number)
 is not caught here; it stays a T-24 residual.
 

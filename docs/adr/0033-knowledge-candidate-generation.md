@@ -1484,8 +1484,8 @@ Still owed, with the milestone that will satisfy it:
   > `ReviewEvent.external_key`) reads the key: one that does not parse, or names
   > another repository, refuses before the resolve, and a resolved record whose
   > `external_key` is not the thread's `event_key` refuses after it. That one
-  > equality also binds the record's repository to the submission's wherever
-  > its provider holds no `:`, since `external_key` is built from the record's
+  > equality also binds the record's repository to the submission's, since
+  > `ReviewEvent` refuses a `:` provider and `external_key` is built from the record's
   > own provider, repository and number. Both refusals are
   > `UNRESOLVED_RECORD_REFUSAL`, this decision's constant, and both come before
   > the fix-commit verification.
@@ -1494,10 +1494,12 @@ Still owed, with the milestone that will satisfy it:
   > provider, no parseable key, and another repository on both key and record —
   > each asserting the constant text, no verification call and no draft.
   > `tests/unit/test_event_key_single_parser.py` holds the shared parser: the
-  > one `re` call under `theurian` whose pattern reads digits after a `#` is in
-  > `domain/review.py`, and `parse_event_key`'s callers are exactly
+  > one `re.<fn>(<string literal>, ...)` call under `theurian` whose literal reads
+  > digits after a `#` sits outside any function in a `review.py` (today
+  > `domain/review.py`), and `parse_event_key`'s bare-name callers are exactly
   > `candidate_generation._event` and `review_search_builder._pull_request_of`
-> (a parse by `split` or `partition` is outside its key).
+  > (outside its key: a parse by `split` or `partition`, and a pattern passed by a
+  > constant's name or through `from re import`, [#990](https://github.com/theurian/theurian/issues/990)).
   > **Not closed: a same-repository renumber.** A thread honestly on #431 whose
   > key is edited to #432, where #432 exists, still reads #432's signals. No
   > stored referent independent of the key carries the number, so this stays

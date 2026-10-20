@@ -758,7 +758,7 @@ def _pull_request_of(entry: EvidenceEntry) -> int | None:
     other two carry only an ``event_key``, parsed by
     :func:`~theurian.domain.review.parse_event_key`; a key that is not in the
     recorded format, or names a provider or repository other than the entry's
-    own, answers ``None`` rather than a guess.
+    own, answers ``None`` rather than a guess; ``#0`` answers 0, which the row refuses.
 
     Raises:
         ReviewSearchBuildError: If the key's digit run is wider than the store's

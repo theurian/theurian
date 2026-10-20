@@ -70,7 +70,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   in the same repository is still not caught.
 - **`review.search` serves `pullRequest: null` for a thread or submission whose
   `event_key` names another repository or provider, or is not in the recorded
-  format** (#748), rather than the number at the end of the key.
+  format** (#748), rather than the number at the end of the key. `#0` on the
+  record's own repository, or a run wider than 19 digits, still refuses the build.
 
 ## [0.5.3] - 2026-10-08
 
