@@ -1364,6 +1364,7 @@ def isolated_git(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     empty.write_text("", encoding="utf-8")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.delenv("GIT_CONFIG", raising=False)
     for name in list(os.environ):
         if name == "GIT_CONFIG_PARAMETERS" or name.startswith(
             ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
