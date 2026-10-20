@@ -1,4 +1,8 @@
-"""The event_key parse lives in one function, and it inverts ``external_key`` (#748)."""
+"""Pins which ``re`` calls on a literal read digits after a `#`, and who calls ``parse_event_key``.
+
+A census under ``theurian`` (#748), not an inverse test: that is
+``test_parse_event_key_inverts_external_key``.
+"""
 
 from __future__ import annotations
 
