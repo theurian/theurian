@@ -1835,7 +1835,7 @@ def test_a_last_seen_instant_that_cannot_be_expressed_in_utc_is_refused_by_name(
     assert "theurian review build" in excinfo.value.remedy
 
 
-def _with_event_key(paths: ProjectPaths, number: str) -> Path:
+def _with_event_key(paths: ProjectPaths, number: str, key: str | None = None) -> Path:
     """Rewrite the one landed record's ``eventKey`` to end ``#number``.
 
     A hand edit of the landed file rather than of the builder's own types,
@@ -1845,7 +1845,7 @@ def _with_event_key(paths: ProjectPaths, number: str) -> Path:
     """
     landed = next(paths.review.rglob("*.json"))
     document = json.loads(landed.read_text(encoding="utf-8"))
-    document["record"]["eventKey"] = f"{PROVIDER}:{REPOSITORY}#{number}"
+    document["record"]["eventKey"] = key or f"{PROVIDER}:{REPOSITORY}#{number}"
     landed.write_text(json.dumps(document, indent=2), encoding="utf-8")
     return landed
 
@@ -1958,6 +1958,35 @@ def test_a_non_ascii_digit_in_an_event_key_names_no_pull_request(
         f"a non-ASCII digit run became pull request {stored.pull_request}, a number no "
         f"provider issued -- and one a caller can filter on as though it had"
     )
+
+
+@pytest.mark.parametrize(
+    ("key", "expected"),
+    [
+        pytest.param(f"{PROVIDER}:{REPOSITORY}#431", 431, id="honest-key"),
+        pytest.param(f"{PROVIDER}:evil/other#431", None, id="foreign-repository"),
+        pytest.param(f"gitlab:{REPOSITORY}#431", None, id="foreign-provider"),
+        pytest.param("not-a-key#431", None, id="garbage-prefix"),
+        pytest.param(f"{PROVIDER}:a#b/c#5", None, id="repository-containing-hash"),
+    ],
+)
+def test_an_event_key_naming_another_repository_serves_no_pull_request(
+    tmp_path: Path, key: str, expected: int | None
+) -> None:
+    """#748 AC748-4: `pullRequest` is `null` unless the key names the record's own repository.
+
+    The published `pullRequest` description promises a key outside the recorded
+    format answers `null` rather than a guess; the builder once read the trailing
+    `#N` alone and served 431 for all four wrong keys. The honest key is the control.
+    """
+    paths = _project(tmp_path)
+    evidence = _landed(paths, _submission())
+    _with_event_key(paths, "", key)
+
+    store, _ = _build(paths, evidence, withheld=frozenset())
+
+    (stored,) = store.dump()
+    assert stored.pull_request == expected
 
 
 @pytest.mark.parametrize(
