@@ -44,6 +44,26 @@ _EXTENSIONS: Final = {MARKDOWN.value: ".md", JSON.value: ".json", YAML.value: ".
 
 
 @dataclass(frozen=True, slots=True)
+class CandidateProvenance:
+    """The gate's inputs for a generated candidate, written to ``evidence.json``.
+
+    Inputs, not the result: a candidate that exists met its gate. ``repository``,
+    ``record_key`` and ``event_key`` are contributor-controlled (T-24); they are
+    escaped by the same ``json.dumps`` and secret scan as every other string in
+    that file.
+    """
+
+    repository: str
+    record_key: str
+    event_key: str
+    fix_commit: str
+    fix_commit_verdict: str
+    category: str
+    candidate_id: str
+    generated_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class Evidence:
     """Where a proposed change came from, and why its author believes it.
 

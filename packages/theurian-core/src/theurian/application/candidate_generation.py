@@ -20,7 +20,10 @@ intersects :class:`CandidateSubmission`'s fields with the gate's own, read live.
 of the thread, so the thread's record is resolved by the caller's key and the
 pull request's by the number parsed out of the thread's ``event_key`` -- through
 the *same* visibility resolve, so a withheld pull-request record refuses exactly
-as a withheld thread does.
+as a withheld thread does. The record it returns must carry that ``event_key`` and
+the submitted repository, or the thread is read against a pull request that is not
+its own. A same-repository renumbering (the key edited to another existing number)
+is not caught here; it stays a T-24 residual.
 
 **A record the resolve does not answer for refuses uniformly, and nothing is read
 on that path** (decision 5). Withheld and absent are the same answer by
@@ -62,7 +65,7 @@ from theurian.domain.enums import KnowledgeKind, ReviewCommentCategory, ReviewTh
 from theurian.domain.errors import TheurianError
 from theurian.domain.identifiers import ItemId, RevisionId
 from theurian.domain.ports.determinism import Clock
-from theurian.domain.proposal import Evidence
+from theurian.domain.proposal import CandidateProvenance, Evidence
 from theurian.domain.review import (
     FixCommitVerdict,
     KnowledgeCandidate,
@@ -236,7 +239,9 @@ class CandidateGenerator:
         )
         # `local=False` is ADR-0013 point 7: `--local` writes into the managed
         # ignore block, where the human review FR-V4 relies on cannot reach it.
-        proposal = self._drafts.draft(_request(submission, candidate), local=False)
+        proposal = self._drafts.draft(
+            _request(submission, candidate, thread.event_key), local=False
+        )
         return GeneratedCandidate(candidate=candidate, proposal=proposal)
 
     def _thread(self, submission: CandidateSubmission) -> ReviewThread:
@@ -250,7 +255,11 @@ class CandidateGenerator:
         if number is None:
             raise _unresolved()
         record = self._record(submission, number.group(1))
-        if not isinstance(record, ReviewEvent):
+        if (
+            not isinstance(record, ReviewEvent)
+            or record.external_key != thread.event_key
+            or record.repository != submission.repository
+        ):
             raise _unresolved()
         return record
 
@@ -265,7 +274,8 @@ def _unresolved() -> CandidateGenerationError:
     """The shared refusal for a record that does not arrive.
 
     Three shapes reach it: a key the resolve does not answer for, a stored record
-    whose kind is not the one its key promised, and -- once #575 creates the class
+    whose kind is not the one its key promised, a pull request record that is not
+    the one the thread's ``event_key`` names, and -- once #575 creates the class
     -- a withheld record, which the resolve answers for exactly as it answers for
     an absent one. They share a sentence because the difference between them is
     material the caller was not granted (decision 5). It takes no argument, which
@@ -371,7 +381,9 @@ def _refresh(submission: CandidateSubmission) -> str:
     )
 
 
-def _request(submission: CandidateSubmission, candidate: KnowledgeCandidate) -> ProposalRequest:
+def _request(
+    submission: CandidateSubmission, candidate: KnowledgeCandidate, event_key: str
+) -> ProposalRequest:
     """ADR-0033 decision 1's candidate-to-request table, applied.
 
     ``trust_level`` is the *candidate's*, fixed by its declaration
@@ -417,4 +429,14 @@ def _request(submission: CandidateSubmission, candidate: KnowledgeCandidate) -> 
         namespace=submission.namespace,
         expected_revision=submission.expected_revision,
         sensitivity_is_default=True,
+        candidate_provenance=CandidateProvenance(
+            repository=submission.repository,
+            record_key=candidate.source_thread_id,
+            event_key=event_key,
+            fix_commit=submission.fix_commit,
+            fix_commit_verdict=FixCommitVerdict.VERIFIED.value,
+            category=candidate.category.value,
+            candidate_id=candidate.candidate_id,
+            generated_at=candidate.generated_at.isoformat(),
+        ),
     )
