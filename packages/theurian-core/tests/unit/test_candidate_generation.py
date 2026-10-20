@@ -1005,6 +1005,7 @@ def test_a_pull_request_record_the_thread_does_not_name_is_the_uniform_refusal(
         generator.generate(_submission())
 
     assert str(refusal.value) == UNRESOLVED_RECORD_REFUSAL
+    assert refusal.value.__context__ is None or refusal.value.__suppress_context__
     assert verified == [], "the refusal came after the fix commit was verified"
     assert drafts.requests == []
 
