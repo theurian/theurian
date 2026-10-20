@@ -713,6 +713,7 @@ def test_the_pull_request_number_is_matched_ascii_only() -> None:
 
 
 @example(provider="github", repository="a:b", number=5)
+@example(provider="github", repository="o/r", number=MAX_STORED_PULL_REQUEST)
 @given(
     provider=st.text(
         st.characters(blacklist_characters=":", blacklist_categories=["Cs"]), min_size=1
