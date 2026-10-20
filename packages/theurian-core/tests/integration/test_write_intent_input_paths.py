@@ -18,10 +18,11 @@ set per kind in ``_V1_RECORDED``; the document's top-level members are a closed 
 in ``_MIGRATION_MEMBERS``. Canary drives cover
 ``knowledge.proposeChange`` landing, the ``_V1_PATH_MEMBERS`` landing through
 ``knowledge.generateMigrationDraft``, and ``review.generateKnowledgeCandidate``'s
-refused ``repository`` and ``recordKey`` (canary path). Three calls carry no canary:
-an ``upsertRevision`` refused by the v1 gate (checked for paths and bytes written),
-``review.generateKnowledgeCandidate``'s control call that lands, and its
-schema-refused path-shaped ``fixCommit``. That tool's ``scopePaths``
+refused ``repository`` and ``recordKey`` (canary path). The calls that carry no
+canary are an ``upsertRevision`` refused by the v1 gate (checked for paths and bytes
+written), ``review.generateKnowledgeCandidate``'s control call that lands, its
+schema-refused path-shaped ``fixCommit``, and the over-cap ``body`` that tool and
+``knowledge.proposeChange`` refuse (#691). That tool's ``scopePaths``
 and ``sourceAnchors`` are not driven (#996). The scan sees a canary's bytes only in a
 file under the test's ``tmp_path`` (``.git`` excluded) or in the tool's response.
 The schema walk raises on any keyword outside ``_WALKED`` and
@@ -44,6 +45,7 @@ from theurian.application.candidate_generation import UNRESOLVED_RECORD_REFUSAL
 from theurian.application.project_service import ProjectRegistry
 from theurian.application.proposal_service import V1_OPERATION_KINDS
 from theurian.daemon.runner import build_server
+from theurian.security.paths import MAX_SOURCE_FILE_BYTES
 
 from mcp_wire_session import mcp_session  # isort: skip
 
@@ -560,4 +562,25 @@ def test_a_path_shaped_fix_commit_is_refused_at_the_schema_naming_the_field(
     assert result["isError"] is True, result
     assert "does not match this tool's published input schema" in text, text
     assert "At fixCommit" in text, text
+    assert served.proposals() == set()
+
+
+@pytest.mark.parametrize("tool", ["knowledge.proposeChange", "review.generateKnowledgeCandidate"])
+def test_a_body_over_the_byte_cap_is_refused_on_the_wire_and_writes_nothing(
+    served: ServedProject, tmp_path: pathlib.Path, tool: str
+) -> None:
+    """#691: both tools landed this body with HTTP 200, and ``propose accept`` refused it."""
+    body = "a" * (MAX_SOURCE_FILE_BYTES + 1)
+    args = _candidate_args(served, body=body)
+    if tool == "knowledge.proposeChange":
+        candidate_only = {"repository", "recordKey", "fixCommit", "category"}
+        args = {k: v for k, v in args.items() if k not in candidate_only}
+        args["contentType"] = "text/markdown"
+
+    with mcp_session(build_server(served.registry), tmp_path / "data") as call:
+        result = call(tool, {"projectId": "demo", **args})["result"]
+
+    text = result["content"][0]["text"]
+    assert result["isError"] is True, text[:500]
+    assert f"{len(body)} bytes in UTF-8, larger than {MAX_SOURCE_FILE_BYTES} bytes" in text, text
     assert served.proposals() == set()
