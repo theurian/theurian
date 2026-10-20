@@ -2566,7 +2566,8 @@ class ProposalService:
             "been accepted.",
             remedy="Look in .theurian/migrations/ for the migration this proposal drafted -- it "
             "may be present under a different name. If it is genuinely gone, draft the change "
-            "again with theurian propose.",
+            "again: theurian propose for a content change, knowledge.generateMigrationDraft for "
+            "the other operations it drafts, by hand for anything else.",
         )
 
     def _inferred_answer(self, directory: Path, proposal_id: ProposalId) -> ProposalError:
@@ -2611,7 +2612,9 @@ class ProposalService:
             "no migration id, so the directory cannot say for certain.",
             remedy="Confirm the migration this proposal drafted is in .theurian/migrations/. If "
             "it is, no further action is needed beyond reviewing it and opening a pull request. "
-            "If it is not, nothing landed -- draft the change again with theurian propose.",
+            "If it is not, nothing landed -- draft the change again: theurian propose for a "
+            "content change, knowledge.generateMigrationDraft for the other operations it "
+            "drafts, by hand for anything else.",
         )
 
     def _read_evidence_record(
