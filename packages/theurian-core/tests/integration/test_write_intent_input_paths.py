@@ -24,10 +24,10 @@ an ``upsertRevision`` refused by the v1 gate (checked for paths and bytes writte
 schema-refused path-shaped ``fixCommit``. That tool's ``scopePaths``
 and ``sourceAnchors`` are not driven (#996). The scan sees a canary's bytes only in a
 file under the test's ``tmp_path`` (``.git`` excluded) or in the tool's response;
-the ``stored_as_text`` and ``lands_as_text`` drives also see an in-process open of the
-canary by path (``str``, ``bytes`` or path-like, resolved from the working directory)
-through ``_OPENERS``, whatever the read then lands; ``_refuse_opens_of`` names what it
-is blind to. The schema walk raises on
+the ``stored_as_text`` and ``lands_as_text`` drives also refuse a call through one of
+the attributes ``_OPENERS`` patches whose first positional argument (``str``, ``bytes``
+or path-like) has the canary's ``os.path.realpath``, whatever the read then lands.
+Every other read is unseen; ``_refuse_opens_of`` gives examples. The schema walk raises on
 any keyword outside ``_WALKED`` and ``_INERT``, so a path added under one is refused
 rather than missed.
 """
@@ -388,12 +388,17 @@ _OPENERS: Final = (
 
 
 def _refuse_opens_of(canary: str, monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """Make each of ``_OPENERS`` record, then refuse, an open of *canary* by real path.
+    """Make each of ``_OPENERS`` record, then refuse, a call whose first positional
+    argument (``str``, ``bytes`` or path-like) has the canary's ``os.path.realpath``.
 
-    The byte scan alone misses a handler that reads the file and lands a digest or
-    an encoding of it (#995 adversarial M3). Blind: an opener bound before the patch
-    (``from builtins import open as o``), ``io.FileIO``, ``posix.open``, an int fd
-    given to ``open``, a name relative to ``dir_fd``, and a read outside this process.
+    The byte scan alone misses a handler that reads the file and lands a digest or an
+    encoding of it (#995 adversarial M3). The match is on a spelling, not on the file,
+    and only through the patched attributes, so every other read is unseen. Examples,
+    not a complete list: another name for the same file (a case variant on a
+    case-insensitive filesystem, a hard link), an int fd, a name relative to
+    ``dir_fd``, an opener outside ``_OPENERS`` or bound before the patch
+    (``io.FileIO``, ``_io.open``, ``io.open_code``, ``posix.open``, a C-level open such
+    as ``sqlite3.connect``), and a read outside this process.
     """
     target = os.path.realpath(canary)
     opened: list[str] = []
