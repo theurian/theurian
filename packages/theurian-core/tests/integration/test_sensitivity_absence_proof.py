@@ -193,6 +193,7 @@ from hypothesis import given, seed, settings
 from hypothesis import strategies as st
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 from migration_fixtures import body_pin
+from tool_result import structured_payload
 from typer.testing import CliRunner
 
 from theurian.application.authorization import (
@@ -990,12 +991,7 @@ def _call(
         return await build_server(registry, grant).call_tool(tool, arguments)
 
     result = asyncio.run(invoke())
-    structured = getattr(result, "structuredContent", None)
-    if structured is not None:
-        payload: dict[str, Any] = structured
-        return payload
-    loaded: dict[str, Any] = json.loads(result.content[0].text)
-    return loaded
+    return structured_payload(result)
 
 
 def _search(registry: ProjectRegistry, case: _Case, **arguments: Any) -> dict[str, Any]:
@@ -1327,6 +1323,9 @@ def test_no_published_value_varies_with_an_above_ceiling_document(
         "ceiling -- the three members of the disclosure family measured moving on the status "
         "axis, named here so the whole-response diff below is not the first thing a reader sees"
     )
+    assert json.dumps(probe, sort_keys=True) == json.dumps(control, sort_keys=True), (
+        "the serialised responses differ, which equality of the parsed dicts hides (true is 1)"
+    )
     assert probe == control, (
         "every published value must equal what the same query returns against a corpus whose "
         "above-ceiling documents say something else, or hold none of them at all"
@@ -1391,6 +1390,9 @@ def test_the_status_tool_counts_the_same_over_both_corpora(
         f"a healthy project reported damage ({probe.get('integrity')}, {control.get('integrity')})"
         f" -- the #30 comparison must stay on the ungated population at both ends, or every "
         f"restricted deployment reports a corrupt database"
+    )
+    assert json.dumps(probe, sort_keys=True) == json.dumps(control, sort_keys=True), (
+        "the serialised responses differ, which equality of the parsed dicts hides (true is 1)"
     )
     assert probe == control, (
         "knowledge.status published a different answer over a corpus holding above-ceiling "
@@ -1557,6 +1559,9 @@ def test_a_withheld_candidate_does_not_cost_a_visible_document_its_slot(
     assert _published_family(probe) == _published_family(control), (
         "a withheld candidate cost a visible document its slot: the probe's count, cost or "
         "scores differ from a corpus whose withheld rows this query does not reach"
+    )
+    assert json.dumps(probe, sort_keys=True) == json.dumps(control, sort_keys=True), (
+        "the serialised responses differ, which equality of the parsed dicts hides (true is 1)"
     )
     assert probe == control, (
         "and the whole response must be equal, not only the three fields named above"

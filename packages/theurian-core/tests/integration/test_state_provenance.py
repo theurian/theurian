@@ -40,6 +40,7 @@ import pytest
 from git_harness import commit_migrations
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
 from migration_fixtures import body_pin
+from tool_result import structured_payload
 from typer.testing import CliRunner
 
 from theurian.application.project_service import BuildProvenance, ProjectRegistry
@@ -218,12 +219,7 @@ def _call(registry: ProjectRegistry, tool: str, **arguments: Any) -> dict[str, A
         return await build_server(registry).call_tool(tool, arguments)
 
     result = asyncio.run(invoke())
-    structured = getattr(result, "structuredContent", None)
-    if structured is not None:
-        payload: dict[str, Any] = structured
-        return payload
-    loaded: dict[str, Any] = json.loads(result.content[0].text)
-    return loaded
+    return structured_payload(result)
 
 
 def _refused(registry: ProjectRegistry, tool: str, **arguments: Any) -> str:

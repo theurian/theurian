@@ -43,6 +43,7 @@ from typing import Any, Final
 
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
+from tool_result import structured_payload
 from typer.testing import CliRunner
 
 from theurian.application.project_service import (
@@ -294,12 +295,7 @@ def _call_findings(registry: ProjectRegistry) -> dict[str, Any]:
         return await build_server(registry).call_tool("review.findings", {"projectId": "demo"})
 
     result = asyncio.run(invoke())
-    structured = getattr(result, "structuredContent", None)
-    if structured is not None:
-        payload: dict[str, Any] = structured
-        return payload
-    loaded: dict[str, Any] = json.loads(result.content[0].text)
-    return loaded
+    return structured_payload(result)
 
 
 def _refused_findings(registry: ProjectRegistry) -> str:

@@ -72,6 +72,7 @@ from typing import Any
 import pytest
 from git_harness import commit_migrations
 from migration_fixtures import body_pin
+from tool_result import structured_payload
 from typer.testing import CliRunner
 
 from theurian.application.authorization import (
@@ -290,13 +291,7 @@ async def _search_with(
     result = await build_server(registry, grant).call_tool(
         "knowledge.search", {"projectId": "demo", **arguments}
     )
-    structured = getattr(result, "structuredContent", None)
-    if structured is not None:
-        payload: dict[str, Any] = structured
-        return payload
-    content: Any = result.content  # type: ignore[union-attr]
-    loaded: dict[str, Any] = json.loads(content[0].text)
-    return loaded
+    return structured_payload(result)
 
 
 def _corrupt(database: Path, statement: str, parameters: tuple[Any, ...] = ()) -> None:
