@@ -2530,7 +2530,11 @@ the property as it was written and states what actually holds it:
   `::test_a_document_the_schema_rejects_is_refused_and_nothing_is_written` is the
   nothing-written arm. **Two halves of this entry did not land** and are in
   *Still owed*: the end-to-end drive through `theurian propose accept`, and a
-  test for the structural no-direct-loader-import property.
+  test for the structural no-direct-loader-import property. (Neither is owed
+  now: the drive landed after the slice, and the structural property was already
+  held, for import statements that name `theurian.infrastructure`, when this was
+  written. See *The operations path's accept drive and its
+  no-direct-loader-import property* below.)
 - **The CLI-only guarantees have wire equivalents (decision 3).** Landed, and the
   two rows landed differently. Duplicate `labels[]` is a *schema* refusal naming
   the `labels` key path over the wire
@@ -2582,27 +2586,21 @@ the property as it was written and states what actually holds it:
   `tests/integration/test_write_intent_facade_population.py::test_accept_reached_through_the_facades_captured_service_fails_closed`
   calls `accept` on the MCP facade's captured service and asserts the decision-8
   `RuntimeError`, with `.theurian/knowledge` and `.theurian/migrations` unchanged.
-
-Still owed, with the milestone that will satisfy it:
-
-**Corrected in place.** This paragraph said: "**The first three below are
-addressed to a slice and to no issue.** Measured 2026-09-15, `gh issue list
---state open --search "write-intent OR proposeChange OR generateMigrationDraft OR
-facade OR draft-only"` returns nothing that covers any of them, so this section
-is their only owner — a reader should treat that as the gap it is rather than
-assume a tracker entry exists. The last three each name their issue." #700,
-#701 and #703 were filed for them that day, and each item below now names its
-owner. (Open-question 5's timing measurement, formerly a fourth
-slice-addressed item here, landed at slice B4 and moved to the decision-6
-*Landed* entry above.)
-
-- **[#966](https://github.com/theurian/theurian/pull/966) — a file path is refused
-  by construction inside `knowledge.generateMigrationDraft`'s `document`
-  (decision 2).** The tool-level input schemas landed in #962:
+- **A file path is refused by construction inside
+  `knowledge.generateMigrationDraft`'s `document` (decision 2).** The tool-level
+  input schemas landed in #962:
   `tests/integration/test_write_intent_input_paths.py` pins each one's declared
   members (`_RECORDED`, with a reason per path-shaped one in `_PATH_SHAPED`) and
   drives dereference with a canary file; its docstring states the reach. The
-  `document` interior, an opaque object at its schema, is #966's, stacked on #962.
+  `document` interior, an opaque object at its schema, landed in
+  [#966](https://github.com/theurian/theurian/pull/966) (`c45e7ac2`): the same
+  file pins a closed property-path set per v1-admitted operation definition
+  (`_V1_RECORDED`), asserts that no v1-admitted operation declares
+  `contentFile`, drafts each recorded path-shaped member (`_V1_PATH_MEMBERS`)
+  over the wire with a canary path whose text lands while its bytes reach
+  neither a file under the test's tree outside `.git` nor the response, and
+  drives an `upsertRevision` refused with the v1 gate's message and the tree
+  unchanged. This entry was moved here from *Still owed*.
 
   **Corrected in place.** This bullet said: "The property holds as shipped:
   neither published input schema declares a path, URI, or reference field, and
@@ -2628,15 +2626,101 @@ slice-addressed item here, landed at slice B4 and moved to the decision-6
   widens." Its last step does not hold: a test that no input schema declares a
   path-shaped field would fail on the fields above, so the walk records them
   instead of forbidding them.
-- **[#703](https://github.com/theurian/theurian/issues/703) and
-  [#959](https://github.com/theurian/theurian/issues/959), in that order — the two
-  halves of the operations-path entry that did not land.** A test that a
-  document drafted through `draft_from_document` produces a
-  proposal directory `theurian propose accept` accepts, driven through the
-  shipped commands rather than asserted about the service; and a structural test
-  that the entry imports no migration-loader symbol directly (ADR-0003). The
-  second holds today by reading `application/proposal_service.py`'s imports, and
-  by nothing else.
+- **The operations path's accept drive and its no-direct-loader-import
+  property.** Recorded after the slice, with no new test:
+  [#703](https://github.com/theurian/theurian/issues/703) and
+  [#959](https://github.com/theurian/theurian/issues/959) were filed for these two
+  halves of the operations-path entry above, and both were closed on this record
+  after the checks below were found to hold them, the second only for import
+  statements that name `theurian.infrastructure`. The property as it was written
+  in *Still owed*: "A test that a document drafted through `draft_from_document`
+  produces a proposal directory `theurian propose accept` accepts, driven through
+  the shipped commands rather than asserted about the service; and a structural
+  test that the entry imports no migration-loader symbol directly (ADR-0003)."
+
+  **The accept drive.** Three tests, each landed after #703 was filed on
+  2026-09-15, draft a proposal through a write-intent tool over the MCP transport
+  (`mcp_session`) — the third in two of its four parameters — run
+  `propose accept` in-process through the CLI's Typer app, and assert that the
+  accepted change landed:
+  - `tests/integration/test_accept_never_introduces_a_report_row.py::test_the_withdrawal_drafted_again_after_the_update_is_accepted_and_takes_effect`
+    drafts a `deprecateItem` through `knowledge.generateMigrationDraft` — the
+    `draft_from_document` path the property names — and asserts the item's state
+    row reads `deprecated` after `migrate apply`. Landed in `7007565d`, the
+    GHSA-v2qg-23fc-7fqp merge (2026-10-05).
+  - `tests/integration/test_candidate_lands_as_a_proposal.py::test_the_shipped_propose_accept_accepts_a_generated_candidate`
+    drafts through `review.generateKnowledgeCandidate` and asserts the migration
+    reaches `.theurian/migrations/` and the drafted body reaches the
+    `bodyDestination` the tool answered. Landed in `76b9eba1` (#744, 2026-09-19).
+  - `tests/integration/test_update_label_inheritance.py::test_an_update_omitting_sensitivity_leaves_the_items_sensitivity_unchanged`,
+    whose two `mcp-*` parameters draft through `knowledge.proposeChange`, runs
+    `propose accept` and `migrate apply` and asserts the item's
+    `current_revision_id` is the drafted revision. Landed in `7007565d`.
+
+  Only the first drives `draft_from_document`; the other two tools draft through
+  `ProposalService.draft`. Measured at `f3abfba0` in a private copy, over the six
+  node ids the three collect (the third's four parameters are two `mcp-*` and two
+  `cli-*`, the latter drafted by `theurian propose`): 6 passed as shipped, and 6
+  failed with `ProposalService._commit`'s migration write,
+  `_write_file(migration_destination, migration_bytes, exclusive=True)`, replaced
+  by `pass`. That driver reddens the first test at its stale-refusal step,
+  because the CLI update it lands first no longer lands; skipping the write only
+  for a migration containing `deprecateItem` reddens it at the `deprecated`
+  assertion, after `propose accept` exited 0 — measured at `f3abfba0` too.
+
+  **The structural property was already held, for import statements that name
+  `theurian.infrastructure`.**
+  `tests/unit/test_layering.py::test_application_does_not_import_infrastructure`
+  and `::test_only_composition_roots_import_infrastructure` walk each in-scope
+  module's whole AST, so they flag an absolute `theurian.infrastructure` import —
+  the loader is `infrastructure/filesystem/migration_loader.py` — at module level
+  or inside a function. Both landed in `261eff32` (2026-08-01). Ruff's `TID251`
+  banned-api entry on `theurian.infrastructure` in `pyproject.toml`, which the
+  gate's `ruff check` runs, flags the same import, and was added in `7562b41c`
+  (2026-08-01). Measured at `f3abfba0` in a private copy, with
+  `from theurian.infrastructure.filesystem import migration_loader` planted in
+  `application/proposal_service.py`: `test_layering.py` went from 6 passed to 2
+  failed and 4 passed, the 2 being the tests above, and `ruff check` reported
+  `TID251` on the planted line, both with the import at module top and with it
+  inside `draft_from_document`. Ruff alone catches two other forms, each leaving
+  `test_layering.py` at 6 passed: a parent-relative
+  `from ..infrastructure.filesystem import migration_loader` at module top
+  (`TID251` and `TID252`), and `from theurian import infrastructure` at module
+  top and inside `draft_from_document` (`TID251`). Planted inside
+  `draft_from_document`, four forms pass both (6 passed, no `TID` rule):
+  `__import__` and `importlib.import_module` naming the loader, and
+  `validate_migration_document` imported from `theurian.cli.propose_commands` or
+  `theurian.daemon.runner`, each of which re-exports the loader's own function.
+  The re-export residual was filed as
+  [#975](https://github.com/theurian/theurian/issues/975), and the relative
+  form's escape from `test_layering.py`'s scan as
+  [#972](https://github.com/theurian/theurian/issues/972); the two dynamic forms
+  are recorded on those issues.
+
+  **Moved from *Still owed* and corrected.** The bullet said: "The second holds
+  today by reading `application/proposal_service.py`'s imports, and by nothing
+  else." That was false when it was written: both layering tests (`261eff32`) and
+  the `TID251` entry (`7562b41c`) predate the bullet, which was added in
+  `e262b36e` (#698, 2026-09-16).
+
+Still owed, with the milestone that will satisfy it:
+
+**Corrected in place.** This paragraph said: "**The first three below are
+addressed to a slice and to no issue.** Measured 2026-09-15, `gh issue list
+--state open --search "write-intent OR proposeChange OR generateMigrationDraft OR
+facade OR draft-only"` returns nothing that covers any of them, so this section
+is their only owner — a reader should treat that as the gap it is rather than
+assume a tracker entry exists. The last three each name their issue." #700,
+#701 and #703 were filed for them that day, and each item below now names its
+owner. (Open-question 5's timing measurement, formerly a fourth
+slice-addressed item here, landed at slice B4 and moved to the decision-6
+*Landed* entry above. The three items #700, #701 and #703 were filed for have
+since moved to *Landed* above as well: *A value-level wire-contract assertion on
+`writeTools`* (#700), *A file path is refused by construction inside
+`knowledge.generateMigrationDraft`'s `document`* (#701, through #966), and *The
+operations path's accept drive and its no-direct-loader-import property* (#703,
+with #959).)
+
 - **[#691](https://github.com/theurian/theurian/issues/691) — the unit the
   published `body` `maxLength` counts.** JSON Schema counts code points; the
   constant it transcribes counts bytes, so the bound admits up to four times the
