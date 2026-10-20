@@ -79,10 +79,15 @@ fail-closed verdict every reading that cannot reach a git answer takes, never a
 crash and never the misleading ``TOUCHES_NOTHING_HERE`` (which would assert a
 commit was found and touched nothing, a claim the verification never made for a
 path git cannot receive). Outside, and named so the closure is not overclaimed:
-pathname byte-*equality* under Unicode normalization (an NFC-stored anchor versus
-an NFD tree path) is a different root cause -- ``-z`` does not touch it, the two
-byte strings simply differ and the honest fix reads ``TOUCHES_NOTHING_HERE`` --
-and it is filed as [#758], not folded in here.
+pathname byte-*equality* under Unicode normalization is a different root cause --
+``-z`` does not touch it. Its byte-identical face is fixed by
+``-c core.precomposeunicode=false`` ([#758]): macOS ``git init``/``clone`` write
+``precomposeunicode=true``, which rewrote an NFD pathspec to NFC and refused a
+valid fix whose stored path was byte-identical to an NFD tree path. NFC-stored
+versus NFD-tree stays a deliberate fail-closed residual (``TOUCHES_NOTHING_HERE``
+under every setting): every normalising alternative was rejected as fail-open,
+because it verifies a commit that touched only the normalisation twin -- an
+Omega U+03A9 anchor verified by a commit touching the Ohm sign U+2126.
 
 **The command is the git-2.30 ``log`` form, chosen so the documented floor holds
 (round-2 HIGH-1).** The floor is git 2.30+ (``development.md``). The round-1 fix
@@ -90,10 +95,11 @@ reached merge commits with ``diff-tree --diff-merges=first-parent``, but
 ``--diff-merges=first-parent`` is a git 2.31 feature: on a 2.30 install the option
 errors, the non-zero exit folds to ``NO_SUCH_COMMIT``, and *every* valid
 ``fixCommit`` refuses. That attempt is recorded here as history, not repeated. The
-shipped form is ``git --literal-pathspecs log --no-walk --first-parent -m
---name-only --format= --root --end-of-options <sha>^{commit} -- <path>``, whose
-verdicts are byte-identical to the diff-tree form across present+touches,
-not-touching, absent, conflict-merge+touches, root+touches and non-commit, one
+shipped form is ``git -c core.precomposeunicode=false --literal-pathspecs log
+--no-walk --first-parent -m --name-only --format= --root --end-of-options
+<sha>^{commit} -- <path>``, whose verdicts are byte-identical to the diff-tree form
+across present+touches, not-touching, absent, conflict-merge+touches,
+root+touches and non-commit, one
 spawn each (``log_form_probe.py``).
 
 **Both arguments are untrusted, and they are untrusted differently.** The sha is
@@ -108,6 +114,9 @@ and 2.54.0, 2026-09-19:
   under ``core.quotePath`` and separates entries by newline, so ``.splitlines()``
   over the rendering never equals the raw ``file_path`` and an honest fix is
   refused. Predates the 2.30 floor (git 1.5).
+* ``-c core.precomposeunicode=false`` -- **load-bearing ([#758]).** Makes the
+  pathspec byte-literal, so the verdict is pure byte-equality and cannot fail open.
+  It must precede the subcommand.
 * ``--literal-pathspecs`` -- **defence in depth, subsumed by membership.** Against
   a commit touching only ``docs/notes.md``, the stored paths
   ``:(exclude)src/retrying.py``, ``:!src/retrying.py``, ``:(glob)**/*.md`` and
@@ -240,6 +249,8 @@ class FixCommitCheck:
             return FixCommitVerdict.NO_SUCH_COMMIT
         completed = self._run(
             [
+                "-c",
+                "core.precomposeunicode=false",
                 "--literal-pathspecs",
                 "log",
                 "--no-walk",

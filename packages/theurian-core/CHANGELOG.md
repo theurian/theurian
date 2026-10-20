@@ -12,6 +12,16 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
 
 ## [Unreleased]
 
+### Security
+
+- **A `fixCommit` whose commit touched its thread's NFD path is no longer
+  refused on macOS** ([#758](https://github.com/theurian/theurian/issues/758)):
+  `git init` and `git clone` write `core.precomposeunicode=true` there, and git
+  rewrote the NFD pathspec to NFC. The command is now
+  `git -c core.precomposeunicode=false --literal-pathspecs log --no-walk --first-parent -m --name-only --format= -z --root --end-of-options <sha>^{commit} -- <file_path>`,
+  a byte-equality check. NFC against NFD, either way round, stays refused:
+  normalising would verify a commit touching only its twin. Linux is not measured.
+
 ### Changed
 
 - For remedy parsers: the race remedy prints `expectedRevision: <rev>`,

@@ -47,7 +47,8 @@ is a git 2.31 feature while the documented floor is 2.30
 now ``git --literal-pathspecs log --no-walk --first-parent -m --name-only
 --format= -z --root --end-of-options <sha>^{commit} -- <path>``, whose verdicts
 are byte-identical (measured, git 2.47.1, 2026-09-19) and whose newest token is
-``--end-of-options`` (2.24), at or below the floor -- ``-z`` predates it.
+``--end-of-options`` (2.24), at or below the floor -- ``-z`` predates it, as does
+the ``-c core.precomposeunicode=false`` pair #758 later prefixed.
 :func:`test_the_verify_command_uses_only_git_features_at_or_below_the_documented_floor`
 holds the whole command to the floor as a class, not the one retired flag.
 
@@ -1257,6 +1258,7 @@ def test_the_git_vector_is_one_process_fixed_and_forecloses_an_option_a_path_and
 
     RED if the call count moves off one, if a timeout is dropped, if the call
     reaches a shell, if the binary stops being an absolute path, if
+    ``-c core.precomposeunicode=false`` leaves the vector or stops opening it, if
     ``--end-of-options`` / ``--`` / ``--literal-pathspecs`` / ``--root`` /
     ``--first-parent`` / ``-m`` / ``--no-walk`` leaves the vector, if
     ``--diff-merges=first-parent`` returns, or if the ``^{commit}`` suffix leaves
@@ -1287,6 +1289,8 @@ def test_the_git_vector_is_one_process_fixed_and_forecloses_an_option_a_path_and
 
     vector = call["args"]
     assert vector[1:] == [
+        "-c",
+        "core.precomposeunicode=false",
         "--literal-pathspecs",
         "log",
         "--no-walk",
@@ -1301,10 +1305,10 @@ def test_the_git_vector_is_one_process_fixed_and_forecloses_an_option_a_path_and
         "--",
         stored_path,
     ], vector
-    assert vector[1] == "--literal-pathspecs", (
-        "`--literal-pathspecs` is a root-level option and must precede the `log` "
-        "subcommand; after it git does not accept it at all, and the stored path is a "
-        "pathspec expression again"
+    assert vector[1:4] == ["-c", "core.precomposeunicode=false", "--literal-pathspecs"], (
+        "`-c core.precomposeunicode=false` and `--literal-pathspecs` are root-level "
+        "options and must precede the `log` subcommand; after it git does not accept "
+        "them, and the stored path is a pathspec expression (or NFC-rewritten, #758) again"
     )
     assert "-z" in vector, (
         "`-z` must stay in the vector: it makes `git` emit NUL-delimited *raw path "
@@ -1338,6 +1342,113 @@ def test_the_git_vector_is_one_process_fixed_and_forecloses_an_option_a_path_and
         "the stored path must be the last token and must sit behind `--`, so an "
         "option-shaped `filePath` out of an evidence file is a pathspec rather than a flag"
     )
+
+
+# ---------------------------------------------------------------------------
+# Unicode normalization twins (#758): the verdict is byte-equality, nothing looser.
+# ---------------------------------------------------------------------------
+
+_CAFE_NFC = "caf\u00e9.md"
+_CAFE_NFD = "cafe\u0301.md"
+_OMEGA = "\u03a9.md"  # canonical singleton pair: NFC(OHM SIGN) == OMEGA
+_OHM = "\u2126.md"
+
+
+@pytest.fixture
+def isolated_git(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """No ambient or system git config, so ``core.precomposeunicode`` is the repo's alone."""
+    empty = tmp_path / "empty.gitconfig"
+    empty.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+
+def _twin_repo(tmp_path: Path, *tree_names: str) -> tuple[Path, str]:
+    """A repo set to ``precomposeunicode=true`` whose child commit adds exactly ``tree_names``.
+
+    Tree bytes come from ``mktree -z``, not ``git add``, so no filesystem or
+    ``core.precomposeunicode`` rewrites them and two normalization twins can sit
+    in one tree.
+    """
+    repo = _seeded_repo(tmp_path)
+    _git(repo, "config", "core.precomposeunicode", "true")
+    base = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    seed_blob = _git(repo, "rev-parse", "HEAD:seed.md").stdout.strip()
+    records = b"100644 blob " + seed_blob.encode() + b"\tseed.md\0"
+    for name in tree_names:
+        records += b"100644 blob " + seed_blob.encode() + b"\t" + name.encode() + b"\0"
+    tree = _git_raw(repo, "mktree", "-z", stdin=records).decode().strip()
+    sha = _git_raw(repo, "commit-tree", tree, "-p", base, "-m", "add twin").decode().strip()
+    listed = _git_raw(repo, "log", "--no-walk", "--name-only", "--format=", "-z", sha)
+    assert sorted(e for e in listed.split(b"\0") if e) == sorted(n.encode() for n in tree_names)
+    return repo, sha
+
+
+def _git_precomposes_pathspecs(tmp_path: Path) -> bool:
+    """Measured: does this platform's git rewrite an NFD pathspec to NFC under precompose?"""
+    (tmp_path / "premise").mkdir()
+    repo, sha = _twin_repo(tmp_path / "premise", _CAFE_NFD)
+    seen = _git_raw(
+        repo, "--literal-pathspecs", "log", "--no-walk", "--name-only", "--format=", "-z",
+        sha, "--", _CAFE_NFD,
+    )  # fmt: skip
+    return seen == b""
+
+
+@pytest.mark.usefixtures("isolated_git")
+def test_a_stored_path_byte_identical_to_an_nfd_tree_path_verifies_under_precompose(
+    tmp_path: Path,
+) -> None:
+    """#758: macOS ``git init`` writes ``precomposeunicode=true``, which rewrote the NFD
+    pathspec to NFC and refused a valid fix whose stored path equals the tree path."""
+    if not _git_precomposes_pathspecs(tmp_path):
+        pytest.skip("this platform's git does not precompose pathspecs; the case cannot fail")
+    repo, sha = _twin_repo(tmp_path, _CAFE_NFD)
+
+    verdict = FixCommitCheck(repo).verify(sha, _CAFE_NFD)
+
+    assert verdict is FixCommitVerdict.VERIFIED
+
+
+@pytest.mark.usefixtures("isolated_git")
+@pytest.mark.parametrize(
+    ("stored", "tree"),
+    [(_CAFE_NFC, _CAFE_NFD), (_CAFE_NFD, _CAFE_NFC)],
+    ids=["nfc-vs-nfd", "nfd-vs-nfc"],
+)
+def test_a_stored_path_differing_only_by_normalization_from_the_tree_path_is_not_verified(
+    tmp_path: Path, stored: str, tree: str
+) -> None:
+    """Deliberate fail-closed residual (#758): byte-equality, in both directions."""
+    repo, sha = _twin_repo(tmp_path, tree)
+
+    verdict = FixCommitCheck(repo).verify(sha, stored)
+
+    assert verdict is FixCommitVerdict.TOUCHES_NOTHING_HERE
+
+
+@pytest.mark.usefixtures("isolated_git")
+@pytest.mark.parametrize(
+    ("stored", "tree", "expected"),
+    [
+        (_OMEGA, _OHM, FixCommitVerdict.TOUCHES_NOTHING_HERE),
+        (_OHM, _OMEGA, FixCommitVerdict.TOUCHES_NOTHING_HERE),
+        (_CAFE_NFC, _CAFE_NFD, FixCommitVerdict.TOUCHES_NOTHING_HERE),
+        (_OHM, _OHM, FixCommitVerdict.VERIFIED),
+    ],
+    ids=["omega-vs-ohm", "ohm-vs-omega", "cafe-nfc-vs-nfd-twin-only", "control-ohm-vs-ohm"],
+)
+def test_a_commit_touching_only_the_normalization_twin_of_the_anchor_is_not_verified(
+    tmp_path: Path, stored: str, tree: str, expected: FixCommitVerdict
+) -> None:
+    """The fail-open guard (#758): normalising either side would verify a commit that
+    touched only the twin (Omega U+03A9 anchored, Ohm U+2126 committed). The last row
+    is the green control: the same bytes verify."""
+    repo, sha = _twin_repo(tmp_path, tree)
+
+    verdict = FixCommitCheck(repo).verify(sha, stored)
+
+    assert verdict is expected
 
 
 # ---------------------------------------------------------------------------
@@ -1377,6 +1488,11 @@ GIT_TOKEN_FLOOR: dict[str, tuple[int, int]] = {
     "-z": (1, 5),
     "--root": (1, 5),
     "--literal-pathspecs": (1, 9),
+    # `-c` is 1.7.2 (RelNotes/1.7.2.txt); the precompose feature and its
+    # `core.precomposeunicode` setting are 1.7.12 (RelNotes/1.7.12.txt, which names the
+    # feature, not the config key). Read off Homebrew git 2.47.1's bundled RelNotes.
+    "-c": (1, 7),
+    "core.precomposeunicode=false": (1, 7),
     "--end-of-options": (2, 24),
     "--": (1, 0),
 }
