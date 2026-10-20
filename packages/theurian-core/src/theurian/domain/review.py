@@ -8,9 +8,11 @@ human decision (ADR-0013, FR-V4).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+from typing import Final
 
 from theurian.domain.enums import (
     CandidateStatus,
@@ -23,6 +25,7 @@ from theurian.domain.enums import (
 from theurian.domain.errors import InvariantViolationError
 from theurian.domain.identifiers import ItemId, ProjectId
 from theurian.domain.knowledge import SourceAnchor
+from theurian.domain.review_search import MAX_STORED_PULL_REQUEST
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +94,11 @@ class ReviewEvent:
             raise InvariantViolationError(
                 f"Pull request number must be positive, got {self.number}"
             )
+        if not self.provider or ":" in self.provider or not self.repository:
+            raise InvariantViolationError(
+                "ReviewEvent provider must be non-empty without ':' and repository "
+                f"non-empty, got provider {self.provider!r}, repository {self.repository!r}"
+            )
         if self.merged and self.merge_commit is None:
             raise InvariantViolationError(
                 f"Merged pull request {self.repository}#{self.number} must record a merge commit"
@@ -100,6 +108,39 @@ class ReviewEvent:
     def external_key(self) -> str:
         """Stable identity across re-ingestion: provider, repository, number."""
         return f"{self.provider}:{self.repository}#{self.number}"
+
+
+# ASCII digits only: `event_key` is author-controlled data a clone can deliver
+# (T-24), and `\d` would range over fullwidth digits that `int` accepts, parsing
+# to a record key no store holds. The repository runs to the LAST `#`.
+_EVENT_KEY: Final = re.compile(r"([^:]+):(.+)#([0-9]+)", re.DOTALL)
+
+
+def parse_event_key(event_key: str) -> tuple[str, str, int] | None:
+    """The inverse of :attr:`ReviewEvent.external_key` for a number of up to 19 digits.
+
+    ``(provider, repository, number)``, or ``None`` when the key is not in that format;
+    ``#0`` parses to 0, which no ``ReviewEvent`` holds, and both callers refuse it.
+
+    Raises:
+        InvariantViolationError: If the digit run is wider than
+            ``MAX_STORED_PULL_REQUEST``. The whole run is measured, leading zeros
+            included, before ``int``, which itself raises past 4,300 digits
+            (#630 HIGH-1).
+    """
+    found = _EVENT_KEY.fullmatch(event_key)
+    if found is None:
+        return None
+    provider, repository, digits = found.groups()
+    if len(digits) > len(str(MAX_STORED_PULL_REQUEST)):
+        raise InvariantViolationError(
+            f"The event key names a pull request as a run of {len(digits)} digits, "
+            f"wider than the {len(str(MAX_STORED_PULL_REQUEST))} digits of "
+            f"{MAX_STORED_PULL_REQUEST}."
+        )
+    if digits[0] == "0" and len(digits) > 1:
+        return None
+    return provider, repository, int(digits)
 
 
 @dataclass(frozen=True, slots=True)

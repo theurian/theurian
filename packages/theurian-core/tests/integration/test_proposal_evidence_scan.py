@@ -30,6 +30,7 @@ reason it records.
 from __future__ import annotations
 
 import base64
+import dataclasses
 import hashlib
 import json
 import subprocess
@@ -65,7 +66,7 @@ from theurian.domain.identifiers import AgentId, ItemId, MigrationId, ProjectId,
 from theurian.domain.knowledge import SourceAnchor
 from theurian.domain.migration import Migration
 from theurian.domain.project import DEFAULT_KNOWLEDGE_DIRECTORY
-from theurian.domain.proposal import Evidence
+from theurian.domain.proposal import CandidateProvenance, Evidence
 from theurian.domain.values import MARKDOWN
 from theurian.infrastructure.filesystem.migration_loader import (
     load_migrations,
@@ -833,3 +834,80 @@ def test_the_refusal_arrives_before_the_author_is_told_to_commit_the_directory(
         f"the author was told to commit the proposal directory anyway: {published}"
     )
     assert evidence.exists(), "the refusal removed the record the author has to correct"
+
+
+def _candidate_block(**overrides: str) -> CandidateProvenance:
+    """A realistic block; ids are derived, as a literal node id trips gitleaks."""
+    digest = hashlib.sha256(b"theurian candidate-provenance fixture (#754)")
+    values = {
+        "repository": "acme/order-service",
+        "record_key": "PRRT_kwDO" + base64.b64encode(digest.digest()[:9]).decode(),
+        "event_key": "github:acme/order-service#431",
+        "fix_commit": hashlib.sha1(b"fix", usedforsecurity=False).hexdigest(),
+        "fix_commit_verdict": "verified",
+        "category": "reliability-rule",
+        "candidate_id": "PRRT_kwDOaaaaaaaaaaaa:reliability.retry-lock-order",
+        "generated_at": "2026-10-20T09:00:00+00:00",
+    }
+    return CandidateProvenance(**{**values, **overrides})
+
+
+def _candidate_request(provenance: CandidateProvenance) -> ProposalRequest:
+    return dataclasses.replace(_request(), candidate_provenance=provenance)
+
+
+def test_a_realistic_candidate_block_passes_the_accept_time_scan(service: ProposalService) -> None:
+    """#754: a 40-hex commit and a node id must not read as a leaked credential at accept."""
+    drafted = service.draft(_candidate_request(_candidate_block()))
+    assert "candidate" in json.loads((drafted.directory / EVIDENCE_FILE).read_text("utf-8"))
+
+    accepted = service.accept(drafted.proposal_id)
+
+    assert accepted.secret_scan.findings == (), [
+        f.describe() for f in accepted.secret_scan.findings
+    ]
+
+
+def test_a_secret_in_the_candidate_block_is_refused_at_accept(service: ProposalService) -> None:
+    """The control for the test above: the scan reaches the ``candidate`` block (T-24)."""
+    drafted = service.draft(_candidate_request(_candidate_block(record_key=PLANTED_TOKEN)))
+    assert PLANTED_TOKEN not in drafted.migration_file.read_text(encoding="utf-8")
+
+    with pytest.raises(ProposalError) as caught:
+        service.accept(drafted.proposal_id)
+
+    assert _AT_EVIDENCE in f"{caught.value}\n{caught.value.remedy}"
+
+
+def test_contributor_controlled_candidate_strings_are_json_escaped_in_the_file(
+    service: ProposalService,
+) -> None:
+    """T-24: non-ASCII and control characters in the block land as JSON escapes."""
+    repository = "acme/caf\u00e9\u7f72"
+    event_key = "github:acme/order\x07service\n#431"
+    drafted = service.draft(
+        _candidate_request(_candidate_block(repository=repository, event_key=event_key))
+    )
+
+    raw = (drafted.directory / EVIDENCE_FILE).read_bytes()
+
+    assert raw.isascii() and not any(b < 0x20 and b != 0x0A for b in raw), raw
+    assert b"\\u00e9" in raw and b"\\u0007" in raw
+    block = json.loads(raw)["candidate"]
+    assert (block["repository"], block["eventKey"]) == (repository, event_key)
+
+
+def test_the_ordinary_drafts_write_no_candidate_key(service: ProposalService) -> None:
+    """#754: `draft` without provenance and `draft_from_document` write no block, not even null."""
+    ordinary = service.draft(_request())
+    from_document = service.draft_from_document(
+        {
+            "author": "platform-team@example.com",
+            "description": "Deprecate the retry policy item after review",
+            "operations": [{"op": "deprecateItem", "itemId": "architecture.retry-policy"}],
+        },
+        evidence=EVIDENCE,
+    )
+
+    for directory in (ordinary.directory, from_document.directory):
+        assert "candidate" not in json.loads((directory / EVIDENCE_FILE).read_text("utf-8"))

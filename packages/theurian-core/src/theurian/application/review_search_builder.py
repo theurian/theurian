@@ -42,7 +42,6 @@ opened the pull request.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable, Iterable, Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -53,9 +52,14 @@ from theurian.application.findings_builder import WriteSection
 from theurian.application.review_landing_gate import ReviewRecordPayload
 from theurian.domain.errors import InvariantViolationError, TheurianError
 from theurian.domain.knowledge import SourceAnchor
-from theurian.domain.review import ReviewEvent, ReviewParticipant, ReviewSubmission, ReviewThread
+from theurian.domain.review import (
+    ReviewEvent,
+    ReviewParticipant,
+    ReviewSubmission,
+    ReviewThread,
+    parse_event_key,
+)
 from theurian.domain.review_search import (
-    MAX_STORED_PULL_REQUEST,
     ReviewSearchLoad,
     ReviewSearchRecord,
     ReviewTextChannel,
@@ -107,56 +111,6 @@ ListEvidenceFingerprints = Callable[[], Mapping[str, EvidenceFingerprint]]
 #: so this layer never names a file: an application service that knew where the
 #: store lives would be deciding a filesystem layout it has no business deciding.
 WriteReviewSearchStore = Callable[[ReviewSearchLoad], None]
-
-#: The trailing ``#<number>`` of an event key. ``ReviewEvent.external_key`` is
-#: ``f"{provider}:{repository}#{number}"`` and is the **only** producer of the
-#: ``event_key`` a submission or a thread carries.
-#:
-#: The population, with the search that answers it. **The pathspec excludes this
-#: file**, and it is not decoration: the command appears in this comment, so a
-#: search without it matches its own two occurrences here and answers six where
-#: the population is four --
-#: ``git grep -n 'event_key=' -- packages/theurian-core/src ':!*review_search_builder.py'``.
-#:
-#: Those four are ``review_provider.py``'s ``ReviewThread(...)``, which binds
-#: ``event.external_key`` directly; ``response.py``'s ``ReviewSubmission(...)``
-#: inside ``submission()``, whose one caller hands it the same
-#: ``event.external_key`` **positionally** and is therefore not itself among the
-#: four; and the two ``codec.py`` reads that load the value back out of a landed
-#: file. So the parse below is exact for every record the shipped writer lands.
-#:
-#: ASCII-anchored (``re.ASCII``) rather than ``str.isdigit``: that predicate is
-#: true of ``٣`` and ``int`` accepts it, so a non-ASCII digit would become a
-#: pull-request number no provider issued.
-_EVENT_KEY_NUMBER = re.compile(r"#(\d+)\Z", re.ASCII)
-
-#: How many decimal digits a pull-request number's run may span, derived from the
-#: bound rather than chosen: :data:`MAX_STORED_PULL_REQUEST` is nineteen digits
-#: wide, so a longer run is out of range whatever it spells.
-#:
-#: The check is on the run's **length** because ``int`` itself is not total:
-#: CPython refuses to convert a decimal string past
-#: ``sys.get_int_max_str_digits()`` -- 4,300 digits by default -- and raises
-#: ``ValueError``, which is neither a ``TheurianError`` nor anything ``theurian
-#: review build`` grades. Measured 2026-09-10, before this arm existed: a landed
-#: file whose ``eventKey`` ended in 4,301 nines ended the build in
-#: ``ValueError: Exceeds the limit (4300 digits) for integer string conversion``
-#: and a traceback. The same family as ``mcp/findings._digits`` (PR #504 round 1,
-#: R1-2 face ii), met on the *write* side: the refusal about an unrenderable
-#: number must not itself render it.
-#:
-#: **The whole run is measured, leading zeros included**, and that is the width
-#: CPython measures too: ``int("0" * 4301 + "1")`` raises the identical
-#: ``ValueError`` -- ``value has 4302 digits`` -- for a run that spells 1
-#: (measured 2026-09-10, Python 3.13). Measuring after ``lstrip("0")`` was #630's
-#: HIGH-1: the guard saw one significant digit, passed, and handed ``int`` the
-#: whole run anyway. What the wider key costs is a zero-padded run spelling an
-#: in-range number, refused where it used to be stored -- and the run in a landed
-#: key is rendered from an ``int`` by
-#: :meth:`~theurian.domain.review.ReviewEvent.external_key`, the one producer
-#: :data:`_EVENT_KEY_NUMBER`'s note found, whose ``str`` carries no leading zero
-#: at all. A hand-edited one is what this refuses, by the file it names.
-_MAX_NUMBER_DIGITS: Final = len(str(MAX_STORED_PULL_REQUEST))
 
 
 class ReviewSearchBuildError(TheurianError):
@@ -716,7 +670,7 @@ def _projected(entry: EvidenceEntry) -> ReviewSearchRecord:
             kind=entry.kind,
             provider=entry.provider,
             repository=entry.repository,
-            pull_request=_pull_request_of(entry.payload, entry.relative_path),
+            pull_request=_pull_request_of(entry),
             thread_state=_thread_state_of(entry.payload),
             file_path=_file_path_of(entry.payload),
             source_uri=entry.anchor.source_uri,
@@ -797,61 +751,37 @@ def _distinct(values: Iterable[str]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(values))
 
 
-def _pull_request_of(payload: ReviewRecordPayload, relative_path: str) -> int | None:
+def _pull_request_of(entry: EvidenceEntry) -> int | None:
     """Which pull request a record belongs to, where the record can say.
 
     A :class:`~theurian.domain.review.ReviewEvent` carries its own number. The
-    other two carry an ``event_key``, and reading the number back out of that
-    string is a parse -- which
-    :class:`~theurian.application.review_landing_gate.ReviewRecordIdentity`
-    deliberately avoids by carrying the number beside the payload instead.
-
-    That avoidance does not transfer here and the difference is worth stating:
-    the gate is downstream of the adapter and can ask it what it knew, while this
-    builder reads a **file**, where the key is the only thing that names the pull
-    request at all. The alternative is ``None`` for two of the three kinds, which
-    would make the pull-request filter miss exactly the records -- threads -- a
-    reviewer searches for. So it is parsed, against the one format
-    :data:`_EVENT_KEY_NUMBER` records as the only producer, and a key that does
-    not match answers ``None`` rather than a guess.
-
-    ``relative_path`` is taken for :func:`_instant_text`'s reason: the digit run
-    below is refused by a message that has to name the evidence file, and this
-    function is the layer that is looking at the string.
+    other two carry only an ``event_key``, parsed by
+    :func:`~theurian.domain.review.parse_event_key`; a key that is not in the
+    recorded format, or names a provider or repository other than the entry's
+    own, answers ``None`` rather than a guess; ``#0`` answers 0, which the row refuses.
 
     Raises:
         ReviewSearchBuildError: If the key's digit run is wider than the store's
-            column -- the **whole** run, leading zeros included -- which is a
-            refusal on its **length** and therefore before any ``int``. See
-            :data:`_MAX_NUMBER_DIGITS`.
+            column, refused on its length before any ``int``.
     """
+    payload = entry.payload
     match payload:
         case ReviewEvent():
-            # No length arm: the number arrived as a JSON integer through the
-            # codec, so `int` has already been applied by the reader and its own
-            # failures are graded there. `ReviewSearchRecord` refuses an
-            # out-of-range one at construction, which is the arm this reaches.
             return payload.number
         case ReviewSubmission() | ReviewThread():
-            found = _EVENT_KEY_NUMBER.search(payload.event_key)
-            if found is None:
-                return None
-            digits = found.group(1)
-            # The whole run, not `digits.lstrip("0")`: the significant-digit
-            # spelling measured something narrower than what it was guarding, and
-            # `int` below counts every character in the run. See
-            # `_MAX_NUMBER_DIGITS`.
-            if len(digits) > _MAX_NUMBER_DIGITS:
+            try:
+                parsed = parse_event_key(payload.event_key)
+            except InvariantViolationError as exc:
                 raise ReviewSearchBuildError(
-                    f"`{relative_path}` names a pull request as a run of "
-                    f"{len(digits)} digits, wider than the {_MAX_NUMBER_DIGITS} "
-                    f"digits of {MAX_STORED_PULL_REQUEST}, the widest value the "
-                    f"store's column holds. The whole run is measured, leading "
-                    f"zeros included, and refused unconverted: the width is what "
-                    f"this refuses, not the value it spells.",
-                    remedy=_record_cure(relative_path),
-                )
-            return int(digits)
+                    f"`{entry.relative_path}`: {exc} That is the widest value the store's "
+                    f"column holds. The whole run is measured, leading zeros included, and "
+                    f"refused unconverted: the width is what this refuses, not the "
+                    f"value it spells.",
+                    remedy=_record_cure(entry.relative_path),
+                ) from exc
+            if parsed is None or parsed[:2] != (entry.provider, entry.repository):
+                return None
+            return parsed[2]
 
 
 def _thread_state_of(payload: ReviewRecordPayload) -> str | None:

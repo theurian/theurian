@@ -136,8 +136,9 @@ Comments are classified into the eleven categories from §21 of the brief:
 
 Classification is a caller-supplied hint recorded on the candidate, not a router:
 it chooses neither the knowledge kind nor the namespace — those are the caller's
-own wire fields — and today it is not carried into the drafted proposal at all
-([#754](https://github.com/theurian/theurian/issues/754) tracks that). It is not
+own wire fields. It reaches the drafted proposal only as the `category` key of
+`evidence.json`'s `candidate` block, written for the reviewer; no code path
+reads that key back ([#754](https://github.com/theurian/theurian/issues/754)). It is not
 a truth claim, and a misclassification costs a reviewer one correction — not a
 wrong rule in the knowledge base.
 
