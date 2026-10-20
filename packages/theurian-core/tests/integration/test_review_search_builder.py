@@ -1839,9 +1839,10 @@ def _with_event_key(paths: ProjectPaths, number: str, key: str | None = None) ->
     """Rewrite the one landed record's ``eventKey`` to end ``#number``.
 
     A hand edit of the landed file rather than of the builder's own types,
-    because what these two cases assert is that a **file** on disk produces a
-    graded refusal: ``_pull_request_of`` parses the trailing ``#(\\d+)`` out of
-    exactly this string, so the file is the only place such a number can enter.
+    because what its callers assert is that a **file** on disk produces a
+    graded refusal: ``_pull_request_of`` reads the number by ``parse_event_key``'s
+    full match of exactly this string, so the file is the only place such a
+    number can enter.
     """
     landed = next(paths.review.rglob("*.json"))
     document = json.loads(landed.read_text(encoding="utf-8"))
@@ -2003,11 +2004,13 @@ def test_the_over_range_refusal_never_renders_the_number_it_refuses(
 ) -> None:
     """RED means composing the refusal is itself the next crash.
 
-    ``_pull_request_of`` parses ``#(\\d+)``, so a hand-edited event key can carry
-    a number of any length, and CPython refuses to render an integer wider than
-    ``sys.get_int_max_str_digits()`` -- 4,300 digits by default. A refusal that
-    quoted the caller's number back would raise ``ValueError`` *inside the arm
-    building it*, which is the face ``mcp/findings._digits`` met. The bound is
+    A hand-edited event key can carry a digit run of any length;
+    ``parse_event_key`` takes the whole run in its full match and refuses one
+    wider than the digits of ``MAX_STORED_PULL_REQUEST`` before ``int``. CPython
+    refuses to convert or render an integer wider than
+    ``sys.get_int_max_str_digits()`` -- 4,300 digits by default -- so a refusal
+    that quoted the caller's number back would raise ``ValueError`` *inside the
+    arm building it*, which is the face ``mcp/findings._digits`` met. The bound is
     named instead, which is the part a reader acts on.
 
     **Two runs of the same width, and the second is #630's HIGH-1.** The guard
