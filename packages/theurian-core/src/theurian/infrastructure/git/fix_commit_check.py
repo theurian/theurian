@@ -174,8 +174,9 @@ holds the 2.30 floor as an allowlist rather than as a single flag's absence.
 decides a promotion signal and letting an inherited ``PATH`` choose the
 executable that answers it is the shape that clause refuses. It reaches no
 network -- ``log`` reads local object storage, names no remote and takes no
-URL -- except that in a partial clone git lazily fetches missing objects (trees,
-and the blobs rename detection reads) from the promisor remote (#981); it is on
+URL -- except in a partial clone, where git lazily fetches from the promisor
+remote any object it reads and lacks, the named commit among them, so a commit
+present only on the remote can read ``VERIFIED`` (#981); it is on
 ``PROCESS_SPAWN_SITES`` because it spawns a process.
 """
 
