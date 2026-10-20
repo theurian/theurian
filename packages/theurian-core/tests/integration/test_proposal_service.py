@@ -14,7 +14,7 @@ import os
 import shutil
 import sys
 import tempfile
-from collections.abc import Collection, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping
 from pathlib import Path
 from typing import Final, NoReturn
 
@@ -32,6 +32,7 @@ from theurian.application.proposal_service import (
     ApprovedSetUnusableError,
     CandidateMigrationSet,
     ChangeAlreadyInPlaceError,
+    DraftedMigration,
     DraftedProposal,
     ProposalAlreadyAcceptedError,
     ProposalError,
@@ -2561,6 +2562,83 @@ def test_a_legacy_proposal_infers_acceptance_from_the_generated_body_shape(
     with pytest.raises(ProposalAlreadyAcceptedError, match="appears to have been accepted") as e:
         service.accept(accepted.proposal_id)
     assert ".theurian/migrations/" in e.value.remedy
+
+
+def _leave(drafted: DraftedProposal | DraftedMigration, state: str) -> None:
+    """Strip a draft's directory to a state that holds no migration file."""
+    drafted.migration_file.unlink()
+    if state == "recorded id":
+        return
+    for path in drafted.directory.iterdir():
+        if path.is_dir():
+            shutil.rmtree(path)
+        elif state == "emptied" or path != drafted.evidence_file:
+            path.unlink()
+    if state == "no migrationId":
+        record = json.loads(drafted.evidence_file.read_text(encoding="utf-8"))
+        del record["migrationId"]
+        drafted.evidence_file.write_text(json.dumps(record), encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "draft",
+    [
+        # `theurian propose` and `knowledge.proposeChange` both call `draft`.
+        pytest.param(lambda service: service.draft(_request()), id="draft"),
+        # `knowledge.generateMigrationDraft`'s entry.
+        pytest.param(
+            lambda service: service.draft_from_document(
+                {
+                    "author": "a@example.com",
+                    "operations": [{"op": "deprecateItem", "itemId": "architecture.retry-policy"}],
+                },
+                evidence=EVIDENCE,
+            ),
+            id="draft_from_document",
+        ),
+    ],
+)
+def test_every_missing_migration_remedy_redrafts_in_one_shape_naming_each_drafting_tool(
+    service: ProposalService,
+    draft: Callable[[ProposalService], DraftedProposal | DraftedMigration],
+) -> None:
+    """#930: both said "draft the change again with theurian propose", which drafts content only.
+
+    ``recorded id`` reaches ``_no_migration_error``; the other two reach
+    ``_inferred_answer``'s "appears to have been accepted".
+    """
+    tails = set()
+    for state, site in (
+        ("recorded id", "Nothing it drafted has been accepted"),
+        ("no migrationId", "appears to have been accepted, but this is inferred"),
+        ("emptied", "appears to have been accepted, but this is inferred"),
+    ):
+        drafted = draft(service)
+        _leave(drafted, state)
+
+        with pytest.raises(ProposalError, match=site) as caught:
+            service.accept(drafted.proposal_id)
+
+        tail = caught.value.remedy[caught.value.remedy.index("draft the change again") :]
+        assert "knowledge.generateMigrationDraft" in tail, (state, tail)
+        assert "with theurian propose" not in tail, (state, tail)
+        tails.add(tail)
+
+    assert len(tails) == 1, tails
+
+
+def test_an_unfinished_content_draft_is_still_told_to_redraft_with_theurian_propose(
+    service: ProposalService,
+) -> None:
+    """#930 kept this branch: the generated body it keys on is left only by a content draft."""
+    drafted = service.draft(_request())
+    _as_legacy(drafted)
+    drafted.migration_file.unlink()
+
+    with pytest.raises(ProposalError, match="looks unfinished") as caught:
+        service.accept(drafted.proposal_id)
+
+    assert caught.value.remedy.endswith("draft the change again with theurian propose.")
 
 
 def test_a_file_accept_left_behind_does_not_flip_the_legacy_inference(
