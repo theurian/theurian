@@ -47,11 +47,10 @@ They mutate a temporary `HOME` and register real OS services, so they must never
 run against a developer's own profile — every fixture asserts an isolated `HOME`
 before doing anything.
 
-**No CI job runs them.** This paragraph said they "run in a dedicated job on
-macOS and Linux runners". Both occurrences of `e2e` in `.github/workflows/`
-*exclude* the marker (`-m "not e2e"`, in `core.yml`'s `test` and `offline`
-jobs); the dedicated job has never existed. So the 25 tests in the two files
-here run only when someone runs them by hand — including the SEC-7 path- and
+**`core.yml`'s `e2e` job runs them on pull requests (#634).** This paragraph
+once said they "run in a dedicated job on macOS and Linux runners"; until #634
+that job did not exist, and `core.yml`'s `test` and `offline` jobs *exclude* the
+marker (`-m "not e2e"`). The job runs `tests/e2e`, so the SEC-7 path- and
 symlink-containment cases, and the tests ADR-0002, ADR-0004, ADR-0011, ADR-0013
-and ADR-0016 each cite by name to discharge a compliance item. Tracked as
-[#65](https://github.com/theurian/theurian/issues/65).
+and ADR-0016 each cite by name to discharge a compliance item, are now exercised
+on a pull request. Tracked as [#65](https://github.com/theurian/theurian/issues/65).

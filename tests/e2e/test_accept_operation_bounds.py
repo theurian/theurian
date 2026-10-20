@@ -16,10 +16,9 @@ The deterministic, CI-run twin of this proof --
 ``test_proposal_service.py`` -- monkeypatches ``_body_moves`` to assert it is
 never entered once the cap is exceeded. This file measures the same property
 by an independent method (real memory, not a patched call), and it is marked
-``e2e`` because CI's own jobs run every other suite under ``-m "not e2e"``
-(``.github/workflows/core.yml``) -- this one is exercised by the mandated full
-local gate (``uv run pytest -q``, no marker filter) and by a developer running
-``-m e2e`` directly.
+``e2e`` because it drives the installed binary. ``core.yml``'s ``e2e`` job runs
+``tests/e2e`` on pull requests (#634); the mandated full local gate
+(``uv run pytest -q``, no marker filter) and ``-m e2e`` run it too.
 """
 
 from __future__ import annotations

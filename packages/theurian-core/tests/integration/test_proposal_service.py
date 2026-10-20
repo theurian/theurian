@@ -3289,11 +3289,12 @@ def test_the_operation_cap_holds_the_two_channel_memory_ceiling() -> None:
     ``_commit`` can hold resident (the incoming ``moves`` bytes and, for every
     replaced body, the ``restored`` destination bytes kept for rollback; see
     ``MAX_UPSERT_OPERATIONS``'s docstring) -- is only proven at real memory
-    scale by the e2e ``AC-7`` proof, which CI's ``-m "not e2e"`` jobs exclude.
+    scale by the e2e ``AC-7`` proof, which ``core.yml``'s ``test`` and ``offline``
+    jobs (``-m "not e2e"``) exclude and its ``e2e`` job runs.
     This recomputes that same bound from the LIVE constants and pins it
     against the 4 GiB ceiling the constant's own docstring targets, so a
     constant change that breaks the ceiling goes red here, in the CI-run
-    suite, rather than only in the excluded e2e job.
+    suite, rather than only in the e2e job.
     """
     two_channel_peak_bytes = MAX_UPSERT_OPERATIONS * 2 * MAX_SOURCE_FILE_BYTES
     four_gib = 4 * 1024**3
