@@ -83,10 +83,10 @@ pathname byte-*equality* under Unicode normalization is a different root cause -
 ``-z`` does not touch it. Its byte-identical face is fixed by
 ``-c core.precomposeunicode=false`` ([#758]): macOS ``git init``/``clone`` write
 ``precomposeunicode=true``, which rewrote an NFD pathspec to NFC and refused a
-valid fix whose stored path was byte-identical to an NFD tree path. NFC-stored
-versus NFD-tree stays a deliberate fail-closed residual (``TOUCHES_NOTHING_HERE``
+valid fix whose stored path was byte-identical to an NFD tree path. NFC against
+NFD, either way round, stays a deliberate fail-closed residual (``TOUCHES_NOTHING_HERE``
 tested at ``precomposeunicode=true`` alone; the override makes the setting moot, and
-true, false and unset were each measured so on 2026-10-20 at 62a431c5, on the
+true, false and unset were each measured so on 2026-10-20, on the
 PR #976 branch): every normalising alternative was rejected as fail-open,
 because it verifies a commit that touched only the normalisation twin -- an
 Omega U+03A9 anchor verified by a commit touching the Ohm sign U+2126.
@@ -98,11 +98,12 @@ reached merge commits with ``diff-tree --diff-merges=first-parent``, but
 errors, the non-zero exit folds to ``NO_SUCH_COMMIT``, and *every* valid
 ``fixCommit`` refuses. That attempt is recorded here as history, not repeated. The
 shipped form is ``git -c core.precomposeunicode=false --literal-pathspecs log
---no-walk --first-parent -m --name-only --format= --root --end-of-options
-<sha>^{commit} -- <path>``, whose verdicts are byte-identical to the diff-tree form
+--no-walk --first-parent -m --name-only --format= -z --root --end-of-options
+<sha>^{commit} -- <file_path>``. Its round-2 form, without ``-z`` (round 3) and
+``-c`` ([#758]), gave verdicts byte-identical to the diff-tree form
 across present+touches, not-touching, absent, conflict-merge+touches,
 root+touches and non-commit, one
-spawn each (``log_form_probe.py``).
+spawn each (``log_form_probe.py``, 2026-09-19).
 
 **Both arguments are untrusted, and they are untrusted differently.** The sha is
 caller wire input; the path is author-controlled stored data a clone can deliver
@@ -116,8 +117,14 @@ and 2.54.0, 2026-09-19:
   under ``core.quotePath`` and separates entries by newline, so ``.splitlines()``
   over the rendering never equals the raw ``file_path`` and an honest fix is
   refused. Predates the 2.30 floor (git 1.5).
-* ``-c core.precomposeunicode=false`` -- **load-bearing ([#758]).** Makes the
-  pathspec byte-literal, so the verdict is pure byte-equality and cannot fail open.
+* ``-c core.precomposeunicode=false`` -- **load-bearing ([#758]) for the honest
+  byte-identical NFD path only** (measured 2026-10-20, git 2.47.1 and 2.54.0, PR
+  #976): under ``precomposeunicode=true``, which macOS ``git init`` writes, git
+  rewrites the pathspec to NFC and never emits the byte-identical NFD entry.
+  Normalisation twins do not depend on it -- removed, byte membership still reads
+  each, NFC/NFD and Omega/Ohm either way round, ``TOUCHES_NOTHING_HERE`` -- and
+  fail-open through repository state (a shallow boundary, replace refs,
+  ``GIT_DIR``) is #981's, not closed here.
   It must precede the subcommand.
 * ``--literal-pathspecs`` -- **defence in depth, subsumed by membership.** Against
   a commit touching only ``docs/notes.md``, the stored paths
@@ -167,7 +174,8 @@ holds the 2.30 floor as an allowlist rather than as a single flag's absence.
 decides a promotion signal and letting an inherited ``PATH`` choose the
 executable that answers it is the shape that clause refuses. It reaches no
 network -- ``log`` reads local object storage, names no remote and takes no
-URL -- and is on ``PROCESS_SPAWN_SITES`` only because it spawns a process.
+URL -- except that in a partial clone git lazily fetches missing trees from the
+promisor remote (#981); it is on ``PROCESS_SPAWN_SITES`` only because it spawns a process.
 """
 
 from __future__ import annotations
