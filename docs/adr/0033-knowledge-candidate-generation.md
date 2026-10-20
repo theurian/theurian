@@ -1308,8 +1308,8 @@ Still owed, with the milestone that will satisfy it:
   > relationship measured under load with its instrument named, never as a
   > single-run fixed bound.
 
-  > **Amended in [#758](https://github.com/theurian/theurian/issues/758): byte membership
-  > failed on macOS.** There `git init` and `git clone` write `core.precomposeunicode=true`,
+  > **Amended in [#758](https://github.com/theurian/theurian/issues/758): an NFD anchor
+  > was refused on macOS.** There `git init` and `git clone` write `core.precomposeunicode=true`,
   > and git rewrote an NFD pathspec to NFC, so an anchor byte-identical to the NFD tree
   > path was refused; the command now opens `git -c core.precomposeunicode=false`. The byte-unequal
   > class deferred above stays fail-closed on purpose: normalising was rejected as fail-open,
