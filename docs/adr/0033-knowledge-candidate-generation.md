@@ -1518,8 +1518,7 @@ Still owed, with the milestone that will satisfy it:
   > planter writes the anchor in the same thread file, so binding bars only a one-field hand
   > edit; a repository name reused after a rename or deletion carries an identical URL,
   > which binding would not catch; and `ReadEvidenceRecord` returns only the payload, so
-  > binding needs new plumbing, with an unmeasured risk of refusing honest threads whose
-  > anchors predate the current ingest form. So this stays
+  > binding needs new plumbing. So this stays
   > T-24's accepted residual, and no test asserts it either way.
 - **Slice B5 — the candidate lands as an ordinary proposal, through the mapping
   decision 1 states.** Owed: a test that the proposal a generated candidate
