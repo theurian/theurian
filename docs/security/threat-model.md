@@ -3831,7 +3831,8 @@ become a candidate. It is the risk `docs/roadmap.md`'s Phase B row named as owed
 here. **No new control is added for it**; what follows is where the existing
 ones stand on this path.
 
-*Nothing a thread says is rendered into the proposal.*
+*No comment body is rendered into the proposal; the thread's identifiers reach
+only `evidence.json`'s `candidate` block.*
 `application/candidate_generation.py`'s `CandidateGenerator.generate` builds the
 `KnowledgeCandidate` from the **submission**: `title`, `body`, `kind`,
 `category` and the source anchors are the caller's, and `generator_model` is the
