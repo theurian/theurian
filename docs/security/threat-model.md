@@ -2127,7 +2127,7 @@ other's blind spots.
   **The sixth is the only one handed an argument a document supplies.** Since
   ADR-0033's candidate generation landed, `infrastructure/git/fix_commit_check.py`
   runs one command,
-  `git --literal-pathspecs log --no-walk --first-parent -m --name-only --format= -z --root --end-of-options <sha>^{commit} -- <file_path>`,
+  `git -c core.precomposeunicode=false --literal-pathspecs log --no-walk --first-parent -m --name-only --format= -z --root --end-of-options <sha>^{commit} -- <file_path>`,
   to answer whether a caller's `fixCommit` is a commit here that touched the
   stored thread's `file_path`. Its two inputs are untrusted differently: the sha
   is caller wire input, and the path is author-controlled stored data a clone can
@@ -2170,10 +2170,7 @@ other's blind spots.
   the machine format; `--literal-pathspecs` stays as defence in depth over the
   magic half. The **encoding** face is in scope and fail-closed: a non-UTF-8 disk
   path cannot equal a UTF-8-encoded anchor, so it is refused `TOUCHES_NOTHING_HERE`.
-  Pathname **normalization** — a byte-unequal NFC-versus-NFD anchor — is a
-  *separate* equality class, filed
-  [#758](https://github.com/theurian/theurian/issues/758), and is deliberately out
-  of this closure. The remaining tokens are graded rather than listed: `--root`
+  The remaining tokens are graded rather than listed: `--root`
   lets a repository's first commit be a fix; `--first-parent -m` make a merge
   commit diffable against the branch it landed on, so a fix that landed as a
   conflict resolution is not refused as touching nothing; `--end-of-options` guards
@@ -2190,6 +2187,18 @@ other's blind spots.
   filename is CJK, quoted, backslashed, newline-bearing, tab-bearing or a single
   space — each verifying under `-z` where the human rendering refused — and a
   non-UTF-8 disk path fail-closed against a UTF-8 anchor.
+
+  **Normalization ([#758](https://github.com/theurian/theurian/issues/758)) is
+  byte-equality, not equivalence.** macOS `git init` and `git clone` write
+  `core.precomposeunicode=true`, under which git rewrote an NFD pathspec to NFC, so
+  an anchor byte-identical to an NFD tree path was refused; the `-c` override fixes
+  that. NFC against NFD, either way round, stays `TOUCHES_NOTHING_HERE`, a
+  deliberate fail-closed residual: every normalising alternative was rejected as
+  fail-open, as it verifies a commit touching only the anchor's twin (Ohm U+2126
+  for an Omega U+03A9 anchor). Measured on macOS only, at `true`, `false` and unset;
+  the tests run at `true` alone (the override makes the setting moot), the
+  fixed-face one skipping where git does not rewrite the pathspec. Re-check:
+  `uv run pytest packages/theurian-core/tests/integration/test_fix_commit_check_adapter.py -k "normalization or nfd"`.
 
   This entry said "two sites" and named the first two until 2026-09-02,
   "three" until ADR-0030's adapter landed, "four" until ADR-0034's committed

@@ -580,7 +580,7 @@ def test_a_record_of_the_fix_commit_site_names_every_token_the_adapter_spawns(
 
     assert len(vector) >= 5, (
         f"the adapter's spawn vector read as {list(vector)}; the shipped `log … -z` form "
-        f"carries eleven constant tokens, so a set this small means the derivation stopped "
+        f"carries thirteen constant tokens, so a set this small means the derivation stopped "
         f"reading the call rather than that the vector shrank"
     )
     missing = [token for token in vector if token not in named]
