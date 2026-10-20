@@ -773,8 +773,8 @@ def _pull_request_of(entry: EvidenceEntry) -> int | None:
                 parsed = parse_event_key(payload.event_key)
             except InvariantViolationError as exc:
                 raise ReviewSearchBuildError(
-                    f"`{entry.relative_path}` {exc}, the widest value the store's column "
-                    f"holds. The whole run is measured, leading zeros included, and "
+                    f"`{entry.relative_path}`: {exc} That is the widest value the store's "
+                    f"column holds. The whole run is measured, leading zeros included, and "
                     f"refused unconverted: the width is what this refuses, not the "
                     f"value it spells.",
                     remedy=_record_cure(entry.relative_path),

@@ -94,6 +94,11 @@ class ReviewEvent:
             raise InvariantViolationError(
                 f"Pull request number must be positive, got {self.number}"
             )
+        if not self.provider or ":" in self.provider or not self.repository:
+            raise InvariantViolationError(
+                "ReviewEvent provider must be non-empty without ':' and repository "
+                f"non-empty, got provider {self.provider!r}, repository {self.repository!r}"
+            )
         if self.merged and self.merge_commit is None:
             raise InvariantViolationError(
                 f"Merged pull request {self.repository}#{self.number} must record a merge commit"
@@ -128,10 +133,12 @@ def parse_event_key(event_key: str) -> tuple[str, str, int] | None:
     provider, repository, digits = found.groups()
     if len(digits) > len(str(MAX_STORED_PULL_REQUEST)):
         raise InvariantViolationError(
-            f"names a pull request as a run of {len(digits)} digits, "
+            f"The event key names a pull request as a run of {len(digits)} digits, "
             f"wider than the {len(str(MAX_STORED_PULL_REQUEST))} digits of "
-            f"{MAX_STORED_PULL_REQUEST}"
+            f"{MAX_STORED_PULL_REQUEST}."
         )
+    if digits[0] == "0" and len(digits) > 1:
+        return None
     return provider, repository, int(digits)
 
 
