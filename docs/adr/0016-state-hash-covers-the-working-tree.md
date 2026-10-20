@@ -145,6 +145,24 @@ e2e suite ([#65](https://github.com/theurian/theurian/issues/65)) — including
 the one that pins this ADR's own regression,
 `test_editing_an_applied_migration_is_fatal`.
 
+> **Amended in [#634](https://github.com/theurian/theurian/issues/634) (PR
+> [#979](https://github.com/theurian/theurian/pull/979), 2026-10-20): the
+> paragraph above no longer holds, and it was narrower than it read.** When it
+> was written, `core.yml`'s `test` and `offline` jobs selected `-m "not e2e"`,
+> so no pull request ran the e2e suite; `release-core.yml` runs the whole suite
+> (`uv run pytest -q`, no marker filter), but only on a `core-v*` tag, after the
+> change has landed. `core.yml` now has an `e2e` job, matrixed over
+> `os: [ubuntu-latest, macos-latest]`, that runs
+> `uv run pytest tests/e2e -m e2e -v -rs` on every push to `main` and pull
+> request the workflow's paths filter admits, and fails when the summary line
+> reports a skip or no pass. All three e2e tests above are in that job's
+> population — `uv run pytest tests/e2e -m e2e --collect-only -q` lists
+> `tests/e2e/test_migration_workflow.py::test_the_state_hash_does_not_depend_on_the_project_path`,
+> `tests/e2e/test_migration_workflow.py::test_editing_an_applied_migration_is_fatal`
+> and `tests/e2e/test_migration_workflow.py::test_a_new_revision_forks_a_new_state`
+> — so this ADR's own regression pin now gates a pull request. The paragraph is
+> left standing as the state of the evidence when it was written.
+
 Still owed, with the milestone that will satisfy it:
 
 - **Nothing asserts that reverting an edit restores the hash.** This section
