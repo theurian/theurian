@@ -27,7 +27,10 @@ else, so it is asserted outright -- structurally, over the shipped source, in tw
 prongs each blind to what the other catches.
 
 **How the scanned population is assembled matters as much as the scan itself.**
-:data:`SERVING_MODULES` is not one hand-written list a human must remember to
+The scans read every shipped module bar :data:`WRITE_PATH_MODULES`
+(``_non_write_path_modules``); :data:`SERVING_MODULES` is the classification of
+which of those serve, used by the completeness test and by the exemption-overlap
+guard. It is not one hand-written list a human must remember to
 extend every time a file is added. ``mcp/``, ``daemon/`` and ``review/`` are
 walked wholesale (every ``.py`` file under any of the three, at any depth, via
 :func:`_walk_python_modules`) -- none of the three carries the findings write
@@ -87,25 +90,26 @@ exception, walked rather than acknowledged.
 module bar :data:`WRITE_PATH_MODULES` is parsed and its imports are scanned
 (``_non_write_path_modules``; :data:`SERVING_MODULES` is a subset of it). A module
 outside :data:`SANCTIONED_STORE_READERS` and :data:`NON_SERVING_STORE_REACH` may
-reach neither the
-store port, nor the store adapter, nor the standalone builder; a module inside it
-may reach exactly the names recorded there and no others -- so widening the
-sanctioned reader's own reach (adding the *builder* to the tool surface, say) is
+reach neither the store port, nor the store adapter, nor the standalone builder.
+A sanctioned reader may reach exactly the names recorded there and no others --
+so widening the sanctioned reader's own reach (adding the *builder* to the tool surface, say) is
 as visible as adding a second reader. This catches a store reference added
-anywhere under the walked directories or the hand-picked remainder, including on
-a path no test drives -- but it reads *imports*, so a serving module that reached
+in any shipped module bar the write path, including on a path no test drives --
+but it reads *imports*, so a module that reached
 the store's SQLite *table* directly, importing nothing, would slip past it. Prong
 (b) is the half that sees that.
 
-**Prong (b) -- the store's tables never appear in a serving module, and exactly
+**Prong (b) -- the store's tables appear in no serving module, and exactly
 one registered tool serves a finding [grep + AST].** The distinctive table and
 artifact tokens (``findings_metadata``, ``rejected_trailers``, ``theurian-findings``,
 the ``findings`` table SQL, matched loosely enough to catch a quoted or
 schema-qualified table name) are grepped out of every module bar the write path -- the arm
 that catches a raw ``SELECT ... FROM findings`` an import scan cannot see. **That
-arm is unchanged by slice-3 and still admits nothing**: the sanctioned reader
-goes through the port, so no serving module names a table, and a hand-written
-query in the read path is as much a defect as it ever was. And the MCP tool
+arm admits nothing from a serving module**: the sanctioned reader goes through the
+port, so no serving module names a table, and a hand-written query in the read
+path is as much a defect as it ever was. A non-serving module may name exactly the
+labels :data:`NON_SERVING_STORE_REACH` records for it (the store's own definition
+and the ``theurian-findings`` prefix in ``project_service.py``), and no others. And the MCP tool
 registry in ``mcp/tools.py`` is parsed for every tool it registers -- through the
 ``_tool`` seam or straight onto ``server.tool``, both shapes -- pinned to the
 known set, and asserted to expose exactly one tool whose name serves a finding.
@@ -151,7 +155,7 @@ half. Following the hop is still owed.
 
 **A static sibling of that same one-hop gap.** Prong (a) reads each
 scanned module's *own* import statements; it does not follow an
-import transitively. A brand-new module under an acknowledged, unscanned area
+import transitively. A brand-new module under an acknowledged area
 (``infrastructure/some_new_adapter.py``, say) that itself imports the store, then
 imported by a serving module by its own innocuous name
 (``from theurian.infrastructure.some_new_adapter import get_finding_count``),
@@ -784,7 +788,7 @@ def test_the_store_import_scan_sees_each_reaching_form_and_no_other(
     """Guards the guard below, which is worthless the moment its scanner stops seeing.
 
     A structural pin fails in a way nobody notices: if ``_store_references`` stops
-    resolving imports, the serving-module scan keeps passing forever, and the
+    resolving imports, the store scan keeps passing forever, and the
     silence looks exactly like a serving layer that never reached the store. So
     each form the scan claims to catch is asserted against a snippet here, and each
     form it claims to let past is asserted to produce nothing.
@@ -799,7 +803,7 @@ def test_the_store_import_scan_sees_each_reaching_form_and_no_other(
         f"the store scan read `{source}` as {sorted(found)}, expected "
         f"{sorted(expected)}. The scanner is broken, not the product: fix "
         f"`_store_references` before trusting a green result from "
-        f"`test_no_serving_module_imports_the_finding_store`, which would keep "
+        f"`test_only_sanctioned_and_recorded_modules_import_the_finding_store`, which would keep "
         f"passing with a scanner that resolves nothing."
     )
 
@@ -824,23 +828,25 @@ def _table_kinds(source: str) -> set[str]:
 
 
 def _serving_source(module: str) -> str:
-    """The text of a serving module, or a hard failure if the path drifted.
+    """The text of a shipped module, or a hard failure if the path drifted.
 
-    A moved or renamed serving module would make the scan read an empty string and
+    A moved or renamed module would make the scan read an empty string and
     pass vacuously -- the exact failure the parser-registry drift guard exists to
     stop -- so a missing path is a loud error, not a skip.
     """
     path = SRC / module
     assert path.is_file(), (
-        f"the serving module {module} is not at {path}. SERVING_MODULES has "
-        f"drifted from the shipped package; a scan over a path that does not exist "
-        f"reads nothing and would pass this boundary vacuously. Fix the list."
+        f"the module {module} is not at {path}. The list it came from "
+        f"(SERVING_MODULES, SANCTIONED_STORE_READERS, WRITE_PATH_MODULES or "
+        f"NON_SERVING_STORE_REACH) has drifted from the shipped package; a scan over "
+        f"a path that does not exist reads nothing and would pass this boundary "
+        f"vacuously. Fix the list."
     )
     return path.read_text(encoding="utf-8")
 
 
-def test_only_the_sanctioned_serving_modules_import_the_finding_store() -> None:
-    """Prong (a): one reader, named, and every other serving module reaches nothing.
+def test_only_sanctioned_and_recorded_modules_import_the_finding_store() -> None:
+    """Prong (a): one serving reader, named, and no unrecorded module reaches the store.
 
     AC-7's import half, inverted for slice-3 rather than relaxed. A finding now
     reaches a caller, so "nothing touches the store" is no longer the property;
@@ -868,7 +874,8 @@ def test_only_the_sanctioned_serving_modules_import_the_finding_store() -> None:
     }
 
     assert not unsanctioned, (
-        "a serving-layer module that is not a sanctioned reader imports the "
+        "a module that is neither a sanctioned reader nor recorded in "
+        "NON_SERVING_STORE_REACH imports (or reaches beyond its record in) the "
         "review-finding store:\n"
         + "\n".join(f"  {module} :: {names}" for module, names in sorted(unsanctioned.items()))
         + "\n\nExactly one serving path may reach the store (ADR-0029 phase-2 "
@@ -878,7 +885,9 @@ def test_only_the_sanctioned_serving_modules_import_the_finding_store() -> None:
         "rejected-trailer exclusion, the bound -- that no review has seen.\n\n"
         "If this is a new serving surface, it lands with its own disclosure round "
         "and its own entry in SANCTIONED_STORE_READERS, not by being added here "
-        "quietly. The write/maintenance path (`findings build`) is exempt and lives "
+        "quietly. A non-serving module with a reason to name the store is recorded, "
+        "with that reason, in NON_SERVING_STORE_REACH. The write/maintenance path "
+        "(`findings build`) is exempt and lives "
         "in cli/findings_commands.py and application/findings_builder.py, which are "
         "deliberately outside SERVING_MODULES."
     )
@@ -903,7 +912,7 @@ def test_only_the_sanctioned_serving_modules_import_the_finding_store() -> None:
 def test_each_sanctioned_reader_really_reaches_the_store() -> None:
     """The positive half, without which prong (a) certifies a broken scanner.
 
-    ``test_only_the_sanctioned_serving_modules_import_the_finding_store`` answers
+    ``test_only_sanctioned_and_recorded_modules_import_the_finding_store`` answers
     "does an unsanctioned module reach the store?" and reports *no* as clean --
     which is also what a scanner that resolved nothing would report, forever. The
     write-path test below has always been this file's answer to that, and this is
@@ -932,6 +941,28 @@ def test_each_sanctioned_reader_really_reaches_the_store() -> None:
     )
 
 
+def test_the_scanned_population_is_every_shipped_module_bar_the_write_path() -> None:
+    """Prongs (a) and (b) range over the whole package, not over the serving set.
+
+    Reverting the population to ``sorted(SERVING_MODULES)`` left every other test
+    green and the #631 plant unseen.
+    """
+    scanned = _non_write_path_modules()
+
+    assert scanned == sorted(_all_shipped_modules(SRC) - set(WRITE_PATH_MODULES))
+    assert set(NON_SERVING_STORE_REACH) <= set(scanned)
+
+
+def test_no_serving_module_is_exempted_as_a_non_serving_one() -> None:
+    """A serving module recorded in NON_SERVING_STORE_REACH would escape prong (a).
+
+    The exemption table is for modules that do not serve; a serving module has
+    SANCTIONED_STORE_READERS, which is exact and requires the reach.
+    """
+    assert not set(NON_SERVING_STORE_REACH) & set(SERVING_MODULES)
+    assert set(SANCTIONED_STORE_READERS) <= set(SERVING_MODULES)
+
+
 def test_each_recorded_non_serving_reach_is_still_a_reach() -> None:
     """A recorded exemption that no longer matches is a stale permission.
 
@@ -958,7 +989,7 @@ def test_the_write_path_modules_do_reach_the_store() -> None:
 
     The mirror of the prong-(a) assertion, and the reason it is not vacuous. If
     ``_store_references`` silently resolved nothing against a real repository file,
-    the serving-module scan would pass no matter what the source did. These two
+    the store scan would pass no matter what the source did. These two
     files are the composition root of the wholesale rebuild and *must* name the
     store; asserting they do is what demonstrates the scanner sees a real import,
     not only the snippets in :data:`_SCANNER_CASES`.
@@ -996,10 +1027,11 @@ def test_the_directory_walk_picks_up_a_new_file_under_a_walked_directory(
     is the guard the guard needs -- the same reason :data:`_SCANNER_CASES` exists
     for :func:`_store_references` -- because a walk that silently stopped
     descending, or silently stopped seeing a freshly written file, would make
-    :data:`SERVING_MODULES` shrink with no test noticing until a real evasion
-    landed. Built against a synthetic tree rather than :data:`SRC`, so a file can
-    actually be added and observed, including one nested a directory deep --
-    proving the walk is recursive, not only one level, in case any walked
+    :data:`SERVING_MODULES` shrink, and the exemption-overlap guard and the
+    sanctioned-reader check would then range over a smaller set. Built against a
+    synthetic tree rather than :data:`SRC`, so a file can actually be added and
+    observed, including one nested a directory deep -- proving the walk is
+    recursive, not only one level, in case any walked
     directory ever grows a subpackage.
     """
     (tmp_path / "mcp").mkdir()
@@ -1033,7 +1065,8 @@ def test_the_walked_serving_directories_exist_and_are_non_empty() -> None:
     ``rglob`` on a directory that does not exist returns an empty iterator with
     no exception. A renamed ``daemon/`` (or ``mcp/``, or ``review/``) would
     therefore make :data:`SERVING_MODULES` quietly lose every file that
-    directory used to contribute, with nothing failing at import time -- the
+    directory used to contribute, narrowing what the overlap guard checks, with
+    nothing failing at import time -- the
     same silent-shrink failure
     :func:`test_the_directory_walk_picks_up_a_new_file_under_a_walked_directory`
     guards for a synthetic tree, but that test never touches the real package,
@@ -1053,7 +1086,7 @@ def test_the_walked_serving_directories_exist_and_are_non_empty() -> None:
         assert _walk_python_modules(SRC, directory), (
             f"walking {directory}/ found no .py file -- an empty walk is indistinguishable "
             f"from a renamed or emptied directory and would leave SERVING_MODULES silently "
-            f"missing this directory's contents."
+            f"missing this directory's contents, so the guards over it range over less."
         )
 
 
@@ -1196,14 +1229,14 @@ def _store_table_hits(source: str) -> list[str]:
     return hits
 
 
-def test_no_serving_module_reaches_the_store_tables_by_sql_or_name() -> None:
-    """Prong (b): a serving path could reach the TABLE directly, importing nothing.
+def test_no_unrecorded_module_reaches_the_store_tables_by_sql_or_name() -> None:
+    """Prong (b): a module could reach the TABLE directly, importing nothing.
 
-    Prong (a) reads imports, so a serving module that opened the store's SQLite
+    Prong (a) reads imports, so a module that opened the store's SQLite
     file and issued ``SELECT ... FROM findings`` -- naming no store class -- would
     pass it. This is the arm that catches that: the store's table names and its
     file-name prefix have no innocent use in a serving module, so any occurrence is
-    a serving path reaching into the findings artifact by hand.
+    a module reaching into the findings artifact by hand.
     """
     offenders = {
         module: sorted(hits)
@@ -1215,7 +1248,8 @@ def test_no_serving_module_reaches_the_store_tables_by_sql_or_name() -> None:
     }
 
     assert not offenders, (
-        "a serving-layer module names the review-finding store's tables:\n"
+        "a module names the review-finding store's tables beyond what "
+        "NON_SERVING_STORE_REACH records for it:\n"
         + "\n".join(f"  {module} :: {hits}" for module, hits in sorted(offenders.items()))
         + "\n\nThe store's tables (findings, rejected_trailers, findings_metadata) "
         "carry parsed findings that this slice ships no reviewed way to serve. A "
@@ -1229,10 +1263,10 @@ def test_no_serving_module_reaches_the_store_tables_by_sql_or_name() -> None:
 def test_the_table_grep_detects_the_store_tables_in_the_adapter() -> None:
     """Guards prong (b): the grep is proven to fire against the real store files.
 
-    A grep that matched nothing would pass the serving-module scan for a serving
+    A grep that matched nothing would pass the store scan for a
     module that *did* reach the table. So the store's own adapter and schema are
-    asserted to contain exactly the tokens the serving scan forbids -- if this goes
-    red, the grep has stopped seeing the tables and the serving scan above is
+    asserted to contain exactly the tokens the scan forbids -- if this goes
+    red, the grep has stopped seeing the tables and the table scan above is
     vacuous, whatever it reports.
     """
     adapter = (SRC / "infrastructure/sqlite/findings_store.py").read_text(encoding="utf-8")
@@ -1241,8 +1275,8 @@ def test_the_table_grep_detects_the_store_tables_in_the_adapter() -> None:
     adapter_hits = set(_store_table_hits(adapter))
     assert {"findings_metadata", "rejected_trailers"} <= adapter_hits, (
         "the table grep no longer finds the store's tables in its own adapter; "
-        "prong (b)'s serving scan is now vacuous. Fix STORE_ARTIFACT_TOKENS / the "
-        "SQL pattern before trusting a green serving scan."
+        "prong (b)'s table scan is now vacuous. Fix STORE_ARTIFACT_TOKENS / the "
+        "SQL pattern before trusting a green table scan."
     )
     assert _FINDINGS_TABLE_SQL.search(adapter), "the findings-table SQL pattern no longer matches"
     assert "theurian-findings" in adapter, "the store file-name prefix token is no longer detected"
@@ -1302,7 +1336,7 @@ def test_the_sql_table_pattern_does_not_false_positive_on_prose_or_other_tables(
 
     Widening the pattern to catch quoted and qualified forms must not also start
     matching prose about review findings, or a different table whose name merely
-    starts with ``findings`` -- either would make the serving scan noisy, forcing
+    starts with ``findings`` -- either would make the scan noisy, forcing
     a reviewer to explain away a false positive instead of trusting the scan.
     """
     assert not _FINDINGS_TABLE_SQL.search(snippet), (
