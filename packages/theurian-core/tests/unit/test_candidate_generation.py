@@ -33,10 +33,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
+import hypothesis
 import pytest
 from fakes.clock import FrozenClock
 from fakes.ids import SeededIdGenerator
-from hypothesis import example, given
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
 from theurian.application.candidate_generation import (
@@ -738,7 +739,11 @@ def test_parse_event_key_inverts_external_key(provider: str, repository: str, nu
 @example("github:o/r#431\n")
 @example("github:a:b#5")
 @example("github:o/r#0")
-@given(key=st.text())
+@example("github:o/r#05")
+@example(":o/r#5")
+@example("github:#5")
+@settings(deadline=None, derandomize=True, database=None, max_examples=400)
+@given(key=st.one_of(st.text(), st.from_regex(r"[^:]*:.*#[0-9]+", fullmatch=True)))
 def test_parse_event_key_reads_only_what_external_key_would_render(key: str) -> None:
     """The converse of the inverse test: a key that parses is its parsed event's ``external_key``.
 
@@ -749,7 +754,9 @@ def test_parse_event_key_reads_only_what_external_key_would_render(key: str) -> 
     try:
         parsed = parse_event_key(key)
     except InvariantViolationError:
+        hypothesis.event("refused")
         return
+    hypothesis.event("unparsed" if parsed is None else "parsed")
     if parsed is not None:
         provider, repository, number = parsed
         if number:
