@@ -82,6 +82,21 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `event_key` names another repository or provider, or is not in the recorded
   format** (#748), rather than the number at the end of the key. `#0` on the
   record's own repository, or a run wider than 19 digits, still refuses the build.
+- **A body over `MAX_SOURCE_FILE_BYTES` (8 MiB) in UTF-8 is refused at draft**
+  ([#691](https://github.com/theurian/theurian/issues/691)), rather than landing
+  a proposal `theurian propose accept` refuses. **Caller-visible:**
+  `knowledge.proposeChange` and `review.generateKnowledgeCandidate` return
+  `isError` with "The body is N bytes in UTF-8, larger than 8388608 bytes, so
+  accept would refuse it." where they returned a proposal, and write nothing.
+  `theurian propose --body-file` and `theurian okf import` already refused such
+  a file at read. The published `body` `maxLength` does not change.
+- **The missing-migration remedies of `theurian propose accept` no longer send
+  every proposal to `theurian propose`**
+  ([#930](https://github.com/theurian/theurian/issues/930)), which drafts
+  content only: "draft the change again: theurian propose for a content change,
+  knowledge.generateMigrationDraft for the other operations it drafts, by hand
+  for anything else". An unfinished content draft is still sent to
+  `theurian propose`. The messages and exit codes do not change.
 
 ## [0.5.3] - 2026-10-08
 
