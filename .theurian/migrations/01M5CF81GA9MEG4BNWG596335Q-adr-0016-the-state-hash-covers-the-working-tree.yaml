@@ -1,0 +1,38 @@
+apiVersion: theurian.dev/v1
+id: 01M5CF81GA9MEG4BNWG596335Q
+createdAt: '2026-10-20T10:55:49+00:00'
+author: Takehide Uchida
+description: 'Re-seed the served ADR-0016 twin from its current source: the corpus pins docs/adr/0016-state-hash-covers-the-working-tree.md
+  as it stood at 266e6b6, and 502cd141 (#979, #634) moved the tracked document since.'
+operations:
+- op: createItem
+  itemId: architecture.state-hash-covers-the-working-tree
+  kind: architecture
+  namespace: architecture
+  owner: theurian-maintainers
+- op: upsertRevision
+  itemId: architecture.state-hash-covers-the-working-tree
+  revisionId: 01M5CF81GA9MEG4BNWG596335R
+  expectedRevision: 01M1EVFA8Y06D6SWZZT6Y08NH1
+  contentFile: ../knowledge/architecture/state-hash-covers-the-working-tree.01M5CF81GA9MEG4BNWG596335R.md
+  contentSha256: 0d724865a51f97bd0eaee4b788e0d3e452c5d77161762c6632876a5fab95e4f6
+  metadata:
+    title: 'ADR-0016: The state hash covers the working tree, not just committed migrations'
+    contentType: text/markdown
+    kind: architecture
+    namespace: architecture
+    status: approved
+    owner: theurian-maintainers
+    trustLevel: reviewed
+    sensitivity: public
+    labels:
+    - adr
+    - adr-0016
+    scope:
+      paths:
+      - packages/theurian-core/**
+    sourceAnchors:
+    - provider: git
+      sourceUri: https://github.com/theurian/theurian.git
+      commitSha: 502cd141dced6ff8ec2075db8864b349df702fb6
+      filePath: docs/adr/0016-state-hash-covers-the-working-tree.md
