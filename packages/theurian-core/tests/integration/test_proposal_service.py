@@ -671,6 +671,43 @@ def test_a_body_over_the_byte_cap_is_refused_before_anything_is_written(
         assert not parent.exists() or not [p for p in parent.iterdir() if p.is_dir()], parent
 
 
+@pytest.mark.parametrize(
+    "expected", [None, RevisionId("01K9D2G8YT6PXN0VKS4WBZ7RQM")], ids=["new", "update"]
+)
+def test_a_body_over_the_byte_cap_is_refused_before_either_lookup_is_called(
+    paths: ProjectPaths, expected: RevisionId | None
+) -> None:
+    """The lookups may replay the landed set into a scratch directory outside the
+    project root, which no tree comparison sees; the byte check must precede them."""
+    called: list[str] = []
+
+    def current_item(item_id: ItemId) -> CurrentItem | None:
+        called.append("current_item")
+        return None
+
+    def current_revision(item_id: ItemId) -> RevisionId | None:
+        called.append("current_revision")
+        return None
+
+    guarded = ProposalService(
+        paths=paths,
+        project_id=ProjectId("demo"),
+        clock=FrozenClock(),
+        ids=SeededIdGenerator(),
+        validate=_validator,
+        current_item=current_item,
+        current_revision=current_revision,
+        landed_migration=lambda _: None,
+        landed_migrations=lambda: (),
+        rehearse=lambda candidate: rehearse_migration_set(candidate, clock=FrozenClock()),
+    )
+
+    with pytest.raises(ProposalError, match="larger than"):
+        guarded.draft(_request(body=_OVER_THE_CAP, expected_revision=expected), local=False)
+
+    assert called == []
+
+
 def test_a_body_of_exactly_the_byte_cap_is_drafted_and_accepted(
     service: ProposalService,
 ) -> None:
