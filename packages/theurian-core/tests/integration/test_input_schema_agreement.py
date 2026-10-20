@@ -80,6 +80,7 @@ from theurian.application.project_service import ProjectRegistry
 from theurian.daemon.runner import build_server
 
 from mcp_server_probe import loaded_input_schemas, registered_tool_names  # isort: skip
+from mcp_wire_session import headers, open_client, payload  # isort: skip
 
 pytestmark = pytest.mark.integration
 
@@ -472,3 +473,30 @@ def test_every_published_schema_composes_exactly_one_level(
         where = (tool_name, referent["$id"])
         assert "allOf" not in referent, where
         assert "$ref" not in json.dumps(referent.get("properties", {})), where
+
+
+def test_tools_list_serves_each_tools_sdk_derived_parameters(
+    server: MCPServer, tmp_path: Path
+) -> None:
+    """The relation above compares ``Tool.parameters``; a client reads ``tools/list``.
+    ADR-0013 ("what the key reads") says the key reads the signature-built
+    ``inputSchema`` that ``tools/list`` serves; ``MCPServer.list_tools`` is what
+    hands it ``Tool.parameters``, and nothing else compared the two.
+
+    Cannot see a difference that JSON serialization erases.
+    """
+    derived = {tool.name: tool.parameters for tool in server._tool_manager.list_tools()}
+
+    with open_client(server, tmp_path) as (client, session):
+        listed = payload(
+            client.post(
+                "/mcp",
+                json={"jsonrpc": "2.0", "id": 3, "method": "tools/list"},
+                headers=headers(session),
+            )
+        )
+
+    assert derived, "no tool is registered, so nothing is compared"
+    assert {t["name"]: t["inputSchema"] for t in listed["result"]["tools"]} == json.loads(
+        json.dumps(derived)
+    )
