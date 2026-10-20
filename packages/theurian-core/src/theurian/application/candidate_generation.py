@@ -251,11 +251,7 @@ class CandidateGenerator:
             raise _unresolved()
         record = self._record(submission, str(parsed[2]))
         # The thread carries no provider: this equality is what binds it.
-        if (
-            not isinstance(record, ReviewEvent)
-            or record.external_key != thread.event_key
-            or record.repository != submission.repository
-        ):
+        if not isinstance(record, ReviewEvent) or record.external_key != thread.event_key:
             raise _unresolved()
         return record
 
