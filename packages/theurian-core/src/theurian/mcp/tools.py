@@ -3383,9 +3383,11 @@ def register(  # noqa: PLR0915 -- one registration per tool; splitting hides the
         unguarded update. It reaches no approved-state write (ADR-0013): approval
         is a human merging a pull request.
 
-        The body is **inline text** (ADR-0032 decision 2). There is no path
-        parameter, by construction, so this tool is not a read primitive over the
-        operator's filesystem.
+        The body is **inline text** (ADR-0032 decision 2): there is no body-path
+        parameter, which would be a read primitive over the operator's
+        filesystem. The path-shaped parameters -- ``scopePaths`` and
+        ``sourceAnchors[]``'s ``sourceUri``, ``filePath`` and ``repository`` --
+        are recorded as text and not read as paths.
         """
         facade, paths = _draft_only_proposals(projectId)
         anchors = _wire_source_anchors(sourceAnchors)

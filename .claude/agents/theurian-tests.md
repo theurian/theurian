@@ -24,11 +24,12 @@ holding uncommitted work restore a perturbed file by COPY (`cp` to scratch, `cp`
 back), never with `git checkout --`, which discards uncommitted edits
 (CLAUDE.md's dev-machine section; PR #596's fix arc hit it live).
 **`tools/mutate.py`'s verdict path IS a full-suite run**, control included —
-never start it inside an assignment: full-suite and batch runs are serialized
-across lanes by the orchestrator. The in-assignment mode is `--prepare-tree`
-plus a scoped `pytest` selection in your own clone (with
-`git remote set-branches --add origin main && git fetch origin main` first, or
-the control is red). PR #596's arc measured the cost of this twice.
+never start it inside an assignment (PR #596 paid this twice): the orchestrator
+serializes full-suite and batch runs across lanes. Run `--prepare-tree` plus a
+scoped `pytest` selection in your own clone. In a `--single-branch` or `--depth`
+clone the control is red unless you first run
+`git remote set-branches --add origin main && git fetch origin main`; never run
+that in a linked worktree: it shares `.git/config`, already sees `origin/main`.
 
 **A refused step is reported and the work stops there** — never worked around,
 never re-attempted by another route. Retry a transient classifier or
@@ -47,7 +48,7 @@ fixture whose setup never reaches the branch under test.
 
 ## Structure
 
-- `tests/unit/` — pure functions, no I/O. Fast enough to be free.
+- `tests/unit/` — pure functions, no I/O.
 - `tests/integration/` — real SQLite files, real temporary directories, real
   subprocesses. Fakes only for things that would touch the developer's own
   machine (launchd, Claude Code's config) or the network.
@@ -65,12 +66,11 @@ Commit-scope-lowercase-letters-only family; it cost one slice two reworks.
 The name is a sentence about behaviour, not about a method:
 `test_a_draft_is_withheld_by_default`, not `test_search_2`. The docstring says
 **why the behaviour matters** — the failure it prevents, the requirement it
-discharges (FR-*, SEC-*, T-*, ADR-*). A reader six months from now needs to know
-whether an assertion may be relaxed. If it names no failure, requirement,
-incident, or invariant that makes the assertion worth keeping, omit it: no
-docstring beats a paraphrase of the test name. Arrange / Act / Assert with blank
-lines between. One behaviour per test. Prefer a real object to a mock; mocks
-confirm that code calls what you told it to call.
+discharges (FR-*, SEC-*, T-*, ADR-*). A later reader must know whether an
+assertion may be relaxed. If it names no failure, requirement, incident, or
+invariant that justifies the assertion, omit it: no docstring beats a paraphrase
+of the test name. Arrange / Act / Assert, blank-line separated. One behaviour
+per test. Prefer a real object to a mock; mocks confirm only scripted calls.
 
 ## Re-tense prose written at RED time
 
