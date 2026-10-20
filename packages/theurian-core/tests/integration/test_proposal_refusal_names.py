@@ -357,6 +357,10 @@ _UNGATED_BY_CONSTRUCTION: Final[Mapping[tuple[str, str], str]] = {
     ("_list_strings", "index"): "an integer position",
     ("_metadata_strings", "index"): "an integer position",
     ("_refuse_past_the_operation_cap", "count"): "an integer the caller is deliberately told",
+    # `draft`'s byte-cap refusal: `len(...)` of `request.body.encode("utf-8")` is an
+    # `int`, the body's length in bytes, so no character of the body is rendered.
+    ("draft", "len(body_bytes)"): "an int: the UTF-8 byte length of the body, no body text",
+    ("draft", "MAX_SOURCE_FILE_BYTES"): "an imported integer constant, theurian.security.paths",
     # -- the gate's own internals --------------------------------------------
     ("_one_name", "head"): "what _bounded returned, inside the gate itself",
     ("_one_name", "_TRUNCATED"): "this module's own constant",

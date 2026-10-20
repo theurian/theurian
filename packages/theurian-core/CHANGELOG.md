@@ -41,6 +41,18 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `dependsOn: [<id>]`, for one `upsertRevision` of the raced item with a landed
   revision of it, and otherwise "the expectedRevision the message reports"; the
   removal cure can end with a redraft sentence.
+- **BREAKING — `knowledge.proposeChange` and `review.generateKnowledgeCandidate`
+  refuse a body over `MAX_SOURCE_FILE_BYTES` (8 MiB) in UTF-8**
+  ([#691](https://github.com/theurian/theurian/issues/691)). Old shape: drafted,
+  and `theurian propose accept` then refused the proposal. New shape: `isError`
+  with "The body is N bytes in UTF-8, larger than 8388608 bytes, so accept would
+  refuse it.", and nothing written. `theurian propose --body-file` and
+  `theurian okf import` already refused such a regular file at read.
+  `--body-file` checks the file's size before reading it, so a FIFO, or a file
+  that grows during the read, gets past that check
+  ([#1006](https://github.com/theurian/theurian/issues/1006)), and
+  `ProposalService.draft` now refuses such a body once it is read. The published
+  `body` `maxLength` does not change.
 - **The `knowledge.proposeChange` and `knowledge.generateMigrationDraft` input
   schemas name their path-shaped members instead of denying they exist**
   ([#963](https://github.com/theurian/theurian/issues/963), ADR-0032 decision
@@ -113,6 +125,13 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `event_key` names another repository or provider, or is not in the recorded
   format** (#748), rather than the number at the end of the key. `#0` on the
   record's own repository, or a run wider than 19 digits, still refuses the build.
+- **The missing-migration remedies of `theurian propose accept` no longer send
+  every proposal to `theurian propose`**
+  ([#930](https://github.com/theurian/theurian/issues/930)), which drafts
+  content only: "draft the change again: theurian propose for a content change,
+  knowledge.generateMigrationDraft for the other operations it drafts, by hand
+  for anything else". An unfinished content draft is still sent to
+  `theurian propose`. The messages and exit codes do not change.
 
 ## [0.5.3] - 2026-10-08
 

@@ -125,15 +125,11 @@ UNAUTHENTICATED_PATHS: Final = frozenset({"/health"})
 #: :data:`MAX_REQUEST_BODY_BYTES` -- so it buys a worst-case body room for its
 #: JSON-RPC frame, tool name and sibling arguments without changing what this
 #: daemon will read. Sizing those fields, and the pin that would recompute this
-#: addend from them, is https://github.com/theurian/theurian/issues/691.
+#: addend from them, is https://github.com/theurian/theurian/issues/968.
 #:
-#: **The unit is landed bytes, and the schema side does not yet agree.**
-#: ADR-0032's compliance table records that no code applies
-#: ``MAX_SOURCE_FILE_BYTES`` on this wire path, and the ``maxLength`` slice B4
-#: plans counts *code points* rather than bytes -- so a ``maxLength`` set to the
-#: byte cap would admit up to four times the bytes. The landed-byte framing here
-#: is the intended invariant; which unit the published schema states it in is
-#: #691's to settle.
+#: **The unit is landed bytes.** ``ProposalService.draft`` refuses a body whose
+#: UTF-8 is over ``MAX_SOURCE_FILE_BYTES``, which the ``body`` ``maxLength``, in
+#: code points, over-approximates (#691).
 #:
 #: **What the bound costs, per request -- and it is not a single multiple of the
 #: wire bytes, nor a function of the body alone.** Up to three terms are live

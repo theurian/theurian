@@ -1801,6 +1801,14 @@ them.** Both live in `cli/propose_commands.py`, above the service:
 | The body is capped at `MAX_SOURCE_FILE_BYTES` (8 MiB) | `_read_body`, applied to the body **file**'s `stat().st_size` — there is no file on this path (decision 2), so nothing applies it | ADR-0031's published input schema (slice B2) carries an explicit `maxLength` on `body`, and slice B4 drives it — in a unit that is still open, since `maxLength` counts code points and this cap is in bytes, so the wire bound must either be the sound over-approximation plus a byte check at landing or an explicitly recorded different unit ([#691](https://github.com/theurian/theurian/issues/691)) |
 | `--label authored-in-theurian` beside `--authored-here` is deduplicated | `_merge_labels`, which exists because `revisionMetadata.labels` is `uniqueItems` in the migration schema and a duplicate would fail the generator's own validation | The published input schema sets `uniqueItems` on `labels[]`, so the refusal is a schema refusal with a key path rather than a validation failure over a document the caller cannot see |
 
+> **Amended 2026-10-20 ([#691](https://github.com/theurian/theurian/issues/691)).**
+> The first row's open unit took the first answer: the sound over-approximation
+> plus a byte check at landing. The `maxLength` is `MAX_REQUEST_BODY_BYTES`
+> code points, and since PR #1001 `ProposalService.draft` refuses a body whose
+> UTF-8 is over `MAX_SOURCE_FILE_BYTES` and writes nothing, so the cap now
+> applies on this path, in the service. The other answer, a cap recorded in
+> code points, would still draft bodies that `accept`'s byte-capped read refuses.
+
 Neither is a defect in the CLI; both are the consequence of the service taking
 already-read text. What would be a defect is assuming they travel.
 
@@ -2547,7 +2555,14 @@ the property as it was written and states what actually holds it:
   first — so the published `maxLength` is not the refusal a caller meets
   ([#699](https://github.com/theurian/theurian/issues/699)). The unit it counts
   is [#691](https://github.com/theurian/theurian/issues/691)'s. Both are recorded
-  in *Still owed* rather than read as discharged.
+  in *Still owed* rather than read as discharged. (#691's landed in PR #1001,
+  and moved here from *Still owed*: `ProposalService.draft` refuses a
+  body over `MAX_SOURCE_FILE_BYTES` in UTF-8 —
+  `test_proposal_service.py::test_a_body_over_the_byte_cap_is_refused_before_anything_is_written`
+  for ASCII, astral and `--local` bodies, and over the wire for both tools
+  `test_write_intent_input_paths.py::test_a_body_over_the_byte_cap_is_refused_on_the_wire_and_writes_nothing`
+  — and drafts one of exactly that size that `accept` then lands,
+  `test_proposal_service.py::test_a_body_of_exactly_the_byte_cap_is_drafted_and_accepted`.)
 - **ADR-0013's owed E2E is discharged.** Landed as
   `tests/e2e/test_write_intent_session.py::test_a_session_calling_every_write_intent_tool_leaves_approved_knowledge_unchanged`:
   against a real daemon the session calls each write-intent tool, and approved
@@ -2757,10 +2772,6 @@ since moved to *Landed* above as well: *A value-level wire-contract assertion on
 operations path's accept drive and its no-direct-loader-import property* (#703,
 with #959).)
 
-- **[#691](https://github.com/theurian/theurian/issues/691) — the unit the
-  published `body` `maxLength` counts.** JSON Schema counts code points; the
-  constant it transcribes counts bytes, so the bound admits up to four times the
-  bytes it names. Recorded, not closed.
 - **[#699](https://github.com/theurian/theurian/issues/699) — that `maxLength` is
   unreachable over the shipped transport.** The rendered-character bound and the
   transport cap are both tighter and fire first, so a caller never meets the
