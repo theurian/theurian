@@ -269,9 +269,10 @@ class CandidateGenerator:
 def _unresolved() -> CandidateGenerationError:
     """The shared refusal for a record that does not arrive.
 
-    Three shapes reach it: a key the resolve does not answer for, a stored record
-    whose kind is not the one its key promised, a pull request record that is not
-    the one the thread's ``event_key`` names, and -- once #575 creates the class
+    These shapes reach it: a key the resolve does not answer for, a stored record
+    whose kind is not the one its key promised, a thread whose ``event_key`` names
+    no pull request of the submitted repository, a pull request record that is not
+    the one that key names, and -- once #575 creates the class
     -- a withheld record, which the resolve answers for exactly as it answers for
     an absent one. They share a sentence because the difference between them is
     material the caller was not granted (decision 5). It takes no argument, which
