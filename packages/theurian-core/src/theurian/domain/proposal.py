@@ -47,8 +47,9 @@ _EXTENSIONS: Final = {MARKDOWN.value: ".md", JSON.value: ".json", YAML.value: ".
 class CandidateProvenance:
     """The gate's inputs for a generated candidate, written to ``evidence.json``.
 
-    Inputs, not the result: a candidate that exists met its gate. ``repository``,
-    ``record_key`` and ``event_key`` are contributor-controlled (T-24); they are
+    Inputs, not the result: a candidate that exists met its gate. ``record_key``,
+    ``event_key`` and the thread half of ``candidate_id`` are stored-record strings,
+    contributor-controlled and unbounded (T-24, #968); ``repository`` is the caller's. All are
     escaped by the same ``json.dumps`` and secret scan as every other string in
     that file.
     """

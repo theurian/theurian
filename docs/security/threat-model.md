@@ -3834,8 +3834,9 @@ fields onto the `ProposalRequest`, so an instruction planted in a review comment
 cannot ride into a proposal as content. Since #754 the stored record's
 identifiers also reach `evidence.json`'s `candidate` block, and no other file of
 the proposal: `thread.external_id` as `recordKey` and half of `candidateId`, and
-`thread.event_key` as `eventKey`. Both are identifiers rather than comment
-text, and a clone can deliver either (T-24), so they cross through the same
+`thread.event_key` as `eventKey`. Both are identifiers by role, not by grammar:
+contributor-controlled strings with no length bound ([#968](https://github.com/theurian/theurian/issues/968)),
+and a clone can deliver either (T-24), so they cross through the same
 `json.dumps` escaping and accept-time scan as every other string in that file:
 the escaping driven through `eventKey` by
 `tests/integration/test_proposal_evidence_scan.py::test_contributor_controlled_candidate_strings_are_json_escaped_in_the_file`,
@@ -7905,7 +7906,8 @@ that are properties of this surface rather than preferences: the content never
 leaves the untrusted plane (the triple is unconditional, and the promotion path
 ADR-0033's slice B5 added ends at an unapproved proposal a human reads, whose
 title, body and evidence anchors are the *caller's* submission and not the
-stored record's text — the holds table above records what a planted record can
+stored record's text, though its `evidence.json` `candidate` block carries three
+unbounded stored-record strings (T-3) — the holds table above records what a planted record can
 still do, which is make an unearned thread clear the gate; the faces measured or identified so
 far: a key edited to another existing number in the same repository; a planted thread naming a
 pull request stored for the submitted repository; a repository name reused after a rename or
