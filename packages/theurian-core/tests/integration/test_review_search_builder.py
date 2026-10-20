@@ -1922,14 +1922,13 @@ _NON_ASCII_DIGIT_KEYS: Final[tuple[tuple[str, str, int], ...]] = (
 def test_a_non_ascii_digit_in_an_event_key_names_no_pull_request(
     tmp_path: Path, suffix: str, would_be: int
 ) -> None:
-    """``_EVENT_KEY_NUMBER``'s ``re.ASCII`` flag, which nothing drove.
+    """``parse_event_key``'s ASCII-only digits, which nothing drove.
 
-    The pattern's own note says why the flag is there: ``\\d`` matches every
-    Unicode decimal digit without it, ``int`` accepts them all, and the result
+    ``\\d`` would match every Unicode decimal digit, ``int`` accepts them all, and the result
     would be a pull-request number no provider issued -- attached to a real
     record, filterable, and indistinguishable on the wire from one GitHub gave.
     The premise is measured rather than argued: each suffix really does convert,
-    so a pattern without the flag really would produce that number.
+    so a parser admitting them really would produce that number.
 
     A landed file's ``eventKey`` is hand-edited, for the reason the sibling cases
     give: that string is the only place such a number can enter, because the
@@ -1941,7 +1940,7 @@ def test_a_non_ascii_digit_in_an_event_key_names_no_pull_request(
     the build succeeds and the column is empty.
     """
     assert int(suffix) == would_be, (
-        "the premise: `int` really converts this run, so a pattern without `re.ASCII` "
+        "the premise: `int` really converts this run, so a parser admitting non-ASCII digits "
         "really would store it as a pull-request number"
     )
     paths = _project(tmp_path)

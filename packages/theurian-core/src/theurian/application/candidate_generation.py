@@ -53,7 +53,6 @@ three-way answer is collapsed here.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Final, final
@@ -62,7 +61,7 @@ from theurian.application.draft_only_proposals import DraftOnlyProposals
 from theurian.application.proposal_service import DraftedProposal, ProposalRequest
 from theurian.application.review_landing_gate import ReviewRecordPayload
 from theurian.domain.enums import KnowledgeKind, ReviewCommentCategory, ReviewThreadState
-from theurian.domain.errors import TheurianError
+from theurian.domain.errors import InvariantViolationError, TheurianError
 from theurian.domain.identifiers import ItemId, RevisionId
 from theurian.domain.ports.determinism import Clock
 from theurian.domain.proposal import CandidateProvenance, Evidence
@@ -72,6 +71,7 @@ from theurian.domain.review import (
     PromotionGate,
     ReviewEvent,
     ReviewThread,
+    parse_event_key,
 )
 from theurian.domain.review_ingest import bounded_quote
 from theurian.domain.review_search import untransportable_reason
@@ -94,14 +94,6 @@ VerifyFixCommit = Callable[[str, str], FixCommitVerdict]
 #: is here although the shipped adapter never emits it: the codec accepts one, so
 #: a clone-delivered evidence file can carry it (T-24).
 _EXCLUDED_STATES: Final = frozenset({ReviewThreadState.OUTDATED, ReviewThreadState.DISMISSED})
-
-#: The pull request's number at the end of a thread's ``event_key``
-#: (``provider:owner/name#number``), which is that record's own key. ``re.ASCII``
-#: for ``review_search_builder``'s load-bearing reason: ``event_key`` is
-#: author-controlled data a clone can deliver (T-24), and without the flag ``\d``
-#: ranges over every Unicode decimal, so a key ending in a fullwidth-digit number
-#: (U+FF10..U+FF19) parses to a record key no store holds rather than to nothing.
-_PULL_REQUEST_NUMBER: Final = re.compile(r"#(\d+)\Z", re.ASCII)
 
 #: What every record that does not arrive is refused with, and a **constant**: it
 #: interpolates nothing -- not the key, not the repository, nothing read from the
@@ -251,10 +243,14 @@ class CandidateGenerator:
         return record
 
     def _event(self, submission: CandidateSubmission, thread: ReviewThread) -> ReviewEvent:
-        number = _PULL_REQUEST_NUMBER.search(thread.event_key)
-        if number is None:
+        try:
+            parsed = parse_event_key(thread.event_key)
+        except InvariantViolationError:
+            raise _unresolved() from None
+        if parsed is None or parsed[1] != submission.repository:
             raise _unresolved()
-        record = self._record(submission, number.group(1))
+        record = self._record(submission, str(parsed[2]))
+        # The thread carries no provider: this equality is what binds it.
         if (
             not isinstance(record, ReviewEvent)
             or record.external_key != thread.event_key
