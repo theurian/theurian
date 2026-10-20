@@ -77,6 +77,7 @@ from typing import Any, Final
 
 import pytest
 from git_harness import commit_migrations
+from mcp.types import CallToolResult
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
@@ -468,12 +469,13 @@ def _search(project: Project, query: str = QUERY) -> dict[str, Any]:
         )
 
     result = asyncio.run(invoke())
-    structured = getattr(result, "structuredContent", None)
-    if structured is not None:
-        payload: dict[str, Any] = structured
-        return payload
-    loaded: dict[str, Any] = json.loads(result.content[0].text)
-    return loaded
+    assert isinstance(result, CallToolResult)
+    structured = result.structured_content
+
+    assert structured is not None
+
+    payload: dict[str, Any] = structured
+    return payload
 
 
 def _answered_from_the_index(answer: dict[str, Any]) -> None:

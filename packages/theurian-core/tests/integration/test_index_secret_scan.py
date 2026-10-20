@@ -42,6 +42,7 @@ from typing import Any
 
 import pytest
 from git_harness import commit_migrations
+from mcp.types import CallToolResult
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
@@ -547,8 +548,12 @@ async def _relations_of(data_dir: Path, item_id: str) -> list[dict[str, Any]]:
     """
     server = build_server(ProjectRegistry.default(data_dir), None)
     result: Any = await server.call_tool("knowledge.get", {"projectId": "demo", "itemId": item_id})
-    structured = getattr(result, "structuredContent", None)
-    payload = dict(structured) if structured is not None else json.loads(result.content[0].text)
+    assert isinstance(result, CallToolResult)
+    structured = result.structured_content
+
+    assert structured is not None
+
+    payload = dict(structured)
     return [dict(row) for row in payload["relations"]]
 
 
@@ -831,13 +836,13 @@ async def _search(registry: ProjectRegistry, **arguments: Any) -> dict[str, Any]
     result = await build_server(registry, None).call_tool(
         "knowledge.search", {"projectId": "demo", **arguments}
     )
-    structured = getattr(result, "structuredContent", None)
-    if structured is not None:
-        payload: dict[str, Any] = structured
-        return payload
-    content: Any = result.content  # type: ignore[union-attr]
-    loaded: dict[str, Any] = json.loads(content[0].text)
-    return loaded
+    assert isinstance(result, CallToolResult)
+    structured = result.structured_content
+
+    assert structured is not None
+
+    payload: dict[str, Any] = structured
+    return payload
 
 
 def test_doctor_reports_the_published_builds_secret_as_degraded(planted: Path) -> None:

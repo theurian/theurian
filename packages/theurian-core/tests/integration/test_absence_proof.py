@@ -302,6 +302,7 @@ from git_harness import commit_migrations
 from hypothesis import given, seed, settings
 from hypothesis import strategies as st
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
+from mcp.types import CallToolResult, TextContent
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
@@ -1211,12 +1212,19 @@ def _call(
         return await build_server(registry, grant).call_tool(tool, arguments)
 
     result = asyncio.run(invoke())
-    structured = getattr(result, "structuredContent", None)
-    if structured is not None:
-        payload: dict[str, Any] = structured
-        return payload
-    loaded: dict[str, Any] = json.loads(result.content[0].text)
-    return loaded
+    assert isinstance(result, CallToolResult)
+    structured = result.structured_content
+
+    assert structured is not None
+    text_block = result.content[0]
+
+    assert isinstance(text_block, TextContent)
+    assert json.loads(text_block.text) == structured, (
+        "the text block and the structured copy of one response disagree"
+    )
+
+    payload: dict[str, Any] = structured
+    return payload
 
 
 def _search(registry: ProjectRegistry, case: _Case, **arguments: Any) -> dict[str, Any]:

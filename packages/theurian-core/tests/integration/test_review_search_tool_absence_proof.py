@@ -911,8 +911,9 @@ def test_both_published_copies_of_one_response_carry_the_same_payload(
 
     That premise silently stopped holding. ``CallToolResult``'s fields are
     ``structured_content`` and ``is_error``; the camelCase names are serialisation
-    aliases and not attributes, so the ``getattr(result, "structuredContent",
-    None)`` this module used returned ``None`` on every call there had ever been.
+    aliases and not attributes, so the ``getattr`` this module used
+    to read the camelCase spelling returned ``None`` on every call there had ever
+    been.
     The compared string carried ``"structured": null`` for both corpora, every
     comparison over it was ``None == None``, and the whole closure ran over the
     text blocks alone -- passing, in the reassuring way a vacuous assertion

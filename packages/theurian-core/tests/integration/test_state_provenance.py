@@ -39,6 +39,7 @@ from typing import Any
 import pytest
 from git_harness import commit_migrations
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
+from mcp.types import CallToolResult
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
@@ -218,12 +219,13 @@ def _call(registry: ProjectRegistry, tool: str, **arguments: Any) -> dict[str, A
         return await build_server(registry).call_tool(tool, arguments)
 
     result = asyncio.run(invoke())
-    structured = getattr(result, "structuredContent", None)
-    if structured is not None:
-        payload: dict[str, Any] = structured
-        return payload
-    loaded: dict[str, Any] = json.loads(result.content[0].text)
-    return loaded
+    assert isinstance(result, CallToolResult)
+    structured = result.structured_content
+
+    assert structured is not None
+
+    payload: dict[str, Any] = structured
+    return payload
 
 
 def _refused(registry: ProjectRegistry, tool: str, **arguments: Any) -> str:

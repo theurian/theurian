@@ -56,6 +56,7 @@ import pytest
 import typer.main
 from git_harness import commit_migrations
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
+from mcp.types import CallToolResult
 from migration_fixtures import body_pin
 from typer.testing import CliRunner
 
@@ -959,10 +960,13 @@ async def call_tool(server: Any, tool: str, arguments: dict[str, Any]) -> Answer
         result = await server.call_tool(tool, arguments)
     except SdkToolError as exc:
         return Answer(refused=True, text=str(exc))
-    structured = getattr(result, "structuredContent", None)
-    if structured is not None:
-        return Answer(refused=False, text=json.dumps(structured, ensure_ascii=False))
-    return Answer(refused=False, text=result.content[0].text)
+    assert isinstance(result, CallToolResult)
+
+    assert result.structured_content is not None
+
+    assert json.loads(result.content[0].text) == result.structured_content  # type: ignore[union-attr]
+
+    return Answer(refused=False, text=json.dumps(result.structured_content, ensure_ascii=False))
 
 
 async def sweep(corpus: Corpus) -> dict[tuple[str, str, str], Answer]:
