@@ -870,6 +870,85 @@ def test_a_pull_request_key_holding_a_record_of_another_kind_is_the_uniform_refu
     )
 
 
+def _event_key_corpus(event_key: str, stored_event: ReviewEvent) -> _Corpus:
+    """A thread whose ``event_key`` is ``event_key``, over a PR record stored under #431."""
+    thread = dataclasses.replace(_thread(_event()), event_key=event_key)
+    return _Corpus(
+        records={THREAD_FILE: thread, EVENT_FILE: stored_event},
+        paths={(REPOSITORY, THREAD_KEY): THREAD_FILE, (REPOSITORY, str(PULL_REQUEST)): EVENT_FILE},
+    )
+
+
+_FOREIGN: Final = "evil/other"
+
+
+@pytest.mark.parametrize(
+    ("event_key", "stored_event"),
+    [
+        (f"github:{_FOREIGN}#431", _event()),
+        (f"gitlab:{REPOSITORY}#431", _event()),
+        ("not-a-key-at-all#431", _event()),
+        (
+            f"github:{_FOREIGN}#431",
+            dataclasses.replace(_event(), repository=_FOREIGN),
+        ),
+    ],
+    ids=["foreign-repo-key", "foreign-provider", "not-a-key", "foreign-key-and-payload"],
+)
+def test_a_pull_request_record_the_thread_does_not_name_is_the_uniform_refusal(
+    event_key: str, stored_event: ReviewEvent
+) -> None:
+    """#748 / T-24: the number is read off ``event_key`` but the record must be *that* PR.
+
+    The second resolve is keyed by the *submitted* repository and the number
+    alone, so a delivered thread whose ``event_key`` names another repository
+    would otherwise borrow the local #431's merged and green signals. In the first
+    case the local #431 is merged and green, so a regression to "trust whatever
+    the number resolves" LANDS rather than refusing for another reason. A renumber
+    inside the same repository is T-24's recorded residual and is not asserted.
+    """
+    verified: list[str] = []
+    drafts = _RecordingDrafts()
+    corpus = _event_key_corpus(event_key, stored_event)
+    generator = CandidateGenerator(
+        resolve_evidence_path=corpus.resolve,
+        read_record=corpus.read,
+        verify_fix_commit=lambda commit, _path: (
+            verified.append(commit) or FixCommitVerdict.VERIFIED
+        ),
+        drafts=DraftOnlyProposals(drafts),
+        clock=FrozenClock(),
+    )
+
+    with pytest.raises(CandidateGenerationError) as refusal:
+        generator.generate(_submission())
+
+    assert str(refusal.value) == UNRESOLVED_RECORD_REFUSAL
+    assert verified == [], "the refusal came after the fix commit was verified"
+    assert drafts.requests == []
+
+
+def test_a_differently_cased_repository_ingested_consistently_still_lands() -> None:
+    """The #748 guard adds no refusal for a case variant main resolved.
+
+    The store's by-key lookup is an exact match, so a variant resolves only when
+    the thread, the PR record and the submission all spell it alike
+    (``landed_keys`` case-folds, the resolve does not). Driven against the guard's
+    two comparisons, both of which must be exact on a consistent spelling.
+    """
+    variant = "Theurian/Theurian"
+    event = dataclasses.replace(_event(), repository=variant)
+    corpus = _Corpus(
+        records={THREAD_FILE: _thread(event), EVENT_FILE: event},
+        paths={(variant, THREAD_KEY): THREAD_FILE, (variant, str(PULL_REQUEST)): EVENT_FILE},
+    )
+    drafts = _RecordingDrafts()
+
+    _generator(corpus, drafts).generate(_submission(repository=variant))
+
+    assert len(drafts.requests) == 1
+
+
 # ---------------------------------------------------------------------------
 # The review category is provenance, never a change the reviewer authored (#754).
 # ---------------------------------------------------------------------------
