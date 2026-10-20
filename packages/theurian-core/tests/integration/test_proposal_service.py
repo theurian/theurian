@@ -633,6 +633,54 @@ def test_a_body_that_is_not_the_declared_format_is_refused(service: ProposalServ
         service.draft(_request(body="   \n"))
 
 
+_OVER_THE_CAP: Final = "a" * (MAX_SOURCE_FILE_BYTES + 1)
+
+
+@pytest.mark.parametrize(
+    ("body", "local"),
+    [
+        pytest.param(_OVER_THE_CAP, False, id="ascii"),
+        # Under the cap in code points, over it in bytes.
+        pytest.param("\U0001f600" * (MAX_SOURCE_FILE_BYTES // 4 + 1), False, id="astral"),
+        pytest.param(_OVER_THE_CAP, True, id="local"),
+    ],
+)
+def test_a_body_over_the_byte_cap_is_refused_before_anything_is_written(
+    service: ProposalService, paths: ProjectPaths, body: str, local: bool
+) -> None:
+    """#691: ``draft`` wrote a body of any size, and ``accept`` then refused it.
+
+    The ``.gitignore`` is stale, so a ``--local`` draft that got past the check
+    would rewrite it.
+    """
+    gitignore = paths.root / ".gitignore"
+    gitignore.write_bytes(b"node_modules/\n")
+    before = _tree(paths.root)
+    size = len(body.encode("utf-8"))
+
+    with pytest.raises(ProposalError) as raised:
+        service.draft(_request(body=body), local=local)
+
+    assert f"The body is {size} bytes in UTF-8, larger than {MAX_SOURCE_FILE_BYTES} bytes" in str(
+        raised.value
+    )
+    assert gitignore.read_bytes() == b"node_modules/\n"
+    assert _tree(paths.root) == before
+    for parent in (paths.proposals, paths.proposals_local):
+        assert not parent.exists() or not [p for p in parent.iterdir() if p.is_dir()], parent
+
+
+def test_a_body_of_exactly_the_byte_cap_is_drafted_and_accepted(
+    service: ProposalService,
+) -> None:
+    """#691's other side: ``draft`` refuses no body that ``accept`` would land."""
+    drafted = service.draft(_request(body="a" * MAX_SOURCE_FILE_BYTES))
+
+    service.accept(drafted.proposal_id)
+
+    assert drafted.body_destination.stat().st_size == MAX_SOURCE_FILE_BYTES
+
+
 # -- acceptance ------------------------------------------------------------
 
 
