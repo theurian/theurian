@@ -76,6 +76,7 @@ from typing import Any, Final
 
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
+from tool_result import structured_payload
 
 from theurian.application.authorization import (
     DEPLOYMENT_ACL_GROUPS,
@@ -525,10 +526,7 @@ def _knowledge_get(registry: ProjectRegistry, item_id: ItemId) -> dict[str, Any]
         )
 
     result = asyncio.run(invoke())
-    structured = getattr(result, "structured_content", None)
-    assert structured is not None, "knowledge.get published no structured content"
-    payload: dict[str, Any] = structured
-    return payload
+    return structured_payload(result)
 
 
 def _knowledge_get_refusal(registry: ProjectRegistry, item_id: ItemId) -> str:
