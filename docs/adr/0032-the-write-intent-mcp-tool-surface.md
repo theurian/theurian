@@ -2481,7 +2481,8 @@ the property as it was written and states what actually holds it:
   *Still owed*: the end-to-end drive through `theurian propose accept`, and a
   test for the structural no-direct-loader-import property. (Neither is owed
   now: the drive landed after the slice, and the structural property was already
-  held when this was written. See *The operations path's accept drive and its
+  held, for import statements that name `theurian.infrastructure`, when this was
+  written. See *The operations path's accept drive and its
   no-direct-loader-import property* below.)
 - **The CLI-only guarantees have wire equivalents (decision 3).** Landed, and the
   two rows landed differently. Duplicate `labels[]` is a *schema* refusal naming
@@ -2534,12 +2535,53 @@ the property as it was written and states what actually holds it:
   `tests/integration/test_write_intent_facade_population.py::test_accept_reached_through_the_facades_captured_service_fails_closed`
   calls `accept` on the MCP facade's captured service and asserts the decision-8
   `RuntimeError`, with `.theurian/knowledge` and `.theurian/migrations` unchanged.
+- **A file path is refused by construction inside
+  `knowledge.generateMigrationDraft`'s `document` (decision 2).** The tool-level
+  input schemas landed in #962:
+  `tests/integration/test_write_intent_input_paths.py` pins each one's declared
+  members (`_RECORDED`, with a reason per path-shaped one in `_PATH_SHAPED`) and
+  drives dereference with a canary file; its docstring states the reach. The
+  `document` interior, an opaque object at its schema, landed in
+  [#966](https://github.com/theurian/theurian/pull/966) (`c45e7ac2`): the same
+  file pins a closed property-path set per v1-admitted operation definition
+  (`_V1_RECORDED`), asserts that no v1-admitted operation declares
+  `contentFile`, drafts each recorded path-shaped member (`_V1_PATH_MEMBERS`)
+  over the wire with a canary path whose text lands while its bytes reach
+  neither a file under the test's tree outside `.git` nor the response, and
+  drives an `upsertRevision` refused with the v1 gate's message and the tree
+  unchanged. This entry was moved here from *Still owed*.
+
+  **Corrected in place.** This bullet said: "The property holds as shipped:
+  neither published input schema declares a path, URI, or reference field, and
+  neither handler signature has a path parameter." That was false:
+  `sourceAnchors[]`'s `sourceUri`, `filePath` and `repository`, `scopePaths`
+  (also a handler parameter) and, on `review.generateKnowledgeCandidate`,
+  `repository` and `fixCommit` are declared. The property is dereference: the
+  anchor members and `scopePaths` are recorded and not read as paths where the
+  test drives them, the candidate tool's `repository` is a review-store lookup
+  key the resolve refuses when unknown, and `fixCommit` is resolved as a git
+  object id its schema `pattern` confines.
+  [#963](https://github.com/theurian/theurian/issues/963) owns the same wording
+  in two schema `description`s and the CHANGELOG `[0.3.0]` entry.
+
+  The bullet's reasoning for the shape of the owed check is kept, because it is
+  why #962 pins a closed set of declared members rather than a refusal:
+  "**What is owed is the check**, and the shape matters — a refusal test would
+  pin today's spelling of a rejection, while what this needs is a structural
+  test that no write-intent tool's input schema declares a path-shaped field.
+  Today the absence is held by review and by ADR-0031's
+  `unevaluatedProperties: false` refusing any key the schema does not name,
+  which stops a *caller* smuggling one and does nothing about a schema someone
+  widens." Its last step does not hold: a test that no input schema declares a
+  path-shaped field would fail on the fields above, so the walk records them
+  instead of forbidding them.
 - **The operations path's accept drive and its no-direct-loader-import
   property.** Recorded after the slice, with no new test:
   [#703](https://github.com/theurian/theurian/issues/703) and
   [#959](https://github.com/theurian/theurian/issues/959) were filed for these two
   halves of the operations-path entry above, and both were closed on this record
-  after the tests below were found to hold them. The property as it was written
+  after the checks below were found to hold them, the second only for import
+  statements that name `theurian.infrastructure`. The property as it was written
   in *Still owed*: "A test that a document drafted through `draft_from_document`
   produces a proposal directory `theurian propose accept` accepts, driven through
   the shipped commands rather than asserted about the service; and a structural
@@ -2575,7 +2617,8 @@ the property as it was written and states what actually holds it:
   for a migration containing `deprecateItem` reddens it at the `deprecated`
   assertion, after `propose accept` exited 0 — measured at `f3abfba0` too.
 
-  **The structural property was already held.**
+  **The structural property was already held, for import statements that name
+  `theurian.infrastructure`.**
   `tests/unit/test_layering.py::test_application_does_not_import_infrastructure`
   and `::test_only_composition_roots_import_infrastructure` walk each in-scope
   module's whole AST, so they flag an absolute `theurian.infrastructure` import —
@@ -2588,14 +2631,22 @@ the property as it was written and states what actually holds it:
   `application/proposal_service.py`: `test_layering.py` went from 6 passed to 2
   failed and 4 passed, the 2 being the tests above, and `ruff check` reported
   `TID251` on the planted line, both with the import at module top and with it
-  inside `draft_from_document`. The two instruments split on two other forms,
-  measured with the plant at module top: a parent-relative
-  `from ..infrastructure.filesystem import migration_loader` passes
-  `test_layering.py` (6 passed) and is reported by ruff alone (`TID251` and
-  `TID252`), and an `importlib.import_module` call naming the loader is flagged
-  by neither the layering tests nor any `TID` rule.
+  inside `draft_from_document`. Ruff alone catches two other forms, each leaving
+  `test_layering.py` at 6 passed: a parent-relative
+  `from ..infrastructure.filesystem import migration_loader` at module top
+  (`TID251` and `TID252`), and `from theurian import infrastructure` at module
+  top and inside `draft_from_document` (`TID251`). Planted inside
+  `draft_from_document`, four forms pass both (6 passed, no `TID` rule):
+  `__import__` and `importlib.import_module` naming the loader, and
+  `validate_migration_document` imported from `theurian.cli.propose_commands` or
+  `theurian.daemon.runner`, each of which re-exports the loader's own function.
+  The re-export residual was filed as
+  [#975](https://github.com/theurian/theurian/issues/975), and the relative
+  form's escape from `test_layering.py`'s scan as
+  [#972](https://github.com/theurian/theurian/issues/972); the two dynamic forms
+  are recorded on those issues.
 
-  **Corrected in place.** The bullet this entry replaces said: "The second holds
+  **Moved from *Still owed* and corrected.** The bullet said: "The second holds
   today by reading `application/proposal_service.py`'s imports, and by nothing
   else." That was false when it was written: both layering tests (`261eff32`) and
   the `TID251` entry (`7562b41c`) predate the bullet, which was added in
@@ -2612,40 +2663,13 @@ assume a tracker entry exists. The last three each name their issue." #700,
 #701 and #703 were filed for them that day, and each item below now names its
 owner. (Open-question 5's timing measurement, formerly a fourth
 slice-addressed item here, landed at slice B4 and moved to the decision-6
-*Landed* entry above.)
+*Landed* entry above. The three items #700, #701 and #703 were filed for have
+since moved to *Landed* above as well: *A value-level wire-contract assertion on
+`writeTools`* (#700), *A file path is refused by construction inside
+`knowledge.generateMigrationDraft`'s `document`* (#701, through #966), and *The
+operations path's accept drive and its no-direct-loader-import property* (#703,
+with #959).)
 
-- **[#966](https://github.com/theurian/theurian/pull/966) — a file path is refused
-  by construction inside `knowledge.generateMigrationDraft`'s `document`
-  (decision 2).** The tool-level input schemas landed in #962:
-  `tests/integration/test_write_intent_input_paths.py` pins each one's declared
-  members (`_RECORDED`, with a reason per path-shaped one in `_PATH_SHAPED`) and
-  drives dereference with a canary file; its docstring states the reach. The
-  `document` interior, an opaque object at its schema, is #966's, stacked on #962.
-
-  **Corrected in place.** This bullet said: "The property holds as shipped:
-  neither published input schema declares a path, URI, or reference field, and
-  neither handler signature has a path parameter." That was false:
-  `sourceAnchors[]`'s `sourceUri`, `filePath` and `repository`, `scopePaths`
-  (also a handler parameter) and, on `review.generateKnowledgeCandidate`,
-  `repository` and `fixCommit` are declared. The property is dereference: the
-  anchor members and `scopePaths` are recorded and not read as paths where the
-  test drives them, the candidate tool's `repository` is a review-store lookup
-  key the resolve refuses when unknown, and `fixCommit` is resolved as a git
-  object id its schema `pattern` confines.
-  [#963](https://github.com/theurian/theurian/issues/963) owns the same wording
-  in two schema `description`s and the CHANGELOG `[0.3.0]` entry.
-
-  The bullet's reasoning for the shape of the owed check is kept, because it is
-  why #962 pins a closed set of declared members rather than a refusal:
-  "**What is owed is the check**, and the shape matters — a refusal test would
-  pin today's spelling of a rejection, while what this needs is a structural
-  test that no write-intent tool's input schema declares a path-shaped field.
-  Today the absence is held by review and by ADR-0031's
-  `unevaluatedProperties: false` refusing any key the schema does not name,
-  which stops a *caller* smuggling one and does nothing about a schema someone
-  widens." Its last step does not hold: a test that no input schema declares a
-  path-shaped field would fail on the fields above, so the walk records them
-  instead of forbidding them.
 - **[#691](https://github.com/theurian/theurian/issues/691) — the unit the
   published `body` `maxLength` counts.** JSON Schema counts code points; the
   constant it transcribes counts bytes, so the bound admits up to four times the
