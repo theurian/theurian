@@ -3293,8 +3293,8 @@ def test_the_operation_cap_holds_the_two_channel_memory_ceiling() -> None:
     jobs (``-m "not e2e"``) exclude and its ``e2e`` job runs.
     This recomputes that same bound from the LIVE constants and pins it
     against the 4 GiB ceiling the constant's own docstring targets, so a
-    constant change that breaks the ceiling goes red here, in the CI-run
-    suite, rather than only in the e2e job.
+    constant change that breaks the ceiling goes red here, in the
+    deterministic in-process suite, rather than only in the e2e job.
     """
     two_channel_peak_bytes = MAX_UPSERT_OPERATIONS * 2 * MAX_SOURCE_FILE_BYTES
     four_gib = 4 * 1024**3

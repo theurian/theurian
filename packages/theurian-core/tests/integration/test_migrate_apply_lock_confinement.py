@@ -4,9 +4,11 @@
 runs `tests/e2e` on pull requests (#634), so
 `tests/e2e/test_migrate_apply_concurrency.py` -- which drives two real OS
 processes racing a 50ms poll window -- now gates a pull request. Before that
-job (#485) this file was the compensating control. Nothing makes it
-compensating now; it stays as the in-process control: every test here is
-`integration`-marked, runs in-process through `typer.testing.CliRunner`
+job (#485) this file was the compensating control. The e2e pair loop is
+timing-dependent by its own account (a pair that happens not to race still
+satisfies the invariant), so this file remains the only pull-request-time check
+guaranteed to go red on a #468 regression. It is the in-process control:
+every test here is `integration`-marked, runs in-process through `typer.testing.CliRunner`
 (the same pattern `test_cli_commands.py` uses), and is deterministic --
 no timing window, no race to win, so a red here names the lock, not the
 scheduler. The e2e test is the readable end-to-end proof that a
