@@ -8,7 +8,8 @@ replace it -- or the boundary would simply have been deleted.
 
 What replaces it: **exactly one sanctioned reader, named here, and any second one
 fails.** The prongs below are the same prongs, inverted rather than relaxed. Each
-still walks the whole serving layer; what changed is that a hit in
+walks every shipped module bar the write path (not the serving layer alone, as
+they did until the scan was widened); what changed is that a hit in
 :data:`SANCTIONED_STORE_READERS` is permitted *and required*, while a hit anywhere
 else is the failure it always was. The planted-second-reader scenario this file
 was written against -- ``review/findings_search.py``, importing the store and
@@ -82,9 +83,11 @@ placeholder for a layer that is "not yet implemented" by its own module
 docstring -- and it is exactly the gap that made ``review/`` above the one
 exception, walked rather than acknowledged.
 
-**Prong (a) -- only the sanctioned modules import the store [AST].** Every module
-in the assembled :data:`SERVING_MODULES` set is parsed and its imports are
-scanned. A module outside :data:`SANCTIONED_STORE_READERS` may reach neither the
+**Prong (a) -- only the sanctioned modules import the store [AST].** Every shipped
+module bar :data:`WRITE_PATH_MODULES` is parsed and its imports are scanned
+(``_non_write_path_modules``; :data:`SERVING_MODULES` is a subset of it). A module
+outside :data:`SANCTIONED_STORE_READERS` and :data:`NON_SERVING_STORE_REACH` may
+reach neither the
 store port, nor the store adapter, nor the standalone builder; a module inside it
 may reach exactly the names recorded there and no others -- so widening the
 sanctioned reader's own reach (adding the *builder* to the tool surface, say) is
@@ -98,7 +101,7 @@ the store's SQLite *table* directly, importing nothing, would slip past it. Pron
 one registered tool serves a finding [grep + AST].** The distinctive table and
 artifact tokens (``findings_metadata``, ``rejected_trailers``, ``theurian-findings``,
 the ``findings`` table SQL, matched loosely enough to catch a quoted or
-schema-qualified table name) are grepped out of every serving module -- the arm
+schema-qualified table name) are grepped out of every module bar the write path -- the arm
 that catches a raw ``SELECT ... FROM findings`` an import scan cannot see. **That
 arm is unchanged by slice-3 and still admits nothing**: the sanctioned reader
 goes through the port, so no serving module names a table, and a hand-written
@@ -147,7 +150,7 @@ sanctioned tool's own reach to go unnoticed, which fails that arm's positive
 half. Following the hop is still owed.
 
 **A static sibling of that same one-hop gap.** Prong (a) reads each
-:data:`SERVING_MODULES` member's *own* import statements; it does not follow an
+scanned module's *own* import statements; it does not follow an
 import transitively. A brand-new module under an acknowledged, unscanned area
 (``infrastructure/some_new_adapter.py``, say) that itself imports the store, then
 imported by a serving module by its own innocuous name
@@ -157,9 +160,9 @@ shows the serving module naming only ``some_new_adapter`` and
 so prong (a) sees nothing to catch, and prong (b)'s grep sees no store table
 token in the serving module either, only in the adapter one hop away.
 :func:`test_every_shipped_python_module_is_classified` forces the new adapter
-itself into a bucket, but an "acknowledged non-serving" entry is a classification,
-not a measurement (see :data:`_APPLICATION_NON_SERVING_MODULES`'s own docstring
-note) -- it does not scan the adapter's imports either. Closing this needs the
+itself into a bucket, and the widened scan fails the adapter on its own account
+unless it is recorded in :data:`NON_SERVING_STORE_REACH`; what stays unfollowed is
+the hop from a serving module into such a recorded module. Closing that needs the
 same store-level universal invariant the string-concatenation residual above is
 owed to, not a deeper walk here; recorded with the same slice-3 disposition as
 its runtime counterpart.
@@ -328,16 +331,51 @@ SANCTIONED_STORE_READERS: dict[str, frozenset[str]] = {
     "mcp/findings.py": frozenset({"review_finding_store"}),
 }
 
+#: The non-serving modules that reach the store's names, and exactly what each
+#: reaches, measured at 3c056191 by scanning every shipped module bar
+#: :data:`WRITE_PATH_MODULES` (``_non_write_path_modules``). Prongs (a) and (b)
+#: scan that whole population, so a module absent from here and
+#: :data:`SANCTIONED_STORE_READERS` may reach nothing, and a module present may
+#: reach exactly these labels: import-scan names as :func:`_store_references`
+#: reports them, :data:`STORE_ARTIFACT_TOKENS` members, and
+#: ``findings-table-sql`` for a match of :data:`_FINDINGS_TABLE_SQL`.
+#:
+#: Why each is here, none of them a serving path:
+#:
+#: - the store's own definition -- the port, its package re-export, the schema and
+#:   the SQLite adapter, which must name the tables and the port they implement;
+#: - ``review_search_builder.py`` and ``cli/review_commands.py`` import
+#:   ``WriteSection`` from the builder module and nothing else of it;
+#: - ``project_service.py`` names the ``theurian-findings`` file-name prefix to
+#:   keep the findings artifact apart from the index artifact.
+NON_SERVING_STORE_REACH: dict[str, frozenset[str]] = {
+    "application/project_service.py": frozenset({"theurian-findings"}),
+    "application/review_search_builder.py": frozenset({"findings_builder"}),
+    "cli/review_commands.py": frozenset({"findings_builder"}),
+    "domain/ports/__init__.py": frozenset({"ReviewFindingStore", "review_finding_store"}),
+    "domain/ports/review_finding_store.py": frozenset({"rejected_trailers"}),
+    "infrastructure/sqlite/findings_schema.py": frozenset(
+        {"findings_metadata", "rejected_trailers", "findings-table-sql"}
+    ),
+    "infrastructure/sqlite/findings_store.py": frozenset(
+        {
+            "review_finding_store",
+            "findings_metadata",
+            "rejected_trailers",
+            "theurian-findings",
+            "findings-table-sql",
+        }
+    ),
+}
+
 #: Every other ``.py`` file directly under ``application/``: neither serving
 #: content the way ``retrieval_service.py``/``visibility.py`` do, nor the
 #: findings write path. Named explicitly, alongside :data:`SERVING_MODULES`'s own
 #: hand-picked entries for this directory, so the completeness test below
 #: (``test_every_shipped_python_module_is_classified``) can assert the three
-#: buckets are exhaustive over the real directory listing. Membership here is an
-#: acknowledgement, not a measurement: it is not a claim that any of these files
-#: were checked for a store reference, only that a human has sorted them into
-#: "not serving, not the write path" and a future addition must be sorted the
-#: same way before this test passes again.
+#: buckets are exhaustive over the real directory listing. Membership here is a
+#: classification; the store-reference scan of these files is prongs (a) and (b),
+#: whose exemptions are :data:`NON_SERVING_STORE_REACH`.
 _APPLICATION_NON_SERVING_MODULES: frozenset[str] = frozenset(
     {
         "__init__.py",
@@ -468,11 +506,9 @@ _CLI_NON_SERVING_MODULES: frozenset[str] = frozenset(
 #: ``WRITE_PATH_MODULES`` is entirely ``application/``/``cli/``). Paths are
 #: relative to ``infrastructure/`` itself, not bare filenames, because unlike
 #: ``application/``/``cli/`` this directory has real subpackages
-#: (``sqlite/``, ``claude/``, ``services/``, ...). Membership here is an
-#: acknowledgement, not a measurement, in the same sense
-#: :data:`_APPLICATION_NON_SERVING_MODULES` already documents: a human has
-#: sorted these into "not serving, not the write path", not scanned each one
-#: for a store reference.
+#: (``sqlite/``, ``claude/``, ``services/``, ...). Membership here is a
+#: classification, scanned for store references like
+#: :data:`_APPLICATION_NON_SERVING_MODULES`.
 _INFRASTRUCTURE_NON_SERVING_MODULES: frozenset[str] = frozenset(
     {
         "__init__.py",
@@ -768,6 +804,25 @@ def test_the_store_import_scan_sees_each_reaching_form_and_no_other(
     )
 
 
+def _non_write_path_modules() -> list[str]:
+    """Every shipped module bar the write path -- the population prongs (a) and (b) scan.
+
+    Walked fresh from disk, so it is the population
+    :func:`test_every_shipped_python_module_is_classified` proves classified, not
+    :data:`SERVING_MODULES`: a store reference planted in a module the inventory
+    files as non-serving was invisible to a scan over the serving set alone.
+    """
+    return sorted(_all_shipped_modules(SRC) - set(WRITE_PATH_MODULES))
+
+
+def _table_kinds(source: str) -> set[str]:
+    """:func:`_store_table_hits` as labels: tokens by name, any table SQL as one label."""
+    kinds = {token for token in STORE_ARTIFACT_TOKENS if token in source}
+    if _FINDINGS_TABLE_SQL.search(source):
+        kinds.add("findings-table-sql")
+    return kinds
+
+
 def _serving_source(module: str) -> str:
     """The text of a serving module, or a hard failure if the path drifted.
 
@@ -804,9 +859,12 @@ def test_only_the_sanctioned_serving_modules_import_the_finding_store() -> None:
     """
     unsanctioned = {
         module: sorted(hits)
-        for module in SERVING_MODULES
+        for module in _non_write_path_modules()
         if module not in SANCTIONED_STORE_READERS
-        and (hits := _store_references(_serving_source(module), module))
+        and (
+            hits := _store_references(_serving_source(module), module)
+            - NON_SERVING_STORE_REACH.get(module, frozenset())
+        )
     }
 
     assert not unsanctioned, (
@@ -871,6 +929,27 @@ def test_each_sanctioned_reader_really_reaches_the_store() -> None:
         "SANCTIONED_STORE_READERS, and check whether its new home is scanned at all "
         "-- or the import scan has stopped resolving real files, in which case "
         "prong (a) is now vacuous and its green result means nothing."
+    )
+
+
+def test_each_recorded_non_serving_reach_is_still_a_reach() -> None:
+    """A recorded exemption that no longer matches is a stale permission.
+
+    :data:`NON_SERVING_STORE_REACH` is an exact set per module, not a licence to
+    touch anything findings-shaped. A label listed there that the module no
+    longer reaches would let the next edit re-add it unseen.
+    """
+    stale = {}
+    for module, recorded in NON_SERVING_STORE_REACH.items():
+        source = _serving_source(module)
+        reached = _store_references(source, module) | _table_kinds(source)
+        if recorded - reached:
+            stale[module] = sorted(recorded - reached)
+
+    assert not stale, (
+        "NON_SERVING_STORE_REACH records labels its module no longer reaches:\n"
+        + "\n".join(f"  {module} :: {labels}" for module, labels in sorted(stale.items()))
+        + "\n\nRemove them, so the exemption stays exactly what the module does."
     )
 
 
@@ -1016,10 +1095,9 @@ def test_every_shipped_python_module_is_classified() -> None:
     test; a file in two is a bug in the bucket data, not a classification gap,
     and is reported by name rather than merely failing the equality.
 
-    This equality is a completeness check on classification, not a claim that
-    every acknowledged member was scanned for a store reference -- only
-    :data:`SERVING_MODULES` and :data:`WRITE_PATH_MODULES` are (see prong (a)
-    and prong (b) below). :data:`_ACKNOWLEDGED_SUBTREES` is a strictly weaker
+    This equality is a completeness check on classification; the same population
+    (bar :data:`WRITE_PATH_MODULES`) is what prongs (a) and (b) below  scan.
+    :data:`_ACKNOWLEDGED_SUBTREES` is a strictly weaker
     guarantee than the three file-level lists: see its own docstring for why
     that trade-off is deliberate, and why ``review/`` is walked instead of
     acknowledged rather than accepting it here.
@@ -1128,9 +1206,12 @@ def test_no_serving_module_reaches_the_store_tables_by_sql_or_name() -> None:
     a serving path reaching into the findings artifact by hand.
     """
     offenders = {
-        module: hits
-        for module in SERVING_MODULES
-        if (hits := _store_table_hits(_serving_source(module)))
+        module: sorted(hits)
+        for module in _non_write_path_modules()
+        if (
+            hits := _table_kinds(_serving_source(module))
+            - NON_SERVING_STORE_REACH.get(module, frozenset())
+        )
     }
 
     assert not offenders, (
