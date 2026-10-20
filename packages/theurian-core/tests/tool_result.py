@@ -26,7 +26,7 @@ def structured_payload(result: object) -> dict[str, Any]:
 
     block = result.content[0]
 
-    assert isinstance(block, TextContent)
+    assert isinstance(block, TextContent), f"the content block is {type(block).__name__}, not text"
     assert json.dumps(json.loads(block.text), sort_keys=True) == json.dumps(
         structured, sort_keys=True
     ), "the text block and the structured copy of one response disagree"

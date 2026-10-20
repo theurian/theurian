@@ -57,9 +57,11 @@ adapter every read tool imports, reached by ``mcp/tools.py`` for
 gap a round-one review measured: a store reference added to it evaded every
 prior check because it was in neither the walked directories nor the old list.
 ``cli/main.py`` -- the command-registration root every CLI entry point is
-wired through -- is scanned for the same reason, moved here from the acknowledged
-non-serving bucket it sat in before; it names no store reference today, so the
-scan stays green.
+wired through -- sits in :data:`SERVING_MODULES` (it was once filed as
+non-serving). The prongs scan ``_non_write_path_modules()``, every shipped module
+bar :data:`WRITE_PATH_MODULES`, so ``cli/main.py`` is scanned as a member of that
+population whichever bucket it is classified in; it names no store reference
+today, so the scan stays green.
 
 **The completeness guard now covers the whole shipped package, not only
 ``application/`` and ``cli/``.** A round-two review measured that ``domain/``
@@ -1129,7 +1131,7 @@ def test_every_shipped_python_module_is_classified() -> None:
     and is reported by name rather than merely failing the equality.
 
     This equality is a completeness check on classification; the same population
-    (bar :data:`WRITE_PATH_MODULES`) is what prongs (a) and (b) below  scan.
+    (bar :data:`WRITE_PATH_MODULES`) is what prongs (a) and (b) below scan.
     :data:`_ACKNOWLEDGED_SUBTREES` is a strictly weaker
     guarantee than the three file-level lists: see its own docstring for why
     that trade-off is deliberate, and why ``review/`` is walked instead of

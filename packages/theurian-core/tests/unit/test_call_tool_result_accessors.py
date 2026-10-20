@@ -25,6 +25,8 @@ import ast
 import pathlib
 
 import pytest
+from mcp.types import CallToolResult, TextContent
+from tool_result import structured_payload
 
 pytestmark = pytest.mark.unit
 
@@ -114,3 +116,40 @@ def test_the_scan_goes_red_on_each_forbidden_name_in_every_root_and_any_module_n
 )
 def test_the_scan_stays_green_on_the_correct_spelling_and_on_computed_names(source: str) -> None:
     assert _alias_getattrs(source) == []
+
+
+def _result(
+    text: str = '{"a": 1}',
+    structured: dict[str, object] | None = {"a": 1},  # noqa: B006
+    *,
+    blocks: int = 1,
+    is_error: bool = False,
+) -> CallToolResult:
+    return CallToolResult(
+        content=[TextContent(type="text", text=text)] * blocks,
+        structured_content=structured,
+        is_error=is_error,
+    )
+
+
+@pytest.mark.parametrize(
+    ("result", "reason"),
+    [
+        (_result('{"a": 1, "b": 2}'), "disagree"),
+        (_result(blocks=2), "other than one content block"),
+        (_result('{"a": true}', {"a": 1}), "disagree"),
+        (_result(is_error=True), "error flag"),
+        (_result(structured=None), "no structured copy"),
+    ],
+    ids=["extra-key-in-text", "two-blocks", "true-vs-one", "error-flag", "no-structured-copy"],
+)
+def test_structured_payload_refuses_a_result_whose_copies_do_not_agree(
+    result: CallToolResult, reason: str
+) -> None:
+    """Accepting any of these would let a one-copy defect pass every #635 closure."""
+    with pytest.raises(AssertionError, match=reason):
+        structured_payload(result)
+
+
+def test_structured_payload_returns_the_structured_copy_of_an_agreeing_result() -> None:
+    assert structured_payload(_result()) == {"a": 1}
