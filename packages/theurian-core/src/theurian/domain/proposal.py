@@ -68,10 +68,13 @@ class Evidence:
     """Where a proposed change came from, and why its author believes it.
 
     Written to ``evidence.json``, and **every field here is read by the humans
-    reviewing the pull request rather than by Core**. Core reads exactly one key
-    of that file, and it is not one of these: ``propose`` also records the
-    migration id it minted, so ``propose accept`` can tell an accepted proposal
-    from an interrupted draft (#253). Nothing below is read by any code path.
+    reviewing the pull request rather than by Core**. Core reads two keys of that
+    file, neither of them one of these: ``migrationId`` and ``itemId``, which
+    ``propose accept`` checks against the migration set to tell an accepted
+    proposal from an interrupted draft (#253). The ``candidate`` key a generated
+    candidate's proposal carries (:class:`CandidateProvenance`) is written for the
+    human and read by no code path. Nor is anything below; ``accept``'s secret
+    scan reads the whole file as text, not by key (#361).
 
     None of it is a substitute for ``metadata.sourceAnchors``, which is what
     ``theurian migrate apply`` enforces (INV-8): a revision carrying rich

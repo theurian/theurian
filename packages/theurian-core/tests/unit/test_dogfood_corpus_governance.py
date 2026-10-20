@@ -241,10 +241,14 @@ EVIDENCE_KEYS: Final = frozenset(
 #: for a field the tool did not write when they were drafted. Every proposal
 #: drafted since carries both.
 #:
-#: This is an allowance for *these* keys and not a relaxation of the rule: the
-#: escape the rule below closes is an evidence file carrying a field nothing reads
-#: and no schema validates, and a set of two named keys is still exact.
-OPTIONAL_EVIDENCE_KEYS: Final = frozenset({"migrationId", "itemId"})
+#: ``candidate`` is the provenance block ``review.generateKnowledgeCandidate``
+#: writes (#754), for the reviewer; Core reads none of it.
+#:
+#: The escape the rule below closes is an evidence file carrying a field nothing
+#: reads and no schema validates, and the set stays exact at the top level.
+#: ``candidate`` is itself such a field, so the escape survives inside it: **its
+#: inner keys are not checked here.**
+OPTIONAL_EVIDENCE_KEYS: Final = frozenset({"migrationId", "itemId", "candidate"})
 
 #: The keys a ``sourceAnchor`` carries, in both a migration's revision metadata
 #: and an ``evidence.json`` (measured 2026-08-20: one shape, 52 anchors).

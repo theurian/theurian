@@ -98,8 +98,9 @@ verification and packaging:
 
 **A `KnowledgeCandidate` is not a `ProposalRequest`, and the gap is eight of
 sixteen fields.** The candidate carries **15** fields and the request **16**
-(`dataclasses.fields` on each: `domain/review.py` and
-`application/proposal_service.py:525`), and they do not nest. **Eight of the
+(`dataclasses.fields` on each at `be977ea7`: `domain/review.py` and
+`application/proposal_service.py:525`; the request has since grown, see the
+2026-10-20 amendment below), and they do not nest. **Eight of the
 request's sixteen have no field on the candidate to read**, and they split two
 ways: four whose source this ADR has to **decide** — `owner`, `description`,
 `content_type` and `author`, each with its own row below and its own reason —
@@ -209,6 +210,27 @@ this tool.
 > `test_accept_status_floor.py::test_accept_refuses_the_mcp_draft_for_a_deprecated_create_only_item`
 > holds the refusal for a `knowledge.proposeChange` draft, and the floor
 > compares replayed state without reading which tool drafted the proposal.
+
+> **Amended 2026-10-20 ([#754](https://github.com/theurian/theurian/issues/754),
+> [PR #969](https://github.com/theurian/theurian/pull/969)): the request has 18
+> fields, and the drafted proposal records where the candidate came from.**
+> 18 `ProposalRequest` fields (key:
+> `uv run python -c "import dataclasses as d; from theurian.application.proposal_service import ProposalRequest as R; print(len(d.fields(R)))"`).
+> The 17th is `sensitivity_is_default`, from the amendment above. The 18th,
+> `candidate_provenance`, is named by one call in `src/`, `_request`'s
+> (`tests/unit/test_candidate_call_sites.py::test_exactly_one_site_in_the_shipped_tree_sets_candidate_provenance`,
+> an AST scan that `**kwargs` expansion would pass),
+> and `ProposalService` writes it into `evidence.json` as a `candidate` object:
+> `repository`, `recordKey`, `eventKey`, `fixCommit`, `fixCommitVerdict`,
+> `category`, `candidateId` and `generatedAt`. They are the gate's inputs, not
+> its result — a candidate that exists met its gate, so `fixCommitVerdict` is
+> always `verified`. **It is a reviewer aid, not proof:** a committed proposal
+> directory is untrusted pull-request input
+> ([ADR-0028](0028-a-local-proposal-is-a-different-directory.md) decision 1), so
+> a contributor can edit the block like any other byte of that file, and no code
+> path reads its keys back. `knowledge.proposeChange`, `theurian propose` and
+> `knowledge.generateMigrationDraft` write no `candidate` key, and neither the
+> tool's response nor the migration schema changes.
 
 `KnowledgeCandidate.generator_model` stays what its type says it is: `str | None`
 recording the caller's *declared* model, provenance rather than a control.
@@ -562,10 +584,11 @@ responses **and its refusals**.
 The caller chooses one, and ADR-0031's published input schema constrains it to
 that enum. `category` is a caller-supplied hint recorded on the candidate, **not
 a router**: it chooses neither the knowledge `kind` nor the `namespace` — both are
-the caller's own wire fields (decision 1) — and today it is not carried into the
-drafted proposal at all, since `ProposalRequest` has no `category` field and
-`CandidateGenerator._request` maps none
-([#754](https://github.com/theurian/theurian/issues/754) tracks carrying it). The
+the caller's own wire fields (decision 1). Until
+[#754](https://github.com/theurian/theurian/issues/754) it was not carried into
+the drafted proposal at all; since 2026-10-20 it is the `category` key of
+`evidence.json`'s `candidate` block (decision 1's amendment), written for the
+reviewer and routing nothing. The
 cost of a wrong choice is bounded, and `docs/architecture/review-knowledge.md`
 prices it: a misclassification "costs a reviewer one correction — not a wrong rule
 in the knowledge base", because a human reads the proposal before anything becomes
@@ -1450,6 +1473,33 @@ Still owed, with the milestone that will satisfy it:
   > discovered: generated requests (every example is hand-enumerated;
   > `test_review_search_tool_absence_proof.py` carries the hypothesis arm) and
   > the store's own artifact (`test_review_search_absence_proof.py`'s).
+  >
+  > **Amended 2026-10-20 ([#748](https://github.com/theurian/theurian/issues/748),
+  > [PR #969](https://github.com/theurian/theurian/pull/969)): the pull request
+  > the gate reads is the one the thread's key names.** `_event` read only the
+  > trailing `#N` of the thread's `event_key` and resolved #N in the submitted
+  > repository, so a thread whose key named another repository or provider
+  > cleared the gate on the local #N's merged and CI values. Now
+  > `parse_event_key` (`domain/review.py`, the inverse of
+  > `ReviewEvent.external_key`) reads the key: one that does not parse, or names
+  > another repository, refuses before the resolve, and a resolved record whose
+  > `external_key` is not the thread's `event_key`, or whose repository is not
+  > the submission's, refuses after it. Both refusals are
+  > `UNRESOLVED_RECORD_REFUSAL`, this decision's constant, and both come before
+  > the fix-commit verification.
+  > `uv run pytest packages/theurian-core/tests/unit/test_candidate_generation.py -k "does_not_name"`
+  > re-checks it: four cases — a key naming another repository, another
+  > provider, no parseable key, and another repository on both key and record —
+  > each asserting the constant text, no verification call and no draft.
+  > `tests/unit/test_event_key_single_parser.py` holds the shared parser: the
+  > one `re` call under `theurian` whose pattern reads digits after a `#` is in
+  > `domain/review.py`, and `parse_event_key`'s callers are exactly
+  > `candidate_generation._event` and `review_search_builder._pull_request_of`
+> (a parse by `split` or `partition` is outside its key).
+  > **Not closed: a same-repository renumber.** A thread honestly on #431 whose
+  > key is edited to #432, where #432 exists, still reads #432's signals. No
+  > stored referent independent of the key carries the number, so this stays
+  > T-24's accepted residual, and no test asserts it either way.
 - **Slice B5 — the candidate lands as an ordinary proposal, through the mapping
   decision 1 states.** Owed: a test that the proposal a generated candidate
   produces is one `theurian propose accept` accepts, driven through the shipped
