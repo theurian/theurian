@@ -59,6 +59,7 @@ from theurian.domain.enums import (
     Sensitivity,
     TrustLevel,
 )
+from theurian.domain.errors import InvariantViolationError
 from theurian.domain.identifiers import (
     AgentId,
     ItemId,
@@ -722,12 +723,43 @@ def test_the_pull_request_number_is_matched_ascii_only() -> None:
 def test_parse_event_key_inverts_external_key(provider: str, repository: str, number: int) -> None:
     """A writer and reader that drift apart make every honest key read as foreign (#748).
 
-    The explicit example pins the grammar: the provider holds no `:` and the repository
-    may, so `github:a:b#5` parses as `("github", "a:b", 5)`.
+    The strategy's domain equals ``ReviewEvent``'s own validation. The examples pin the
+    grammar (the provider holds no `:`, the repository may, so `github:a:b#5` parses as
+    `("github", "a:b", 5)`) and the widest stored number, which random draws never reach.
     """
     event = dataclasses.replace(_event(), provider=provider, repository=repository, number=number)
 
     assert parse_event_key(event.external_key) == (provider, repository, number)
+
+
+@example("github:o/r#000431")
+@example("github:o/r#431x")
+@example("github:o/r#431\n")
+@given(key=st.text())
+def test_parse_event_key_reads_only_what_external_key_would_render(key: str) -> None:
+    """The converse of the inverse test: a key that parses is exactly one ``external_key`` renders.
+
+    A zero-padded `#000431` served as pull request 431, and a trailing `\n` or `x`
+    slipped past a prefix match (#748). The refusal for a too-wide run is allowed.
+    """
+    try:
+        parsed = parse_event_key(key)
+    except InvariantViolationError:
+        return
+    if parsed is not None:
+        provider, repository, number = parsed
+        assert f"{provider}:{repository}#{number}" == key
+
+
+@pytest.mark.parametrize(
+    ("provider", "repository"), [("", "o/r"), ("github:a", "o/r"), ("github", "")]
+)
+def test_a_review_event_refuses_an_identity_external_key_cannot_round_trip(
+    provider: str, repository: str
+) -> None:
+    """An empty part or a `:` in the provider renders a key that parses as another identity (#748)."""
+    with pytest.raises(InvariantViolationError):
+        dataclasses.replace(_event(), provider=provider, repository=repository)
 
 
 def test_the_submission_type_declares_no_gate_signal() -> None:

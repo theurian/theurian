@@ -1759,3 +1759,22 @@ def test_an_anchor_from_another_provider_is_refused() -> None:
             anchor=SourceAnchor(provider="gitlab", source_uri="https://example.invalid/1"),
             payload=_event().payload,
         )
+
+
+def test_a_landed_event_whose_provider_was_rewritten_to_a_colon_refuses_as_evidence_error(
+    tmp_path: Path,
+) -> None:
+    """A rewritten file must be an operator-readable refusal, not a traceback (#748).
+
+    `ReviewEvent` now refuses a `:` in the provider, so a clone-delivered file
+    carrying one must surface as ``ReviewEvidenceError`` on the graded read.
+    """
+    store = _store(tmp_path)
+    (landed,) = store.write([_event(number=42)], run=RUN_ONE)
+    leaf = _review_root(tmp_path) / landed
+    text = leaf.read_text(encoding="utf-8")
+    assert '"provider": "github"' in text, "the fixture no longer carries the rewritten spelling"
+    leaf.write_text(text.replace('"provider": "github"', '"provider": "github:a"'), encoding="utf-8")
+
+    with pytest.raises(ReviewEvidenceError):
+        store.read_all()
