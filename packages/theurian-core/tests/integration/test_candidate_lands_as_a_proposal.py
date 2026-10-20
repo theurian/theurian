@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Final
 
@@ -281,3 +282,50 @@ def test_the_accepted_migration_names_the_human_and_the_proposal_named_the_agent
         f"`evidence.json`, which records the run; the migration records the human "
         f"whose name a reviewer reads as the author of the change."
     )
+
+
+#: The eight keys of the ``candidate`` block (#754), in no order that matters.
+CANDIDATE_KEYS: Final = {
+    "repository",
+    "recordKey",
+    "eventKey",
+    "fixCommit",
+    "fixCommitVerdict",
+    "category",
+    "candidateId",
+    "generatedAt",
+}
+
+
+def test_the_candidate_block_in_evidence_json_holds_the_gate_inputs_and_survives_accept(
+    project: ServedProject, tmp_path: Path
+) -> None:
+    """#754: a reviewer reads which thread, event and commit a candidate came from.
+
+    Values, not presence: each key is compared with what the call named or the
+    corpus holds. ``generatedAt`` is the one instant read off the system clock, so
+    it is checked to be an ISO instant. Read again after ``propose accept``,
+    because ``evidence.json`` is the file the acceptance leaves behind (#361).
+    """
+    payload = _generate(project, tmp_path)
+    evidence_file = project.root / ".theurian/proposals" / payload["proposalId"] / "evidence.json"
+
+    before = json.loads(evidence_file.read_text(encoding="utf-8"))
+    run_cli("propose", "accept", payload["proposalId"])
+    after = json.loads(evidence_file.read_text(encoding="utf-8"))
+
+    block = before["candidate"]
+    assert set(block) == CANDIDATE_KEYS, block
+    assert datetime.fromisoformat(block.pop("generatedAt")).tzinfo is not None
+    assert block == {
+        "repository": corpus.REPOSITORY,
+        "recordKey": corpus.THREAD_SATISFYING,
+        "eventKey": f"{corpus.PROVIDER}:{corpus.REPOSITORY}#{corpus.PULL_REQUEST_CI_PASSED}",
+        "fixCommit": project.verifying,
+        "fixCommitVerdict": "verified",
+        "category": "reliability-rule",
+        "candidateId": f"{corpus.THREAD_SATISFYING}:{ITEM_ID}",
+    }
+    assert after == before | {
+        "candidate": {**block, "generatedAt": after["candidate"]["generatedAt"]}
+    }
