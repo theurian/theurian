@@ -714,6 +714,7 @@ def test_the_pull_request_number_is_matched_ascii_only() -> None:
 
 @example(provider="github", repository="a:b", number=5)
 @example(provider="github", repository="o/r", number=10**19 - 1)
+@example(provider="github", repository=" ", number=5)
 @given(
     provider=st.text(st.characters(blacklist_characters=":"), min_size=1),
     repository=st.text(st.characters(), min_size=1),
@@ -724,7 +725,8 @@ def test_parse_event_key_inverts_external_key(provider: str, repository: str, nu
 
     The strategy draws ``ReviewEvent``'s domain, lone surrogates included, with numbers up to the
     parser's 19 digits. The examples pin on every run the grammar (the provider holds no `:`, the
-    repository may, so `github:a:b#5` parses as `("github", "a:b", 5)`) and the widest number.
+    repository may, so `github:a:b#5` parses as `("github", "a:b", 5)`), the widest number and a
+    whitespace-only repository.
     """
     event = dataclasses.replace(_event(), provider=provider, repository=repository, number=number)
 
