@@ -191,6 +191,49 @@ def test_object_schemas_reject_unknown_properties(path: pathlib.Path) -> None:
     )
 
 
+#: The one nested object an input schema leaves open on purpose: the migration
+#: document is validated against the migration schema inside the service, and
+#: this boundary "constrains only that an object arrives" (its own description).
+_OPAQUE_NESTED = {("knowledge-generate-migration-draft-input.schema.json", "$.properties.document")}
+
+
+def _nested_objects(node: Any, path: str = "$") -> list[tuple[str, dict[str, Any]]]:
+    """Every strict descendant subschema that declares ``type: object`` or ``properties``."""
+    found: list[tuple[str, dict[str, Any]]] = []
+    if isinstance(node, dict):
+        if path != "$" and (node.get("type") == "object" or "properties" in node):
+            found.append((path, node))
+        for key, value in node.items():
+            found.extend(_nested_objects(value, f"{path}.{key}"))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            found.extend(_nested_objects(value, f"{path}[{index}]"))
+    return found
+
+
+def test_nested_input_objects_reject_unknown_properties() -> None:
+    """A nested object that lost its closure accepts a misspelt key silently (#974, SEC-12).
+
+    Population, measured at 41484424: the 10 ``schemas/mcp/*-input.schema.json``
+    hold 6 nested object subschemas; 5 close with ``additionalProperties: false``
+    (``evidence`` x3, ``sourceAnchors.items`` x2) and 1 is the opaque exception
+    above. Key: ``type: object`` or ``properties``, below the root.
+    Blind to an object reached only through a ``$ref`` to another file, or one
+    declaring neither keyword. RED driver: delete ``evidence.additionalProperties``
+    from any of the three schemas that carry it.
+    """
+    open_objects = [
+        f"{path.name} {where}"
+        for path, schema in _input_schemas()
+        for where, node in _nested_objects(schema)
+        if node.get("additionalProperties") is not False
+        and node.get("unevaluatedProperties") is not False
+        and (path.name, where) not in _OPAQUE_NESTED
+    ]
+
+    assert not open_objects, f"nested input objects left open: {open_objects}"
+
+
 # -- Migration schema ------------------------------------------------------
 
 
