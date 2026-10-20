@@ -1516,8 +1516,8 @@ Still owed, with the milestone that will satisfy it:
   > of the key carries the number: `theurian review ingest` writes the thread's
   > `sourceAnchor.sourceUri` as its pull request's URL. Binding it was declined: a T-24
   > planter writes the anchor in the same thread file, so binding bars only a one-field hand
-  > edit; a repository name reused after a rename or deletion carries an identical URL,
-  > which binding would not catch; and `ReadEvidenceRecord` returns only the payload, so
+  > edit, and would not cover a repository name reused after a rename or deletion, whose URL
+  > is identical; and `ReadEvidenceRecord` returns only the payload, so
   > binding needs new plumbing. So this stays
   > T-24's accepted residual, and no test asserts it either way.
 - **Slice B5 — the candidate lands as an ordinary proposal, through the mapping
