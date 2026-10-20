@@ -425,4 +425,13 @@ Still owed, with the milestone that brings the feature under test:
   other than a proposal; this ADR does not admit one, and admitting one is a
   different decision. The mis-key in the other direction fails closed: a read tool
   that grew an `evidence` input would be demanded in the session's argument set
-  and redden until somebody settled which it is.
+  and redden until somebody settled which it is. **Pinned since
+  [#962](https://github.com/theurian/theurian/pull/962) (#711):**
+  `tests/integration/test_write_intent_facade_population.py::test_the_four_write_intent_keys_name_the_same_tools`
+  asserts the evidence key names the same tools as the draft-only-facade key and
+  the hand lists `WRITE_INTENT_TOOLS` and `_WRITE_INTENT_TOOL_NAMES`. Residual: a
+  tool that drafts without the facade, requires no `evidence` and is in neither
+  hand list leaves the four agreeing. The key reads the signature-built
+  `inputSchema` that `tools/list` serves; its top-level agreement with
+  `schemas/mcp/` is `test_input_schema_agreement.py`'s (ADR-0031 decision 6), and
+  nested members are not compared.

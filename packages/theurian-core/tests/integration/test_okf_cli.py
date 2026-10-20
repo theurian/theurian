@@ -250,3 +250,24 @@ def test_okf_import_over_the_operation_cap_refuses_with_a_remedy_naming_item(
 
     assert code == EXIT_INVALID_INPUT
     assert "--item" in payload["remedy"]
+
+
+def test_the_import_service_is_handed_the_draft_only_facade_and_not_the_service(
+    project: Path,
+) -> None:
+    """The OKF import is the second surface carrying ADR-0032 decision 8's promise.
+
+    ``OkfImportService(drafts=service)  # type: ignore[arg-type]`` left this file
+    and ``test_okf_commands.py`` green at 6c3c2827 (23 passed, those two files); mypy, without
+    the ignore, caught it. RED driver: that mutant.
+    """
+    from theurian.application.proposal_service import ProposalService
+    from theurian.cli.context import resolve_context
+    from theurian.cli.okf_commands import _service
+
+    drafts: Any = _service(resolve_context(project))._drafts
+
+    assert type(drafts).__name__ == "DraftOnlyProposals"
+    assert not isinstance(drafts, ProposalService)
+    assert not hasattr(drafts, "accept")
+    assert not hasattr(drafts, "_commit")
