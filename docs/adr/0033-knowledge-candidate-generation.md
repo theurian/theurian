@@ -1501,8 +1501,14 @@ Still owed, with the milestone that will satisfy it:
   > (outside its key: a parse by `split` or `partition`, and a pattern passed by a
   > constant's name or through `from re import`, [#990](https://github.com/theurian/theurian/issues/990)).
   > **Not closed: a same-repository renumber.** A thread honestly on #431 whose
-  > key is edited to #432, where #432 exists, still reads #432's signals. No
-  > stored referent independent of the key carries the number, so this stays
+  > key is edited to #432, where #432 exists, still reads #432's signals. A field independent
+  > of the key carries the number: `theurian review ingest` writes the thread's
+  > `sourceAnchor.sourceUri` as its pull request's URL. Binding it was declined: a T-24
+  > planter writes the anchor in the same thread file, so binding bars only a one-field hand
+  > edit; a repository name reused after a rename or deletion carries an identical URL,
+  > which binding would not catch; and `ReadEvidenceRecord` returns only the payload, so
+  > binding needs new plumbing, with an unmeasured risk of refusing honest threads whose
+  > anchors predate the current ingest form. So this stays
   > T-24's accepted residual, and no test asserts it either way.
 - **Slice B5 — the candidate lands as an ordinary proposal, through the mapping
   decision 1 states.** Owed: a test that the proposal a generated candidate
