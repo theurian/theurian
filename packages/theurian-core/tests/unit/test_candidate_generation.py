@@ -908,14 +908,17 @@ def test_a_pull_request_record_the_thread_does_not_name_is_the_uniform_refusal(
     inside the same repository is T-24's recorded residual and is not asserted.
     """
     verified: list[str] = []
+
+    def verify(commit: str, _path: str) -> FixCommitVerdict:
+        verified.append(commit)
+        return FixCommitVerdict.VERIFIED
+
     drafts = _RecordingDrafts()
     corpus = _event_key_corpus(event_key, stored_event)
     generator = CandidateGenerator(
         resolve_evidence_path=corpus.resolve,
         read_record=corpus.read,
-        verify_fix_commit=lambda commit, _path: (
-            verified.append(commit) or FixCommitVerdict.VERIFIED
-        ),
+        verify_fix_commit=verify,
         drafts=DraftOnlyProposals(drafts),
         clock=FrozenClock(),
     )
