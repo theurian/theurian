@@ -54,8 +54,8 @@ from typing import Any, Final
 import pytest
 from git_harness import commit_migrations
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
-from mcp.types import CallToolResult
 from migration_fixtures import body_pin
+from tool_result import structured_payload
 from typer.testing import CliRunner
 
 from theurian.application.project_service import (
@@ -400,24 +400,7 @@ async def _call(registry: ProjectRegistry, **arguments: Any) -> dict[str, Any]:
     result = await build_server(registry).call_tool(
         "review.search", {"projectId": "demo", **arguments}
     )
-    # `structured_content`, not `structuredContent`: the camelCase spelling is a
-    # serialisation alias and not an attribute, so a `getattr` for it returned the
-    # default on every call and this helper always took the text-block branch --
-    # the structured copy of every assertion in this module was unread.
-    assert isinstance(result, CallToolResult), (
-        f"`review.search` answered with {type(result).__name__} rather than a tool result"
-    )
-
-    structured = result.structured_content
-
-    assert structured is not None, (
-        "`review.search` published no structured content, so this helper would fall "
-        "back to the text block and every assertion below would range over one of the "
-        "response's two copies without saying which"
-    )
-
-    payload: dict[str, Any] = structured
-    return payload
+    return structured_payload(result)
 
 
 async def _refusal(registry: ProjectRegistry, **arguments: Any) -> str:

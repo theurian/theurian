@@ -24,8 +24,8 @@ import pytest
 from git_harness import commit_migrations
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError as SdkToolError
-from mcp.types import CallToolResult
 from migration_fixtures import body_pin
+from tool_result import structured_payload
 from typer.testing import CliRunner
 
 from theurian import __protocol_version__, __version__
@@ -346,24 +346,7 @@ async def _call_on(server: MCPServer, tool: str, **arguments: Any) -> dict[str, 
     from two different grants and so cannot let the helper build one.
     """
     result = await server.call_tool(tool, arguments)
-    # `structured_content`, not `structuredContent`: the camelCase spelling is a
-    # serialisation alias and not an attribute, so a `getattr` for it returned the
-    # default on every call and this helper always took the text-block branch --
-    # the structured copy of every assertion in this module was unread.
-    assert isinstance(result, CallToolResult), (
-        f"`{tool}` answered with {type(result).__name__} rather than a tool result"
-    )
-
-    structured = result.structured_content
-
-    assert structured is not None, (
-        f"`{tool}` published no structured content, so this helper would fall back to "
-        f"the text block and every assertion below would range over one of the "
-        f"response's two copies without saying which"
-    )
-
-    payload: dict[str, Any] = structured
-    return payload
+    return structured_payload(result)
 
 
 # -- Authorization grants (#119) -------------------------------------------
@@ -6173,6 +6156,16 @@ async def test_a_withheld_document_changes_nothing_a_caller_can_see(
     }
     assert moved == set(BUILD_IDENTITY), (
         "exactly the two fields the published contract exempts -- no more, and no fewer"
+    )
+
+    def _whole(payload: dict[str, Any]) -> str:
+        retrieval = {k: v for k, v in payload["retrieval"].items() if k not in BUILD_IDENTITY}
+        # `projectId` echoes the request, and the two corpora are two projects.
+        return json.dumps({**payload, "projectId": None, "retrieval": retrieval}, sort_keys=True)
+
+    assert _whole(probe) == _whole(other), (
+        "the whole response bar the echoed project id and the build identities, "
+        "so a top-level key nobody enumerated above is compared too"
     )
 
 
