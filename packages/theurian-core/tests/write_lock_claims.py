@@ -10,16 +10,21 @@ https://github.com/theurian/theurian/issues/432 and
 https://github.com/theurian/theurian/issues/433 corrected them -- separately,
 because nothing tied the copy to the original.
 
-The third is the **served-corpus twin**,
-``.theurian/knowledge/architecture/single-writer-synchronous-in-m1.<ulid>.md:31``,
-which still carries the retracted wording and is meant to: the dogfood corpus is
-held byte-identical to its source anchor commit by
-``test_dogfood_corpus_governance.py::test_every_pinned_body_is_byte_identical_to_its_source_anchor_commit``,
-so only a governed re-seed can move it, and that re-seed is #199 unit C. It is
-outside both pins on purpose -- a scan that reached it would report the
-governance guard doing its job as drift. Recorded here rather than left to a
-reader who greps the tree for the old sentence, finds a third copy, and has to
-guess which of the three is the defect.
+The third is the **corpus twin**,
+``.theurian/knowledge/architecture/single-writer-synchronous-in-m1.<ulid>.md``,
+and it is outside both pins on purpose. Its **seed** revision,
+``01M0D5H1ZW7YW97TFNBPVG7HB1``, still carries the retracted wording at :31 and
+is meant to: it is superseded but stays tracked, and
+``test_dogfood_corpus_governance.py::test_every_pinned_body_is_byte_identical_to_its_source_anchor_commit``
+holds every revision a tracked migration declares byte-identical to its source
+anchor commit, so a re-seed supersedes that body rather than moving it. The
+**served** revision has carried the corrected clause since the #471 re-seed. A
+scan that reached the corpus would report the governance guard doing its job as
+drift on the seed, and the fix as the defect on any later revision whose
+correction note quotes the retracted phrase -- the trap
+:func:`find_lock_on_database` records for a file-wide call. Recorded here rather
+than left to a reader who greps the tree for the old sentence, finds a third
+copy, and has to guess which of the three is the defect.
 
 The line number is worth getting right because its neighbour carries a
 *different* retracted claim. Measured 2026-08-31 against
