@@ -80,6 +80,7 @@ from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from itertools import chain
 from pathlib import Path, PurePosixPath
+from types import MappingProxyType
 from typing import Final, NoReturn
 
 import yaml
@@ -139,6 +140,7 @@ from theurian.domain.migration import (
     CreateItem,
     DeprecateItem,
     Migration,
+    MigrationSet,
     OperationKind,
     RestoreItem,
     UpsertRevision,
@@ -1949,7 +1951,13 @@ class ProposalService:
             raise
         except (TheurianError, OSError) as exc:
             raise self._union_refusal(
-                location, migration_file, landed, exc, _kinds_of(document), moves=moves
+                location,
+                migration_file,
+                landed,
+                exc,
+                _kinds_of(document),
+                document=document,
+                moves=moves,
             ) from exc
 
     def _refuse_an_effective_lowering(
@@ -2015,6 +2023,8 @@ class ProposalService:
             kinds,
             location,
             moves,
+            # The landed status is what `theurian propose` reads, not what the refusal names.
+            retired=[i for i, labels in held.items() if _is_retired(labels)],
         )
         if refusal is not None:
             raise refusal
@@ -2145,6 +2155,7 @@ class ProposalService:
         error: BaseException,
         kinds: frozenset[str],
         *,
+        document: Mapping[str, object] = MappingProxyType({}),
         moves: tuple[_BodyMove, ...] = (),
     ) -> ProposalError:
         """Turn a refused rehearsal into a refusal a reader can act on.
@@ -2181,15 +2192,27 @@ class ProposalService:
                         return ProposalError(message, remedy=ACCEPT_READMISSION_REMEDY)
                     return ProposalError(
                         message,
-                        remedy=_removal_remedy([error.item_id], location, moves, READMIT_REMEDY),
+                        remedy=_removal_remedy(
+                            [error.item_id],
+                            location,
+                            moves,
+                            READMIT_REMEDY,
+                            retired=[error.item_id],
+                        ),
                     )
+            # The revision and the writer come from the landed set alone, never from
+            # `error`: when this proposal replays first the error is raised on the landed
+            # migration and its `actual` is this proposal's own revision. Rejected: dropping
+            # the edit cure in that order -- it leaves the non-content route only the
+            # removal cure, which drops that item's content update.
+            edit, revision = self._edit_cure(error, document)
             if not content_only:
                 return ProposalError(
                     message,
                     remedy=(
                         "Another change to this item landed first. Nothing has moved, so either "
-                        "give the proposal's own migration the expectedRevision the message "
-                        "reports and run `theurian propose accept` again, or "
+                        + edit
+                        + ", then run `theurian propose accept` again, or "
                         + _removal_cure([error.item_id], location, moves)
                     ),
                 )
@@ -2197,9 +2220,10 @@ class ProposalService:
                 message,
                 remedy=(
                     "Another change to this item landed first. Nothing has moved, so either "
-                    "give the proposal's own migration the expectedRevision the message "
-                    "reports, or draft the change again with --expected-revision and delete "
-                    f"{location.relative}/."
+                    + edit
+                    + ", or draft the change again with --expected-revision"
+                    + revision
+                    + f" and delete {location.relative}/."
                 ),
             )
         return ProposalError(
@@ -2209,6 +2233,43 @@ class ProposalService:
                 "it again. Nothing has moved and the proposal's own files are intact."
             ),
         )
+
+    def _edit_cure(
+        self, error: RevisionConflictError, document: Mapping[str, object]
+    ) -> tuple[str, str]:
+        """The clause giving this proposal's upsert the landed revision, and that revision.
+
+        The revision is the item's current one in the landed set alone.
+        """
+        reported = "give the proposal's own migration the expectedRevision the message reports"
+        own = [
+            r
+            for _, op in _mappings_in(document.get("operations"), set())
+            if op.get("op") == "upsertRevision" and op.get("itemId") == error.item_id.value
+            if isinstance(r := op.get("revisionId"), str)
+        ]
+        # #950: with two upserts of the item the store can hold this proposal's own earlier
+        # revision, which no landed writer wrote, so only the message's value can be followed.
+        if len(own) > 1:
+            return reported, ""
+        if self._current_revision is not None:
+            revision = self._current_revision(error.item_id)
+        else:
+            current = self._current_item(error.item_id)
+            revision = None if current is None else current.revision_id
+        if revision is None:
+            return reported, ""
+        edit = f"give the proposal's own migration `expectedRevision: {revision.value}`"
+        # `dependsOn` is printed when the engine's own order puts the landed writer after
+        # this proposal. Rejected keys: `error.actual` (misses a proposal between two landed
+        # writers) and an unconditional `dependsOn` (moves the proposal in the normal order).
+        writers = _writers_after_incoming(document, tuple(self._landed_migrations()), revision)
+        if writers:
+            edit += (
+                " and `dependsOn: [" + ", ".join(writers) + "]`, so it replays after the "
+                "migration that wrote it"
+            )
+        return edit, " " + revision.value
 
     def _landed_set_refusal(self, error: BaseException) -> ApprovedSetUnusableError:
         """The refusal for a fault that predates this proposal.
@@ -4554,12 +4615,14 @@ def _write_file(destination: Path, data: bytes, *, exclusive: bool) -> None:
         opened.write(data)
 
 
-def _floor_refusal(
+def _floor_refusal(  # noqa: PLR0913 -- `retired` is keyword-only
     lowered: tuple[tuple[ItemId, Sensitivity, Sensitivity], ...],
     readmitted: tuple[tuple[ItemId, KnowledgeStatus, KnowledgeStatus], ...],
     kinds: frozenset[str],
     location: _ProposalLocation,
     moves: Sequence[_BodyMove] = (),
+    *,
+    retired: Sequence[ItemId] = (),
 ) -> ProposalError | None:
     """The accept refusal for what the replay changed, naming every cause at once.
 
@@ -4586,6 +4649,7 @@ def _floor_refusal(
                 moves,
                 *([DECLASSIFY_REMEDY] if lowered else []),
                 *([READMIT_REMEDY] if readmitted else []),
+                retired=[*retired, *(change[0] for change in readmitted)],
             ),
         )
     remedies: list[str] = []
@@ -4621,6 +4685,39 @@ def _writes(migration: Migration, item_id: ItemId, field: str) -> bool:
         isinstance(operation, writers) and operation.item_id == item_id
         for operation in migration.operations
     )
+
+
+def _writers_after_incoming(
+    document: Mapping[str, object], landed: tuple[Migration, ...], revision: RevisionId
+) -> list[str]:
+    """Landed writers of ``revision`` that replay after this proposal, in the engine's order.
+
+    The order is :meth:`MigrationSet.ordered` over the landed set plus a stand-in for the
+    proposal that carries only its id and ``dependsOn``. If that order cannot be built,
+    every writer is named: that clears the revision conflict, and it can move the proposal
+    past unrelated landed migrations (#953).
+    """
+    writers = [
+        m
+        for m in landed
+        if any(isinstance(o, UpsertRevision) and o.revision_id == revision for o in m.operations)
+    ]
+    names = [m.migration_id.value for m in writers]
+    incoming = _migration_id_or_none(document.get("id"))
+    depends = document.get("dependsOn")
+    if incoming is None or not writers:
+        return names
+    try:
+        deps = tuple(MigrationId(d) for d in depends) if isinstance(depends, list) else ()
+        stand_in = replace(writers[0], migration_id=incoming, depends_on=deps)
+        order = [m.migration_id for m in MigrationSet.ordered((*landed, stand_in))]
+    except (TheurianError, TypeError):
+        return names
+    return [
+        n
+        for n, m in zip(names, writers, strict=True)
+        if order.index(m.migration_id) > order.index(incoming)
+    ]
 
 
 def _writers_replaying_after(
@@ -4752,11 +4849,15 @@ def _is_content_only(kinds: frozenset[str]) -> bool:
 
 
 def _removal_remedy(
-    item_ids: list[ItemId], location: _ProposalLocation, moves: Sequence[_BodyMove], *tails: str
+    item_ids: list[ItemId],
+    location: _ProposalLocation,
+    moves: Sequence[_BodyMove],
+    *tails: str,
+    retired: Sequence[ItemId],
 ) -> str:
     """The landed-labels-untouched removal cure, then the remedies for what the replay changed."""
     lead = "Nothing has moved. To keep those items at their landed labels, "
-    return " ".join([lead + _removal_cure(item_ids, location, moves), *tails])
+    return " ".join([lead + _removal_cure(item_ids, location, moves, retired), *tails])
 
 
 #: A printable body path: plain segments of ASCII word characters, dot and hyphen, so no
@@ -4777,8 +4878,19 @@ def _printable_body(source: Path, directory: Path) -> str | None:
     return relative if source.resolve().is_relative_to(directory.resolve()) else None
 
 
+def _file_identity(path: Path) -> tuple[int, int] | None:
+    try:
+        info = path.stat()
+    except OSError:
+        return None
+    return (info.st_dev, info.st_ino)
+
+
 def _removal_cure(
-    item_ids: list[ItemId], location: _ProposalLocation, moves: Sequence[_BodyMove]
+    item_ids: list[ItemId],
+    location: _ProposalLocation,
+    moves: Sequence[_BodyMove],
+    retired: Sequence[ItemId] = (),
 ) -> str:
     """The clause curing a refusal of items the proposal cannot be redrafted around.
 
@@ -4786,18 +4898,38 @@ def _removal_cure(
     body path is outside :data:`_PRINTABLE_BODY_PATH` or resolves outside the proposal
     directory, the one cure naming nothing is left. ``location.relative`` is the configured
     proposals directory plus a validated ULID.
+
+    Every refused id and body path is kept (#940): a follower needs each one, the body list is
+    bounded by ``MAX_UPSERT_OPERATIONS``, which is refused before :meth:`_body_moves` reads
+    anything, and a cap was rejected because past it a directory-only cure discards the kept
+    operations.
     """
     removed = {item_id.value for item_id in item_ids}
-    shared = {m.source for m in moves if m.item_id not in removed}
-    sources = [m.source for m in moves if m.item_id in removed and m.source not in shared]
+    delete_all = "delete " + location.relative + "/"
+    # A body is shared by file identity, as `_body_moves` keys it: two spellings of one
+    # file must not list it for deletion. With a kept body, an identity that cannot be read
+    # on either side fails closed to the directory-only cure, which names no file.
+    shared = {_file_identity(m.source) for m in moves if m.item_id not in removed}
+    sources = [m.source for m in moves if m.item_id in removed]
+    if shared and (None in shared or any(_file_identity(s) is None for s in sources)):
+        return delete_all + "."
+    sources = [s for s in sources if _file_identity(s) not in shared]
     relatives = [_printable_body(source, location.directory) for source in sources]
     bodies = sorted(location.relative + "/" + r for r in relatives if r is not None)
-    delete_all = "delete " + location.relative + "/"
     if None in relatives or any(_one_name(name) != repr(name) for name in (*removed, *bodies)):
         return delete_all + "."
     operations = " and ".join(
         "every operation whose `itemId` is `" + item_id.value + "`" for item_id in item_ids
     )
+    redraft = ""
+    # No line for a retired item: `theurian propose` refuses it without naming a revision.
+    live = removed - {item_id.value for item_id in retired}
+    if any(m.item_id in live for m in moves):
+        redraft = (
+            " To keep a removed content update for an item that is not withdrawn, draft it "
+            "again afterwards with "
+            "`theurian propose`; if it refuses, its refusal names the --expected-revision it needs."
+        )
     drafted = ""
     if bodies:
         drafted = (
@@ -4813,6 +4945,7 @@ def _removal_cure(
         + ", then run `theurian propose accept` again; if those are all of its operations, "
         + delete_all
         + " instead."
+        + redraft
     )
 
 
@@ -4891,6 +5024,15 @@ def _refuse_a_retired_item(current: ItemLabels) -> None:
     """
     if not may_surface(current.status, include_unapproved=True):
         raise ProposalError(RETIRED_ITEM_MESSAGE, remedy=READMIT_REMEDY)
+
+
+def _is_retired(labels: ItemLabels) -> bool:
+    """Asked of `_refuse_a_retired_item`, so the status gate keeps one reader here."""
+    try:
+        _refuse_a_retired_item(labels)
+    except ProposalError:
+        return True
+    return False
 
 
 def _refuse_a_lower_sensitivity(request: ProposalRequest, current: ItemLabels) -> None:
