@@ -1491,7 +1491,8 @@ Still owed, with the milestone that will satisfy it:
   > repository, so a thread whose key named another repository or provider
   > cleared the gate on the local #N's merged and CI values. Now
   > `parse_event_key` (`domain/review.py`, the inverse of
-  > `ReviewEvent.external_key`) reads the key: one that does not parse, or names
+  > `ReviewEvent.external_key` for a number of up to 19 digits) reads the key:
+  > one that does not parse, or names
   > another repository, refuses before the resolve, and a resolved record whose
   > `external_key` is not the thread's `event_key` refuses after it. That one
   > equality also binds the record's repository to the submission's, since
