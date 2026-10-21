@@ -16,6 +16,9 @@ import pytest
 
 from theurian.infrastructure.git import environment
 
+HONOURS_NO_LAZY_FETCH = "git_honours_no_lazy_fetch"
+BELOW_2_45 = "git_below_2_45"
+
 _IDENTITY = (
     "-c",
     "user.email=test@example.com",

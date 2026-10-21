@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 from git_isolation_fixtures import (
+    BELOW_2_45,
     clone,
     commit_file,
     git,
@@ -25,7 +26,6 @@ from git_isolation_fixtures import (
     new_repo,
     serving_origin,
     traced_fetches,
-    without_lazy_fetch_guard,
 )
 
 from theurian.domain.review import FixCommitVerdict
@@ -35,15 +35,6 @@ pytestmark = pytest.mark.integration
 
 FILE = "src/retrying.py"
 OTHER = "docs/notes.md"
-HONOURS = "git_honours_no_lazy_fetch"
-OLDER = "git_below_2_45"
-
-
-@pytest.fixture(params=[HONOURS, OLDER])
-def lazy_fetch_mode(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
-    if request.param == OLDER:
-        without_lazy_fetch_guard(monkeypatch)
-    return str(request.param)
 
 
 def _fetches_of(
@@ -134,7 +125,7 @@ def test_a_commit_in_a_treeless_partial_clone_is_refused_without_a_fetch(
 
     assert verdict is _V.NO_SUCH_COMMIT
     assert missing_objects(repo) == before
-    assert lazy_fetch_mode == OLDER or fetches == []
+    assert lazy_fetch_mode == BELOW_2_45 or fetches == []
 
 
 @pytest.mark.parametrize(
@@ -179,7 +170,7 @@ def test_a_commit_the_clone_has_never_fetched_is_not_pulled_in_by_naming_it(
 
     assert verdict is _V.NO_SUCH_COMMIT
     assert not any(has_object(repo, sha) for sha in chain)
-    assert lazy_fetch_mode == OLDER or fetches == []
+    assert lazy_fetch_mode == BELOW_2_45 or fetches == []
 
 
 def test_a_bare_partial_clone_does_not_ask_for_its_mailmap_blob(
