@@ -41,6 +41,7 @@ from migration_fixtures import body_pin
 
 from theurian.cli.context import schema_root
 from theurian.infrastructure.filesystem.migration_loader import load_migrations
+from theurian.infrastructure.git import environment
 from theurian.infrastructure.git.committed_check import (
     GIT_TIMEOUT_SECONDS,
     CommittedMigrationCheck,
@@ -316,7 +317,7 @@ def test_the_git_vectors_are_fixed_and_carry_a_timeout(
 ONE, TWO = "migrations/0001.md", "migrations/0002.md"
 
 
-@pytest.mark.parametrize("redirect", ["replace-ref", "git-dir"])
+@pytest.mark.parametrize("redirect", ["replace-ref", "replace-ref-under-repo-config", "git-dir"])
 def test_a_migration_absent_at_head_is_not_committed_whatever_redirects_head(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, redirect: str
 ) -> None:
@@ -326,9 +327,12 @@ def test_a_migration_absent_at_head_is_not_committed_whatever_redirects_head(
     git(repo, "checkout", "-q", "-b", "side")
     side = commit_file(repo, TWO, "two\n")
     root = repo
-    if redirect == "replace-ref":
+    if redirect.startswith("replace-ref"):
         git(repo, "checkout", "-q", "main")
         git(repo, "replace", head, side)
+        if redirect.endswith("config"):  # the env is taken away: only the argv defends
+            git(repo, "config", "core.useReplaceRefs", "true")
+            monkeypatch.delitem(environment._FORCED, "GIT_NO_REPLACE_OBJECTS")
     else:
         root = new_repo(tmp_path / "elsewhere")
         commit_file(root, ONE, "one\n")

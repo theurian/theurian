@@ -27,6 +27,7 @@ from git_isolation_fixtures import (
 )
 
 from theurian.domain.review import FixCommitVerdict
+from theurian.infrastructure.git import environment
 from theurian.infrastructure.git.fix_commit_check import FixCommitCheck
 
 pytestmark = pytest.mark.integration
@@ -87,7 +88,10 @@ def test_a_shallow_boundary_commit_is_never_verified(
     assert FixCommitCheck(repo).verify(shas[verify_index], FILE) is expected
 
 
-@pytest.mark.parametrize("redirect", ["replace-ref", "git-dir", "info-grafts", "graft-file-env"])
+@pytest.mark.parametrize(
+    "redirect",
+    ["replace-ref", "replace-ref-under-repo-config", "git-dir", "info-grafts", "graft-file-env"],
+)
 def test_a_redirected_history_never_verifies_a_commit_that_did_not_touch_the_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, redirect: str
 ) -> None:
@@ -96,8 +100,11 @@ def test_a_redirected_history_never_verifies_a_commit_that_did_not_touch_the_pat
     touching = commit_file(repo, FILE, "a\n")
     untouched = commit_file(repo, OTHER, "b\n")
     root, sha, expected = repo, untouched, FixCommitVerdict.TOUCHES_NOTHING_HERE
-    if redirect == "replace-ref":
+    if redirect.startswith("replace-ref"):
         git(repo, "replace", untouched, touching)
+        if redirect.endswith("config"):  # the env is taken away: only the argv defends
+            git(repo, "config", "core.useReplaceRefs", "true")
+            monkeypatch.delitem(environment._FORCED, "GIT_NO_REPLACE_OBJECTS")
     elif redirect == "info-grafts":
         (repo / ".git" / "info" / "grafts").write_text(f"{untouched}\n", encoding="utf-8")
     elif redirect == "graft-file-env":
