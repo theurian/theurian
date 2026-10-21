@@ -16,8 +16,9 @@ response varies with what a query matched among withheld content — not a count
 not a token total, not a mode, not a score.** It holds outside the residuals
 T-17a records, an ``--include-unapproved`` build's BM25 statistics and the
 windows it names; ``stale``, ``note`` and ``snapshotId`` do move, with project
-state, and ``indexBuildId`` per build and on a withdrawal-purge publish — none of
-them with the query.
+state, ``indexBuildId`` per build and on a withdrawal-purge publish, and all but
+``snapshotId`` with the caller's own parameters, which choose the answer path —
+none of them with what a query matched.
 
 It is not enough to leave withheld hits out of ``results``. A response saying
 ``count: 0, results: [], usedTokens: 46`` states that something matched and may
@@ -55,8 +56,8 @@ state the request resolved once.
 ``test_a_withheld_document_changes_nothing_a_caller_can_see``, in
 ``tests/integration/test_mcp_tools.py``, holds the invariant end to end on the
 ranked path: one query against two corpora differing only in a withheld
-document answers identically bar ``projectId``, the request echo, and the two
-build identities ``indexBuildId`` and ``snapshotId``, which
+document answers identically bar ``projectId`` and the two build identities
+``indexBuildId`` and ``snapshotId``, which
 ``test_the_build_identity_a_search_reports_does_not_vary_with_the_query`` checks
 do not vary with the query. It was checked by breaking it rather than by
 reading it: ranking :func:`hybrid_answer`'s candidates through a visibility that
