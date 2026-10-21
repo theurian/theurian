@@ -576,7 +576,7 @@ def test_each_sentence_boundary_rule_keeps_a_false_sentence_visible(text: str) -
     assert _flagged({"case": text})
 
 
-#: Green controls: each true, and each RED if the rule its id names is deleted.
+#: Green controls, outside the class: each turns RED if the rule its id names is deleted.
 TRUE_CASES: Final = [
     *(
         (f"exempt {name}", f"Every published value is equal bar `{name}`.")
@@ -584,6 +584,12 @@ TRUE_CASES: Final = [
     ),
     ("exempt build identities", "Every published value is equal bar the build identities."),
     ("exempt build-identity", "Every published value is equal bar each build-identity field."),
+    ("semicolon bounds a gap", "Nothing is derived from the index; withheld rows are dropped."),
+    (
+        "60-character gap",
+        "No field may be derived from the index alone, since its build may have changed long "
+        "before anything was withheld.",
+    ),
     (
         "match keeps the rule",
         "No field varies with what a query matched among content the caller may not read.",
@@ -608,6 +614,10 @@ TRUE_CASES: Final = [
 )
 def test_a_true_sentence_is_not_flagged(sentence: str) -> None:
     assert not _flagged({"case": sentence})
+
+
+def test_naming_status_s_state_hash_does_not_exempt_a_sentence() -> None:
+    assert _flagged({"case": "The third names its exceptions: `stateHash` moves."})
 
 
 def test_the_records_name_the_battery_s_build_identities() -> None:
