@@ -1293,8 +1293,13 @@ def test_the_git_vector_is_one_process_fixed_and_forecloses_an_option_a_path_and
         "-c",
         "core.precomposeunicode=false",
         "--literal-pathspecs",
+        "--shallow-file",
+        "",
+        "-c",
+        "log.mailmap=false",
         "log",
         "--no-walk",
+        "--no-renames",
         "--first-parent",
         "-m",
         "--name-only",
@@ -1505,6 +1510,12 @@ GIT_TOKEN_FLOOR: dict[str, tuple[int, int]] = {
     "-z": (1, 5),
     "--root": (1, 5),
     "--literal-pathspecs": (1, 9),
+    # internal, v2.30.0 git.c:281; if git drops it every verify exits 129 -> NO_SUCH_COMMIT
+    # (fail closed). The empty-string argument that follows it is a token too.
+    "--shallow-file": (2, 30),
+    "": (2, 30),
+    "log.mailmap=false": (1, 8),  # log.mailmap is 1.8.3 (RelNotes/1.8.3.txt)
+    "--no-renames": (1, 5),
     # `-c` is 1.7.2 (RelNotes/1.7.2.txt); the precompose feature and its
     # `core.precomposeunicode` setting are 1.7.12 (RelNotes/1.7.12.txt, which names the
     # feature, not the config key). Read off Homebrew git 2.47.1's bundled RelNotes.
