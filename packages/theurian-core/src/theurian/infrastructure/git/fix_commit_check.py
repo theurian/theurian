@@ -97,9 +97,10 @@ reached merge commits with ``diff-tree --diff-merges=first-parent``, but
 ``--diff-merges=first-parent`` is a git 2.31 feature: on a 2.30 install the option
 errors, the non-zero exit folds to ``NO_SUCH_COMMIT``, and *every* valid
 ``fixCommit`` refuses. That attempt is recorded here as history, not repeated. The
-shipped form is ``git -c core.precomposeunicode=false --literal-pathspecs log
---no-walk --first-parent -m --name-only --format= -z --root --end-of-options
-<sha>^{commit} -- <file_path>``. Its round-2 form, without ``-z`` (round 3) and
+shipped form is ``git -c core.precomposeunicode=false --literal-pathspecs
+--shallow-file "" -c log.mailmap=false log --no-walk --no-renames --first-parent
+-m --name-only --format= -z --root --end-of-options <sha>^{commit} --
+<file_path>``. Its round-2 form, without ``-z`` (round 3) and
 ``-c`` ([#758]), gave verdicts byte-identical to the diff-tree form
 across present+touches, not-touching, absent, conflict-merge+touches,
 root+touches and non-commit, one

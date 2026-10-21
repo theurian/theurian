@@ -282,9 +282,9 @@ NETWORK_CLIENT_SITES = {
 #:   and not the bare-``git`` tier its ``cli/context.py`` sibling uses, because this
 #:   call gates a write. Timeout ``GIT_TIMEOUT_SECONDS`` (5s) on each.
 #: - ``infrastructure/git/fix_commit_check.py`` runs one command,
-#:   ``git -c core.precomposeunicode=false --literal-pathspecs log --no-walk
-#:   --first-parent -m --name-only --format= -z --root --end-of-options
-#:   <sha>^{commit} -- <file_path>``,
+#:   ``git -c core.precomposeunicode=false --literal-pathspecs --shallow-file ""
+#:   -c log.mailmap=false log --no-walk --no-renames --first-parent -m --name-only
+#:   --format= -z --root --end-of-options <sha>^{commit} -- <file_path>``,
 #:   to answer whether the ``fixCommit`` a caller named is a commit here that
 #:   touched the file the stored review thread is anchored to (ADR-0033 decision
 #:   3's verification, which is what makes ``fix_commit_present`` a signal the
