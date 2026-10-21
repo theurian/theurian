@@ -40,7 +40,10 @@ so a withheld row took a slot and 442 calls recovered the credential again, this
 time at the default budget.
 
 What finally had to change was not which layer counts but *when* the canonical
-store is asked. It is now asked while the retrievers are being read, so this
+store is asked. It is now asked while the retrievers are being read, so outside
+the residuals T-17a records — an ``--include-unapproved`` build's BM25
+statistics, and the windows in which it says a pre-purge build still answers,
+both scoring a visible candidate against rows the caller cannot read — this
 module never sees a candidate that was ranked against withheld content:
 :class:`theurian.application.retrieval_service.ResultGate` hands its
 :class:`~theurian.application.visibility.Visibility` to the retrieval it drives,

@@ -16,14 +16,18 @@ A candidate is a chunk of an index. A *result* is a chunk the canonical store ha
 confirmed is still current and still approved.
 
 **The property this module exists to hold (SEC-13, T-15): for every
-``limit <= MAX_RESULTS``, every published value equals what the same query would
-return if the withheld documents had never been indexed at all.** Not the last
-result of fifty; not a bounded residual. Equality — for ``count``,
+``limit <= MAX_RESULTS``, every value this module computes equals what the same
+query would compute if the withheld documents had never been indexed at all.**
+Not the last result of fifty; not a bounded residual. Equality — for ``count``,
 ``usedTokens``, ``droppedForBudget``, ``fusedScore``, ``foundBy``, and the
-identity and order of every hit. Held by
+identity and order of every hit. The response's two build identities are outside
+it and are not computed here: ``indexBuildId`` names the build, a fresh ULID per
+build, and ``snapshotId`` the canonical state, withheld items included. Held by
 ``test_a_withheld_document_changes_nothing_a_caller_can_see``
-(``tests/integration/test_mcp_tools.py``) — one query, two corpora, the whole
-response compared — which goes red in twelve of its twenty parametrisations when
+(``tests/integration/test_mcp_tools.py``) — one query, two corpora, every field
+compared except ``projectId`` and the two build identities ``BUILD_IDENTITY``
+names, which it asserts are exactly the ``retrieval`` fields that differ — which
+goes red in twelve of its twenty parametrisations when
 :meth:`RetrievalService._visible_ranking`'s loop is replaced by a single
 :data:`CANDIDATE_DEPTH` fetch. It rests on one assumption this module does not
 own — false at the FTS5 level in the two retrievers that score with ``bm25``, and
@@ -162,8 +166,8 @@ and on the *write* path rather than the read path first proposed and rejected:
 revisions removed, synchronously in the same command, the moment a withdrawal
 lands (:func:`theurian.application.withdrawal_purge.publish_purge_for_withdrawal`,
 wiring ADR-0024 decision 5). So after a withdrawal the published index holds no
-row either channel could score, and the equality holds over the whole response —
-for the **status** axis, the only one ``may_surface`` and these two channels
+row either channel could score, and the equality holds over every value this
+module computes — for the **status** axis, the only one ``may_surface`` and these two channels
 read; the deferred sensitivity, tenant and ACL axes are issue #119. Two residuals
 remain, both content-independent: a request in flight at the pointer swap
 finishes against the pre-purge build, and a purge that fails leaves the stale
