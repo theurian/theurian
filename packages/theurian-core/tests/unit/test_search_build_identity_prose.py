@@ -17,7 +17,7 @@ every comment block (consecutive `#`/`#:` lines, joined) and the string constant
 `assert` message. Everything else is outside it -- `docs/protocol/mcp-tools.md`, the
 READMEs, the CHANGELOG, other tests, `@_tool(description=...)` strings, the governed twins
 under `.theurian/knowledge/` and `tests/fixtures/eval/` -- and so is this file, whose
-cases spell the class on purpose.
+cases spell the class on purpose. Cost: a false claim in this file's own prose is unseen.
 
 Excluded, as history: every double-quoted span after a `**Corrected in place.**` marker, to
 the end of its paragraph, as in `test_adr_0032_decision2_prose.py`. Cost: a live claim in
@@ -150,7 +150,7 @@ ACCEPTED: Final = (
     (
         "search.py",
         "What holds *this* call site to using its visibility",
-        "a call-site check the battery does make: red in all twenty parametrisations",
+        "the battery's call-site check, recorded red in all twenty parametrisations",
     ),
     (
         "0023-trigram-index-beside-the-word-index.md",
@@ -402,7 +402,7 @@ def test_every_accepted_sentence_is_still_flagged_exactly_once() -> None:
 def test_the_population_reaches_each_host_the_class_was_found_in() -> None:
     population = _population()
     tests = {path.name for path in TEST_FILES}
-    hosts = {_file(where) for where in population}
+    hosts = {re.split(r"[#:]", where, maxsplit=1)[0] for where in population}
     kinds = {
         (_file(where), where.rpartition(" ")[2] if " " in where else "docstring")
         for where in population
@@ -410,7 +410,8 @@ def test_the_population_reaches_each_host_the_class_was_found_in() -> None:
     }
 
     assert {path.name for path in SCHEMAS.glob("*.schema.json")} <= hosts
-    assert {"retrieval_service.py", "search.py"} | {path.name for path in DOCS} <= hosts
+    assert {"theurian/application/retrieval_service.py", "theurian/mcp/search.py"} <= hosts
+    assert {path.name for path in DOCS} <= hosts
     assert kinds == {(name, kind) for name in tests for kind in ("docstring", "comment", "assert")}
 
 
