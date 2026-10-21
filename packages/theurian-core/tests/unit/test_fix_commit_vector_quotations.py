@@ -8,8 +8,8 @@ token reddens every quotation that has not followed.
 
 Key: the span a quotation delimits, compared token for token. ``<sha>`` and
 ``<file_path>`` stand for the two runtime values; the empty string is quoted ``""``.
-This holds those three quotations only; the CHANGELOG quotes it in a change entry,
-which records history and is not held to the current vector.
+This holds those three quotations only; the CHANGELOG's is held by
+``test_threat_model_t7_claims``, not here.
 """
 
 from __future__ import annotations
