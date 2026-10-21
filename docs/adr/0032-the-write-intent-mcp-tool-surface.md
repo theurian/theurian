@@ -2133,6 +2133,15 @@ they may read needs to know it is `rejected` in order to fix the document.
    The equality covered refusals as well as responses, which is why *timing* was
    in scope: the duration channel decision 6's *does not close* row named is the
    ~9 µs existence term this measurement bounds, not the body-size one B4 removed.
+   The comparison has since been re-run with a committed harness,
+   `tools/measure/decision6_refusal_timing.py`, added in
+   [#978](https://github.com/theurian/theurian/pull/978): in two runs on one
+   machine every withheld-minus-absent Δmedian is positive and under one MAD,
+   and the ~9 µs is smaller than one MAD of a single lookup call there, so the
+   runs neither confirm that figure nor show the term absent. The decision-6
+   *Landed* entry in *Compliance* records the runs, their N, the source commit
+   they measured and what each channel times. This adds an instrument; it does
+   not re-grade the residual.
 6. **Rate, size and concurrency bounds on a write-intent call.** A caller able
    to make the daemon spend work no recorded limit bounds is the T-6 family's;
    [#26](https://github.com/theurian/theurian/issues/26)'s concurrency cap is
@@ -2485,6 +2494,72 @@ the property as it was written and states what actually holds it:
   bodyless pointer row; an absent id reads nothing), about 155× below the
   ~1.40 ms transport floor (TB-1) and not a gradeable disclosure — the
   measurement open-question 5 owed.
+
+  **Re-run with a committed harness.** The ~9 µs, and the 155× derived
+  from it, are figures PR #698's review round measured with scratch scripts and
+  no committed harness (squashed as `e262b36e`; the
+  [T-26 work log](../work-logs/2026-09-16-t26-timing.md)'s face-4 section
+  records their provenance). An earlier scratch run, posted on
+  [#702](https://github.com/theurian/theurian/issues/702#issuecomment-5676499959)
+  on 2026-09-15 — the day before that squash, and describing the lookup as
+  reading through `get_item` — reported withheld-minus-absent Δmedians of
+  +74/+82 µs on the isolated closure and −312/−362 µs at the wire
+  (rejected/confidential), with a |Δ|/noise of 0.04–0.08 whose noise estimator
+  it does not name. Both stay as recorded; nothing below confirms either.
+
+  The committed harness is `tools/measure/decision6_refusal_timing.py`, added in
+  [#978](https://github.com/theurian/theurian/pull/978). It is a measurement,
+  not a CI test: it prints its figures and asserts nothing about them, because a
+  timing-ratio assertion flaked on a hosted runner (#960). From the repository
+  root, with `--n-lookup` defaulting to 2,000 and `--n-wire` to 300:
+
+  ```sh
+  PYTHONDONTWRITEBYTECODE=1 uv run --frozen python -B tools/measure/decision6_refusal_timing.py [--n-lookup N] [--n-wire N]
+  ```
+
+  It builds the decision-6 oracle's corpus through the real CLI in a temporary
+  directory, with `HOME` and `THEURIAN_DATA_DIR` redirected, and times a
+  withheld id — `rejected`, and `confidential` above the default ceiling —
+  against an id nothing stored, with `time.perf_counter_ns` on both sides, the
+  two interleaved call by call in alternating order after 20 warm-up calls per
+  side. Its two channels differ in what they time, and only one of them times
+  shipped code:
+
+  | Channel | What it times |
+  | :-- | :-- |
+  | `wire` | **The instrument of decision 6's published claim**, because it is the only channel that times shipped code end to end: a `knowledge.proposeChange` refusal over a stale `expectedRevision`, through `build_server` and the daemon's ASGI app, timed around the whole `tools/call` round trip. The transport is Starlette's in-process `TestClient` (`mcp_session`), not a socket. |
+  | `lookup` | **A reproduction of the `current_item` closure body, not shipped code.** The closure is local to the tool registration in `mcp/tools.py` and cannot be imported, so the harness copies its body — `get_item_metadata`, then `may_surface` and `may_disclose` — and tracks the shipped closure only while the two bodies agree. |
+
+  Two runs on one development machine, both measuring the source at `3c056191`:
+  run 1 ran there before the harness was committed, and run 2 ran on #978's
+  branch, which changes nothing under `packages/`. Δmedian is withheld minus
+  absent; |Δ|/MAD divides by the larger of the two sides' MADs, given as
+  withheld/absent.
+
+  | Run | Channel | `rejected`: Δmedian (\|Δ\|/MAD; MAD) | `confidential`: Δmedian (\|Δ\|/MAD; MAD) |
+  | :-- | :-- | :-- | :-- |
+  | 1 — N = 2,000 lookup / 300 wire per side | lookup | +24.3 µs (0.36; 67.2/60.1 µs) | +16.4 µs (0.32; 51.1/47.8 µs) |
+  | | wire | +77.2 µs (0.35; 222.3/191.0 µs) | +11.8 µs (0.06; 196.3/206.8 µs) |
+  | 2 — N = 300 lookup / 60 wire per side | lookup | +15.5 µs (0.65; 24.1/20.6 µs) | +20.0 µs (0.45; 43.9/39.7 µs) |
+  | | wire | +1.6 µs (0.01; 158.0/164.8 µs) | +43.3 µs (0.21; 207.1/194.9 µs) |
+
+  What the two runs show, and what they cannot:
+
+  - **Every |Δmedian| is under one MAD**, in all eight cells. That says a single
+    call's duration spreads further than the two medians sit apart; it is not a
+    test that the medians are equal, and the harness prints no interval for
+    their difference.
+  - **Every Δmedian is positive** — withheld slower — from +1.6 µs to +77.2 µs.
+    The harness does not say whether that sign is noise.
+  - **The recorded ~9 µs is smaller than one lookup MAD on this machine**
+    (20.6–67.2 µs across the two runs), so a single call cannot resolve it, and
+    the runs neither confirm that figure nor show the term absent: their lookup
+    Δmedians, +15.5 to +24.3 µs, all sit above it.
+  - **The lookup rows measure a copy.** A change to the shipped closure that
+    leaves the copy alone reaches only the wire rows.
+
+  This adds an instrument and two runs. It does not re-grade the residual, and
+  decision 6 stands as recorded.
 
   **This item moved the pinned counts it said it would, in the commit that added
   the call site.** The lookup is one call site on each gate, so
