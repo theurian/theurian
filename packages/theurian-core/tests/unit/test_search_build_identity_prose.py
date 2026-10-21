@@ -28,9 +28,11 @@ is unseen.
 
 Sentences (`_sentences`): text is cut at a blank line (a `>`-only line counts), before a
 `- ` or `* ` list item and before a `|` table row; then flattened by `record_sentences.flat`,
-with U+2019 read as `'`, and cut after `.`, `?` or `!` -- optionally closed by `**`, `*`,
-`)` or `"` -- that whitespace follows, except after `e.g.` or `i.e.` and inside a backtick
-span. A `1. ` item needs no rule: the stop after its number cuts its text from the line above.
+with U+2019 read as `'` and U+00AD dropped, and cut after `.`, `?` or `!` -- optionally
+closed by `**`, `*`, `)`, `"`, U+201D, `'`, `]` [and a `(…)` link target] or a `[^n]`
+footnote -- that whitespace follows, except after `e.g.`, `i.e.`, `cf.`, `vs.` or `etc.`
+and inside a backtick span. A `1. ` item needs no rule: the stop after its number cuts its
+text from the line above.
 """
 
 from __future__ import annotations
@@ -81,7 +83,7 @@ _EXEMPT: Final = re.compile(
 )
 
 _EVERY: Final = (
-    r"\b(?:every|each|all(?: of)?(?: the| its)?) (?:\w+'s )?(?:published )?(?:`?\w+`? )?"
+    r"\b(?:every|each|all)(?: of)?(?: the| its)?[ -](?:\w+'s )?(?:published )?(?:`?\w+`? )?"
     r"(?:value|field|number)s?\b"
 )
 _UNIVERSAL: Final = (
@@ -103,7 +105,7 @@ _SOURCE: Final = (
     r"|\b(?:computed|derived) from (?:the|visible) results\b"
     r"|\bthe request\b"
 )
-_NEG: Final = r"(?:\bno\b|\bnothing\b|\bnever\b|\bnot\b|n't\b|\bcannot\b)"
+_NEG: Final = r"(?:\bno\b|\bnothing\b|\bnone\b|\bnever\b|\bnot\b|n't\b|\bcannot\b)"
 _VERB: Final = r"\b(?:(?:deriv|var[yi]|mov|chang|depend|comput)\w* (?:from|with|on)|counts)\b"
 _UNREADABLE: Final = r"(?:withheld|(?:not allowed to|may not|cannot|can't) (?:read|see))"
 _SHIFT: Final = r"\b(?:mov|chang|affect)\w*"
@@ -116,7 +118,7 @@ MEMBERS: Final = {
     "source_list": (rf"{_EVERY}|\beverything\b", _SOURCE),
     "returned": (r"\bdescribes? what was \*?returned\b",),
     "negated": (rf"{_NEG}{_GAP}{_VERB}{_GAP}{_UNREADABLE}",),
-    "reversed": (rf"{_UNREADABLE}{_GAP}{_SHIFT} (?:no|nothing|none)\b",),
+    "reversed": (rf"{_UNREADABLE}{_GAP}(?:{_SHIFT} (?:no|nothing|none)\b|{_NEG}{_GAP}\baffect)",),
     "battery_holds": (r"changes_nothing_a_caller_can_see", r"\bholds?\b"),
     "exemption_set": (
         r"\bnames its exceptions\b"
@@ -131,8 +133,8 @@ _COMPILED: Final = {
 
 _PARAGRAPH: Final = re.compile(r"\n[ \t>]*\n")
 _SEGMENT: Final = re.compile(r"\n[ \t>]*\n|\n(?=[ \t>]*(?:[-*] |\|))")
-_STOP: Final = re.compile(r"[.?!](?:\*\*|\*|\)|\")?(?=\s|$)")
-_ABBREVIATION: Final = re.compile(r"\b(?:e\.g|i\.e)\.$")
+_STOP: Final = re.compile(r"[.?!](?:\*\*|[*)\"\u201d']|\](?:\([^)\s]*\))?|\[\^\w+\])?(?=\s|$)")
+_ABBREVIATION: Final = re.compile(r"\b(?:e\.g|i\.e|cf|vs|etc)\.$")
 
 #: The true sentences the key flags at HEAD: (file, a span of the sentence, why it is true).
 #: "One project" means two queries against one project, whose build identities agree.
@@ -141,6 +143,7 @@ ACCEPTED: Final = (
     ("retrieval_service.py", "over every value this module computes", "the ranking's values"),
     ("review_commands.py", "nothing about it varies with anything", "the review CLI's remedies"),
     ("search.py", "What holds *this* call site", "a call-site check, recorded red"),
+    ("knowledge-search-response.schema.json", "neither counts a row a", "the integrity COUNTs"),
     ("visibility.py", "every field in the response has been arranged not", "timing, not equality"),
     ("admission.py", "handing out the same slot twice", "the admission lock, not search"),
     ("review_finding.py", "Every member value can stay byte-identical", "review findings"),
@@ -238,7 +241,7 @@ def _population(
 
 def _sentences(text: str) -> Iterator[str]:
     for segment in _SEGMENT.split(text):
-        flattened = flat(segment).replace("\u2019", "'")
+        flattened = flat(segment).replace("\u2019", "'").replace("\u00ad", "")
         start = 0
         for stop in _STOP.finditer(flattened):
             inside_code = flattened[: stop.start()].count("`") % 2
@@ -277,14 +280,14 @@ def _accepted_by(flagged: list[tuple[str, str]]) -> dict[str, list[tuple[str, st
 def test_no_live_sentence_gives_search_the_equality_without_its_build_identities() -> None:
     """Key (case-insensitive, per sentence; each is a `MEMBERS` entry):
 
-    - `universal_equality`: a universal -- `every`, `each` or `all` [`of`] [`the`|`its`],
-      then [a `…'s` possessive] [`published`] [one word, backticked or not]
-      `value`/`field`/`number`[`s`];
-      `whole`/`entire` `response` (or `whole-`/`entire-response`); `whole`/`entire`
-      [`]retrieval[`] block`; `comparison [is] total` -- with an equality word (`equal…`,
-      `identical`, `indistinguishable`, `same`, `unchanged`, `unaffected`, `does not`/
-      `doesn't differ`), `compar…`, a corpus phrase (`both`/`two`/`across corpora`),
-      `never [been] indexed` or `the property`; and no `never held`.
+    - `universal_equality`: a universal -- `every`, `each` or `all` [`of`] [`the`|`its`], a
+      space or hyphen, then [a `…'s` possessive] [`published`] [one word, backticked or not]
+      `value`/`field`/`number`[`s`]; `whole`/`entire` `response` (or `whole-`/
+      `entire-response`); `whole`/`entire` [`]retrieval[`] block`; `comparison [is] total`
+      -- with an equality word (`equal…`, `identical`, `indistinguishable`, `same`,
+      `unchanged`, `unaffected`, `does not`/`doesn't differ`), `compar…`, a corpus phrase
+      (`both`/`two`/`across corpora`), `never [been] indexed` or `the property`; and no
+      `never held`.
     - `response_across_corpora`: `response…` with an equality word and a corpus phrase, and
       no `never held`.
     - `source_list`: that `every`/`each`/`all` subject, or `everything`, with a source --
@@ -292,13 +295,13 @@ def test_no_live_sentence_gives_search_the_equality_without_its_build_identities
       `property`/`properties of the index`; `read off that object`/`the index`;
       `computed`/`derived from the`/`visible results`; `the request`.
     - `returned`: `describe[s] what was [*]returned`.
-    - `negated`: `no`, `nothing`, `never`, `not`, `n't` or `cannot`; then a verb -- `deriv…`,
-      `vary`/`vari…`, `mov…`, `chang…`, `depend…`, `comput…`, each before `from`, `with`
-      or `on`, or `counts`; then content the caller may not read -- `withheld`, or
+    - `negated`: `no`, `nothing`, `none`, `never`, `not`, `n't` or `cannot`; then a verb --
+      `deriv…`, `vary`/`vari…`, `mov…`, `chang…`, `depend…`, `comput…`, each before `from`,
+      `with` or `on`, or `counts`; then content the caller may not read -- `withheld`, or
       `not allowed to`/`may not`/`cannot`/`can't` before `read`/`see`. Each gap is at
       most 60 characters and holds neither `;` nor `match`.
     - `reversed`: that unreadable content; a gap as above; `mov…`, `chang…` or `affect…`;
-      then `no`, `nothing` or `none`.
+      then `no`, `nothing` or `none`; or that content, a gap, a negation, a gap, `affect…`.
     - `battery_holds`: the battery's name with `hold[s]`.
     - `exemption_set`: `names its exceptions`; `the [published] contract`/`schema exempts`;
       `stale[`] is the [deliberate|only] exception`.
@@ -330,7 +333,7 @@ def test_no_live_sentence_gives_search_the_equality_without_its_build_identities
     exception set in other words ("only status has exceptions") and markup inside a phrase
     pass.
 
-    Measured: zero unaccepted hits at ac869eee plus this file. RED drivers, each alone in a
+    Measured: zero unaccepted hits at 4d017afe plus this file. RED drivers, each alone in a
     private worktree at that tree: each of 23 sentences of #1000's faces F-a to F-m
     restored in its host from bd84393c.
     """
@@ -448,6 +451,9 @@ MEMBER_CASES: Final = [
     ("all of the", "universal_equality", "All of the fields are equal."),
     ("all its", "universal_equality", "All its values are equal."),
     ("possessive", "universal_equality", "Every response's field is equal."),
+    ("every-field", "universal_equality", "Search gives every-field equality across two corpora."),
+    ("each of the", "universal_equality", "Each of the fields is equal."),
+    ("each of its", "universal_equality", "Each of its values is identical."),
     ("modifier", "universal_equality", "Every retrieval value stays the same."),
     ("backticked modifier", "universal_equality", "Every `retrieval` field is equal."),
     ("published modifier", "universal_equality", "All published retrieval fields are equal."),
@@ -485,6 +491,7 @@ MEMBER_CASES: Final = [
     ("not", "negated", "A field is not derived from withheld content."),
     ("n't", "negated", "A field isn't derived from withheld content."),
     ("cannot", "negated", "A field cannot be derived from withheld content."),
+    ("none", "negated", "None of the fields depends on withheld content."),
     ("vary", "negated", "No field may vary with withheld content."),
     ("varies", "negated", "No field varies with withheld content."),
     ("mov", "negated", "No field moves with withheld content."),
@@ -500,6 +507,7 @@ MEMBER_CASES: Final = [
     ("moves no", "reversed", "Withheld content moves no field."),
     ("changes nothing", "reversed", "A withheld document changes nothing."),
     ("affects none", "reversed", "Withheld content affects none of them."),
+    ("does not affect", "reversed", "Withheld content does not affect any field."),
     (
         "battery holds",
         "battery_holds",
@@ -542,6 +550,16 @@ SENTENCE_CASES: Final = [
     ("i.e.", "No field, i.e. `count`, is derived from withheld content."),
     ("code span", "No field `a. b` is derived from withheld content."),
     ("curly apostrophe", "The response doesn\u2019t vary with withheld content."),
+    ("U+201D close", "\u201cEvery published value is equal.\u201d `snapshotId` moves."),
+    ("U+2019 close", "\u2018Every published value is equal.\u2019 `snapshotId` moves."),
+    ("apostrophe close", "'Every published value is equal.' `snapshotId` moves."),
+    ("bracket close", "[Every published value is equal.] `snapshotId` moves."),
+    ("link close", "[Every published value is equal.](x) `snapshotId` moves."),
+    ("footnote", "Every published value is equal.[^1] `snapshotId` moves."),
+    ("cf.", "No field (cf. T-17a) is derived from withheld content."),
+    ("vs.", "No field (vs. the scan) is derived from withheld content."),
+    ("etc.", "No field, nor its sources etc. is derived from withheld content."),
+    ("soft hyphen", "No field is derived from with\u00adheld content."),
 ]
 
 
@@ -613,7 +631,7 @@ def test_the_records_name_the_battery_s_build_identities() -> None:
     population; and the `retrieval-metadata` description's list of fields that "move with
     project state, the build, or the caller's own parameters", which is `BUILD_IDENTITY`
     with `stale` and `note`.
-    Measured at ac869eee: eight pairs. RED drivers: `BUILD_IDENTITY` given `stale`, or
+    Measured at 4d017afe: eight pairs. RED drivers: `BUILD_IDENTITY` given `stale`, or
     without `snapshotId`; `note` dropped from that list.
     """
     text = flat("\n".join(_population().values()).replace("``", "`"))
