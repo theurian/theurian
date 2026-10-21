@@ -625,6 +625,27 @@ def test_naming_status_s_state_hash_does_not_exempt_a_sentence() -> None:
     assert _flagged({"case": "The third names its exceptions: `stateHash` moves."})
 
 
+#: The universal's load-bearing statements, each found by its lead phrase.
+_STATEMENTS: Final = {
+    "retrieval-metadata.schema.json#/description": "No field varies with what a query matched",
+    "theurian/mcp/search.py:1": "The invariant this module exists to hold",
+    "theurian/application/retrieval_service.py:1": "The property this module exists to hold",
+}
+
+
+@pytest.mark.parametrize(("where", "lead"), list(_STATEMENTS.items()), ids=list(_STATEMENTS))
+def test_each_statement_of_the_universal_carries_t17a_s_reach(where: str, lead: str) -> None:
+    """C8 (#1013 R1 H1): without "outside the residuals T-17a records" the universal is
+    false for a default caller an `--include-unapproved` build serves. Key: the paragraph
+    holding *lead*, whitespace collapsed. Out of scope: sentences on what the battery
+    asserts, which describe its default-build fixture."""
+    text = _population().get(where, "")
+    paragraphs = [flat(part) for part in _PARAGRAPH.split(text) if lead in flat(part)]
+
+    assert paragraphs, f"{where}: no paragraph holds {lead!r}"
+    assert all("outside the residuals T-17a records" in part for part in paragraphs), where
+
+
 def test_the_records_name_the_battery_s_build_identities() -> None:
     """The exemption above is `BUILD_IDENTITY`; the records must name the same pair. Key:
     `build identities[,]` then two backticked names joined by `[,] and`, over the
