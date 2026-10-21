@@ -2177,7 +2177,10 @@ other's blind spots.
   the token position the funnel has already emptied; and `--` keeps an
   option-shaped stored `filePath` a pathspec. The call reaches no network and names
   no remote (`log` reads local object storage), resolves `git` to an absolute path,
-  and bounds the spawn with `GIT_TIMEOUT_SECONDS`.
+  and bounds the spawn with `GIT_TIMEOUT_SECONDS`. It runs under the shared child environment
+  (`infrastructure/git/environment.py`), which refuses every transport and disables lazy fetch
+  where git honours it; `--shallow-file ""` keeps a shallow boundary from reading as a root, and
+  `-c log.mailmap=false` and `--no-renames` keep the check from reading any blob (#981).
   `tests/integration/test_fix_commit_check_adapter.py` captures the one vector at
   the widest object name the grammar admits and a pathspec-expression stored path
   and asserts the whole argv above, that the retired --diff-merges=first-parent

@@ -1376,6 +1376,12 @@ no-network):
 - run the `git` subprocess with inherited **`GIT_*` environment stripped** — closes
   the env-injected-config channel.
 
+> **Amended in [#981](https://github.com/theurian/theurian/issues/981): grafts were a channel
+> the invariant above does not name.** Neither replace switch stops a graft, which could
+> re-parent the public tip onto a local-only commit. The isolation moved to the shared
+> `infrastructure/git/environment.py`, which also sets `GIT_GRAFT_FILE=/dev/null`, so no graft
+> is read (`test_git_trailer_source.py::test_a_trailer_reachable_only_through_grafted_history_is_not_read_as_public`).
+
 **Stated non-goal for this slice, owed to the serving arm:** verifying
 `remote.origin.url` against a recorded public-origin URL — the "a private-fork
 clone where `origin` *is* the private fork" member. Reasoning: the documented

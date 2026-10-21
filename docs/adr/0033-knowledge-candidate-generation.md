@@ -458,6 +458,20 @@ contents through a review-evidence tool. The two are one refusal, and decision 5
 governs it for the same reason it governs the gate-signal refusals: the
 distinguishing information is about material the caller has not been granted.
 
+> **Amended in [#981](https://github.com/theurian/theurian/issues/981): "against the local git
+> repository" means against this repository's own objects.** Git read more: a shallow boundary
+> commit verified any path; a replace ref, a graft or an inherited `GIT_DIR` redirected the
+> verdict; a partial clone fetched from its promisor, so a commit only the remote held read
+> `VERIFIED` — a verdict about another repository. The call now runs under the shared
+> `infrastructure/git/environment.py` with `--shallow-file ""`, `-c log.mailmap=false` and
+> `--no-renames`, and a boundary commit, or a commit or tree not yet fetched, refuses
+> `NO_SUCH_COMMIT`, whose cure names the limit. Decision 5's duration bind gains an exception:
+> on git below 2.45, in a partial clone, git still spawns a fetch child, which the transport
+> refusal stops before any object arrives, so a sha the clone lacks costs one more process than
+> one it holds. The `[git_below_2_45]` params of `test_git_ambient_state_fix_commit.py`
+> (simulated by withholding `GIT_NO_LAZY_FETCH`; no older git was run) hold that no object
+> arrives; the process difference is not pinned.
+
 The residual is stated rather than implied: a **hand-authored stored record**
 can still fabricate `fix_commit`, which is T-24's accepted residual — a review
 evidence directory is source rather than derived state, and this ADR does not
