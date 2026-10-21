@@ -80,19 +80,28 @@ _EXEMPT: Final = re.compile(
     "|".join([*map(re.escape, BUILD_IDENTITY), r"build[- ]identit"]), re.IGNORECASE
 )
 
-_EVERY: Final = r"\b(?:every|all) (?:published )?(?:value|field|number)s?\b"
+_EVERY: Final = (
+    r"\b(?:every|each|all(?: of)?(?: the| its)?) (?:\w+'s )?(?:published )?"
+    r"(?:value|field|number)s?\b"
+)
 _UNIVERSAL: Final = (
-    rf"{_EVERY}|\bwhole[- ]response\b|\bwhole `?retrieval`? block\b|\bcomparison (?:is )?total\b"
+    rf"{_EVERY}|\b(?:whole|entire)[- ]response\b|\b(?:whole|entire) `?retrieval`? block\b"
+    r"|\bcomparison (?:is )?total\b"
 )
-_ACROSS: Final = (
-    r"\bequal|\bidentical\b|\bindistinguishable\b|\bcompar|\btwo corpora\b"
-    r"|\bnever (?:been )?indexed\b|\bthe property\b"
+_EQUAL: Final = (
+    r"\bequal|\bidentical\b|\bindistinguishable\b|\bsame\b|\bunchanged\b|\bunaffected\b"
+    r"|\bdoes(?: not|n't) differ\b"
 )
+_CORPORA: Final = r"\b(?:both|two|across) corpora\b"
+_ACROSS: Final = rf"{_EQUAL}|\bcompar|{_CORPORA}|\bnever (?:been )?indexed\b|\bthe property\b"
+#: #1010's counterfactual, an index that never held the rows, is another class.
+_NOT_NEVER_HELD: Final = r"^(?!.*\bnever held\b)"
 _SOURCE: Final = (
     r"\bcaller(?:'s|s')? (?:own )?(?:parameters|arguments)\b"
     r"|\bpropert(?:y|ies) of the index\b"
     r"|\bread off (?:that object|the index)\b"
-    r"|\b(?:computed|derived) from the results\b"
+    r"|\b(?:computed|derived) from (?:the|visible) results\b"
+    r"|\bthe request\b"
 )
 _NEG: Final = r"(?:\bno\b|\bnothing\b|\bnever\b|\bnot\b|n't\b|\bcannot\b)"
 _VERB: Final = r"\b(?:(?:deriv|var[yi]|mov|chang|depend|comput)\w* (?:from|with|on)|counts)\b"
@@ -102,7 +111,8 @@ _GAP: Final = r"(?:(?!match)[^;]){0,60}?"
 
 #: A sentence is flagged when every pattern of one member matches it.
 MEMBERS: Final = {
-    "universal_equality": (_UNIVERSAL, _ACROSS),
+    "universal_equality": (_UNIVERSAL, _ACROSS, _NOT_NEVER_HELD),
+    "response_across_corpora": (r"\bresponse", _EQUAL, _CORPORA, _NOT_NEVER_HELD),
     "source_list": (rf"{_EVERY}|\beverything\b", _SOURCE),
     "returned": (r"\bdescribes? what was \*?returned\b",),
     "negated": (rf"{_NEG}{_GAP}{_VERB}{_GAP}{_UNREADABLE}",),
@@ -130,8 +140,9 @@ ACCEPTED: Final = (
     ("okf_export.py", "the gate withheld moves none of them", "OKF export's values"),
     ("retrieval_service.py", "over every value this module computes", "the ranking's values"),
     ("review_commands.py", "nothing about it varies with anything", "the review CLI's remedies"),
-    ("raptor.py", "the two-corpus equality decision 9 rests on", "#1010's shape, box-split"),
     ("search.py", "What holds *this* call site", "a call-site check, recorded red"),
+    ("visibility.py", "every field in the response has been arranged not", "timing, not equality"),
+    ("admission.py", "handing out the same slot twice", "the admission lock, not search"),
     ("0023-trigram-index-beside-the-word-index.md", "no whole-response comparison", "a negative"),
     ("threat-model.md", "comparison of the whole `retrieval` block", "one project; a recorded LOW"),
     ("threat-model.md", "It therefore falsifies, as an unqualified", "T-17a history"),
@@ -145,6 +156,7 @@ ACCEPTED: Final = (
     ("test_mcp_tools.py", "and every field agrees", "one project"),
     ("test_mcp_tools.py", "must be identical, not merely the `retrieval`", "one project"),
     ("test_mcp_tools.py", "a whole-response comparison would fail", "a negative"),
+    ("test_mcp_tools.py", "naming each field's role", "system.capabilities"),
 )
 
 
@@ -263,15 +275,19 @@ def _accepted_by(flagged: list[tuple[str, str]]) -> dict[str, list[tuple[str, st
 def test_no_live_sentence_gives_search_the_equality_without_its_build_identities() -> None:
     """Key (case-insensitive, per sentence; each is a `MEMBERS` entry):
 
-    - `universal_equality`: a universal -- `every`/`all` [`published`]
-      `value`/`field`/`number`[`s`]; `whole response`/`whole-response`;
-      `whole [`]retrieval[`] block`; `comparison [is] total` -- with `equal…`,
-      `identical`, `indistinguishable`, `compar…`, `two corpora`, `never [been] indexed`
-      or `the property`.
-    - `source_list`: that `every`/`all` subject, or `everything`, with a source --
+    - `universal_equality`: a universal -- `every`, `each` or `all` [`of`] [`the`|`its`],
+      then [a `…'s` possessive] [`published`] `value`/`field`/`number`[`s`];
+      `whole`/`entire` `response` (or `whole-`/`entire-response`); `whole`/`entire`
+      [`]retrieval[`] block`; `comparison [is] total` -- with an equality word (`equal…`,
+      `identical`, `indistinguishable`, `same`, `unchanged`, `unaffected`, `does not`/
+      `doesn't differ`), `compar…`, a corpus phrase (`both`/`two`/`across corpora`),
+      `never [been] indexed` or `the property`; and no `never held`.
+    - `response_across_corpora`: `response…` with an equality word and a corpus phrase, and
+      no `never held`.
+    - `source_list`: that `every`/`each`/`all` subject, or `everything`, with a source --
       `caller's`/`callers'`/`caller` [`own`] `parameters`/`arguments`;
       `property`/`properties of the index`; `read off that object`/`the index`;
-      `computed`/`derived from the results`.
+      `computed`/`derived from the`/`visible results`; `the request`.
     - `returned`: `describe[s] what was [*]returned`.
     - `negated`: `no`, `nothing`, `never`, `not`, `n't` or `cannot`; then a verb -- `deriv…`,
       `vary`/`vari…`, `mov…`, `chang…`, `depend…`, `comput…`, each before `from`, `with`
@@ -296,13 +312,17 @@ def test_no_live_sentence_gives_search_the_equality_without_its_build_identities
     and the query-matched rule ("no field varies with what a query matched among content
     the caller may not read") is not read, with or without them.
 
-    Blind: a universal outside the list (`each`, `entire`, "nothing differs") or one with
-    no equality or corpus word beside it; a source list whose subject is not `every`/`all`/
-    `everything`; a negation, verb and unreadable term more than 60 characters apart, or a
-    verb or preposition outside the list (`carry`, `leak`, `reach`, `by`); `match` between
-    them, read as the query-matched rule; anaphora other than the battery's name with
-    `hold` ("search answers the same"); an exception set in other words ("only status has
-    exceptions"); markup inside a phrase.
+    Blind: every word outside the closed lists above. A universal is only those words --
+    not `any`, `full`, `complete` or "nothing differs" -- and needs one of the equality
+    words, `compar…`, a corpus phrase, `never [been] indexed` or `the property` beside it;
+    `agrees`, `matches`, `consistent` and `the same as` written another way are not
+    equality words. A sentence saying `never held` is read as #1010's counterfactual and
+    passes, whatever else it claims. A source list needs the `every`/`each`/`all`/
+    `everything` subject. A negation, verb and unreadable term more than 60 characters
+    apart, or a verb or preposition outside the list (`carry`, `leak`, `reach`, `by`), pass;
+    so does `match` between them, read as the query-matched rule. Anaphora other than the
+    battery's name with `hold` ("search answers the same"), an exception set in other
+    words ("only status has exceptions") and markup inside a phrase pass.
 
     Measured: zero unaccepted hits at ac869eee plus this file. RED drivers, each alone in a
     private worktree at that tree: each of 23 sentences of #1000's faces F-a to F-m
@@ -416,6 +436,24 @@ MEMBER_CASES: Final = [
     ("indistinguishable", "universal_equality", "Every field is indistinguishable."),
     ("compar", "universal_equality", "Every field is compared."),
     ("two corpora", "universal_equality", "Every field agrees across two corpora."),
+    ("both corpora", "universal_equality", "Every field agrees across both corpora."),
+    ("across corpora", "universal_equality", "Every field agrees across corpora."),
+    ("each", "universal_equality", "Each field is equal."),
+    ("all of the", "universal_equality", "All of the fields are equal."),
+    ("all its", "universal_equality", "All its values are equal."),
+    ("possessive", "universal_equality", "Every response's field is equal."),
+    ("entire response", "universal_equality", "The entire response is equal."),
+    ("entire block", "universal_equality", "The entire `retrieval` block is equal."),
+    ("same", "universal_equality", "Every field is the same."),
+    ("unchanged", "universal_equality", "The whole response is unchanged."),
+    ("unaffected", "universal_equality", "Every field is unaffected."),
+    ("does not differ", "universal_equality", "Every field does not differ."),
+    ("doesn't differ", "universal_equality", "Every field doesn't differ."),
+    (
+        "response across corpora",
+        "response_across_corpora",
+        "The `knowledge.search` response is identical across both corpora.",
+    ),
     ("never indexed", "universal_equality", "Every field is as if it was never indexed."),
     ("never been indexed", "universal_equality", "Every field is as if it had never been indexed."),
     ("the property", "universal_equality", "Every field keeps the property."),
@@ -429,6 +467,8 @@ MEMBER_CASES: Final = [
     ("read off that object", "source_list", "Every field is read off that object."),
     ("computed from the results", "source_list", "Every field is computed from the results."),
     ("derived from the results", "source_list", "Every field is derived from the results."),
+    ("visible results", "source_list", "Every field is computed from visible results."),
+    ("the request", "source_list", "Every field describes the request."),
     ("returned", "returned", "It describes what was *returned*."),
     ("no", "negated", "No field is derived from withheld content."),
     ("nothing", "negated", "Nothing is derived from withheld content."),
@@ -529,6 +569,17 @@ TRUE_CASES: Final = [
         "plural exceptions",
         "The equality covers three tools, and two of them name their exceptions.",
     ),
+    (
+        "never held (universal)",
+        "The whole response is the same for an index that never held the withheld documents.",
+    ),
+    (
+        "never held (corpora)",
+        "The response is the same across two corpora, one of which never held the rows.",
+    ),
+    ("no response word", "The two corpora hold the same crowd."),
+    ("no equality word", "The response is built from two corpora."),
+    ("no corpus phrase", "The response is identical to the last one."),
     (
         "#1010's shape",
         "An index holding the document and an index that never held it return the same response.",
