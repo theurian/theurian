@@ -353,6 +353,8 @@ class GitTrailerFindingSource:
             "log.showSignature=false",
             "--no-optional-locks",
             "--no-replace-objects",
+            "-c",
+            "core.useReplaceRefs=false",
             "log",
             "-z",  # NUL-separate records (D4; `format:` separates, not terminates)
             PUBLIC_REF,

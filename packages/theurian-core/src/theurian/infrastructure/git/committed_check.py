@@ -223,7 +223,7 @@ class CommittedMigrationCheck:
             return None
         try:
             return subprocess.run(  # noqa: S603 - fixed adapter-controlled vector, no shell; the rev-parse arg begins with `HEAD:` and the hash-object path uses the `--path=<value>` form, so no user-supplied element is option-shaped or names a revision (SEC-9)
-                [str(self._git), *git_args],
+                [str(self._git), "-c", "core.useReplaceRefs=false", *git_args],
                 cwd=self._repo_root,
                 input=stdin_bytes,
                 capture_output=True,

@@ -1297,6 +1297,8 @@ def test_the_git_vector_is_one_process_fixed_and_forecloses_an_option_a_path_and
         "",
         "-c",
         "log.mailmap=false",
+        "-c",
+        "core.useReplaceRefs=false",
         "log",
         "--no-walk",
         "--no-renames",
@@ -1514,6 +1516,8 @@ GIT_TOKEN_FLOOR: dict[str, tuple[int, int]] = {
     # (fail closed). Its argument (the empty string) is a value, not a feature, and is
     # skipped where the tokens are read off the argv.
     "--shallow-file": (2, 30),
+    # read at v2.30.0 config.c:1402 (core.usereplacerefs); exists since 2.18
+    "core.useReplaceRefs=false": (2, 18),
     "log.mailmap=false": (1, 8),  # log.mailmap is 1.8.3 (RelNotes/1.8.3.txt)
     "--no-renames": (1, 5),
     # `-c` is 1.7.2 (RelNotes/1.7.2.txt); the precompose feature and its
