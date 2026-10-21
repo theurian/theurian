@@ -16,11 +16,13 @@ A candidate is a chunk of an index. A *result* is a chunk the canonical store ha
 confirmed is still current and still approved.
 
 **The property this module exists to hold (SEC-13, T-15): for every
-``limit <= MAX_RESULTS``, every value this module computes equals what the same
-query would compute if the withheld documents had never been indexed at all —
-which leaves out the response's two build identities, ``indexBuildId`` and
-``snapshotId``, because neither is computed here.** Not the last result of
-fifty; not a bounded residual. Equality — for ``count``, ``usedTokens``,
+``limit <= MAX_RESULTS``, every value this module computes — which leaves out the
+response's two build identities, ``indexBuildId`` and ``snapshotId``, because
+neither is computed here — equals what the same query would compute if the
+withheld documents had never been indexed at all,
+outside the residuals T-17a records: an ``--include-unapproved`` build's BM25
+statistics, and the windows it names.** Not the last result of fifty; within this
+module, not a bounded residual. Equality — for ``count``, ``usedTokens``,
 ``droppedForBudget``, ``fusedScore``, ``foundBy``, and the identity and order of
 every hit. ``indexBuildId`` names the build, a fresh ULID per build, and
 ``snapshotId`` the canonical state, withheld items included. Held by
@@ -167,14 +169,17 @@ and on the *write* path rather than the read path first proposed and rejected:
 revisions removed, synchronously in the same command, the moment a withdrawal
 lands (:func:`theurian.application.withdrawal_purge.publish_purge_for_withdrawal`,
 wiring ADR-0024 decision 5). So after a withdrawal the published index holds no
-row either channel could score, and the equality holds over every value this
-module computes — for the **status** axis, the only one ``may_surface`` and these two channels
-read; the deferred sensitivity, tenant and ACL axes are issue #119. Two residuals
-remain, both content-independent: a request in flight at the pointer swap
-finishes against the pre-purge build, and a purge that fails leaves the stale
-build serving until a rebuild — reported through the apply's ``indexPurge``, not
-silently. T-17a in the threat model carries the closure, the measurements and the
-residuals.
+row either channel could score, and outside the residuals T-17a records — an
+``--include-unapproved`` build's BM25 statistics, and the windows it names — the
+equality holds over every value this module computes, for the **status** axis
+``may_surface`` reads and, since #119, the sensitivity axis, closed at build time
+and by a ``changeSensitivity`` purge; tenant and ACL carry one value each, which
+#119 enforces at write time. A purge that fails no longer leaves the stale build
+serving: it taints the pointer, and :mod:`theurian.mcp.search` refuses that build
+and answers from the canonical scan, ``fallbackReason`` ``index-purge-failed``,
+until a rebuild — reported through the apply's ``indexPurge``, not silently
+(GHSA-97q9-xxfg-33r6). T-17a in the threat model carries the closure, the
+measurements and the residuals.
 
 Both take their collaborators by injection. The ranking they depend on lives in
 :mod:`theurian.domain.ranking` and never touches a database, so the interesting

@@ -4219,10 +4219,12 @@ stage left that could compute a number from a row the caller may not read, which
 is what makes the equality structural rather than argued field by field. The
 property, stated where it is held, is in
 `theurian.application.retrieval_service`'s module docstring: for every
-`limit <= MAX_RESULTS`, every value the ranking computes — `count`, `usedTokens`,
+`limit <= MAX_RESULTS`, every value that module computes — `count`, `usedTokens`,
 `droppedForBudget`, `fusedScore`, `foundBy`, and the identity and order of every
 hit — equals what the same query would compute had the withheld documents never
-been indexed, outside the residuals T-17a records; the response's two build
+been indexed at all, outside the residuals T-17a records (an
+`--include-unapproved` build's BM25 statistics, and the windows it names); the
+response's two build
 identities are outside it, `indexBuildId` naming the build and `snapshotId` the
 canonical state, withheld items included.
 `test_a_withheld_document_changes_nothing_a_caller_can_see` exempts both by name
@@ -6207,18 +6209,20 @@ the dense path, which T-6 enumerates as the second member of that class.
 >   one the build held. On a `--raptor` build a node the purge removes as
 >   ungrounded also makes `holds_any_revision` answer true, so there the bit can
 >   read "held" for residue unrelated to the withdrawal.
-> - **The callers for whom the withdrawn revision was never readable.** A caller
+> - **The callers who did not request the withdrawn revision.** A caller
 >   that does not pass `includeUnapproved` is served by an `--include-unapproved`
 >   build — `mcp.search._published_index` stands aside only the reverse pairing —
->   and that build holds drafts and proposals this caller may not read. An apply
+>   and that build holds drafts and proposals this caller did not ask for. An apply
 >   that rejects or deprecates such an item the build holds, or revises it so the
 >   revision the build holds is no longer current, purges it and moves
->   `indexBuildId`: this caller learns that the build held a revision it was never
->   allowed to read. `--include-unapproved` is an operator build flag, off by
->   default. A default build, and every purge copy of one, holds only rows that
->   were approved and inside its ceiling when `theurian index build` wrote them,
->   and serves only callers whose grant is that ceiling, so under it the bit
->   concerns revisions those callers could read when the build was made.
+>   `indexBuildId`: this caller learns that the build held a revision it did not
+>   request, and could have read with `includeUnapproved: true`, a documented
+>   parameter with no authorization gate. `--include-unapproved` is an operator
+>   build flag, off by default. A default build, and every purge copy of one,
+>   holds only rows that were approved and inside its ceiling when `theurian index
+>   build` wrote them, and serves only callers whose grant is that ceiling, so
+>   under it the bit concerns revisions those callers could read when the build
+>   was made.
 > - **The purge's other outcome, failure, reads the same trigger through other
 >   fields.** A purge that raises before its pointer swap taints the pointer
 >   (`mark_active_index_purge_failed`), GHSA-97q9-xxfg-33r6's gate then refuses to
@@ -6231,8 +6235,15 @@ the dense path, which T-6 enumerates as the second member of that class.
 >   is itself refused — the double fault above — nothing moves and the bit reads
 >   as "did not hold".
 >
-> This amendment does not grade the bit. The security review of #1000 grades it,
-> and if graded, it is filed as its own issue.
+> **Graded LOW, informational, and recorded as a design decision; no issue is
+> filed.** The security review of #1000 graded it
+> ([PR #1013](https://github.com/theurian/theurian/pull/1013), round one). Under
+> either build flavor the revision the bit concerns is one the same principal
+> could read when the build was made, with at most a documented parameter
+> (`includeUnapproved`); under the shipped default flavor it concerns approved
+> revisions only. It is query-independent, at most one bit per withdrawing apply,
+> and not something the caller can trigger, since an apply is an operator's act;
+> and it carries none of the revision's bytes.
 >
 > **Everything below is the record of why this was accepted for Milestone 5 and
 > what twice proved its bound wrong. It is kept because the reasoning is the
