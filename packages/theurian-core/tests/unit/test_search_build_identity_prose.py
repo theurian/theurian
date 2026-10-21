@@ -312,17 +312,19 @@ def test_no_live_sentence_gives_search_the_equality_without_its_build_identities
     and the query-matched rule ("no field varies with what a query matched among content
     the caller may not read") is not read, with or without them.
 
-    Blind: every word outside the closed lists above. A universal is only those words --
-    not `any`, `full`, `complete` or "nothing differs" -- and needs one of the equality
-    words, `compar…`, a corpus phrase, `never [been] indexed` or `the property` beside it;
-    `agrees`, `matches`, `consistent` and `the same as` written another way are not
-    equality words. A sentence saying `never held` is read as #1010's counterfactual and
-    passes, whatever else it claims. A source list needs the `every`/`each`/`all`/
-    `everything` subject. A negation, verb and unreadable term more than 60 characters
-    apart, or a verb or preposition outside the list (`carry`, `leak`, `reach`, `by`), pass;
-    so does `match` between them, read as the query-matched rule. Anaphora other than the
-    battery's name with `hold` ("search answers the same"), an exception set in other
-    words ("only status has exceptions") and markup inside a phrase pass.
+    Blind: every word outside the closed lists above. The universals are exactly those
+    listed -- `any`, `full` and `complete` are not -- and each needs an equality word,
+    `compar…`, a corpus phrase, `never [been] indexed` or `the property` beside it. The
+    equality words are exactly those listed -- `agrees`, `matches`, `coincides`,
+    `is consistent` and `differ…` without `does not`/`doesn't` are not -- and the corpus
+    phrases exactly `both`/`two`/`across corpora`. A sentence saying `never held` is read
+    as #1010's counterfactual and passes, whatever else it claims. A source list needs the
+    `every`/`each`/`all`/`everything` subject. A negation, verb and unreadable term more
+    than 60 characters apart, or a verb or preposition outside the list (`carry`, `leak`,
+    `reach`, `by`), pass; so does `match` between them, read as the query-matched rule.
+    Anaphora other than the battery's name with `hold` ("search answers the same"), an
+    exception set in other words ("only status has exceptions") and markup inside a phrase
+    pass.
 
     Measured: zero unaccepted hits at ac869eee plus this file. RED drivers, each alone in a
     private worktree at that tree: each of 23 sentences of #1000's faces F-a to F-m
