@@ -6161,9 +6161,7 @@ async def test_a_withheld_document_changes_nothing_a_caller_can_see(
     moved = {
         key for key in probe["retrieval"] if probe["retrieval"][key] != other["retrieval"][key]
     }
-    assert moved == set(BUILD_IDENTITY), (
-        "exactly the two build identities -- no more, and no fewer"
-    )
+    assert moved == set(BUILD_IDENTITY), "exactly the two build identities -- no more, and no fewer"
 
     assert probe["projectId"] == "depth-probe-corp"
     assert other["projectId"] == control
