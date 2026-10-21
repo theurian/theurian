@@ -59,7 +59,7 @@ ranked path: one query against two corpora differing only in a withheld
 document answers identically bar ``projectId`` and the two build identities
 ``indexBuildId`` and ``snapshotId``, which
 ``test_the_build_identity_a_search_reports_does_not_vary_with_the_query`` checks
-do not vary with the query. It was checked by breaking it rather than by
+do not vary with the query text. It was checked by breaking it rather than by
 reading it: ranking :func:`hybrid_answer`'s candidates through a visibility that
 withholds nothing turns all twenty of its parametrisations red, the first on a
 published hit carrying the retired document's credential.
@@ -908,10 +908,10 @@ def _index_report(
         # index status` does compare all three, and will report a database that
         # is itself behind, which this cannot.
         #
-        # Query-independent, which is what makes it a safe replacement for the
-        # per-query `withheldSuperseded` it now stands in for: it says "your
-        # index is behind, expect fewer results" without saying how many, for
-        # this query, matched something you may not read.
+        # Independent of the query text, which is what makes it a safe
+        # replacement for the per-query `withheldSuperseded` it now stands in
+        # for: it says "your index is behind, expect fewer results" without
+        # saying how many, for this query, matched something you may not read.
         stale=stale,
         stale_against="builtState",
         index_build_id=published.build_id,

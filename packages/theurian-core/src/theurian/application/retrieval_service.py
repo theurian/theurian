@@ -407,9 +407,9 @@ class SearchOutcome:
     ``limit=3`` and 12 at ``limit=12``, never the eleven available.
 
     No ``embedding_model``. It said which model backed the ranking, and it was
-    the same value for every query against one index — so it moved to
+    the same value for every query text against one index — so it moved to
     :meth:`RetrievalService.embedding_model`, where it is answerable *without* a
-    query and therefore cannot be made to vary with one.
+    query and therefore cannot be made to vary with its text or what it matched.
     """
 
     candidates: tuple[Fused, ...]

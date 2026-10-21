@@ -101,7 +101,8 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   wrong, not the behaviour. It now states the rule that holds — no field varies
   with what a query matched among content the caller may not read, outside the
   residuals T-17a records — and names `stale`, `note`, `snapshotId` and
-  `indexBuildId` as moving with project state or the build. The status
+  `indexBuildId` as moving with project state, the build, or the caller's own
+  parameters (which path answers), never with what a query matched. The status
   description compared its partial equality to "the way it does for
   `knowledge.search` and `knowledge.get`"; it now says search is in the same
   position through those two fields and get publishes neither. `[0.1.0.dev0]`'s

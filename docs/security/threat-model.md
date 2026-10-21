@@ -4351,14 +4351,21 @@ query-independent. `withheldSuperseded` is removed rather than corrected: "how
 many documents matched but were withheld" is exactly the count this channel
 needs, and no legitimate caller has a use for it. `stale` reports the
 query-independent half of the same fact — the index is behind, expect fewer
-results — identically for every query, which is what makes it a replacement
+results — identically for every query text, which is what makes it a replacement
 rather than a narrower version of the same leak. `embeddingModel` moved off the
 search outcome and onto `RetrievalService.embedding_model(use_dense=...)`, which
 is answerable without running a query and therefore cannot be made to vary with
-one. This is FR-R1's filter-before-ranking applied to metadata as well as to
+the query text or what it matched. This is FR-R1's filter-before-ranking
+applied to metadata as well as to
 `results`, and it touches SEC-13's boundary even though the read stays inside one
 Project: a caller may not learn what it is not authorized for, whether that is a
 document or one bit encoded in a token count.
+
+**Corrected in place.** This paragraph scoped neither field's sameness to the
+query text. A request parameter moves both: `includeUnapproved: true` against a
+build without drafts takes the unranked path, where `stale` is null, and
+`embeddingModel` is empty unless `useDense` is set
+([#1000](https://github.com/theurian/theurian/issues/1000)).
 
 `Resolved`, the value object the gate returns, is **not** a capability token and
 this entry no longer claims it is. Python offers no way to make a type
