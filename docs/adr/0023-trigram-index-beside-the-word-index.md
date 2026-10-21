@@ -601,11 +601,19 @@ Landed in Milestone 5:
 - **That this retriever's rows are read through the caller's visibility**, which
   is what the amendment to the first Negative consequence above requires.
   `tests/integration/test_mcp_tools.py::test_a_withheld_document_changes_nothing_a_caller_can_see`
-  states the property over the whole response, and
+  states the property over the whole response bar `projectId` and the two build
+  identities `indexBuildId` and `snapshotId`, which it asserts are exactly the
+  `retrieval` fields that differ, and
   `test_the_depth_probe_reaches_the_withheld_document_inside_the_candidate_depth`
   asserts the fixture can still break it. One layer down,
   `tests/integration/test_retrieval_service.py::test_a_withheld_row_cannot_choose_which_chunk_of_a_visible_document_is_published`
   pins the part no whole-response comparison can reach.
+
+  **Corrected in place.** This bullet said the first test "states the property
+  over the whole response". It excludes the two build identities by name
+  (`BUILD_IDENTITY`), as it has since it was added in
+  [#32](https://github.com/theurian/theurian/pull/32)
+  ([#1000](https://github.com/theurian/theurian/issues/1000)).
 - **And that it holds on the writing system this ADR exists for.** Both tests
   above are parametrised by corpus — `_DepthCorpus`, ids `english` and
   `japanese` — over the same crowd, the same ids, the same query shape and the

@@ -211,9 +211,19 @@ For the amendment to the depth consequence (fusion runs behind the gate):
   exact arrangement.
 - `tests/integration/test_mcp_tools.py::test_a_withheld_document_changes_nothing_a_caller_can_see`
   — the end-to-end statement of the same property: one query, two corpora, every
-  published value equal, at `limit` 50 and at the default. Paired with
+  published value equal bar `projectId` and the two build identities
+  `indexBuildId` and `snapshotId`, which it asserts are exactly the `retrieval`
+  fields that differ, at `limit` 50 and at the default. Paired with
   `test_the_depth_probe_reaches_the_withheld_document_inside_the_candidate_depth`,
   which asserts the fixture can still violate it.
+
+  **Corrected in place.** This bullet said: "one query, two corpora, every
+  published value equal, at `limit` 50 and at the default." That was false of
+  the two build identities: `indexBuildId` names the build and `snapshotId` the
+  canonical state, withheld items included, and the test has excluded both by
+  name (`BUILD_IDENTITY`) since it was added in
+  [#32](https://github.com/theurian/theurian/pull/32)
+  ([#1000](https://github.com/theurian/theurian/issues/1000)).
 
 The security argument these discharge, and the five fields it took three rounds
 of review to close, are recorded in T-17 of the
