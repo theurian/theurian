@@ -4219,24 +4219,46 @@ stage left that could compute a number from a row the caller may not read, which
 is what makes the equality structural rather than argued field by field. The
 property, stated where it is held, is in
 `theurian.application.retrieval_service`'s module docstring: for every
-`limit <= MAX_RESULTS`, every published value equals what the same query would
-return had the withheld documents never been indexed.
+`limit <= MAX_RESULTS`, every value the ranking computes — `count`, `usedTokens`,
+`droppedForBudget`, `fusedScore`, `foundBy`, and the identity and order of every
+hit — equals what the same query would compute had the withheld documents never
+been indexed. The response's two build identities are outside it: `indexBuildId`
+names the build and `snapshotId` the canonical state, withheld items included,
+and `test_a_withheld_document_changes_nothing_a_caller_can_see` exempts both by
+name (`BUILD_IDENTITY`) and asserts they are exactly the `retrieval` fields that
+differ.
 
 That equality holds over every stage the gate controls. The gate does not reach
 the corpus statistics BM25 scores against, so while a published build still held a
 withdrawn row those statistics carried content it should not — the residual
 tracked as T-17a below. That residual is now closed for the status axis: the
 withdrawal→purge trigger removes the withdrawn rows from the published build in
-the same `migrate apply` (issue #15), so no statistic counts a row the caller may
-not read. Read the gate's *own* guarantee as "no stage computes a number from a
-withheld *row*", which is what the gate verifies; the trigger is what makes the
-stronger "the withdrawn document has no effect on any published number" true, by
-taking the document out of the build. The claim is also about three of the five
-tools rather than all of them, and the third names its exceptions:
+the same `migrate apply` (issue #15), so outside the residuals T-17a records no
+statistic counts a withdrawn row. A build can still hold rows a given caller may
+not read with nothing withdrawn: an `--include-unapproved` build holds drafts and
+proposals, and serves a caller that does not ask for them, who is scored against
+them — the residual T-17a records for that build flavor. Read the gate's *own*
+guarantee as "no stage computes a number from a withheld *row*", which is what
+the gate verifies; the trigger is what makes the stronger "the withdrawn document
+has no effect on any published number" true outside those residuals, by taking
+the document out of the build. The claim is also about three of
+the five tools rather than all of them, and two of the three name exceptions:
+`knowledge.search` publishes the two build identities above, which move, and
 `knowledge.status` holds it for four of its six fields and publishes two that
-move — `stateHash` and `appliedMigrations` — exempt by a decision now recorded in
+move — `stateHash` and `appliedMigrations` — each exempt by a decision recorded in
 that tool's response schema and pinned as an exact set by a test; see *The
-equality covers three tools, and the third names its exceptions*, below.
+equality covers three tools, and two of them name their exceptions*, below.
+
+**Corrected in place.** These two paragraphs said the property was that "every
+published value equals what the same query would return had the withheld
+documents never been indexed", that the trigger means "no statistic counts a row
+the caller may not read", and that of the three tools "the third names its
+exceptions". The first and third were false of `knowledge.search`'s two build
+identities, `indexBuildId` and `snapshotId`, which its end-to-end test has
+excluded by name since it was added in
+[#32](https://github.com/theurian/theurian/pull/32); the second was false of the
+`--include-unapproved` and in-flight cases T-17a records
+([#1000](https://github.com/theurian/theurian/issues/1000)).
 
 Three details of that control are load-bearing and easy to lose:
 
@@ -4342,19 +4364,22 @@ narrower and still worth having: the three published numbers are read off one
 object built in one of two named places. The claim that carries the security
 property is the ordering above, not the type.
 
-**The equality covers three tools, and the third names its exceptions.** It is
-asserted end to end for `knowledge.search`
-(`test_a_withheld_document_changes_nothing_a_caller_can_see`), since round eight
-for `knowledge.get`, and now for `knowledge.status` — which holds it for four of
-its six always-present fields and publishes two that move under a recorded
-exemption. (A seventh key, `integrity`, arrived with #30 PR1 and appears only
-under damage; whether it appears is held equal across a withheld-only difference
-by a differential of its own, below.) The
-exemption is stated here, and in that tool's response schema, rather than left to
-a reader who takes "the whole response" at face value. Two projects built
-identically except for one extra migration creating a `rejected` item — invisible
-to every tool — measured through the real MCP tool against two real projects
-built by the real CLI:
+**The equality covers three tools, and two of them name their exceptions.** It
+is asserted end to end for `knowledge.search`
+(`test_a_withheld_document_changes_nothing_a_caller_can_see`), which exempts the
+two build identities `indexBuildId` and `snapshotId` by name and asserts they are
+exactly the `retrieval` fields that differ; since round eight for `knowledge.get`,
+which publishes no build or state identity; and now for `knowledge.status` —
+which holds it for four of its six always-present fields and publishes two that
+move under a recorded exemption. (A seventh key, `integrity`, arrived with #30
+PR1 and appears only under damage; whether it appears is held equal across a
+withheld-only difference by a differential of its own, below.) Each exemption —
+`indexBuildId` and `snapshotId` for search, `stateHash` and `appliedMigrations`
+for status — is stated here, and in that tool's response schema, rather than left
+to a reader who takes "the whole response" at face value. For `knowledge.status`,
+two projects built identically except for one extra migration creating a
+`rejected` item — invisible to every tool — measured through the real MCP tool
+against two real projects built by the real CLI:
 
 ```
 appliedMigrations    1                    2                    DIFFERS
@@ -4374,6 +4399,14 @@ version is an input to a state hash (ADR-0017,
 `test_schema_version_changes_the_hash`). What the transcript is evidence for —
 which fields differ and which do not — is unaffected, and that is the claim it is
 here to carry.
+
+**Corrected in place.** The lead of the paragraph above the transcript said: "The
+equality covers three tools, and the third names its exceptions." That was false:
+`knowledge.search` names two, its build identities `indexBuildId` and
+`snapshotId`, which its end-to-end test has excluded by name since it was added
+in [#32](https://github.com/theurian/theurian/pull/32), and the paragraph named
+the exemption for `knowledge.status` alone
+([#1000](https://github.com/theurian/theurian/issues/1000)).
 
 `itemCount` and `itemsByStatus` are correct and pinned by
 `test_retired_items_are_absent_from_every_published_count`. The two that move are
@@ -6140,6 +6173,65 @@ the dense path, which T-6 enumerates as the second member of that class.
 > holding withdrawn rows would leak — rather than a leak the shipped product still
 > has. The alarm that goes RED on the pre-trigger wiring is the closure test named
 > above.
+>
+> **Amended in #1000 (2026-10-21): the purge is itself observable, through
+> `indexBuildId`.** Nothing in this model named `indexBuildId` before this
+> amendment. What follows is a lifecycle bit of this entry's class — *the index
+> still held the withdrawn rows* — read off the active-index pointer rather than
+> off a statistic, from `application/withdrawal_purge.py`
+> `publish_purge_for_withdrawal`:
+>
+> - **When the purge publishes.** `migrate apply` hands the purge the final state
+>   of every item its pending migrations deprecated, restored, reclassified or
+>   revised, and `revisions_to_purge` reduces that to the revisions the published
+>   build may not hold *under its own flavor* (`indexesUnapproved`,
+>   `indexedSensitivities`). For a build `knowledge.search` is answering from, if
+>   that set is non-empty and `holds_any_revision` answers true for it — the build
+>   holds a chunk of one of those revisions, or a summary node not grounded in
+>   what survives them — the purge publishes a copy under a fresh ULID, and the
+>   `indexBuildId` the next search reports moves. Otherwise it publishes nothing
+>   and `indexBuildId` stays.
+> - **What does not tell the two apart.** The purged pointer keeps the source
+>   build's `stateHash`, so `stale` reads the same whether the purge published or
+>   not; `snapshotId` moves on any canonical change, purge or not.
+> - **The bit, beyond `snapshotId`.** A caller comparing `indexBuildId` across an
+>   apply learns whether the active build, under its flavor, held a row of a
+>   revision that apply withdrew. Its reach: query-independent — the published
+>   value is the pointer's own, `includeUnapproved` decides only whether the ranked
+>   path answers at all, and nothing a query matched reaches it, so no probe varies
+>   it; at most one bit per withdrawing apply; observable only by a caller who
+>   reads `indexBuildId` before and after that apply, and a `theurian index build`
+>   between the two reads moves it too; and it carries none of the withdrawn
+>   revision's bytes, nor, when the apply withdrew more than one revision, which
+>   one the build held. On a `--raptor` build a node the purge removes as
+>   ungrounded also makes `holds_any_revision` answer true, so there the bit can
+>   read "held" for residue unrelated to the withdrawal.
+> - **The callers for whom the withdrawn revision was never readable.** A caller
+>   that does not pass `includeUnapproved` is served by an `--include-unapproved`
+>   build — `mcp.search._published_index` stands aside only the reverse pairing —
+>   and that build holds drafts and proposals this caller may not read. An apply
+>   that rejects or deprecates such an item the build holds, or revises it so the
+>   revision the build holds is no longer current, purges it and moves
+>   `indexBuildId`: this caller learns that the build held a revision it was never
+>   allowed to read. `--include-unapproved` is an operator build flag, off by
+>   default. A default build, and every purge copy of one, holds only rows that
+>   were approved and inside its ceiling when `theurian index build` wrote them,
+>   and serves only callers whose grant is that ceiling, so under it the bit
+>   concerns revisions those callers could read when the build was made.
+> - **The purge's other outcome, failure, reads the same trigger through other
+>   fields.** A purge that raises before its pointer swap taints the pointer
+>   (`mark_active_index_purge_failed`), GHSA-97q9-xxfg-33r6's gate then refuses to
+>   serve the build, and the next `knowledge.search` answers from the canonical
+>   scan: `indexed` false, `mode` `substring`, `fallbackReason`
+>   `index-purge-failed`, `indexBuildId` and `stale` null. Failure is reached only
+>   once the reduced set is non-empty. A failure in `derive_purged` or the pointer
+>   write comes after `holds_any_revision` answered true; one raised at or before
+>   that check taints the build without it having answered. Where the taint write
+>   is itself refused — the double fault above — nothing moves and the bit reads
+>   as "did not hold".
+>
+> This amendment does not grade the bit. The security review of #1000 grades it,
+> and if graded, it is filed as its own issue.
 >
 > **Everything below is the record of why this was accepted for Milestone 5 and
 > what twice proved its bound wrong. It is kept because the reasoning is the
