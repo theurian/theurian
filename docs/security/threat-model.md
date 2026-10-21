@@ -6184,6 +6184,74 @@ the dense path, which T-6 enumerates as the second member of that class.
 > has. The alarm that goes RED on the pre-trigger wiring is the closure test named
 > above.
 >
+> **Amended in #1000 (2026-10-21): the purge is itself observable, through
+> `indexBuildId`.** Nothing in this model named `indexBuildId` before this
+> amendment. What follows is a lifecycle bit of this entry's class — *the index
+> still held the withdrawn rows* — read off the active-index pointer rather than
+> off a statistic, from `application/withdrawal_purge.py`
+> `publish_purge_for_withdrawal`:
+>
+> - **When the purge publishes.** `migrate apply` hands the purge the final state
+>   of every item its pending migrations deprecated, restored, reclassified or
+>   revised, and `revisions_to_purge` reduces that to the revisions the published
+>   build may not hold *under its own flavor* (`indexesUnapproved`,
+>   `indexedSensitivities`). For a build `knowledge.search` is answering from, if
+>   that set is non-empty and `holds_any_revision` answers true for it — the build
+>   holds a chunk of one of those revisions, or a summary node not grounded in
+>   what survives them — the purge publishes a copy under a fresh ULID, and the
+>   `indexBuildId` the next search reports moves. Otherwise it publishes nothing
+>   and `indexBuildId` stays.
+> - **What does not tell the two apart.** The purged pointer keeps the source
+>   build's `stateHash`, so `stale` reads the same whether the purge published or
+>   not; `snapshotId` moves on any canonical change, purge or not.
+> - **The bit, beyond `snapshotId`.** A caller comparing `indexBuildId` across an
+>   apply learns whether the active build, under its flavor, held a row of a
+>   revision that apply withdrew. Its reach: query-independent — the published
+>   value is the pointer's own, `includeUnapproved` decides only whether the ranked
+>   path answers at all, and nothing a query matched reaches it, so no probe varies
+>   it; at most one bit per withdrawing apply; observable only by a caller who
+>   reads `indexBuildId` before and after that apply, and a `theurian index build`
+>   between the two reads moves it too; and it carries none of the withdrawn
+>   revision's bytes, nor, when the apply withdrew more than one revision, which
+>   one the build held. On a `--raptor` build a node the purge removes as
+>   ungrounded also makes `holds_any_revision` answer true, so there the bit can
+>   read "held" for residue unrelated to the withdrawal.
+> - **The callers who did not request the withdrawn revision.** A caller
+>   that does not pass `includeUnapproved` is served by an `--include-unapproved`
+>   build — `mcp.search._published_index` stands aside only the reverse pairing —
+>   and that build holds drafts and proposals this caller did not ask for. An apply
+>   that rejects or deprecates such an item the build holds, or revises it so the
+>   revision the build holds is no longer current, purges it and moves
+>   `indexBuildId`: this caller learns that the build held a revision it did not
+>   request, and could have read with `includeUnapproved: true`, a documented
+>   parameter with no authorization gate. `--include-unapproved` is an operator
+>   build flag, off by default. A default build, and every purge copy of one,
+>   holds only rows that were approved and inside its ceiling when `theurian index
+>   build` wrote them, and serves only callers whose grant is that ceiling, so
+>   under it the bit concerns revisions those callers could read when the build
+>   was made.
+> - **The purge's other outcome, failure, reads the same trigger through other
+>   fields.** A purge that raises before its pointer swap taints the pointer
+>   (`mark_active_index_purge_failed`), GHSA-97q9-xxfg-33r6's gate then refuses to
+>   serve the build, and the next `knowledge.search` answers from the canonical
+>   scan: `indexed` false, `mode` `substring`, `fallbackReason`
+>   `index-purge-failed`, `indexBuildId` and `stale` null. Failure is reached only
+>   once the reduced set is non-empty. A failure in `derive_purged` or the pointer
+>   write comes after `holds_any_revision` answered true; one raised at or before
+>   that check taints the build without it having answered. Where the taint write
+>   is itself refused — the double fault above — nothing moves and the bit reads
+>   as "did not hold".
+>
+> **Graded LOW, informational, and recorded as a design decision; no issue is
+> filed.** The security review of #1000 graded it
+> ([PR #1013](https://github.com/theurian/theurian/pull/1013), round one). Under
+> either build flavor the revision the bit concerns is one the same principal
+> could read when the build was made, with at most a documented parameter
+> (`includeUnapproved`); under the shipped default flavor it concerns approved
+> revisions only. It is query-independent, at most one bit per withdrawing apply,
+> and not something the caller can trigger, since an apply is an operator's act;
+> and it carries none of the revision's bytes.
+>
 > **Everything below is the record of why this was accepted for Milestone 5 and
 > what twice proved its bound wrong. It is kept because the reasoning is the
 > artifact; read it as history, not as an open finding.**
