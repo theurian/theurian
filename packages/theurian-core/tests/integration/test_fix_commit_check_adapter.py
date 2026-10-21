@@ -1048,7 +1048,7 @@ def _merge_repository(tmp_path: Path, name: str, *, side_touches: bool, main_tou
 #: The semantics are the same whichever command carries them, and the round-2
 #: HIGH-1 fix moved from ``diff-tree --diff-merges=first-parent`` (a git 2.31
 #: feature, above the 2.30 floor) to ``log --first-parent -m``, which is
-#: verdict-identical and 2.30-compatible. Three shapes rather than one, because
+#: verdict-identical in its round-2 form and 2.30-compatible. Three shapes rather than one, because
 #: each rules out a reading of a merge diff that is *not* first-parent (measured,
 #: git 2.47.1, 2026-09-19, where both the default ``diff-tree`` and a ``log``
 #: without ``--first-parent -m`` answered ``TOUCHES_NOTHING_HERE`` for all three):
@@ -1253,7 +1253,7 @@ def test_the_git_vector_is_one_process_fixed_and_forecloses_an_option_a_path_and
     option errors, ``verify`` folds the non-zero exit to ``NO_SUCH_COMMIT``, and
     every valid ``fixCommit`` refuses (round-2 HIGH-1). The log form
     ``git ... log --no-walk --first-parent -m --name-only --format= --root ...``
-    is verdict-identical and 2.30-compatible; the floor-allowlist pin
+    was verdict-identical before ``-z`` (round 2) and is 2.30-compatible; the floor-allowlist pin
     :func:`test_the_verify_command_uses_only_git_features_at_or_below_the_documented_floor`
     holds it to the floor.
 

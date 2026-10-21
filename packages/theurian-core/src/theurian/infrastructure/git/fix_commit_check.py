@@ -43,6 +43,10 @@ exit 0, path is an entry      ``VERIFIED``
 exit 0, path is not an entry  ``TOUCHES_NOTHING_HERE``
 ============================  =================================================
 
+The adapter spawns one process for every admitted input, but on git below 2.45 in a partial clone
+git adds a fetch child for an object the clone lacks, stopped by the transport refusal before name
+resolution; that extra process is decision 5's recorded duration exception (ADR-0033, #981).
+
 **The verdict is byte-membership over git's machine output -- no rendering is
 interpreted -- and that is the round-3 closure of the whole output-parsing
 class.** Three faces of one root cause each read git's *human* rendering of a
@@ -109,7 +113,7 @@ spawn each (``log_form_probe.py``, 2026-09-19).
 **Both arguments are untrusted, and they are untrusted differently.** The sha is
 caller wire input; the path is author-controlled stored data a clone can deliver
 (T-3, T-24). What each token is worth was measured under this shape on git 2.47.1
-and 2.54.0, 2026-09-19:
+and 2.54.0, 2026-09-19 (the #758 and #981 tokens 2026-10-20 to 2026-10-21):
 
 * ``-z`` -- **load-bearing (round-3).** It makes git emit each touched path as
   raw NUL-delimited bytes rather than a newline-separated human rendering, which
