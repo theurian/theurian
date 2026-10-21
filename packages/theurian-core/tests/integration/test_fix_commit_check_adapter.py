@@ -1511,9 +1511,9 @@ GIT_TOKEN_FLOOR: dict[str, tuple[int, int]] = {
     "--root": (1, 5),
     "--literal-pathspecs": (1, 9),
     # internal, v2.30.0 git.c:281; if git drops it every verify exits 129 -> NO_SUCH_COMMIT
-    # (fail closed). The empty-string argument that follows it is a token too.
+    # (fail closed). Its argument (the empty string) is a value, not a feature, and is
+    # skipped where the tokens are read off the argv.
     "--shallow-file": (2, 30),
-    "": (2, 30),
     "log.mailmap=false": (1, 8),  # log.mailmap is 1.8.3 (RelNotes/1.8.3.txt)
     "--no-renames": (1, 5),
     # `-c` is 1.7.2 (RelNotes/1.7.2.txt); the precompose feature and its
@@ -1591,7 +1591,12 @@ def test_the_verify_command_uses_only_git_features_at_or_below_the_documented_fl
 
     assert len(calls) == 1, f"expected one spawn to read the command off; got {len(calls)}"
     runtime_values = {f"{caller_sha}^{{commit}}", path}
-    tokens = [token for token in calls[0]["args"][1:] if token not in runtime_values]
+    argv = calls[0]["args"][1:]
+    tokens = [
+        token
+        for index, token in enumerate(argv)
+        if token not in runtime_values and argv[index - 1] != "--shallow-file"
+    ]
 
     unlisted = [token for token in tokens if token not in GIT_TOKEN_FLOOR]
     assert not unlisted, (
