@@ -130,7 +130,7 @@ and 2.54.0, 2026-09-19:
   the shared child environment (#981), not here.
   It must precede the subcommand.
 * ``--shallow-file ""`` -- **load-bearing (#981).** A shallow clone's boundary
-  commit read as a root that added every file, so it verified any path; read as
+  commit read as a root that added every file, so it verified any path in its tree; read as
   complete, its absent parent exits 128 (``NO_SUCH_COMMIT``), while a true root and
   a commit whose parent is present still verify. A git-internal option, handled in
   ``git.c`` at the v2.30.0 floor; if git drops it, every verify exits 129 and refuses.

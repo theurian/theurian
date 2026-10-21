@@ -460,7 +460,7 @@ distinguishing information is about material the caller has not been granted.
 
 > **Amended in [#981](https://github.com/theurian/theurian/issues/981): "against the local git
 > repository" means against this repository's own objects.** Git read more: a shallow boundary
-> commit verified any path; a replace ref, a graft or an inherited `GIT_DIR` redirected the
+> commit verified any path in its tree; a replace ref, graft or inherited `GIT_DIR` redirected the
 > verdict; a partial clone fetched from its promisor, so a commit only the remote held read
 > `VERIFIED` — a verdict about another repository. The call now runs under the shared
 > `infrastructure/git/environment.py` with `--shallow-file ""`, `-c log.mailmap=false` and
