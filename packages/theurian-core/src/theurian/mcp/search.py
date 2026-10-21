@@ -11,9 +11,11 @@ which an agent reads as "we have no such decision" rather than "ask me again in
 a moment". An index is derived (ADR-0004), so its absence is a missing
 optimisation and never a reason to refuse to answer.
 
-**The invariant this module exists to hold (SEC-13, T-15): nothing derived from
-withheld content may appear in the response — not a count, not a token total,
-not a mode, not a score.**
+**The invariant this module exists to hold (SEC-13, T-15): nothing in the
+response varies with what a query matched among withheld content — not a count,
+not a token total, not a mode, not a score.** Four ``retrieval`` fields do move,
+never with the query: ``stale``, ``note`` and ``snapshotId`` with project state,
+and ``indexBuildId`` per build and on a withdrawal-purge publish.
 
 It is not enough to leave withheld hits out of ``results``. A response saying
 ``count: 0, results: [], usedTokens: 46`` states that something matched and may
@@ -41,15 +43,20 @@ module never sees a candidate that was ranked against withheld content:
 :class:`theurian.application.retrieval_service.ResultGate` hands its
 :class:`~theurian.application.visibility.Visibility` to the retrieval it drives,
 and hands back a :class:`~theurian.application.retrieval_service.Resolved`.
-Everything this module publishes is read off that object, off the index, or off
-the caller's own parameters.
+Everything this module publishes is read off that object, off the index, off the
+caller's own parameters, or — ``snapshotId`` and ``stale`` — off the canonical
+state the request resolved once.
 
 ``test_a_withheld_document_changes_nothing_a_caller_can_see``, in
-``tests/integration/test_mcp_tools.py``, is what holds that claim, and it was
-checked by breaking it rather than by reading it: ranking :func:`hybrid_answer`'s
-candidates through a visibility that withholds nothing turns all twenty of its
-parametrisations red, the first on a published hit carrying the retired
-document's credential.
+``tests/integration/test_mcp_tools.py``, holds the invariant end to end on the
+ranked path: one query against two corpora differing only in a withheld
+document answers identically bar ``projectId``, the request echo, and the two
+build identities ``indexBuildId`` and ``snapshotId``, which
+``test_the_build_identity_a_search_reports_does_not_vary_with_the_query`` shows
+are the same for every query. It was checked by breaking it rather than by
+reading it: ranking :func:`hybrid_answer`'s candidates through a visibility that
+withholds nothing turns all twenty of its parametrisations red, the first on a
+published hit carrying the retired document's credential.
 
 What is left here is the part that genuinely belongs to a tool surface: which
 index may answer at all and what to say when none can, the wire shape of a hit,
