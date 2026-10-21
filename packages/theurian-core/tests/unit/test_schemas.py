@@ -1300,8 +1300,8 @@ def test_only_surfaceable_statuses_are_published() -> None:
 #:
 #: The bar a new key has to clear: it must not vary with what a query matched
 #: among content the caller may not read. `stale`, `note`, `snapshotId` and
-#: `indexBuildId` clear it while moving with project state or the build, because
-#: none of them moves with the query (`retrieval-metadata.schema.json`).
+#: `indexBuildId` clear it: they move with project state, the build or the caller's
+#: own parameters, never with what a query matched (`retrieval-metadata.schema.json`).
 PUBLISHED_RETRIEVAL_KEYS = frozenset(
     {
         "mode",

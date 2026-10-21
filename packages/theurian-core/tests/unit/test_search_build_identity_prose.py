@@ -611,7 +611,8 @@ def test_the_records_name_the_battery_s_build_identities() -> None:
     """The exemption above is `BUILD_IDENTITY`; the records must name the same pair. Key:
     `build identities[,]` then two backticked names joined by `[,] and`, over the
     population; and the `retrieval-metadata` description's list of fields that "move with
-    project state or the build", which is `BUILD_IDENTITY` with `stale` and `note`.
+    project state, the build, or the caller's own parameters", which is `BUILD_IDENTITY`
+    with `stale` and `note`.
     Measured at ac869eee: eight pairs. RED drivers: `BUILD_IDENTITY` given `stale`, or
     without `snapshotId`; `note` dropped from that list.
     """
@@ -619,7 +620,7 @@ def test_the_records_name_the_battery_s_build_identities() -> None:
     pairs = re.findall(r"build identities,? `(\w+)`,? and `(\w+)`", text)
     description = json.loads((SCHEMAS / "retrieval-metadata.schema.json").read_text("utf-8"))
     moving = re.search(
-        r"((?:`\w+`(?:, | and ))+`\w+`) move with project state or the build",
+        r"((?:`\w+`(?:, | and ))+`\w+`) move with project state, the build",
         description["description"],
     )
 

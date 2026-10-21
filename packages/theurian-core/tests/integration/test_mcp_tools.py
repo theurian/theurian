@@ -4354,13 +4354,14 @@ async def test_nothing_derived_from_the_withheld_document_is_reported(
 ) -> None:
     """SEC-13, T-17, stated positively so a reader knows what the fields may say.
 
-    Every number in `retrieval`, and `mode`, is computed from results the gate
-    cleared for this caller, and every other field describes the index or the
-    caller's own parameters or — `stale`, `note`, `snapshotId` and
-    `indexBuildId` — moves with project state or the build, never with the
-    query (`retrieval-metadata.schema.json`). `stale` is the reason
-    `withheldSuperseded` could be deleted rather than merely hidden: it says
-    "your index is behind, expect fewer results" identically for every query.
+    A query matching only the withheld document reports `usedTokens` and
+    `droppedForBudget` at zero, `mode` as `none`, no `withheldSuperseded` key,
+    and `stale` still true; the rest of the block is pinned by
+    `test_a_withheld_document_changes_nothing_a_caller_can_see` and
+    `test_the_build_identity_a_search_reports_does_not_vary_with_the_query`.
+    `stale` is the reason `withheldSuperseded` could be deleted rather than
+    merely hidden: it says "your index is behind, expect fewer results"
+    identically for every query.
 
     `droppedForBudget` is asserted at zero for its own reason. A withheld hit is
     not "dropped for budget" — counting it there would move the leak one field
