@@ -1381,6 +1381,7 @@ no-network):
 > re-parent the public tip onto a local-only commit. The isolation moved to the shared
 > `infrastructure/git/environment.py`, which also sets `GIT_GRAFT_FILE=/dev/null`, so no graft
 > is read (`test_git_trailer_source.py::test_a_trailer_reachable_only_through_grafted_history_is_not_read_as_public`).
+> The read also passes `-c core.useReplaceRefs=false`, needed below git 2.42 (source read at v2.30.0 config.c:1402; not run).
 
 **Stated non-goal for this slice, owed to the serving arm:** verifying
 `remote.origin.url` against a recorded public-origin URL — the "a private-fork

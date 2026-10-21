@@ -18,7 +18,7 @@ object identity or of parentage -- what could put an embargoed commit at the pub
 
 - it reads the **fully-qualified** :data:`PUBLIC_REF`, never the short name, so a
   shadowing branch or tag cannot answer for the remote-tracking ref;
-- it disables **object replacement** (``--no-replace-objects`` *and*
+- it disables **object replacement** (``--no-replace-objects``, ``core.useReplaceRefs=false`` *and*
   ``GIT_NO_REPLACE_OBJECTS=1``), so a ``git replace`` cannot map the public tip's
   sha onto an author-chosen commit body;
 - it disables **grafts** (``GIT_GRAFT_FILE=/dev/null``, which neither replace switch
