@@ -27,10 +27,10 @@ flagged sentence, or two, fails. Cost: an edit to an accepted sentence that keep
 is unseen.
 
 Sentences (`_sentences`): text is cut at a blank line (a `>`-only line counts), before a
-`- `, `* ` or `1. ` list item and before a `|` table row; then flattened by
-`record_sentences.flat`, with U+2019 read as `'`, and cut after `.`, `?` or `!` -- optionally
-closed by `**`, `*`, `)` or `"` -- that whitespace follows, except after `e.g.` or `i.e.`
-and inside a backtick span.
+`- ` or `* ` list item and before a `|` table row; then flattened by `record_sentences.flat`,
+with U+2019 read as `'`, and cut after `.`, `?` or `!` -- optionally closed by `**`, `*`,
+`)` or `"` -- that whitespace follows, except after `e.g.` or `i.e.` and inside a backtick
+span. A `1. ` item needs no rule: the stop after its number cuts its text from the line above.
 """
 
 from __future__ import annotations
@@ -120,7 +120,7 @@ _COMPILED: Final = {
 }
 
 _PARAGRAPH: Final = re.compile(r"\n[ \t>]*\n")
-_SEGMENT: Final = re.compile(r"\n[ \t>]*\n|\n(?=[ \t>]*(?:[-*] |\d+\. |\|))")
+_SEGMENT: Final = re.compile(r"\n[ \t>]*\n|\n(?=[ \t>]*(?:[-*] |\|))")
 _STOP: Final = re.compile(r"[.?!](?:\*\*|\*|\)|\")?(?=\s|$)")
 _ABBREVIATION: Final = re.compile(r"\b(?:e\.g|i\.e)\.$")
 
@@ -481,7 +481,6 @@ SENTENCE_CASES: Final = [
     ("quoted blank line", "> Every published value is equal\n>\n> `snapshotId` moves"),
     ("dash item", "Every published value is equal\n- `snapshotId` moves"),
     ("star item", "Every published value is equal\n* `snapshotId` moves"),
-    ("numbered item", "Every published value is equal\n1. `snapshotId` moves"),
     ("table row", "| every published value is equal |\n| `snapshotId` moves |"),
     ("full stop", "Every published value is equal. `snapshotId` moves."),
     ("question mark", "Is every published value equal? `snapshotId` moves."),
