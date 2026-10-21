@@ -268,7 +268,8 @@ NETWORK_CLIENT_SITES = {
 #:   launchd and systemd adapters run ``launchctl`` and ``systemctl`` through.
 #:   Adapter-controlled argument vectors, never user input (its own ``noqa: S603``
 #:   says so), and a twenty-second timeout.
-#: - ``infrastructure/git/committed_check.py`` runs ``git rev-parse --verify
+#: - ``infrastructure/git/committed_check.py`` runs, each under a fixed
+#:   ``-c core.useReplaceRefs=false``, ``git rev-parse --verify
 #:   --quiet HEAD:<path>`` (the committed id) and ``git hash-object --stdin
 #:   --path=<path>`` (the applied id) to answer whether a migration file is
 #:   committed unmodified at ``HEAD`` -- the check ``migrate apply`` makes before it
