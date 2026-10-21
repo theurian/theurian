@@ -530,6 +530,7 @@ _INFRASTRUCTURE_NON_SERVING_MODULES: frozenset[str] = frozenset(
         "filesystem/parsers/registry.py",
         "filesystem/parsers/structured.py",
         "git/__init__.py",
+        "git/environment.py",
         "git/trailer_source.py",
         # The migrate-apply committed-file check (ADR-0034, T-15). It runs `git
         # rev-parse` and `git hash-object` to decide whether a migration is committed
