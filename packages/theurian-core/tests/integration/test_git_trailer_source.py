@@ -521,6 +521,43 @@ def test_a_git_replace_on_the_public_tip_is_not_read(tmp_path: Path) -> None:
     _assert_only_public(clone)
 
 
+@pytest.mark.parametrize("splice", ["replace-ref", "info-grafts", "graft-file-env"])
+def test_a_trailer_reachable_only_through_grafted_history_is_not_read_as_public(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, splice: str
+) -> None:
+    """Public history is what the remote ref's own commits say, not what a local splice makes of it.
+
+    A graft or a replace ref re-parents the public tip onto a local-only commit, so
+    that commit's trailer would be served under public provenance. ``replace-ref`` is
+    the control that was already isolated; the two graft forms are not stopped by
+    ``GIT_NO_REPLACE_OBJECTS``.
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    _commit(clone, "fix: public (#1)", "Review-Finding: security HIGH — a public finding")
+    _publish(clone)
+    tip = _git(clone, "rev-parse", "refs/remotes/origin/main").strip()
+    _git(clone, "checkout", "--orphan", "local-only")
+    local = _commit(
+        clone, "fix: local only (#2)", "Review-Finding: adversarial HIGH — a grafted-in finding"
+    )
+    _git(clone, "checkout", "-f", "main")
+    _git(clone, "branch", "-D", "local-only")
+    if splice == "replace-ref":
+        _git(clone, "replace", tip, local)
+    elif splice == "info-grafts":
+        (clone / ".git" / "info" / "grafts").write_text(f"{tip} {local}\n", encoding="utf-8")
+    else:
+        grafts = tmp_path / "grafts"
+        grafts.write_text(f"{tip} {local}\n", encoding="utf-8")
+        monkeypatch.setenv("GIT_GRAFT_FILE", str(grafts))
+    spliced = _git(clone, "log", "refs/remotes/origin/main", "--format=%B")
+    assert "a grafted-in finding" in spliced, "the splice does not reach an unisolated git"
+
+    texts = [f.finding_text for f in GitTrailerFindingSource(clone).load_findings().accepted]
+
+    assert texts == ["a public finding"]
+
+
 def test_an_injected_git_dir_does_not_hijack_the_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
