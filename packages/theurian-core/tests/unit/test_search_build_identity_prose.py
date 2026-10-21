@@ -125,99 +125,26 @@ _STOP: Final = re.compile(r"[.?!](?:\*\*|\*|\)|\")?(?=\s|$)")
 _ABBREVIATION: Final = re.compile(r"\b(?:e\.g|i\.e)\.$")
 
 #: The true sentences the key flags at HEAD: (file, a span of the sentence, why it is true).
+#: "One project" means two queries against one project, whose build identities agree.
 ACCEPTED: Final = (
-    (
-        "okf_export.py",
-        "a row the gate withheld moves none of them",
-        "OKF export's count and digest, not knowledge.search's response",
-    ),
-    (
-        "retrieval_service.py",
-        "the equality holds over every value this module computes",
-        "scoped to what the ranking computes, which the module's property sentence says "
-        "leaves out the build identities; its #119 clause is #1014's, another class",
-    ),
-    (
-        "review_commands.py",
-        "nothing about it varies with anything the caller may not read",
-        "the review CLI's remedy mapping, not knowledge.search",
-    ),
-    (
-        "raptor.py",
-        "break the two-corpus equality decision 9 rests on",
-        "#1010's shape, a purged build against one that never held the rows: box-split",
-    ),
-    (
-        "search.py",
-        "What holds *this* call site to using its visibility",
-        "the battery's call-site check, recorded red in all twenty parametrisations",
-    ),
-    (
-        "0023-trigram-index-beside-the-word-index.md",
-        "pins the part no whole-response comparison can reach",
-        "says what a whole-response comparison cannot reach",
-    ),
-    (
-        "threat-model.md",
-        "the field-by-field comparison of the whole `retrieval` block that closed round one",
-        "two queries against one project, whose build identities agree; "
-        "a recorded LOW overclaim, not this class",
-    ),
-    (
-        "threat-model.md",
-        "It therefore falsifies, as an unqualified statement, the property",
-        "T-17a history, calling that property false",
-    ),
-    (
-        "threat-model.md",
-        "| The **equality** — every published value equals",
-        "T-17a round-five history: the row records the property as broken",
-    ),
-    (
-        "threat-model.md",
-        "changes nothing, and that is false",
-        "history, calling the old text false",
-    ),
-    (
-        "test_mcp_tools.py",
-        "The whole `retrieval` block, compared field by field.",
-        "two queries against one project, whose build identities agree",
-    ),
-    (
-        "test_mcp_tools.py",
-        "The whole response, compared field by field.",
-        "two queries against one project, whose build identities agree",
-    ),
-    (
-        "test_mcp_tools.py",
-        "The **whole response** must be identical -- all sixteen",
-        "knowledge.get, which publishes no build identity",
-    ),
-    (
-        "test_mcp_tools.py",
-        "the two fields the published schema exempts",
-        "knowledge.status, whose schema exempts exactly stateHash and appliedMigrations",
-    ),
-    (
-        "test_mcp_tools.py",
-        "The two `retrieval` blocks are compared whole",
-        "two queries against one project, whose build identities agree",
-    ),
-    (
-        "test_mcp_tools.py",
-        "both sides of the comparison answer `count: 0` and every field agrees",
-        "two queries against one project, whose build identities agree",
-    ),
-    (
-        "test_mcp_tools.py",
-        "the **whole response** must be identical, not merely the `retrieval` block",
-        "the one-project probe-and-control tests that follow it",
-    ),
-    (
-        "test_mcp_tools.py",
-        "a whole-response comparison would fail for an honest reason",
-        "says a two-query comparison cannot be total",
-    ),
+    ("okf_export.py", "the gate withheld moves none of them", "OKF export's values"),
+    ("retrieval_service.py", "over every value this module computes", "the ranking's values"),
+    ("review_commands.py", "nothing about it varies with anything", "the review CLI's remedies"),
+    ("raptor.py", "the two-corpus equality decision 9 rests on", "#1010's shape, box-split"),
+    ("search.py", "What holds *this* call site", "a call-site check, recorded red"),
+    ("0023-trigram-index-beside-the-word-index.md", "no whole-response comparison", "a negative"),
+    ("threat-model.md", "comparison of the whole `retrieval` block", "one project; a recorded LOW"),
+    ("threat-model.md", "It therefore falsifies, as an unqualified", "T-17a history"),
+    ("threat-model.md", "| The **equality** — every published value", "T-17a history"),
+    ("threat-model.md", "changes nothing, and that is false", "history, called false"),
+    ("test_mcp_tools.py", "The whole `retrieval` block, compared field", "one project"),
+    ("test_mcp_tools.py", "The whole response, compared field by field.", "one project"),
+    ("test_mcp_tools.py", "The **whole response** must be identical --", "knowledge.get"),
+    ("test_mcp_tools.py", "the two fields the published schema exempts", "knowledge.status"),
+    ("test_mcp_tools.py", "The two `retrieval` blocks are compared whole", "one project"),
+    ("test_mcp_tools.py", "and every field agrees", "one project"),
+    ("test_mcp_tools.py", "must be identical, not merely the `retrieval`", "one project"),
+    ("test_mcp_tools.py", "a whole-response comparison would fail", "a negative"),
 )
 
 
