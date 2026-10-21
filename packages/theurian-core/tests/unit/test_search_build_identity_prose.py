@@ -28,11 +28,11 @@ is unseen.
 
 Sentences (`_sentences`): text is cut at a blank line (a `>`-only line counts), before a
 `- ` or `* ` list item and before a `|` table row; then flattened by `record_sentences.flat`,
-with U+2019 read as `'` and U+00AD dropped, and cut after `.`, `?` or `!` -- optionally
-closed by `**`, `*`, `)`, `"`, U+201D, `'`, `]` [and a `(…)` link target] or a `[^n]`
-footnote -- that whitespace follows, except after `e.g.`, `i.e.`, `cf.`, `vs.` or `etc.`
-and inside a backtick span. A `1. ` item needs no rule: the stop after its number cuts its
-text from the line above.
+with U+2019 read as `'`, U+00AD and word-edge `_` dropped, and cut after `.`, `?` or `!`
+-- optionally closed by `**`, `*`, `)`, `"`, U+201D, `'`, `]` [and a `(…)` link target] or
+a `[^n]` footnote -- that whitespace follows, except after `e.g.`, `i.e.`, `cf.`, `vs.` or
+`etc.` and inside a backtick span. A `1. ` item needs no rule: the stop after its number
+cuts its text from the line above.
 """
 
 from __future__ import annotations
@@ -135,6 +135,7 @@ _PARAGRAPH: Final = re.compile(r"\n[ \t>]*\n")
 _SEGMENT: Final = re.compile(r"\n[ \t>]*\n|\n(?=[ \t>]*(?:[-*] |\|))")
 _STOP: Final = re.compile(r"[.?!](?:\*\*|[*)\"\u201d']|\](?:\([^)\s]*\))?|\[\^\w+\])?(?=\s|$)")
 _ABBREVIATION: Final = re.compile(r"\b(?:e\.g|i\.e|cf|vs|etc)\.$")
+_EDGE_UNDERSCORE: Final = re.compile(r"(?<!\w)_|_(?!\w)")
 
 #: The true sentences the key flags at HEAD: (file, a span of the sentence, why it is true).
 #: "One project" means two queries against one project, whose build identities agree.
@@ -242,6 +243,7 @@ def _population(
 def _sentences(text: str) -> Iterator[str]:
     for segment in _SEGMENT.split(text):
         flattened = flat(segment).replace("\u2019", "'").replace("\u00ad", "")
+        flattened = _EDGE_UNDERSCORE.sub("", flattened)
         start = 0
         for stop in _STOP.finditer(flattened):
             inside_code = flattened[: stop.start()].count("`") % 2
@@ -560,6 +562,7 @@ SENTENCE_CASES: Final = [
     ("vs.", "No field (vs. the scan) is derived from withheld content."),
     ("etc.", "No field, nor its sources etc. is derived from withheld content."),
     ("soft hyphen", "No field is derived from with\u00adheld content."),
+    ("underscore italics", "_Every published value is equal._ `snapshotId` moves."),
 ]
 
 
