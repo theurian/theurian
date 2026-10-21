@@ -4222,10 +4222,11 @@ property, stated where it is held, is in
 `limit <= MAX_RESULTS`, every value the ranking computes — `count`, `usedTokens`,
 `droppedForBudget`, `fusedScore`, `foundBy`, and the identity and order of every
 hit — equals what the same query would compute had the withheld documents never
-been indexed. The response's two build identities are outside it: `indexBuildId`
-names the build and `snapshotId` the canonical state, withheld items included,
-and `test_a_withheld_document_changes_nothing_a_caller_can_see` exempts both by
-name (`BUILD_IDENTITY`) and asserts they are exactly the `retrieval` fields that
+been indexed, outside the residuals T-17a records; the response's two build
+identities are outside it, `indexBuildId` naming the build and `snapshotId` the
+canonical state, withheld items included.
+`test_a_withheld_document_changes_nothing_a_caller_can_see` exempts both by name
+(`BUILD_IDENTITY`) and asserts they are exactly the `retrieval` fields that
 differ.
 
 That equality holds over every stage the gate controls. The gate does not reach

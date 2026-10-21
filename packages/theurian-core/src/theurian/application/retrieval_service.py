@@ -17,12 +17,13 @@ confirmed is still current and still approved.
 
 **The property this module exists to hold (SEC-13, T-15): for every
 ``limit <= MAX_RESULTS``, every value this module computes equals what the same
-query would compute if the withheld documents had never been indexed at all.**
-Not the last result of fifty; not a bounded residual. Equality — for ``count``,
-``usedTokens``, ``droppedForBudget``, ``fusedScore``, ``foundBy``, and the
-identity and order of every hit. The response's two build identities are outside
-it and are not computed here: ``indexBuildId`` names the build, a fresh ULID per
-build, and ``snapshotId`` the canonical state, withheld items included. Held by
+query would compute if the withheld documents had never been indexed at all —
+which leaves out the response's two build identities, ``indexBuildId`` and
+``snapshotId``, because neither is computed here.** Not the last result of
+fifty; not a bounded residual. Equality — for ``count``, ``usedTokens``,
+``droppedForBudget``, ``fusedScore``, ``foundBy``, and the identity and order of
+every hit. ``indexBuildId`` names the build, a fresh ULID per build, and
+``snapshotId`` the canonical state, withheld items included. Held by
 ``test_a_withheld_document_changes_nothing_a_caller_can_see``
 (``tests/integration/test_mcp_tools.py``) — one query, two corpora, every field
 compared except ``projectId`` and the two build identities ``BUILD_IDENTITY``
