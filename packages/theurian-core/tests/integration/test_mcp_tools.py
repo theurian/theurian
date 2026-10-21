@@ -999,12 +999,13 @@ async def test_a_withheld_item_moves_exactly_the_two_fields_the_status_schema_ex
 
     One request against two corpora, which is the form that closes T-17: a
     project holding items the caller may not read must answer the way a project
-    that never held them answers. `knowledge.search` holds that outright
-    (`test_a_withheld_document_changes_nothing_a_caller_can_see`) and
-    `knowledge.get` holds it by refusing to distinguish a withheld id from an
-    absent one. This tool holds it for four of its six fields; the other two are
-    `stateHash` and `appliedMigrations`, exempt by the recorded decision in
-    `schemas/mcp/knowledge-status-response.schema.json` (#19) -- neither carries
+    that never held them answers. `knowledge.search` holds it bar its two build
+    identities, `indexBuildId` and `snapshotId`
+    (`test_a_withheld_document_changes_nothing_a_caller_can_see`), and
+    `knowledge.get` holds it outright, by refusing to distinguish a withheld id
+    from an absent one. This tool holds it for four of its six fields; the other
+    two are `stateHash` and `appliedMigrations`, exempt by the recorded decision
+    in `schemas/mcp/knowledge-status-response.schema.json` (#19) -- neither carries
     a bit about *what* was withheld, and this tool takes one argument, so there
     is no probe to vary and therefore no extraction oracle.
 
@@ -4044,7 +4045,7 @@ async def test_what_a_stale_index_withheld_is_not_reported(indexed: ProjectRegis
     It bought that at the price of a truth oracle, and the trigram retriever
     matches any substring of three characters, so the oracle extracts rather
     than merely detects. `stale` says the same useful thing — your index is
-    behind, expect fewer results — and says it identically for every query.
+    behind, expect fewer results — and says it identically for every query text.
     """
     result = await _call(indexed, "knowledge.search", projectId="demo", query="signed token")
 
@@ -4353,11 +4354,14 @@ async def test_nothing_derived_from_the_withheld_document_is_reported(
 ) -> None:
     """SEC-13, T-17, stated positively so a reader knows what the fields may say.
 
-    Every number in `retrieval` is computed from the results the caller actually
-    receives; everything else is a property of the index or of the caller's own
-    parameters. `stale` is the deliberate exception and the reason
-    `withheldSuperseded` could be deleted rather than merely hidden: it says
-    "your index is behind, expect fewer results" identically for every query.
+    A query matching only the withheld document reports `usedTokens` and
+    `droppedForBudget` at zero, `mode` as `none`, no `withheldSuperseded` key,
+    and `stale` still true; the rest of the block is pinned by
+    `test_a_withheld_document_changes_nothing_a_caller_can_see` and
+    `test_the_build_identity_a_search_reports_does_not_vary_with_the_query`.
+    `stale` is the reason `withheldSuperseded` could be deleted rather than
+    merely hidden: it says "your index is behind, expect fewer results"
+    identically for every query text.
 
     `droppedForBudget` is asserted at zero for its own reason. A withheld hit is
     not "dropped for budget" — counting it there would move the leak one field
@@ -4370,7 +4374,7 @@ async def test_nothing_derived_from_the_withheld_document_is_reported(
     assert retrieval["droppedForBudget"] == 0, "a withheld hit is not 'dropped for budget'"
     assert retrieval["mode"] == "none", "the mode names the retrievers behind the *results*"
     assert "withheldSuperseded" not in retrieval
-    assert retrieval["stale"] is True, "the query-independent half is still told"
+    assert retrieval["stale"] is True, "the query-text-independent half is still told"
 
 
 # -- The same oracle, in the input space the probes above cannot reach --------
@@ -5551,8 +5555,9 @@ async def test_the_project_id_echo_is_named_up_to_the_id_ceiling_then_by_length(
 #
 # So the property is stated against two *corpora* and one query: the response
 # must equal what an index that never held the withheld document would return.
-# Nothing about the query varies, which is what makes the comparison total —
-# every field, `useDense` included.
+# Nothing about the query varies, which is what lets the comparison cover every
+# field, `useDense` included, bar `projectId` and the two build identities
+# `BUILD_IDENTITY` names below.
 
 #: Enough approved documents to fill every retriever's candidate depth. Smaller
 #: and the boundary is unreachable: the withheld document has to take a slot a
@@ -5587,7 +5592,7 @@ DOCUMENTED_DEPTH = 50
 #: withheld document itself. Excluding a field is how a comparison quietly gets
 #: narrower than the property it claims, so both are covered instead by
 #: `test_the_build_identity_a_search_reports_does_not_vary_with_the_query`,
-#: which shows they are the same for every query against one project and
+#: which shows they are the same for every query text against one project and
 #: therefore cannot answer "did this query match something withheld?".
 BUILD_IDENTITY = ("indexBuildId", "snapshotId")
 
@@ -6157,9 +6162,7 @@ async def test_a_withheld_document_changes_nothing_a_caller_can_see(
     moved = {
         key for key in probe["retrieval"] if probe["retrieval"][key] != other["retrieval"][key]
     }
-    assert moved == set(BUILD_IDENTITY), (
-        "exactly the two fields the published contract exempts -- no more, and no fewer"
-    )
+    assert moved == set(BUILD_IDENTITY), "exactly the two build identities -- no more, and no fewer"
 
     assert probe["projectId"] == "depth-probe-corp"
     assert other["projectId"] == control
@@ -6180,9 +6183,9 @@ async def test_the_build_identity_a_search_reports_does_not_vary_with_the_query(
 
     A field left out of a comparison is a field nothing checks, so the two that
     are left out are checked here instead, and by the only test that means
-    anything for them: they must be the same for *every* query against one
-    project. A value that cannot vary with the query cannot answer a question
-    about what the query matched.
+    anything for them: they must be the same for *every* query text against
+    one project. A value that cannot vary with the query text cannot answer a
+    question about what the query matched.
     """
     matching = await _call(
         three_indexes.registry,

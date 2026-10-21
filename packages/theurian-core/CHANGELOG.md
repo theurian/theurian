@@ -84,6 +84,38 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   document's `description` (`ProposalService.draft_from_document` and
   `_slug_source` in `application/proposal_service.py`, `kebab_slug` in
   `domain/proposal.py`), and the description now says so.
+- **The `knowledge.search` `retrieval` block's description names the fields
+  that are not equal across withheld content**
+  ([#1000](https://github.com/theurian/theurian/issues/1000)). This is a claim
+  correction, not a contract change: only the top-level `description`
+  annotations of `retrieval-metadata.schema.json` and
+  `knowledge-status-response.schema.json` changed. The first said "No field may
+  be derived from content the caller was not allowed to read", with `stale` as
+  the one exception. The response has always published two build identities
+  that differ between two projects differing only in a withheld item:
+  `snapshotId`, the hash over canonical state, withheld items included, that
+  `knowledge.status` publishes as `stateHash`; and `indexBuildId`, a fresh ULID
+  per build, which is not derived from content but differs between any two
+  builds, and also moves when the purge after a withdrawing `migrate apply`
+  publishes. The description was
+  wrong, not the behaviour. It now states the rule that holds — no field varies
+  with what a query matched among content the caller may not read, outside the
+  residuals T-17a records — and names `stale`, `note`, `snapshotId` and
+  `indexBuildId` as moving with project state, the build, or the caller's own
+  parameters (which path answers), never with what a query matched. The status
+  description compared its partial equality to "the way it does for
+  `knowledge.search` and `knowledge.get`"; it now says search is in the same
+  position through those two fields and get publishes neither. `[0.1.0.dev0]`'s
+  *Security* entry for the T-17 fix says "Every published value is equal"
+  across the two corpora; the test behind it excluded both fields then too, and
+  that entry is left standing as the record of that release. Its *Changed*
+  entry's "a value answerable without a query cannot be made to vary with one",
+  said of `embeddingModel`, was false when shipped too: `useDense`, and
+  `includeUnapproved` where it selects the scan path, move the field per request
+  (`""` without `useDense` and on that path), though it does not vary with the
+  query text. The threat model,
+  ADR-0021, ADR-0023 and two module docstrings made the same claim and are
+  corrected in place.
 
 ### Fixed
 

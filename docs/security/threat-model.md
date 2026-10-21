@@ -4219,24 +4219,49 @@ stage left that could compute a number from a row the caller may not read, which
 is what makes the equality structural rather than argued field by field. The
 property, stated where it is held, is in
 `theurian.application.retrieval_service`'s module docstring: for every
-`limit <= MAX_RESULTS`, every published value equals what the same query would
-return had the withheld documents never been indexed.
+`limit <= MAX_RESULTS`, every value that module computes — `count`, `usedTokens`,
+`droppedForBudget`, `fusedScore`, `foundBy`, and the identity and order of every
+hit — equals what the same query would compute had the withheld documents never
+been indexed at all, outside the residuals T-17a records (an
+`--include-unapproved` build's BM25 statistics, and the windows it names); the
+response's two build
+identities are outside it, `indexBuildId` naming the build and `snapshotId` the
+canonical state, withheld items included.
+`test_a_withheld_document_changes_nothing_a_caller_can_see` exempts both by name
+(`BUILD_IDENTITY`) and asserts they are exactly the `retrieval` fields that
+differ.
 
 That equality holds over every stage the gate controls. The gate does not reach
 the corpus statistics BM25 scores against, so while a published build still held a
 withdrawn row those statistics carried content it should not — the residual
 tracked as T-17a below. That residual is now closed for the status axis: the
 withdrawal→purge trigger removes the withdrawn rows from the published build in
-the same `migrate apply` (issue #15), so no statistic counts a row the caller may
-not read. Read the gate's *own* guarantee as "no stage computes a number from a
-withheld *row*", which is what the gate verifies; the trigger is what makes the
-stronger "the withdrawn document has no effect on any published number" true, by
-taking the document out of the build. The claim is also about three of the five
-tools rather than all of them, and the third names its exceptions:
+the same `migrate apply` (issue #15), so outside the residuals T-17a records no
+statistic counts a withdrawn row. A build can still hold rows a given caller may
+not read with nothing withdrawn: an `--include-unapproved` build holds drafts and
+proposals, and serves a caller that does not ask for them, who is scored against
+them — the residual T-17a records for that build flavor. Read the gate's *own*
+guarantee as "no stage computes a number from a withheld *row*", which is what
+the gate verifies; the trigger is what makes the stronger "the withdrawn document
+has no effect on any published number" true outside those residuals, by taking
+the document out of the build. The claim is also about three of
+the five tools rather than all of them, and two of the three name exceptions:
+`knowledge.search` publishes the two build identities above, which move, and
 `knowledge.status` holds it for four of its six fields and publishes two that
-move — `stateHash` and `appliedMigrations` — exempt by a decision now recorded in
+move — `stateHash` and `appliedMigrations` — each exempt by a decision recorded in
 that tool's response schema and pinned as an exact set by a test; see *The
-equality covers three tools, and the third names its exceptions*, below.
+equality covers three tools, and two of them name their exceptions*, below.
+
+**Corrected in place.** These two paragraphs said the property was that "every
+published value equals what the same query would return had the withheld
+documents never been indexed", that the trigger means "no statistic counts a row
+the caller may not read", and that of the three tools "the third names its
+exceptions". The first and third were false of `knowledge.search`'s two build
+identities, `indexBuildId` and `snapshotId`, which its end-to-end test has
+excluded by name since it was added in
+[#32](https://github.com/theurian/theurian/pull/32); the second was false of the
+`--include-unapproved` and in-flight cases T-17a records
+([#1000](https://github.com/theurian/theurian/issues/1000)).
 
 Three details of that control are load-bearing and easy to lose:
 
@@ -4326,14 +4351,21 @@ query-independent. `withheldSuperseded` is removed rather than corrected: "how
 many documents matched but were withheld" is exactly the count this channel
 needs, and no legitimate caller has a use for it. `stale` reports the
 query-independent half of the same fact — the index is behind, expect fewer
-results — identically for every query, which is what makes it a replacement
+results — identically for every query text, which is what makes it a replacement
 rather than a narrower version of the same leak. `embeddingModel` moved off the
 search outcome and onto `RetrievalService.embedding_model(use_dense=...)`, which
 is answerable without running a query and therefore cannot be made to vary with
-one. This is FR-R1's filter-before-ranking applied to metadata as well as to
+the query text or what it matched. This is FR-R1's filter-before-ranking
+applied to metadata as well as to
 `results`, and it touches SEC-13's boundary even though the read stays inside one
 Project: a caller may not learn what it is not authorized for, whether that is a
 document or one bit encoded in a token count.
+
+**Corrected in place.** This paragraph scoped neither field's sameness to the
+query text. A request parameter moves both: `includeUnapproved: true` against a
+build without drafts takes the unranked path, where `stale` is null, and
+`embeddingModel` is empty unless `useDense` is set
+([#1000](https://github.com/theurian/theurian/issues/1000)).
 
 `Resolved`, the value object the gate returns, is **not** a capability token and
 this entry no longer claims it is. Python offers no way to make a type
@@ -4342,19 +4374,22 @@ narrower and still worth having: the three published numbers are read off one
 object built in one of two named places. The claim that carries the security
 property is the ordering above, not the type.
 
-**The equality covers three tools, and the third names its exceptions.** It is
-asserted end to end for `knowledge.search`
-(`test_a_withheld_document_changes_nothing_a_caller_can_see`), since round eight
-for `knowledge.get`, and now for `knowledge.status` — which holds it for four of
-its six always-present fields and publishes two that move under a recorded
-exemption. (A seventh key, `integrity`, arrived with #30 PR1 and appears only
-under damage; whether it appears is held equal across a withheld-only difference
-by a differential of its own, below.) The
-exemption is stated here, and in that tool's response schema, rather than left to
-a reader who takes "the whole response" at face value. Two projects built
-identically except for one extra migration creating a `rejected` item — invisible
-to every tool — measured through the real MCP tool against two real projects
-built by the real CLI:
+**The equality covers three tools, and two of them name their exceptions.** It
+is asserted end to end for `knowledge.search`
+(`test_a_withheld_document_changes_nothing_a_caller_can_see`), which exempts the
+two build identities `indexBuildId` and `snapshotId` by name and asserts they are
+exactly the `retrieval` fields that differ; since round eight for `knowledge.get`,
+which publishes no build or state identity; and now for `knowledge.status` —
+which holds it for four of its six always-present fields and publishes two that
+move under a recorded exemption. (A seventh key, `integrity`, arrived with #30
+PR1 and appears only under damage; whether it appears is held equal across a
+withheld-only difference by a differential of its own, below.) Each exemption —
+`indexBuildId` and `snapshotId` for search, `stateHash` and `appliedMigrations`
+for status — is stated here, and in that tool's response schema, rather than left
+to a reader who takes "the whole response" at face value. For `knowledge.status`,
+two projects built identically except for one extra migration creating a
+`rejected` item — invisible to every tool — measured through the real MCP tool
+against two real projects built by the real CLI:
 
 ```
 appliedMigrations    1                    2                    DIFFERS
@@ -4374,6 +4409,14 @@ version is an input to a state hash (ADR-0017,
 `test_schema_version_changes_the_hash`). What the transcript is evidence for —
 which fields differ and which do not — is unaffected, and that is the claim it is
 here to carry.
+
+**Corrected in place.** The lead of the paragraph above the transcript said: "The
+equality covers three tools, and the third names its exceptions." That was false:
+`knowledge.search` names two, its build identities `indexBuildId` and
+`snapshotId`, which its end-to-end test has excluded by name since it was added
+in [#32](https://github.com/theurian/theurian/pull/32), and the paragraph named
+the exemption for `knowledge.status` alone
+([#1000](https://github.com/theurian/theurian/issues/1000)).
 
 `itemCount` and `itemsByStatus` are correct and pinned by
 `test_retired_items_are_absent_from_every_published_count`. The two that move are

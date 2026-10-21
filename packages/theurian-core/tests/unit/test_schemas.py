@@ -1298,9 +1298,10 @@ def test_only_surfaceable_statuses_are_published() -> None:
 #: here must therefore be a decision somebody takes, not a diff somebody misses,
 #: so the set is written out and this test is the place to argue for a change.
 #:
-#: The bar a new key has to clear: it describes what was *returned*, the index,
-#: or the caller's own parameters -- never what a query matched and the caller
-#: may not read.
+#: The bar a new key has to clear: it must not vary with what a query matched
+#: among content the caller may not read. `stale`, `note`, `snapshotId` and
+#: `indexBuildId` clear it: they move with project state, the build or the caller's
+#: own parameters, never with what a query matched (`retrieval-metadata.schema.json`).
 PUBLISHED_RETRIEVAL_KEYS = frozenset(
     {
         "mode",
