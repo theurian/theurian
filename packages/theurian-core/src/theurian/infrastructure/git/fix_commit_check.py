@@ -191,6 +191,7 @@ from typing import Final, final
 
 from theurian.domain.review import FixCommitVerdict
 from theurian.domain.review_search import untransportable_reason
+from theurian.infrastructure.git.environment import child_environment
 
 #: Timeout on the one ``git`` call this adapter spawns. A single local object read
 #: is cheap, and an unbounded subprocess on a daemon-reachable path is a hang the
@@ -313,6 +314,7 @@ class FixCommitCheck:
                 capture_output=True,
                 timeout=GIT_TIMEOUT_SECONDS,
                 check=False,
+                env=child_environment(os.environ),
             )
         except (OSError, ValueError, subprocess.TimeoutExpired):
             return None

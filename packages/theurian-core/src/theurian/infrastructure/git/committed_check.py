@@ -79,6 +79,8 @@ from enum import Enum
 from pathlib import Path, PurePath
 from typing import Final, final
 
+from theurian.infrastructure.git.environment import child_environment
+
 #: Timeout on each ``git`` call this adapter spawns. A single object read or hash
 #: from local storage is cheap -- generous even for a migration at the loader's
 #: 8 MiB source cap (:data:`~theurian.security.paths.MAX_SOURCE_FILE_BYTES`) -- and
@@ -224,6 +226,7 @@ class CommittedMigrationCheck:
                 capture_output=True,
                 timeout=GIT_TIMEOUT_SECONDS,
                 check=False,
+                env=child_environment(os.environ),
             )
         except (OSError, subprocess.TimeoutExpired):
             return None
