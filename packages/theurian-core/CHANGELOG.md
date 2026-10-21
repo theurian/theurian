@@ -108,7 +108,12 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   position through those two fields and get publishes neither. `[0.1.0.dev0]`'s
   *Security* entry for the T-17 fix says "Every published value is equal"
   across the two corpora; the test behind it excluded both fields then too, and
-  that entry is left standing as the record of that release. The threat model,
+  that entry is left standing as the record of that release. Its *Changed*
+  entry's "a value answerable without a query cannot be made to vary with one",
+  said of `embeddingModel`, was false when shipped too: `useDense`, and
+  `includeUnapproved` where it selects the scan path, move the field per request
+  (`""` without `useDense` and on that path), though it does not vary with the
+  query text. The threat model,
   ADR-0021, ADR-0023 and two module docstrings made the same claim and are
   corrected in place.
 
