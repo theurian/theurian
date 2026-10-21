@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from typing import Final
 
 #: Inherited ``GIT_*`` environment variables the child ``git`` must not see, so no
-#: ambient process state can redirect what "public history" means (ADR-0029
+#: ambient process state can redirect what the repository's history means (ADR-0029
 #: Amendment 1, D7). Stripping a variable can only make ``git`` fall back to its
 #: default (this repository, its real object store, no injected config) -- never to
 #: a wrong answer -- so the list is a defensive superset. It covers three classes:

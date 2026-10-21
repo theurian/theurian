@@ -300,7 +300,8 @@ NETWORK_CLIENT_SITES = {
 #:   attempt that reached merges through diff tree with a diff merges option
 #:   needed git 2.31, above the documented floor of 2.30, so on a floor install
 #:   it errored and every valid fixCommit refused (round 2 HIGH 1); the log form
-#:   is verdict identical and 2.30 compatible. The z flag makes git emit NUL
+#:   is 2.30 compatible, and its round 2 shape, without z, measured verdict
+#:   identical. The z flag makes git emit NUL
 #:   delimited raw path bytes rather than its human rendering, and a verdict is
 #:   verified only when the exact stored path, encoded to UTF 8, is one of those
 #:   byte entries after empty entries are dropped: no quoting, no line splitting,

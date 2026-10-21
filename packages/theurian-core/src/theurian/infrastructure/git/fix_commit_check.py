@@ -126,8 +126,18 @@ and 2.54.0, 2026-09-19:
   ``TOUCHES_NOTHING_HERE``: an NFD anchor against an NFC tree reaches byte
   membership and is refused there, while for NFC against NFD and Omega/Ohm either
   way round git emits nothing -- and fail-open through repository state (a
-  shallow boundary, replace refs, ``GIT_DIR``) is #981's, not closed here.
+  shallow boundary, replace refs, ``GIT_DIR``) is closed by ``--shallow-file`` and
+  the shared child environment (#981), not here.
   It must precede the subcommand.
+* ``--shallow-file ""`` -- **load-bearing (#981).** A shallow clone's boundary
+  commit read as a root that added every file, so it verified any path; read as
+  complete, its absent parent exits 128 (``NO_SUCH_COMMIT``), while a true root and
+  a commit whose parent is present still verify. A git-internal option, handled in
+  ``git.c`` at the v2.30.0 floor; if git drops it, every verify exits 129 and refuses.
+* ``-c log.mailmap=false`` and ``--no-renames`` -- **load-bearing (#981): the check
+  reads no blob.** They stop the mailmap and rename-detection blob reads, each a
+  lazy fetch in a partial clone; ``--no-renames`` changes no verdict, because the
+  pathspec filters before rename pairing.
 * ``--literal-pathspecs`` -- **defence in depth, subsumed by membership.** Against
   a commit touching only ``docs/notes.md``, the stored paths
   ``:(exclude)src/retrying.py``, ``:!src/retrying.py``, ``:(glob)**/*.md`` and
@@ -167,7 +177,8 @@ and 2.54.0, 2026-09-19:
 
 ``tests/integration/test_fix_commit_check_adapter.py`` holds all of these, and
 names which a behavioural case can reach and which only its captured-vector pin
-can; ``test_the_verify_command_uses_only_git_features_at_or_below_the_documented_floor``
+can; ``test_git_ambient_state_fix_commit.py`` drives the cases the #981 tokens decide;
+``test_the_verify_command_uses_only_git_features_at_or_below_the_documented_floor``
 holds the 2.30 floor as an allowlist rather than as a single flag's absence.
 
 **The binary is resolved to an absolute path**, the ``gh`` precedent tier
@@ -175,10 +186,11 @@ holds the 2.30 floor as an allowlist rather than as a single flag's absence.
 decides a promotion signal and letting an inherited ``PATH`` choose the
 executable that answers it is the shape that clause refuses. It reaches no
 network -- ``log`` reads local object storage, names no remote and takes no
-URL -- except in a partial clone, where git lazily fetches from the promisor
-remote any object it reads and lacks, the named commit among them, so a commit
-present only on the remote can read ``VERIFIED`` (#981); it is on
-``PROCESS_SPAWN_SITES`` because it spawns a process.
+URL, and it runs under ``environment.py``'s child environment, which disables lazy
+fetch where git honours it (2.45+) and refuses every transport on any version, so
+an object a partial clone lacks is a refusal, not a fetch. Below git 2.45, git may
+still spawn its own fetch child, which that refusal stops before name resolution
+(#981). It is on ``PROCESS_SPAWN_SITES`` because it spawns a process.
 """
 
 from __future__ import annotations
