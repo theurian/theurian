@@ -97,7 +97,7 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `knowledge.status` publishes as `stateHash`; and `indexBuildId`, a fresh ULID
   per build, which is not derived from content but differs between any two
   builds, and also moves when the purge after a withdrawing `migrate apply`
-  publishes (now recorded under T-17a in the threat model). The description was
+  publishes. The description was
   wrong, not the behaviour. It now states the rule that holds — no field varies
   with what a query matched among content the caller may not read, outside the
   residuals T-17a records — and names `stale`, `note`, `snapshotId` and
