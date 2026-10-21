@@ -175,7 +175,8 @@ equality holds over every value this module computes, for the **status** axis
 ``may_surface`` reads and, since #119, the sensitivity axis, closed at build time
 and by a ``changeSensitivity`` purge; tenant and ACL carry one value each, which
 #63 (phase 1, #110) enforces at write time. A purge that fails no longer leaves
-the stale build serving: it taints the pointer, and :mod:`theurian.mcp.search`
+the stale build serving, unless the taint write is itself refused (the double
+fault T-17a records): it taints the pointer, and :mod:`theurian.mcp.search`
 refuses that build and answers from the canonical scan, ``fallbackReason``
 ``index-purge-failed``, until a rebuild — reported through the apply's
 ``indexPurge``, not silently (GHSA-97q9-xxfg-33r6). T-17a in the threat model
