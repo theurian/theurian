@@ -246,11 +246,12 @@ def test_the_git_vectors_are_fixed_and_carry_a_timeout(
 
     - each executable is an **absolute path** (resolved once, the ``gh`` tier, so the
       environment does not choose it), and neither call reaches a shell;
-    - the committed vector is exactly ``git rev-parse --verify --quiet
+    - the committed vector is the binary, the ``-c core.useReplaceRefs=false`` pair, then exactly
+      ``rev-parse --verify --quiet
       HEAD:<source_path>``; its object argument **begins with the literal ``HEAD:``**,
       so the revision is pinned and ``source_path`` can name neither an option, a URL
       nor a revision;
-    - the applied vector is exactly ``git hash-object --stdin --path=<source_path>``;
+    - the applied vector's ``[3:]`` is exactly ``hash-object --stdin --path=<source_path>``;
       its path is the **``--path=<value>`` form** (one token, an ``=`` inside it), so
       an option-shaped filename cannot be read as a flag, and the loader's bytes are
       fed on **stdin** -- no second read of the working tree;
