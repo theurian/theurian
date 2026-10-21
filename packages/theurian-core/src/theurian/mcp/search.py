@@ -13,9 +13,11 @@ optimisation and never a reason to refuse to answer.
 
 **The invariant this module exists to hold (SEC-13, T-15): nothing in the
 response varies with what a query matched among withheld content — not a count,
-not a token total, not a mode, not a score.** ``stale``, ``note`` and
-``snapshotId`` do move, with project state, and ``indexBuildId`` per build and on
-a withdrawal-purge publish — none of them with the query.
+not a token total, not a mode, not a score.** It holds outside the residuals
+T-17a records, an ``--include-unapproved`` build's BM25 statistics and the
+windows it names; ``stale``, ``note`` and ``snapshotId`` do move, with project
+state, and ``indexBuildId`` per build and on a withdrawal-purge publish — none of
+them with the query.
 
 It is not enough to leave withheld hits out of ``results``. A response saying
 ``count: 0, results: [], usedTokens: 46`` states that something matched and may
@@ -52,8 +54,8 @@ state the request resolved once.
 ranked path: one query against two corpora differing only in a withheld
 document answers identically bar ``projectId``, the request echo, and the two
 build identities ``indexBuildId`` and ``snapshotId``, which
-``test_the_build_identity_a_search_reports_does_not_vary_with_the_query`` shows
-are the same for every query. It was checked by breaking it rather than by
+``test_the_build_identity_a_search_reports_does_not_vary_with_the_query`` checks
+do not vary with the query. It was checked by breaking it rather than by
 reading it: ranking :func:`hybrid_answer`'s candidates through a visibility that
 withholds nothing turns all twenty of its parametrisations red, the first on a
 published hit carrying the retired document's credential.
