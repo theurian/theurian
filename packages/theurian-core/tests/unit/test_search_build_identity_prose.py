@@ -304,9 +304,9 @@ def test_no_live_sentence_gives_search_the_equality_without_its_build_identities
     `hold` ("search answers the same"); an exception set in other words ("only status has
     exceptions"); markup inside a phrase.
 
-    Measured: zero unaccepted hits at 23fe135a plus this file. RED drivers, each in a
-    private worktree at that tree: restoring from bd84393c, one at a time, each sentence of
-    #1000's faces F-a to F-m in its host.
+    Measured: zero unaccepted hits at ac869eee plus this file. RED drivers, each alone in a
+    private worktree at that tree: each of 23 sentences of #1000's faces F-a to F-m
+    restored in its host from bd84393c.
     """
     flagged = _flagged(_population())
     accepted = {pair for pairs in _accepted_by(flagged).values() for pair in pairs}
@@ -552,7 +552,8 @@ def test_the_records_name_the_battery_s_build_identities() -> None:
     `build identities[,]` then two backticked names joined by `[,] and`, over the
     population; and the `retrieval-metadata` description's list of fields that "move with
     project state or the build", which is `BUILD_IDENTITY` with `stale` and `note`.
-    Measured at 23fe135a: five pairs.
+    Measured at ac869eee: eight pairs. RED drivers: `BUILD_IDENTITY` given `stale`, or
+    without `snapshotId`; `note` dropped from that list.
     """
     text = flat("\n".join(_population().values()).replace("``", "`"))
     pairs = re.findall(r"build identities,? `(\w+)`,? and `(\w+)`", text)
