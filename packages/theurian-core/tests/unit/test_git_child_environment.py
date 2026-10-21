@@ -13,7 +13,6 @@ from typing import Final
 
 import pytest
 
-from theurian.infrastructure.git import environment
 from theurian.infrastructure.git.environment import child_environment
 
 pytestmark = pytest.mark.unit
@@ -66,29 +65,6 @@ def test_the_child_environment_is_exactly_the_kept_variables_plus_the_forced_one
     assert child == {**KEPT, **FORCED}
 
 
-@pytest.mark.parametrize("name", OVERRIDES)
-def test_each_inherited_override_is_stripped(name: str) -> None:
-    """One name per case, so a single member dropped from the set names itself."""
-    child = child_environment({**KEPT, name: "/parent/value"})
-
-    assert name not in child
-
-
-@pytest.mark.parametrize(("name", "value"), sorted(FORCED.items()))
-def test_each_forced_value_overrides_an_inherited_one(name: str, value: str) -> None:
-    """A parent that sets the variable to something else does not win."""
-    child = child_environment({**KEPT, name: "inherited"})
-
-    assert child[name] == value
-
-
-def test_unrelated_variables_are_kept() -> None:
-    child = child_environment({**KEPT, "LANG": "C"})
-
-    assert child["LANG"] == "C"
-    assert child["PATH"] == "/parent/bin"
-
-
 def test_the_parent_mapping_is_not_mutated() -> None:
     parent = _hostile_parent()
     before = dict(parent)
@@ -96,10 +72,3 @@ def test_the_parent_mapping_is_not_mutated() -> None:
     child_environment(parent)
 
     assert parent == before
-
-
-def test_the_expected_mapping_can_fail(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The companion: a forced value changed in production no longer equals the pin."""
-    monkeypatch.setattr(environment, "_FORCED", {**environment._FORCED, "GIT_NO_LAZY_FETCH": "0"})
-
-    assert child_environment(_hostile_parent()) != {**KEPT, **FORCED}

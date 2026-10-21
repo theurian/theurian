@@ -29,7 +29,6 @@ from typing import Any, Final
 
 import pytest
 from git_isolation_fixtures import (
-    BELOW_2_45,
     clone,
     commit_file,
     git,
@@ -360,7 +359,7 @@ def test_a_treeless_partial_clone_reads_not_tracked_without_a_fetch(
 
     assert verdict is HeadComparison.NOT_TRACKED
     assert missing_objects(repo) == before
-    assert lazy_fetch_mode == BELOW_2_45 or fetches == []
+    assert lazy_fetch_mode == "git_below_2_45" or fetches == []
 
 
 def test_a_treeless_clone_with_a_checkout_reads_committed(tmp_path: Path) -> None:

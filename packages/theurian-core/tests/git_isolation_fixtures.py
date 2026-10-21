@@ -14,11 +14,6 @@ from pathlib import Path
 
 import pytest
 
-from theurian.infrastructure.git import environment
-
-HONOURS_NO_LAZY_FETCH = "git_honours_no_lazy_fetch"
-BELOW_2_45 = "git_below_2_45"
-
 _IDENTITY = (
     "-c",
     "user.email=test@example.com",
@@ -91,19 +86,6 @@ def missing_objects(repo: Path) -> int:
     return sum(1 for line in listing.splitlines() if line.startswith("?"))
 
 
-def has_object(repo: Path, sha: str) -> bool:
-    return (
-        subprocess.run(  # noqa: S603
-            ["git", "cat-file", "-e", sha],  # noqa: S607
-            cwd=repo,
-            capture_output=True,
-            check=False,
-            env=_env({"GIT_NO_LAZY_FETCH": "1"}),
-        ).returncode
-        == 0
-    )
-
-
 def traced_fetches[T](
     monkeypatch: pytest.MonkeyPatch, trace: Path, call: Callable[[], T]
 ) -> tuple[T, list[str]]:
@@ -121,13 +103,3 @@ def traced_fetches[T](
     return result, [
         line for line in lines if "fetch" in line and ("run_command" in line or "built-in" in line)
     ]
-
-
-def without_lazy_fetch_guard(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Simulate git below 2.45, which ignores ``GIT_NO_LAZY_FETCH``.
-
-    ``child_environment`` reads the forced set at call time, so removing the key is
-    the child environment such a git would be handed.
-    """
-    forced = {k: v for k, v in environment._FORCED.items() if k != "GIT_NO_LAZY_FETCH"}
-    monkeypatch.setattr(environment, "_FORCED", forced)
