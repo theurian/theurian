@@ -13,9 +13,9 @@ optimisation and never a reason to refuse to answer.
 
 **The invariant this module exists to hold (SEC-13, T-15): nothing in the
 response varies with what a query matched among withheld content — not a count,
-not a token total, not a mode, not a score.** Four ``retrieval`` fields do move,
-never with the query: ``stale``, ``note`` and ``snapshotId`` with project state,
-and ``indexBuildId`` per build and on a withdrawal-purge publish.
+not a token total, not a mode, not a score.** ``stale``, ``note`` and
+``snapshotId`` do move, with project state, and ``indexBuildId`` per build and on
+a withdrawal-purge publish — none of them with the query.
 
 It is not enough to leave withheld hits out of ``results``. A response saying
 ``count: 0, results: [], usedTokens: 46`` states that something matched and may
