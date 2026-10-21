@@ -4045,7 +4045,7 @@ async def test_what_a_stale_index_withheld_is_not_reported(indexed: ProjectRegis
     It bought that at the price of a truth oracle, and the trigram retriever
     matches any substring of three characters, so the oracle extracts rather
     than merely detects. `stale` says the same useful thing — your index is
-    behind, expect fewer results — and says it identically for every query.
+    behind, expect fewer results — and says it identically for every query text.
     """
     result = await _call(indexed, "knowledge.search", projectId="demo", query="signed token")
 
@@ -4361,7 +4361,7 @@ async def test_nothing_derived_from_the_withheld_document_is_reported(
     `test_the_build_identity_a_search_reports_does_not_vary_with_the_query`.
     `stale` is the reason `withheldSuperseded` could be deleted rather than
     merely hidden: it says "your index is behind, expect fewer results"
-    identically for every query.
+    identically for every query text.
 
     `droppedForBudget` is asserted at zero for its own reason. A withheld hit is
     not "dropped for budget" — counting it there would move the leak one field
@@ -4374,7 +4374,7 @@ async def test_nothing_derived_from_the_withheld_document_is_reported(
     assert retrieval["droppedForBudget"] == 0, "a withheld hit is not 'dropped for budget'"
     assert retrieval["mode"] == "none", "the mode names the retrievers behind the *results*"
     assert "withheldSuperseded" not in retrieval
-    assert retrieval["stale"] is True, "the query-independent half is still told"
+    assert retrieval["stale"] is True, "the query-text-independent half is still told"
 
 
 # -- The same oracle, in the input space the probes above cannot reach --------
@@ -5592,7 +5592,7 @@ DOCUMENTED_DEPTH = 50
 #: withheld document itself. Excluding a field is how a comparison quietly gets
 #: narrower than the property it claims, so both are covered instead by
 #: `test_the_build_identity_a_search_reports_does_not_vary_with_the_query`,
-#: which shows they are the same for every query against one project and
+#: which shows they are the same for every query text against one project and
 #: therefore cannot answer "did this query match something withheld?".
 BUILD_IDENTITY = ("indexBuildId", "snapshotId")
 
@@ -6183,9 +6183,9 @@ async def test_the_build_identity_a_search_reports_does_not_vary_with_the_query(
 
     A field left out of a comparison is a field nothing checks, so the two that
     are left out are checked here instead, and by the only test that means
-    anything for them: they must be the same for *every* query against one
-    project. A value that cannot vary with the query cannot answer a question
-    about what the query matched.
+    anything for them: they must be the same for *every* query text against
+    one project. A value that cannot vary with the query text cannot answer a
+    question about what the query matched.
     """
     matching = await _call(
         three_indexes.registry,

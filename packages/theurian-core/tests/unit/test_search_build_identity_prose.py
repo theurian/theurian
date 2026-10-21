@@ -144,7 +144,7 @@ ACCEPTED: Final = (
     ("retrieval_service.py", "over every value this module computes", "the ranking's values"),
     ("review_commands.py", "nothing about it varies with anything", "the review CLI's remedies"),
     ("search.py", "What holds *this* call site", "a call-site check, recorded red"),
-    ("knowledge-search-response.schema.json", "neither counts a row a", "the integrity COUNTs"),
+    ("knowledge-search-response.schema.json", "neither counts a row a", "false; filed as #1017"),
     ("visibility.py", "every field in the response has been arranged not", "timing, not equality"),
     ("admission.py", "handing out the same slot twice", "the admission lock, not search"),
     ("review_finding.py", "Every member value can stay byte-identical", "review findings"),
