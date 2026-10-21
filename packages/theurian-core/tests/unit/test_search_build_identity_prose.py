@@ -81,7 +81,7 @@ _EXEMPT: Final = re.compile(
 )
 
 _EVERY: Final = (
-    r"\b(?:every|each|all(?: of)?(?: the| its)?) (?:\w+'s )?(?:published )?"
+    r"\b(?:every|each|all(?: of)?(?: the| its)?) (?:\w+'s )?(?:published )?(?:`?\w+`? )?"
     r"(?:value|field|number)s?\b"
 )
 _UNIVERSAL: Final = (
@@ -143,6 +143,7 @@ ACCEPTED: Final = (
     ("search.py", "What holds *this* call site", "a call-site check, recorded red"),
     ("visibility.py", "every field in the response has been arranged not", "timing, not equality"),
     ("admission.py", "handing out the same slot twice", "the admission lock, not search"),
+    ("review_finding.py", "Every member value can stay byte-identical", "review findings"),
     ("0023-trigram-index-beside-the-word-index.md", "no whole-response comparison", "a negative"),
     ("threat-model.md", "comparison of the whole `retrieval` block", "one project; a recorded LOW"),
     ("threat-model.md", "It therefore falsifies, as an unqualified", "T-17a history"),
@@ -157,6 +158,7 @@ ACCEPTED: Final = (
     ("test_mcp_tools.py", "must be identical, not merely the `retrieval`", "one project"),
     ("test_mcp_tools.py", "a whole-response comparison would fail", "a negative"),
     ("test_mcp_tools.py", "naming each field's role", "system.capabilities"),
+    ("test_mcp_tools.py", "every other value in this response is swept", "a secret sweep"),
 )
 
 
@@ -276,7 +278,8 @@ def test_no_live_sentence_gives_search_the_equality_without_its_build_identities
     """Key (case-insensitive, per sentence; each is a `MEMBERS` entry):
 
     - `universal_equality`: a universal -- `every`, `each` or `all` [`of`] [`the`|`its`],
-      then [a `…'s` possessive] [`published`] `value`/`field`/`number`[`s`];
+      then [a `…'s` possessive] [`published`] [one word, backticked or not]
+      `value`/`field`/`number`[`s`];
       `whole`/`entire` `response` (or `whole-`/`entire-response`); `whole`/`entire`
       [`]retrieval[`] block`; `comparison [is] total` -- with an equality word (`equal…`,
       `identical`, `indistinguishable`, `same`, `unchanged`, `unaffected`, `does not`/
@@ -313,8 +316,9 @@ def test_no_live_sentence_gives_search_the_equality_without_its_build_identities
     the caller may not read") is not read, with or without them.
 
     Blind: every word outside the closed lists above. The universals are exactly those
-    listed -- `any`, `full` and `complete` are not -- and each needs an equality word,
-    `compar…`, a corpus phrase, `never [been] indexed` or `the property` beside it. The
+    listed -- `any`, `full` and `complete` are not, and two or more modifiers before the
+    noun pass -- and each needs an equality word, `compar…`, a corpus phrase,
+    `never [been] indexed` or `the property` beside it. The
     equality words are exactly those listed -- `agrees`, `matches`, `coincides`,
     `is consistent` and `differ…` without `does not`/`doesn't` are not -- and the corpus
     phrases exactly `both`/`two`/`across corpora`. A sentence saying `never held` is read
@@ -444,6 +448,9 @@ MEMBER_CASES: Final = [
     ("all of the", "universal_equality", "All of the fields are equal."),
     ("all its", "universal_equality", "All its values are equal."),
     ("possessive", "universal_equality", "Every response's field is equal."),
+    ("modifier", "universal_equality", "Every retrieval value stays the same."),
+    ("backticked modifier", "universal_equality", "Every `retrieval` field is equal."),
+    ("published modifier", "universal_equality", "All published retrieval fields are equal."),
     ("entire response", "universal_equality", "The entire response is equal."),
     ("entire block", "universal_equality", "The entire `retrieval` block is equal."),
     ("same", "universal_equality", "Every field is the same."),
