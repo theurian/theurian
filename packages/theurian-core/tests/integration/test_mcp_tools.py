@@ -999,12 +999,13 @@ async def test_a_withheld_item_moves_exactly_the_two_fields_the_status_schema_ex
 
     One request against two corpora, which is the form that closes T-17: a
     project holding items the caller may not read must answer the way a project
-    that never held them answers. `knowledge.search` holds that outright
-    (`test_a_withheld_document_changes_nothing_a_caller_can_see`) and
-    `knowledge.get` holds it by refusing to distinguish a withheld id from an
-    absent one. This tool holds it for four of its six fields; the other two are
-    `stateHash` and `appliedMigrations`, exempt by the recorded decision in
-    `schemas/mcp/knowledge-status-response.schema.json` (#19) -- neither carries
+    that never held them answers. `knowledge.search` holds it bar its two build
+    identities, `indexBuildId` and `snapshotId`
+    (`test_a_withheld_document_changes_nothing_a_caller_can_see`), and
+    `knowledge.get` holds it outright, by refusing to distinguish a withheld id
+    from an absent one. This tool holds it for four of its six fields; the other
+    two are `stateHash` and `appliedMigrations`, exempt by the recorded decision
+    in `schemas/mcp/knowledge-status-response.schema.json` (#19) -- neither carries
     a bit about *what* was withheld, and this tool takes one argument, so there
     is no probe to vary and therefore no extraction oracle.
 
@@ -4353,9 +4354,11 @@ async def test_nothing_derived_from_the_withheld_document_is_reported(
 ) -> None:
     """SEC-13, T-17, stated positively so a reader knows what the fields may say.
 
-    Every number in `retrieval` is computed from the results the caller actually
-    receives; everything else is a property of the index or of the caller's own
-    parameters. `stale` is the deliberate exception and the reason
+    Every number in `retrieval`, and `mode`, is computed from results the gate
+    cleared for this caller, and every other field describes the index or the
+    caller's own parameters or — `stale`, `note`, `snapshotId` and
+    `indexBuildId` — moves with project state or the build, never with the
+    query (`retrieval-metadata.schema.json`). `stale` is the reason
     `withheldSuperseded` could be deleted rather than merely hidden: it says
     "your index is behind, expect fewer results" identically for every query.
 
@@ -5551,8 +5554,9 @@ async def test_the_project_id_echo_is_named_up_to_the_id_ceiling_then_by_length(
 #
 # So the property is stated against two *corpora* and one query: the response
 # must equal what an index that never held the withheld document would return.
-# Nothing about the query varies, which is what makes the comparison total —
-# every field, `useDense` included.
+# Nothing about the query varies, which is what lets the comparison cover every
+# field, `useDense` included, bar `projectId` and the two build identities
+# `BUILD_IDENTITY` names below.
 
 #: Enough approved documents to fill every retriever's candidate depth. Smaller
 #: and the boundary is unreachable: the withheld document has to take a slot a
@@ -6158,7 +6162,7 @@ async def test_a_withheld_document_changes_nothing_a_caller_can_see(
         key for key in probe["retrieval"] if probe["retrieval"][key] != other["retrieval"][key]
     }
     assert moved == set(BUILD_IDENTITY), (
-        "exactly the two fields the published contract exempts -- no more, and no fewer"
+        "exactly the two build identities -- no more, and no fewer"
     )
 
     assert probe["projectId"] == "depth-probe-corp"
