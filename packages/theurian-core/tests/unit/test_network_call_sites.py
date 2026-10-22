@@ -269,7 +269,7 @@ NETWORK_CLIENT_SITES = {
 #:   Adapter-controlled argument vectors, never user input (its own ``noqa: S603``
 #:   says so), and a twenty-second timeout.
 #: - ``infrastructure/git/committed_check.py`` runs, each under a fixed
-#:   ``-c core.useReplaceRefs=false``, ``git rev-parse --verify
+#:   ``-c core.useReplaceRefs=false -c core.commitGraph=false``, ``git rev-parse --verify
 #:   --quiet HEAD:<path>`` (the committed id) and ``git hash-object --stdin
 #:   --path=<path>`` (the applied id) to answer whether a migration file is
 #:   committed unmodified at ``HEAD`` -- the check ``migrate apply`` makes before it
@@ -284,8 +284,8 @@ NETWORK_CLIENT_SITES = {
 #:   call gates a write. Timeout ``GIT_TIMEOUT_SECONDS`` (5s) on each.
 #: - ``infrastructure/git/fix_commit_check.py`` runs one command,
 #:   ``git -c core.precomposeunicode=false --literal-pathspecs --shallow-file ""
-#:   -c log.mailmap=false -c core.useReplaceRefs=false log --no-walk --no-renames
-#:   --first-parent -m --name-only --format= -z --root --end-of-options <sha>^{commit}
+#:   -c log.mailmap=false -c core.useReplaceRefs=false -c core.commitGraph=false log --no-walk
+#:   --no-renames --first-parent -m --name-only --format= -z --root --end-of-options <sha>^{commit}
 #:   -- <file_path>``,
 #:   to answer whether the ``fixCommit`` a caller named is a commit here that
 #:   touched the file the stored review thread is anchored to (ADR-0033 decision

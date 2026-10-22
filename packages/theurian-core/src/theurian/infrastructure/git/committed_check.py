@@ -53,7 +53,8 @@ separate ``--path <value>`` token), so an option-shaped filename is part of the
 one token and cannot be read as a flag. The ``<path>`` on both sides is the git
 spelling -- forward slashes -- because ``source_path`` is built with ``os.sep``
 and a Windows backslash spelling would resolve nothing at ``HEAD`` (round-1
-code-review HIGH). The vector is the adapter's -- ``git -c core.useReplaceRefs=false``, two literal
+code-review HIGH). The vector is the adapter's -- ``git -c core.useReplaceRefs=false -c
+core.commitGraph=false``, two literal
 subcommands and one built argument each -- and takes nothing from a document, a
 config, a URL or a remote (SEC-9). It reaches no network, which is the same answer
 ``trailer_source.py`` gives for its own ``git log``: it is on
@@ -223,7 +224,14 @@ class CommittedMigrationCheck:
             return None
         try:
             return subprocess.run(  # noqa: S603 - fixed adapter-controlled vector, no shell; the rev-parse arg begins with `HEAD:` and the hash-object path uses the `--path=<value>` form, so no user-supplied element is option-shaped or names a revision (SEC-9)
-                [str(self._git), "-c", "core.useReplaceRefs=false", *git_args],
+                [
+                    str(self._git),
+                    "-c",
+                    "core.useReplaceRefs=false",
+                    "-c",
+                    "core.commitGraph=false",
+                    *git_args,
+                ],
                 cwd=self._repo_root,
                 input=stdin_bytes,
                 capture_output=True,

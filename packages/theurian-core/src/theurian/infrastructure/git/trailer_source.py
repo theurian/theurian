@@ -355,6 +355,8 @@ class GitTrailerFindingSource:
             "--no-replace-objects",
             "-c",
             "core.useReplaceRefs=false",
+            "-c",
+            "core.commitGraph=false",
             "log",
             "-z",  # NUL-separate records (D4; `format:` separates, not terminates)
             PUBLIC_REF,

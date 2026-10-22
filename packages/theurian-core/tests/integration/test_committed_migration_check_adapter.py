@@ -246,12 +246,13 @@ def test_the_git_vectors_are_fixed_and_carry_a_timeout(
 
     - each executable is an **absolute path** (resolved once, the ``gh`` tier, so the
       environment does not choose it), and neither call reaches a shell;
-    - the committed vector is the binary, the ``-c core.useReplaceRefs=false`` pair, then exactly
+    - the committed vector is the binary, the ``-c core.useReplaceRefs=false`` and
+      ``-c core.commitGraph=false`` pairs, then exactly
       ``rev-parse --verify --quiet
       HEAD:<source_path>``; its object argument **begins with the literal ``HEAD:``**,
       so the revision is pinned and ``source_path`` can name neither an option, a URL
       nor a revision;
-    - the applied vector's ``[3:]`` is exactly ``hash-object --stdin --path=<source_path>``;
+    - the applied vector's ``[5:]`` is exactly ``hash-object --stdin --path=<source_path>``;
       its path is the **``--path=<value>`` form** (one token, an ``=`` inside it), so
       an option-shaped filename cannot be read as a flag, and the loader's bytes are
       fed on **stdin** -- no second read of the working tree;
@@ -290,8 +291,10 @@ def test_the_git_vectors_are_fixed_and_carry_a_timeout(
 
     rev_parse, hash_object = calls[0]["args"], calls[1]["args"]
 
-    assert rev_parse[1:3] == ["-c", "core.useReplaceRefs=false"], rev_parse
-    assert rev_parse[3:] == ["rev-parse", "--verify", "--quiet", f"HEAD:{source_path}"], rev_parse
+    assert rev_parse[1:5] == ["-c", "core.useReplaceRefs=false", "-c", "core.commitGraph=false"], (
+        rev_parse
+    )
+    assert rev_parse[5:] == ["rev-parse", "--verify", "--quiet", f"HEAD:{source_path}"], rev_parse
     assert rev_parse[-1].startswith("HEAD:"), (
         "the rev-parse object argument must begin with the literal HEAD:, so the "
         "revision is pinned and source_path cannot name an option or a different revision"
@@ -301,7 +304,7 @@ def test_the_git_vectors_are_fixed_and_carry_a_timeout(
         "into this process's memory (the security MEDIUM)"
     )
 
-    assert hash_object[3:] == ["hash-object", "--stdin", f"--path={source_path}"], hash_object
+    assert hash_object[5:] == ["hash-object", "--stdin", f"--path={source_path}"], hash_object
     path_token = hash_object[-1]
     assert path_token.startswith("--path=") and "=" in path_token, (
         "the hash-object path must be the --path=<value> form (an = inside the one "

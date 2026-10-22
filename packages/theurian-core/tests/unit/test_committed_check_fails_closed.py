@@ -195,7 +195,7 @@ def test_a_hash_object_failure_after_rev_parse_succeeds_reads_not_tracked(
     def run_two_phase(
         cmd: list[str], *_a: object, **_k: object
     ) -> subprocess.CompletedProcess[bytes]:
-        subcommand = cmd[3]
+        subcommand = cmd[5]
         if subcommand == "rev-parse":
             return subprocess.CompletedProcess(
                 cmd, returncode=0, stdout=f"{_COMMITTED_ID}\n".encode("ascii"), stderr=b""
