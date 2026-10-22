@@ -466,7 +466,12 @@ distinguishing information is about material the caller has not been granted.
 > `infrastructure/git/environment.py` with `--shallow-file ""`, `-c log.mailmap=false`,
 > `--no-renames` and `-c core.useReplaceRefs=false`, since below git 2.42 a repo-local `true`
 > re-enables replace refs (source read at v2.30.0 config.c:1402; not run), and a boundary commit, or
-> a commit or tree not yet fetched, refuses `NO_SUCH_COMMIT`, whose cure names the limit. Decision
+> a commit or tree not yet fetched, refuses `NO_SUCH_COMMIT`, whose cure names the limit. So every
+> documented git feature that changes what a read means is neutralised (replace, grafts, shallow,
+> commit-graph, lazy fetch, transports); an actor who writes the object store, a cache file or a ref
+> directly can forge any answer, and no read-side check closes that. Two documented features are not
+> yet neutralised and are tracked: a working-tree clean filter on the committed check (#1015) and,
+> below git 2.45, the fetch child's reading of repository config (#1016). Decision
 > 5's duration bind gains an exception: on git below 2.45, in a partial clone, git still spawns a
 > fetch child, which the transport refusal stops before any object arrives, so a sha the clone lacks
 > costs one more process than one it holds. The `[git_below_2_45]` params of

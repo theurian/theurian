@@ -13,19 +13,22 @@ Amendment 1, D7). The short name ``origin/main`` is *not* a safe handle: it is
 shadowed by ``refs/heads/origin/main``, ``refs/tags/origin/main`` and the bare
 ``refs/origin/main`` (gitrevisions(7) tries ``refs/<name>``, ``refs/tags/<name>``
 and ``refs/heads/<name>`` before ``refs/remotes/<name>``), and by ``git replace``.
-So history is read with no repository-local or inherited redirection of the ref, of
-object identity or of parentage -- what could put an embargoed commit at the public tip:
+The read trusts the ref's value and neutralises every documented git feature that changes what a
+read means (replace, grafts, shallow, commit-graph, lazy fetch, transports); a direct write to the
+object store, a cache file or a ref -- ``git update-ref`` of :data:`PUBLIC_REF` included, a member
+of the non-goal below -- can still forge any answer (open: #1015, #1016). Concretely:
 
 - it reads the **fully-qualified** :data:`PUBLIC_REF`, never the short name, so a
   shadowing branch or tag cannot answer for the remote-tracking ref;
 - it disables **object replacement** (``--no-replace-objects``, ``core.useReplaceRefs=false`` *and*
   ``GIT_NO_REPLACE_OBJECTS=1``), so a ``git replace`` cannot map the public tip's
   sha onto an author-chosen commit body;
-- it disables **grafts** (``GIT_GRAFT_FILE=/dev/null``, which neither replace switch
-  stops), so no graft file can re-parent the public tip onto a local-only commit;
+- it disables **grafts** (``GIT_GRAFT_FILE=/dev/null``, which neither replace switch stops) and
+  the **commit-graph** (``core.commitGraph=false``; measured on git 2.47.1 and 2.54.0), so no
+  graft or graph file can re-parent public history onto a local-only commit;
 - it runs ``git`` with inherited **``GIT_*`` overrides stripped**
-  (:func:`~theurian.infrastructure.git.environment.child_environment`, shared by every
-  deciding git spawn), so an env-injected ``GIT_DIR``, alternate object store,
+  (:func:`~theurian.infrastructure.git.environment.child_environment` drops every ``GIT_*`` name
+  but ``GIT_TRACE*``), so an env-injected ``GIT_DIR``, alternate object store,
   replace-ref base or config file cannot redirect what history means.
 
 Verifying ``remote.origin.url`` against a recorded public origin is a stated

@@ -2178,9 +2178,14 @@ other's blind spots.
   option-shaped stored `filePath` a pathspec. The call reaches no network and names
   no remote (`log` reads local object storage), resolves `git` to an absolute path,
   and bounds the spawn with `GIT_TIMEOUT_SECONDS`. It runs under the shared child environment
-  (`infrastructure/git/environment.py`), which refuses every transport and disables lazy fetch
-  where git honours it; `--shallow-file ""` keeps a shallow boundary from reading as a root, and
-  `-c log.mailmap=false` and `--no-renames` keep the check from reading any blob (#981).
+  (`infrastructure/git/environment.py`); `--shallow-file ""` keeps a shallow boundary from reading
+  as a root, and `-c log.mailmap=false` and `--no-renames` keep the check from reading any blob
+  (#981). For this call, the trailer read and the committed check, every documented git feature
+  that changes what a read means is neutralised (replace, grafts, shallow, commit-graph, lazy fetch,
+  transports); an actor who writes the object store, a cache file or a ref directly can forge any
+  answer, and no read-side check closes that. Two documented features are not yet neutralised and
+  are tracked: a working-tree clean filter on the committed check (#1015) and, below git 2.45, the
+  fetch child's reading of repository config (#1016).
   `tests/integration/test_fix_commit_check_adapter.py` captures the one vector at
   the widest object name the grammar admits and a pathspec-expression stored path
   and asserts the whole argv above, that the retired --diff-merges=first-parent

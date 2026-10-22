@@ -1,8 +1,9 @@
 """The environment every deciding ``git`` spawn runs under (ADR-0029 D7, ADR-0033).
 
-One construction shared by the trailer read, the fixCommit verdict and the
-migration committed check, so a repository-local or inherited input cannot
-redirect what git reads or make it reach a promisor remote (#981).
+Shared by the trailer read, the fixCommit verdict and the migration committed check (#981).
+With each spawn's own flags it neutralises every documented git feature that changes what a
+read means (replace, grafts, shallow, commit-graph, lazy fetch, transports); a direct write to
+the object store, a cache file or a ref can still forge any answer (open: #1015, #1016).
 """
 
 from __future__ import annotations
