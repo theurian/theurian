@@ -134,9 +134,11 @@ wire, then runs `propose accept`, commits on a branch, pushes, merges `--no-ff`
 into `main`, pushes `main`, and runs `migrate apply` and `index build`.
 
 - `test_a_proposed_item_is_served_once_a_human_merges_and_applies_it`
-  (`knowledge.proposeChange`) asserts that `knowledge.get` returns the item with
-  `status: approved`, that `knowledge.search` returns exactly that item, and
-  that `retrieval.stale` is `false`.
+  (`knowledge.proposeChange`) first asserts that the proposal alone is not
+  served: before the human cycle, `knowledge.get` on the proposed item errors
+  and a `knowledge.search` for its text returns no results. After the cycle it
+  asserts that `get` returns the item with `status: approved`, that `search`
+  returns exactly that item, and that `retrieval.stale` is `false`.
 - `test_a_deprecation_draft_retires_the_item_once_a_human_merges_and_applies_it`
   (`knowledge.generateMigrationDraft`, `deprecateItem`) first reads the seed
   item through `get` and `search` as a positive control. Afterwards it asserts
@@ -149,8 +151,9 @@ into `main`, pushes `main`, and runs `migrate apply` and `index build`.
 
 It does not repeat everything the run did. It runs no `setup --dry-run`,
 `tools/list`, `system.capabilities`, `migrate validate` or `git diff --stat`. It
-asserts that `get` errors, not the refusal's text. And it does not check that
-the proposed item is withheld before the merge.
+asserts that `get` errors, not the refusal's text. It also checks one thing the
+run did not: before the human cycle, `get` errors and `search` returns no hit
+for the proposed item.
 
 core.yml's `e2e` job runs it with `pytest tests/e2e -m e2e` on ubuntu-latest
 and macos-latest, and fails on a skip. That workflow runs only on the pushes to
