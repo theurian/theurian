@@ -22,6 +22,12 @@ if str(_TESTS_ROOT) not in sys.path:
 @pytest.fixture(params=["git_honours_no_lazy_fetch", "git_below_2_45"])
 def lazy_fetch_mode(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
     """Run a partial-clone case as git 2.45+ behaves, then as an older git does (#981)."""
+    from git_isolation_fixtures import git_version
+
+    if request.param == "git_honours_no_lazy_fetch" and git_version() < (2, 45):
+        pytest.skip(
+            f"git {git_version()[0]}.{git_version()[1]} ignores GIT_NO_LAZY_FETCH (added in 2.45)"
+        )
     if request.param == "git_below_2_45":
         # child_environment reads the forced set at call time; git < 2.45 ignores the key.
         forced = {k: v for k, v in environment._FORCED.items() if k != "GIT_NO_LAZY_FETCH"}

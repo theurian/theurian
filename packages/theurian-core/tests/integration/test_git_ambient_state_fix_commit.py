@@ -20,6 +20,7 @@ from git_isolation_fixtures import (
     clone,
     commit_file,
     git,
+    git_version,
     missing_objects,
     new_repo,
     serving_origin,
@@ -142,7 +143,8 @@ def test_a_commit_in_a_treeless_partial_clone_is_refused_without_a_fetch(
 
     assert verdict is FixCommitVerdict.NO_SUCH_COMMIT
     assert missing_objects(repo) == before
-    assert lazy_fetch_mode == "git_below_2_45" or fetches == []
+    if git_version() >= (2, 45):  # lines: run_command + built-in per fetch child
+        assert len(fetches) == (0 if lazy_fetch_mode == "git_honours_no_lazy_fetch" else 2)
 
 
 @pytest.mark.parametrize(
@@ -194,7 +196,8 @@ def test_a_commit_the_clone_has_never_fetched_is_not_pulled_in_by_naming_it(
         extra_env={"GIT_NO_LAZY_FETCH": "1"},
     )
     assert not any(sha in local for sha in chain)
-    assert lazy_fetch_mode == "git_below_2_45" or fetches == []
+    if git_version() >= (2, 45):  # lines: run_command + built-in per fetch child
+        assert len(fetches) == (0 if lazy_fetch_mode == "git_honours_no_lazy_fetch" else 4)
 
 
 def test_a_bare_partial_clone_does_not_ask_for_its_mailmap_blob(

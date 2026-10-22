@@ -7,7 +7,9 @@ shared ``.git/config``: the partial-clone settings go on a temporary origin only
 
 from __future__ import annotations
 
+import functools
 import os
+import re
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -25,8 +27,9 @@ _IDENTITY = (
 
 
 def _env(extra: dict[str, str] | None = None) -> dict[str, str]:
+    inherited = {k: v for k, v in os.environ.items() if k != "GIT_NO_LAZY_FETCH"}
     return {
-        **os.environ,
+        **inherited,
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_NOSYSTEM": "1",
         **(extra or {}),
@@ -103,3 +106,14 @@ def traced_fetches[T](
     return result, [
         line for line in lines if "fetch" in line and ("run_command" in line or "built-in" in line)
     ]
+
+
+def parse_git_version(text: str) -> tuple[int, int]:
+    match = re.search(r"git version (\d+)\.(\d+)", text)
+    assert match, text
+    return int(match[1]), int(match[2])
+
+
+@functools.cache
+def git_version() -> tuple[int, int]:
+    return parse_git_version(git(Path.cwd(), "--version"))

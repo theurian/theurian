@@ -32,6 +32,7 @@ from git_isolation_fixtures import (
     clone,
     commit_file,
     git,
+    git_version,
     missing_objects,
     new_repo,
     serving_origin,
@@ -368,7 +369,8 @@ def test_a_treeless_partial_clone_reads_not_tracked_without_a_fetch(
 
     assert verdict is HeadComparison.NOT_TRACKED
     assert missing_objects(repo) == before
-    assert lazy_fetch_mode == "git_below_2_45" or fetches == []
+    if git_version() >= (2, 45):  # lines: run_command + built-in per fetch child
+        assert len(fetches) == (0 if lazy_fetch_mode == "git_honours_no_lazy_fetch" else 2)
 
 
 def test_a_treeless_clone_with_a_checkout_reads_committed(tmp_path: Path) -> None:

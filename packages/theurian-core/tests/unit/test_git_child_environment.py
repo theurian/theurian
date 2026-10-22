@@ -12,6 +12,7 @@ import os
 from typing import Final
 
 import pytest
+from git_isolation_fixtures import parse_git_version
 
 from theurian.infrastructure.git.environment import child_environment
 
@@ -71,3 +72,14 @@ def test_the_parent_mapping_is_not_mutated() -> None:
     child_environment(parent)
 
     assert parent == before
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("git version 2.44.1", (2, 44)), ("git version 2.54.0 (Apple Git-157)", (2, 54))],
+)
+def test_the_git_version_parser_reads_both_the_plain_and_the_apple_banner(
+    text: str, expected: tuple[int, int]
+) -> None:
+    assert parse_git_version(text) == expected
+    assert (parse_git_version(text) >= (2, 45)) is (expected[1] >= 45)
