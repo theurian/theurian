@@ -662,8 +662,9 @@ no flag reports
 From B, the write-intent MCP tools have shipped and emit proposals for human
 review (`writeTools: true`), and GitHub review ingestion has shipped as
 `theurian review ingest`, with `review.search` callable over MCP
-(`reviewIngestion: true`); the roadmap records B's exit demonstration, from a
-second client, as not yet run. C has not shipped (`traceability: false`). From
+(`reviewIngestion: true`); B is complete, and the roadmap records its exit
+demonstration as run from a plain MCP client on 2026-10-22. C has not shipped
+(`traceability: false`). From
 F, context export has shipped as `theurian okf export`, with
 `theurian okf import`. D and E have not shipped, nor have F's second client
 adapter and experimental work, and no flag reports any of them.
