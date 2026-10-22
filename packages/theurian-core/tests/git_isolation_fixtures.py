@@ -40,7 +40,7 @@ def _env(extra: dict[str, str] | None = None) -> dict[str, str]:
 
 def git(cwd: Path, *args: str, extra_env: dict[str, str] | None = None) -> str:
     """One hermetic fixture ``git`` call; answers stdout."""
-    return subprocess.run(  # noqa: S603
+    return subprocess.run(
         ["git", *_IDENTITY, *args],  # noqa: S607
         cwd=cwd,
         capture_output=True,
@@ -117,3 +117,34 @@ def parse_git_version(text: str) -> tuple[int, int]:
 @functools.cache
 def git_version() -> tuple[int, int]:
     return parse_git_version(git(Path.cwd(), "--version"))
+
+
+def forge_commit_graph(
+    repo: Path, sha: str, *, tree: str | None = None, parent: str | None = None
+) -> None:
+    """Write a commit-graph, then overwrite *sha*'s root tree and/or first parent in it (SHA-1)."""
+    tips = git(repo, "rev-list", "--all") + "".join(f"{x}\n" for x in (sha, parent) if x)
+    subprocess.run(
+        ["git", "commit-graph", "write", "--stdin-commits"],  # noqa: S607
+        cwd=repo,
+        input=tips,
+        text=True,
+        check=True,
+        env=_env(),
+    )
+    path = repo / ".git" / "objects" / "info" / "commit-graph"
+    data = bytearray(path.read_bytes())
+    assert data[:4] == b"CGPH" and data[5] == 1, "SHA-1 commit-graph only"
+    chunks = {
+        bytes(data[8 + 12 * i : 12 + 12 * i]): int.from_bytes(data[12 + 12 * i : 20 + 12 * i])
+        for i in range(data[6] + 1)
+    }
+    count = int.from_bytes(data[chunks[b"OIDF"] + 1020 : chunks[b"OIDF"] + 1024])
+    oids = [data[chunks[b"OIDL"] + 20 * i :][:20].hex() for i in range(count)]
+    record = chunks[b"CDAT"] + 36 * oids.index(sha)
+    if tree:
+        data[record : record + 20] = bytes.fromhex(tree)
+    if parent:
+        data[record + 20 : record + 24] = oids.index(parent).to_bytes(4)
+    path.chmod(0o644)
+    path.write_bytes(data)

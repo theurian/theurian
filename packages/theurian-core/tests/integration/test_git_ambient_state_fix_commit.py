@@ -20,6 +20,7 @@ import pytest
 from git_isolation_fixtures import (
     clone,
     commit_file,
+    forge_commit_graph,
     git,
     git_version,
     missing_objects,
@@ -36,6 +37,7 @@ pytestmark = pytest.mark.integration
 
 FILE = "src/retrying.py"
 OTHER = "docs/notes.md"
+EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
 def _fetches_of(
@@ -127,6 +129,20 @@ def test_a_redirected_history_never_verifies_a_commit_that_did_not_touch_the_pat
     )
 
     assert FixCommitCheck(root).verify(sha, FILE) is expected
+
+
+def test_a_forged_commit_graph_never_verifies_a_commit_that_did_not_touch_the_path(
+    tmp_path: Path,
+) -> None:
+    """The graph caches a commit's tree; a forged entry would diff the parent as empty."""
+    repo = new_repo(tmp_path / "work")
+    parent = commit_file(repo, FILE, "a\n")
+    child = commit_file(repo, OTHER, "o\n")
+    forge_commit_graph(repo, parent, tree=EMPTY_TREE)
+    naive = git(repo, "log", "--no-walk", "--name-only", "--format=", child, "--", FILE)
+    assert FILE in naive, "the forge does not reach an unisolated git, so this case proves nothing"
+
+    assert FixCommitCheck(repo).verify(child, FILE) is FixCommitVerdict.TOUCHES_NOTHING_HERE
 
 
 def test_a_commit_in_a_treeless_partial_clone_is_refused_without_a_fetch(

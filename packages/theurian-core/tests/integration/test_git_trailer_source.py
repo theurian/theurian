@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Final
 
 import pytest
+from git_isolation_fixtures import forge_commit_graph
 
 from theurian.domain.review_finding import (
     TRAILER_KEY,
@@ -519,6 +520,22 @@ def test_a_git_replace_on_the_public_tip_is_not_read(tmp_path: Path) -> None:
     # Control: with replacement active, a naive read *does* serve the embargo body.
     replaced_bodies = _git(clone, "log", "refs/remotes/origin/main", "--format=%b")
     assert "an embargoed finding" in replaced_bodies
+
+    _assert_only_public(clone)
+
+
+def test_a_forged_commit_graph_cannot_splice_a_local_commit_into_the_public_history(
+    tmp_path: Path,
+) -> None:
+    """The graph caches a commit's parent; a forged entry would serve unpublished trailers."""
+    clone, embargo = _embargo_shadow(tmp_path)
+    forge_commit_graph(
+        clone, _git(clone, "rev-parse", "refs/remotes/origin/main").strip(), parent=embargo
+    )
+    subjects = _git(clone, "log", "refs/remotes/origin/main", "--format=%s")
+    assert "fix: embargoed (#2)" in subjects, (
+        "the forge does not reach an unisolated git, so this case proves nothing"
+    )
 
     _assert_only_public(clone)
 
