@@ -45,14 +45,9 @@ are for.
 from __future__ import annotations
 
 import hashlib
-import http.client
-import json
 import os
-import re
 import shutil
-import socket
 import subprocess
-import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,6 +55,7 @@ from typing import Any
 
 import pytest
 import review_candidate_fixtures as corpus
+from daemon_session import McpClient, serve_daemon
 from migration_fixtures import body_pin
 
 from theurian.application.project_service import ProjectPaths
@@ -71,8 +67,6 @@ pytestmark = [
     pytest.mark.e2e,
     pytest.mark.skipif(THEURIAN is None, reason="theurian is not installed on PATH"),
 ]
-
-STARTUP_TIMEOUT_SECONDS = 30.0
 
 MIGRATION_ID = "01K1AAAAAA01234567890ABCDE"
 BODY = "# Authentication policy\n\nEvery call carries a signed token.\n"
@@ -199,12 +193,6 @@ def _resolved(arguments: dict[str, Any], daemon: Daemon) -> dict[str, Any]:
     }
 
 
-def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind(("127.0.0.1", 0))
-        return int(probe.getsockname()[1])
-
-
 @dataclass(frozen=True)
 class Daemon:
     port: int
@@ -292,141 +280,21 @@ def running_daemon(tmp_path: Path) -> Iterator[Daemon]:
     )
     cli("review", "build", "--json")
 
-    port = _free_port()
-    log = tmp_path / "daemon.log"
-    with log.open("wb") as sink:
-        process = subprocess.Popen(  # noqa: S603
-            [THEURIAN, "daemon", "start", "--foreground", "--port", str(port)],
-            cwd=root,
-            env=env,
-            stdout=sink,
-            stderr=subprocess.STDOUT,
-        )
-
-    try:
-        deadline = time.monotonic() + STARTUP_TIMEOUT_SECONDS
-        while time.monotonic() < deadline:
-            if _health(port) is not None:
-                break
-            if process.poll() is not None:
-                pytest.fail(f"daemon exited: {log.read_text()}")
-            time.sleep(0.2)
-        else:
-            pytest.fail(f"daemon did not become healthy in time: {log.read_text()}")
-
-        token = (data_dir / "auth" / "mcp-token").read_text().strip()
+    with serve_daemon(THEURIAN, root, env, data_dir, tmp_path / "daemon.log") as (port, token):
         yield Daemon(port, token, root, fix_commit)
-    finally:
-        process.terminate()
-        try:
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:  # pragma: no cover - defensive
-            process.kill()
-            process.wait(timeout=10)
 
 
-def _health(port: int) -> dict[str, Any] | None:
-    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-    try:
-        connection.request("GET", "/health")
-        response = connection.getresponse()
-        if response.status != 200:
-            return None
-        payload: dict[str, Any] = json.loads(response.read().decode())
-    except OSError:
-        return None
-    finally:
-        connection.close()
-    return payload
+def _approved_view(client: McpClient) -> dict[str, Any]:
+    """What the read tools say about approved knowledge, read through the daemon.
 
-
-class _McpClient:
-    """A minimal Streamable HTTP MCP client, owning its connection explicitly so
-    no keep-alive socket is left to the garbage collector under ``filterwarnings =
-    error``."""
-
-    def __init__(self, port: int, token: str) -> None:
-        self._connection = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
-        self._token = token
-        self._session: dict[str, str] = {}
-
-    def __enter__(self) -> _McpClient:
-        self._post(
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-06-18",
-                    "capabilities": {},
-                    "clientInfo": {"name": "session", "version": "1"},
-                },
-            }
-        )
-        self._post({"jsonrpc": "2.0", "method": "notifications/initialized"})
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        self._connection.close()
-
-    def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self._connection.request(
-            "POST",
-            "/mcp",
-            body=json.dumps(payload).encode(),
-            headers={
-                "Authorization": f"Bearer {self._token}",
-                "Content-Type": "application/json",
-                "Accept": "application/json, text/event-stream",
-                **self._session,
-            },
-        )
-        response = self._connection.getresponse()
-        if session_id := response.getheader("mcp-session-id"):
-            self._session["mcp-session-id"] = session_id
-        raw = response.read().decode()
-        if not raw.strip():
-            return {}
-        match = re.search(r"^data: (.*)$", raw, re.MULTILINE)
-        parsed: dict[str, Any] = json.loads(match.group(1) if match else raw)
-        return parsed
-
-    def tool_schemas(self) -> dict[str, dict[str, Any]]:
-        """Every registered tool's served ``inputSchema`` (the SDK's, built from the
-        handler signature, not the ``schemas/mcp`` files), by name.
-
-        The schema rather than the name alone, because what makes a tool
-        write-intent is visible in what it requires of a caller and is not
-        recoverable from a list of names -- see :func:`_write_intent_tools`.
-        """
-        response = self._post({"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}})
-        return {tool["name"]: tool.get("inputSchema", {}) for tool in response["result"]["tools"]}
-
-    def call(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        response = self._post(
-            {
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/call",
-                "params": {"name": tool, "arguments": arguments},
-            }
-        )
-        result: dict[str, Any] = response["result"]
-        return result
-
-    def approved_view(self) -> dict[str, Any]:
-        """What the read tools say about approved knowledge, read through the daemon.
-
-        Deterministic reads of the canonical state -- the status breakdown and the
-        approved item's own record. Read through the daemon, so a change a
-        write-intent tool buffered in the store's WAL (not yet in the main file)
-        would show here even though :func:`_tree_digest` excludes the WAL.
-        """
-        status = self.call("knowledge.status", {"projectId": "demo"})
-        item = self.call(
-            "knowledge.get", {"projectId": "demo", "itemId": "architecture.auth-policy"}
-        )
-        return {"status": status["structuredContent"], "item": item["structuredContent"]}
+    Deterministic reads of the canonical state -- the status breakdown and the
+    approved item's own record. Read through the daemon, so a change a
+    write-intent tool buffered in the store's WAL (not yet in the main file)
+    would show here even though :func:`_tree_digest` excludes the WAL.
+    """
+    status = client.call("knowledge.status", {"projectId": "demo"})
+    item = client.call("knowledge.get", {"projectId": "demo", "itemId": "architecture.auth-policy"})
+    return {"status": status["structuredContent"], "item": item["structuredContent"]}
 
 
 #: SQLite's read-time sidecars. A read in WAL mode creates an (empty) ``-wal`` and
@@ -524,7 +392,7 @@ def test_a_session_calling_every_write_intent_tool_leaves_approved_knowledge_unc
     before_digest = _tree_digest(*approved)
     before_proposals = _proposal_count(root)
 
-    with _McpClient(running_daemon.port, running_daemon.token) as client:
+    with McpClient(running_daemon.port, running_daemon.token) as client:
         schemas = client.tool_schemas()
         registered_write_intent = _write_intent_tools(schemas)
 
@@ -546,7 +414,7 @@ def test_a_session_calling_every_write_intent_tool_leaves_approved_knowledge_unc
             f"that registers it."
         )
 
-        before_view = client.approved_view()
+        before_view = _approved_view(client)
 
         landed: dict[str, str] = {}
         for tool in sorted(registered_write_intent):
@@ -556,7 +424,7 @@ def test_a_session_calling_every_write_intent_tool_leaves_approved_knowledge_unc
             assert proposal_id, (tool, result)
             landed[tool] = proposal_id
 
-        after_view = client.approved_view()
+        after_view = _approved_view(client)
 
     # Every write-intent tool actually did work: a distinct proposal each.
     assert set(landed) == set(WRITE_INTENT_CALLS)
