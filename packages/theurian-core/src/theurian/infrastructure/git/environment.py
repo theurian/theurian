@@ -11,40 +11,6 @@ import os
 from collections.abc import Mapping
 from typing import Final
 
-#: Inherited ``GIT_*`` environment variables the child ``git`` must not see, so no
-#: ambient process state can redirect what the repository's history means (ADR-0029
-#: Amendment 1, D7). Stripping a variable can only make ``git`` fall back to its
-#: default (this repository, its real object store, no injected config) -- never to
-#: a wrong answer -- so the list is a defensive superset. It covers three classes:
-#: *which repository/objects* answer (``GIT_DIR``, ``GIT_WORK_TREE``,
-#: ``GIT_OBJECT_DIRECTORY``, ``GIT_ALTERNATE_OBJECT_DIRECTORIES``, ``GIT_COMMON_DIR``,
-#: ``GIT_INDEX_FILE``, ``GIT_CEILING_DIRECTORIES``); *ref resolution and replacement*
-#: (``GIT_NAMESPACE``, ``GIT_REPLACE_REF_BASE``); and *config injection*
-#: (``GIT_CONFIG``, the ``GIT_CONFIG_{COUNT,GLOBAL,SYSTEM}`` trio, and
-#: ``GIT_CONFIG_PARAMETERS`` -- the last injects config as if by ``-c``, so an
-#: inherited ``i18n.logOutputEncoding=UTF-16`` there would make ``git log`` emit
-#: non-UTF-8 and break the parse). Defined here rather than imported from ``tools/``
-#: or the test tree (which keep their own copy for a different read) so the adapter
-#: owns its own contract.
-_INHERITED_GIT_OVERRIDES: Final = frozenset(
-    {
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-        "GIT_CEILING_DIRECTORIES",
-        "GIT_COMMON_DIR",
-        "GIT_CONFIG",
-        "GIT_CONFIG_COUNT",
-        "GIT_CONFIG_GLOBAL",
-        "GIT_CONFIG_PARAMETERS",
-        "GIT_CONFIG_SYSTEM",
-        "GIT_DIR",
-        "GIT_INDEX_FILE",
-        "GIT_NAMESPACE",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_REPLACE_REF_BASE",
-        "GIT_WORK_TREE",
-    }
-)
-
 #: Variables set on top of the stripped parent. Each has its measured reason.
 _FORCED: Final = {
     "GIT_NO_REPLACE_OBJECTS": "1",
@@ -61,7 +27,12 @@ _FORCED: Final = {
 
 
 def child_environment(parent: Mapping[str, str]) -> dict[str, str]:
-    """``parent`` minus the inherited ``GIT_*`` overrides, plus the forced isolation."""
-    env = {name: value for name, value in parent.items() if name not in _INHERITED_GIT_OVERRIDES}
+    """``parent`` minus inherited ``GIT_*`` variables (not tracing), plus the forced isolation."""
+    env = {
+        name: value
+        for name, value in parent.items()
+        # Tracing redirects no read; aimed at the captured stdout it only makes the parse refuse.
+        if not name.startswith("GIT_") or name.startswith("GIT_TRACE")
+    }
     env.update(_FORCED)
     return env
