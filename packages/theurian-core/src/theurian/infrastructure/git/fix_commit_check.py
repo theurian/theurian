@@ -43,9 +43,9 @@ exit 0, path is an entry      ``VERIFIED``
 exit 0, path is not an entry  ``TOUCHES_NOTHING_HERE``
 ============================  =================================================
 
-The adapter spawns one process for every admitted input, but on git below 2.45 in a partial clone
-git adds a fetch child for an object the clone lacks, stopped by the transport refusal before name
-resolution; that extra process is decision 5's recorded duration exception (ADR-0033, #981).
+The adapter spawns one process for every admitted input; below git 2.45, in any repository with a
+promisor remote configured (source read), git's own fetch children add 0, 1 or 2 more, refused at
+transport: decision 5's recorded duration exception, counted in ADR-0033's #981 amendment.
 
 **The verdict is byte-membership over git's machine output -- no rendering is
 interpreted -- and that is the round-3 closure of the whole output-parsing
@@ -194,11 +194,9 @@ holds the 2.30 floor as an allowlist rather than as a single flag's absence.
 decides a promotion signal and letting an inherited ``PATH`` choose the
 executable that answers it is the shape that clause refuses. It reaches no
 network -- ``log`` reads local object storage, names no remote and takes no
-URL, and it runs under ``environment.py``'s child environment, which disables lazy
-fetch where git honours it (2.45+) and refuses every transport on any version, so
-an object a partial clone lacks is a refusal, not a fetch. Below git 2.45, git may
-still spawn its own fetch child, which that refusal stops before name resolution
-(#981). It is on ``PROCESS_SPAWN_SITES`` because it spawns a process.
+URL; ``environment.py``'s child environment disables lazy fetch where git honours it and refuses
+every transport; below git 2.45 the fetch-child exception above applies (#981). It is on
+``PROCESS_SPAWN_SITES`` because it spawns a process.
 """
 
 from __future__ import annotations

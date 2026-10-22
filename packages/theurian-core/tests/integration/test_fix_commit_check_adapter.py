@@ -35,7 +35,7 @@ refusal's *duration* answered "does this object exist here", which is a fact
 about the repository the caller was not granted. ADR-0033 decision 5 binds the
 pair in text **and in duration**, so the two questions collapse into one call
 whose outcome is read off the exit code and the output.
-Below 2.45 in a partial clone git adds a fetch child for an object the clone lacks (ADR-0033, #981).
+Below git 2.45, with any promisor remote configured, git adds 0-2 fetch children (ADR-0033, #981).
 :func:`test_the_same_request_spawns_the_same_vector_whether_the_object_is_here_or_not`
 is the pin, and it is the one that was RED when this shape was chosen.
 

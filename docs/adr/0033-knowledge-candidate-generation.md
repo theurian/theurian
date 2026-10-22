@@ -471,12 +471,13 @@ distinguishing information is about material the caller has not been granted.
 > commit-graph, lazy fetch, transports); an actor who writes the object store, a cache file or a ref
 > directly can forge any answer, and no read-side check closes that. Two documented features are not
 > yet neutralised and are tracked: a working-tree clean filter on the committed check (#1015) and,
-> below git 2.45, the fetch child's reading of repository config (#1016). Decision
-> 5's duration bind gains an exception: on git below 2.45, in a partial clone, git still spawns a
-> fetch child, which the transport refusal stops before any object arrives, so a sha the clone lacks
-> costs one more process than one it holds. The `[git_below_2_45]` params of
-> `test_git_ambient_state_fix_commit.py` (simulated by withholding `GIT_NO_LAZY_FETCH`; no older git
-> was run) hold that no object arrives; the process difference is not pinned.
+> below git 2.45, the fetch child's reading of repository config (#1016). Decision 5's duration
+> bind gains an exception: below git 2.45, in any repository with a promisor remote configured
+> (source read), git starts fetch children, refused at transport: none for an object held, one for
+> a tree a `tree:0` clone lacks, two for a commit only a `blob:none` clone's remote holds (simulated
+> on git 2.47.1 and 2.54.0 by withholding `GIT_NO_LAZY_FETCH`; no older git was run), pinned on
+> 2.45+ by the `[git_below_2_45]` rows of `test_git_ambient_state_fix_commit.py` and
+> `test_committed_migration_check_adapter.py`.
 
 The residual is stated rather than implied: a **hand-authored stored record**
 can still fabricate `fix_commit`, which is T-24's accepted residual — a review
