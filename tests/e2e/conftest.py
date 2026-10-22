@@ -1,4 +1,6 @@
-"""Puts the core test tree on ``sys.path`` so ``migration_fixtures`` imports here.
+"""Puts the core test tree and this directory on ``sys.path``.
+
+That makes ``migration_fixtures`` and ``daemon_session`` importable here.
 
 The same mechanism ``tests/unit/tools/conftest.py`` uses for ``tools/``. The
 migration fixtures in this directory declare a ``contentSha256`` the schema
@@ -15,5 +17,6 @@ from pathlib import Path
 
 _CORE_TESTS = Path(__file__).resolve().parents[2] / "packages" / "theurian-core" / "tests"
 
-if str(_CORE_TESTS) not in sys.path:
-    sys.path.insert(0, str(_CORE_TESTS))
+for _path in (_CORE_TESTS, Path(__file__).resolve().parent):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
