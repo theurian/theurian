@@ -38,7 +38,7 @@ def _env(extra: dict[str, str] | None = None) -> dict[str, str]:
 
 def git(cwd: Path, *args: str, extra_env: dict[str, str] | None = None) -> str:
     """One hermetic fixture ``git`` call; answers stdout."""
-    return subprocess.run(
+    return subprocess.run(  # noqa: S603
         ["git", *_IDENTITY, *args],  # noqa: S607
         cwd=cwd,
         capture_output=True,
