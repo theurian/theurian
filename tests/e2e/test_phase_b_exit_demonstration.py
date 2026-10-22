@@ -188,9 +188,9 @@ def _project_id(client: McpClient) -> str:
 
 
 def test_a_proposed_item_is_served_once_a_human_merges_and_applies_it(project: Project) -> None:
-    """The proposeChange half of the Phase B exit criterion: nothing the agent wrote
-    is served until the merge, `migrate apply` and `index build` have happened, and
-    afterwards it is served approved and not stale (ADR-0013, ADR-0034)."""
+    """The proposeChange half of the Phase B exit criterion: the proposal alone is
+    not served (`get` is refused and `search` finds nothing), and after the human
+    cycle the item is served approved and not stale (ADR-0013, ADR-0034)."""
     with McpClient(project.port, project.token) as client:
         project_id = _project_id(client)
         proposal = _structured(
@@ -214,6 +214,11 @@ def test_a_proposed_item_is_served_once_a_human_merges_and_applies_it(project: P
                 },
             )
         )
+
+        item = {"projectId": project_id, "itemId": "architecture.retry-policy"}
+        query = {"projectId": project_id, "query": "retry attempts jittered backoff"}
+        assert client.call("knowledge.get", item)["isError"] is True
+        assert _structured(client.call("knowledge.search", query))["results"] == []
 
         project.human_cycle(proposal["proposalId"])
 
