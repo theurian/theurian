@@ -13,17 +13,23 @@ Amendment 1, D7). The short name ``origin/main`` is *not* a safe handle: it is
 shadowed by ``refs/heads/origin/main``, ``refs/tags/origin/main`` and the bare
 ``refs/origin/main`` (gitrevisions(7) tries ``refs/<name>``, ``refs/tags/<name>``
 and ``refs/heads/<name>`` before ``refs/remotes/<name>``), and by ``git replace``.
-So the source hardens the read against every locally-forgeable channel that could
-substitute an embargoed commit for the public tip:
+The read trusts the ref's value and neutralises every documented git feature that changes what a
+read means (replace, grafts, shallow, commit-graph, lazy fetch, transports); a direct write to the
+object store, a cache file or a ref -- ``git update-ref`` of :data:`PUBLIC_REF` included, a member
+of the non-goal below -- can still forge any answer (open: #1015, #1016). Concretely:
 
 - it reads the **fully-qualified** :data:`PUBLIC_REF`, never the short name, so a
   shadowing branch or tag cannot answer for the remote-tracking ref;
-- it disables **object replacement** (``--no-replace-objects`` *and*
+- it disables **object replacement** (``--no-replace-objects``, ``core.useReplaceRefs=false`` *and*
   ``GIT_NO_REPLACE_OBJECTS=1``), so a ``git replace`` cannot map the public tip's
   sha onto an author-chosen commit body;
+- it disables **grafts** (``GIT_GRAFT_FILE=/dev/null``, which neither replace switch stops) and
+  the **commit-graph** (``core.commitGraph=false``; measured on git 2.47.1 and 2.54.0), so no
+  graft or graph file can re-parent public history onto a local-only commit;
 - it runs ``git`` with inherited **``GIT_*`` overrides stripped**
-  (:data:`_INHERITED_GIT_OVERRIDES`), so an env-injected ``GIT_DIR``, alternate
-  object store, replace-ref base or config file cannot redirect what history means.
+  (:func:`~theurian.infrastructure.git.environment.child_environment` drops every ``GIT_*`` name
+  but ``GIT_TRACE*``), so an env-injected ``GIT_DIR``, alternate object store,
+  replace-ref base or config file cannot redirect what history means.
 
 Verifying ``remote.origin.url`` against a recorded public origin is a stated
 non-goal of this slice, owed to the FR-V serving arm that carries that identity
@@ -71,6 +77,7 @@ from theurian.domain.review_finding import (
     finding_from_trailer,
     keyed_lines,
 )
+from theurian.infrastructure.git.environment import child_environment
 
 #: The one ref this source reads, fully qualified (ADR-0029 Amendment 1, D7). Not
 #: a parameter, and not the short ``origin/main``: see the module docstring -- the
@@ -78,40 +85,6 @@ from theurian.domain.review_finding import (
 #: than trusted. Reading ``refs/remotes/origin/main`` closes the ref-shadowing
 #: channel (a local ``refs/heads/origin/main`` resolves ahead of the short name).
 PUBLIC_REF: Final = "refs/remotes/origin/main"
-
-#: Inherited ``GIT_*`` environment variables the child ``git`` must not see, so no
-#: ambient process state can redirect what "public history" means (ADR-0029
-#: Amendment 1, D7). Stripping a variable can only make ``git`` fall back to its
-#: default (this repository, its real object store, no injected config) -- never to
-#: a wrong answer -- so the list is a defensive superset. It covers three classes:
-#: *which repository/objects* answer (``GIT_DIR``, ``GIT_WORK_TREE``,
-#: ``GIT_OBJECT_DIRECTORY``, ``GIT_ALTERNATE_OBJECT_DIRECTORIES``, ``GIT_COMMON_DIR``,
-#: ``GIT_INDEX_FILE``, ``GIT_CEILING_DIRECTORIES``); *ref resolution and replacement*
-#: (``GIT_NAMESPACE``, ``GIT_REPLACE_REF_BASE``); and *config injection*
-#: (``GIT_CONFIG``, the ``GIT_CONFIG_{COUNT,GLOBAL,SYSTEM}`` trio, and
-#: ``GIT_CONFIG_PARAMETERS`` -- the last injects config as if by ``-c``, so an
-#: inherited ``i18n.logOutputEncoding=UTF-16`` there would make ``git log`` emit
-#: non-UTF-8 and break the parse). Defined here rather than imported from ``tools/``
-#: or the test tree (which keep their own copy for a different read) so the adapter
-#: owns its own contract.
-_INHERITED_GIT_OVERRIDES: Final = frozenset(
-    {
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-        "GIT_CEILING_DIRECTORIES",
-        "GIT_COMMON_DIR",
-        "GIT_CONFIG",
-        "GIT_CONFIG_COUNT",
-        "GIT_CONFIG_GLOBAL",
-        "GIT_CONFIG_PARAMETERS",
-        "GIT_CONFIG_SYSTEM",
-        "GIT_DIR",
-        "GIT_INDEX_FILE",
-        "GIT_NAMESPACE",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_REPLACE_REF_BASE",
-        "GIT_WORK_TREE",
-    }
-)
 
 #: An unbounded ``git log`` over a large history would hang a caller. The bound
 #: is generous for a full-history read that is still local and I/O-cheap.
@@ -383,6 +356,10 @@ class GitTrailerFindingSource:
             "log.showSignature=false",
             "--no-optional-locks",
             "--no-replace-objects",
+            "-c",
+            "core.useReplaceRefs=false",
+            "-c",
+            "core.commitGraph=false",
             "log",
             "-z",  # NUL-separate records (D4; `format:` separates, not terminates)
             PUBLIC_REF,
@@ -395,7 +372,7 @@ class GitTrailerFindingSource:
                 capture_output=True,
                 timeout=GIT_TIMEOUT_SECONDS,
                 check=False,
-                env=self._child_env(),
+                env=child_environment(os.environ),
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise GitHistoryUnavailableError(self._repo_root, str(exc)) from exc
@@ -407,24 +384,6 @@ class GitTrailerFindingSource:
         # and not the corpus. See the module docstring for why the byte-level NUL
         # split is the same partition the decoded one was.
         return completed.stdout
-
-    @staticmethod
-    def _child_env() -> dict[str, str]:
-        """The sanitized environment the child ``git`` runs under (ADR-0029 D7).
-
-        The ambient environment minus every inherited ``GIT_*`` override, plus an
-        explicit ``GIT_NO_REPLACE_OBJECTS=1`` -- so neither a redirected object
-        store nor an active ``git replace`` can substitute an embargoed commit for
-        the public tip. ``PATH`` and the rest of the environment are kept so ``git``
-        is still found and behaves normally.
-        """
-        env = {
-            name: value
-            for name, value in os.environ.items()
-            if name not in _INHERITED_GIT_OVERRIDES
-        }
-        env["GIT_NO_REPLACE_OBJECTS"] = "1"
-        return env
 
 
 def _record_level_rejection(record: _Record) -> RejectedTrailer | tuple[str, datetime]:

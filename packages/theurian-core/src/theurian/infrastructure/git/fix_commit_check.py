@@ -43,6 +43,10 @@ exit 0, path is an entry      ``VERIFIED``
 exit 0, path is not an entry  ``TOUCHES_NOTHING_HERE``
 ============================  =================================================
 
+The adapter spawns one process for every admitted input; below git 2.45, in any repository with a
+promisor remote configured (source read), git's own fetch children add 0, 1 or 2 more, refused at
+transport: decision 5's recorded duration exception, counted in ADR-0033's #981 amendment.
+
 **The verdict is byte-membership over git's machine output -- no rendering is
 interpreted -- and that is the round-3 closure of the whole output-parsing
 class.** Three faces of one root cause each read git's *human* rendering of a
@@ -97,8 +101,9 @@ reached merge commits with ``diff-tree --diff-merges=first-parent``, but
 ``--diff-merges=first-parent`` is a git 2.31 feature: on a 2.30 install the option
 errors, the non-zero exit folds to ``NO_SUCH_COMMIT``, and *every* valid
 ``fixCommit`` refuses. That attempt is recorded here as history, not repeated. The
-shipped form is ``git -c core.precomposeunicode=false --literal-pathspecs log
---no-walk --first-parent -m --name-only --format= -z --root --end-of-options
+shipped form is ``git -c core.precomposeunicode=false --literal-pathspecs
+--shallow-file "" -c log.mailmap=false -c core.useReplaceRefs=false -c core.commitGraph=false
+log --no-walk --no-renames --first-parent -m --name-only --format= -z --root --end-of-options
 <sha>^{commit} -- <file_path>``. Its round-2 form, without ``-z`` (round 3) and
 ``-c`` ([#758]), gave verdicts byte-identical to the diff-tree form
 across present+touches, not-touching, absent, conflict-merge+touches,
@@ -108,7 +113,7 @@ spawn each (``log_form_probe.py``, 2026-09-19).
 **Both arguments are untrusted, and they are untrusted differently.** The sha is
 caller wire input; the path is author-controlled stored data a clone can deliver
 (T-3, T-24). What each token is worth was measured under this shape on git 2.47.1
-and 2.54.0, 2026-09-19:
+and 2.54.0, 2026-09-19 (the #758 and #981 tokens from 2026-10-20) unless marked source read:
 
 * ``-z`` -- **load-bearing (round-3).** It makes git emit each touched path as
   raw NUL-delimited bytes rather than a newline-separated human rendering, which
@@ -125,8 +130,25 @@ and 2.54.0, 2026-09-19:
   ``TOUCHES_NOTHING_HERE``: an NFD anchor against an NFC tree reaches byte
   membership and is refused there, while for NFC against NFD and Omega/Ohm either
   way round git emits nothing -- and fail-open through repository state (a
-  shallow boundary, replace refs, ``GIT_DIR``) is #981's, not closed here.
+  shallow boundary, replace refs, a commit-graph, ``GIT_DIR``) is closed by ``--shallow-file``, the
+  shared child environment, ``-c core.useReplaceRefs=false`` and ``-c core.commitGraph=false``
+  (#981), not here.
   It must precede the subcommand.
+* ``--shallow-file ""`` -- **load-bearing (#981).** A shallow clone's boundary
+  commit read as a root that added every file, so it verified any path in its tree; read as
+  complete, its absent parent exits 128 (``NO_SUCH_COMMIT``), while a true root and
+  a commit whose parent is present still verify. Source read: a git-internal option, handled in
+  ``git.c`` at the v2.30.0 floor; if git drops it, every verify exits 129 and refuses.
+* ``-c log.mailmap=false`` and ``--no-renames`` -- **load-bearing (#981): the check
+  reads no blob.** They stop the mailmap and rename-detection blob reads, each a
+  lazy fetch in a partial clone; ``--no-renames`` changes no verdict, because the
+  pathspec filters before rename pairing.
+* ``-c core.useReplaceRefs=false`` -- **load-bearing below 2.42 (#981; source read, not run).**
+  v2.30.0 ``config.c:1402`` re-reads the key after ``GIT_NO_REPLACE_OBJECTS``, so a repo-local
+  ``true`` re-enabled replace refs. ``[replace-ref-under-repo-config]`` pins the token alone.
+* ``-c core.commitGraph=false`` -- **load-bearing (#981).** A commit-graph file supplies parents
+  and root trees in place of the commit objects: a forged one verified a commit that never touched
+  the path (measured). The key exists since git 2.18 (source read, ``RelNotes/2.18.0.txt:248``).
 * ``--literal-pathspecs`` -- **defence in depth, subsumed by membership.** Against
   a commit touching only ``docs/notes.md``, the stored paths
   ``:(exclude)src/retrying.py``, ``:!src/retrying.py``, ``:(glob)**/*.md`` and
@@ -166,7 +188,8 @@ and 2.54.0, 2026-09-19:
 
 ``tests/integration/test_fix_commit_check_adapter.py`` holds all of these, and
 names which a behavioural case can reach and which only its captured-vector pin
-can; ``test_the_verify_command_uses_only_git_features_at_or_below_the_documented_floor``
+can; ``test_git_ambient_state_fix_commit.py`` drives the cases the #981 tokens decide;
+``test_the_verify_command_uses_only_git_features_at_or_below_the_documented_floor``
 holds the 2.30 floor as an allowlist rather than as a single flag's absence.
 
 **The binary is resolved to an absolute path**, the ``gh`` precedent tier
@@ -174,9 +197,8 @@ holds the 2.30 floor as an allowlist rather than as a single flag's absence.
 decides a promotion signal and letting an inherited ``PATH`` choose the
 executable that answers it is the shape that clause refuses. It reaches no
 network -- ``log`` reads local object storage, names no remote and takes no
-URL -- except in a partial clone, where git lazily fetches from the promisor
-remote any object it reads and lacks, the named commit among them, so a commit
-present only on the remote can read ``VERIFIED`` (#981); it is on
+URL; ``environment.py``'s child environment disables lazy fetch where git honours it and refuses
+every transport; below git 2.45 the fetch-child exception above applies (#981). It is on
 ``PROCESS_SPAWN_SITES`` because it spawns a process.
 """
 
@@ -191,6 +213,7 @@ from typing import Final, final
 
 from theurian.domain.review import FixCommitVerdict
 from theurian.domain.review_search import untransportable_reason
+from theurian.infrastructure.git.environment import child_environment
 
 #: Timeout on the one ``git`` call this adapter spawns. A single local object read
 #: is cheap, and an unbounded subprocess on a daemon-reachable path is a hang the
@@ -264,8 +287,17 @@ class FixCommitCheck:
                 "-c",
                 "core.precomposeunicode=false",
                 "--literal-pathspecs",
+                "--shallow-file",
+                "",
+                "-c",
+                "log.mailmap=false",
+                "-c",
+                "core.useReplaceRefs=false",
+                "-c",
+                "core.commitGraph=false",
                 "log",
                 "--no-walk",
+                "--no-renames",
                 "--first-parent",
                 "-m",
                 "--name-only",
@@ -313,6 +345,7 @@ class FixCommitCheck:
                 capture_output=True,
                 timeout=GIT_TIMEOUT_SECONDS,
                 check=False,
+                env=child_environment(os.environ),
             )
         except (OSError, ValueError, subprocess.TimeoutExpired):
             return None

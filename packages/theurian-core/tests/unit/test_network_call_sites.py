@@ -268,7 +268,8 @@ NETWORK_CLIENT_SITES = {
 #:   launchd and systemd adapters run ``launchctl`` and ``systemctl`` through.
 #:   Adapter-controlled argument vectors, never user input (its own ``noqa: S603``
 #:   says so), and a twenty-second timeout.
-#: - ``infrastructure/git/committed_check.py`` runs ``git rev-parse --verify
+#: - ``infrastructure/git/committed_check.py`` runs, each under a fixed
+#:   ``-c core.useReplaceRefs=false -c core.commitGraph=false``, ``git rev-parse --verify
 #:   --quiet HEAD:<path>`` (the committed id) and ``git hash-object --stdin
 #:   --path=<path>`` (the applied id) to answer whether a migration file is
 #:   committed unmodified at ``HEAD`` -- the check ``migrate apply`` makes before it
@@ -282,9 +283,10 @@ NETWORK_CLIENT_SITES = {
 #:   and not the bare-``git`` tier its ``cli/context.py`` sibling uses, because this
 #:   call gates a write. Timeout ``GIT_TIMEOUT_SECONDS`` (5s) on each.
 #: - ``infrastructure/git/fix_commit_check.py`` runs one command,
-#:   ``git -c core.precomposeunicode=false --literal-pathspecs log --no-walk
-#:   --first-parent -m --name-only --format= -z --root --end-of-options
-#:   <sha>^{commit} -- <file_path>``,
+#:   ``git -c core.precomposeunicode=false --literal-pathspecs --shallow-file ""
+#:   -c log.mailmap=false -c core.useReplaceRefs=false -c core.commitGraph=false log --no-walk
+#:   --no-renames --first-parent -m --name-only --format= -z --root --end-of-options <sha>^{commit}
+#:   -- <file_path>``,
 #:   to answer whether the ``fixCommit`` a caller named is a commit here that
 #:   touched the file the stored review thread is anchored to (ADR-0033 decision
 #:   3's verification, which is what makes ``fix_commit_present`` a signal the
@@ -300,7 +302,8 @@ NETWORK_CLIENT_SITES = {
 #:   attempt that reached merges through diff tree with a diff merges option
 #:   needed git 2.31, above the documented floor of 2.30, so on a floor install
 #:   it errored and every valid fixCommit refused (round 2 HIGH 1); the log form
-#:   is verdict identical and 2.30 compatible. The z flag makes git emit NUL
+#:   is 2.30 compatible, and its round 2 shape, without z, measured verdict
+#:   identical. The z flag makes git emit NUL
 #:   delimited raw path bytes rather than its human rendering, and a verdict is
 #:   verified only when the exact stored path, encoded to UTF 8, is one of those
 #:   byte entries after empty entries are dropped: no quoting, no line splitting,

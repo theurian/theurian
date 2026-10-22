@@ -534,6 +534,23 @@ def test_a_fix_commit_that_touches_no_file_here_is_refused_in_the_same_words() -
     )
 
 
+@pytest.mark.parametrize(
+    "verdict", [FixCommitVerdict.NO_SUCH_COMMIT, FixCommitVerdict.TOUCHES_NOTHING_HERE]
+)
+def test_both_commit_refusals_name_the_shallow_and_partial_clone_limit(
+    verdict: FixCommitVerdict,
+) -> None:
+    """A caller in a shallow or partial clone is told why an honest commit is refused.
+
+    The sentence is static, so it adds no distinction between the two refusals; the
+    byte-identity pin above holds that, and this one holds that neither lost it.
+    """
+    refusal = _fix_commit_refusal(verdict)
+
+    assert "This check reads only objects already in this repository" in refusal.remedy
+    assert "`git fetch --unshallow`" in refusal.remedy
+
+
 def test_a_fix_commit_that_touches_the_threads_file_is_accepted() -> None:
     """The control without which refusing both the same way is satisfied by refusing all.
 

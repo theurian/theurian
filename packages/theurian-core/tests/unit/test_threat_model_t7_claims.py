@@ -534,8 +534,9 @@ def _spawned_vector() -> tuple[str, ...]:
         f"the vector handed to `_run` is a {type(argument).__name__} rather than a list "
         f"literal, so this module can no longer read the tokens it claims to check"
     )
+    # The empty string is `--shallow-file`'s argument; records quote it as `""`.
     return tuple(
-        element.value
+        element.value or '""'
         for element in argument.elts
         if isinstance(element, ast.Constant) and isinstance(element.value, str)
     )

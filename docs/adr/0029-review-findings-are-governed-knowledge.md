@@ -1376,6 +1376,17 @@ no-network):
 - run the `git` subprocess with inherited **`GIT_*` environment stripped** — closes
   the env-injected-config channel.
 
+> **Amended in [#981](https://github.com/theurian/theurian/issues/981): grafts and the commit-graph
+> were channels the invariant above does not name.** Neither replace switch stops a graft, which could
+> re-parent the public tip onto a local-only commit, and a commit-graph file supplies parents in place
+> of the commit objects (measured on git 2.47.1 and 2.54.0). The isolation moved to the shared
+> `infrastructure/git/environment.py`, which strips every inherited `GIT_*` variable but `GIT_TRACE*`
+> and sets `GIT_GRAFT_FILE=/dev/null`, so no graft is read
+> (`test_git_trailer_source.py::test_a_trailer_reachable_only_through_grafted_history_is_not_read_as_public`).
+> The read also passes `-c core.useReplaceRefs=false`, needed below git 2.42 (source read at v2.30.0
+> config.c:1402; not run), and `-c core.commitGraph=false`. It trusts the ref's value: a local
+> `git update-ref` of `refs/remotes/origin/main` is a member of the non-goal below.
+
 **Stated non-goal for this slice, owed to the serving arm:** verifying
 `remote.origin.url` against a recorded public-origin URL — the "a private-fork
 clone where `origin` *is* the private fork" member. Reasoning: the documented

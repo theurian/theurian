@@ -53,11 +53,17 @@ separate ``--path <value>`` token), so an option-shaped filename is part of the
 one token and cannot be read as a flag. The ``<path>`` on both sides is the git
 spelling -- forward slashes -- because ``source_path`` is built with ``os.sep``
 and a Windows backslash spelling would resolve nothing at ``HEAD`` (round-1
-code-review HIGH). The vector is fixed by this adapter -- ``git``, two literal
+code-review HIGH). The vector is the adapter's -- ``git -c core.useReplaceRefs=false -c
+core.commitGraph=false``, two literal
 subcommands and one built argument each -- and takes nothing from a document, a
 config, a URL or a remote (SEC-9). It reaches no network, which is the same answer
 ``trailer_source.py`` gives for its own ``git log``: it is on
-``PROCESS_SPAWN_SITES`` only because it spawns a process.
+``PROCESS_SPAWN_SITES`` only because it spawns a process. Both calls run under the shared
+child environment (``environment.py``, #981) and ``-c core.useReplaceRefs=false``, so neither a
+replace ref nor an inherited ``GIT_DIR`` can make ``HEAD`` name another commit, and a tree a
+partial clone has not fetched reads ``NOT_TRACKED`` rather than being fetched (below 2.45, open:
+#1016). ``-c core.commitGraph=false`` is there for a uniform argv: a forged commit-graph moved
+neither answer (measured, git 2.47.1 and 2.54.0).
 
 **The binary is resolved to an absolute path, and this call is the ``gh``
 precedent tier, not the bare-``git`` tier** (ADR-0034 decision 4's open choice).
@@ -78,6 +84,8 @@ import subprocess
 from enum import Enum
 from pathlib import Path, PurePath
 from typing import Final, final
+
+from theurian.infrastructure.git.environment import child_environment
 
 #: Timeout on each ``git`` call this adapter spawns. A single object read or hash
 #: from local storage is cheap -- generous even for a migration at the loader's
@@ -218,12 +226,20 @@ class CommittedMigrationCheck:
             return None
         try:
             return subprocess.run(  # noqa: S603 - fixed adapter-controlled vector, no shell; the rev-parse arg begins with `HEAD:` and the hash-object path uses the `--path=<value>` form, so no user-supplied element is option-shaped or names a revision (SEC-9)
-                [str(self._git), *git_args],
+                [
+                    str(self._git),
+                    "-c",
+                    "core.useReplaceRefs=false",
+                    "-c",
+                    "core.commitGraph=false",
+                    *git_args,
+                ],
                 cwd=self._repo_root,
                 input=stdin_bytes,
                 capture_output=True,
                 timeout=GIT_TIMEOUT_SECONDS,
                 check=False,
+                env=child_environment(os.environ),
             )
         except (OSError, subprocess.TimeoutExpired):
             return None

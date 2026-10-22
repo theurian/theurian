@@ -683,7 +683,12 @@ test that discharges it:
   `tests/integration/test_committed_migration_check_adapter.py::test_an_untrusted_filename_never_resolves_to_a_different_revision`
   drives a filename carrying a `:`, a leading `../`, or a newline through the
   adapter and asserts it refuses or resolves to the file it names, never to a
-  different revision.
+  different revision. Since [#981](https://github.com/theurian/theurian/issues/981) both calls run
+  under the shared `infrastructure/git/environment.py` and `-c core.useReplaceRefs=false` (needed
+  below git 2.42: source read at v2.30.0 config.c:1402; not run); that file's #981 cases hold that a
+  replace ref or an inherited `GIT_DIR` leaves a migration absent at `HEAD` `NOT_TRACKED`, and that
+  a treeless `--no-checkout` clone reads `NOT_TRACKED` with no object arriving. They also pass
+  `-c core.commitGraph=false`, for a uniform argv: a forged graph moved neither answer (measured).
 - **The residual population is rewritten *per control*, in the same commit as the
   check.** The key and its measured exclusion are in decision 5. The T-15 entry
   narrows rather than closing: what becomes enforced is *committed*, and what
