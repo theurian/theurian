@@ -102,10 +102,9 @@ reached merge commits with ``diff-tree --diff-merges=first-parent``, but
 errors, the non-zero exit folds to ``NO_SUCH_COMMIT``, and *every* valid
 ``fixCommit`` refuses. That attempt is recorded here as history, not repeated. The
 shipped form is ``git -c core.precomposeunicode=false --literal-pathspecs
---shallow-file "" -c log.mailmap=false -c core.useReplaceRefs=false -c
-core.commitGraph=false log --no-walk --no-renames --first-parent -m --name-only --format= -z
---root --end-of-options <sha>^{commit} --
-<file_path>``. Its round-2 form, without ``-z`` (round 3) and
+--shallow-file "" -c log.mailmap=false -c core.useReplaceRefs=false -c core.commitGraph=false
+log --no-walk --no-renames --first-parent -m --name-only --format= -z --root --end-of-options
+<sha>^{commit} -- <file_path>``. Its round-2 form, without ``-z`` (round 3) and
 ``-c`` ([#758]), gave verdicts byte-identical to the diff-tree form
 across present+touches, not-touching, absent, conflict-merge+touches,
 root+touches and non-commit, one
@@ -131,8 +130,9 @@ and 2.54.0, 2026-09-19 (the #758 and #981 tokens from 2026-10-20) unless marked 
   ``TOUCHES_NOTHING_HERE``: an NFD anchor against an NFC tree reaches byte
   membership and is refused there, while for NFC against NFD and Omega/Ohm either
   way round git emits nothing -- and fail-open through repository state (a
-  shallow boundary, replace refs, ``GIT_DIR``) is closed by ``--shallow-file`` and
-  the shared child environment and ``-c core.useReplaceRefs=false`` (#981), not here.
+  shallow boundary, replace refs, a commit-graph, ``GIT_DIR``) is closed by ``--shallow-file``, the
+  shared child environment, ``-c core.useReplaceRefs=false`` and ``-c core.commitGraph=false``
+  (#981), not here.
   It must precede the subcommand.
 * ``--shallow-file ""`` -- **load-bearing (#981).** A shallow clone's boundary
   commit read as a root that added every file, so it verified any path in its tree; read as
@@ -146,6 +146,9 @@ and 2.54.0, 2026-09-19 (the #758 and #981 tokens from 2026-10-20) unless marked 
 * ``-c core.useReplaceRefs=false`` -- **load-bearing below 2.42 (#981; source read, not run).**
   v2.30.0 ``config.c:1402`` re-reads the key after ``GIT_NO_REPLACE_OBJECTS``, so a repo-local
   ``true`` re-enabled replace refs. ``[replace-ref-under-repo-config]`` pins the token alone.
+* ``-c core.commitGraph=false`` -- **load-bearing (#981).** A commit-graph file supplies parents
+  and root trees in place of the commit objects: a forged one verified a commit that never touched
+  the path (measured). The key exists since git 2.18 (source read, ``RelNotes/2.18.0.txt:248``).
 * ``--literal-pathspecs`` -- **defence in depth, subsumed by membership.** Against
   a commit touching only ``docs/notes.md``, the stored paths
   ``:(exclude)src/retrying.py``, ``:!src/retrying.py``, ``:(glob)**/*.md`` and

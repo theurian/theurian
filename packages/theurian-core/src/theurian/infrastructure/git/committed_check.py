@@ -62,7 +62,8 @@ config, a URL or a remote (SEC-9). It reaches no network, which is the same answ
 child environment (``environment.py``, #981) and ``-c core.useReplaceRefs=false``, so neither a
 replace ref nor an inherited ``GIT_DIR`` can make ``HEAD`` name another commit, and a tree a
 partial clone has not fetched reads ``NOT_TRACKED`` rather than being fetched (below 2.45, open:
-#1016).
+#1016). ``-c core.commitGraph=false`` is there for a uniform argv: a forged commit-graph moved
+neither answer (measured, git 2.47.1 and 2.54.0).
 
 **The binary is resolved to an absolute path, and this call is the ``gh``
 precedent tier, not the bare-``git`` tier** (ADR-0034 decision 4's open choice).
