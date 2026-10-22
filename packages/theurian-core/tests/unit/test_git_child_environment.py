@@ -2,8 +2,8 @@
 
 The expected mapping is written out here and never imported: a test that reads the
 production constant moves with it, so mutating the constant would leave the pin
-green. The parent is hostile -- it sets every one of the fourteen inherited
-overrides, so a member removed from the stripped set shows up as a key in the child.
+green. The predicate: every inherited ``GIT_*`` variable goes except ``GIT_TRACE*``,
+and then the forced set applies.
 """
 
 from __future__ import annotations
@@ -17,22 +17,14 @@ from theurian.infrastructure.git.environment import child_environment
 
 pytestmark = pytest.mark.unit
 
-#: The inherited variables a child ``git`` must never see, written out by hand.
-OVERRIDES: Final[tuple[str, ...]] = (
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_CEILING_DIRECTORIES",
-    "GIT_COMMON_DIR",
-    "GIT_CONFIG",
-    "GIT_CONFIG_COUNT",
-    "GIT_CONFIG_GLOBAL",
-    "GIT_CONFIG_PARAMETERS",
-    "GIT_CONFIG_SYSTEM",
+#: Inherited ``GIT_*`` variables written out by hand, one per way a spawn is redirected.
+HOSTILE: Final[tuple[str, ...]] = (
     "GIT_DIR",
-    "GIT_INDEX_FILE",
-    "GIT_NAMESPACE",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_REPLACE_REF_BASE",
-    "GIT_WORK_TREE",
+    "GIT_EXEC_PATH",
+    "GIT_SHALLOW_FILE",
+    "GIT_TEST_COMMIT_GRAPH",
+    "GIT_ATTR_SOURCE",
+    "GIT_CONFIG_PARAMETERS",
 )
 
 #: What the child is forced to carry. ``GIT_ALLOW_PROTOCOL`` is set *and empty*: an
@@ -44,15 +36,22 @@ FORCED: Final[dict[str, str]] = {
     "GIT_ALLOW_PROTOCOL": "",
 }
 
-#: Variables the child must keep: ``git`` still has to be found, and a trace or
-#: identity the caller set is not an isolation concern.
-KEPT: Final[dict[str, str]] = {"PATH": "/parent/bin", "HOME": "/parent/home", "GIT_TRACE": "/t"}
+#: Variables the child must keep: ``git`` still has to be found, tracing is no
+#: isolation concern, and ``GITHUB_TOKEN`` starts with ``GIT`` but not ``GIT_``.
+KEPT: Final[dict[str, str]] = {
+    "PATH": "/parent/bin",
+    "HOME": "/parent/home",
+    "GIT_TRACE": "/t",
+    "GIT_TRACE2_EVENT": "/t2",
+    "GITHUB_TOKEN": "t",
+}
 
 
 def _hostile_parent() -> dict[str, str]:
     return {
         **KEPT,
-        **{name: f"/parent/{name}" for name in OVERRIDES},
+        **{name: f"/parent/{name}" for name in HOSTILE},
+        "GIT_NO_LAZY_FETCH": "0",
         "GIT_GRAFT_FILE": "/parent/grafts",
         "GIT_ALLOW_PROTOCOL": "file:https",
     }
