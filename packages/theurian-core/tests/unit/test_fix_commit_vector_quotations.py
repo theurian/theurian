@@ -1,15 +1,15 @@
-"""The three places that quote ``FixCommitCheck.verify``'s git command quote what ships (#985).
+"""The four places that quote ``FixCommitCheck.verify``'s git command quote what ships (#985).
 
 Prose that quotes the argv drifts the moment a token is added: the module docstring,
-the T-7 entry in the threat model and ``PROCESS_SPAWN_SITES``'s note each went stale
+the T-7 entry in the threat model, ``PROCESS_SPAWN_SITES``'s note and the CHANGELOG each went stale
 when ``--shallow-file``, ``log.mailmap=false`` and ``--no-renames`` joined the vector.
 The shipped vector is the argv one real ``verify`` spawns, not restated here, so adding a
 token reddens every quotation that has not followed.
 
 Key: the span a quotation delimits, compared token for token. ``<sha>`` and
 ``<file_path>`` stand for the two runtime values; the empty string is quoted ``""``.
-This holds those three quotations only; the CHANGELOG's is held by
-``test_threat_model_t7_claims``, not here.
+The CHANGELOG is read from its ``## [Unreleased]`` section only, so released history
+never has to move; ``test_threat_model_t7_claims`` holds the same quote as a token set.
 """
 
 from __future__ import annotations
@@ -65,10 +65,17 @@ def _spawn_sites_note_quotations(_tree: ast.Module) -> list[str]:
     return re.findall(rf"``({re.escape(OPENING)}.+?)``", note)
 
 
+def _changelog_quotations(_tree: ast.Module) -> list[str]:
+    text = (ROOT / "packages/theurian-core/CHANGELOG.md").read_text(encoding="utf-8")
+    unreleased = text.split("## [Unreleased]", 1)[1].split("\n## [", 1)[0]
+    return re.findall(rf"`({re.escape(OPENING)}[^`]+)`", unreleased)
+
+
 QUOTATIONS = {
     "module-docstring": _docstring_quotations,
     "threat-model-T-7": _threat_model_quotations,
     "spawn-sites-note": _spawn_sites_note_quotations,
+    "changelog-unreleased": _changelog_quotations,
 }
 
 
