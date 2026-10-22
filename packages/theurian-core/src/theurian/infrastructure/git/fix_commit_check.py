@@ -114,7 +114,7 @@ spawn each (``log_form_probe.py``, 2026-09-19).
 **Both arguments are untrusted, and they are untrusted differently.** The sha is
 caller wire input; the path is author-controlled stored data a clone can deliver
 (T-3, T-24). What each token is worth was measured under this shape on git 2.47.1
-and 2.54.0, 2026-09-19 (the #758 and #981 tokens 2026-10-20 to 2026-10-21):
+and 2.54.0, 2026-09-19 (the #758 and #981 tokens from 2026-10-20) unless marked source read:
 
 * ``-z`` -- **load-bearing (round-3).** It makes git emit each touched path as
   raw NUL-delimited bytes rather than a newline-separated human rendering, which
@@ -137,7 +137,7 @@ and 2.54.0, 2026-09-19 (the #758 and #981 tokens 2026-10-20 to 2026-10-21):
 * ``--shallow-file ""`` -- **load-bearing (#981).** A shallow clone's boundary
   commit read as a root that added every file, so it verified any path in its tree; read as
   complete, its absent parent exits 128 (``NO_SUCH_COMMIT``), while a true root and
-  a commit whose parent is present still verify. A git-internal option, handled in
+  a commit whose parent is present still verify. Source read: a git-internal option, handled in
   ``git.c`` at the v2.30.0 floor; if git drops it, every verify exits 129 and refuses.
 * ``-c log.mailmap=false`` and ``--no-renames`` -- **load-bearing (#981): the check
   reads no blob.** They stop the mailmap and rename-detection blob reads, each a

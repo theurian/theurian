@@ -12,15 +12,16 @@ import os
 from collections.abc import Mapping
 from typing import Final
 
-#: Variables set on top of the stripped parent. Each has its measured reason.
+#: Variables set on top of the stripped parent. Each reason was measured unless marked source read.
 _FORCED: Final = {
     "GIT_NO_REPLACE_OBJECTS": "1",
     # Grafts are not stopped by GIT_NO_REPLACE_OBJECTS; this overrides an
     # inherited value too and leaves no repo-local graft file readable.
     "GIT_GRAFT_FILE": os.devnull,
-    # Honoured from git 2.45.0: stops every lazy fetch from a promisor remote.
+    # Honoured from git 2.45.0 and the v2.44.1 and v2.39.4 maintenance releases (source
+    # read): stops every lazy fetch from a promisor remote.
     "GIT_NO_LAZY_FETCH": "1",
-    # Fallback below git 2.45. git reads this env list before any config, and an
+    # Fallback below git 2.45 (source read). git reads this env list before any config, and an
     # empty list allows no transport; `-c protocol.allow=never` is defeated by a
     # repo-local `protocol.file.allow=always`, this is not.
     "GIT_ALLOW_PROTOCOL": "",
