@@ -451,9 +451,10 @@ that ADR.** Refusing a set the old engine applied changes what a frozen v1
 document does, and the change touches relation rows, so decision 6's
 engine-version path alone does not cover it. Decided here: no `apiVersion` bump,
 because every set that satisfies INV-6 applies exactly as before — no
-operation's meaning changes, and INV-6 was a stated invariant of the model
-before any v1 document existed, so a cyclic set was an unenforced corpus, never
-a valid one. No `protocolVersion` bump: no wire field moves.
+operation's meaning changes, and INV-6 was a stated invariant before the format
+existed — its row arrived in `481bd0f0`, four commits before the migration
+schema's first commit, `0f8c387d` (`git rev-list --count 481bd0f0..0f8c387d`
+prints 4) — so a cyclic set was an unenforced corpus, never a valid one. No `protocolVersion` bump: no wire field moves.
 `MIGRATION_ENGINE_VERSION` goes from 1 to 2, so a state the unchecked engine
 built is never reused under the checked one's hash. The CHANGELOG names the new
 refusal as **BREAKING**. Nothing at open reads `engine_version` (ADR-0039,
