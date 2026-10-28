@@ -82,4 +82,3 @@ def test_the_git_version_parser_reads_both_the_plain_and_the_apple_banner(
     text: str, expected: tuple[int, int]
 ) -> None:
     assert parse_git_version(text) == expected
-    assert (parse_git_version(text) >= (2, 45)) is (expected[1] >= 45)

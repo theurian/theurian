@@ -6,9 +6,10 @@ a shallow boundary, a promisor remote, a rename's blob, a mailmap -- would chang
 the verdict or fetch an object, and asserts the refusal the isolated child produces.
 
 ``lazy_fetch_mode`` runs the partial-clone cases twice: once as git 2.45+ behaves
-(``GIT_NO_LAZY_FETCH`` is honoured, so no fetch is attempted) and once as an older
-git does (the variable is ignored, a fetch child may start, and only the
-``GIT_ALLOW_PROTOCOL`` refusal keeps an object from arriving).
+(``GIT_NO_LAZY_FETCH`` is honoured, so no fetch is attempted) and once as a git
+that ignores it does (below 2.45, bar the v2.44.1 and v2.39.4 maintenance releases;
+source read): a fetch child may start, and only the ``GIT_ALLOW_PROTOCOL`` refusal
+keeps an object from arriving.
 """
 
 from __future__ import annotations

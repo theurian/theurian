@@ -24,12 +24,13 @@ def lazy_fetch_mode(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPa
     """Run a partial-clone case as git 2.45+ behaves, then as an older git does (#981)."""
     from git_isolation_fixtures import git_version
 
-    if request.param == "git_honours_no_lazy_fetch" and git_version() < (2, 45):
+    major, minor = git_version()
+    if request.param == "git_honours_no_lazy_fetch" and (major, minor) < (2, 45):
         pytest.skip(
-            f"git {git_version()[0]}.{git_version()[1]} ignores GIT_NO_LAZY_FETCH (added in 2.45)"
+            f"git {major}.{minor} is below 2.45, where honouring GIT_NO_LAZY_FETCH is not assumed"
         )
     if request.param == "git_below_2_45":
-        # child_environment reads the forced set at call time; git < 2.45 ignores the key.
+        # child_environment reads the forced set at call time; simulates a git that ignores the key.
         forced = {k: v for k, v in environment._FORCED.items() if k != "GIT_NO_LAZY_FETCH"}
         monkeypatch.setattr(environment, "_FORCED", forced)
     return str(request.param)
