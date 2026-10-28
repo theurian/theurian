@@ -475,13 +475,14 @@ distinguishing information is about material the caller has not been granted.
 > (#1016). Features that can only make a read refuse are outside this bound (for example
 > log.showSignature, #1022, and a shallow clone's boundary on the trailer read). An actor who writes
 > the object store, a cache file or a ref directly can forge any answer; no read-side check closes
-> that. Decision 5's duration bind gains an exception: on a git that ignores `GIT_NO_LAZY_FETCH`
-> (below 2.45, bar the v2.44.1 and v2.39.4 maintenance releases; source read), in any repository
-> with a promisor remote configured (source read), git starts fetch children, refused at transport:
-> none for an object held, one for a tree a `tree:0` clone lacks, two for a commit only a
-> `blob:none` clone's remote holds (simulated on git 2.47.1 and 2.54.0 by withholding
-> `GIT_NO_LAZY_FETCH`; no older git was run), pinned on 2.45+ by the `[git_below_2_45]` rows of
-> `test_git_ambient_state_fix_commit.py` and `test_committed_migration_check_adapter.py`.
+> that. Decision 5's duration bind gains an exception: on a git that does not honour
+> `GIT_NO_LAZY_FETCH` (source read: releases before v2.45.0, bar the 2.39–2.44 maintenance releases
+> from May 2024 on), in any repository with a promisor remote configured (source read), git starts
+> fetch children, refused at transport: none for an object held, one for a tree a `tree:0` clone
+> lacks, two for a commit only a `blob:none` clone's remote holds (simulated on git 2.47.1 and
+> 2.54.0 by withholding `GIT_NO_LAZY_FETCH`; no older git was run), pinned on 2.45+ by the
+> `[git_below_2_45]` rows of `test_git_ambient_state_fix_commit.py` and
+> `test_committed_migration_check_adapter.py`.
 
 The residual is stated rather than implied: a **hand-authored stored record**
 can still fabricate `fix_commit`, which is T-24's accepted residual — a review

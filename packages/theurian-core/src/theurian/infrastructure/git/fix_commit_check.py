@@ -43,10 +43,11 @@ exit 0, path is an entry      ``VERIFIED``
 exit 0, path is not an entry  ``TOUCHES_NOTHING_HERE``
 ============================  =================================================
 
-The adapter spawns one process for every admitted input; on a git that ignores ``GIT_NO_LAZY_FETCH``
-(below 2.45, bar the v2.44.1 and v2.39.4 maintenance releases; source read), in any repository with
-a promisor remote configured (source read), git's own fetch children add 0, 1 or 2 more, refused at
-transport: decision 5's recorded duration exception, counted in ADR-0033's #981 amendment.
+The adapter spawns one process for every admitted input; on a git that does not honour
+``GIT_NO_LAZY_FETCH`` (source read: releases before v2.45.0, bar the 2.39-2.44 maintenance releases
+from May 2024 on), in any repository with a promisor remote configured (source read), git's own
+fetch children add 0, 1 or 2 more, refused at transport: decision 5's recorded duration exception,
+counted in ADR-0033's #981 amendment.
 
 **The verdict is byte-membership over git's machine output -- no rendering is
 interpreted -- and that is the round-3 closure of the whole output-parsing

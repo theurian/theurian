@@ -7,9 +7,9 @@ the verdict or fetch an object, and asserts the refusal the isolated child produ
 
 ``lazy_fetch_mode`` runs the partial-clone cases twice: once as git 2.45+ behaves
 (``GIT_NO_LAZY_FETCH`` is honoured, so no fetch is attempted) and once as a git
-that ignores it does (below 2.45, bar the v2.44.1 and v2.39.4 maintenance releases;
-source read): a fetch child may start, and only the ``GIT_ALLOW_PROTOCOL`` refusal
-keeps an object from arriving.
+that does not honour it does (source read: releases before v2.45.0, bar the 2.39-2.44
+maintenance releases from May 2024 on): a fetch child may start, and only the
+``GIT_ALLOW_PROTOCOL`` refusal keeps an object from arriving.
 """
 
 from __future__ import annotations

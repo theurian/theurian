@@ -20,8 +20,8 @@ _FORCED: Final = {
     # Grafts are not stopped by GIT_NO_REPLACE_OBJECTS; this overrides an
     # inherited value too and leaves no repo-local graft file readable.
     "GIT_GRAFT_FILE": os.devnull,
-    # Honoured from git 2.45.0 and the v2.44.1 and v2.39.4 maintenance releases (source
-    # read): stops every lazy fetch from a promisor remote.
+    # Honoured from git 2.45.0 and by the 2.39-2.44 maintenance releases from May 2024 on
+    # (source read): stops every lazy fetch from a promisor remote.
     "GIT_NO_LAZY_FETCH": "1",
     # Fallback below git 2.45 (source read). git reads this env list before any config, and an
     # empty list allows no transport; `-c protocol.allow=never` is defeated by a
