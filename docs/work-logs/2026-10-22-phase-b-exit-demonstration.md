@@ -142,11 +142,11 @@ Nothing was filed.
 The re-check is `tests/e2e/test_phase_b_exit_demonstration.py`, the run ported
 into the suite. Its fixture builds a git repository with a bare remote and one
 approved seed item, committed, pushed, applied and built, and serves it from a
-real `theurian daemon start --foreground` on a free port. `HOME`, the data
-directory and the git ceiling sit under the test's temporary directory, and
-inherited `GIT_*` variables are stripped. Each test drives one tool over the
-wire, then runs `propose accept`, commits on a branch, pushes, merges `--no-ff`
-into `main`, pushes `main`, and runs `migrate apply` and `index build`.
+real `theurian daemon start --foreground` on a free port. What it redirects
+and strips is the predicate its module docstring states. Each test drives one
+tool over the wire, then runs `propose accept`, commits on a branch, pushes,
+merges `--no-ff` into `main`, pushes `main`, and runs `migrate apply` and
+`index build`.
 
 - `test_a_proposed_item_is_served_once_a_human_merges_and_applies_it`
   (`knowledge.proposeChange`) first asserts that the proposal alone is not
@@ -159,25 +159,30 @@ into `main`, pushes `main`, and runs `migrate apply` and `index build`.
   item through `get` and `search` as a positive control. Afterwards it asserts
   that `get` errors with and without `includeUnapproved`, that `search` no
   longer returns the item, and that `knowledge.status`'s `itemCount` dropped by
-  one. These hold through the serve-time gate, not the index: `get` refuses, and
-  `search` drops from whatever the index returns, an item that fails
-  `may_surface` against canonical state (SEC-13; `mcp/tools.py:2364-2367` and
-  `application/visibility.py:424` at `61dfe00e`), and `itemCount` is read from
-  the state. The run observed `migrate apply` publish a purged build in the same
-  command (s11, `indexPurge` `published: true`, `removed: 1`;
-  [ADR-0024](../adr/0024-a-purge-is-a-build.md) decision 5), but this test does
-  not hold it: with the purge disabled in `src/`, round one's adversarial review
-  found it still GREEN, `search` answering `results: []`, `stale: true`,
-  `mode: "none"`, an empty answer the non-membership assertion passes. A
-  regression of the same-command purge would not redden it.
+  one. `get`'s refusals hold through the serve-time gate (SEC-13;
+  `mcp/tools.py:2364-2367` at `61dfe00e`): with it disabled, the test goes RED
+  at `get`. `search` non-membership is held three times over: by the
+  `index build` after the apply, by `migrate apply`'s same-command purge, which
+  the run observed (s11, `indexPurge` `published: true`, `removed: 1`;
+  [ADR-0024](../adr/0024-a-purge-is-a-build.md) decision 5), and by the
+  serve-time `may_surface` filter (`application/visibility.py:424` at
+  `61dfe00e`). Disabling any one of them leaves the test GREEN, and so do the
+  filter with the purge and the filter with the build; with all three disabled
+  it went RED (rounds one and two of the adversarial review). A regression of
+  any one of them would not redden it. After the cycle no item is surfaceable,
+  so the post-cycle `search` has no positive control
+  ([#1031](https://github.com/theurian/theurian/issues/1031)). `itemCount` is
+  read from the state.
 
 It does not repeat everything the run did. It runs no `setup --dry-run`,
 `tools/list`, `system.capabilities`, `migrate validate` or `git diff --stat`. It
 asserts that `get` errors, not the refusal's text. It also checks one thing the
 run did not: before the human cycle, `get` errors and `search` returns no hit
 for the proposed item. It pushes a branch, merges it `--no-ff` and pushes
-`main`, but asserts only that each of those git steps exits 0: no assertion
-reads the remote or checks that a merge happened.
+`main`, and asserts that each git step exits 0. A merge that does not happen
+reddens both tests, because `migrate apply` reads the checked-out tree; nothing
+reads the remote, and with every push skipped both stay GREEN (round two's
+adversarial review).
 
 core.yml's `e2e` job runs it with `pytest tests/e2e -m e2e` on ubuntu-latest
 and macos-latest, and fails on a skip. That workflow runs only on the pushes to
