@@ -42,10 +42,8 @@ What it does not mean:
   suffices because Theurian observes nothing of the merge:
   [ADR-0034](docs/adr/0034-migrate-apply-enforces-the-merge.md) enforces the
   commit only, and T-15 records the merge as its residual.
-- **Phase B's open security issues are not closed by it.** #332, #333, #575,
-  #702 and #968 were open under `phase-b` on 2026-10-22 and stay open.
-
-The open `phase-b` issues move to dispositions after this merges.
+- **It closes no security issue.** The twelve issues open under `phase-b` on
+  2026-10-22, security ones among them, move to dispositions after this merges.
 
 Recorded here as a phase completion, as Phase A's was. No artifact version
 moved: this records a run and adds a test, and neither reaches an installer.
