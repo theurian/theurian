@@ -785,8 +785,9 @@ Still owed, with the issue or slice that will satisfy it:
    **Sequencing condition:** INV-6 enforcement at apply lands in the same PR as
    the SCHEMA_VERSION 4→5 bump — never earlier (under v4 a cyclic state built by
    core-v0.5.3 hashes identically and is reused; its refused re-apply rolls back
-   and keeps serving it), never later ((c), a closure leaning on release
-   ordering, rejected in R2). So the pull request that bumps `SCHEMA_VERSION`
+   and keeps serving it), never later (a rule that no core-v* tag sits between
+   the bump and the enforcement would be a closure leaning on release ordering,
+   which this ADR rejects). So the pull request that bumps `SCHEMA_VERSION`
    also carries decision 5's guard, on every apply; `RelationCycleError`; a
    **BREAKING** CHANGELOG entry naming the refusal; FR-K8's "a no-op, not an
    error" (`docs/architecture/requirements-analysis.md:38`), restated as scope
