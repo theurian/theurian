@@ -286,14 +286,15 @@ state". **A commit that changes no migration and no body a migration references
 leaves `state_hash` unchanged.**
 
 **A state's identity is (`state_hash`, walk commit, boundary), and two states
-with one identity hold the same edges.** `state_hash` names the canonical state
-(ADR-0016) and, through `MIGRATION_ENGINE_VERSION`, the collector's rules, so a
-change to them, the depth bound and decision 3(c)'s cap among them, bumps it. The
-boundary is where the walk stopped short of a root commit: the shallow digest
-and whether the depth bound stopped it, both below. The collector reads Git and
-nothing else (decision 3(b)), so after an apply the edges are a function of the
-walk commit and the boundary under those rules, because the walk is
-deterministic:
+with one identity hold the same edges;** a state whose collection was capped
+never shares an identity with one whose was not. `state_hash` names the
+canonical state (ADR-0016) and, through `MIGRATION_ENGINE_VERSION`, the
+collector's rules, so a change to them, the depth bound and decision 3(c)'s cap
+among them, bumps it. The boundary is what the walk left uncollected: the
+shallow digest, whether the depth bound stopped it, and decision 3(c)'s capped
+digest. The collector reads Git and nothing else (decision 3(b)), so after an
+apply the edges are a function of the walk commit and the boundary under those
+rules, because the walk is deterministic:
 
 - `--no-renames`: rename detection depends on `diff.renames` and similarity
   thresholds, which are local configuration. A renaming commit yields edges from
@@ -401,12 +402,15 @@ state held any edges would depend on a command nothing else requires.
   visible. Decision 9's rows 1, 2 and 5 hold it on the wire. `Refs: adr-0040` is
   this case: a valid `_DottedId` that names a label, not an item, recorded and
   inert.
-- **(c) A commit naming more than 32 distinct valid ids yields no edges.** Its
-  edges are one per id per changed path, both sizes its author chose. The count
-  takes every distinct valid id, item or not, so the cap reads Git alone ((b)).
-  All or none, since a partial rule needs an order among ids; the build reports
-  the commit's sha, never its values, as (a) does; and it does not refuse, or
-  one hostile commit would refuse every later build. 32 is over four times the
+- **(c) A commit naming more than 32 distinct valid ids yields no edges, and
+  the boundary records it.** Its edges are one per id per changed path, both
+  sizes its author chose. The count takes every distinct valid id, item or not,
+  so the cap reads Git alone ((b)). All or none, since a partial rule needs an
+  order among ids. The capped digest is the lowercase hex SHA-256 of the capped
+  commits' shas, sorted byte-wise, each followed by a newline, and null when
+  there are none; the build reports each sha, never its values, as (a) does.
+  It does not refuse, or one hostile commit would refuse every later build.
+  32 is over four times the
   most distinct ADR numbers one commit message on `main` names, 7 at
   `f665ecf6`, the nearest measure while `main` has no `Refs:` trailer (F4):
   `git rev-list 5ad30799 | while read c; do git log -1 --format=%B $c | grep -o -E 'ADR-[0-9]{4}' | sort -u | wc -l; done | sort -n | tail -1`.
@@ -431,7 +435,7 @@ compare, and a later source may carry evidence from several commits while
 `RelationType` value, and #1033 narrows `TraceabilityEdge.relation_type` from
 `str` (F9) to `RelationType`; roadmap §4 keeps edge types closed.
 `schema_metadata` gains decision 2's walk commit and boundary — the shallow
-digest, and whether the depth bound stopped the walk — all null with no walk.
+digest, the depth-bound flag and the capped digest — all null with no walk.
 
 These are DDL changes, so `SCHEMA_VERSION` goes from 4 to 5. Under the exact
 match (F6), a v4 build refuses a v5 database and a v5 build a v4 one, per
@@ -487,9 +491,8 @@ rows among them, to "decision 8's ADR-first route"; this record is that ADR.
 Decision 6's engine-version path is for when "a Core must change what an
 earlier-version document does" — "#841's case, where the table the retired
 operations write goes away". Refusing a set the old engine applied reads as that
-case and is not: the guard changes which sets are accepted, not what an accepted
-operation does. It adds a refusal and writes nothing, so on an acyclic set the
-enforcing engine does exactly what the non-enforcing one did, and an engine bump
+case and is not: the guard adds a refusal and writes nothing, so it changes
+which sets are accepted, not what an accepted operation does, and an engine bump
 — the version "still describes the engine, not the format" (ADR-0039,
 *Neutral*) and is hashed into the state hash — would invalidate every state
 built from an acyclic set to buy nothing. The one set whose outcome changes was
@@ -566,6 +569,7 @@ statements, under names that say *recorded edges*:
 | `recordedEdgesWalked` | how many recorded edges the traversal walked — counted after the gate, so only edges whose endpoints passed |
 | `recordedEdgesHistoryShallow` | whether collection stopped at a shallow boundary |
 | `recordedEdgesDepthBounded` | whether collection stopped at the depth bound (decision 2) |
+| `recordedEdgesCapped` | whether collection skipped a commit over decision 3(c)'s cap |
 | `recordedEdgesCoverage` | the constant `"not-claimed"`: the response asserts nothing about edges that were never recorded |
 
 Descriptions say *recorded* edges and never claim completeness (Phase C
@@ -673,11 +677,10 @@ gate decides (row 9).
   ADR-0040's item id; that item does not exist at `5ad30799`. #1035's
   demonstration needs a trailer naming one of the 24 twins, or a twin created
   first.
-- **Between a commit and the next apply, the edges describe the walk commit,
-  not `HEAD`** (decision 2), and so do they after a checkout that leaves the
-  migrations alone. `recordedEdgesCommit` says which commit; nothing raises a
-  staleness alarm. #1033 owes the walk's measured cost per apply, at the depth
-  bound.
+- **Between a commit, or a checkout that leaves the migrations alone, and the
+  next apply, the edges describe the walk commit, not `HEAD`** (decision 2).
+  `recordedEdgesCommit` says which; nothing raises a staleness alarm. #1033
+  owes the walk's measured cost per apply, at the depth bound.
 - **A rename breaks the path link.** An edge names the path its commit changed;
   the module at its new path has no edge until a later commit with a trailer
   changes it.
@@ -742,8 +745,8 @@ Landing with this pull request:
   match, F7's two item-id endpoints, the label's lack of cross-item
   uniqueness, and the state hash's reading no Git; every other fact is dated,
   and its fact side is how #1033 and #1034 learn this record must move.
-  Decision 2's identity and shallow digest and decision 5's guard have no fact
-  side until #1033 builds them. Its reach is stated in its module docstring.
+  Decision 2's identity and digests, 3(c)'s cap and decision 5's guard have no
+  fact side until #1033 builds them. Its reach is stated in its module docstring.
 
 Rests on enforcement that already holds:
 
@@ -761,8 +764,8 @@ Still owed, with the issue or slice that will satisfy it:
    3(a) to 3(c); schema v5 (decision 4); the SQLite adapter for both port
    methods; tests for determinism at one `HEAD`, for no Git history, for an
    unborn `HEAD`, for a shallow clone and its boundary commit, for the depth
-   bound, for 3(c)'s cap at 32 and at 33 ids, and for the full replace after a
-   rebase; a perturbation pin that a
+   bound, for 3(c)'s cap and capped digest at 32 and at 33 ids, and for the full
+   replace after a rebase; a perturbation pin that a
    commit changing no migration and no body a migration references leaves
    `state_hash` unchanged; `UNPOPULATED_TABLES`; the CHANGELOG; the measured
    cost of *Negative*'s third item; and, in the same change, each sentence its
