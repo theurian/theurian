@@ -67,7 +67,7 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   ([#981](https://github.com/theurian/theurian/issues/981)). Old shape: in a shallow
   clone a boundary commit verified for any path in its tree, and in a partial clone an
   unfetched commit or tree was fetched from the promisor and could verify. New shape: both
-  refuse with the fix-commit refusal, whose cure now names the limit.
+  refuse (below git 2.45, open: #1016) with the fix-commit refusal, whose cure now names the limit.
 - **The `knowledge.proposeChange` and `knowledge.generateMigrationDraft` input
   schemas name their path-shaped members instead of denying they exist**
   ([#963](https://github.com/theurian/theurian/issues/963), ADR-0032 decision
