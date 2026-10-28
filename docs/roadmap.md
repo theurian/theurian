@@ -607,6 +607,10 @@ and traversal depend on the type being closed.
    **no caller in `src/`** — its only reader is
    `tests/unit/test_domain_invariants.py`. Enforce it before Phases C and E
    build traversal on top of the graph.
+   **Recorded: [ADR-0040](adr/0040-traceability-representation-and-edge-sources.md)**
+   decision 5: the set is `supersedes`, `superseded_by` and `depends_on`, read
+   as two graphs; [#1033](https://github.com/theurian/theurian/issues/1033)
+   owes the guard, over the whole set every apply leaves.
 4. **A thin approval-provenance pointer.** When `migrate apply` runs, record in
    `migration_history` the SHA of the merge commit the applied migration arrived
    through, where that is obtainable. Approval remains Git's; this is only a
