@@ -27,8 +27,9 @@ included, a member of the non-goal below -- can still forge any answer. Concrete
   ``GIT_NO_REPLACE_OBJECTS=1``), so a ``git replace`` cannot map the public tip's
   sha onto an author-chosen commit body;
 - it disables **grafts** (``GIT_GRAFT_FILE=/dev/null``, which neither replace switch stops) and
-  the **commit-graph** (``core.commitGraph=false``; measured on git 2.47.1 and 2.54.0), so no
-  graft or graph file can re-parent public history onto a local-only commit;
+  the **commit-graph** (``core.commitGraph=false``, measured on git 2.47.1 and 2.54.0, and the
+  ``GIT_*`` strip below: an inherited ``GIT_TEST_COMMIT_GRAPH=1`` overrides ``-c``, source read),
+  so no graft or graph file can re-parent public history onto a local-only commit;
 - it runs ``git`` with inherited **``GIT_*`` overrides stripped**
   (:func:`~theurian.infrastructure.git.environment.child_environment` drops every ``GIT_*`` name
   but ``GIT_TRACE*``), so an env-injected ``GIT_DIR``, alternate object store,

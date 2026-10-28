@@ -150,7 +150,8 @@ and 2.54.0, 2026-09-19 (the #758 and #981 tokens from 2026-10-20) unless marked 
   ``true`` re-enabled replace refs. ``[replace-ref-under-repo-config]`` pins the token alone.
 * ``-c core.commitGraph=false`` -- **load-bearing (#981).** A commit-graph file supplies parents
   and root trees in place of the commit objects: a forged one verified a commit that never touched
-  the path (measured). The key exists since git 2.18 (source read, ``RelNotes/2.18.0.txt:248``).
+  the path (measured). The key exists since git 2.18 (source read: v2.18.0
+  ``Documentation/config.txt:907`` names ``core.commitGraph``; v2.17.0's does not).
 * ``--literal-pathspecs`` -- **defence in depth, subsumed by membership.** Against
   a commit touching only ``docs/notes.md``, the stored paths
   ``:(exclude)src/retrying.py``, ``:!src/retrying.py``, ``:(glob)**/*.md`` and

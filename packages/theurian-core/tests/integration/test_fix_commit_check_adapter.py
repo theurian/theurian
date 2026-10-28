@@ -1523,8 +1523,8 @@ GIT_TOKEN_FLOOR: dict[str, tuple[int, int]] = {
     "--shallow-file": (2, 30),
     # read at v2.30.0 config.c:1402 (core.usereplacerefs); exists since 2.18
     "core.useReplaceRefs=false": (2, 18),
-    # commit-graph and core.commitGraph are 2.18.0
-    # (RelNotes/2.18.0.txt:248, read off Homebrew git's bundled RelNotes)
+    # core.commitGraph is 2.18.0: v2.18.0 Documentation/config.txt:907 names it,
+    # v2.17.0's does not (source read)
     "core.commitGraph=false": (2, 18),
     "log.mailmap=false": (1, 8),  # log.mailmap is 1.8.3 (RelNotes/1.8.3.txt)
     "--no-renames": (1, 5),
