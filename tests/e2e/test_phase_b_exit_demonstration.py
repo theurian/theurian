@@ -7,12 +7,13 @@ branch push followed by ``merge --no-ff`` into a local bare remote: Theurian
 observes nothing of the merge (T-15, ADR-0034), so that local flow is the
 human half. Expected values are the ones that run recorded.
 
-What writes or config reads reach outside ``tmp_path`` is the predicate
-``_isolated_env`` holds: ``HOME``, ``XDG_CONFIG_HOME``, ``TMPDIR`` (the migration
-rehearsal's ``theurian-rehearsal-*``), ``THEURIAN_DATA_DIR`` and
-``GIT_CEILING_DIRECTORIES`` are redirected, inherited ``GIT_*`` variables are
-stripped by prefix, git's system config is off, and the only remote is a bare
-repository beside the project. ``PATH`` is inherited, to find ``theurian`` and git.
+Containment is the predicate ``_isolated_env`` holds, not a universal:
+``HOME``, ``XDG_CONFIG_HOME``, ``TMPDIR`` (the migration rehearsal's
+``theurian-rehearsal-*``), ``THEURIAN_DATA_DIR`` and ``GIT_CEILING_DIRECTORIES``
+are redirected under ``tmp_path``, inherited ``GIT_*`` variables are stripped by
+prefix, git's system config is off, and the only remote is a bare repository
+beside the project. Every other variable is inherited, ``PATH`` among them, to
+find ``theurian`` and git.
 """
 
 from __future__ import annotations
@@ -191,7 +192,7 @@ def _project_id(client: McpClient) -> str:
 
 
 def test_a_proposed_item_is_served_once_a_human_merges_and_applies_it(project: Project) -> None:
-    """The proposeChange half of the Phase B exit criterion: the proposal alone is
+    """The proposeChange cycle of the Phase B exit demonstration: the proposal alone is
     not served (`get` is refused and `search` finds nothing), and after the human
     cycle the item is served approved and not stale (ADR-0013, ADR-0034)."""
     with McpClient(project.port, project.token) as client:
@@ -236,7 +237,7 @@ def test_a_proposed_item_is_served_once_a_human_merges_and_applies_it(project: P
 def test_a_deprecation_draft_retires_the_item_once_a_human_merges_and_applies_it(
     project: Project,
 ) -> None:
-    """The generateMigrationDraft half, and SEC-13: a retired item is unreachable by
+    """The generateMigrationDraft cycle, and SEC-13: a retired item is unreachable by
     `get` (with or without `includeUnapproved`) and by `search`, and leaves the count.
 
     The positive control reads the item through `get` and `search` before the cycle,
