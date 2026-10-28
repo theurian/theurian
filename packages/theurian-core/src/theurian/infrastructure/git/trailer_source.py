@@ -350,11 +350,14 @@ class GitTrailerFindingSource:
         # ``--no-replace-objects`` is *not* a ``log`` option -- placing it after
         # ``log`` gives ``fatal: unrecognized argument`` -- and ``-c
         # log.showSignature=false`` / ``--no-optional-locks`` stop a repo config
-        # from injecting gpg lines or taking a lock during a read.
+        # from injecting gpg lines or taking a lock during a read; the encoding
+        # pin covers ``i18n.commitEncoding`` too (the fix spawn needs none).
         args = [
             "git",
             "-c",
             "log.showSignature=false",
+            "-c",
+            "i18n.logOutputEncoding=UTF-8",
             "--no-optional-locks",
             "--no-replace-objects",
             "-c",
