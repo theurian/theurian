@@ -12,6 +12,42 @@ changes, and milestone completions.
 
 ## Repository history
 
+### 2026-10-22 — Phase B complete: the exit demonstration ran from a plain MCP client
+
+Phase B's Exit criteria row in [`docs/roadmap.md`](docs/roadmap.md) asks for
+two things: a `KnowledgeCandidate` generated from an ingested review thread,
+which slice B5 already met
+([ADR-0033](docs/adr/0033-knowledge-candidate-generation.md)), and "a
+demonstration of propose → PR → merge → apply from both Claude Code and Codex
+(or any plain MCP client)". **The demonstration closed it.** On 2026-10-22, at
+`61dfe00e`, a plain Streamable HTTP MCP client drove two of the three
+write-intent tools against a real daemon — `knowledge.proposeChange` adding an
+item and `knowledge.generateMigrationDraft` deprecating one — each through
+`theurian propose accept`, a branch pushed to a bare remote,
+`git merge --no-ff`, `migrate apply` and `index build`. The new item was then
+served approved and the deprecated one refused. The run record is
+[the work log](docs/work-logs/2026-10-22-phase-b-exit-demonstration.md), and
+`tests/e2e/test_phase_b_exit_demonstration.py` re-runs both cycles.
+
+What it does not mean:
+
+- **No live Claude Code run.** Claude Code would issue the same wire calls; a
+  live run waits on an operator's installed daemon carrying the write tools,
+  core 0.3.0 or later.
+- **No Codex run.**
+- **No cycle for the third write-intent tool.**
+  `review.generateKnowledgeCandidate`'s proposal was not taken through
+  accept → merge → apply.
+- **No forge pull request.** The PR leg was a local `merge --no-ff`, which
+  suffices because Theurian observes nothing of the merge:
+  [ADR-0034](docs/adr/0034-migrate-apply-enforces-the-merge.md) enforces the
+  commit only, and T-15 records the merge as its residual.
+- **It closes no security issue.** The twelve issues open under `phase-b` on
+  2026-10-22, security ones among them, move to dispositions after this merges.
+
+Recorded here as a phase completion, as Phase A's was. No artifact version
+moved: this records a run and adds a test, and neither reaches an installer.
+
 ### 2026-09-24 — Phase A complete: the RAPTOR decision closed its exit criteria
 
 The entry below, from earlier the same day, recorded the baseline and said in
