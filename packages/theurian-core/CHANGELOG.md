@@ -21,15 +21,6 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `git -c core.precomposeunicode=false --literal-pathspecs --shallow-file "" -c log.mailmap=false -c core.useReplaceRefs=false -c core.commitGraph=false log --no-walk --no-renames --first-parent -m --name-only --format= -z --root --end-of-options <sha>^{commit} -- <file_path>`,
   a byte-equality check. NFC against NFD, either way round, stays refused:
   normalising would verify a commit touching only its twin. Linux is not measured.
-- **Fix-commit verification, the `migrate apply` committed check and the
-  public-trailer read run under one isolated git environment**
-  ([#981](https://github.com/theurian/theurian/issues/981)). Every documented git feature that
-  changes what a read means is neutralised (replace, grafts, shallow, commit-graph, lazy fetch,
-  transports), except that the trailer read honours a shallow clone's own boundary, which only drops
-  findings older than it (measured); an actor who writes the object store, a cache file or a ref
-  directly can forge any answer, and no read-side check closes that. Two documented features are not
-  yet neutralised and are tracked: a working-tree clean filter on the committed check (#1015) and,
-  below git 2.45, the fetch child's reading of repository config (#1016).
 
 ### Added
 
@@ -62,12 +53,6 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   ([#1006](https://github.com/theurian/theurian/issues/1006)), and
   `ProposalService.draft` now refuses such a body once it is read. The published
   `body` `maxLength` does not change.
-- **BREAKING — `review.generateKnowledgeCandidate` refuses a `fixCommit` it
-  cannot verify from this repository's own objects**
-  ([#981](https://github.com/theurian/theurian/issues/981)). Old shape: in a shallow
-  clone a boundary commit verified for any path in its tree, and in a partial clone an
-  unfetched commit or tree was fetched from the promisor and could verify. New shape: both
-  refuse (below git 2.45, open: #1016) with the fix-commit refusal, whose cure now names the limit.
 - **The `knowledge.proposeChange` and `knowledge.generateMigrationDraft` input
   schemas name their path-shaped members instead of denying they exist**
   ([#963](https://github.com/theurian/theurian/issues/963), ADR-0032 decision

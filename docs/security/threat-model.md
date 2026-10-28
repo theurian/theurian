@@ -2148,7 +2148,7 @@ other's blind spots.
   option, which is a git 2.31 feature; the documented floor is git 2.30
   (`docs/contributing/development.md`), where that option errors and every valid
   `fixCommit` was refused (round-2 HIGH-1). `log --no-walk --first-parent -m`
-  reaches the same merge commits on 2.30 and, before `-z` (round 2), gave byte-identical verdicts, so the
+  reaches the same merge commits on 2.30 and gives byte-identical verdicts, so the
   diff-tree attempt is recorded here as history rather than as a live control.
   **The verdict is a byte-membership check over NUL-delimited entries, and `-z` is
   what ends the output-parsing family.** `-z` makes git emit its *machine* format:
@@ -2177,16 +2177,7 @@ other's blind spots.
   the token position the funnel has already emptied; and `--` keeps an
   option-shaped stored `filePath` a pathspec. The call reaches no network and names
   no remote (`log` reads local object storage), resolves `git` to an absolute path,
-  and bounds the spawn with `GIT_TIMEOUT_SECONDS`. It runs under the shared child environment
-  (`infrastructure/git/environment.py`); `--shallow-file ""` keeps a shallow boundary from reading
-  as a root, and `-c log.mailmap=false` and `--no-renames` keep the check from reading any blob
-  (#981). For this call, the trailer read and the committed check, every documented git feature that
-  changes what a read means is neutralised (replace, grafts, shallow, commit-graph, lazy fetch,
-  transports), except that the trailer read honours a shallow clone's own boundary, which only drops
-  findings older than it (measured); an actor who writes the object store, a cache file or a ref
-  directly can forge any answer, and no read-side check closes that. Two documented features are not
-  yet neutralised and are tracked: a working-tree clean filter on the committed check (#1015) and,
-  below git 2.45, the fetch child's reading of repository config (#1016).
+  and bounds the spawn with `GIT_TIMEOUT_SECONDS`.
   `tests/integration/test_fix_commit_check_adapter.py` captures the one vector at
   the widest object name the grammar admits and a pathspec-expression stored path
   and asserts the whole argv above, that the retired --diff-merges=first-parent
