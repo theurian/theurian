@@ -7,6 +7,7 @@ rather than being scattered across command bodies.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -31,6 +32,7 @@ from theurian.domain.ports.determinism import Clock
 from theurian.domain.state import StateHash
 from theurian.infrastructure.determinism import SystemClock, UlidGenerator
 from theurian.infrastructure.filesystem.migration_loader import load_migrations
+from theurian.infrastructure.git.environment import child_environment
 from theurian.infrastructure.sqlite.schema import SCHEMA_VERSION
 
 #: Timeout on every `git` invocation. An unbounded subprocess in a CLI that a
@@ -61,11 +63,17 @@ def find_git_root(start: Path) -> Path | None:
 
     ``--show-toplevel`` rather than walking up looking for ``.git``: in a
     worktree, ``.git`` is a *file*, and a hand-rolled walk gets that wrong.
+    Root selection runs under the same discovery as every deciding spawn; a
+    ceiling may only shorten the search, so the parent's is carried.
     """
+    env = child_environment(os.environ)
+    if "GIT_CEILING_DIRECTORIES" in os.environ:
+        env["GIT_CEILING_DIRECTORIES"] = os.environ["GIT_CEILING_DIRECTORIES"]
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],  # noqa: S607 - resolved via PATH
             cwd=start,
+            env=env,
             capture_output=True,
             text=True,
             timeout=GIT_TIMEOUT_SECONDS,
