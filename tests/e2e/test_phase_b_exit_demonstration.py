@@ -8,12 +8,12 @@ observes nothing of the merge (T-15, ADR-0034), so that local flow is the
 human half. Expected values are the ones that run recorded.
 
 Containment is the predicate ``_isolated_env`` holds, not a universal:
-``HOME``, ``XDG_CONFIG_HOME``, ``TMPDIR`` (the migration rehearsal's
-``theurian-rehearsal-*``), ``THEURIAN_DATA_DIR`` and ``GIT_CEILING_DIRECTORIES``
-are redirected under ``tmp_path``, inherited ``GIT_*`` variables are stripped by
-prefix, git's system config is off, and the only remote is a bare repository
-beside the project. Every other variable is inherited, ``PATH`` among them, to
-find ``theurian`` and git.
+``HOME``, ``XDG_CONFIG_HOME``, ``TMPDIR`` (the CLI's ``tempfile`` scratch,
+``theurian-rehearsal-*`` among it), ``SQLITE_TMPDIR``, ``THEURIAN_DATA_DIR`` and
+``GIT_CEILING_DIRECTORIES`` are redirected under ``tmp_path``, inherited ``GIT_*``
+variables are stripped by prefix, git's system config is off, and the only
+remote is a bare repository beside the project. Every other variable is
+inherited, ``PATH`` among them, to find ``theurian`` and git.
 """
 
 from __future__ import annotations
@@ -88,9 +88,9 @@ GIT_IDENTITY = (
 @dataclass(frozen=True)
 class Project:
     root: Path
-    env: dict[str, str] = field(repr=False)
+    env: dict[str, str] = field(repr=False, compare=False)
     port: int
-    token: str = field(repr=False)
+    token: str = field(repr=False, compare=False)
 
     def cli(self, *args: str) -> dict[str, Any]:
         assert THEURIAN is not None
@@ -140,12 +140,12 @@ class Project:
 def _isolated_env(tmp_path: Path) -> dict[str, str]:
     inherited = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     (tmp_path / "tmp").mkdir(exist_ok=True)
-    (tmp_path / "xdg").mkdir(exist_ok=True)
     return {
         **inherited,
         "HOME": str(tmp_path / "home"),
         "XDG_CONFIG_HOME": str(tmp_path / "xdg"),
         "TMPDIR": str(tmp_path / "tmp"),
+        "SQLITE_TMPDIR": str(tmp_path / "tmp"),
         "THEURIAN_DATA_DIR": str(tmp_path / "data"),
         "GIT_CEILING_DIRECTORIES": str(tmp_path),
         "GIT_CONFIG_NOSYSTEM": "1",

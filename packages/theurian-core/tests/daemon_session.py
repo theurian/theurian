@@ -46,9 +46,9 @@ def health(port: int) -> dict[str, Any] | None:
 def serve_daemon(
     theurian: str, root: Path, env: dict[str, str], log: Path
 ) -> Iterator[tuple[int, str]]:
-    """``theurian daemon start --foreground`` on a free port; yields ``(port, token)``.
-
-    The token is read from ``env["THEURIAN_DATA_DIR"]``, the directory the daemon uses."""
+    """``theurian daemon start --foreground`` on a free port; yields ``(port, token)``."""
+    __tracebackhide__ = True
+    token_file = Path(env["THEURIAN_DATA_DIR"]) / "auth" / "mcp-token"
     port = free_port()
     with log.open("wb") as sink:
         process = subprocess.Popen(  # noqa: S603
@@ -69,7 +69,7 @@ def serve_daemon(
         else:
             pytest.fail(f"daemon did not become healthy in time: {log.read_text()}")
 
-        yield port, (Path(env["THEURIAN_DATA_DIR"]) / "auth" / "mcp-token").read_text().strip()
+        yield port, token_file.read_text().strip()
     finally:
         process.terminate()
         try:
