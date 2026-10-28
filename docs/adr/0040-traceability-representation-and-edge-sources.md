@@ -288,7 +288,7 @@ leaves `state_hash` unchanged.**
 **A state's identity is (`state_hash`, walk commit, boundary), and two states
 with one identity hold the same edges.** `state_hash` names the canonical state
 (ADR-0016) and, through `MIGRATION_ENGINE_VERSION`, the collector's rules, so a
-change to those rules, the depth bound among them, bumps that version. The
+change to them, the depth bound and decision 3(c)'s cap among them, bumps it. The
 boundary is where the walk stopped short of a root commit: the shallow digest
 and whether the depth bound stopped it, both below. The collector reads Git and
 nothing else (decision 3(b)), so after an apply the edges are a function of the
@@ -324,9 +324,9 @@ or whether `migrate apply` succeeds for any tool, would vary with the machine's
 load. At `5ad30799` the first-parent history is 427 commits
 (`git rev-list --first-parent --count 5ad30799`), which
 `git log --first-parent --no-renames --name-only -z` read in about 30 ms here:
-the bound is some 23 times this history. It counts commits; the edges a walked
-commit yields, its changed paths times its distinct valid ids, are a property
-of the history.
+the bound is some 23 times this history. **The edges one apply writes are at
+most 32 times the changed paths the walk reads** (decision 3(c)), a read the
+depth and the 30-second timeout above bound.
 
 **It reads `HEAD`, not ADR-0029's `refs/remotes/origin/main`.** ADR-0029 pins
 public history because an embargoed finding must not enter a corpus built from
@@ -401,6 +401,15 @@ state held any edges would depend on a command nothing else requires.
   visible. Decision 9's rows 1, 2 and 5 hold it on the wire. `Refs: adr-0040` is
   this case: a valid `_DottedId` that names a label, not an item, recorded and
   inert.
+- **(c) A commit naming more than 32 distinct valid ids yields no edges.** Its
+  edges are one per id per changed path, both sizes its author chose. The count
+  takes every distinct valid id, item or not, so the cap reads Git alone ((b)).
+  All or none, since a partial rule needs an order among ids; the build reports
+  the commit's sha, never its values, as (a) does; and it does not refuse, or
+  one hostile commit would refuse every later build. 32 is over four times the
+  most distinct ADR numbers one commit message on `main` names, 7 at
+  `f665ecf6`, the nearest measure while `main` has no `Refs:` trailer (F4):
+  `git rev-list 5ad30799 | while read c; do git log -1 --format=%B $c | grep -o -E 'ADR-[0-9]{4}' | sort -u | wc -l; done | sort -n | tail -1`.
 - **Collection resolves no alias and no label.** A label names no single item
   (*Two further facts*). An alias is an author-chosen key whose target a later
   migration moves, so a resolved edge would point wherever the alias map of the
@@ -497,15 +506,14 @@ Core is refused at its next apply.** Without the nothing-pending clause, "next
 apply" would not reach a project that adds no migration.
 
 **What that leaves, recorded** (read from source, not run). A refused apply rolls
-back and publishes nothing, so the active pointer still names its state, and the
-serve path opens it without reading `engine_version` (ADR-0039, *Context*) or
-the relation set. A cyclic state a non-enforcing Core of the same
-`SCHEMA_VERSION` published keeps serving, before the next apply and after its
-refusal, until an apply succeeds or the state is deleted; with the engine
-version unchanged, #853's serve-path engine check would not see it either. This
-record accepts it — what is served is what the non-enforcing Core served, and
-the refusal shows the operator the cycle — and #1033's INV-6 pull request
-states it in its **BREAKING** entry.
+back and publishes nothing, and the serve path opens the pointer's state without
+reading `engine_version` (ADR-0039, *Context*) or the relation set. So a cyclic
+state a non-enforcing Core of the same `SCHEMA_VERSION` published keeps serving,
+before the next apply and after its refusal, until an apply succeeds or the
+state is deleted; with the version unchanged, #853's engine check misses it
+too. This record accepts it — what is served is what the non-enforcing Core
+served, and the refusal shows the operator the cycle — and #1033's INV-6 pull
+request states it in its **BREAKING** entry.
 
 ### 6. The per-hop visibility gate
 
@@ -750,24 +758,22 @@ Still owed, with the issue or slice that will satisfy it:
 
 1. **[#1033](https://github.com/theurian/theurian/issues/1033), edge
    collection:** the collector of decisions 2 and 3 with the build report of
-   3(a) and 3(b); schema v5 (decision 4); the SQLite adapter for both port
+   3(a) to 3(c); schema v5 (decision 4); the SQLite adapter for both port
    methods; tests for determinism at one `HEAD`, for no Git history, for an
    unborn `HEAD`, for a shallow clone and its boundary commit, for the depth
-   bound and for the full replace after a rebase; a perturbation pin that a
+   bound, for 3(c)'s cap at 32 and at 33 ids, and for the full replace after a
+   rebase; a perturbation pin that a
    commit changing no migration and no body a migration references leaves
    `state_hash` unchanged; `UNPOPULATED_TABLES`; the CHANGELOG; the measured
    cost of *Negative*'s third item; and, in the same change, each sentence its
-   nothing-pending write makes false. At `5ad30799`: "An apply with nothing
-   pending writes nothing" (`cli/migration_pipeline.py:153-154`,
-   `docs/security/threat-model.md:4749-4750`), "an idempotent replay writes
-   nothing" (`cli/commands.py:1135-1136`), `migrate apply`'s `--help`, "changes
-   nothing (FR-K8)" (`cli/commands.py:2532-2533`), and ADR-0018 point 2's loser
-   that "becomes a no-op" and its *Compliance*'s "changes nothing"
-   (`docs/adr/0018-single-writer-synchronous-in-m1.md:36-38`, `:262-264`). Key:
+   nothing-pending write makes false — at `5ad30799`,
+   `cli/migration_pipeline.py:153-154`, `cli/commands.py:1135-1136` and
+   `:2532-2533` (`migrate apply`'s `--help`),
+   `docs/security/threat-model.md:4749-4750`, and
+   `docs/adr/0018-single-writer-synchronous-in-m1.md:36-38` and `:262-264`. Key:
    `git grep -n -i -E 'nothing pending|writes nothing|changes nothing|a no-op' 5ad30799 -- docs packages/theurian-core/src`,
-   read hit by hit, and a whitespace-joined read for phrases wrapped across
-   lines; sentences about the expected-count record, which keeps its condition,
-   stay true. **Its INV-6
+   read hit by hit, plus a whitespace-joined read for wrapped phrases; sentences
+   about the expected-count record, which keeps its condition, stay true. **Its INV-6
    pull request**: decision 5's guard, on every apply; `RelationCycleError`; a
    **BREAKING** CHANGELOG entry naming the refusal and decision 5's residual;
    FR-K8's "a no-op, not an error"
