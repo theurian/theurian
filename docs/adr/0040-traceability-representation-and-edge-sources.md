@@ -508,15 +508,21 @@ including one with nothing pending, so a cyclic set built by a non-enforcing
 Core is refused at its next apply.** Without the nothing-pending clause, "next
 apply" would not reach a project that adds no migration.
 
-**What that leaves, recorded** (read from source, not run). A refused apply rolls
-back and publishes nothing, and the serve path opens the pointer's state without
-reading `engine_version` (ADR-0039, *Context*) or the relation set. So a cyclic
-state a non-enforcing Core of the same `SCHEMA_VERSION` published keeps serving,
-before the next apply and after its refusal, until an apply succeeds or the
-state is deleted; with the version unchanged, #853's engine check misses it
-too. This record accepts it — what is served is what the non-enforcing Core
-served, and the refusal shows the operator the cycle — and #1033's INV-6 pull
-request states it in its **BREAKING** entry.
+**Why the guard ships with schema v5** (read from source, not run). A refused
+apply rolls back and publishes nothing, and the serve path opens the pointer's
+state without reading `engine_version` (ADR-0039, *Context*) or the relation
+set. A cyclic state built at the enforcing Core's own `SCHEMA_VERSION` would
+therefore hash identically, be reused, and keep serving after its refused
+re-apply: the failure *Compliance*'s sequencing condition (#1033) prevents.
+**Under that condition, every state an enforcing Core serves or applies into was
+built by an enforcing Core.** A state a non-enforcing Core built is v4: the
+enforcing Core refuses it at open (`_assert_schema_version`,
+`infrastructure/sqlite/connection.py:1083-1089`) and names another database for
+the project, since `SCHEMA_VERSION` is a state-hash input
+(`resolve_state_hash(loaded, SCHEMA_VERSION)`, `cli/context.py:262`,
+`cli/migration_pipeline.py:209`, `:362`), which only the enforcing apply builds.
+A corpus already cyclic under v4 is served nothing by an enforcing Core until a
+migration removes a relation of its cycle.
 
 ### 6. The per-hop visibility gate
 
@@ -765,9 +771,8 @@ Still owed, with the issue or slice that will satisfy it:
    methods; tests for determinism at one `HEAD`, for no Git history, for an
    unborn `HEAD`, for a shallow clone and its boundary commit, for the depth
    bound, for 3(c)'s cap and capped digest at 32 and at 33 ids, and for the full
-   replace after a rebase; a perturbation pin that a
-   commit changing no migration and no body a migration references leaves
-   `state_hash` unchanged; `UNPOPULATED_TABLES`; the CHANGELOG; the measured
+   replace after a rebase; a perturbation pin that a commit changing no
+   migration and no body a migration references leaves `state_hash` unchanged; `UNPOPULATED_TABLES`; the CHANGELOG; the measured
    cost of *Negative*'s third item; and, in the same change, each sentence its
    nothing-pending write makes false — at `5ad30799`,
    `cli/migration_pipeline.py:153-154`, `cli/commands.py:1135-1136` and
@@ -776,14 +781,19 @@ Still owed, with the issue or slice that will satisfy it:
    `docs/adr/0018-single-writer-synchronous-in-m1.md:36-38` and `:262-264`. Key:
    `git grep -n -i -E 'nothing pending|writes nothing|changes nothing|a no-op' 5ad30799 -- docs packages/theurian-core/src`,
    read hit by hit, plus a whitespace-joined read for wrapped phrases; sentences
-   about the expected-count record, which keeps its condition, stay true. **Its INV-6
-   pull request**: decision 5's guard, on every apply; `RelationCycleError`; a
-   **BREAKING** CHANGELOG entry naming the refusal and decision 5's residual;
-   FR-K8's "a no-op, not an error"
-   (`docs/architecture/requirements-analysis.md:38`), which the guard makes
-   false for a cyclic set; and the RED driver: a corpus holding a cycle a
-   non-enforcing engine built, whose next apply, with nothing pending, is
-   refused.
+   about the expected-count record, which keeps its condition, stay true.
+   **Sequencing condition:** INV-6 enforcement at apply lands in the same PR as
+   the SCHEMA_VERSION 4→5 bump — never earlier (under v4 a cyclic state built by
+   core-v0.5.3 hashes identically and is reused; its refused re-apply rolls back
+   and keeps serving it), never later ((c), a closure leaning on release
+   ordering, rejected in R2). So the pull request that bumps `SCHEMA_VERSION`
+   also carries decision 5's guard, on every apply; `RelationCycleError`; a
+   **BREAKING** CHANGELOG entry naming the refusal; FR-K8's "a no-op, not an
+   error" (`docs/architecture/requirements-analysis.md:38`), restated as scope
+   over applied sets, since under the condition a cyclic set is never applied;
+   and the RED driver: a state holding a cycle written without the guard, whose
+   next apply, with nothing pending, is refused. The collector and the adapter
+   may be their own pull request on either side of it.
 2. **[#1034](https://github.com/theurian/theurian/issues/1034),
    `knowledge.trace`:** decisions 6–8, with `TraceNodeType` added to the
    governed classes of ADR-0039's scan, which is decision 9's ground; decision
