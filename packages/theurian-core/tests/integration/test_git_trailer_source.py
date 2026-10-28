@@ -35,8 +35,10 @@ from theurian.domain.review_finding import (
 )
 from theurian.infrastructure.git.trailer_source import (
     _FIELDS_PER_RECORD,
+    _FORMAT,
     _NUL,
     _UNDECODABLE_EXCERPT_BYTES,
+    PUBLIC_REF,
     GitHistoryUnavailableError,
     GitOutputFramingError,
     GitTrailerFindingSource,
@@ -656,11 +658,13 @@ def test_a_utf16_git_log_stream_is_a_typed_framing_error_not_an_uncaught_decode(
     The input below is a synthetic seven-byte literal: it splits into four tokens
     -- not a multiple of three -- so the **field-count** guard raises, and the
     four-token premise is asserted so this cannot pass because some other guard
-    happened to fire. A *real* UTF-16 stream is not reliably that shape,
-    and the pinned read no longer receives one from a repository's config
-    (``test_a_repo_config_utf16_log_encoding_does_not_reach_the_trailer_read``), so
-    the arms are held by synthetic streams only; the ``%H`` decode arm by
-    ``test_an_undecodable_metadata_field_stays_fatal_with_the_framing_remedy``.
+    happened to fire. A *real* UTF-16 stream is not reliably that shape: whether it
+    still frames as whole records depends on the emitted stream's byte count, which
+    the commit count and the message text both move, and when it does frame the
+    **metadata decode** is what refused it before the read pinned UTF-8. That arm is
+    held by ``test_a_real_utf16_log_config_is_inert_on_the_pinned_read``. Neither
+    test alone covers a UTF-16 stream; what both pin is that either arm is a typed
+    error with the same remedy.
     """
     utf16 = b"\xff\xfe\x00R\x00e\x00v"
     assert len(utf16.split(_NUL)) == 4, "the premise: UTF-16 output carries NUL bytes of its own"
@@ -671,34 +675,80 @@ def test_a_utf16_git_log_stream_is_a_typed_framing_error_not_an_uncaught_decode(
     assert "git version" in caught.value.remedy
 
 
-def test_a_repo_config_utf16_log_encoding_does_not_reach_the_trailer_read(tmp_path: Path) -> None:
-    """The read pins UTF-8 output, so a repository's own ``i18n.logOutputEncoding`` is inert.
+#: How many commits the search below may add before giving up. Justified by **this
+#: fixture's own message shape**, not by a rule about UTF-16 in general: replaying
+#: the search's exact walk (2026-09-03, git 2.47.1) hits ``3n`` framing at ``n=2``,
+#: and no run of non-framing counts within ``1..12`` exceeds two. A wider grid does
+#: show longer runs for *other* message texts, which is exactly why the limit is
+#: tied to the walk it bounds. Nothing about correctness rests on the number: the
+#: search **fails hard** when it finds nothing, so a message shape that outran the
+#: limit would redden this test rather than quietly skip the arm it exists to pin.
+_UTF16_FRAMING_SEARCH_LIMIT: Final = 12
 
-    SEC-10/T-7: a repo-local or global encoding (or the ``i18n.commitEncoding``
-    fallback) re-encoded the read's output, letting a public non-trailer line
-    transliterate into an accepted finding (#981). The real-stream route to the
-    ``%H`` decode arm of :class:`GitOutputFramingError` is closed by the pin; that
-    arm is held by the synthetic
-    ``test_a_utf16_git_log_stream_is_a_typed_framing_error_not_an_uncaught_decode``.
+
+def _utf16_repo_whose_stream_frames_as_whole_records(
+    tmp_path: Path,
+) -> tuple[GitTrailerFindingSource, bytes]:
+    """A published repo whose real UTF-16 ``git log`` stream splits into ``3n`` tokens.
+
+    **The count is searched for, not assumed** (#496 R1-2). Whether a UTF-16 stream
+    still frames as whole records is a function of its byte count rather than of the
+    encoding -- UTF-16 puts a NUL beside every ASCII character, so the token count
+    tracks the message text, and two grids differing only in that text disagree on
+    which commit counts frame. A fixture pinned to one count would therefore stop
+    exercising the metadata-decode arm the first time a git version, or an edit to
+    the subject below, shifted a byte -- and would pass through the field-count arm
+    instead while its name still said "decode". So commits are added until the
+    stream frames (for the shape written here, that is ``n=2``), and the search
+    failing is a hard failure rather than a skip.
     """
     _origin, clone = _origin_and_clone(tmp_path)
-    _commit(clone, "fix: a thing (#1)", "Review-Finding: security HIGH — a public finding")
-    _publish(clone)
-    _git(clone, "config", "i18n.logOutputEncoding", "UTF-16")
-    unpinned = subprocess.run(
-        ["git", "log", "-1", "--format=%H"],  # noqa: S607 - git resolved via PATH
-        cwd=clone,
-        check=True,
-        capture_output=True,
-        env=_child_env(None, hermetic=True),
-    ).stdout
-    assert unpinned.startswith((b"\xff\xfe", b"\xfe\xff")), (
-        f"the control: the hostile config must be live, got {unpinned[:16]!r}"
+    tried: list[int] = []
+    for n in range(1, _UTF16_FRAMING_SEARCH_LIMIT + 1):
+        _commit(clone, f"fix: a thing (#{n})", f"Review-Finding: security HIGH — finding {n}")
+        _publish(clone)
+        _git(clone, "config", "i18n.logOutputEncoding", "UTF-16")
+        stdout = subprocess.check_output(  # noqa: S603 - a plain log, unpinned
+            ["git", "log", "-z", PUBLIC_REF, f"--format={_FORMAT}"],  # noqa: S607
+            cwd=clone,
+            env=_child_env(None, hermetic=True),
+        )
+        _git(clone, "config", "--unset", "i18n.logOutputEncoding")
+        tried.append(len(stdout.split(_NUL)))
+        if tried[-1] % _FIELDS_PER_RECORD == 0:
+            _git(clone, "config", "i18n.logOutputEncoding", "UTF-16")
+            return GitTrailerFindingSource(clone), stdout
+    pytest.fail(
+        f"no commit count up to {_UTF16_FRAMING_SEARCH_LIMIT} produced a UTF-16 stream "
+        f"framing as a multiple of {_FIELDS_PER_RECORD} tokens (token counts: {tried}); "
+        "the metadata-decode arm cannot be driven end-to-end as written"
     )
 
-    (finding,) = GitTrailerFindingSource(clone).load_findings().accepted
 
-    assert finding.finding_text == "a public finding"
+def test_a_real_utf16_log_config_is_inert_on_the_pinned_read(tmp_path: Path) -> None:
+    """A real UTF-16 stream that frames cleanly no longer reaches the decode (#496 R1-2, #981).
+
+    The synthetic literal above is short enough to break the field count; a real
+    stream often is not. ``i18n.logOutputEncoding=UTF-16`` in the repository's own
+    config reached the adapter's child ``git`` -- only the ``GIT_*`` *environment*
+    overrides were stripped -- and when the resulting stream splits into whole
+    records the field-count guard passed it, leaving ``%H`` (a byte-order mark and
+    UTF-16 code units) as the thing that could not decode. The read now pins UTF-8,
+    so the premise assert is the control that the config is live, and the arm is held by
+    ``test_an_undecodable_metadata_field_stays_fatal_with_the_framing_remedy``.
+
+    This is the arm the branch's two docstrings originally attributed to the
+    field-count guard, and it had no end-to-end test at all.
+    """
+    source, stdout = _utf16_repo_whose_stream_frames_as_whole_records(tmp_path)
+    assert stdout.startswith((b"\xff\xfe", b"\xfe\xff")), (
+        f"the premise: git must really emit UTF-16 here, got {stdout[:16]!r}"
+    )
+
+    texts = [f.finding_text for f in source.load_findings().accepted]
+
+    assert len(texts) >= 2
+    assert sorted(texts) == [f"finding {n}" for n in range(1, len(texts) + 1)]
 
 
 # --- D4: NUL framing, not forgeable RS/US ----------------------------------
