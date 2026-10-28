@@ -14,9 +14,10 @@ shadowed by ``refs/heads/origin/main``, ``refs/tags/origin/main`` and the bare
 ``refs/origin/main`` (gitrevisions(7) tries ``refs/<name>``, ``refs/tags/<name>``
 and ``refs/heads/<name>`` before ``refs/remotes/<name>``), and by ``git replace``.
 The read trusts the ref's value and neutralises every documented git feature that changes what a
-read means (replace, grafts, shallow, commit-graph, lazy fetch, transports); a direct write to the
-object store, a cache file or a ref -- ``git update-ref`` of :data:`PUBLIC_REF` included, a member
-of the non-goal below -- can still forge any answer (open: #1015, #1016). Concretely:
+read means (replace, grafts, shallow, commit-graph, lazy fetch, transports) bar shallow, the one it
+honours: a shallow clone's own boundary only drops findings older than it (measured). A direct write
+to the object store, a cache file or a ref -- ``git update-ref`` of :data:`PUBLIC_REF` included, a
+member of the non-goal below -- can still forge any answer (open: #1015, #1016). Concretely:
 
 - it reads the **fully-qualified** :data:`PUBLIC_REF`, never the short name, so a
   shadowing branch or tag cannot answer for the remote-tracking ref;

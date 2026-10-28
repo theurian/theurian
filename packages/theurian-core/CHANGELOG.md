@@ -25,10 +25,11 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   public-trailer read run under one isolated git environment**
   ([#981](https://github.com/theurian/theurian/issues/981)). Every documented git feature that
   changes what a read means is neutralised (replace, grafts, shallow, commit-graph, lazy fetch,
-  transports); an actor who writes the object store, a cache file or a ref directly can forge any
-  answer, and no read-side check closes that. Two documented features are not yet neutralised and
-  are tracked: a working-tree clean filter on the committed check (#1015) and, below git 2.45, the
-  fetch child's reading of repository config (#1016).
+  transports), except that the trailer read honours a shallow clone's own boundary, which only drops
+  findings older than it (measured); an actor who writes the object store, a cache file or a ref
+  directly can forge any answer, and no read-side check closes that. Two documented features are not
+  yet neutralised and are tracked: a working-tree clean filter on the committed check (#1015) and,
+  below git 2.45, the fetch child's reading of repository config (#1016).
 
 ### Added
 
