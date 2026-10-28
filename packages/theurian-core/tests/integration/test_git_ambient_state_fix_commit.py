@@ -1,4 +1,4 @@
-"""``FixCommitCheck`` reads only this repository's own, whole, local history (#981).
+"""``FixCommitCheck`` reads only the repo's own whole local history (#981; below 2.45, open: #1016).
 
 Each case builds a real repository under ``tmp_path`` in which something git
 consults besides the named commit -- an inherited variable, a replace ref, a graft,
