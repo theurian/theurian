@@ -13,11 +13,13 @@ Amendment 1, D7). The short name ``origin/main`` is *not* a safe handle: it is
 shadowed by ``refs/heads/origin/main``, ``refs/tags/origin/main`` and the bare
 ``refs/origin/main`` (gitrevisions(7) tries ``refs/<name>``, ``refs/tags/<name>``
 and ``refs/heads/<name>`` before ``refs/remotes/<name>``), and by ``git replace``.
-The read trusts the ref's value and neutralises every documented git feature that changes what a
-read means (replace, grafts, shallow, commit-graph, lazy fetch, transports) bar shallow, the one it
-honours: a shallow clone's own boundary only drops findings older than it (measured). A direct write
-to the object store, a cache file or a ref -- ``git update-ref`` of :data:`PUBLIC_REF` included, a
-member of the non-goal below -- can still forge any answer (open: #1015, #1016). Concretely:
+Every documented git feature that can make a deciding read admit what this repository's own objects
+do not is neutralised, except two that are tracked: an attribute-driven conversion on the committed
+check (#1015) and, below git 2.45, the fetch child's reading of repository config (#1016). Features
+that can only make a read refuse are outside this bound, a shallow clone's own boundary among them:
+here it only drops findings older than it (measured). The read trusts the ref's value; a direct
+write to the object store, a cache file or a ref -- ``git update-ref`` of :data:`PUBLIC_REF`
+included, a member of the non-goal below -- can still forge any answer. Concretely:
 
 - it reads the **fully-qualified** :data:`PUBLIC_REF`, never the short name, so a
   shadowing branch or tag cannot answer for the remote-tracking ref;
