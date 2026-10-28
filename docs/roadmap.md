@@ -965,8 +965,8 @@ flowchart LR
    into an ADR (Phase C).
    **Recorded: [ADR-0040](adr/0040-traceability-representation-and-edge-sources.md)**:
    edges come from a `Refs: <item id>` commit trailer naming a literal item id,
-   collected when the state is built, with the commit joining the state hash;
-   every hop is gated on the literally named row's metadata.
+   collected at every `migrate apply` with its commit recorded, not hashed; every
+   hop is gated on the literally named row's metadata.
 5. **Governance of golden-query evaluation** — the standing of committed
    judgements, and the reconciliation with ADR-0021's rejection of labelled
    relevance judgements (regression detection only; LTR permanently a non-goal)

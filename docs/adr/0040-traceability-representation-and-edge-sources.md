@@ -35,13 +35,14 @@ it must move this record too.
 
 **Records this decision moves.** Decision 3 narrows ADR-0038 decision 2, which
 required a spec id named by an edge source to be resolved to its item id when
-the edge is populated. Decision 2 changes ADR-0016 decision 4, "Git is simply
-not consulted when computing the hash". Decision 8 adds a ninth set to the eight
-ADR-0039 decision 1 governs. Decision 5 settles which relations INV-6 covers,
-which two other records state differently (F8). Each of those records owes an
-amendment block pointing here (*Compliance*, Still owed item 1). The roadmap's
-Phase C *Architecture* row, which planned three edge sources, is corrected with
-this record.
+the edge is populated. Decision 2 keeps ADR-0016 decision 4's "Git is simply
+not consulted when computing the hash" true, and ends what it implied: a state's
+contents are no longer a function of its hash alone. Decision 8 adds a ninth set
+to the eight ADR-0039 decision 1 governs. Decision 5 settles which relations
+INV-6 covers, which two other records state differently (F8). Each of those
+records carries an amendment pointing here, in this pull request
+(*Compliance*). The roadmap's Phase C *Architecture* row, which planned three
+edge sources, is corrected with this record.
 
 ## Context
 
@@ -191,11 +192,11 @@ this record.
   list only, so nothing makes a label unique across items. A label's grammar is a
   string of at most 64 characters, so `adr-0040` is both a valid label and a
   valid item id.
-- *(dated)* **The state hash is computed by every CLI command that resolves a
-  project, and reads no Git today.** `resolve_context` computes it
-  (`cli/context.py:262`) from the
-  migrations, their body checksums, `SCHEMA_VERSION` and
-  `MIGRATION_ENGINE_VERSION` (`domain/state.py:47-54`). Search compares a
+- *(standing)* **The state hash reads no Git.** Its inputs are the migrations,
+  their body checksums, `SCHEMA_VERSION` and `MIGRATION_ENGINE_VERSION`
+  (`StateInputs`, `domain/state.py:47-54`), and decision 2 keeps it so.
+  *(dated)* Every CLI command that resolves a project computes it, in
+  `resolve_context` (`cli/context.py:262`). Search compares a
   published index build's recorded hash against the current one and labels the
   answer stale when they differ (`mcp/search.py:655`), and `index status` reports
   `indexStale` on the same comparison (`cli/index_status_report.py:217`).
@@ -261,7 +262,7 @@ and are out of scope.
 | (iii) | Hand-authored `addRelation` migrations | 0 in the corpus (F2) | **Rejected.** Item to item only (F7). Reaching a module needs either a new operation — an `apiVersion` bump under ADR-0039 decision 3, and an owner decision — or modules entered as items, which is a new `kind`, additive under ADR-0039 decision 2 but due only after [#849](https://github.com/theurian/theurian/issues/849) and [#853](https://github.com/theurian/theurian/issues/853), and a governed item per module. `addRelation` rows stay item-to-item edges that `knowledge.trace` walks (decision 7) |
 | (iv) | `scope.paths` globs | 55 of 56 match any core module (F3) | **Rejected.** An edge from every core module to nearly every item says nothing. It stays a candidate source once the corpus's globs are module-level |
 
-### 2. The collector runs when the state is built, over first-parent history at `HEAD`
+### 2. Every apply collects, over first-parent history at `HEAD`; the commit is recorded, not hashed
 
 **Collection runs inside the state build** — the write transaction `migrate
 apply` already runs (`apply_migration_set`, `cli/migration_pipeline.py`) — after
@@ -269,18 +270,30 @@ the migration set applies. It walks `git log --first-parent HEAD`, reads each
 commit's `Refs:` trailers (decision 3) and the paths the commit changed against
 its first parent, and writes the edges into `traceability_edges`.
 
-**`HEAD`'s commit joins the state hash.** What the state holds is then
-determined by the migrations and that commit, and ADR-0016 already refuses a
-database whose key does not describe its contents. That commit is §6 principle
-2's "commit it was measured against", recorded with the state (decision 4) and
-reported by every trace response (decision 7). It is `HEAD` rather than a digest
-of the collected edges because every command that resolves a project computes
-the hash (*Two further facts*): `HEAD` is one `git rev-parse HEAD`, which
-`current_commit` already runs (`cli/context.py:81-93`), and a digest of the edges
-would need the whole walk in each of those commands. This changes ADR-0016 decision 4: Git is now
-consulted for `HEAD`, and on a shallow clone for its boundary.
+**Every `migrate apply` collects, including one with nothing pending,** and
+replaces the whole edge set, the recorded walk commit and the boundary inside its
+write transaction. It is a full replace, not an incremental walk from the stored
+commit: after a rebase or a reset, the stored commit is not an ancestor of
+`HEAD`. The expected-count record keeps its condition
+(`cli/migration_pipeline.py:146`), because edges are not that record.
 
-**The walk is deterministic, so one hash cannot name two edge sets.**
+**The walk commit is recorded, not hashed.** It is §6 principle 2's "commit it
+was measured against", recorded in `schema_metadata` (decision 4) and published
+by every trace (decision 7). Principle 2 asks a response to state its commit,
+not that every commit invalidate the state, and ADR-0016 rejected a commit sha
+in the hash: "a code-only commit touching no knowledge would invalidate a valid
+state". **A commit that changes no migration and no body a migration references
+leaves `state_hash` unchanged.**
+
+**A state's identity is (`state_hash`, walk commit, boundary), and two states
+with one identity hold the same edges.** `state_hash` names the canonical state
+(ADR-0016) and, through `MIGRATION_ENGINE_VERSION`, the collector's rules, so a
+change to those rules, the depth bound among them, bumps that version. The
+boundary is where the walk stopped short of a root commit: the shallow digest
+and whether the depth bound stopped it, both below. The collector reads Git and
+nothing else (decision 3(b)), so after an apply the edges are a function of the
+walk commit and the boundary under those rules, because the walk is
+deterministic:
 
 - `--no-renames`: rename detection depends on `diff.renames` and similarity
   thresholds, which are local configuration. A renaming commit yields edges from
@@ -296,11 +309,24 @@ consulted for `HEAD`, and on a shallow clone for its boundary.
   the path, never from `git remote get-url origin`, which differs between
   clones and prints a filesystem path for a local remote — an operator's
   layout, the class GHSA-923w-f36f-jcfq closed in MCP error responses.
-- A failure to read `HEAD`, a walk that fails or times out, and a stream the
-  framing cannot read refuse the build. None of them degrades to "no edges",
-  because then one hash would name two contents. `current_commit` returns `None`
-  both for an unborn `HEAD` and for a failure (`cli/context.py:81-93`), so the
-  collector reads `HEAD` through a call that tells the two apart.
+- A failure to read `HEAD`, a walk that fails or outlives the 30-second
+  subprocess timeout ADR-0029's reader already applies
+  (`infrastructure/git/trailer_source.py:118`), and a stream the framing cannot
+  read refuse the build. None of them degrades to "no edges", because then one
+  identity would name two edge sets. `current_commit` returns `None` both for an
+  unborn `HEAD` and for a failure (`cli/context.py:81-93`), so the collector
+  reads `HEAD` through a call that tells the two apart.
+
+**The walk reads at most 10,000 first-parent commits, the walk commit first,**
+and one that reaches the bound stops there and records it in the boundary. A
+depth stops every machine at the same commit; under a time limit the edge set,
+or whether `migrate apply` succeeds for any tool, would vary with the machine's
+load. At `5ad30799` the first-parent history is 427 commits
+(`git rev-list --first-parent --count 5ad30799`), which
+`git log --first-parent --no-renames --name-only -z` read in about 30 ms here:
+the bound is some 23 times this history. It counts commits; the edges a walked
+commit yields, its changed paths times its distinct valid ids, are a property
+of the history.
 
 **It reads `HEAD`, not ADR-0029's `refs/remotes/origin/main`.** ADR-0029 pins
 public history because an embargoed finding must not enter a corpus built from
@@ -316,22 +342,24 @@ when the merge commit's message carries it (*Negative*).
 CLI refuses outside a Git repository (`cli/context.py:246-252`), so the cases
 are a rehearsal's throwaway copy, which is not a Git working tree
 (`cli/migration_pipeline.py:71-75`), and a repository whose `HEAD` is unborn. In
-both, the hash takes a fixed "no commit" input that no sha equals, and a trace
-reports the commit as null and zero edges walked.
+both, `schema_metadata` records the walk commit and the boundary as null, and a
+trace reports the commit as null and zero edges walked.
 
-**On a shallow clone, the walk stops at the shallow boundary, and the boundary
-joins the hash.** The clone's shallow-commit list — the file
-`git rev-parse --git-path shallow` names, its shas sorted — is hashed beside
-`HEAD`, so a shallow and a full clone at one `HEAD` get different hashes and
-each describes its own edges. Reading it is one file read. The state records
-that the walk ended at a boundary, and a trace says so (decision 7).
+**On a shallow clone, the walk stops at the shallow boundary.** The shallow
+digest is the lowercase hex SHA-256 of the clone's shallow-commit list — the
+shas in the file `git rev-parse --git-path shallow` names, sorted byte-wise,
+each followed by a newline — and null when no such file exists, which is a full
+clone. A commit the list names yields no edges: its parent is absent, so
+`git log` diffs it against the empty tree. In a depth-2 clone at `5ad30799` the
+boundary commit `54a9f673` lists 1,159 paths, its whole tree
+(`git ls-tree -r --name-only 54a9f673 | wc -l`), against the 2 the full history
+lists. A trace publishes the shallow flag, not the digest (decision 7).
 
 **Not in `ingest`, and not a new command.** `ingest` writes only
 `.theurian/cache/ingestion.json`, reads `HEAD`'s sha and no history, and never
 opens the state database (F10). Collecting there, or in a command of its own,
-gives the state database a second writer whose run is optional: under a hash
-that covers `HEAD`, one database name would hold edges or not depending on
-whether that command had run.
+gives the state database a second writer whose run is optional, so whether a
+state held any edges would depend on a command nothing else requires.
 
 ### 3. The trailer grammar: a literal item id, untrusted, never resolved
 
@@ -393,8 +421,8 @@ compare, and a later source may carry evidence from several commits while
 `source_commit` names the one it was measured against. `relation_type` holds a
 `RelationType` value, and #1033 narrows `TraceabilityEdge.relation_type` from
 `str` (F9) to `RelationType`; roadmap §4 keeps edge types closed.
-`schema_metadata` gains the commit the walk started from, null when there was
-none (decision 2), and whether the walk ended at a shallow boundary.
+`schema_metadata` gains decision 2's walk commit and boundary — the shallow
+digest, and whether the depth bound stopped the walk — all null with no walk.
 
 These are DDL changes, so `SCHEMA_VERSION` goes from 4 to 5. Under the exact
 match (F6), a v4 build refuses a v5 database and a v5 build a v4 one, per
@@ -442,24 +470,42 @@ carries it.
 holds no relation row (F2). Corpora in other repositories cannot be measured
 from here. One with a cycle meets `RelationCycleError` at its first apply under
 the enforcing Core, naming the cycle; until a migration removes a relation of
-it, that Core builds no state for the project. If that Core is also the first v5
-Core, the project's v4 state is refused at open as well (decision 4), so nothing
-is served until then.
+it, that Core builds no state for the project.
 
-**Its versioning is ADR-0039 decision 6's ADR-first route, and this record is
-that ADR.** Refusing a set the old engine applied changes what a frozen v1
-document does, and the change touches relation rows, so decision 6's
-engine-version path alone does not cover it. Decided here: no `apiVersion` bump,
-because every set that satisfies INV-6 applies exactly as before — no
-operation's meaning changes, and INV-6 was a stated invariant before the format
-existed — its row arrived in `481bd0f0`, four commits before the migration
-schema's first commit, `0f8c387d` (`git rev-list --count 481bd0f0..0f8c387d`
-prints 4) — so a cyclic set was an unenforced corpus, never a valid one. No `protocolVersion` bump: no wire field moves.
-`MIGRATION_ENGINE_VERSION` goes from 1 to 2, so a state the unchecked engine
-built is never reused under the checked one's hash. The CHANGELOG names the new
-refusal as **BREAKING**. Nothing at open reads `engine_version` (ADR-0039,
-*Context*), so on the serve path a state the old engine built keeps serving
-until it is rebuilt; that is #853's.
+**No `apiVersion`, `protocolVersion` or `MIGRATION_ENGINE_VERSION` bump.**
+ADR-0039 decision 6 sends a change that "moves which rows a gate reads", relation
+rows among them, to "decision 8's ADR-first route"; this record is that ADR.
+Decision 6's engine-version path is for when "a Core must change what an
+earlier-version document does" — "#841's case, where the table the retired
+operations write goes away". Refusing a set the old engine applied reads as that
+case and is not: the guard changes which sets are accepted, not what an accepted
+operation does. It adds a refusal and writes nothing, so on an acyclic set the
+enforcing engine does exactly what the non-enforcing one did, and an engine bump
+— the version "still describes the engine, not the format" (ADR-0039,
+*Neutral*) and is hashed into the state hash — would invalidate every state
+built from an acyclic set to buy nothing. The one set whose outcome changes was
+never valid: INV-6 predates the format — its row arrived in `481bd0f0`, four
+commits before the migration schema's first commit, `0f8c387d`
+(`git rev-list --count 481bd0f0..0f8c387d` prints 4). No operation's meaning
+changes and no wire field moves, so `apiVersion` and `protocolVersion` stay. The
+refusal is a break — a Core MINOR before 1.0, a MAJOR after (ADR-0039, *The
+matrix*) — named **BREAKING** in the CHANGELOG.
+
+**The guard validates the whole relation set the apply leaves, on every apply,
+including one with nothing pending, so a cyclic set built by a non-enforcing
+Core is refused at its next apply.** Without the nothing-pending clause, "next
+apply" would not reach a project that adds no migration.
+
+**What that leaves, recorded** (read from source, not run). A refused apply rolls
+back and publishes nothing, so the active pointer still names its state, and the
+serve path opens it without reading `engine_version` (ADR-0039, *Context*) or
+the relation set. A cyclic state a non-enforcing Core of the same
+`SCHEMA_VERSION` published keeps serving, before the next apply and after its
+refusal, until an apply succeeds or the state is deleted; with the engine
+version unchanged, #853's serve-path engine check would not see it either. This
+record accepts it — what is served is what the non-enforcing Core served, and
+the refusal shows the operator the cycle — and #1033's INV-6 pull request
+states it in its **BREAKING** entry.
 
 ### 6. The per-hop visibility gate
 
@@ -511,6 +557,7 @@ statements, under names that say *recorded edges*:
 | `recordedEdgesCommit` | the commit the state's edges were collected at (decision 2); null with no Git history |
 | `recordedEdgesWalked` | how many recorded edges the traversal walked — counted after the gate, so only edges whose endpoints passed |
 | `recordedEdgesHistoryShallow` | whether collection stopped at a shallow boundary |
+| `recordedEdgesDepthBounded` | whether collection stopped at the depth bound (decision 2) |
 | `recordedEdgesCoverage` | the constant `"not-claimed"`: the response asserts nothing about edges that were never recorded |
 
 Descriptions say *recorded* edges and never claim completeness (Phase C
@@ -558,8 +605,8 @@ additive rule, decision 7 on reordering and decision 9's ground apply to it, and
 decisions 3 and 5, which are about `apiVersion`, do not: no migration names a
 node type. Adding a member is a Core MINOR, and #853's
 per-database check is due before the first new member, as it is for `kind` and
-`relationType`. ADR-0039 decision 1's "eight entries" becomes nine, an
-amendment owed there (*Compliance*, Still owed item 1).
+`relationType`. ADR-0039 decision 1's "eight entries" becomes nine, in an
+amendment there.
 
 ### 9. The disclosure families of a graph response
 
@@ -591,7 +638,7 @@ gate decides (row 9).
 | 5 | An error that tells withheld from absent | At the start node; at a hop | The start refusal is `knowledge.get`'s absent-id refusal; a hop never errors on an endpoint, it withholds | A start at W against a start at an absent id: identical bytes; a hop to W against a hop to an absent id: identical response |
 | 6 | A resource consumed | Pre-gate rows read: relation rows naming W are read and dropped in A and do not exist in B | Bounded by 100 × the largest fan-out (decision 7); the per-row cost is the one `knowledge.get`'s `relations` already pays | A measurement of rows read per request on the dogfood corpus |
 | 7 | Another tool reaching the same content | `knowledge.get` and `trace` on one item | `trace` publishes no relation field `knowledge.get` withholds and no item content at all (decision 7) | For every item in a corpus holding withheld rows, `trace`'s relations of it are a subset of `knowledge.get`'s |
-| 8 | State, lifecycle and concurrency | A v4 database under a v5 Core; a trace racing a rebuild | Exact match at open (decision 4); one read session per request, and the active pointer read once, so a trace sees one state whole | A two-way open test; a trace racing a rebuild sees the old state or the new one, never both |
+| 8 | State, lifecycle and concurrency | A v4 database under a v5 Core; a trace racing a rebuild, or an apply replacing the edges in place (decision 2) | Exact match at open (decision 4); one read session per request, and the active pointer read once, so a trace sees one state whole | A two-way open test; a trace racing either sees the old state or the new one, never both |
 | 9 | A closed-set value decoded before the gate (#853's class) | A `TraceNodeType` or `RelationType` member a Core lacks, decoded before the hop's gate decides | `traceability_edges` rows are identical in A and B (3(b)), so their decode cannot differ; an item row or a `knowledge_relations` row naming W is the face #853 records, held by its per-database check, due before the first new member (ADR-0039) | A withheld row carrying an unknown member against an absent id: identical responses, the acceptance ADR-0039 *Compliance* item 3 states |
 
 ## Consequences
@@ -618,13 +665,11 @@ gate decides (row 9).
   ADR-0040's item id; that item does not exist at `5ad30799`. #1035's
   demonstration needs a trailer naming one of the 24 twins, or a twin created
   first.
-- **Every commit moves the state hash** (decision 2). After any commit,
-  `theurian project status` (`cli/commands.py:1955`) shows `stateHash` and
-  `activeStateHash` differing
-  until the next `migrate apply`, even when the commit touched no migration and
-  carried no trailer; after that apply, the published index build reads stale
-  (*Two further facts*) until it is rebuilt. Read from source, not run. #1033
-  owes the measured cost.
+- **Between a commit and the next apply, the edges describe the walk commit,
+  not `HEAD`** (decision 2), and so do they after a checkout that leaves the
+  migrations alone. `recordedEdgesCommit` says which commit; nothing raises a
+  staleness alarm. #1033 owes the walk's measured cost per apply, at the depth
+  bound.
 - **A rename breaks the path link.** An edge names the path its commit changed;
   the module at its new path has no edge until a later commit with a trailer
   changes it.
@@ -656,12 +701,15 @@ gate decides (row 9).
 | **Prose mentions, `addRelation`, `scope.paths`** as the source | Decision 1's table, each with its key |
 | **`constrained_by`** as the relation | Projects a commit-level declaration onto every changed path as a per-path constraint (decision 1) |
 | **A `commit` `TraceNode`**, with edges path → commit → item | A new `TraceNodeType` member, so #853 first (decision 8); two hops per declaration against the four-hop depth limit; and the commit is what measured the edge, not what the edge is about |
-| **Collect in `ingest`**, as the roadmap row planned, **or in a new command** | `ingest` writes no state (F10); either gives the state database an optional second writer under a hash that covers `HEAD` (decision 2) |
-| **Hash a digest of the collected edges** instead of `HEAD` | Every command that resolves a project computes the hash, and the digest needs the whole walk each time (decision 2) |
-| **Keep the edges in a database of their own**, keyed by `HEAD`, as the index is kept apart ([ADR-0022](0022-index-lives-in-its-own-database.md)) | It would leave ADR-0016 decision 4 and the index's freshness untouched, at the price of a trace reading two databases built at different moments: the per-hop gate would judge an edge from one state against items from another, and family 8 would hold two pointers instead of one |
+| **Collect in `ingest`**, as the roadmap row planned, **or in a new command** | `ingest` writes no state (F10); either gives the state database an optional second writer (decision 2) |
+| **`HEAD` in `state_hash`** | §6 principle 2 asks the response to state its commit, not that every commit invalidate the state, and ADR-0016 rejected a commit sha in the hash for invalidating a valid state on a code-only commit. A staleness alarm after every commit, the stale index label (*Two further facts*) among its faces, is §10's trust failure by another route: a signal that is always on is read as noise. Read from source, not run (decision 2) |
+| **Hash a digest of the collected edges** | Every command that resolves a project computes the hash, and the digest needs the whole walk each time (decision 2) |
+| **Bound the walk by wall time** | The edge set, or whether the build succeeds, would vary with the machine's load (decision 2) |
+| **Keep the edges in a database of their own**, keyed by `HEAD`, as the index is kept apart ([ADR-0022](0022-index-lives-in-its-own-database.md)) | What it would keep — ADR-0016 decision 4 and the index's freshness untouched — decision 2 keeps without it. Its price is a trace reading two databases built at different moments: the per-hop gate would judge an edge from one state against items from another, and family 8 would hold two pointers instead of one |
 | **Resolve an alias or label at collection**, ADR-0038 decision 2's form | Labels name no single item, an alias's target moves with later migrations, and resolution reads canonical rows into the collector (decision 3) |
 | **Drop a valid id that names no item** | The edge table would vary with withheld content, and the declaration would vanish silently (decision 3(b)) |
 | **Reuse `MigrationCycleError`** for INV-6 | It names a migration-ordering cycle, carries migration ids, and its remedy edits `dependsOn` (decision 5) |
+| **Bump `MIGRATION_ENGINE_VERSION`** with INV-6 | The guard changes which sets are accepted, not what an accepted operation does, so the bump would invalidate every state built from an acyclic set to buy nothing, and the whole-set guard already refuses a cyclic one at its next apply (decision 5) |
 | **Check INV-6 after each migration** rather than over the set | A frozen migration that closed a cycle a later one breaks would refuse forever, with no cure but editing history |
 | **Annotate trace parameters with `Literal` or an enum** | Publishes an `enum` on the served schema, #856's trigger (decision 8) |
 
@@ -672,15 +720,22 @@ it states, plus the obligations below.
 
 Landing with this pull request:
 
+- **Amendments pointing here**, each in the record this decision moves:
+  ADR-0038 decision 2 and its *Compliance* item 3 (decisions 1, 3, 4 and 6
+  answer that item); ADR-0016 decision 4 (decision 2); ADR-0039 decision 1's
+  eight entries (decision 8); and the INV-6 row of
+  `docs/architecture/requirements-analysis.md` and roadmap §4 item 3, for
+  decision 5's set.
 - **`packages/theurian-core/tests/unit/test_adr_0040_claims.py`, the claims
   pin**, written by the tests step after this record. It is owed both directions
   for each fact under *Context*: a prose side that reddens when this record
   drifts from what it says, and a fact side derived from live source that
   reddens when the codebase moves. Its standing invariants are F6's exact
-  match, F7's two item-id endpoints, and the label's lack of cross-item
-  uniqueness; every other fact is dated, and its fact side is how #1033 and
-  #1034 learn this record must move. Its reach is stated in its module
-  docstring.
+  match, F7's two item-id endpoints, the label's lack of cross-item
+  uniqueness, and the state hash's reading no Git; every other fact is dated,
+  and its fact side is how #1033 and #1034 learn this record must move.
+  Decision 2's identity and shallow digest and decision 5's guard have no fact
+  side until #1033 builds them. Its reach is stated in its module docstring.
 
 Rests on enforcement that already holds:
 
@@ -693,30 +748,43 @@ Rests on enforcement that already holds:
 
 Still owed, with the issue or slice that will satisfy it:
 
-1. **Amendment blocks pointing here**, each in the record this decision moves:
-   ADR-0038 decision 2 and its *Compliance* item 3 (decisions 3, 4 and 6
-   answer that item); ADR-0016 decision 4 (decision 2); ADR-0039 decision 1's
-   eight entries (decision 8); and the INV-6 row of
-   `docs/architecture/requirements-analysis.md` and roadmap §4 item 3, for
-   decision 5's set. None is in this pull request's file set; each is named here
-   so none is silent.
-2. **[#1033](https://github.com/theurian/theurian/issues/1033), edge
+1. **[#1033](https://github.com/theurian/theurian/issues/1033), edge
    collection:** the collector of decisions 2 and 3 with the build report of
    3(a) and 3(b); schema v5 (decision 4); the SQLite adapter for both port
    methods; tests for determinism at one `HEAD`, for no Git history, for an
-   unborn `HEAD` and for a shallow clone; `UNPOPULATED_TABLES`; the CHANGELOG;
-   and the measured cost of *Negative*'s third item. **Its INV-6 pull request**:
-   decision 5's guard, `RelationCycleError`, the `MIGRATION_ENGINE_VERSION`
-   bump, and a **BREAKING** CHANGELOG entry naming the refusal.
-3. **[#1034](https://github.com/theurian/theurian/issues/1034),
-   `knowledge.trace`:** decisions 6–8; decision 9's tests, in the same change as
-   the tool; #845's M-4 as an acceptance criterion; `system.capabilities`'s
-   `traceability` flipped to true (F11); and the Phase C *Tests* row's pin that
-   every hop's visibility decision goes through the non-resolving, body-free
-   read.
-4. **[#1035](https://github.com/theurian/theurian/issues/1035), the exit
+   unborn `HEAD`, for a shallow clone and its boundary commit, for the depth
+   bound and for the full replace after a rebase; a perturbation pin that a
+   commit changing no migration and no body a migration references leaves
+   `state_hash` unchanged; `UNPOPULATED_TABLES`; the CHANGELOG; the measured
+   cost of *Negative*'s third item; and, in the same change, each sentence its
+   nothing-pending write makes false. At `5ad30799`: "An apply with nothing
+   pending writes nothing" (`cli/migration_pipeline.py:153-154`,
+   `docs/security/threat-model.md:4749-4750`), "an idempotent replay writes
+   nothing" (`cli/commands.py:1135-1136`), `migrate apply`'s `--help`, "changes
+   nothing (FR-K8)" (`cli/commands.py:2532-2533`), and ADR-0018 point 2's loser
+   that "becomes a no-op" and its *Compliance*'s "changes nothing"
+   (`docs/adr/0018-single-writer-synchronous-in-m1.md:36-38`, `:262-264`). Key:
+   `git grep -n -i -E 'nothing pending|writes nothing|changes nothing|a no-op' 5ad30799 -- docs packages/theurian-core/src`,
+   read hit by hit, and a whitespace-joined read for phrases wrapped across
+   lines; sentences about the expected-count record, which keeps its condition,
+   stay true. **Its INV-6
+   pull request**: decision 5's guard, on every apply; `RelationCycleError`; a
+   **BREAKING** CHANGELOG entry naming the refusal and decision 5's residual;
+   FR-K8's "a no-op, not an error"
+   (`docs/architecture/requirements-analysis.md:38`), which the guard makes
+   false for a cyclic set; and the RED driver: a corpus holding a cycle a
+   non-enforcing engine built, whose next apply, with nothing pending, is
+   refused.
+2. **[#1034](https://github.com/theurian/theurian/issues/1034),
+   `knowledge.trace`:** decisions 6–8, with `TraceNodeType` added to the
+   governed classes of ADR-0039's scan, which is decision 9's ground; decision
+   9's tests, in the same change as the tool; #845's M-4 as an acceptance
+   criterion; `system.capabilities`'s `traceability` flipped to true (F11); and
+   the Phase C *Tests* row's pin that every hop's visibility decision goes
+   through the non-resolving, body-free read.
+3. **[#1035](https://github.com/theurian/theurian/issues/1035), the exit
    demonstration:** a commit carrying a trailer that names one of the 24 ADR
    twins, or a twin created first (*Negative*, second item), traced from a
    module to that ADR.
-5. **[#853](https://github.com/theurian/theurian/issues/853)**, before the first
+4. **[#853](https://github.com/theurian/theurian/issues/853)**, before the first
    new `TraceNodeType` member (decision 8).
