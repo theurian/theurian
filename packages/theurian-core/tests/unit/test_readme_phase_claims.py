@@ -2,7 +2,7 @@
 
 Reach: the flags ``### What comes next`` backticks; the commands, MCP tool names and
 paths the paragraph backticks, with any other span there refused; Phase A's exit date
-and Phase B's owed demonstration against the roadmap's literals; the schema's flag set.
+and Phase B's completion and demonstration date against the roadmap's; the schema's flag set.
 
 Not run by a documentation-only pull request (#839); ``release-core.yml``'s quality
 job runs the whole suite at every tag, so a drift cannot reach a release.
@@ -55,8 +55,11 @@ _TOOL_NAME: Final = re.compile(r"[a-z]+\.[a-z][A-Za-z]*")
 
 _A_EXIT_DATE: Final = re.compile(r"\*\*All three met, (\d{4}-\d{2}-\d{2})\.\*\*")
 _README_A_DATE: Final = re.compile(r"\bmet on (\d{4}-\d{2}-\d{2})\b")
-_B_DEMONSTRATION_OWED: Final = "What is left of this row is the demonstration itself"
-_B_NOT_RUN: Final = "not yet run"
+_B_EXIT_DATE: Final = re.compile(r"\*\*Both halves met, (\d{4}-\d{2}-\d{2})\.\*\*")
+_README_B_DATE: Final = re.compile(
+    r"\bB is complete, and the roadmap records its exit demonstration as run "
+    r"from a plain MCP client on (\d{4}-\d{2}-\d{2})\b"
+)
 
 
 def _flat(text: str) -> str:
@@ -144,7 +147,7 @@ def test_the_readmes_shipped_phase_claims_match_system_capabilities_and_the_cli(
     tracked = {path.relative_to(REPO_ROOT).as_posix() for path in _population(REPO_ROOT)}
     schema = json.loads(_SCHEMA.read_text(encoding="utf-8"))
     phase_a_dates = _A_EXIT_DATE.findall(_exit_row("A"))
-    demonstration_owed = _B_DEMONSTRATION_OWED in _exit_row("B")
+    phase_b_dates = _B_EXIT_DATE.findall(_exit_row("B"))
     this_test = test_the_readmes_shipped_phase_claims_match_system_capabilities_and_the_cli
 
     unread = [
@@ -194,9 +197,10 @@ def test_the_readmes_shipped_phase_claims_match_system_capabilities_and_the_cli(
         f"README.md dates Phase A's exit {_README_A_DATE.findall(paragraph)}; "
         f"the roadmap records {phase_a_dates}"
     )
-    assert (_B_NOT_RUN in paragraph) == demonstration_owed, (
-        f"README.md says B's exit demonstration is {_B_NOT_RUN!r}: {_B_NOT_RUN in paragraph}; "
-        f"the roadmap's Phase B exit row carries {_B_DEMONSTRATION_OWED!r}: {demonstration_owed}"
+    assert len(phase_b_dates) == 1, f"the roadmap's Phase B exit row dates {phase_b_dates}"
+    assert _README_B_DATE.findall(paragraph) == phase_b_dates, (
+        f"README.md dates Phase B's exit demonstration {_README_B_DATE.findall(paragraph)}; "
+        f"the roadmap records {phase_b_dates}"
     )
     assert frozenset(schema["properties"]["capabilities"]["properties"]) == _SCHEMA_FLAGS
     assert node_ids == [
