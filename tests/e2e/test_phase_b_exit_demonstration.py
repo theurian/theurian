@@ -22,7 +22,7 @@ import os
 import shutil
 import subprocess
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -87,10 +87,9 @@ GIT_IDENTITY = (
 @dataclass(frozen=True)
 class Project:
     root: Path
-    remote: Path
-    env: dict[str, str]
+    env: dict[str, str] = field(repr=False)
     port: int
-    token: str
+    token: str = field(repr=False)
 
     def cli(self, *args: str) -> dict[str, Any]:
         assert THEURIAN is not None
@@ -160,7 +159,7 @@ def project(tmp_path: Path) -> Iterator[Project]:
     root.mkdir()
     remote = tmp_path / "remote.git"
     env = _isolated_env(tmp_path)
-    stub = Project(root, remote, env, port=0, token="")
+    stub = Project(root, env, port=0, token="")
 
     stub.git("init", "-q", "--bare", "-b", "main", str(remote))
     stub.git("init", "-q", "-b", "main")
@@ -176,11 +175,8 @@ def project(tmp_path: Path) -> Iterator[Project]:
     stub.cli("index", "build", "--json")
 
     assert THEURIAN is not None
-    with serve_daemon(THEURIAN, root, env, tmp_path / "data", tmp_path / "daemon.log") as (
-        port,
-        token,
-    ):
-        yield Project(root, remote, env, port, token)
+    with serve_daemon(THEURIAN, root, env, tmp_path / "daemon.log") as (port, token):
+        yield Project(root, env, port, token)
 
 
 def _structured(result: dict[str, Any]) -> dict[str, Any]:
@@ -229,17 +225,8 @@ def test_a_proposed_item_is_served_once_a_human_merges_and_applies_it(project: P
 
         project.human_cycle(proposal["proposalId"])
 
-        got = _structured(
-            client.call(
-                "knowledge.get", {"projectId": project_id, "itemId": "architecture.retry-policy"}
-            )
-        )
-        found = _structured(
-            client.call(
-                "knowledge.search",
-                {"projectId": project_id, "query": "retry attempts jittered backoff"},
-            )
-        )
+        got = _structured(client.call("knowledge.get", item))
+        found = _structured(client.call("knowledge.search", query))
 
     assert got["status"] == "approved"
     assert [hit["itemId"] for hit in found["results"]] == ["architecture.retry-policy"]

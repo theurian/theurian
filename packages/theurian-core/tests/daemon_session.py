@@ -1,6 +1,7 @@
 """A real daemon on a free port and a plain Streamable HTTP MCP client, shared by
 the e2e modules that drive the wire -- extracted here rather than copied per
-module, as ``packages/theurian-core/tests/mcp_wire_session.py`` was."""
+module, following the precedent of ``packages/theurian-core/tests/mcp_wire_session.py``,
+which was extracted for the same reason."""
 
 from __future__ import annotations
 
@@ -43,9 +44,11 @@ def health(port: int) -> dict[str, Any] | None:
 
 @contextmanager
 def serve_daemon(
-    theurian: str, root: Path, env: dict[str, str], data_dir: Path, log: Path
+    theurian: str, root: Path, env: dict[str, str], log: Path
 ) -> Iterator[tuple[int, str]]:
-    """``theurian daemon start --foreground`` on a free port; yields ``(port, token)``."""
+    """``theurian daemon start --foreground`` on a free port; yields ``(port, token)``.
+
+    The token is read from ``env["THEURIAN_DATA_DIR"]``, the directory the daemon uses."""
     port = free_port()
     with log.open("wb") as sink:
         process = subprocess.Popen(  # noqa: S603
@@ -66,7 +69,7 @@ def serve_daemon(
         else:
             pytest.fail(f"daemon did not become healthy in time: {log.read_text()}")
 
-        yield port, (data_dir / "auth" / "mcp-token").read_text().strip()
+        yield port, (Path(env["THEURIAN_DATA_DIR"]) / "auth" / "mcp-token").read_text().strip()
     finally:
         process.terminate()
         try:

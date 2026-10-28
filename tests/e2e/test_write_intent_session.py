@@ -280,7 +280,7 @@ def running_daemon(tmp_path: Path) -> Iterator[Daemon]:
     )
     cli("review", "build", "--json")
 
-    with serve_daemon(THEURIAN, root, env, data_dir, tmp_path / "daemon.log") as (port, token):
+    with serve_daemon(THEURIAN, root, env, tmp_path / "daemon.log") as (port, token):
         yield Daemon(port, token, root, fix_commit)
 
 
