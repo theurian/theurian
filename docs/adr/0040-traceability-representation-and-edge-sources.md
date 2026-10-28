@@ -47,9 +47,9 @@ this record.
 
 ### What exists
 
-1. *(dated)* **The dogfood corpus has 26 items, 24 of them ADR twins, against
+- **F1.** *(dated)* **The dogfood corpus has 26 items, 24 of them ADR twins, against
    40 ADR files.** The twins anchor ADR-0001 to ADR-0024; ADR-0025 to ADR-0040
-   have no item.
+   have no twin.
 
    ```sh
    # 26 unique item ids created
@@ -67,10 +67,11 @@ this record.
    git ls-tree --name-only 5ad30799 docs/adr/ | grep -c -E '/[0-9]{4}-'
    ```
 
-2. *(dated)* **The corpus holds no relation and no specification.** The op key
+- **F2.** *(dated)* **The corpus holds no relation and no specification.** The op key
    prints two lines, `58 op: createItem` and `58 op: upsertRevision`: 0
-   `addRelation`, 0 `deprecateItem` and 0 `registerSpecification`. Those two are
-   the only operations that write a relation row — the engine's two
+   `addRelation`, 0 `deprecateItem` and 0 `registerSpecification`.
+   `addRelation` and `deprecateItem` are the only operations that write a
+   relation row — the engine's two
    `writer.add_relation(` calls, `application/migration_engine.py:506` for
    `deprecateItem`'s `supersededBy` and `:522` for `addRelation` — so the
    dogfood state holds no relation row.
@@ -80,8 +81,8 @@ this record.
    git grep -n 'writer.add_relation(' 5ad30799 -- packages/theurian-core/src
    ```
 
-3. *(dated)* **`scope.paths` does not discriminate between modules.** Of the 58
-   revisions (item 2), 56 carry `scope.paths`, and their sorted glob sets take
+- **F3.** *(dated)* **`scope.paths` does not discriminate between modules.** Of the 58
+   revisions (F2), 56 carry `scope.paths`, and their sorted glob sets take
    exactly three values: 48 `packages/theurian-core/**`, 7 `'**'` (quoted so in
    the YAML) and 1 `plugins/**`. None names a module or a file. A module under
    `packages/theurian-core/` matches 55 of the 56 (48 + 7).
@@ -92,7 +93,7 @@ this record.
      | python3 -c 'import re,sys,collections; print(collections.Counter(tuple(sorted(g.strip()[2:] for g in m.split("\n") if g.strip())) for m in re.findall(r"\n\s+scope:\n\s+paths:\n((?:\s+- .*\n)+)", sys.stdin.read())))'
    ```
 
-4. *(dated)* **No commit on `main` carries a `Refs:` trailer; 380 lines of its
+- **F4.** *(dated)* **No commit on `main` carries a `Refs:` trailer; 380 lines of its
    history mention an ADR number.** The first key prints 0. The second counts
    *lines*, not commits: a commit naming two ADRs on one line counts once, on
    two lines twice.
@@ -102,7 +103,7 @@ this record.
    git log 5ad30799 --format='%H %B' | grep -c -E 'ADR-[0-9]{4}'
    ```
 
-5. *(dated)* **No adapter implements the edge port.** `CanonicalStore` declares
+- **F5.** *(dated)* **No adapter implements the edge port.** `CanonicalStore` declares
    `add_traceability_edge` and `list_traceability_edges`
    (`domain/ports/canonical_store.py:371`, `:373`). The key prints nothing;
    without its `grep -v` it prints those two port lines, which is its positive
@@ -113,20 +114,24 @@ this record.
      -- packages/theurian-core/src | grep -v ports/
    ```
 
-6. **The table and the version check.** *(dated)* `traceability_edges`
+- **F6.** **The table and the version check.** *(dated)* `traceability_edges`
    (`infrastructure/sqlite/schema.py:386-398`) has no `source_commit` column, and
    `SCHEMA_VERSION` is 4 (`schema.py:58`). *(standing)* `is_supported` returns
    `schema_version == SCHEMA_VERSION` (`schema.py:468`) — "deliberately no
-   compatibility window" (ADR-0017) — and the state database's opener calls it
-   through `_assert_schema_version` (`infrastructure/sqlite/connection.py:980`),
-   whose only read is `schema_metadata`'s `schema_version`.
+   compatibility window" (ADR-0017). `_connect` opens a state database in
+   three places (`infrastructure/sqlite/connection.py:1044`, `:1069`, `:1415`):
+   `create_database`, which writes the DDL into a new file, and the two openers
+   of an existing one, `open_read_connection` and the write transaction's. Both
+   run `_prepare` (`:1046`, `:1417`), whose `_assert_schema_version` (`:980`)
+   reads `schema_metadata`'s `schema_version` and nothing else before refusing a
+   mismatch.
 
    ```sh
-   git grep -n -E '^SCHEMA_VERSION|return schema_version == SCHEMA_VERSION|_assert_schema_version\(' \
+   git grep -n -E '^SCHEMA_VERSION|return schema_version == SCHEMA_VERSION|_assert_schema_version\(|_prepare\(connection|_connect\(database_path' \
      5ad30799 -- packages/theurian-core/src/theurian/infrastructure/sqlite
    ```
 
-7. *(standing)* **An `addRelation` endpoint is always an item id.**
+- **F7.** *(standing)* **An `addRelation` endpoint is always an item id.**
    `$defs/opAddRelation` requires `sourceItemId` and `targetItemId`, each a
    `$ref` to `#/$defs/itemId`, and sets `additionalProperties: false`, so a
    module cannot be an endpoint of a migration-declared relation.
@@ -135,11 +140,12 @@ this record.
    git show 5ad30799:schemas/migrations/migration.schema.json | python3 -c 'import json,sys; d=json.load(sys.stdin)["$defs"]["opAddRelation"]; print(d["required"], d["properties"]["sourceItemId"], d["properties"]["targetItemId"], d["additionalProperties"])'
    ```
 
-8. **INV-6 is declared and not enforced, and three records disagree on its
+- **F8.** **INV-6 is declared and not enforced, and three records disagree on its
    set.** *(dated)* `KnowledgeRelation.must_be_acyclic` (`domain/knowledge.py:470`)
    has no caller in `src`: the key prints nothing, and the same key over
-   `packages/theurian-core/tests` prints `test_domain_invariants.py:342`, its
-   positive control. The three sets: `docs/architecture/requirements-analysis.md:1027`
+   `packages/theurian-core/tests` prints two lines, the call at
+   `test_domain_invariants.py:342` and a docstring at
+   `test_adr_0038_claims.py:172`, its positive control. The three sets: `docs/architecture/requirements-analysis.md:1027`
    says `supersedes`; `ACYCLIC_RELATIONS` (`domain/enums.py:104`) holds
    `supersedes`, `superseded_by` and `depends_on`; `docs/roadmap.md:604` says
    `supersedes` and `depends_on`.
@@ -148,18 +154,19 @@ this record.
    git grep -n -E '\.must_be_acyclic([^a-z_]|$)' 5ad30799 -- packages/theurian-core/src
    ```
 
-9. *(dated)* **`TraceNodeType` has 12 members and no `commit`**
+- **F9.** *(dated)* **`TraceNodeType` has 12 members and no `commit`**
    (`domain/enums.py:160-174`), and ADR-0039 never names it:
    `git show 5ad30799:docs/adr/0039-closed-set-extension-compatibility.md | grep -c TraceNodeType`
    prints 0. `TraceabilityEdge.relation_type` is typed `str`
    (`domain/specification.py:88`).
-10. *(dated)* **`ingest` reads no Git history and writes no state.** Its
+- **F10.** *(dated)* **`ingest` reads no Git history and writes no state.** Its
     docstring (`cli/commands.py:3246`) names `.theurian/cache/ingestion.json` as
     the only file written. Its Git reads are `current_commit` and
     `repository_url` (`cli/commands.py:3316-3317`), which run `git rev-parse
     HEAD` and `git remote get-url origin` (`cli/context.py:84`, `:115`). The only
     `git log` invocations in `src` are the two adapters under
-    `infrastructure/git/`. The state database, where `traceability_edges` lives,
+    `infrastructure/git/`, imported by `cli/findings_commands.py` and
+    `mcp/tools.py` and not by `ingest`. The state database, where `traceability_edges` lives,
     is created on the `migrate apply` path (`cli/migration_pipeline.py:211`,
     `:374`; `cli/commands.py:2657`).
 
@@ -167,9 +174,9 @@ this record.
     git grep -n -E '"log",' 5ad30799 -- packages/theurian-core/src
     ```
 
-11. *(dated)* **`system.capabilities` publishes `"traceability": False`**,
+- **F11.** *(dated)* **`system.capabilities` publishes `"traceability": False`**,
     hard-coded at `mcp/tools.py:3325`.
-12. *(dated)* **The relation gate reads each endpoint non-resolving and
+- **F12.** *(dated)* **The relation gate reads each endpoint non-resolving and
     body-free.** `_relation_is_visible` (`mcp/tools.py:1124`) reads both
     endpoints through `get_item_exact_metadata`
     (`infrastructure/sqlite/store.py:516`), whose `_ITEM_METADATA_SQL`
@@ -184,8 +191,9 @@ this record.
   list only, so nothing makes a label unique across items. A label's grammar is a
   string of at most 64 characters, so `adr-0040` is both a valid label and a
   valid item id.
-- *(dated)* **The state hash is computed on every CLI command and reads no Git
-  today.** `resolve_context` computes it (`cli/context.py:262`) from the
+- *(dated)* **The state hash is computed by every CLI command that resolves a
+  project, and reads no Git today.** `resolve_context` computes it
+  (`cli/context.py:262`) from the
   migrations, their body checksums, `SCHEMA_VERSION` and
   `MIGRATION_ENGINE_VERSION` (`domain/state.py:47-54`). Search compares a
   published index build's recorded hash against the current one and labels the
@@ -225,8 +233,8 @@ migration operation and no new closed-set member**: `CODE`, `KNOWLEDGE` and
 — this source moves neither.
 
 **Main has no `Refs:` trailer today (F4), so recorded edges begin at the
-convention's first commit, and nothing collected before it.** A trace response
-claims no coverage of the history before that commit or after it (decision 7).
+convention's first commit.** No commit before it carries anything to collect, and
+a trace response claims no coverage (decision 7).
 
 **`related_to`, not `constrained_by`.** The declaration is made once per commit
 and projected onto every path the commit changed. `constrained_by` would assert,
@@ -249,7 +257,7 @@ and are out of scope.
 | | Source | Measured | Verdict |
 | :-- | :-- | :-- | :-- |
 | (i) | `Refs: <item id>` trailer | 0 lines on `main` (F4) | **Chosen.** Explicit, per commit, reaches a path |
-| (ii) | Prose mentions in commit messages, `ADR-NNNN` | 380 lines (F4) | **Rejected.** Roadmap §10 names false traceability the product's largest risk, and a mention is not a declaration: a message saying "unlike ADR-0007" mentions it. A mention names an ADR number, which needs resolving to an item (decision 3), and 16 of 40 ADRs have no item (F1). If ever added, it is a distinct source, with a published confidence below 1.0 and field names that keep it apart from *recorded* edges |
+| (ii) | Prose mentions in commit messages, `ADR-NNNN` | 380 lines (F4) | **Rejected.** Roadmap §10 names false traceability the product's largest risk, and a mention is not a declaration: a message saying "unlike ADR-0007" mentions it. A mention names an ADR number, which needs resolving to an item (decision 3), and 16 of 40 ADRs have no twin (F1). If ever added, it is a distinct source, with a published confidence below 1.0 and field names that keep it apart from *recorded* edges |
 | (iii) | Hand-authored `addRelation` migrations | 0 in the corpus (F2) | **Rejected.** Item to item only (F7). Reaching a module needs either a new operation — an `apiVersion` bump under ADR-0039 decision 3, and an owner decision — or modules entered as items, which is a new `kind`, additive under ADR-0039 decision 2 but due only after [#849](https://github.com/theurian/theurian/issues/849) and [#853](https://github.com/theurian/theurian/issues/853), and a governed item per module. `addRelation` rows stay item-to-item edges that `knowledge.trace` walks (decision 7) |
 | (iv) | `scope.paths` globs | 55 of 56 match any core module (F3) | **Rejected.** An edge from every core module to nearly every item says nothing. It stays a candidate source once the corpus's globs are module-level |
 
@@ -266,19 +274,19 @@ determined by the migrations and that commit, and ADR-0016 already refuses a
 database whose key does not describe its contents. That commit is §6 principle
 2's "commit it was measured against", recorded with the state (decision 4) and
 reported by every trace response (decision 7). It is `HEAD` rather than a digest
-of the collected edges because the hash is computed on every CLI command (*Two
-further facts*): `HEAD` is one `git rev-parse HEAD`, which `current_commit`
-already runs (`cli/context.py:81-93`), and a digest of the edges would need the
-whole walk on every command. This changes ADR-0016 decision 4: Git is now
-consulted for one value.
+of the collected edges because every command that resolves a project computes
+the hash (*Two further facts*): `HEAD` is one `git rev-parse HEAD`, which
+`current_commit` already runs (`cli/context.py:81-93`), and a digest of the edges
+would need the whole walk in each of those commands. This changes ADR-0016 decision 4: Git is now
+consulted for `HEAD`, and on a shallow clone for its boundary.
 
 **The walk is deterministic, so one hash cannot name two edge sets.**
 
 - `--no-renames`: rename detection depends on `diff.renames` and similarity
   thresholds, which are local configuration. A renaming commit yields edges from
   both the old and the new path.
-- The hardening ADR-0029's trailer reader already applies
-  (`infrastructure/git/trailer_source.py`): no replace objects, inherited
+- The hardening ADR-0029's trailer reader already applies (its Amendment 1,
+  D7; `infrastructure/git/trailer_source.py`): no replace objects, inherited
   `GIT_*` overrides stripped, `log.showSignature` off, NUL-framed records, and a
   commit message that is not UTF-8 contained to its own record (#496). A path
   git emits that is not UTF-8 is not collected, by the same rule.
@@ -286,8 +294,8 @@ consulted for one value.
   the item id; the committer date — never from the engine's clock or an id
   generator. The evidence's required `source_uri` derives from the commit and
   the path, never from `git remote get-url origin`, which differs between
-  clones and prints a filesystem path for a local remote, the class
-  GHSA-923w-f36f-jcfq keeps off the wire.
+  clones and prints a filesystem path for a local remote — an operator's
+  layout, the class GHSA-923w-f36f-jcfq closed in MCP error responses.
 - A failure to read `HEAD`, a walk that fails or times out, and a stream the
   framing cannot read refuse the build. None of them degrades to "no edges",
   because then one hash would name two contents. `current_commit` returns `None`
@@ -329,7 +337,8 @@ whether that command had run.
 
 - **Extraction is ADR-0029's rule.** A `Refs:` trailer is a line of the whole
   commit message, subject included, that begins at column 0 with exactly
-  `Refs: ` — ADR-0029 D1's rule, which `keyed_lines` implements — so one placed
+  `Refs: ` — ADR-0029 Amendment 1's D1, which `keyed_lines`
+  (`domain/review_finding.py:293`) implements for `Review-Finding:` — so one placed
   above the `Signed-off-by:` paragraph is read, and an indented or quoted one is
   not. Its value is the rest of that one physical line with surrounding ASCII
   whitespace removed. One item per line; a commit naming two items carries two
@@ -354,8 +363,9 @@ whether that command had run.
   edge table itself would vary with withheld content. The per-hop gate withholds
   a missing endpoint (decision 6), so a recorded edge to an absent id surfaces
   exactly what one to a withheld item does: nothing. And a dropped declaration
-  is an edge the contributor believes exists; a recorded one starts to surface
-  at the first build in which its item exists, with no rewrite of history.
+  is an edge the contributor believes exists; a recorded one starts to surface,
+  through the gate, at the first build in which its item exists, with no
+  rewrite of history.
   **Observable consequence:** no `knowledge.trace` response shows such an edge,
   counts it, or gives it a slot. The build report counts, per commit, recorded
   edges whose item endpoint named no item at that build — a CLI surface read by
@@ -387,9 +397,9 @@ compare, and a later source may carry evidence from several commits while
 none (decision 2), and whether the walk ended at a shallow boundary.
 
 These are DDL changes, so `SCHEMA_VERSION` goes from 4 to 5. Under the exact
-match (F6), a v4 build and a v5 database refuse each other — and a v5 build and
-a v4 database — per database, at open, in `_assert_schema_version`, before any
-row other than `schema_metadata`'s is read. That is the shape
+match (F6), a v4 build refuses a v5 database and a v5 build a v4 one, per
+database, at open, in `_assert_schema_version`, before any row other than
+`schema_metadata`'s is read. That is the shape
 [#853](https://github.com/theurian/theurian/issues/853) requires: decided per
 database, never per row. `SCHEMA_VERSION` is also a state-hash input
 (`domain/state.py`), so on the build path a v5 Core never selects a v4
@@ -532,22 +542,23 @@ through the gate.
 
 `knowledge.trace`'s edge-type, direction and node-type parameters are typed `str`
 in the handler and parsed by `_closed_value` (`mcp/tools.py:1253`), never
-annotated with a `Literal` or an enum. An annotation is what makes the MCP SDK
-publish an `enum` in the served input schema, which is
-[#856](https://github.com/theurian/theurian/issues/856)'s trigger; a string
-whose description names the set keeps a new member off the wire contract, as
-ADR-0039 decision 9's ground requires. The response publishes node and relation
+annotated with a `Literal` or an enum. An annotation reaches the input schema
+the SDK serves for the tool, the form
+[#856](https://github.com/theurian/theurian/issues/856) records ADR-0039's
+tripwires missing; a `str` whose description names the set keeps a new member
+off the wire contract, as ADR-0039 decision 9's ground requires. The response publishes node and relation
 types as strings for the same reason.
 
 **`TraceNodeType` joins ADR-0039's governed sets, as a vocabulary set,**
 because #1034 makes it wire-visible and #1033 stores it in the derived state —
 the two faces ADR-0039 governs for `kind` and `relationType`. Its publication is
-the trace wire and the state, not the migration format, so ADR-0039 decisions 2,
-4, 7 and 9 apply to it, and decisions 3 and 5, which are about `apiVersion`, do
-not: no migration names a node type. Adding a member is a Core MINOR, and #853's
+the trace wire and the state, not the migration format, so ADR-0039 decision 2's
+additive rule, decision 7 on reordering and decision 9's ground apply to it, and
+decisions 3 and 5, which are about `apiVersion`, do not: no migration names a
+node type. Adding a member is a Core MINOR, and #853's
 per-database check is due before the first new member, as it is for `kind` and
-`relationType`. ADR-0039 decision 1's "eight entries" becomes nine (*Compliance*,
-Still owed item 1).
+`relationType`. ADR-0039 decision 1's "eight entries" becomes nine, an
+amendment owed there (*Compliance*, Still owed item 1).
 
 ### 9. The disclosure families of a graph response
 
@@ -564,10 +575,11 @@ read of `knowledge_items` on the trace path is the per-hop gate's read
 `knowledge_relations` row is gated on both endpoints before it reaches a count,
 a slot or a field, and a row naming W fails the gate in A and does not exist in
 B. Every limit and count is taken after the gate (decision 7). So every
-published value is a function of rows that are identical in A and B. **The gate
-does not hold three families, and the table names what does:** the time and the
-rows spent reading and dropping (rows 3 and 6), and a decode that runs before
-the gate decides (row 9).
+published value is a function of rows that are identical in A and B. That
+argument holds rows 1, 2, 4, 5 and 7. **It does not cover four families, and the
+table names what does:** the time and the rows spent reading and dropping (rows
+3 and 6), which state a request reads (row 8), and a decode that runs before the
+gate decides (row 9).
 
 | # | Family | Its face in a trace response | Held by | #1034's test, by role |
 | --: | :-- | :-- | :-- | :-- |
@@ -588,8 +600,9 @@ the gate decides (row 9).
 - **The exit demonstration needs no new operation, no new member and no
   `apiVersion` bump** (decision 1). AC: `git diff origin/main...HEAD -- schemas`
   is empty for this record.
-- **The edge table cannot vary with withheld content** (decision 3(b)), so six
-  of decision 9's nine families close at one gate, and the other three are named.
+- **The edge table cannot vary with withheld content** (decision 3(b)), so five
+  of decision 9's nine families close on one argument over one gate, and the
+  other four are named with what holds them.
 - **A mistyped or early declaration costs nothing at read time** and starts to
   surface when its item exists.
 
@@ -598,14 +611,15 @@ the gate decides (row 9).
 - **Coverage starts at zero.** No commit on `main` carries a trailer (F4), and
   no edge is recorded for anything before the convention's first commit. The 380
   lines that mention an ADR are not collected.
-- **ADR-0025 to ADR-0040 have no item (F1).** A trailer naming one of them names
+- **ADR-0025 to ADR-0040 have no twin (F1).** A trailer naming one of them names
   nothing until a migration creates its twin, and is recorded and inert until
   then (decision 3(b)). #1033 plans a squash body carrying `Refs:` with
   ADR-0040's item id; that item does not exist at `5ad30799`. #1035's
   demonstration needs a trailer naming one of the 24 twins, or a twin created
   first.
 - **Every commit moves the state hash** (decision 2). After any commit,
-  `theurian project status` shows `stateHash` and `activeStateHash` differing
+  `theurian project status` (`cli/commands.py:1955`) shows `stateHash` and
+  `activeStateHash` differing
   until the next `migrate apply`, even when the commit touched no migration and
   carried no trailer; after that apply, the published index build reads stale
   (*Two further facts*) until it is rebuilt. Read from source, not run. #1033
@@ -642,7 +656,7 @@ the gate decides (row 9).
 | **`constrained_by`** as the relation | Projects a commit-level declaration onto every changed path as a per-path constraint (decision 1) |
 | **A `commit` `TraceNode`**, with edges path → commit → item | A new `TraceNodeType` member, so #853 first (decision 8); two hops per declaration against the four-hop depth limit; and the commit is what measured the edge, not what the edge is about |
 | **Collect in `ingest`**, as the roadmap row planned, **or in a new command** | `ingest` writes no state (F10); either gives the state database an optional second writer under a hash that covers `HEAD` (decision 2) |
-| **Hash a digest of the collected edges** instead of `HEAD` | The hash is computed on every CLI command, and the digest needs the whole walk each time (decision 2) |
+| **Hash a digest of the collected edges** instead of `HEAD` | Every command that resolves a project computes the hash, and the digest needs the whole walk each time (decision 2) |
 | **Keep the edges in a database of their own**, keyed by `HEAD`, as the index is kept apart ([ADR-0022](0022-index-lives-in-its-own-database.md)) | It would leave ADR-0016 decision 4 and the index's freshness untouched, at the price of a trace reading two databases built at different moments: the per-hop gate would judge an edge from one state against items from another, and family 8 would hold two pointers instead of one |
 | **Resolve an alias or label at collection**, ADR-0038 decision 2's form | Labels name no single item, an alias's target moves with later migrations, and resolution reads canonical rows into the collector (decision 3) |
 | **Drop a valid id that names no item** | The edge table would vary with withheld content, and the declaration would vanish silently (decision 3(b)) |
@@ -673,7 +687,7 @@ Rests on enforcement that already holds:
   `get_item_exact_metadata` (F12), the read decision 6 extends to every hop.
 - **The exact-match open** (F6), which decision 4's v4/v5 refusal is.
 - **ADR-0029's trailer extraction and hardening** (`keyed_lines`, the
-  sanitized child environment), which decision 2 and 3 reuse.
+  sanitized child environment), which decisions 2 and 3 reuse.
 - **`_closed_value`**, the parse decision 8 requires.
 
 Still owed, with the issue or slice that will satisfy it:
