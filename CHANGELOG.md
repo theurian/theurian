@@ -20,9 +20,9 @@ which slice B5 already met
 ([ADR-0033](docs/adr/0033-knowledge-candidate-generation.md)), and "a
 demonstration of propose → PR → merge → apply from both Claude Code and Codex
 (or any plain MCP client)". **The demonstration closed it.** On 2026-10-22, at
-`61dfe00e`, a plain Streamable HTTP MCP client drove both draft-producing tools
-against a real daemon — `knowledge.proposeChange` adding an item and
-`knowledge.generateMigrationDraft` deprecating one — each through
+`61dfe00e`, a plain Streamable HTTP MCP client drove two of the three
+write-intent tools against a real daemon — `knowledge.proposeChange` adding an
+item and `knowledge.generateMigrationDraft` deprecating one — each through
 `theurian propose accept`, a branch pushed to a bare remote,
 `git merge --no-ff`, `migrate apply` and `index build`. The new item was then
 served approved and the deprecated one refused. The run record is
@@ -35,10 +35,15 @@ What it does not mean:
   live run waits on an operator's installed daemon carrying the write tools,
   core 0.3.0 or later.
 - **No Codex run.**
+- **No cycle for the third write-intent tool.**
+  `review.generateKnowledgeCandidate`'s proposal was not taken through
+  accept → merge → apply.
 - **No forge pull request.** The PR leg was a local `merge --no-ff`, which
   suffices because Theurian observes nothing of the merge:
   [ADR-0034](docs/adr/0034-migrate-apply-enforces-the-merge.md) enforces the
   commit only, and T-15 records the merge as its residual.
+- **Phase B's open security issues are not closed by it.** #332, #333, #575,
+  #702 and #968 were open under `phase-b` on 2026-10-22 and stay open.
 
 The open `phase-b` issues move to dispositions after this merges.
 

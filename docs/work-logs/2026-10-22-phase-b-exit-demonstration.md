@@ -76,7 +76,10 @@ manager.
 | s99 | daemon stop | SIGTERM to pid 3214 | return code -15 |
 
 **Verdict: the demonstration completes end to end from a plain MCP client, for
-both draft-producing tools.** No step needed a fix to complete.
+two of the three write-intent tools, `knowledge.proposeChange` and
+`knowledge.generateMigrationDraft`.** No step needed a fix to complete. The
+third, `review.generateKnowledgeCandidate`, was listed (s4) but not called, so
+its proposal was not taken through accept → merge → apply.
 
 ## The PR leg: a local merge, and why it suffices
 
@@ -90,8 +93,12 @@ checks that the merge happened";
 only that a migration is committed at `HEAD`; and
 [T-15](../security/threat-model.md) records the merge as its residual. A bare
 remote and `merge --no-ff` therefore exercise every Theurian step the row names,
-and a forge pull request would add no outcome Theurian can observe. The owner
-may still ask for a forge-PR variant on a scratch repository.
+and a forge pull request would change no gated outcome: no gate on this cycle,
+`propose accept`'s or `migrate apply`'s, reads the merge or the remote. A forge
+remote would change the `repositoryUrl` that `project register` and
+`migrate apply` record from `origin`, which nothing gates on. This is a reading
+of the source at `61dfe00e`; no test pins it. The owner may still ask for a
+forge-PR variant on a scratch repository.
 
 ## The three client legs
 
@@ -109,6 +116,14 @@ may still ask for a forge-PR variant on a scratch repository.
   forbid. This is an operator matter, not a repository gap.
 - **Codex: not run.** `codex exec` returned 400 on the owner's account when
   last tried (recorded 2026-10-21), and it was not re-tried for this run.
+
+**That the plain-client leg meets the row is the `watchdog` agent's ruling**,
+made on 2026-10-22 when it acknowledged this record's definition of ready: the
+plain client is done, Claude Code is the same wire calls with a live leg left
+as an operator item, and Codex is blocked on the owner's account. Its
+reasoning: Theurian observes nothing of the merge, and the row's "(or any plain
+MCP client)" clause admits a plain client, so "the criterion is the roadmap's
+own, met by measurement". The owner was informed.
 
 ## Observations, each with a disposition
 
@@ -144,16 +159,25 @@ into `main`, pushes `main`, and runs `migrate apply` and `index build`.
   item through `get` and `search` as a positive control. Afterwards it asserts
   that `get` errors with and without `includeUnapproved`, that `search` no
   longer returns the item, and that `knowledge.status`'s `itemCount` dropped by
-  one. The withdrawal does not wait for the `index build` after the apply:
-  `migrate apply` publishes a purged build in the same command (s11,
-  `indexPurge` `published: true`, `removed: 1`;
-  [ADR-0024](../adr/0024-a-purge-is-a-build.md) decision 5).
+  one. These hold through the serve-time gate, not the index: `get` refuses, and
+  `search` drops from whatever the index returns, an item that fails
+  `may_surface` against canonical state (SEC-13; `mcp/tools.py:2364-2367` and
+  `application/visibility.py:424` at `61dfe00e`), and `itemCount` is read from
+  the state. The run observed `migrate apply` publish a purged build in the same
+  command (s11, `indexPurge` `published: true`, `removed: 1`;
+  [ADR-0024](../adr/0024-a-purge-is-a-build.md) decision 5), but this test does
+  not hold it: with the purge disabled in `src/`, round one's adversarial review
+  found it still GREEN, `search` answering `results: []`, `stale: true`,
+  `mode: "none"`, an empty answer the non-membership assertion passes. A
+  regression of the same-command purge would not redden it.
 
 It does not repeat everything the run did. It runs no `setup --dry-run`,
 `tools/list`, `system.capabilities`, `migrate validate` or `git diff --stat`. It
 asserts that `get` errors, not the refusal's text. It also checks one thing the
 run did not: before the human cycle, `get` errors and `search` returns no hit
-for the proposed item.
+for the proposed item. It pushes a branch, merges it `--no-ff` and pushes
+`main`, but asserts only that each of those git steps exits 0: no assertion
+reads the remote or checks that a merge happened.
 
 core.yml's `e2e` job runs it with `pytest tests/e2e -m e2e` on ubuntu-latest
 and macos-latest, and fails on a skip. That workflow runs only on the pushes to
