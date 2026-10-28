@@ -472,11 +472,12 @@ distinguishing information is about material the caller has not been granted.
 > store, a cache file or a ref directly can forge any answer, and no read-side check closes that.
 > Two documented features are not yet neutralised and are tracked: a working-tree clean filter on
 > the committed check (#1015) and, below git 2.45, the fetch child's reading of repository config
-> (#1016). Decision 5's duration bind gains an exception: below git 2.45, in any repository with a
-> promisor remote configured (source read), git starts fetch children, refused at transport: none
-> for an object held, one for a tree a `tree:0` clone lacks, two for a commit only a `blob:none`
-> clone's remote holds (simulated on git 2.47.1 and 2.54.0 by withholding `GIT_NO_LAZY_FETCH`; no
-> older git was run), pinned on 2.45+ by the `[git_below_2_45]` rows of
+> (#1016). Decision 5's duration bind gains an exception: on a git that ignores `GIT_NO_LAZY_FETCH`
+> (below 2.45, bar the v2.44.1 and v2.39.4 maintenance releases; source read), in any repository
+> with a promisor remote configured (source read), git starts fetch children, refused at transport:
+> none for an object held, one for a tree a `tree:0` clone lacks, two for a commit only a
+> `blob:none` clone's remote holds (simulated on git 2.47.1 and 2.54.0 by withholding
+> `GIT_NO_LAZY_FETCH`; no older git was run), pinned on 2.45+ by the `[git_below_2_45]` rows of
 > `test_git_ambient_state_fix_commit.py` and `test_committed_migration_check_adapter.py`.
 
 The residual is stated rather than implied: a **hand-authored stored record**

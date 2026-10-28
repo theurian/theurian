@@ -43,8 +43,9 @@ exit 0, path is an entry      ``VERIFIED``
 exit 0, path is not an entry  ``TOUCHES_NOTHING_HERE``
 ============================  =================================================
 
-The adapter spawns one process for every admitted input; below git 2.45, in any repository with a
-promisor remote configured (source read), git's own fetch children add 0, 1 or 2 more, refused at
+The adapter spawns one process for every admitted input; on a git that ignores ``GIT_NO_LAZY_FETCH``
+(below 2.45, bar the v2.44.1 and v2.39.4 maintenance releases; source read), in any repository with
+a promisor remote configured (source read), git's own fetch children add 0, 1 or 2 more, refused at
 transport: decision 5's recorded duration exception, counted in ADR-0033's #981 amendment.
 
 **The verdict is byte-membership over git's machine output -- no rendering is
@@ -198,7 +199,7 @@ decides a promotion signal and letting an inherited ``PATH`` choose the
 executable that answers it is the shape that clause refuses. It reaches no
 network -- ``log`` reads local object storage, names no remote and takes no
 URL; ``environment.py``'s child environment disables lazy fetch where git honours it and refuses
-every transport; below git 2.45 the fetch-child exception above applies (#981). It is on
+every transport; where git ignores it, the fetch-child exception above applies (#981). It is on
 ``PROCESS_SPAWN_SITES`` because it spawns a process.
 """
 
