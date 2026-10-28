@@ -491,6 +491,8 @@ change from one written after it.
    `SpecificationStatus` — leaves Core's writers with its entity under #841. The
    version constant, `apiVersion`, is what the other classes move or do not
    move.
+   *Amended in Amendment 1 (ADR-0040):* nine entries — the eight in the table
+   and `TraceNodeType`, a vocabulary set the migration format does not publish.
 2. **Adding a vocabulary member is additive.** No `apiVersion` bump and no
    `protocolVersion` bump; it is a Core MINOR, recorded under the CHANGELOG's
    `Added` naming the first Core version that reads it. An older Core keeps
@@ -839,3 +841,20 @@ Still owed, with the issue or slice that will satisfy it:
 6. **Roadmap §9 candidate 2's ADR**: its effect on `protocolVersion`, since the
    `status` enum it would move and `itemsByStatus`'s key set are published
    (decision 8).
+
+## Amendment 1 — `TraceNodeType` is a ninth governed set (2026-10-28, ADR-0040, PR #1036)
+
+> **This is an append-only amendment.**
+> [ADR-0040](0040-traceability-representation-and-edge-sources.md) decision 8
+> adds `TraceNodeType` (12 members at `5ad30799`) as a vocabulary set, because
+> #1034 makes it wire-visible and #1033 stores it in the derived state. So
+> decision 1's "eight entries of the table above" are nine; the table is
+> unchanged, since it lists the closed sets the v1 format publishes and the
+> format publishes no node type. Decision 2's additive rule, decision 7 and
+> decision 9's ground apply to it; decisions 3 and 5 do not, since no migration
+> names a node type; and #853 is due before its first new member. Decision 9's
+> ground for it is not yet measured: *Context*'s scan lists seven classes in
+> `GOVERNED`, not `TraceNodeType`, and #1034 adds it. *Context*'s
+> construction-site population is keyed on "the three classes the additive
+> policy governs", four with `TraceNodeType`, whose sites it does not hold;
+> ADR-0040 decision 9's row 9 holds its decode-before-gate face.

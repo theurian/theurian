@@ -183,6 +183,8 @@ settled here.
    before `kind: specification` exists can be retyped by a later revision
    without changing the id its edges address. How an edge is represented is
    #275's and is not decided here.
+   *Amended in Amendment 1 (ADR-0040):* for a `Refs:` trailer, the trailer
+   names the item id itself, so nothing is resolved at population.
 3. **Nothing new is built on the entity.** No new code reads or writes the
    `Specification` entity, the `specifications` table, `SpecId`,
    `SpecificationStatus`, `registerSpecification` or `supersedeSpecification`.
@@ -404,6 +406,7 @@ Still owed, with the issue or slice that will satisfy it:
    resolves an alias nor reads the body, never the joined `get_item_exact` —
    and the further properties *Positive* lists; Phase C's Security row puts the
    two-corpora equality test for trace responses in the same change.
+   *Amended in Amendment 1 (ADR-0040):* decided there; owed until #1034.
 4. **[#834](https://github.com/theurian/theurian/issues/834)'s resolution of
    `KnowledgeRevision.structured`.** Owed under either alternative, since
    neither side persists a parsed payload (*Context*), and due before anything
@@ -412,3 +415,21 @@ Still owed, with the issue or slice that will satisfy it:
    would. This ADR does not choose between the closure options #834 records.
    The `structured` half of roadmap §4 item 1's recommendation is owed to #834,
    not shipped.
+
+## Amendment 1 — decision 2's resolution at population, narrowed for the `Refs:` trailer (2026-10-28, ADR-0040, PR #1036)
+
+> **This is an append-only amendment**, and the amendment above *Context*, by
+> ADR-0039, is unchanged. Decision 2 says a spec id an edge source names "must
+> be resolved to its knowledge item id when the edge is populated
+> (reachability), never inside a hop's authority read (T-21)". [ADR-0040](0040-traceability-representation-and-edge-sources.md)
+> decision 3 narrows it for the source decision 2's example draws, a `Refs:`
+> commit trailer: the trailer names the item id itself, so nothing is resolved
+> at population, and `Refs: spec.order-cancellation` names the item id
+> `spec.order-cancellation`. Its endpoint is a `KNOWLEDGE` node whatever the
+> item's `kind` (ADR-0040 decision 1), so decision 2's rule for a
+> `SPECIFICATION`-typed node stands for the first source that writes one.
+>
+> *Compliance*, Still owed item 3, is decided by ADR-0040 — the endpoint's id
+> (its decisions 1 and 3), the revision pin, which an edge does not carry (its
+> decision 4 and *Neutral*), and the per-hop gate (its decision 6) — and stays
+> owed until [#1034](https://github.com/theurian/theurian/issues/1034) builds it.
