@@ -63,8 +63,8 @@ def find_git_root(start: Path) -> Path | None:
 
     ``--show-toplevel`` rather than walking up looking for ``.git``: in a
     worktree, ``.git`` is a *file*, and a hand-rolled walk gets that wrong.
-    Root selection runs under the same discovery as every deciding spawn; a
-    ceiling may only shorten the search, so the parent's is carried.
+    Every spawn that decides or describes the project runs under this
+    discovery; a ceiling may only shorten the search, so the parent's is carried.
     """
     env = child_environment(os.environ)
     if "GIT_CEILING_DIRECTORIES" in os.environ:
@@ -91,6 +91,7 @@ def current_commit(root: Path) -> str | None:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],  # noqa: S607 - resolved via PATH
             cwd=root,
+            env=child_environment(os.environ),
             capture_output=True,
             text=True,
             timeout=GIT_TIMEOUT_SECONDS,
@@ -106,6 +107,7 @@ def default_branch(root: Path) -> str:
         result = subprocess.run(
             ["git", "symbolic-ref", "--short", "HEAD"],  # noqa: S607 - resolved via PATH
             cwd=root,
+            env=child_environment(os.environ),
             capture_output=True,
             text=True,
             timeout=GIT_TIMEOUT_SECONDS,
@@ -122,6 +124,7 @@ def repository_url(root: Path) -> str | None:
         result = subprocess.run(
             ["git", "remote", "get-url", "origin"],  # noqa: S607 - resolved via PATH
             cwd=root,
+            env=child_environment(os.environ),
             capture_output=True,
             text=True,
             timeout=GIT_TIMEOUT_SECONDS,
