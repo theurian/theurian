@@ -672,7 +672,7 @@ jobs:
           # PyPI upload — twine rejects anything that is not a distribution.
           ls -la upload
 
-      - uses: pypa/gh-action-pypi-publish@v1.14.2
+      - uses: pypa/gh-action-pypi-publish@v1.14.3
         with:
           packages-dir: upload
           # PEP 740 attestations, signed by this workflow's OIDC identity.
