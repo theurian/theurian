@@ -354,7 +354,9 @@ class GitTrailerFindingSource:
         # ``log`` gives ``fatal: unrecognized argument`` -- and ``-c
         # log.showSignature=false`` / ``--no-optional-locks`` stop a repo config
         # from injecting gpg lines or taking a lock during a read; the encoding
-        # pin covers ``i18n.commitEncoding`` too (the fix spawn needs none).
+        # pin covers ``i18n.commitEncoding`` too (the fix spawn needs none);
+        # ``advice.graftFileDeprecated=false`` keeps the forced graft file's
+        # hint off stderr, where it would lead the error reason.
         args = [
             "git",
             "-c",
@@ -367,6 +369,8 @@ class GitTrailerFindingSource:
             "core.useReplaceRefs=false",
             "-c",
             "core.commitGraph=false",
+            "-c",
+            "advice.graftFileDeprecated=false",
             "log",
             "-z",  # NUL-separate records (D4; `format:` separates, not terminates)
             PUBLIC_REF,
