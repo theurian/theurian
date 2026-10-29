@@ -250,10 +250,9 @@ confidence separates in [`traceability.md`](../architecture/traceability.md)
 one `TEST` by its name would be inference, and an inferred node type on an
 explicit edge would mix the two things confidence exists to keep apart.
 
-**The four alternatives, with their keys.** These are every source the roadmap
-or `traceability.md` names that exists in the repository today; review threads
-and test names, which `traceability.md` also draws, are not collected anywhere
-and are out of scope.
+**The four alternatives, with their keys:** every source the roadmap or
+`traceability.md` names that exists here today; review threads and test names
+are collected nowhere (*Neutral*).
 
 | | Source | Measured | Verdict |
 | :-- | :-- | :-- | :-- |
@@ -371,22 +370,25 @@ the depth binds first, near 93,600 entries and 48 MB. At the budget the read
 took at most 0.68 s (*Negative*, third item), 44 times inside the 30-second
 timeout, which is a fault refusal only.
 
-**It reads `HEAD`, not ADR-0029's `refs/remotes/origin/main`.** ADR-0029 pins
-public history because an embargoed finding must not enter a corpus built from
-it. An edge describes the branch the state describes (ADR-0016) and stays in that
-working tree's own state database.
+**It reads `HEAD`, not ADR-0029's `refs/remotes/origin/main`,** which ADR-0029
+pins so that no embargoed finding enters a corpus built from it: an edge
+describes the branch the state describes (ADR-0016), in its own state database.
 
 **First-parent** is the line the branch itself records. Under this repository's
 squash merges it is the whole history (`git rev-list --merges --count 5ad30799`
 prints 0). In a merge workflow a side-branch commit's trailer is collected only
 when the merge commit's message carries it (*Negative*).
 
-**With no Git history, the state holds no edges and records no commit.** The
-CLI refuses outside a Git repository (`cli/context.py:246-252`), so the cases
-are a rehearsal's throwaway copy, which is not a Git working tree
-(`cli/migration_pipeline.py:71-75`), and a repository whose `HEAD` is unborn. In
-both, `schema_metadata` records the walk commit and the boundary as null, and a
-trace reports the commit as null and zero edges walked.
+**The collector never discovers a repository.** `apply_migration_set` takes the
+root the composition root resolved (`find_git_root`, `cli/context.py:59`,
+`:246`) or None, an argument as all that differs between an apply and a replay
+is (ADR-0027 decision 2). None collects nothing and records the walk commit and
+the boundary as null, as an unborn `HEAD` does; a trace then reports a null
+commit and zero edges walked. With a root, every read names it (`--git-dir`), or
+the collector refuses unless `rev-parse --show-toplevel` equals it. The
+rehearsal passes None: with `TMPDIR` inside a clone, its throwaway copy
+discovered that clone and read its history (measured), so
+`cli/migration_pipeline.py:71-75`'s comment is #1033's to restate.
 
 **On a shallow clone, the walk stops at the shallow boundary.** The shallow
 digest is the lowercase hex SHA-256 of the clone's shallow-commit list — the
@@ -821,7 +823,9 @@ Still owed, with the issue or slice that will satisfy it:
    with its positive control; pins that every rev-list line is validated as
    OIDs, that the messages arrive in rev-list's sequence, and that diff-tree
    returns one record per commit fed, an empty commit and a path named like an
-   OID included; tests for no Git history, an unborn `HEAD`, a shallow clone and
+   OID included; a pin that a rehearsal with `TMPDIR` inside a clone records a
+   null commit and 0 edges, against `TMPDIR` outside any repository; tests for
+   no Git history, an unborn `HEAD`, a shallow clone and
    its boundary commit, the depth bound and both budgets, the path cap at 1,000
    and 1,001 paths, 3(c)'s cap and capped digest at 32 and 33 ids, and the full
    replace after a rebase; a perturbation pin that a commit changing no
