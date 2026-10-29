@@ -827,21 +827,35 @@ Still owed, with the issue or slice that will satisfy it:
    with its positive control; pins that every rev-list line is validated as
    OIDs, that the messages arrive in rev-list's sequence, and that diff-tree
    returns one record per commit fed, an empty commit and a path named like an
-   OID included; tests for no Git history, for an
-   unborn `HEAD`, for a shallow clone and its boundary commit, for the depth
-   bound and both budgets, for the path cap at 1,000 and 1,001 paths, for 3(c)'s
-   cap and capped digest at 32 and at 33 ids, and for the full
+   OID included; tests for no Git history, an unborn `HEAD`, a shallow clone and
+   its boundary commit, the depth bound and both budgets, the path cap at 1,000
+   and 1,001 paths, 3(c)'s cap and capped digest at 32 and 33 ids, and the full
    replace after a rebase; a perturbation pin that a commit changing no
-   migration and no body a migration references leaves `state_hash` unchanged; `UNPOPULATED_TABLES`; the CHANGELOG;
-   *Negative*'s third item re-measured through its adapter; and, in the same change, each sentence its
-   nothing-pending write makes false — at `5ad30799`,
-   `cli/migration_pipeline.py:153-154`, `cli/commands.py:1135-1136` and
-   `:2532-2533` (`migrate apply`'s `--help`),
-   `docs/security/threat-model.md:4749-4750`, and
-   `docs/adr/0018-single-writer-synchronous-in-m1.md:36-38` and `:262-264`. Key:
-   `git grep -n -i -E 'nothing pending|writes nothing|changes nothing|a no-op' 5ad30799 -- docs packages/theurian-core/src`,
-   read hit by hit, plus a whitespace-joined read for wrapped phrases; sentences
-   about the expected-count record, which keeps its condition, stay true.
+   migration and no body a migration references leaves `state_hash` unchanged;
+   `UNPOPULATED_TABLES`; the CHANGELOG; *Negative*'s third item re-measured
+   through its adapter; and, in the same change, each sentence decision 2's
+   write or decision 5's guard makes false. Census at `5ad30799`: every tracked
+   text, each JSON `description` on its own, then whitespace-joined sentences;
+   a hit is a unit matching, case-insensitively, both
+   `immutab|changed nothing|changes nothing|change nothing|writes nothing|wrote nothing|write nothing|nothing (is )?pending|nothing to apply|\bno-?op\b|already (fully )?applied|once (it is |it's )?built|never (re)?written|read-only once`
+   and `state|database|\bDB\b|appl|migrat|built|build`: 393 units in 200 files,
+   read at every match (FR-K8's row is a second match). False: "immutable once
+   built" in `docs/protocol/mcp-tools.md`, `domain/ports/canonical_store.py`,
+   `mcp/tools.py` (×2), `tests/integration/test_mcp_tools.py` (×3), and the wire
+   descriptions #1033 restates, `schemas/mcp/knowledge-search-response.schema.json`
+   (×1) and `knowledge-status-response.schema.json` (×2), each of which also
+   says "having changed nothing"; "nothing pending writes nothing" in
+   `cli/migration_pipeline.py`, `docs/security/threat-model.md` and
+   `test_mcp_tools.py`, which adds "a re-apply that changes nothing";
+   `cli/commands.py`'s "an idempotent replay writes nothing" and `--help`
+   "changes nothing (FR-K8)"; ADR-0018's "becomes a no-op" and "changes
+   nothing"; and, restated as FR-K8 is below, `docs/protocol/migrations.md`'s
+   "Re-applying an applied migration is a no-op", ADR-0005 item 5, and the
+   "re-application is a no-op" docstrings of `application/migration_engine.py`
+   and `tests/unit/test_migration_engine.py`. Every other hit stays true (the
+   expected-count record, migration-file and revision immutability, an
+   operation's idempotence, a released CHANGELOG entry), is out of class, or is
+   a `.theurian/` twin (#971).
    **Sequencing condition:** decision 5's guard, on every apply, and
    `RelationCycleError` land in one commit with the `SCHEMA_VERSION` 4→5 bump,
    on the branch and so in the squash — never earlier (under v4 a cyclic state
