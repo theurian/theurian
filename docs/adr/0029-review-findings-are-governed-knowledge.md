@@ -1405,7 +1405,9 @@ no-network):
 
 **Stated non-goal for this slice, owed to the serving arm:** verifying
 `remote.origin.url` against a recorded public-origin URL — the "a private-fork
-clone where `origin` *is* the private fork" member. Reasoning: the documented
+clone where `origin` *is* the private fork" member; the url is recorded as git
+reports it, the first value of a multi-valued key, global config included.
+Reasoning: the documented
 embargo workflow (`../contributing/release.md`) merges an advisory fix into public
 `main` through the **private advisory**, never by pointing a working clone's
 `origin` at the fork; and URL-verification belongs with the serving arm that
