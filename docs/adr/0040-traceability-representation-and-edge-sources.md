@@ -319,20 +319,14 @@ held below or recorded outside the claim:
   below git 2.45, the fetch child's reading of repository config (#1016).
   Features that can only make a read refuse are outside this bound. A direct
   write to the object store, a cache file or a ref can still forge any answer."
-  Every spawn takes its `child_environment` and argv, plus `--no-pager` and
-  `-c core.fsmonitor=false`: a configured fsmonitor hook runs during diff-tree's
-  index read and moved its output. The cache files are one class, kept out of
-  every read by `-c core.commitGraph=false` and `-c core.multiPackIndex=false`.
-  `--ignore-submodules=none` closes `submodule.<name>.ignore` in configuration
-  and in the worktree, index or `HEAD` `.gitmodules`, each of which moved the
-  output without it.
-- **The walk also strips `GIT_TRACE*`, departing from #1012.** A trace aimed at
-  `/dev/stdout` writes into the captured stream (source read, `trace.c`;
-  measured on diff-tree). The trailer read keeps `GIT_TRACE*` under #1012's
-  claim that a trace only makes its parse refuse; that claim is owed a
-  measurement on the log read under #981, not yet made. If it fails,
-  `child_environment` strips `GIT_TRACE*` and this departure collapses into one
-  source when #1033 consumes the module.
+  Every spawn runs under its `child_environment` and argv prefix, unchanged —
+  which keep tracing out of every captured stream (#1012) — plus `--no-pager`
+  and `-c core.fsmonitor=false`: a configured fsmonitor hook runs during
+  diff-tree's index read and moved its output. The cache files are one class,
+  kept out of every read by `-c core.commitGraph=false` and
+  `-c core.multiPackIndex=false`. `--ignore-submodules=none` closes
+  `submodule.<name>.ignore` in configuration and in the worktree, index or `HEAD`
+  `.gitmodules`, each of which moved the output without it.
 - **Outside the claim:** object-store integrity, alternates included, is
   #1012's direct-write residual; a corrupt index, `core.maxTreeDepth`, malformed
   configuration and `safe.directory` can only make a read refuse; the git
