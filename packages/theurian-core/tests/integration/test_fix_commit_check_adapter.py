@@ -36,7 +36,7 @@ about the repository the caller was not granted. ADR-0033 decision 5 binds the
 pair in text **and in duration**, so the two questions collapse into one call
 whose outcome is read off the exit code and the output.
 On a git that does not honour ``GIT_NO_LAZY_FETCH`` (source read: releases before v2.45.0, bar
-the 2.39-2.44 maintenance releases from May 2024 on), any promisor remote adds 0-2 fetch children
+the 2.39-2.44 maintenance releases that carry it), any promisor remote adds 0-2 fetch children
 (simulated; ADR-0033, #981).
 :func:`test_the_same_request_spawns_the_same_vector_whether_the_object_is_here_or_not`
 is the pin, and it is the one that was RED when this shape was chosen.

@@ -477,7 +477,7 @@ distinguishing information is about material the caller has not been granted.
 > the object store, a cache file or a ref directly can forge any answer; no read-side check closes
 > that. Decision 5's duration bind gains an exception: on a git that does not honour
 > `GIT_NO_LAZY_FETCH` (source read: releases before v2.45.0, bar the 2.39–2.44 maintenance releases
-> from May 2024 on), in any repository with a promisor remote configured (source read), git starts
+> that carry it), in any repository with a promisor remote configured (source read), git starts
 > fetch children, refused at transport: none for an object held, one for a tree a `tree:0` clone
 > lacks, two for a commit only a `blob:none` clone's remote holds (simulated on git 2.47.1 and
 > 2.54.0 by withholding `GIT_NO_LAZY_FETCH`; no older git was run), pinned on 2.45+ by the

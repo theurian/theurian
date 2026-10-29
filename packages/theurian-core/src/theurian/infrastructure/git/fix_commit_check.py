@@ -45,7 +45,7 @@ exit 0, path is not an entry  ``TOUCHES_NOTHING_HERE``
 
 The adapter spawns one process for every admitted input; on a git that does not honour
 ``GIT_NO_LAZY_FETCH`` (source read: releases before v2.45.0, bar the 2.39-2.44 maintenance releases
-from May 2024 on), in any repository with a promisor remote configured (source read), git's own
+that carry it), in any repository with a promisor remote configured (source read), git's own
 fetch children add 0, 1 or 2 more, refused at transport: decision 5's recorded duration exception,
 counted in ADR-0033's #981 amendment.
 
