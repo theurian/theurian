@@ -6,6 +6,9 @@ read admit what this repository's own objects do not, except two that are tracke
 attribute-driven conversion on the committed check (#1015) and, below git 2.45, the fetch child's
 reading of repository config (#1016). Features that can only make a read refuse are outside this
 bound. A direct write to the object store, a cache file or a ref can still forge any answer.
+Tracing aimed at the captured stdout never made a read admit anything, but it wrote into the
+provenance the reads return (the trailer read's commit sha, the descriptive reads) and made the
+verdicts refuse, so inherited ``GIT_TRACE*`` is stripped and trace2 is forced off.
 """
 
 from __future__ import annotations
@@ -27,16 +30,16 @@ _FORCED: Final = {
     # empty list allows no transport; `-c protocol.allow=never` is defeated by a
     # repo-local `protocol.file.allow=always`, this is not.
     "GIT_ALLOW_PROTOCOL": "",
+    # (measured, 2.56.0) a trace2 target in global or system config writes into the captured
+    # stdout; the env value overrides config, `-c` does not.
+    "GIT_TRACE2": "0",
+    "GIT_TRACE2_EVENT": "0",
+    "GIT_TRACE2_PERF": "0",
 }
 
 
 def child_environment(parent: Mapping[str, str]) -> dict[str, str]:
-    """``parent`` minus inherited ``GIT_*`` variables (not tracing), plus the forced isolation."""
-    env = {
-        name: value
-        for name, value in parent.items()
-        # Tracing redirects no read; aimed at the captured stdout it only makes the parse refuse.
-        if not name.startswith("GIT_") or name.startswith("GIT_TRACE")
-    }
+    """``parent`` minus inherited ``GIT_*`` variables, plus the forced isolation."""
+    env = {name: value for name, value in parent.items() if not name.startswith("GIT_")}
     env.update(_FORCED)
     return env

@@ -31,8 +31,8 @@ included, a member of the non-goal below -- can still forge any answer. Concrete
   ``GIT_*`` strip below: an inherited ``GIT_TEST_COMMIT_GRAPH=1`` overrides ``-c``, source read),
   so no graft or graph file can re-parent public history onto a local-only commit;
 - it runs ``git`` with inherited **``GIT_*`` overrides stripped**
-  (:func:`~theurian.infrastructure.git.environment.child_environment` drops every ``GIT_*`` name
-  but ``GIT_TRACE*``), so an env-injected ``GIT_DIR``, alternate object store,
+  (:func:`~theurian.infrastructure.git.environment.child_environment` drops every inherited
+  ``GIT_*`` name), so an env-injected ``GIT_DIR``, alternate object store,
   replace-ref base or config file cannot redirect what history means.
 
 Verifying ``remote.origin.url`` against a recorded public origin is a stated

@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+from theurian.infrastructure.git import environment
+
 _IDENTITY = (
     "-c",
     "user.email=test@example.com",
@@ -94,14 +96,12 @@ def traced_fetches[T](
 ) -> tuple[T, list[str]]:
     """Run *call* under ``GIT_TRACE`` and answer its result with every fetch it spawned.
 
-    ``child_environment`` does not strip ``GIT_TRACE``, so a lazy fetch -- whether
-    the built-in or a child process -- is visible as a ``fetch`` trace line.
+    ``child_environment`` strips an inherited ``GIT_TRACE``, so the trace reaches the
+    child through the forced map; a lazy fetch -- whether the built-in or a child
+    process -- is then visible as a ``fetch`` trace line.
     """
-    monkeypatch.setenv("GIT_TRACE", str(trace))
-    try:
-        result = call()
-    finally:
-        monkeypatch.delenv("GIT_TRACE")
+    monkeypatch.setitem(environment._FORCED, "GIT_TRACE", str(trace))
+    result = call()
     lines = trace.read_text(encoding="utf-8").splitlines() if trace.exists() else []
     return result, [
         line for line in lines if "fetch" in line and ("run_command" in line or "built-in" in line)

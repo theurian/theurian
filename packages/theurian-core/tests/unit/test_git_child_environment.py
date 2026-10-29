@@ -2,8 +2,8 @@
 
 The expected mapping is written out here and never imported: a test that reads the
 production constant moves with it, so mutating the constant would leave the pin
-green. The predicate: every inherited ``GIT_*`` variable goes except ``GIT_TRACE*``,
-and then the forced set applies.
+green. The predicate: every inherited ``GIT_*`` variable goes, tracing included, and
+then the forced set applies.
 """
 
 from __future__ import annotations
@@ -26,6 +26,8 @@ HOSTILE: Final[tuple[str, ...]] = (
     "GIT_TEST_COMMIT_GRAPH",
     "GIT_ATTR_SOURCE",
     "GIT_CONFIG_PARAMETERS",
+    "GIT_TRACE",
+    "GIT_TRACE2_EVENT",
 )
 
 #: What the child is forced to carry. ``GIT_ALLOW_PROTOCOL`` is set *and empty*: an
@@ -35,15 +37,16 @@ FORCED: Final[dict[str, str]] = {
     "GIT_GRAFT_FILE": os.devnull,
     "GIT_NO_LAZY_FETCH": "1",
     "GIT_ALLOW_PROTOCOL": "",
+    "GIT_TRACE2": "0",
+    "GIT_TRACE2_EVENT": "0",
+    "GIT_TRACE2_PERF": "0",
 }
 
-#: Variables the child must keep: ``git`` still has to be found, tracing is no
-#: isolation concern, and ``GITHUB_TOKEN`` starts with ``GIT`` but not ``GIT_``.
+#: Variables the child must keep: ``git`` still has to be found, and ``GITHUB_TOKEN``
+#: starts with ``GIT`` but not ``GIT_``.
 KEPT: Final[dict[str, str]] = {
     "PATH": "/parent/bin",
     "HOME": "/parent/home",
-    "GIT_TRACE": "/t",
-    "GIT_TRACE2_EVENT": "/t2",
     "GITHUB_TOKEN": "t",
 }
 
