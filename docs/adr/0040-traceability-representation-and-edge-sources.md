@@ -3,7 +3,7 @@
 - Status: accepted
 - Date: 2026-10-28
 - Deciders: Theurian maintainers
-- Requirements: FR-T2, FR-T3, INV-6, SEC-13
+- Requirements: FR-T2, FR-T3, INV-6, SEC-13, SEC-15
 - **Resolves** [`docs/roadmap.md`](../roadmap.md) §9 ADR candidate 4 — formalising
   the traceability representation
   ([#275](https://github.com/theurian/theurian/issues/275))
@@ -349,9 +349,9 @@ held below or recorded outside the claim:
 - A failure to read `HEAD`, a walk that fails or outlives the 30-second
   subprocess timeout (`infrastructure/git/trailer_source.py:118`), and a stream
   the framing cannot read refuse the build. None of them degrades to "no
-  edges", because then one identity would name two edge sets. `current_commit` returns `None` both for an
-  unborn `HEAD` and for a failure (`cli/context.py:81-93`), so the collector
-  reads `HEAD` through a call that tells the two apart.
+  edges", because then one identity would name two edge sets. `current_commit`
+  returns `None` for an unborn `HEAD` and a failure alike (`cli/context.py:81-93`),
+  so the collector reads `HEAD` through a call that tells the two apart.
 
 **The walk is bounded by recorded constants, never by time:** at most 10,000
 first-parent commits, the walk commit first, and a read budget of 100,000 path
@@ -626,7 +626,10 @@ Descriptions say *recorded* edges and never claim completeness (Phase C
 `relations` publishes for that row after the same gate, so `trace` publishes no
 field of a relation that `knowledge.get` withholds. No title, body or excerpt of
 any item is in a trace response; a caller reads content through
-`knowledge.get`.
+`knowledge.get`. Every response carries SEC-15's triple, `SAFETY`'s
+`contentClassification`, `mayContainInstructions` and `executable`
+(`mcp/results.py:45-49`): a hop's `note`, a `CODE` id and an evidence path are
+author-controlled text (T-3).
 
 **What a hop follows.** A recorded traceability edge, in either direction —
 `related_to` is not in `INVERSE_RELATIONS`, so an edge stored from a path to an
@@ -642,10 +645,9 @@ edges listed once, its edge rows are at most twice the 3,200,000 one apply
 writes (decision 2), and its relation rows are the corpus's. #1034 records the
 measured cost on the dogfood corpus.
 
-**The start node.** An item id that is absent or withheld gets the refusal
-`knowledge.get` gives an absent id, byte for byte. A `CODE` start is the
-caller's own string and is not gated; it reaches only what its edges reach
-through the gate.
+**The start node.** An absent or withheld item id gets `knowledge.get`'s
+absent-id refusal, byte for byte. A `CODE` start is the caller's own string, not
+gated; it reaches only what its edges reach through the gate.
 
 ### 8. Governed parameters, and `TraceNodeType` joins ADR-0039's sets
 
@@ -879,7 +881,7 @@ Still owed, with the issue or slice that will satisfy it:
    9's tests, in the same change as the tool; #845's M-4 as an acceptance
    criterion; `system.capabilities`'s `traceability` flipped to true (F11); and
    the Phase C *Tests* row's pin that every hop's visibility decision goes
-   through the non-resolving, body-free read.
+   through the non-resolving, body-free read; a `SAFETY` pin on every response.
 3. **[#1035](https://github.com/theurian/theurian/issues/1035), the exit
    demonstration:** a commit carrying a trailer that names one of the 24 ADR
    twins, or a twin created first (*Negative*, second item), traced from a
