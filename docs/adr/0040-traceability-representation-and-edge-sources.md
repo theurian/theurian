@@ -319,8 +319,8 @@ held below or recorded outside the claim:
   Features that can only make a read refuse are outside this bound. A direct
   write to the object store, a cache file or a ref can still forge any answer."
   Every spawn runs under its `child_environment` and argv prefix, unchanged —
-  which keep tracing out of every captured stream (#1012) — plus `--no-pager`
-  and `-c core.fsmonitor=false`: a configured fsmonitor hook runs during
+  which keep tracing out of every captured stream (#1012's `4f17f4aa`) — plus
+  `--no-pager` and `-c core.fsmonitor=false`: a configured fsmonitor hook runs during
   diff-tree's index read and moved its output. The cache files are one class,
   kept out of every read by `-c core.commitGraph=false` and
   `-c core.multiPackIndex=false`. `--ignore-submodules=none` closes
@@ -841,24 +841,11 @@ Still owed, with the issue or slice that will satisfy it:
    a hit is a unit matching, case-insensitively, both
    `immutab|changed nothing|changes nothing|change nothing|writes nothing|wrote nothing|write nothing|nothing (is )?pending|nothing to apply|\bno-?op\b|already (fully )?applied|once (it is |it's )?built|never (re)?written|read-only once`
    and `state|database|\bDB\b|appl|migrat|built|build`: 393 units in 200 files,
-   read at every match (FR-K8's row is a second match). False: "immutable once
-   built" in `docs/protocol/mcp-tools.md`, `domain/ports/canonical_store.py`,
-   `mcp/tools.py` (×2),
-   `packages/theurian-core/tests/integration/test_mcp_tools.py` (×3), and the
-   wire descriptions #1033 restates, `schemas/mcp/knowledge-search-response.schema.json`
-   (×1) and `knowledge-status-response.schema.json` (×2), each of which also
-   says "having changed nothing"; "nothing pending writes nothing" in
-   `cli/migration_pipeline.py`, `docs/security/threat-model.md` and
-   `test_mcp_tools.py`, which adds "a re-apply that changes nothing";
-   `cli/commands.py`'s "an idempotent replay writes nothing" and `--help`
-   "changes nothing (FR-K8)"; ADR-0018's "becomes a no-op" and "changes
-   nothing"; and, restated as FR-K8 is below, `docs/protocol/migrations.md`'s
-   "Re-applying an applied migration is a no-op", ADR-0005 item 5, and the
-   "re-application is a no-op" docstrings of `application/migration_engine.py`
-   and `packages/theurian-core/tests/unit/test_migration_engine.py`. Every other
-   hit stays true (the expected-count record, migration-file and revision
-   immutability, an operation's idempotence, a released CHANGELOG entry), is
-   out of class, or is a `.theurian/` twin (#971).
+   read at every match (FR-K8's row is a second match).
+   The 25 units it finds false are listed, file by file, under
+   [#1033's *Sentences this slice falsifies*](https://github.com/theurian/theurian/issues/1033#sentences-this-slice-falsifies);
+   every other hit stays true, is out of class, or is a `.theurian/` twin
+   (#971).
    **Sequencing condition:** decision 5's guard, on every apply, and
    `RelationCycleError` land in one commit with the `SCHEMA_VERSION` 4→5 bump,
    on the branch and so in the squash — never earlier (under v4 a cyclic state
