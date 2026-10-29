@@ -336,8 +336,10 @@ held below or recorded outside the claim:
   independent source read, Codex, 2026-10-29, git 2.56.0 sources; re-check
   `python3 -I probe.py`, `b_plumb3.py` and `b_framing.py` (#1036's round
   record), which #1033's determinism tests become.
-- A commit message that is not UTF-8 is contained to its own record (#496), and
-  a path git emits that is not UTF-8 is not collected.
+- A commit message that is not UTF-8 is contained to its own record (#496) and
+  reported by its sha only, so 3(a)'s "never echoed" holds; ADR-0029's reader
+  keeps up to 120 bytes of it (`trailer_source.py:205`, `:453`). A path git
+  emits that is not UTF-8 is not collected.
 - An edge's id and `created_at` derive from its commit — the sha, the path and
   the item id; the committer date — never from the engine's clock or an id
   generator. The evidence's required `source_uri` derives from the commit and
@@ -732,11 +734,10 @@ gate decides (row 9).
   apply pays the walk and a full replace, near two minutes at the budget:** a
   read of at most 0.68 s, then 3,200,000 rows into `schema.py`'s DDL verbatim
   plus decision 4's `source_commit`, 62.6 s written fresh and 116.6 s as a
-  replace, in a 2.71 GB database (here: git 2.56.0, SQLite 3.53.1; re-measured
-  by `python3 -I at_budget_read.py` and `python3 -I at_budget_write.py
-  <schema.py> v5`, #1036's round record). A commit larger than what remains of
-  the budget stops every walk there until 10,000 newer first-parent commits
-  pass it.
+  replace, in a 2.71 GB database (git 2.56.0, SQLite 3.53.1; `python3 -I
+  at_budget_read.py`, `python3 -I at_budget_write.py <schema.py> v5`, #1036's
+  round record). A commit larger than what remains of the budget stops every
+  walk there until 10,000 newer first-parent commits pass it.
 - **A rename breaks the path link.** An edge names the path its commit changed;
   the module at its new path has no edge until a later commit with a trailer
   changes it.
@@ -828,7 +829,10 @@ Still owed, with the issue or slice that will satisfy it:
    no Git history, an unborn `HEAD`, a shallow clone and
    its boundary commit, the depth bound and both budgets, the path cap at 1,000
    and 1,001 paths, 3(c)'s cap and capped digest at 32 and 33 ids, and the full
-   replace after a rebase; a perturbation pin that a commit changing no
+   replace after a rebase; a no-echo test: an invalid value and a non-UTF-8
+   message planted, and none of their bytes in any stdout, stderr, log, report
+   field or exception text, `got {value!r}` (`identifiers.py:143`) included;
+   a perturbation pin that a commit changing no
    migration and no body a migration references leaves `state_hash` unchanged;
    `UNPOPULATED_TABLES`; the CHANGELOG; *Negative*'s third item re-measured
    through its adapter; and, in the same change, each sentence decision 2's
