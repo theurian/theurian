@@ -266,9 +266,10 @@ and are out of scope.
 
 **Collection runs inside the state build** — the write transaction `migrate
 apply` already runs (`apply_migration_set`, `cli/migration_pipeline.py`) — after
-the migration set applies. It walks `git log --first-parent HEAD`, reads each
-commit's `Refs:` trailers (decision 3) and the paths the commit changed against
-its first parent, and writes the edges into `traceability_edges`.
+the migration set applies. It resolves `HEAD` once to the walk commit's OID — a
+second read of `HEAD` can name another commit — reads from that OID alone each
+first-parent commit's `Refs:` trailers (decision 3) and the paths it changed
+against its first parent, and writes the edges into `traceability_edges`.
 
 **Every `migrate apply` collects, including one with nothing pending,** and
 replaces the whole edge set, the recorded walk commit and the boundary inside its
@@ -293,17 +294,57 @@ collector's rules, so a change to them, the depth bound and decision 3(c)'s cap
 among them, bumps it. The boundary is what the walk left uncollected: the
 shallow digest, whether the depth bound stopped it, and decision 3(c)'s capped
 digest. The collector reads Git and nothing else (decision 3(b)), so after an
-apply the edges are a function of the walk commit and the boundary under those
-rules, because the walk is deterministic:
+apply the edges are a function of the objects first-parent-reachable from the
+walk commit, the shallow list and those rules alone: no environment variable, no
+configuration at any level, and no replace ref, graft or commit-graph reaches
+them. That holds under the prerequisites an independent source read names, each
+held below or recorded outside the claim:
 
-- `--no-renames`: rename detection depends on `diff.renames` and similarity
-  thresholds, which are local configuration. A renaming commit yields edges from
-  both the old and the new path.
-- The hardening ADR-0029's trailer reader already applies (its Amendment 1,
-  D7; `infrastructure/git/trailer_source.py`): no replace objects, inherited
-  `GIT_*` overrides stripped, `log.showSignature` off, NUL-framed records, and a
-  commit message that is not UTF-8 contained to its own record (#496). A path
-  git emits that is not UTF-8 is not collected, by the same rule.
+- **Plumbing, over the walk OID.** `git rev-list --first-parent --parents <OID>`
+  lists the commits, every line OIDs or the build refuses, and each is one stdin
+  record of `git diff-tree --stdin -r --root --no-renames --name-status -z
+  --always --ignore-submodules=none`: `C P1`, or `C` for a root or
+  shallow-boundary commit, so no merge-mode default applies (at 2.56,
+  `-m --first-parent` diffs a merge against every parent). `--name-status` keeps
+  a path named like the next commit's OID from reading as its header; `--always`
+  gives an empty commit its record. The build refuses unless diff-tree returns
+  one record per commit fed, in order — it drops an unknown stdin commit with
+  status 0 — and unless #1012's `log` form, under
+  `-c i18n.logOutputEncoding=UTF-8`, reads the messages in rev-list's sequence.
+  Under `--no-renames` a rename yields both paths.
+- **#1012's bound** (in flight), its module docstring verbatim: "With each
+  spawn's own flags it neutralises every documented git feature that can make a
+  deciding read admit what this repository's own objects do not, except two that
+  are tracked: an attribute-driven conversion on the committed check (#1015) and,
+  below git 2.45, the fetch child's reading of repository config (#1016).
+  Features that can only make a read refuse are outside this bound. A direct
+  write to the object store, a cache file or a ref can still forge any answer."
+  Every spawn takes its `child_environment` and argv, plus `--no-pager` and
+  `-c core.fsmonitor=false`: a configured fsmonitor hook runs during diff-tree's
+  index read and moved its output. The cache files are one class, kept out of
+  every read by `-c core.commitGraph=false` and `-c core.multiPackIndex=false`.
+  `--ignore-submodules=none` closes `submodule.<name>.ignore` in configuration
+  and in the worktree, index or `HEAD` `.gitmodules`, each of which moved the
+  output without it.
+- **The walk also strips `GIT_TRACE*`, departing from #1012.** A trace aimed at
+  `/dev/stdout` writes into the captured stream (source read, `trace.c`;
+  measured on diff-tree). The trailer read keeps `GIT_TRACE*` under #1012's
+  claim that a trace only makes its parse refuse; that claim is owed a
+  measurement on the log read under #981, not yet made. If it fails,
+  `child_environment` strips `GIT_TRACE*` and this departure collapses into one
+  source when #1033 consumes the module.
+- **Outside the claim:** object-store integrity, alternates included, is
+  #1012's direct-write residual; a corrupt index, `core.maxTreeDepth`, malformed
+  configuration and `safe.directory` can only make a read refuse; the git
+  executable's identity is a process prerequisite; and behaviour below git 2.56
+  is established only where the source read cites a version. #1015 does not
+  reach a read of names, which converts no content; #1016 does not reach a walk
+  that never fetches (`GIT_NO_LAZY_FETCH=1`, `GIT_ALLOW_PROTOCOL=""`). Key:
+  independent source read, Codex, 2026-10-29, git 2.56.0 sources; re-check
+  `python3 -I probe.py`, `b_plumb3.py` and `b_framing.py` (#1036's round
+  record), which #1033's determinism tests become.
+- A commit message that is not UTF-8 is contained to its own record (#496), and
+  a path git emits that is not UTF-8 is not collected.
 - An edge's id and `created_at` derive from its commit — the sha, the path and
   the item id; the committer date — never from the engine's clock or an id
   generator. The evidence's required `source_uri` derives from the commit and
@@ -350,8 +391,8 @@ trace reports the commit as null and zero edges walked.
 digest is the lowercase hex SHA-256 of the clone's shallow-commit list — the
 shas in the file `git rev-parse --git-path shallow` names, sorted byte-wise,
 each followed by a newline — and null when no such file exists, which is a full
-clone. A commit the list names yields no edges: its parent is absent, so
-`git log` diffs it against the empty tree. In a depth-2 clone at `5ad30799` the
+clone. A commit the list names yields no edges: its parent is absent, so its
+`C` record diffs it against the empty tree. In a depth-2 clone at `5ad30799` the
 boundary commit `54a9f673` lists 1,159 paths, its whole tree
 (`git ls-tree -r --name-only 54a9f673 | wc -l`), against the 2 the full history
 lists. A trace publishes the shallow flag, not the digest (decision 7).
@@ -721,6 +762,7 @@ gate decides (row 9).
 | **Collect in `ingest`**, as the roadmap row planned, **or in a new command** | `ingest` writes no state (F10); either gives the state database an optional second writer (decision 2) |
 | **`HEAD` in `state_hash`** | §6 principle 2 asks the response to state its commit, not that every commit invalidate the state, and ADR-0016 rejected a commit sha in the hash for invalidating a valid state on a code-only commit. A staleness alarm after every commit, the stale index label (*Two further facts*) among its faces, is §10's trust failure by another route: a signal that is always on is read as noise. Read from source, not run (decision 2) |
 | **Hash a digest of the collected edges** | Every command that resolves a project computes the hash, and the digest needs the whole walk each time (decision 2) |
+| **Porcelain `git log --name-only`** with `-c` pins | A global `~/.gitconfig` `log.showRoot=false` moved the edges under ADR-0029's hardening and under #1012's, and `diff.ignoreSubmodules=all` survived #1012 plus a `showRoot` pin; the population "every key porcelain honours" has no closing key (decision 2) |
 | **Bound the walk by wall time** | The edge set, or whether the build succeeds, would vary with the machine's load (decision 2) |
 | **Keep the edges in a database of their own**, keyed by `HEAD`, as the index is kept apart ([ADR-0022](0022-index-lives-in-its-own-database.md)) | What it would keep — ADR-0016 decision 4 and the index's freshness untouched — decision 2 keeps without it. Its price is a trace reading two databases built at different moments: the per-hop gate would judge an edge from one state against items from another, and family 8 would hold two pointers instead of one |
 | **Resolve an alias or label at collection**, ADR-0038 decision 2's form | Labels name no single item, an alias's target moves with later migrations, and resolution reads canonical rows into the collector (decision 3) |
@@ -759,8 +801,8 @@ Rests on enforcement that already holds:
 - **The one-hop gate.** `_relation_is_visible` reads both endpoints through
   `get_item_exact_metadata` (F12), the read decision 6 extends to every hop.
 - **The exact-match open** (F6), which decision 4's v4/v5 refusal is.
-- **ADR-0029's trailer extraction and hardening** (`keyed_lines`, the
-  sanitized child environment), which decisions 2 and 3 reuse.
+- **ADR-0029's trailer extraction** (`keyed_lines`), which decision 3 reuses;
+  decision 2's environment is #1012's, in flight.
 - **`_closed_value`**, the parse decision 8 requires.
 
 Still owed, with the issue or slice that will satisfy it:
@@ -768,7 +810,11 @@ Still owed, with the issue or slice that will satisfy it:
 1. **[#1033](https://github.com/theurian/theurian/issues/1033), edge
    collection:** the collector of decisions 2 and 3 with the build report of
    3(a) to 3(c); schema v5 (decision 4); the SQLite adapter for both port
-   methods; tests for determinism at one `HEAD`, for no Git history, for an
+   methods; tests for determinism at one `HEAD`, each of decision 2's levers
+   with its positive control; pins that every rev-list line is validated as
+   OIDs, that the messages arrive in rev-list's sequence, and that diff-tree
+   returns one record per commit fed, an empty commit and a path named like an
+   OID included; tests for no Git history, for an
    unborn `HEAD`, for a shallow clone and its boundary commit, for the depth
    bound, for 3(c)'s cap and capped digest at 32 and at 33 ids, and for the full
    replace after a rebase; a perturbation pin that a commit changing no
