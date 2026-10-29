@@ -287,15 +287,15 @@ state". **A commit that changes no migration and no body a migration references
 leaves `state_hash` unchanged.**
 
 **A state's identity is (`state_hash`, walk commit, boundary), and two states
-with one identity hold the same edges;** a state whose collection was capped
-never shares an identity with one whose was not. `state_hash` names the
+with one identity hold the same edges;** a state whose collection was capped or
+bounded never shares an identity with one whose was not. `state_hash` names the
 canonical state (ADR-0016) and, through `MIGRATION_ENGINE_VERSION`, the
-collector's rules, so a change to them, the depth bound and decision 3(c)'s cap
-among them, bumps it. The boundary is what the walk left uncollected: the
-shallow digest, whether the depth bound stopped it, and decision 3(c)'s capped
-digest. The collector reads Git and nothing else (decision 3(b)), so after an
-apply the edges are a function of the objects first-parent-reachable from the
-walk commit, the shallow list and those rules alone: no environment variable, no
+collector's rules, so a change to them, the bounds and caps below among them,
+bumps it. The boundary is what the walk left uncollected: the shallow digest,
+whether the depth bound or the read budget stopped it, and the capped digest.
+The collector reads Git and nothing else (decision 3(b)), so after an apply the
+edges are a function of the objects first-parent-reachable from the walk commit,
+the shallow list and those rules alone: no environment variable, no
 configuration at any level, and no replace ref, graft or commit-graph reaches
 them. That holds under the prerequisites an independent source read names, each
 held below or recorded outside the claim:
@@ -359,16 +359,23 @@ held below or recorded outside the claim:
   unborn `HEAD` and for a failure (`cli/context.py:81-93`), so the collector
   reads `HEAD` through a call that tells the two apart.
 
-**The walk reads at most 10,000 first-parent commits, the walk commit first,**
-and one that reaches the bound stops there and records it in the boundary. A
-depth stops every machine at the same commit; under a time limit the edge set,
-or whether `migrate apply` succeeds for any tool, would vary with the machine's
-load. At `5ad30799` the first-parent history is 427 commits
-(`git rev-list --first-parent --count 5ad30799`), which
-`git log --first-parent --no-renames --name-only -z` read in about 30 ms here:
-the bound is some 23 times this history. **The edges one apply writes are at
-most 32 times the changed paths the walk reads** (decision 3(c)), a read the
-depth and the 30-second timeout above bound.
+**The walk is bounded by recorded constants, never by time:** at most 10,000
+first-parent commits, the walk commit first, and a read budget of 100,000 path
+entries and 64 MiB, counted as each stream arrives, never read whole, capped
+commits included. Git is terminated where a commit would cross a bound; it and
+every older commit are not collected, and the boundary records which bound
+stopped the walk. A commit listing more than 1,000 paths yields no edges and
+joins the capped digest, all or none by 3(c)'s rule. **So one apply writes at
+most 32 × 100,000 = 3,200,000 edges.** A bound stops every machine at the same
+commit; under a time limit the edge set, or whether `migrate apply` succeeds for
+any tool, would vary with the machine's load. At `5ad30799` the walk reads 427
+commits (`git rev-list --first-parent --count 5ad30799`), 3,998 path entries, at
+most 99 in one commit, and 2,061,969 bytes, in 71 to 87 ms here. The budget is
+25 and 32 times that read, the depth 23 times this history, the per-commit cap
+10 times its largest commit; at its mean of 9.4 entries and 4.8 KB per commit
+the depth binds first, near 93,600 entries and 48 MB. At the budget the read
+took at most 0.68 s (*Negative*, third item), 44 times inside the 30-second
+timeout, which is a fault refusal only.
 
 **It reads `HEAD`, not ADR-0029's `refs/remotes/origin/main`.** ADR-0029 pins
 public history because an embargoed finding must not enter a corpus built from
@@ -397,11 +404,9 @@ boundary commit `54a9f673` lists 1,159 paths, its whole tree
 (`git ls-tree -r --name-only 54a9f673 | wc -l`), against the 2 the full history
 lists. A trace publishes the shallow flag, not the digest (decision 7).
 
-**Not in `ingest`, and not a new command.** `ingest` writes only
-`.theurian/cache/ingestion.json`, reads `HEAD`'s sha and no history, and never
-opens the state database (F10). Collecting there, or in a command of its own,
-gives the state database a second writer whose run is optional, so whether a
-state held any edges would depend on a command nothing else requires.
+**Not in `ingest` (F10), and not a new command:** either gives the state
+database a second writer whose run is optional, so whether a state held any
+edges would depend on a command nothing else requires.
 
 ### 3. The trailer grammar: a literal item id, untrusted, never resolved
 
@@ -450,7 +455,8 @@ state held any edges would depend on a command nothing else requires.
   order among ids. The capped digest is the lowercase hex SHA-256 of the capped
   commits' shas, sorted byte-wise, each followed by a newline, and null when
   there are none; the build reports each sha, never its values, as (a) does.
-  It does not refuse, or one hostile commit would refuse every later build.
+  It does not refuse, or one hostile commit would refuse every later build;
+  decision 2's read budget, not a timeout, bounds what a commit's size costs.
   32 is over four times the
   most distinct ADR numbers one commit message on `main` names, 7 at
   `f665ecf6`, the nearest measure while `main` has no `Refs:` trailer (F4):
@@ -476,7 +482,7 @@ compare, and a later source may carry evidence from several commits while
 `RelationType` value, and #1033 narrows `TraceabilityEdge.relation_type` from
 `str` (F9) to `RelationType`; roadmap §4 keeps edge types closed.
 `schema_metadata` gains decision 2's walk commit and boundary — the shallow
-digest, the depth-bound flag and the capped digest — all null with no walk.
+digest, the depth and budget flags and the capped digest — all null with no walk.
 
 These are DDL changes, so `SCHEMA_VERSION` goes from 4 to 5. Under the exact
 match (F6), a v4 build refuses a v5 database and a v5 build a v4 one, per
@@ -616,7 +622,8 @@ statements, under names that say *recorded edges*:
 | `recordedEdgesWalked` | how many recorded edges the traversal walked — counted after the gate, so only edges whose endpoints passed |
 | `recordedEdgesHistoryShallow` | whether collection stopped at a shallow boundary |
 | `recordedEdgesDepthBounded` | whether collection stopped at the depth bound (decision 2) |
-| `recordedEdgesCapped` | whether collection skipped a commit over decision 3(c)'s cap |
+| `recordedEdgesBudgetBounded` | whether collection stopped at the read budget (decision 2) |
+| `recordedEdgesCapped` | whether collection skipped a commit over a per-commit cap (decisions 2 and 3(c)) |
 | `recordedEdgesCoverage` | the constant `"not-claimed"`: the response asserts nothing about edges that were never recorded |
 
 Descriptions say *recorded* edges and never claim completeness (Phase C
@@ -636,9 +643,10 @@ item is also walked from the item — or a `knowledge_relations` row.
 100 nodes and 500 edges per response. Every limit counts units that passed the
 gate, so a withheld node never takes a slot; reaching one sets `truncated`. Each
 endpoint is read at most once per request. The pre-gate rows a request reads are
-bounded by 100 times the largest stored fan-out of a node, which is a property
-of the corpus and its history, not of the request; #1034 records its measured
-cost on the dogfood corpus.
+bounded by 100 times the largest stored fan-out of a node; with each node's
+edges listed once, its edge rows are at most twice the 3,200,000 one apply
+writes (decision 2), and its relation rows are the corpus's. #1034 records the
+measured cost on the dogfood corpus.
 
 **The start node.** An item id that is absent or withheld gets the refusal
 `knowledge.get` gives an absent id, byte for byte. A `CODE` start is the
@@ -726,8 +734,15 @@ gate decides (row 9).
   first.
 - **Between a commit, or a checkout that leaves the migrations alone, and the
   next apply, the edges describe the walk commit, not `HEAD`** (decision 2).
-  `recordedEdgesCommit` says which; nothing raises a staleness alarm. #1033
-  owes the walk's measured cost per apply, at the depth bound.
+  `recordedEdgesCommit` says which; nothing raises a staleness alarm. **Every
+  apply pays the walk and a full replace, near two minutes at the budget:** a
+  read of at most 0.68 s, then 3,200,000 rows into `schema.py`'s DDL verbatim
+  plus decision 4's `source_commit`, 62.6 s written fresh and 116.6 s as a
+  replace, in a 2.71 GB database (here: git 2.56.0, SQLite 3.53.1; re-measured
+  by `python3 -I at_budget_read.py` and `python3 -I at_budget_write.py
+  <schema.py> v5`, #1036's round record). A commit larger than what remains of
+  the budget stops every walk there until 10,000 newer first-parent commits
+  pass it.
 - **A rename breaks the path link.** An edge names the path its commit changed;
   the module at its new path has no edge until a later commit with a trailer
   changes it.
@@ -816,10 +831,11 @@ Still owed, with the issue or slice that will satisfy it:
    returns one record per commit fed, an empty commit and a path named like an
    OID included; tests for no Git history, for an
    unborn `HEAD`, for a shallow clone and its boundary commit, for the depth
-   bound, for 3(c)'s cap and capped digest at 32 and at 33 ids, and for the full
+   bound and both budgets, for the path cap at 1,000 and 1,001 paths, for 3(c)'s
+   cap and capped digest at 32 and at 33 ids, and for the full
    replace after a rebase; a perturbation pin that a commit changing no
-   migration and no body a migration references leaves `state_hash` unchanged; `UNPOPULATED_TABLES`; the CHANGELOG; the measured
-   cost of *Negative*'s third item; and, in the same change, each sentence its
+   migration and no body a migration references leaves `state_hash` unchanged; `UNPOPULATED_TABLES`; the CHANGELOG;
+   *Negative*'s third item re-measured through its adapter; and, in the same change, each sentence its
    nothing-pending write makes false — at `5ad30799`,
    `cli/migration_pipeline.py:153-154`, `cli/commands.py:1135-1136` and
    `:2532-2533` (`migrate apply`'s `--help`),
