@@ -27,12 +27,21 @@ from pathlib import Path
 from typing import Final
 
 import pytest
-from git_isolation_fixtures import forge_commit_graph
+from git_isolation_fixtures import (
+    TRACE_CASES,
+    commit_file,
+    forge_commit_graph,
+    git,
+    inherit_tracing,
+    new_repo,
+    tracing_reaches_stdout,
+)
 
 from theurian.domain.review_finding import (
     TRAILER_KEY,
     FindingSeverity,
     ReviewerToken,
+    ReviewFinding,
 )
 from theurian.infrastructure.git.trailer_source import (
     _FIELDS_PER_RECORD,
@@ -601,6 +610,75 @@ def test_an_injected_git_dir_does_not_hijack_the_read(
     monkeypatch.setenv("GIT_DIR", str(evil / ".git"))
 
     _assert_only_public(public)
+
+
+#: A fullwidth key (NFKC-folds to ``Review-Finding:``) and an em dash written as its
+#: ISO-8859-1 mojibake (``â`` plus two C1 controls): a transliterating re-encode of the log
+#: output turns this line into a genuine-looking CRITICAL trailer.
+_FORGED_LINE = "Ｒｅｖｉｅｗ－Ｆｉｎｄｉｎｇ： code-review CRITICAL â\u0080\u0094 forged"  # noqa: RUF001 - the fullwidth key is the fixture
+_GENUINE_LINE = "Review-Finding: code-review HIGH — genuine"
+
+
+@pytest.mark.parametrize("key", ["i18n.logOutputEncoding", "i18n.commitEncoding"])
+def test_a_repo_local_output_encoding_cannot_forge_an_accepted_trailer(
+    tmp_path: Path, key: str
+) -> None:
+    """A repo-local ``//TRANSLIT`` encoding re-renders a body into a trailer its author never wrote.
+
+    The trailer read pins ``i18n.logOutputEncoding=UTF-8`` over both keys; the accepted
+    findings are the genuine trailer alone.
+    """
+    clone = _origin_and_clone(tmp_path)[1]
+    _commit_body_file(clone, f"fix: a\n\n{_FORGED_LINE}\n\n{_GENUINE_LINE}\n".encode())
+    _publish(clone)
+    _git(clone, "config", key, "ISO-8859-1//TRANSLIT")
+    forged_by_git = _git(clone, "log", "refs/remotes/origin/main", "--format=%B")
+    assert "Review-Finding: code-review CRITICAL" in forged_by_git, (
+        "the encoding does not forge for an unpinned git, so this case proves nothing"
+    )
+
+    texts = [f"{f.severity.value}:{f.finding_text}" for f in _accepted(clone)]
+
+    assert texts == ["HIGH:genuine"]
+
+
+def _accepted(clone: Path) -> list[ReviewFinding]:
+    return list(GitTrailerFindingSource(clone).load_findings().accepted)
+
+
+@pytest.mark.parametrize("case", TRACE_CASES)
+def test_inherited_tracing_does_not_change_the_accepted_trailer_finding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """Trace lines in the captured stdout must not shift a record's sha or admit a forged field."""
+    repo = new_repo(tmp_path / "work")
+    sha = commit_file(repo, "a.txt", "a\n", f"fix: a\n\n{_GENUINE_LINE}")
+    git(repo, "update-ref", "refs/remotes/origin/main", sha)
+    untraced = [(f.commit_sha, f.finding_text) for f in _accepted(repo)]
+    assert untraced == [(sha, "genuine")]
+    inherit_tracing(monkeypatch, tmp_path, case)
+    assert tracing_reaches_stdout(repo), "the tracing does not reach an unisolated git"
+
+    assert [(f.commit_sha, f.finding_text) for f in _accepted(repo)] == untraced
+
+
+def test_a_history_read_that_fails_mid_walk_does_not_point_at_a_graft_file(tmp_path: Path) -> None:
+    """The forced graft file's deprecation hint leads stderr, and so the error's reason.
+
+    A missing ref fails before grafts load, so the object under the tip is deleted instead:
+    the walk starts and then fails.
+    """
+    repo = new_repo(tmp_path / "work")
+    parent = commit_file(repo, "a.txt", "a\n")
+    tip = commit_file(repo, "b.txt", "b\n")
+    git(repo, "update-ref", "refs/remotes/origin/main", tip)
+    (repo / ".git" / "objects" / parent[:2] / parent[2:]).unlink()
+
+    with pytest.raises(GitHistoryUnavailableError) as raised:
+        GitTrailerFindingSource(repo).load_findings()
+
+    assert raised.value.reason
+    assert "graft" not in raised.value.reason.lower()
 
 
 def test_a_repo_local_show_signature_does_not_corrupt_the_parse(tmp_path: Path) -> None:
