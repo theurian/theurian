@@ -152,6 +152,9 @@ def forge_commit_graph(
 
 #: Ways tracing reaches a child ``git``'s captured stdout: two inherited variables, and a
 #: global config that names a trace2 target (the child reads global config from ``HOME``).
+#: Measured: with the ``GIT_TRACE*`` passthrough restored, ``[GIT_TRACE2]`` stays green because the
+#: forced ``GIT_TRACE2="0"`` overrides the kept variable, so each driver has its own live case
+#: (``[GIT_TRACE]`` for the passthrough, ``[global-config-trace2]`` for each forced zero).
 TRACE_CASES = ("GIT_TRACE", "GIT_TRACE2", "global-config-trace2")
 
 
