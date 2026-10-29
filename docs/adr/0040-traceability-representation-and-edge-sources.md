@@ -332,10 +332,10 @@ held below or recorded outside the claim:
   executable's identity is a process prerequisite; and behaviour below git 2.56
   is established only where the source read cites a version. #1015 does not
   reach a read of names, which converts no content; #1016 does not reach a walk
-  that never fetches (`GIT_NO_LAZY_FETCH=1`, `GIT_ALLOW_PROTOCOL=""`). Key:
-  independent source read, Codex, 2026-10-29, git 2.56.0 sources; re-check
-  `python3 -I probe.py`, `b_plumb3.py` and `b_framing.py` (#1036's round
-  record), which #1033's determinism tests become.
+  that #1012's environment keeps from fetching. Key: independent source read,
+  Codex, 2026-10-29, git 2.56.0 sources; re-check `python3 -I probe.py`,
+  `b_plumb3.py` and `b_framing.py` (#1036's round record), which #1033's
+  determinism tests become.
 - A commit message that is not UTF-8 is contained to its own record (#496) and
   reported by its sha only, so 3(a)'s "never echoed" holds; ADR-0029's reader
   keeps up to 120 bytes of it (`trailer_source.py:205`, `:453`). A path git
@@ -347,10 +347,9 @@ held below or recorded outside the claim:
   clones and prints a filesystem path for a local remote — an operator's
   layout, the class GHSA-923w-f36f-jcfq closed in MCP error responses.
 - A failure to read `HEAD`, a walk that fails or outlives the 30-second
-  subprocess timeout ADR-0029's reader already applies
-  (`infrastructure/git/trailer_source.py:118`), and a stream the framing cannot
-  read refuse the build. None of them degrades to "no edges", because then one
-  identity would name two edge sets. `current_commit` returns `None` both for an
+  subprocess timeout (`infrastructure/git/trailer_source.py:118`), and a stream
+  the framing cannot read refuse the build. None of them degrades to "no
+  edges", because then one identity would name two edge sets. `current_commit` returns `None` both for an
   unborn `HEAD` and for a failure (`cli/context.py:81-93`), so the collector
   reads `HEAD` through a call that tells the two apart.
 
@@ -383,14 +382,13 @@ when the merge commit's message carries it (*Negative*).
 
 **The collector never discovers a repository.** `apply_migration_set` takes the
 root the composition root resolved (`find_git_root`, `cli/context.py:59`,
-`:246`) or None, an argument as all that differs between an apply and a replay
-is (ADR-0027 decision 2). None collects nothing and records the walk commit and
-the boundary as null, as an unborn `HEAD` does; a trace then reports a null
-commit and zero edges walked. With a root, every read names it (`--git-dir`), or
-the collector refuses unless `rev-parse --show-toplevel` equals it. The
-rehearsal passes None: with `TMPDIR` inside a clone, its throwaway copy
-discovered that clone and read its history (measured), so
-`cli/migration_pipeline.py:71-75`'s comment is #1033's to restate.
+`:246`) or None. None collects nothing and records the walk commit and the
+boundary as null, as an unborn `HEAD` does; a trace then reports a null commit
+and zero edges walked. With a root, every read names it (`--git-dir`), or the
+collector refuses unless `rev-parse --show-toplevel` equals it. The rehearsal
+passes None: with `TMPDIR` inside a clone, its throwaway copy discovered that
+clone and read its history (measured), so `cli/migration_pipeline.py:71-75`'s
+comment is #1033's to restate.
 
 **On a shallow clone, the walk stops at the shallow boundary.** The shallow
 digest is the lowercase hex SHA-256 of the clone's shallow-commit list — the
@@ -758,9 +756,9 @@ gate decides (row 9).
   `packages/theurian-core/tests/integration/test_canonical_store_corruption.py`
   excludes `traceability_edges`, and only it, from its every-table-holds-a-row
   check (ADR-0038, *Neutral*); the slice that populates it owns the change.
-- **ADR-0038's revision pin stays unrepresented.** ADR-0038 left to this record
-  whether an edge carries the revision pin the fold drops. It does not: an edge
-  carries a commit, and ADR-0038 records why a commit is not that pin.
+- **ADR-0038's revision pin stays unrepresented.** An edge does not carry the
+  pin the fold drops, which ADR-0038 left to this record: it carries a commit,
+  and ADR-0038 records why a commit is not that pin.
 
 ## Alternatives considered
 
@@ -843,8 +841,9 @@ Still owed, with the issue or slice that will satisfy it:
    and `state|database|\bDB\b|appl|migrat|built|build`: 393 units in 200 files,
    read at every match (FR-K8's row is a second match). False: "immutable once
    built" in `docs/protocol/mcp-tools.md`, `domain/ports/canonical_store.py`,
-   `mcp/tools.py` (×2), `tests/integration/test_mcp_tools.py` (×3), and the wire
-   descriptions #1033 restates, `schemas/mcp/knowledge-search-response.schema.json`
+   `mcp/tools.py` (×2),
+   `packages/theurian-core/tests/integration/test_mcp_tools.py` (×3), and the
+   wire descriptions #1033 restates, `schemas/mcp/knowledge-search-response.schema.json`
    (×1) and `knowledge-status-response.schema.json` (×2), each of which also
    says "having changed nothing"; "nothing pending writes nothing" in
    `cli/migration_pipeline.py`, `docs/security/threat-model.md` and
@@ -854,10 +853,10 @@ Still owed, with the issue or slice that will satisfy it:
    nothing"; and, restated as FR-K8 is below, `docs/protocol/migrations.md`'s
    "Re-applying an applied migration is a no-op", ADR-0005 item 5, and the
    "re-application is a no-op" docstrings of `application/migration_engine.py`
-   and `tests/unit/test_migration_engine.py`. Every other hit stays true (the
-   expected-count record, migration-file and revision immutability, an
-   operation's idempotence, a released CHANGELOG entry), is out of class, or is
-   a `.theurian/` twin (#971).
+   and `packages/theurian-core/tests/unit/test_migration_engine.py`. Every other
+   hit stays true (the expected-count record, migration-file and revision
+   immutability, an operation's idempotence, a released CHANGELOG entry), is
+   out of class, or is a `.theurian/` twin (#971).
    **Sequencing condition:** decision 5's guard, on every apply, and
    `RelationCycleError` land in one commit with the `SCHEMA_VERSION` 4→5 bump,
    on the branch and so in the squash — never earlier (under v4 a cyclic state
