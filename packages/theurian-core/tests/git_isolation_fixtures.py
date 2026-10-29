@@ -148,3 +148,34 @@ def forge_commit_graph(
         data[record + 20 : record + 24] = oids.index(parent).to_bytes(4)
     path.chmod(0o644)
     path.write_bytes(data)
+
+
+#: Ways tracing reaches a child ``git``'s captured stdout: two inherited variables, and a
+#: global config that names a trace2 target (the child reads global config from ``HOME``).
+TRACE_CASES = ("GIT_TRACE", "GIT_TRACE2", "global-config-trace2")
+
+
+def inherit_tracing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str) -> None:
+    """Make the current process carry *case*, as a developer's shell or dotfiles would."""
+    if case != "global-config-trace2":
+        monkeypatch.setenv(case, "/dev/stdout")
+        return
+    home = tmp_path / "traced-home"
+    home.mkdir()
+    targets = "".join(f"\t{key}Target = /dev/stdout\n" for key in ("normal", "event", "perf"))
+    (home / ".gitconfig").write_text("[trace2]\n" + targets, encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("GIT_CONFIG_GLOBAL", raising=False)
+
+
+def tracing_reaches_stdout(repo: Path) -> bool:
+    """True when an unisolated ``git`` in the current environment prints more than a sha."""
+    out = subprocess.run(
+        ["git", "rev-parse", "HEAD"],  # noqa: S607
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return len(out.strip().splitlines()) > 1
