@@ -1,4 +1,5 @@
-"""The project root and its descriptive reads come from the repository the work tree is in (#981).
+"""The project root and its descriptive reads come from the repository discovered from
+the working directory (#981).
 
 An inherited ``GIT_DIR``/``GIT_WORK_TREE`` names one repository's object store and another's
 work tree; the CLI keeps that environment for the whole command, so a root chosen under it

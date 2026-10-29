@@ -1397,7 +1397,8 @@ no-network):
 > The CLI chooses the repository the read runs in, and describes it, under the same environment
 > (`cli/context.py`, whose root discovery keeps only the parent's `GIT_CEILING_DIRECTORIES`, which
 > can only shorten the search), so with `GIT_DIR` naming one repository and `GIT_WORK_TREE` inside
-> another the read and the recorded head, branch and url are the work tree's repository's
+> another the read and the recorded head, branch and url are those of the repository discovered from
+> the working directory (the one holding the work tree, when the CLI runs inside it)
 > (`test_git_root_selection.py::test_the_deciding_reads_answer_for_the_repository_the_work_tree_is_in`,
 > `test_git_root_selection.py::test_the_descriptive_reads_name_the_chosen_root_not_the_repository_git_dir_names`).
 > It trusts the ref's value: a local `git update-ref` of `refs/remotes/origin/main` is a member of
