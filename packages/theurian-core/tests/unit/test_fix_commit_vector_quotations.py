@@ -8,8 +8,10 @@ token reddens every quotation that has not followed.
 
 Key: the span a quotation delimits, compared token for token. ``<sha>`` and
 ``<file_path>`` stand for the two runtime values; the empty string is quoted ``""``.
-The CHANGELOG is read from its ``## [Unreleased]`` section only, so released history
-never has to move; ``test_threat_model_t7_claims`` holds the same quote as a token set.
+The CHANGELOG is read from the newest release section (``[Unreleased]`` included) whose
+``### Security`` quotes the command, so a release cut moves the binding forward and
+released history never has to move; ``test_threat_model_t7_claims`` holds the same quote
+as a token set.
 """
 
 from __future__ import annotations
@@ -65,10 +67,22 @@ def _spawn_sites_note_quotations(_tree: ast.Module) -> list[str]:
     return re.findall(rf"``({re.escape(OPENING)}.+?)``", note)
 
 
+def _newest_security_quotations(text: str) -> list[str]:
+    """The quotations in the newest release section whose ``### Security`` has any."""
+    for section in re.split(r"(?m)^## \[", text)[1:]:
+        security = next(
+            (part for part in re.split(r"(?m)^### ", section)[1:] if part.startswith("Security")),
+            "",
+        )
+        quoted = re.findall(rf"`({re.escape(OPENING)}[^`]+)`", security)
+        if quoted:
+            return quoted
+    return []
+
+
 def _changelog_quotations(_tree: ast.Module) -> list[str]:
     text = (ROOT / "packages/theurian-core/CHANGELOG.md").read_text(encoding="utf-8")
-    unreleased = text.split("## [Unreleased]", 1)[1].split("\n## [", 1)[0]
-    return re.findall(rf"`({re.escape(OPENING)}[^`]+)`", unreleased)
+    return _newest_security_quotations(text)
 
 
 QUOTATIONS = {
@@ -91,3 +105,15 @@ def test_a_quotation_of_the_verify_command_is_the_command_that_ships(
 
     for quoted in quotations:
         assert quoted.split() == ["git", *shipped], quoted
+
+
+def test_the_changelog_quotation_binds_the_newest_release_that_quotes_the_command() -> None:
+    """A release cut leaves ``[Unreleased]`` empty; binding only it would go RED at the cut."""
+    text = (
+        "# Changelog\n\n## [Unreleased]\n\n## [0.6.0] - 2026-11-01\n\n### Security\n\n"
+        f"- fix: `{OPENING}new`\n\n## [0.5.9] - 2026-10-01\n\n### Fixed\n\n- x\n\n"
+        f"## [0.5.3] - 2026-09-01\n\n### Security\n\n- fix: `{OPENING}old`\n"
+    )
+
+    assert _newest_security_quotations(text) == [f"{OPENING}new"]
+    assert _newest_security_quotations(text.replace(f"{OPENING}new", "other")) == [f"{OPENING}old"]
