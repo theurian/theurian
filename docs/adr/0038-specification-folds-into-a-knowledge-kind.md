@@ -406,7 +406,7 @@ Still owed, with the issue or slice that will satisfy it:
    resolves an alias nor reads the body, never the joined `get_item_exact` —
    and the further properties *Positive* lists; Phase C's Security row puts the
    two-corpora equality test for trace responses in the same change.
-   *Amended in Amendment 1 (ADR-0040):* decided there; owed until #1034.
+   *Amended in Amendment 1 (ADR-0040):* decided there; #1034 builds it.
 4. **[#834](https://github.com/theurian/theurian/issues/834)'s resolution of
    `KnowledgeRevision.structured`.** Owed under either alternative, since
    neither side persists a parsed payload (*Context*), and due before anything
@@ -431,5 +431,5 @@ Still owed, with the issue or slice that will satisfy it:
 >
 > *Compliance*, Still owed item 3, is decided by ADR-0040 — the endpoint's id
 > (its decisions 1 and 3), the revision pin, which an edge does not carry (its
-> decision 4 and *Neutral*), and the per-hop gate (its decision 6) — and stays
-> owed until [#1034](https://github.com/theurian/theurian/issues/1034) builds it.
+> decision 4 and *Neutral*), and the per-hop gate (its decision 6) — and
+> [#1034](https://github.com/theurian/theurian/issues/1034) builds it.
