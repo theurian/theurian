@@ -568,8 +568,6 @@ enforcing Core refuses it at open (`_assert_schema_version`,
 the project, since `SCHEMA_VERSION` is a state-hash input
 (`resolve_state_hash(loaded, SCHEMA_VERSION)`, `cli/context.py:262`,
 `cli/migration_pipeline.py:209`, `:362`), which only the enforcing apply builds.
-A corpus already cyclic under v4 is served nothing by an enforcing Core until a
-migration removes a relation of its cycle.
 
 ### 6. The per-hop visibility gate
 
@@ -844,13 +842,16 @@ Still owed, with the issue or slice that will satisfy it:
    `git grep -n -i -E 'nothing pending|writes nothing|changes nothing|a no-op' 5ad30799 -- docs packages/theurian-core/src`,
    read hit by hit, plus a whitespace-joined read for wrapped phrases; sentences
    about the expected-count record, which keeps its condition, stay true.
-   **Sequencing condition:** INV-6 enforcement at apply lands in the same PR as
-   the SCHEMA_VERSION 4→5 bump — never earlier (under v4 a cyclic state built by
-   core-v0.5.3 hashes identically and is reused; its refused re-apply rolls back
-   and keeps serving it), never later (a rule that no core-v* tag sits between
-   the bump and the enforcement would be a closure leaning on release ordering,
-   which this ADR rejects). So the pull request that bumps `SCHEMA_VERSION`
-   also carries decision 5's guard, on every apply; `RelationCycleError`; a
+   **Sequencing condition:** decision 5's guard, on every apply, and
+   `RelationCycleError` land in one commit with the `SCHEMA_VERSION` 4→5 bump,
+   on the branch and so in the squash — never earlier (under v4 a cyclic state
+   built by core-v0.5.3 hashes identically and is reused; its refused re-apply
+   rolls back and keeps serving it), never later (a Core built between them
+   serves a v5 state no guard checked, and a rule that no core-v* tag sits
+   between them leans on release ordering, which this ADR rejects). Check:
+   `git log -S` for the `SCHEMA_VERSION` 5 line and for `RelationCycleError`
+   name the same sha. A later revert or cherry-pick that moves one without the
+   other is outside the condition. Its pull request also carries a
    **BREAKING** CHANGELOG entry naming the refusal; FR-K8's "a no-op, not an
    error" (`docs/architecture/requirements-analysis.md:38`), restated as scope
    over applied sets, since under the condition a cyclic set is never applied;
