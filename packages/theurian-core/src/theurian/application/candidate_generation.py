@@ -355,7 +355,10 @@ def _gate_refusal(
         f"stored record is the thing to correct rather than the commit -- a review "
         f"evidence directory is source a clone can deliver (T-24), and `theurian review "
         f"ingest <owner>/<name>` followed by `theurian review build` replaces it with the "
-        f"provider's own."
+        f"provider's own. This check reads only objects already in this repository: in a "
+        f"shallow clone a commit at the history boundary, and in a partial clone a commit "
+        f"or tree not yet fetched, cannot be verified -- `git fetch --unshallow`, or a full "
+        f"clone, makes it checkable."
     )
     cures = dict.fromkeys(
         commit_cure if name == "fix_commit_present" else _refresh(submission)

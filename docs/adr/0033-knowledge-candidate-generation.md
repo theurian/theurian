@@ -458,6 +458,32 @@ contents through a review-evidence tool. The two are one refusal, and decision 5
 governs it for the same reason it governs the gate-signal refusals: the
 distinguishing information is about material the caller has not been granted.
 
+> **Amended in [#981](https://github.com/theurian/theurian/issues/981): "against the local git
+> repository" means against this repository's own objects.** Git read more: a shallow boundary
+> commit verified any path in its tree; a replace ref, graft, commit-graph file or inherited
+> `GIT_DIR` redirected the verdict; a partial clone fetched from its promisor, so a commit only
+> the remote held read `VERIFIED` — a verdict about another repository. The call now runs under
+> the shared `infrastructure/git/environment.py` with `--shallow-file ""`,
+> `-c log.mailmap=false`, `--no-renames`, `-c core.commitGraph=false` and
+> `-c core.useReplaceRefs=false`, since below git 2.42 a repo-local `true` re-enables replace
+> refs (source read at v2.30.0 config.c:1402; not run), and a boundary commit, or a commit or tree
+> not yet fetched, refuses `NO_SUCH_COMMIT`, whose cure names the limit. For this call, the
+> trailer read and the committed check: Every documented git feature that can make a deciding
+> read admit what this repository's own objects do not is neutralised, except two that are tracked:
+> an attribute-driven conversion on the committed check (#1015: ident, filter,
+> working-tree-encoding) and, below git 2.45, the fetch child's reading of repository config
+> (#1016). Features that can only make a read refuse are outside this bound (for example
+> log.showSignature, #1022, and a shallow clone's boundary on the trailer read). An actor who writes
+> the object store, a cache file or a ref directly can forge any answer; no read-side check closes
+> that. Decision 5's duration bind gains an exception: on a git that does not honour
+> `GIT_NO_LAZY_FETCH` (source read: releases before v2.45.0, bar the 2.39–2.44 maintenance releases
+> that carry it), in any repository with a promisor remote configured (source read), git starts
+> fetch children, refused at transport: none for an object held, one for a tree a `tree:0` clone
+> lacks, two for a commit only a `blob:none` clone's remote holds (simulated on git 2.47.1 and
+> 2.54.0 by withholding `GIT_NO_LAZY_FETCH`; no older git was run), pinned on 2.45+ by the
+> `[git_below_2_45]` rows of `test_git_ambient_state_fix_commit.py` and
+> `test_committed_migration_check_adapter.py`.
+
 The residual is stated rather than implied: a **hand-authored stored record**
 can still fabricate `fix_commit`, which is T-24's accepted residual — a review
 evidence directory is source rather than derived state, and this ADR does not

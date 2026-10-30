@@ -35,8 +35,10 @@ from theurian.domain.review_finding import (
 )
 from theurian.infrastructure.git.trailer_source import (
     _FIELDS_PER_RECORD,
+    _FORMAT,
     _NUL,
     _UNDECODABLE_EXCERPT_BYTES,
+    PUBLIC_REF,
     GitHistoryUnavailableError,
     GitOutputFramingError,
     GitTrailerFindingSource,
@@ -521,6 +523,43 @@ def test_a_git_replace_on_the_public_tip_is_not_read(tmp_path: Path) -> None:
     _assert_only_public(clone)
 
 
+@pytest.mark.parametrize("splice", ["replace-ref", "info-grafts", "graft-file-env"])
+def test_a_trailer_reachable_only_through_grafted_history_is_not_read_as_public(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, splice: str
+) -> None:
+    """Public history is what the remote ref's own commits say, not what a local splice makes of it.
+
+    A graft or a replace ref re-parents the public tip onto a local-only commit, so
+    that commit's trailer would be served under public provenance. ``replace-ref`` is
+    the control that was already isolated; the two graft forms are not stopped by
+    ``GIT_NO_REPLACE_OBJECTS``.
+    """
+    _origin, clone = _origin_and_clone(tmp_path)
+    _commit(clone, "fix: public (#1)", "Review-Finding: security HIGH — a public finding")
+    _publish(clone)
+    tip = _git(clone, "rev-parse", "refs/remotes/origin/main").strip()
+    _git(clone, "checkout", "--orphan", "local-only")
+    local = _commit(
+        clone, "fix: local only (#2)", "Review-Finding: adversarial HIGH — a grafted-in finding"
+    )
+    _git(clone, "checkout", "-f", "main")
+    _git(clone, "branch", "-D", "local-only")
+    if splice == "replace-ref":
+        _git(clone, "replace", tip, local)
+    elif splice == "info-grafts":
+        (clone / ".git" / "info" / "grafts").write_text(f"{tip} {local}\n", encoding="utf-8")
+    else:
+        grafts = tmp_path / "grafts"
+        grafts.write_text(f"{tip} {local}\n", encoding="utf-8")
+        monkeypatch.setenv("GIT_GRAFT_FILE", str(grafts))
+    spliced = _git(clone, "log", "refs/remotes/origin/main", "--format=%B")
+    assert "a grafted-in finding" in spliced, "the splice does not reach an unisolated git"
+
+    texts = [f.finding_text for f in GitTrailerFindingSource(clone).load_findings().accepted]
+
+    assert texts == ["a public finding"]
+
+
 def test_an_injected_git_dir_does_not_hijack_the_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -622,8 +661,8 @@ def test_a_utf16_git_log_stream_is_a_typed_framing_error_not_an_uncaught_decode(
     happened to fire. A *real* UTF-16 stream is not reliably that shape: whether it
     still frames as whole records depends on the emitted stream's byte count, which
     the commit count and the message text both move, and when it does frame the
-    **metadata decode** is what refuses it. That arm is driven end-to-end by
-    ``test_a_real_utf16_log_stream_is_refused_by_the_metadata_decode``. Neither
+    **metadata decode** is what refused it before the read pinned UTF-8. That arm is
+    held by ``test_a_real_utf16_log_config_is_inert_on_the_pinned_read``. Neither
     test alone covers a UTF-16 stream; what both pin is that either arm is a typed
     error with the same remedy.
     """
@@ -669,7 +708,11 @@ def _utf16_repo_whose_stream_frames_as_whole_records(
         _commit(clone, f"fix: a thing (#{n})", f"Review-Finding: security HIGH — finding {n}")
         _publish(clone)
         _git(clone, "config", "i18n.logOutputEncoding", "UTF-16")
-        stdout = GitTrailerFindingSource(clone)._git_log()
+        stdout = subprocess.check_output(  # noqa: S603 - a plain log, unpinned
+            ["git", "log", "-z", PUBLIC_REF, f"--format={_FORMAT}"],  # noqa: S607
+            cwd=clone,
+            env=_child_env(None, hermetic=True),
+        )
         _git(clone, "config", "--unset", "i18n.logOutputEncoding")
         tried.append(len(stdout.split(_NUL)))
         if tried[-1] % _FIELDS_PER_RECORD == 0:
@@ -682,36 +725,30 @@ def _utf16_repo_whose_stream_frames_as_whole_records(
     )
 
 
-def test_a_real_utf16_log_stream_is_refused_by_the_metadata_decode(tmp_path: Path) -> None:
-    """A real UTF-16 stream that frames cleanly is refused by the decode (#496 R1-2).
+def test_a_real_utf16_log_config_is_inert_on_the_pinned_read(tmp_path: Path) -> None:
+    """A real UTF-16 stream that frames cleanly no longer reaches the decode (#496 R1-2, #981).
 
     The synthetic literal above is short enough to break the field count; a real
     stream often is not. ``i18n.logOutputEncoding=UTF-16`` in the repository's own
-    config reaches the adapter's child ``git`` -- only the ``GIT_*`` *environment*
-    overrides are stripped -- and when the resulting stream splits into whole
-    records the field-count guard passes it, leaving ``%H`` (a byte-order mark and
-    UTF-16 code units) as the thing that cannot decode.
+    config reached the adapter's child ``git`` -- only the ``GIT_*`` *environment*
+    overrides were stripped -- and when the resulting stream splits into whole
+    records the field-count guard passed it, leaving ``%H`` (a byte-order mark and
+    UTF-16 code units) as the thing that could not decode. The read now pins UTF-8,
+    so the premise assert is the control that the config is live, and the arm is held by
+    ``test_an_undecodable_metadata_field_stays_fatal_with_the_framing_remedy``.
 
     This is the arm the branch's two docstrings originally attributed to the
-    field-count guard, and it had no end-to-end test at all. The assertion names
-    the field, not just the remedy, so the two arms of
-    :class:`GitOutputFramingError` stay distinguishable; the remedy assertions hold
-    the shared property -- a typed error naming the installed git version, never an
-    uncaught ``UnicodeDecodeError`` and never the ``git fetch`` remedy of a history
-    that is perfectly reachable.
+    field-count guard, and it had no end-to-end test at all.
     """
     source, stdout = _utf16_repo_whose_stream_frames_as_whole_records(tmp_path)
     assert stdout.startswith((b"\xff\xfe", b"\xfe\xff")), (
         f"the premise: git must really emit UTF-16 here, got {stdout[:16]!r}"
     )
 
-    with pytest.raises(GitOutputFramingError) as caught:
-        source.load_findings()
+    texts = [f.finding_text for f in source.load_findings().accepted]
 
-    assert "commit sha (%H)" in str(caught.value)
-    assert "not valid UTF-8" in str(caught.value)
-    assert "git version" in caught.value.remedy
-    assert "fetch" not in caught.value.remedy
+    assert len(texts) >= 2
+    assert sorted(texts) == [f"finding {n}" for n in range(1, len(texts) + 1)]
 
 
 # --- D4: NUL framing, not forgeable RS/US ----------------------------------

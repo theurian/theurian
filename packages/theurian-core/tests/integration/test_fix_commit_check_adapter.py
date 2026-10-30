@@ -35,6 +35,9 @@ refusal's *duration* answered "does this object exist here", which is a fact
 about the repository the caller was not granted. ADR-0033 decision 5 binds the
 pair in text **and in duration**, so the two questions collapse into one call
 whose outcome is read off the exit code and the output.
+On a git that does not honour ``GIT_NO_LAZY_FETCH`` (source read: releases before v2.45.0, bar
+the 2.39-2.44 maintenance releases that carry it), any promisor remote adds 0-2 fetch children
+(simulated; ADR-0033, #981).
 :func:`test_the_same_request_spawns_the_same_vector_whether_the_object_is_here_or_not`
 is the pin, and it is the one that was RED when this shape was chosen.
 
@@ -1048,7 +1051,7 @@ def _merge_repository(tmp_path: Path, name: str, *, side_touches: bool, main_tou
 #: The semantics are the same whichever command carries them, and the round-2
 #: HIGH-1 fix moved from ``diff-tree --diff-merges=first-parent`` (a git 2.31
 #: feature, above the 2.30 floor) to ``log --first-parent -m``, which is
-#: verdict-identical and 2.30-compatible. Three shapes rather than one, because
+#: verdict-identical in its round-2 form and 2.30-compatible. Three shapes rather than one, because
 #: each rules out a reading of a merge diff that is *not* first-parent (measured,
 #: git 2.47.1, 2026-09-19, where both the default ``diff-tree`` and a ``log``
 #: without ``--first-parent -m`` answered ``TOUCHES_NOTHING_HERE`` for all three):
@@ -1253,7 +1256,7 @@ def test_the_git_vector_is_one_process_fixed_and_forecloses_an_option_a_path_and
     option errors, ``verify`` folds the non-zero exit to ``NO_SUCH_COMMIT``, and
     every valid ``fixCommit`` refuses (round-2 HIGH-1). The log form
     ``git ... log --no-walk --first-parent -m --name-only --format= --root ...``
-    is verdict-identical and 2.30-compatible; the floor-allowlist pin
+    was verdict-identical before ``-z`` (round 2) and is 2.30-compatible; the floor-allowlist pin
     :func:`test_the_verify_command_uses_only_git_features_at_or_below_the_documented_floor`
     holds it to the floor.
 
@@ -1293,8 +1296,17 @@ def test_the_git_vector_is_one_process_fixed_and_forecloses_an_option_a_path_and
         "-c",
         "core.precomposeunicode=false",
         "--literal-pathspecs",
+        "--shallow-file",
+        "",
+        "-c",
+        "log.mailmap=false",
+        "-c",
+        "core.useReplaceRefs=false",
+        "-c",
+        "core.commitGraph=false",
         "log",
         "--no-walk",
+        "--no-renames",
         "--first-parent",
         "-m",
         "--name-only",
@@ -1505,6 +1517,17 @@ GIT_TOKEN_FLOOR: dict[str, tuple[int, int]] = {
     "-z": (1, 5),
     "--root": (1, 5),
     "--literal-pathspecs": (1, 9),
+    # internal, v2.30.0 git.c:281; if git drops it every verify exits 129 -> NO_SUCH_COMMIT
+    # (fail closed). Its argument (the empty string) is a value, not a feature, and is
+    # skipped where the tokens are read off the argv.
+    "--shallow-file": (2, 30),
+    # read at v2.30.0 config.c:1402 (core.usereplacerefs); exists since 2.18
+    "core.useReplaceRefs=false": (2, 18),
+    # core.commitGraph is 2.18.0: v2.18.0 Documentation/config.txt:907 names it,
+    # v2.17.0's does not (source read)
+    "core.commitGraph=false": (2, 18),
+    "log.mailmap=false": (1, 8),  # log.mailmap is 1.8.3 (RelNotes/1.8.3.txt)
+    "--no-renames": (1, 5),
     # `-c` is 1.7.2 (RelNotes/1.7.2.txt); the precompose feature and its
     # `core.precomposeunicode` setting are 1.7.12 (RelNotes/1.7.12.txt, which names the
     # feature, not the config key). Read off Homebrew git 2.47.1's bundled RelNotes.
@@ -1580,7 +1603,12 @@ def test_the_verify_command_uses_only_git_features_at_or_below_the_documented_fl
 
     assert len(calls) == 1, f"expected one spawn to read the command off; got {len(calls)}"
     runtime_values = {f"{caller_sha}^{{commit}}", path}
-    tokens = [token for token in calls[0]["args"][1:] if token not in runtime_values]
+    argv = calls[0]["args"][1:]
+    tokens = [
+        token
+        for index, token in enumerate(argv)
+        if token not in runtime_values and argv[index - 1] != "--shallow-file"
+    ]
 
     unlisted = [token for token in tokens if token not in GIT_TOKEN_FLOOR]
     assert not unlisted, (

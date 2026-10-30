@@ -2127,7 +2127,7 @@ other's blind spots.
   **The sixth is the only one handed an argument a document supplies.** Since
   ADR-0033's candidate generation landed, `infrastructure/git/fix_commit_check.py`
   runs one command,
-  `git -c core.precomposeunicode=false --literal-pathspecs log --no-walk --first-parent -m --name-only --format= -z --root --end-of-options <sha>^{commit} -- <file_path>`,
+  `git -c core.precomposeunicode=false --literal-pathspecs --shallow-file "" -c log.mailmap=false -c core.useReplaceRefs=false -c core.commitGraph=false log --no-walk --no-renames --first-parent -m --name-only --format= -z --root --end-of-options <sha>^{commit} -- <file_path>`,
   to answer whether a caller's `fixCommit` is a commit here that touched the
   stored thread's `file_path`. Its two inputs are untrusted differently: the sha
   is caller wire input, and the path is author-controlled stored data a clone can

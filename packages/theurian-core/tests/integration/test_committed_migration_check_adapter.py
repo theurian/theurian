@@ -28,10 +28,21 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
+from git_isolation_fixtures import (
+    clone,
+    commit_file,
+    git,
+    git_version,
+    missing_objects,
+    new_repo,
+    serving_origin,
+    traced_fetches,
+)
 from migration_fixtures import body_pin
 
 from theurian.cli.context import schema_root
 from theurian.infrastructure.filesystem.migration_loader import load_migrations
+from theurian.infrastructure.git import environment
 from theurian.infrastructure.git.committed_check import (
     GIT_TIMEOUT_SECONDS,
     CommittedMigrationCheck,
@@ -236,11 +247,13 @@ def test_the_git_vectors_are_fixed_and_carry_a_timeout(
 
     - each executable is an **absolute path** (resolved once, the ``gh`` tier, so the
       environment does not choose it), and neither call reaches a shell;
-    - the committed vector is exactly ``git rev-parse --verify --quiet
+    - the committed vector is the binary, the ``-c core.useReplaceRefs=false`` and
+      ``-c core.commitGraph=false`` pairs, then exactly
+      ``rev-parse --verify --quiet
       HEAD:<source_path>``; its object argument **begins with the literal ``HEAD:``**,
       so the revision is pinned and ``source_path`` can name neither an option, a URL
       nor a revision;
-    - the applied vector is exactly ``git hash-object --stdin --path=<source_path>``;
+    - the applied vector's ``[5:]`` is exactly ``hash-object --stdin --path=<source_path>``;
       its path is the **``--path=<value>`` form** (one token, an ``=`` inside it), so
       an option-shaped filename cannot be read as a flag, and the loader's bytes are
       fed on **stdin** -- no second read of the working tree;
@@ -279,7 +292,10 @@ def test_the_git_vectors_are_fixed_and_carry_a_timeout(
 
     rev_parse, hash_object = calls[0]["args"], calls[1]["args"]
 
-    assert rev_parse[1:] == ["rev-parse", "--verify", "--quiet", f"HEAD:{source_path}"], rev_parse
+    assert rev_parse[1:5] == ["-c", "core.useReplaceRefs=false", "-c", "core.commitGraph=false"], (
+        rev_parse
+    )
+    assert rev_parse[5:] == ["rev-parse", "--verify", "--quiet", f"HEAD:{source_path}"], rev_parse
     assert rev_parse[-1].startswith("HEAD:"), (
         "the rev-parse object argument must begin with the literal HEAD:, so the "
         "revision is pinned and source_path cannot name an option or a different revision"
@@ -289,7 +305,7 @@ def test_the_git_vectors_are_fixed_and_carry_a_timeout(
         "into this process's memory (the security MEDIUM)"
     )
 
-    assert hash_object[1:] == ["hash-object", "--stdin", f"--path={source_path}"], hash_object
+    assert hash_object[5:] == ["hash-object", "--stdin", f"--path={source_path}"], hash_object
     path_token = hash_object[-1]
     assert path_token.startswith("--path=") and "=" in path_token, (
         "the hash-object path must be the --path=<value> form (an = inside the one "
@@ -299,3 +315,70 @@ def test_the_git_vectors_are_fixed_and_carry_a_timeout(
         "the applied bytes must be fed to hash-object on stdin -- the loader's read, "
         "not a second read of the working tree (decision 1's race-closure)"
     )
+
+
+# -- #981: the HEAD read is this repository's own, local HEAD ----------------------
+
+ONE, TWO = "migrations/0001.md", "migrations/0002.md"
+
+
+@pytest.mark.parametrize("redirect", ["replace-ref", "replace-ref-under-repo-config", "git-dir"])
+def test_a_migration_absent_at_head_is_not_committed_whatever_redirects_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, redirect: str
+) -> None:
+    """A replace ref or an inherited ``GIT_DIR`` makes ``HEAD`` name another commit."""
+    repo = new_repo(tmp_path / "work")
+    head = commit_file(repo, ONE, "one\n")
+    git(repo, "checkout", "-q", "-b", "side")
+    side = commit_file(repo, TWO, "two\n")
+    root = repo
+    if redirect.startswith("replace-ref"):
+        git(repo, "checkout", "-q", "main")
+        git(repo, "replace", head, side)
+        if redirect.endswith("config"):  # the env is taken away: only the argv defends
+            git(repo, "config", "core.useReplaceRefs", "true")
+            monkeypatch.delitem(environment._FORCED, "GIT_NO_REPLACE_OBJECTS")
+    else:
+        root = new_repo(tmp_path / "elsewhere")
+        commit_file(root, ONE, "one\n")
+        monkeypatch.setenv("GIT_DIR", str(repo / ".git"))
+    assert git(root, "rev-parse", "--verify", f"HEAD:{TWO}").strip(), (
+        "the redirect does not reach an unisolated git, so this case proves nothing"
+    )
+    check = CommittedMigrationCheck(root)
+
+    assert check.compare_to_head(ONE, b"one\n") is HeadComparison.COMMITTED
+    assert check.compare_to_head(TWO, b"two\n") is HeadComparison.NOT_TRACKED
+
+
+def test_a_treeless_partial_clone_reads_not_tracked_without_a_fetch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lazy_fetch_mode: str
+) -> None:
+    """``HEAD:<path>`` needs trees; a lazy fetch for them would make the verdict the remote's."""
+    origin = serving_origin(tmp_path / "origin")
+    commit_file(origin, ONE, "one\n")
+    repo = clone(origin, tmp_path / "clone", "--no-checkout", "--filter=tree:0")
+    before = missing_objects(repo)
+    assert before > 0
+
+    verdict, fetches = traced_fetches(
+        monkeypatch,
+        tmp_path / "trace",
+        lambda: CommittedMigrationCheck(repo).compare_to_head(ONE, b"one\n"),
+    )
+
+    assert verdict is HeadComparison.NOT_TRACKED
+    assert missing_objects(repo) == before
+    if git_version() >= (2, 45):  # lines: run_command + built-in per fetch child
+        assert len(fetches) == (0 if lazy_fetch_mode == "git_honours_no_lazy_fetch" else 2)
+
+
+def test_a_treeless_clone_with_a_checkout_reads_committed(tmp_path: Path) -> None:
+    """The control: the same clone, once its trees are local, is not refused."""
+    origin = serving_origin(tmp_path / "origin")
+    commit_file(origin, ONE, "one\n")
+    repo = clone(origin, tmp_path / "clone", "--filter=tree:0")
+
+    verdict = CommittedMigrationCheck(repo).compare_to_head(ONE, b"one\n")
+
+    assert verdict is HeadComparison.COMMITTED
