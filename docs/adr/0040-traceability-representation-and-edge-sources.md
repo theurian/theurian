@@ -319,7 +319,7 @@ held below or recorded outside the claim:
   Features that can only make a read refuse are outside this bound. A direct
   write to the object store, a cache file or a ref can still forge any answer."
   Every spawn runs under its `child_environment` and argv prefix, unchanged —
-  which keep tracing out of every captured stream (#1012's `4f17f4aa`) — plus
+  which keep tracing out of every captured stream (#1012's `342ea607`) — plus
   `--no-pager` and `-c core.fsmonitor=false`: a configured fsmonitor hook runs during
   diff-tree's index read and moved its output. The cache files are one class,
   kept out of every read by `-c core.commitGraph=false` and
