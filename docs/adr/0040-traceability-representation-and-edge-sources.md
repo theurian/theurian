@@ -311,7 +311,7 @@ held below or recorded outside the claim:
   status 0 — and unless #1012's `log` form, under
   `-c i18n.logOutputEncoding=UTF-8`, reads the messages in rev-list's sequence.
   Under `--no-renames` a rename yields both paths.
-- **#1012's bound** (in flight), its module docstring verbatim: "With each
+- **#1012's bound**, its module docstring verbatim: "With each
   spawn's own flags it neutralises every documented git feature that can make a
   deciding read admit what this repository's own objects do not, except two that
   are tracked: an attribute-driven conversion on the committed check (#1015) and,
@@ -812,7 +812,7 @@ Rests on enforcement that already holds:
   `get_item_exact_metadata` (F12), the read decision 6 extends to every hop.
 - **The exact-match open** (F6), which decision 4's v4/v5 refusal is.
 - **ADR-0029's trailer extraction** (`keyed_lines`), which decision 3 reuses;
-  decision 2's environment is #1012's, in flight.
+  decision 2's environment is #1012's (`342ea607`).
 - **`_closed_value`**, the parse decision 8 requires.
 
 Still owed, with the issue or slice that will satisfy it:
