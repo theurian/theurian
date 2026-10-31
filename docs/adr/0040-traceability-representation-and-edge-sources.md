@@ -353,7 +353,7 @@ held below or recorded outside the claim:
   returns `None` for an unborn `HEAD` and a failure alike (`cli/context.py:81-93`),
   so the collector reads `HEAD` through a call that tells the two apart.
 
-**The walk is bounded by recorded constants, never by time:** at most 10,000
+**What git emits to the walk is bounded by recorded constants:** at most 10,000
 first-parent commits, the walk commit first, and a read budget of 100,000 path
 entries and 64 MiB, counted as each stream arrives, never read whole, capped
 commits included. Git is terminated where a commit would cross a bound; it and
@@ -369,7 +369,7 @@ most 99 in one commit, and 2,061,969 bytes, in 71 to 87 ms here. The budget is
 10 times its largest commit; at its mean of 9.4 entries and 4.8 KB per commit
 the depth binds first, near 93,600 entries and 48 MB. At the budget the read
 took at most 0.68 s (*Negative*, third item), 44 times inside the 30-second
-timeout, which is a fault refusal only.
+timeout, which git's own reads can still cross (*Negative*, fourth item).
 
 **It reads `HEAD`, not ADR-0029's `refs/remotes/origin/main`,** which ADR-0029
 pins so that no embargoed finding enters a corpus built from it: an edge
@@ -399,6 +399,10 @@ clone. A commit the list names yields no edges: its parent is absent, so its
 boundary commit `54a9f673` lists 1,159 paths, its whole tree
 (`git ls-tree -r --name-only 54a9f673 | wc -l`), against the 2 the full history
 lists. A trace publishes the shallow flag, not the digest (decision 7).
+The build reads the digest before the walk and again after it and refuses
+unless the two are equal, since `rev-list` and the log form each read the list
+again; a list rewritten and restored between the two reads passes, by
+construction, and is outside the identity claim above.
 
 **Not in `ingest` (F10), and not a new command:** either gives the state
 database a second writer whose run is optional, so whether a state held any
@@ -451,9 +455,9 @@ edges would depend on a command nothing else requires.
   order among ids. The capped digest is the lowercase hex SHA-256 of the capped
   commits' shas, sorted byte-wise, each followed by a newline, and null when
   there are none; the build reports each sha, never its values, as (a) does.
-  It does not refuse, or one hostile commit would refuse every later build;
-  decision 2's read budget, not a timeout, bounds what a commit's size costs.
-  32 is over four times the
+  It does not refuse, or every capped commit would refuse every later build
+  that walks it; the timeout does, for content that drives git's own reads
+  past it (*Negative*, fourth item). 32 is over four times the
   most distinct ADR numbers one commit message on `main` names, 7 at
   `f665ecf6`, the nearest measure while `main` has no `Refs:` trailer (F4):
   `git rev-list 5ad30799 | while read c; do git log -1 --format=%B $c | grep -o -E 'ADR-[0-9]{4}' | sort -u | wc -l; done | sort -n | tail -1`.
@@ -738,6 +742,20 @@ gate decides (row 9).
   at_budget_read.py`, `python3 -I at_budget_write.py <schema.py> v5`, #1036's
   round record). A commit larger than what remains of the budget stops every
   walk there until 10,000 newer first-parent commits pass it.
+- **The budget bounds git's output; git's reads to produce it are bounded only
+  by each spawn's 30-second timeout,** which refuses the build and names the
+  spawn that timed out, so the operator sees what to act on. Commit content
+  reaches that bound two ways. Headers no spawn emits: 100 first-parent
+  commits, each with a 330 MiB `gpgsig` header (475 MB on disk), let `rev-list`
+  and `diff-tree` exit 0 in 4.25 s and 9.38 s (8,159 and 5,274 bytes out), and
+  `log` timed out at 30.01 s, refusing the build. Trees compared on changed
+  paths: a flat directory of 100,000 entries costs 9 ms per commit that changes
+  it, about 90 s at the depth bound. Measured against the walk form at #1036's
+  branch commit `7685dc5d`, git 2.56.0, scripts in #1036's round record. The
+  refusal persists while those commits are inside the 10,000-commit window, and
+  whether a walk near the timeout succeeds varies with the machine's load.
+  Metering git's reads, a commit object-size cap and a tree-size cap on changed
+  paths, is filed under #1038; `rev-list`'s own read stays outside any such meter.
 - **A rename breaks the path link.** An edge names the path its commit changed;
   the module at its new path has no edge until a later commit with a trailer
   changes it.
@@ -825,8 +843,9 @@ Still owed, with the issue or slice that will satisfy it:
    OIDs, that the messages arrive in rev-list's sequence, and that diff-tree
    returns one record per commit fed, an empty commit and a path named like an
    OID included; a pin that a rehearsal with `TMPDIR` inside a clone records a
-   null commit and 0 edges, against `TMPDIR` outside any repository; tests for
-   no Git history, an unborn `HEAD`, a shallow clone and
+   null commit and 0 edges, against `TMPDIR` outside any repository; a pin that
+   a `fetch --deepen` interleaved between the two shallow-digest reads refuses
+   the build; tests for no Git history, an unborn `HEAD`, a shallow clone and
    its boundary commit, the depth bound and both budgets, the path cap at 1,000
    and 1,001 paths, 3(c)'s cap and capped digest at 32 and 33 ids, and the full
    replace after a rebase; a no-echo test: an invalid value and a non-UTF-8
