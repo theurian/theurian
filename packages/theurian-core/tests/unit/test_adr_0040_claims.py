@@ -594,10 +594,15 @@ def test_the_append_only_check_refuses_a_deleted_a_reordered_and_a_trailing_line
 
 #: ADR-0040 Compliance's census at 5ad30799 finds these 25 (file, phrase) units false once
 #: decision 2's write and decision 5's guard land; the list is #1033's *Sentences this slice
-#: falsifies*, rows 1-25 in order. A repeated pair is held to its occurrence count.
+#: falsifies*, rows 1-25 in order. Each phrase occurs in its file exactly as many times as it is
+#: listed. Rows 1-3 sit in governed ADRs, which are amended and never trimmed, so they go RED only
+#: when an amendment quotes the phrase.
 FALSIFIED: Final[tuple[tuple[str, str], ...]] = (
     ("docs/adr/0005-yaml-knowledge-migrations.md", "Re-application is a no-op"),
-    ("docs/adr/0018-single-writer-synchronous-in-m1.md", "becomes a no-op"),
+    (
+        "docs/adr/0018-single-writer-synchronous-in-m1.md",
+        "already applied and becomes a no-op (idempotence, FR-K8)",
+    ),
     ("docs/adr/0018-single-writer-synchronous-in-m1.md", "changes nothing"),
     ("docs/architecture/requirements-analysis.md", "a no-op, not an error"),
     ("docs/protocol/mcp-tools.md", "immutable once built"),
@@ -643,7 +648,7 @@ def test_each_sentence_1033_amends_is_still_in_its_file(path: str, phrase: str) 
     """The seam moved the list out of the ADR on the premise that this pin holds it."""
     wanted = FALSIFIED.count((path, phrase))
 
-    assert _text(REPO_ROOT / path).count(collapsed(phrase)) >= wanted, DATED.format(
+    assert _text(REPO_ROOT / path).count(collapsed(phrase)) == wanted, DATED.format(
         where=f"the census unit in {path}",
         issue=1033,
         sentence=f"'{phrase}' there and this pin's FALSIFIED row with it",
