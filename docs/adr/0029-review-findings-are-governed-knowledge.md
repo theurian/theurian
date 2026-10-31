@@ -1376,9 +1376,39 @@ no-network):
 - run the `git` subprocess with inherited **`GIT_*` environment stripped** — closes
   the env-injected-config channel.
 
+> **Amended in [#981](https://github.com/theurian/theurian/issues/981): grafts and the commit-graph
+> were channels the invariant above does not name.** Neither replace switch stops a graft, which could
+> re-parent the public tip onto a local-only commit, and a commit-graph file supplies parents in place
+> of the commit objects (measured on git 2.47.1 and 2.54.0). The isolation moved to the shared
+> `infrastructure/git/environment.py`, which strips every inherited `GIT_*` variable and sets
+> `GIT_GRAFT_FILE=/dev/null`, so no graft is read
+> (`test_git_trailer_source.py::test_a_trailer_reachable_only_through_grafted_history_is_not_read_as_public`).
+> It also sets `GIT_TRACE2`, `GIT_TRACE2_EVENT` and `GIT_TRACE2_PERF` to `0`, which git documents as
+> overriding a trace2 target in global or system config: tracing aimed at the captured stdout wrote
+> into an accepted finding's commit sha, and an inherited `GIT_TRACE` or `GIT_TRACE2` or a global
+> trace2 target now leaves the finding unchanged
+> (`test_git_trailer_source.py::test_inherited_tracing_does_not_change_the_accepted_trailer_finding`).
+> The read also passes `-c core.useReplaceRefs=false`, needed below git 2.42 (source read at v2.30.0
+> config.c:1402; not run), and `-c core.commitGraph=false`. It pins
+> `-c i18n.logOutputEncoding=UTF-8`: a repo-local `ISO-8859-1//TRANSLIT` under
+> `i18n.logOutputEncoding` or `i18n.commitEncoding` forges a trailer for an unpinned `git log` and
+> not for this read
+> (`test_git_trailer_source.py::test_a_repo_local_output_encoding_cannot_forge_an_accepted_trailer`).
+> The CLI chooses the repository the read runs in, and describes it, under the same environment
+> (`cli/context.py`, whose root discovery keeps only the parent's `GIT_CEILING_DIRECTORIES`, which
+> can only shorten the search), so with `GIT_DIR` naming one repository and `GIT_WORK_TREE` inside
+> another the read and the recorded head, branch and url are those of the repository discovered from
+> the working directory (the one holding the work tree, when the CLI runs inside it)
+> (`test_git_root_selection.py::test_the_deciding_reads_answer_for_the_repository_the_work_tree_is_in`,
+> `test_git_root_selection.py::test_the_descriptive_reads_name_the_chosen_root_not_the_repository_git_dir_names`).
+> It trusts the ref's value: a local `git update-ref` of `refs/remotes/origin/main` is a member of
+> the non-goal below.
+
 **Stated non-goal for this slice, owed to the serving arm:** verifying
 `remote.origin.url` against a recorded public-origin URL — the "a private-fork
-clone where `origin` *is* the private fork" member. Reasoning: the documented
+clone where `origin` *is* the private fork" member; the url is recorded as git
+reports it, the first value of a multi-valued key, global config included.
+Reasoning: the documented
 embargo workflow (`../contributing/release.md`) merges an advisory fix into public
 `main` through the **private advisory**, never by pointing a working clone's
 `origin` at the fork; and URL-verification belongs with the serving arm that

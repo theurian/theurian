@@ -21,6 +21,19 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   `git -c core.precomposeunicode=false --literal-pathspecs --shallow-file "" -c log.mailmap=false -c core.useReplaceRefs=false -c core.commitGraph=false log --no-walk --no-renames --first-parent -m --name-only --format= -z --root --end-of-options <sha>^{commit} -- <file_path>`,
   a byte-equality check. NFC against NFD, either way round, stays refused:
   normalising would verify a commit touching only its twin. Linux is not measured.
+- **Fix-commit verification, the `migrate apply` committed check and the
+  public-trailer read run under one isolated git environment**
+  ([#981](https://github.com/theurian/theurian/issues/981)). Every documented git feature that
+  can make a deciding read admit what this repository's own objects do not is neutralised, except
+  two that are tracked: an attribute-driven conversion on the committed check (#1015: ident,
+  filter, working-tree-encoding) and, below git 2.45, the fetch child's reading of repository
+  config (#1016). Features that can only make a read refuse are outside this bound (for example
+  log.showSignature, #1022, and a shallow clone's boundary on the trailer read). An actor who
+  writes the object store, a cache file or a ref directly can forge any answer; no read-side check
+  closes that. Inherited git tracing (`GIT_TRACE*`, and a trace2 target in global or system
+  config) no longer writes into the captured output of these reads and of the CLI's head, branch
+  and url reads, where it reached an accepted finding's commit sha and the recorded head, branch
+  and url and made the verdicts refuse.
 
 ### Added
 
@@ -53,6 +66,20 @@ Pre-1.0, a MINOR bump may change the protocol. Post-1.0, only a MAJOR may.
   ([#1006](https://github.com/theurian/theurian/issues/1006)), and
   `ProposalService.draft` now refuses such a body once it is read. The published
   `body` `maxLength` does not change.
+- **BREAKING — `review.generateKnowledgeCandidate` refuses a `fixCommit` it
+  cannot verify from this repository's own objects**
+  ([#981](https://github.com/theurian/theurian/issues/981)). Old shape: in a shallow
+  clone a boundary commit verified for any path in its tree, and in a partial clone an
+  unfetched commit or tree was fetched from the promisor and could verify. New shape: both
+  refuse (below git 2.45, open: #1016) with the fix-commit refusal, whose cure now names the limit.
+- **BREAKING — the CLI chooses a project's repository, and describes it, by
+  discovery from the working directory, as every git read it makes does**: an
+  inherited `GIT_DIR` or `GIT_WORK_TREE` no longer selects it
+  ([#981](https://github.com/theurian/theurian/issues/981), ADR-0029 D7). Old
+  shape, undocumented: the root and the head, branch and url recorded for it
+  were read under the inherited environment, so an exported `GIT_DIR` or
+  `GIT_WORK_TREE` chose them. New shape: a caller that exported either to pick
+  the project now gets the one discovered from the working directory.
 - **The `knowledge.proposeChange` and `knowledge.generateMigrationDraft` input
   schemas name their path-shaped members instead of denying they exist**
   ([#963](https://github.com/theurian/theurian/issues/963), ADR-0032 decision

@@ -117,3 +117,68 @@ def parse_git_version(text: str) -> tuple[int, int]:
 @functools.cache
 def git_version() -> tuple[int, int]:
     return parse_git_version(git(Path.cwd(), "--version"))
+
+
+def forge_commit_graph(
+    repo: Path, sha: str, *, tree: str | None = None, parent: str | None = None
+) -> None:
+    """Write a commit-graph, then overwrite *sha*'s root tree and/or first parent in it (SHA-1)."""
+    tips = git(repo, "rev-list", "--all") + "".join(f"{x}\n" for x in (sha, parent) if x)
+    subprocess.run(
+        ["git", "commit-graph", "write", "--stdin-commits"],  # noqa: S607
+        cwd=repo,
+        input=tips,
+        text=True,
+        check=True,
+        env=_env(),
+    )
+    path = repo / ".git" / "objects" / "info" / "commit-graph"
+    data = bytearray(path.read_bytes())
+    assert data[:4] == b"CGPH" and data[5] == 1, "SHA-1 commit-graph only"
+    chunks = {
+        bytes(data[8 + 12 * i : 12 + 12 * i]): int.from_bytes(data[12 + 12 * i : 20 + 12 * i])
+        for i in range(data[6] + 1)
+    }
+    count = int.from_bytes(data[chunks[b"OIDF"] + 1020 : chunks[b"OIDF"] + 1024])
+    oids = [data[chunks[b"OIDL"] + 20 * i :][:20].hex() for i in range(count)]
+    record = chunks[b"CDAT"] + 36 * oids.index(sha)
+    if tree:
+        data[record : record + 20] = bytes.fromhex(tree)
+    if parent:
+        data[record + 20 : record + 24] = oids.index(parent).to_bytes(4)
+    path.chmod(0o644)
+    path.write_bytes(data)
+
+
+#: Ways tracing reaches a child ``git``'s captured stdout: two inherited variables, and a
+#: global config that names a trace2 target (the child reads global config from ``HOME``).
+#: Measured: with the ``GIT_TRACE*`` passthrough restored, ``[GIT_TRACE2]`` stays green because the
+#: forced ``GIT_TRACE2="0"`` overrides the kept variable, so each driver has its own live case
+#: (``[GIT_TRACE]`` for the passthrough, ``[global-config-trace2]`` for each forced zero).
+TRACE_CASES = ("GIT_TRACE", "GIT_TRACE2", "global-config-trace2")
+
+
+def inherit_tracing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str) -> None:
+    """Make the current process carry *case*, as a developer's shell or dotfiles would."""
+    if case != "global-config-trace2":
+        monkeypatch.setenv(case, "/dev/stdout")
+        return
+    home = tmp_path / "traced-home"
+    home.mkdir()
+    targets = "".join(f"\t{key}Target = /dev/stdout\n" for key in ("normal", "event", "perf"))
+    (home / ".gitconfig").write_text("[trace2]\n" + targets, encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("GIT_CONFIG_GLOBAL", raising=False)
+
+
+def tracing_reaches_stdout(repo: Path) -> bool:
+    """True when an unisolated ``git`` in the current environment prints more than a sha."""
+    out = subprocess.run(
+        ["git", "rev-parse", "HEAD"],  # noqa: S607
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return len(out.strip().splitlines()) > 1
