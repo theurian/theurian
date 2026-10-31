@@ -48,6 +48,8 @@ state_hash = SHA256(
 4. Git is still what *distributes* the migration set, and a Git worktree is
    still what defines a Project boundary (FR-P5). Git is simply not consulted
    when computing the hash.
+   *Amended in Amendment 1 (ADR-0040):* still true of the hash; a state's
+   edges read Git, so its contents are not a function of the hash alone.
 5. `theurian migrate status` reports whether the working tree is clean with
    respect to Git, so a user can tell a shared state from a local one.
 
@@ -178,3 +180,21 @@ Still owed, with the milestone that will satisfy it:
   claimed a test. ADR-0016's decision is that the hash covers the working tree
   rather than `HEAD`, so working without Git at all is a supported case and this
   is the test that would show it. Milestone 6.
+
+## Amendment 1 — the hash still reads no Git; a state's edges do (2026-10-28, ADR-0040, PR #1036)
+
+> **This is an append-only amendment. The decision above is unchanged**: the
+> hash is computed "over the migration files present in the working tree, not
+> over `HEAD`", and "Git is simply not consulted when computing the hash"
+> (decision 4). [ADR-0040](0040-traceability-representation-and-edge-sources.md) decision 2 keeps the commit out of it, for the reason
+> *Alternatives considered* gives: "a code-only commit touching no knowledge
+> would invalidate a valid state". What ends is the reading that a state's
+> contents are a function of its hash alone. Once
+> [#1033](https://github.com/theurian/theurian/issues/1033) lands, every
+> `migrate apply` also writes traceability edges from `HEAD`'s first-parent
+> history, and a state's identity is (`state_hash`, walk commit, boundary),
+> recorded in `schema_metadata`: the hash names the canonical state, and two
+> states with one identity hold the same edges. *Positive*'s "The database key
+> always describes the database contents" holds for the canonical state;
+> between a commit and the next apply, the edges describe the walk commit, not
+> `HEAD`.

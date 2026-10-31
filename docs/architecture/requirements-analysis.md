@@ -1024,7 +1024,7 @@ erDiagram
 | INV-3 | `content_sha256` must equal SHA-256 of the revision body as stored. |
 | INV-4 | `valid_from < valid_to` when `valid_to` is set. |
 | INV-5 | A relation's source and target must belong to the same Project unless the relation type is explicitly cross-project. |
-| INV-6 | `supersedes` must be acyclic. |
+| INV-6 | `supersedes` must be acyclic. *(Amended by [ADR-0040](../adr/0040-traceability-representation-and-edge-sources.md) decision 5: the set is `ACYCLIC_RELATIONS` — `supersedes`, `superseded_by` and `depends_on` — read as two graphs, supersession and dependency, so a loop mixing them is not a cycle under INV-6.)* |
 | INV-7 | A `KnowledgeCandidate` may only become approved knowledge through a migration authored by a human identity. |
 | INV-8 | Every approved revision has at least one `SourceAnchor` or an explicit `authored-in-theurian` marker. |
 | INV-9 | A revision's `sensitivity` may only be changed by `changeSensitivity`, which creates an audit record — never by editing a body. |

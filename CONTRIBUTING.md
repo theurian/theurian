@@ -144,8 +144,17 @@ other's state. Keying the database by a hash of the reachable migration
 set makes a return to a previously visited branch O(1) and keeps
 worktrees independent.
 
-Refs ADR-0007.
+Refs: architecture.state-hash-partitioned-databases
 ```
+
+A commit that relates to a knowledge item says so with a `Refs: <item id>`
+line at column 0, one line per item, where `<item id>` is the item's literal id.
+Nothing is resolved: an alias or a label is not followed to an item
+([T-21](docs/security/threat-model.md)). A value that is not a valid item id is
+not collected and never echoed; a valid id that names no item is recorded and
+surfaces nothing until that item exists
+([ADR-0040](docs/adr/0040-traceability-representation-and-edge-sources.md)
+decision 3).
 
 ## Where things go
 
