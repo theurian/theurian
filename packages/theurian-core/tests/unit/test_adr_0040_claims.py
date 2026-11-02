@@ -411,6 +411,21 @@ PRESENT: Final[dict[str, tuple[str, str]]] = {
         "built between them serves a v5 state no guard checked, and a rule that no core-v* tag "
         "sits between them leans on release ordering, which this ADR rejects).",
     ),
+    "the shallow digest read tie": (
+        "### 2. ",
+        "The build reads the digest before the walk and again after it and refuses unless the "
+        "two are equal",
+    ),
+    "the shallow digest tie's bound": (
+        "### 2. ",
+        "a list rewritten and restored between the two reads passes, by construction, and is "
+        "outside the identity claim above",
+    ),
+    "the walk budget's reach": (
+        "### Negative",
+        "The budget bounds git's output; git's reads to produce it are bounded only by each "
+        "spawn's 30-second timeout",
+    ),
     "the census sentence": (
         "## Compliance",
         "build: 393 units in 200 files, read at every match (FR-K8's row is a second match). "
@@ -505,6 +520,9 @@ ABSENT: Final = (
     "with the commit joining the state hash",
     "INV-6 pull request",
     "rejected in R2",
+    "never by time",
+    "fault refusal only",
+    "not a timeout",
 )
 ROUND_LABEL: Final = re.compile(r"(?<![-\w])R[1-3]\b|\(\(c\)")
 FILES: Final = {"ADR-0040": ADR, "roadmap": ROADMAP, "ADR-0016": ADR_0016, "ADR-0039": ADR_0039}
@@ -595,8 +613,8 @@ def test_the_append_only_check_refuses_a_deleted_a_reordered_and_a_trailing_line
 #: ADR-0040 Compliance's census at 5ad30799 finds these 25 (file, phrase) units false once
 #: decision 2's write and decision 5's guard land; the list is #1033's *Sentences this slice
 #: falsifies*, rows 1-25 in order. Each phrase occurs in its file exactly as many times as it is
-#: listed. Rows 1-3 sit in governed ADRs, which are amended and never trimmed, so they go RED only
-#: when an amendment quotes the phrase.
+#: listed. Rows 1-3 sit in governed ADRs, which are amended and never trimmed, so their count
+#: changes only when an amendment writes the phrase again, or splits a wrapped phrase with a marker.
 FALSIFIED: Final[tuple[tuple[str, str], ...]] = (
     ("docs/adr/0005-yaml-knowledge-migrations.md", "Re-application is a no-op"),
     (
