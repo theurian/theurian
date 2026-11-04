@@ -138,6 +138,9 @@ class InMemoryWriter:
             )
         ]
 
+    def list_project_relations(self, project_id: ProjectId) -> tuple[KnowledgeRelation, ...]:
+        return tuple(r for r in self.relations if r.project_id == project_id)
+
     def add_alias(self, alias: KnowledgeAlias) -> None:
         self.aliases[(alias.project_id.value, alias.alias.value)] = alias
 

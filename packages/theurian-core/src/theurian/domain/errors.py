@@ -9,7 +9,10 @@ from __future__ import annotations
 import errno as _errno
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
+from theurian.domain.enums import INVERSE_RELATIONS
+
 if TYPE_CHECKING:
+    from theurian.domain.enums import RelationType
     from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId
 
 
@@ -117,6 +120,36 @@ class MigrationCycleError(MigrationError):
         self.cycle = cycle
         rendered = " -> ".join(str(m) for m in cycle)
         super().__init__(f"Migration dependency cycle: {rendered}")
+
+
+class RelationCycleError(MigrationError):
+    """The relations an apply leaves form a cycle INV-6 forbids (ADR-0040 decision 5).
+
+    Not :class:`MigrationCycleError`: that is a ``dependsOn`` cycle among migrations,
+    cured by editing them. Applied migrations are frozen, so a relation cycle is cured
+    by a new migration whose ``removeRelation`` breaks it, and the remedy says so.
+
+    ``cycle`` lists each item once, in ``relation_type``'s direction, the last item
+    linking back to the first.
+    """
+
+    def __init__(self, relation_type: RelationType, cycle: tuple[ItemId, ...]) -> None:
+        self.relation_type = relation_type
+        self.cycle = cycle
+        path = f" {relation_type} ".join(str(item) for item in (*cycle, cycle[0]))
+        super().__init__(f"The knowledge relations form a {relation_type} cycle (INV-6): {path}")
+        inverse = INVERSE_RELATIONS.get(relation_type)
+        stored_either_way = (
+            ""
+            if inverse is None
+            else f" (or for the `{inverse}` relation from the next item back to it, "
+            "whichever the migrations recorded)"
+        )
+        self.remedy = (
+            f"Write a new migration with a `removeRelation` for one `{relation_type}` relation "
+            f"from an item of this cycle to the next{stored_either_way}, then run "
+            "`theurian migrate apply` again."
+        )
 
 
 class MigrationDependencyMissingError(MigrationError):

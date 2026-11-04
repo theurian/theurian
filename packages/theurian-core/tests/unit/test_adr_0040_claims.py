@@ -249,24 +249,29 @@ def test_the_schema_bump_and_inv_6_enforcement_land_together() -> None:
 # --- Fact pins: dated --------------------------------------------------------
 
 
-def test_the_schema_version_is_four() -> None:
-    assert SCHEMA_VERSION == 4, DATED.format(
+def test_the_schema_version_is_five() -> None:
+    assert SCHEMA_VERSION == 5, DATED.format(
         where="F6", issue=1033, sentence="F6's 'SCHEMA_VERSION is 4' and decision 4"
     )
 
 
-def test_schema_metadata_has_the_columns_it_had_at_the_base() -> None:
+def test_schema_metadata_has_the_walk_record_columns() -> None:
     assert _tables()["schema_metadata"] == {
         "id",
         "schema_version",
         "engine_version",
         "state_hash",
         "created_at",
+        "walk_commit",
+        "walk_shallow_digest",
+        "walk_depth_bounded",
+        "walk_budget_bounded",
+        "walk_capped_digest",
     }, DATED.format(where="decision 4", issue=1033, sentence="decision 4's `schema_metadata` gains")
 
 
-def test_traceability_edges_has_no_source_commit_column() -> None:
-    assert "source_commit" not in _tables()["traceability_edges"], DATED.format(
+def test_traceability_edges_has_a_source_commit_column() -> None:
+    assert "source_commit" in _tables()["traceability_edges"], DATED.format(
         where="F6", issue=1033, sentence="F6's 'has no source_commit column'"
     )
 
@@ -293,10 +298,10 @@ def test_no_adapter_defines_the_edge_port_methods() -> None:
     )
 
 
-def test_must_be_acyclic_has_no_caller_under_src() -> None:
-    assert not _acyclic_callers(SRC), DATED.format(
-        where="F8", issue=1033, sentence="F8's 'has no caller in src' and decision 5"
-    )
+def test_must_be_acyclic_has_one_caller_under_src() -> None:
+    assert [c.rpartition(":")[0] for c in _acyclic_callers(SRC)] == [
+        "application/migration_relation_guards.py"
+    ], DATED.format(where="F8", issue=1033, sentence="F8's 'has no caller in src' and decision 5")
 
 
 _GIT_LOG_AND_STATE: Final = frozenset(

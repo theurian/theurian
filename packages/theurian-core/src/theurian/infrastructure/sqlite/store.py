@@ -1370,6 +1370,16 @@ class SqliteWriter:
             ),
         )
 
+    def list_project_relations(self, project_id: ProjectId) -> tuple[KnowledgeRelation, ...]:
+        """Every relation row of the project, as stored, inside the write transaction."""
+        with _reading():
+            rows = self._conn.execute(
+                "SELECT * FROM knowledge_relations WHERE project_id = ? "
+                "ORDER BY source_item_id, relation_type, target_item_id",
+                (project_id.value,),
+            ).fetchall()
+            return tuple(_relation_from_row(row) for row in rows)
+
     def add_alias(self, alias: KnowledgeAlias) -> None:
         self._conn.execute(
             "INSERT OR REPLACE INTO knowledge_aliases (alias, item_id, project_id, created_at) "
