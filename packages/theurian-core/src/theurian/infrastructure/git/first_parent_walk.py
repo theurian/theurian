@@ -28,8 +28,8 @@ from theurian.domain.errors import TheurianError
 from theurian.infrastructure.git.environment import child_environment
 from theurian.infrastructure.git.trailer_source import GIT_TIMEOUT_SECONDS
 
-#: ``trailer_source``'s ``log`` prefix (#1012) plus decision 2's four additions: no pager, and
-#: neither an fsmonitor hook nor a cache file (commit-graph, multi-pack index) reaches a read.
+#: ``trailer_source``'s ``log`` prefix (#1012), plus ``--no-pager`` and decision 2's switches that
+#: keep an fsmonitor hook and a multi-pack index out of every read.
 _PREFIX: Final = (
     "--no-pager",
     "-c",
@@ -157,9 +157,10 @@ def _read_head(git: str, root: Path) -> tuple[int, str | None]:
     """The hash length and ``HEAD``'s OID, read once; ``None`` when ``HEAD`` names nothing.
 
     One spawn answers both, so the ``HEAD`` it reads is the repository whose root it prints.
-    ``--verify --quiet`` exits 1 with no line only when ``HEAD`` resolves to no object name,
-    which on a ``HEAD`` git can read is an unborn branch; a loose ref holding bytes that are not
-    an OID reads the same way, and is #1012's direct write to a ref.
+    ``--verify --quiet`` exits 1 with no line when ``HEAD`` resolves to no object name: an
+    unborn branch reads that way, and so does a loose ref holding bytes that are not an OID --
+    a direct write to a ref, #1012's residual. A ``HEAD`` naming an absent object prints it and
+    refuses at ``rev-list``.
     """
     args = ("rev-parse", "--show-toplevel", "--show-object-format", "--verify", "--quiet", "HEAD")
     with _Child(git, root, args, allowed=(0, 1)) as child:

@@ -320,12 +320,13 @@ NETWORK_CLIENT_SITES = {
 #:   resolved to an absolute path -- ADR-0030 clause 5's tier, as its
 #:   ``committed_check.py`` sibling is, because this call gates a promotion
 #:   signal. Timeout ``GIT_TIMEOUT_SECONDS`` (5s).
-#: - ``infrastructure/git/first_parent_walk.py`` runs ``git rev-parse``, ``rev-list``,
-#:   ``diff-tree --stdin`` and ``log`` over the OID ``HEAD`` resolves to, for traceability
-#:   collection (ADR-0040 decision 2). Local object storage only, so not a network client.
-#:   The one variable token is that OID, validated as hex first; ``diff-tree``'s stdin is
-#:   ``rev-list``'s validated OIDs. Absolute binary (ADR-0030 clause 5's tier: the read gates
-#:   a write), and ``trailer_source``'s 30-second ``GIT_TIMEOUT_SECONDS`` on each spawn.
+#: - ``infrastructure/git/first_parent_walk.py`` runs ``git rev-parse`` to read the root and
+#:   ``HEAD``, then ``rev-list``, ``diff-tree --stdin`` and ``log`` over the OID ``HEAD``
+#:   resolved to, for traceability collection (ADR-0040 decision 2). Local object storage
+#:   only, so not a network client. Its variable tokens are that OID, validated as hex first,
+#:   and a commit count; ``diff-tree``'s stdin is ``rev-list``'s validated OIDs. Absolute
+#:   binary (ADR-0030 clause 5's tier: the read gates a write), and ``trailer_source``'s
+#:   30-second ``GIT_TIMEOUT_SECONDS`` on each spawn.
 #: - ``infrastructure/git/trailer_source.py`` runs ``git log origin/main`` to read
 #:   ``Review-Finding:`` trailers (ADR-0029). It is *not* a network client: unlike
 #:   ``git fetch``, ``git log`` reads local object storage and the local
