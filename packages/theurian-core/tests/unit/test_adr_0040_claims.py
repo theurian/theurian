@@ -287,13 +287,13 @@ def _port_definitions(root: Path) -> list[Path]:
     ]
 
 
-def test_no_adapter_defines_the_edge_port_methods() -> None:
+def test_the_sqlite_store_is_the_one_adapter_of_the_edge_port() -> None:
     """The key without the exclusion finds the port itself, which is its positive control."""
     everywhere = _port_definitions(SRC)
     adapters = [path for path in everywhere if "domain/ports/" not in path.as_posix()]
 
     assert Path("domain/ports/canonical_store.py") in everywhere
-    assert not adapters, DATED.format(
+    assert adapters == [Path("infrastructure/sqlite/store.py")], DATED.format(
         where="F5", issue=1033, sentence="F5's 'No adapter implements the edge port'"
     )
 

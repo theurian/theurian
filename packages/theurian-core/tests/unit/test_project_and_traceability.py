@@ -14,6 +14,7 @@ from theurian.domain.enums import (
     ContentClassification,
     KnowledgeKind,
     PolicyRequirement,
+    RelationType,
     ReviewCommentCategory,
     ReviewThreadState,
     Sensitivity,
@@ -755,11 +756,12 @@ def _edge(**overrides: object) -> TraceabilityEdge:
         "edge_id": EdgeId("01K1DEFEDG01234567890ABCDE"),
         "project_id": PROJECT,
         "source": TraceNode(TraceNodeType.SPECIFICATION, "spec.order-cancellation"),
-        "relation_type": "implemented_by",
+        "relation_type": RelationType.IMPLEMENTED_BY,
         "target": TraceNode(TraceNodeType.PULL_REQUEST, "431"),
         "evidence": (ANCHOR,),
         "confidence": 1.0,
         "created_at": NOW,
+        "source_commit": "a" * 40,
     }
     base.update(overrides)
     return TraceabilityEdge(**base)  # type: ignore[arg-type]

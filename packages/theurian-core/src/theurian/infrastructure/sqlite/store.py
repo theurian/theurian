@@ -36,7 +36,7 @@ import json
 import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Final, final
@@ -49,10 +49,18 @@ from theurian.domain.enums import (
     RelationType,
     Sensitivity,
     SpecificationStatus,
+    TraceNodeType,
     TrustLevel,
 )
 from theurian.domain.errors import InvariantViolationError
-from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId, SpecId
+from theurian.domain.identifiers import (
+    EdgeId,
+    ItemId,
+    MigrationId,
+    ProjectId,
+    RevisionId,
+    SpecId,
+)
 from theurian.domain.knowledge import (
     KnowledgeAlias,
     KnowledgeEvidence,
@@ -64,7 +72,7 @@ from theurian.domain.knowledge import (
     served_content_hash,
 )
 from theurian.domain.project import Project
-from theurian.domain.specification import Specification
+from theurian.domain.specification import Specification, TraceabilityEdge, TraceNode
 from theurian.domain.values import (
     AclGroup,
     ContentHash,
@@ -1029,6 +1037,25 @@ class SqliteCanonicalStore:
             _specification_from_row,
         )
 
+    # -- Traceability -----------------------------------------------------
+
+    def list_traceability_edges(
+        self,
+        context: RequestContext,
+        *,
+        source: TraceNode | None = None,
+        target: TraceNode | None = None,
+    ) -> tuple[TraceabilityEdge, ...]:
+        sql = "SELECT * FROM traceability_edges WHERE project_id = ?"
+        parameters: tuple[str, ...] = (context.project_id.value,)
+        if source is not None:
+            sql += " AND source_type = ? AND source_id = ?"
+            parameters += (source.node_type.value, source.node_id)
+        if target is not None:
+            sql += " AND target_type = ? AND target_id = ?"
+            parameters += (target.node_type.value, target.node_id)
+        return self._read_all(sql + " ORDER BY edge_id", parameters, _edge_from_row)
+
     # -- Migration history ------------------------------------------------
 
     def applied_migrations(self, project_id: ProjectId) -> tuple[tuple[MigrationId, str], ...]:
@@ -1428,6 +1455,28 @@ class SqliteWriter:
             (project_id.value, item_id.value, source_uri),
         )
 
+    # -- Traceability -----------------------------------------------------
+
+    def add_traceability_edge(self, edge: TraceabilityEdge) -> None:
+        self._conn.execute(
+            "INSERT INTO traceability_edges (edge_id, project_id, source_type, source_id, "
+            "relation_type, target_type, target_id, evidence, confidence, created_at, "
+            "source_commit) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                edge.edge_id.value,
+                edge.project_id.value,
+                edge.source.node_type.value,
+                edge.source.node_id,
+                edge.relation_type.value,
+                edge.target.node_type.value,
+                edge.target.node_id,
+                json.dumps([asdict(anchor) for anchor in edge.evidence]),
+                edge.confidence,
+                edge.created_at.isoformat(),
+                edge.source_commit,
+            ),
+        )
+
     # -- Specifications ---------------------------------------------------
 
     def register_specification(self, specification: Specification) -> None:
@@ -1588,8 +1637,8 @@ class SqliteWriter:
 # module-level rather than inlined as lambdas so that the guard's coverage is a
 # property of *where they are called* -- a set small enough to read through,
 # but not the "one place each" this comment used to claim:
-# `grep -E '_from_row' store.py | grep -v '^#' | grep -vc '^def '` is 16 over
-# nine mappers, and six of the nine are reached from more than one place
+# `grep -E '_from_row' store.py | grep -v '^#' | grep -vc '^def '` is 25 over
+# eleven mappers, and eight of the eleven are reached from more than one place
 # (`grep -v '^#' store.py | grep -oE '_[a-z_]+_from_row' | sort | uniq -c`,
 # where a mapper reached once shows 2 -- its own `def` line and that one
 # reference). `_item_from_row` is reached from `get_item`, `list_items` and
@@ -1816,6 +1865,20 @@ def _relation_from_row(row: sqlite3.Row) -> KnowledgeRelation:
         target_item_id=ItemId(row["target_item_id"]),
         created_at=_dt(row["created_at"]),
         note=row["note"],
+    )
+
+
+def _edge_from_row(row: sqlite3.Row) -> TraceabilityEdge:
+    return TraceabilityEdge(
+        edge_id=EdgeId(row["edge_id"]),
+        project_id=ProjectId(row["project_id"]),
+        source=TraceNode(TraceNodeType(row["source_type"]), row["source_id"]),
+        relation_type=RelationType(row["relation_type"]),
+        target=TraceNode(TraceNodeType(row["target_type"]), row["target_id"]),
+        evidence=tuple(SourceAnchor(**anchor) for anchor in json.loads(row["evidence"])),
+        confidence=float(row["confidence"]),
+        created_at=_dt(row["created_at"]),
+        source_commit=row["source_commit"],
     )
 
 
