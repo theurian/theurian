@@ -344,12 +344,16 @@ does not fire on — is [#724](https://github.com/theurian/theurian/issues/724).
   limit, flip only with the owner's consent recorded in the round comment;
   without it, take the size line to the owner.
 - Pass an explicit `--body` to `gh pr merge --squash`, carrying that PR's
-  `Review-Finding:` trailers and the DCO `Signed-off-by`. Without it the squash
-  message is the PR title and description only, and the trailers are dropped:
-  [#399](https://github.com/theurian/theurian/pull/399)'s squash `9d17a41`
-  carries 0 trailers, and the recovery
+  `Review-Finding:` and `Refs:` trailers and the DCO `Signed-off-by`. Without it
+  the squash message is the PR title and description only, and the trailers are
+  dropped: [#399](https://github.com/theurian/theurian/pull/399)'s squash
+  `9d17a41` carries 0 trailers, and the recovery
   [#402](https://github.com/theurian/theurian/pull/402) (`0bd5857`) carries the
-  6 that were lost.
+  6 that were lost. The squash drops a `Refs:` trailer not carried in the body
+  exactly as it drops `Review-Finding:`, and the edge it declares is then never
+  recorded from `main`
+  ([ADR-0040](../adr/0040-traceability-representation-and-edge-sources.md)
+  decision 2).
 - Count landed trailers with
   `git log -1 --format='%B' <sha> | grep -c '^Review-Finding:'`. There are two
   ways to get a wrong number here and both of them read as success:

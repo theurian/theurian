@@ -47,6 +47,7 @@ alternatives that were rejected and why.
 | [0037](0037-okf-is-the-knowledge-layer-interchange.md) | OKF is the knowledge layer's interchange — an Index-class export and a gated import | accepted |
 | [0038](0038-specification-folds-into-a-knowledge-kind.md) | The Specification entity folds into a knowledge `kind` | accepted |
 | [0039](0039-closed-set-extension-compatibility.md) | How the migration format's closed sets change | accepted |
+| [0040](0040-traceability-representation-and-edge-sources.md) | The traceability representation, and where Phase C's edges come from | accepted |
 
 ## Writing a new ADR
 
