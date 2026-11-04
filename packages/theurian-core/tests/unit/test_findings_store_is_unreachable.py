@@ -413,6 +413,7 @@ _APPLICATION_NON_SERVING_MODULES: frozenset[str] = frozenset(
         "migration_alias_guards.py",
         "migration_body_guards.py",
         "migration_engine.py",
+        "migration_relation_guards.py",
         # Every byte of an exported OKF bundle (ADR-0037 decision 2). Pure: it
         # takes walked rows and returns path-to-contents, reaching no store, no
         # clock and no filesystem.
