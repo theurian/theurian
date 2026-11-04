@@ -11,8 +11,12 @@ updates:
     commit-message:
       prefix: "chore(deps)"
     groups:
-      # One weekly PR for every minor and patch bump. A major stays its own PR:
-      # it needs a human reading the changelog (ADR-0014).
+      # Stub bumps move only a fourth version segment, which update-types never
+      # matches, so without this group each one would open its own PR.
+      type-stubs:
+        patterns: ["types-*"]
+      # Minor and patch as Dependabot reads x.y.z, so 0.x minors are included.
+      # A dependency with a newer major gets only its own major PR.
       python-minor-patch:
         patterns: ["*"]
         update-types: ["minor", "patch"]
