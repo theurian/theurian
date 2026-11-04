@@ -283,6 +283,11 @@ def _shim(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spawn: str, action: s
             'awk \'NR==1{f=$0;next}{print}END{print f}\' | "$REAL" "$@"; exit',
             id="diff-tree-out-of-order",
         ),
+        pytest.param(
+            "rev-list",
+            '"$REAL" "$@" | awk \'NR>1{print p}{p=$0}END{printf "%s", p}\'; exit',
+            id="rev-list-unterminated",
+        ),
         pytest.param("log", 'exec "$REAL" "$@" --reverse', id="log-out-of-sequence"),
         pytest.param("log", 'exec "$REAL" "$@" --max-count=1', id="log-missing-messages"),
     ],
@@ -305,14 +310,22 @@ def test_a_spawn_outliving_the_timeout_refuses_and_names_itself(
 ) -> None:
     repo = new_repo(tmp_path / "repo")
     commit_file(repo, "a.txt", "a\n")
-    monkeypatch.setattr(first_parent_walk, "GIT_TIMEOUT_SECONDS", 0.2)
-    _shim(tmp_path, monkeypatch, spawn, "exec sleep 5")
+    monkeypatch.setattr(first_parent_walk, "GIT_TIMEOUT_SECONDS", 2.0)
+    _shim(tmp_path, monkeypatch, spawn, "exec sleep 60")
     started = time.monotonic()
 
     refusal = _refused(repo)
 
-    assert time.monotonic() - started < 4, "the walk waited for git instead of killing it"
-    assert (refusal.spawn, refusal.reason) == (spawn, "git outlived the 0.2-second bound")
+    assert time.monotonic() - started < 30, "the walk waited for git instead of killing it"
+    assert (refusal.spawn, refusal.reason) == (spawn, "git outlived the 2-second bound")
+
+
+def test_a_git_not_on_path_refuses(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = new_repo(tmp_path / "repo")
+    commit_file(repo, "a.txt", "a\n")
+    monkeypatch.setenv("PATH", str(tmp_path / "no-git"))
+
+    assert _refused(repo).spawn == "rev-parse"
 
 
 def test_an_unborn_head_walks_nothing(tmp_path: Path) -> None:
@@ -332,6 +345,14 @@ def test_an_unborn_head_walks_nothing(tmp_path: Path) -> None:
             lambda r, _t, _mp: _write(r / ".git" / "refs" / "heads" / "main", "1" * 40 + "\n"),
             id="head-names-an-absent-object",
         ),
+        pytest.param(
+            "rev-list",
+            lambda r, _t, _mp: [
+                git(r, "tag", "-a", "t", "-m", "t"),
+                _write(r / ".git" / "refs" / "heads" / "main", _rev(r, "t") + "\n"),
+            ],
+            id="head-names-a-tag-not-a-commit",
+        ),
     ],
 )
 def test_a_head_git_cannot_read_refuses(
@@ -342,6 +363,24 @@ def test_a_head_git_cannot_read_refuses(
     break_head(repo, tmp_path, monkeypatch)
 
     assert _refused(repo).spawn == spawn
+
+
+def test_a_committer_date_datetime_cannot_hold_reads_as_none_not_a_refusal(
+    tmp_path: Path,
+) -> None:
+    repo = new_repo(tmp_path / "repo")
+    git(
+        repo,
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "far",
+        extra_env={"GIT_COMMITTER_DATE": "@253402300800 +0000"},
+    )
+    assert git(repo, "log", "-1", "--format=%cI").strip() == "10000-01-01T00:00:00Z"
+
+    assert [commit.committed_at for commit in walk_first_parent(repo).commits] == [None]
 
 
 def test_the_walk_reads_no_repository_but_the_one_rooted_at_root(

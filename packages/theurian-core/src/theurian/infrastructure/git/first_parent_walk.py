@@ -69,7 +69,7 @@ _LOG_FIELDS: Final = 3
 _HEX_LENGTHS: Final = {b"sha1": 40, b"sha256": 64}
 _CHUNK: Final = 1 << 16
 
-_INSTALL: Final = "Install git and put it on PATH, then retry."
+_INSTALL: Final = "Install git and put it on PATH so 'git --version' runs, then retry."
 _REPAIR: Final = (
     "Run 'git fsck' in the project's repository and repair what it reports, then retry."
 )
