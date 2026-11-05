@@ -88,7 +88,7 @@ def find_git_root(start: Path) -> Path | None:
 
 def _line(stdout: bytes) -> str:
     # "replace": strict would raise on a non-UTF-8 ref, and surrogateescape would
-    # move that raise to the SQLite/JSON encode of the recorded value.
+    # move that raise to the SQLite bind of the recorded value.
     return stdout.removesuffix(b"\n").decode("utf-8", "replace")
 
 
