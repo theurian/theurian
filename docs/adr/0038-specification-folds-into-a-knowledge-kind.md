@@ -215,7 +215,7 @@ settled here.
 | `validity` | The specification item's `KnowledgeRevision.validity` |
 | `structured` | The specification item's `KnowledgeRevision.structured`. The payload's home moves from a column that exists, `specifications.structured TEXT NOT NULL DEFAULT '{}'`, to a field whose writer is owed (*Compliance*, item 4); neither holds a payload today (*Context*) |
 | `anchors` | The specification item's `KnowledgeRevision.source_anchors` |
-| the table's `superseded_by` column, set by `supersedeSpecification` | A `supersedes` relation between two specification items, which `deprecateItem`'s `supersededBy` already writes and which `ACYCLIC_RELATIONS` declares acyclic (INV-6). `KnowledgeRelation.must_be_acyclic` has no caller in `packages/theurian-core/src`; apply-time enforcement is Phase C's Schema row. Mapped onto governing items instead, two specifications registered against one item would be a self-relation, which `KnowledgeRelation` refuses |
+| the table's `superseded_by` column, set by `supersedeSpecification` | A `supersedes` relation between two specification items, which `deprecateItem`'s `supersededBy` already writes and which `ACYCLIC_RELATIONS` declares acyclic (INV-6). `KnowledgeRelation.must_be_acyclic` has no caller in `packages/theurian-core/src`; apply-time enforcement is Phase C's Schema row. Mapped onto governing items instead, two specifications registered against one item would be a self-relation, which `KnowledgeRelation` refuses. *Amended in Amendment 2 (ADR-0040):* the INV-6 guard calls `must_be_acyclic` on every apply |
 
 ## Consequences
 
@@ -433,3 +433,17 @@ Still owed, with the issue or slice that will satisfy it:
 > (its decisions 1 and 3), the revision pin, which an edge does not carry (its
 > decision 4 and *Neutral*), and the per-hop gate (its decision 6) — and
 > [#1034](https://github.com/theurian/theurian/issues/1034) builds it.
+
+## Amendment 2 — INV-6 has its caller (2026-11-05, ADR-0040, PR #1059)
+
+> **This is an append-only amendment.** The field table's `superseded_by` row
+> says "`KnowledgeRelation.must_be_acyclic` has no caller in
+> `packages/theurian-core/src`; apply-time enforcement is Phase C's Schema
+> row", which was true when measured and is not now.
+> [ADR-0040](0040-traceability-representation-and-edge-sources.md) decision 5
+> is that enforcement, and
+> [#1033](https://github.com/theurian/theurian/issues/1033) builds it: the guard
+> in `application/migration_relation_guards.py` calls it from
+> `MigrationEngine.apply` on every apply, over every relation row of the
+> project, so a `supersedes` cycle between specification items is refused with
+> `RelationCycleError`.
