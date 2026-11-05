@@ -1,10 +1,10 @@
-"""INV-6's refusal where the CLI replays a migration set (ADR-0040 decision 5).
+r"""INV-6's refusal where the CLI replays a migration set (ADR-0040 decision 5).
 
-The wiring sites are the calls this key prints outside ``cli/migration_pipeline.py``,
-the module that defines the four and calls them from one another; the key's other
-lines are comments and docstrings:
+The wiring sites are the six lines this key prints (nine without the ``':!'``
+exclusion of ``cli/migration_pipeline.py``, the module that defines the four and
+calls them from one another):
 
-    git grep -n -w -E 'apply_migration_set|rehearse_migration_set|current_item_in|permissive_moves_in' -- packages/theurian-core/src/theurian/cli | grep -v -E 'def |import'
+    git grep -n -P '\b(apply_migration_set|rehearse_migration_set|current_item_in|permissive_moves_in)\(' -- packages/theurian-core/src/theurian/cli ':!packages/theurian-core/src/theurian/cli/migration_pipeline.py' | grep -v -E ':[0-9]+:\s*(#|def )'
 
 The census test below re-derives them from the AST, so a seventh goes RED.
 """  # noqa: E501
