@@ -391,7 +391,7 @@ PRESENT: Final[dict[str, tuple[str, str]]] = {
     "the shallow digest derivation": (
         "### 2. ",
         "The shallow digest is the lowercase hex SHA-256 of the clone's shallow-commit list — "
-        "the shas in the file git rev-parse --git-path shallow names, sorted byte-wise, each "
+        "the lines of the file git rev-parse --git-path shallow names, sorted byte-wise, each "
         "followed by a newline — and null when no such file exists, which is a full clone.",
     ),
     "the capped digest derivation": (
@@ -654,9 +654,11 @@ def test_the_append_only_check_refuses_a_deleted_a_reordered_and_a_trailing_line
 
 #: ADR-0040 Compliance's census at 5ad30799 finds these 25 (file, phrase) units false once
 #: decision 2's write and decision 5's guard land; the list is #1033's *Sentences this slice
-#: falsifies*, rows 1-25 in order. Each phrase occurs in its file exactly as many times as it is
-#: listed. Rows 1-3 sit in governed ADRs, which are amended and never trimmed, so their count
-#: changes only when an amendment writes the phrase again, or splits a wrapped phrase with a marker.
+#: falsifies*, rows 1-25 in order. A phrase occurs in its file exactly as many times as it is
+#: listed, except the AMENDED rows, whose sentence #1033's docs step rewrote: those occur 0 times,
+#: so a falsified sentence that comes back goes red. Rows 1-3 sit in governed ADRs, which are
+#: amended and never trimmed, so their count changes only when an amendment writes the phrase
+#: again, or splits a wrapped phrase with a marker.
 FALSIFIED: Final[tuple[tuple[str, str], ...]] = (
     ("docs/adr/0005-yaml-knowledge-migrations.md", "Re-application is a no-op"),
     (
@@ -701,15 +703,23 @@ FALSIFIED: Final[tuple[tuple[str, str], ...]] = (
 )
 
 
+AMENDED: Final[frozenset[int]] = frozenset({4, 6, 8, 20})
+
+
 @pytest.mark.parametrize(
-    ("path", "phrase"), FALSIFIED, ids=[f"row-{n}" for n in range(1, len(FALSIFIED) + 1)]
+    ("row", "path", "phrase"),
+    [(n, *unit) for n, unit in enumerate(FALSIFIED, 1)],
+    ids=[f"row-{n}" for n in range(1, len(FALSIFIED) + 1)],
 )
-def test_each_sentence_1033_amends_is_still_in_its_file(path: str, phrase: str) -> None:
-    """The seam moved the list out of the ADR on the premise that this pin holds it."""
-    wanted = FALSIFIED.count((path, phrase))
+def test_each_sentence_1033_amends_is_still_in_its_file(row: int, path: str, phrase: str) -> None:
+    """The seam moved the list out of the ADR on the premise that this pin holds it.
+
+    An AMENDED row holds the phrase absent: the falsified sentence returning is the failure.
+    """
+    wanted = 0 if row in AMENDED else FALSIFIED.count((path, phrase))
 
     assert _text(REPO_ROOT / path).count(collapsed(phrase)) == wanted, DATED.format(
         where=f"the census unit in {path}",
         issue=1033,
-        sentence=f"'{phrase}' there and this pin's FALSIFIED row with it",
+        sentence=f"'{phrase}' there ({wanted}x) and this pin's FALSIFIED row with it",
     )
