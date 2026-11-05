@@ -215,7 +215,7 @@ settled here.
 | `validity` | The specification item's `KnowledgeRevision.validity` |
 | `structured` | The specification item's `KnowledgeRevision.structured`. The payload's home moves from a column that exists, `specifications.structured TEXT NOT NULL DEFAULT '{}'`, to a field whose writer is owed (*Compliance*, item 4); neither holds a payload today (*Context*) |
 | `anchors` | The specification item's `KnowledgeRevision.source_anchors` |
-| the table's `superseded_by` column, set by `supersedeSpecification` | A `supersedes` relation between two specification items, which `deprecateItem`'s `supersededBy` already writes and which `ACYCLIC_RELATIONS` declares acyclic (INV-6). `KnowledgeRelation.must_be_acyclic` has no caller in `packages/theurian-core/src`; apply-time enforcement is Phase C's Schema row. Mapped onto governing items instead, two specifications registered against one item would be a self-relation, which `KnowledgeRelation` refuses. *Amended in Amendment 2 (ADR-0040):* the INV-6 guard calls `must_be_acyclic` on every apply |
+| the table's `superseded_by` column, set by `supersedeSpecification` | A `supersedes` relation between two specification items, which `deprecateItem`'s `supersededBy` already writes and which `ACYCLIC_RELATIONS` declares acyclic (INV-6). `KnowledgeRelation.must_be_acyclic` has no caller in `packages/theurian-core/src`; apply-time enforcement is Phase C's Schema row. Mapped onto governing items instead, two specifications registered against one item would be a self-relation, which `KnowledgeRelation` refuses |
 
 ## Consequences
 
