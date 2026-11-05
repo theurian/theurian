@@ -85,18 +85,17 @@ _SPECIFICATION_READERS: Final = frozenset({"get_specification", "list_specificat
 # -- Context: the entity's store methods and the table's SQL ------------------
 
 
-def test_the_traceability_edge_methods_are_defined_on_the_port_and_store_and_only_tested() -> None:
+def test_the_traceability_edge_methods_are_defined_on_the_port_and_store_and_never_called() -> None:
     edge_methods = frozenset({"add_traceability_edge", "list_traceability_edges"})
-    round_trip = "packages/theurian-core/tests/integration/test_canonical_store.py"
 
     assert _references(frozenset({"register_specification"})), (
         "positive control: the reference scan no longer sees the engine's known write"
     )
     for name in edge_methods:
         assert _definitions(name) == {PORT, STORE}, f"{name} is defined outside the port and store"
-    assert _references(edge_methods) == {(round_trip, name) for name in edge_methods}, (
-        "a traceability edge method is now referenced outside its round-trip test; "
-        "ADR-0038's `No edge exists yet` and #277's `cheap moment` both move with it"
+    assert _references(edge_methods) == set(), (
+        "a traceability edge method is now referenced; ADR-0038's `No edge exists yet` "
+        "and #277's `cheap moment` both move with it"
     )
 
 
