@@ -151,10 +151,6 @@ _TABLED: Final = {
         "Proposal service draft_from_document",
         "OperationKind(raw)",
     ),
-    ("infrastructure/sqlite/store.py", "_edge_from_row"): (
-        "Derived store row decoders",
-        "_edge_from_row",
-    ),
     ("infrastructure/sqlite/store.py", "_item_from_row"): (
         "Derived store row decoders",
         "_item_from_row",
@@ -229,7 +225,6 @@ REFERENCES: Final = {
     ("cli/propose_commands.py", "propose_draft", "option"): 1,
     ("infrastructure/filesystem/migration_loader.py", "_parse_operation", "construction"): 3,
     ("infrastructure/filesystem/migration_loader.py", "_parse_upsert", "construction"): 1,
-    ("infrastructure/sqlite/store.py", "_edge_from_row", "construction"): 1,
     ("infrastructure/sqlite/store.py", "_item_from_row", "construction"): 1,
     ("infrastructure/sqlite/store.py", "_relation_from_row", "construction"): 1,
     ("infrastructure/sqlite/store.py", "_revision_from_row", "construction"): 1,

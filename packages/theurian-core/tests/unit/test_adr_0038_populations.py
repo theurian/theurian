@@ -85,14 +85,14 @@ _SPECIFICATION_READERS: Final = frozenset({"get_specification", "list_specificat
 # -- Context: the entity's store methods and the table's SQL ------------------
 
 
-def test_the_traceability_edge_methods_are_defined_on_the_port_and_store_and_never_called() -> None:
+def test_the_traceability_edge_methods_are_declared_on_the_port_alone_and_never_called() -> None:
     edge_methods = frozenset({"add_traceability_edge", "list_traceability_edges"})
 
     assert _references(frozenset({"register_specification"})), (
         "positive control: the reference scan no longer sees the engine's known write"
     )
     for name in edge_methods:
-        assert _definitions(name) == {PORT, STORE}, f"{name} is defined outside the port and store"
+        assert _definitions(name) == {PORT}, f"{name} is now defined outside the port"
     assert _references(edge_methods) == set(), (
         "a traceability edge method is now referenced; ADR-0038's `No edge exists yet` "
         "and #277's `cheap moment` both move with it"
@@ -280,8 +280,6 @@ def test_every_whole_object_read_in_src_is_one_already_judged_not_to_publish_a_r
         (SRC + "application/setup_steps.py", "_service_path", "getattr"),
         (SRC + "cli/setup_commands.py", "_service_path", "getattr"),
         (SRC + "domain/raptor.py", "_differing_components", "getattr"),
-        # Handed `edge.evidence`'s `SourceAnchor`s, never a revision.
-        (SRC + "infrastructure/sqlite/store.py", "add_traceability_edge", "asdict"),
         (SRC + "domain/review_finding.py", "_matching_surface", "vars"),
         (SRC + "domain/review_search.py", "texts_of", "getattr"),
         (SRC + "security/yaml_loading.py", "_drop_implicit_resolver", "__dict__"),

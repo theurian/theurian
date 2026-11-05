@@ -7,15 +7,13 @@ to prose would remove exactly the fields coverage and drift detection need
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Final, override
+from typing import override
 
 from theurian.domain.enums import (
     ChangeType,
     PolicyRequirement,
-    RelationType,
     SpecificationStatus,
     TraceNodeType,
 )
@@ -75,10 +73,6 @@ class TraceNode:
         return f"{self.node_type.value}:{self.node_id}"
 
 
-#: A full commit id, SHA-1 or SHA-256 object format.
-_COMMIT_OID: Final = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
-
-
 @dataclass(frozen=True, slots=True)
 class TraceabilityEdge:
     """A typed, evidenced link along the requirement-to-operation chain.
@@ -86,20 +80,16 @@ class TraceabilityEdge:
     ``confidence`` matters because some edges are asserted by a human and others
     are inferred by a heuristic. Drift reporting must be able to distinguish
     "we know" from "we guessed".
-
-    ``source_commit`` is the commit the edge was measured against (ADR-0040
-    decision 4).
     """
 
     edge_id: EdgeId
     project_id: ProjectId
     source: TraceNode
-    relation_type: RelationType
+    relation_type: str
     target: TraceNode
     evidence: tuple[SourceAnchor, ...]
     confidence: float
     created_at: datetime
-    source_commit: str
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.confidence <= 1.0:
@@ -108,10 +98,8 @@ class TraceabilityEdge:
             )
         if self.source == self.target:
             raise InvariantViolationError(f"Self-referential traceability edge on {self.source}")
-        if _COMMIT_OID.fullmatch(self.source_commit) is None:
-            raise InvariantViolationError(
-                "TraceabilityEdge.source_commit must be a full lowercase hex commit id"
-            )
+        if not self.relation_type:
+            raise InvariantViolationError("TraceabilityEdge.relation_type must not be empty")
 
     @property
     def is_inferred(self) -> bool:
