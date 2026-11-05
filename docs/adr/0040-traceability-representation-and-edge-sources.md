@@ -392,9 +392,11 @@ comment is #1033's to restate.
 
 **On a shallow clone, the walk stops at the shallow boundary.** The shallow
 digest is the lowercase hex SHA-256 of the clone's shallow-commit list — the
-shas in the file `git rev-parse --git-path shallow` names, sorted byte-wise,
+lines of the file `git rev-parse --git-path shallow` names, sorted byte-wise,
 each followed by a newline — and null when no such file exists, which is a full
-clone. A commit the list names yields no edges: its parent is absent, so its
+clone. The build refuses unless every line is exactly one lowercase hex OID of
+the repository's hash length. A commit the list names yields no edges: its
+parent is absent, so its
 `C` record diffs it against the empty tree. In a depth-2 clone at `5ad30799` the
 boundary commit `54a9f673` lists 1,159 paths, its whole tree
 (`git ls-tree -r --name-only 54a9f673 | wc -l`), against the 2 the full history
@@ -403,6 +405,13 @@ The build reads the digest before the walk and again after it and refuses
 unless the two are equal, since `rev-list` and the log form each read the list
 again; a list rewritten and restored between the two reads passes, by
 construction, and is outside the identity claim above.
+
+> **Amended in Phase C, by [#1033](https://github.com/theurian/theurian/issues/1033).**
+> The derivation said "the shas in the file", which read as its
+> whitespace-separated tokens. Git reads the file one OID per line, so one
+> line holding two OIDs and two lines holding one each gave one token-wise
+> digest and two different walks (measured on #1036). The digest is over the
+> file's lines, and a line that is not exactly one OID refuses the build.
 
 **Not in `ingest` (F10), and not a new command:** either gives the state
 database a second writer whose run is optional, so whether a state held any
