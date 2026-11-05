@@ -150,6 +150,7 @@ markers = [
     "eval: runs the Phase A retrieval-evaluation harness end to end (ADR-0036)",
 ]
 asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
 filterwarnings = ["error"]
 
 # ---------------------------------------------------------------------------
