@@ -31,7 +31,9 @@ at `5ad30799`.** Source paths are relative to
 `.theurian/` are from the repository root. Each count names its key, run at
 `5ad30799`, and is marked *dated* — a measurement #1033–#1035 are expected to
 move — or *standing* — an invariant this record rests on, so a change that moves
-it must move this record too.
+it must move this record too. Line cites outside *Context* were re-measured in
+#1033's schema-v5 pull request ([#1059](https://github.com/theurian/theurian/pull/1059));
+*Context*'s are as measured at `5ad30799`.
 
 **Records this decision moves.** Decision 3 narrows ADR-0038 decision 2, which
 required a spec id named by an edge source to be resolved to its item id when
@@ -338,7 +340,7 @@ held below or recorded outside the claim:
   determinism tests become.
 - A commit message that is not UTF-8 is contained to its own record (#496) and
   reported by its sha only, so 3(a)'s "never echoed" holds; ADR-0029's reader
-  keeps up to 120 bytes of it (`trailer_source.py:205`, `:453`). A path git
+  keeps up to 120 bytes of it (`trailer_source.py:182`, `:423`). A path git
   emits that is not UTF-8 is not collected.
 - An edge's id and `created_at` derive from its commit — the sha, the path and
   the item id; the committer date — never from the engine's clock or an id
@@ -347,10 +349,10 @@ held below or recorded outside the claim:
   clones and prints a filesystem path for a local remote — an operator's
   layout, the class GHSA-923w-f36f-jcfq closed in MCP error responses.
 - A failure to read `HEAD`, a walk that fails or outlives the 30-second
-  subprocess timeout (`infrastructure/git/trailer_source.py:118`), and a stream
+  subprocess timeout (`infrastructure/git/trailer_source.py:95`), and a stream
   the framing cannot read refuse the build. None of them degrades to "no
   edges", because then one identity would name two edge sets. `current_commit`
-  returns `None` for an unborn `HEAD` and a failure alike (`cli/context.py:81-93`),
+  returns `None` for an unborn `HEAD` and a failure alike (`cli/context.py:89-102`),
   so the collector reads `HEAD` through a call that tells the two apart.
 
 **What git emits to the walk is bounded by recorded constants:** at most 10,000
@@ -381,8 +383,8 @@ prints 0). In a merge workflow a side-branch commit's trailer is collected only
 when the merge commit's message carries it (*Negative*).
 
 **The collector never discovers a repository.** `apply_migration_set` takes the
-root the composition root resolved (`find_git_root`, `cli/context.py:59`,
-`:246`) or None. None collects nothing and records the walk commit and the
+root the composition root resolved (`find_git_root`, `cli/context.py:61`,
+`:257`) or None. None collects nothing and records the walk commit and the
 boundary as null, as an unborn `HEAD` does; a trace then reports a null commit
 and zero edges walked. With a root, every read names it (`--git-dir`), or the
 collector refuses unless `rev-parse --show-toplevel` equals it. The rehearsal
@@ -526,7 +528,7 @@ is frozen, ever needs editing. A refusal rolls the transaction back.
 
 **The refusal is a new `RelationCycleError`, a `MigrationError`, not
 `MigrationCycleError`.** That one means a `dependsOn` cycle among migrations, so
-"no application order exists" (`domain/errors.py:113-119`); it carries migration
+"no application order exists" (`domain/errors.py:116-122`); it carries migration
 ids, and the CLI's remedy for it is "Break the dependency cycle shown above, then
 retry." (`cli/commands.py:767-768`). A relation cycle's cure is a new migration
 with a `removeRelation`, so the new error names the relation type and the
@@ -610,7 +612,7 @@ built by an enforcing Core.** A state a non-enforcing Core built is v4: the
 enforcing Core refuses it at open (`_assert_schema_version`,
 `infrastructure/sqlite/connection.py:1083-1089`) and names another database for
 the project, since `SCHEMA_VERSION` is a state-hash input
-(`resolve_state_hash(loaded, SCHEMA_VERSION)`, `cli/context.py:262`,
+(`resolve_state_hash(loaded, SCHEMA_VERSION)`, `cli/context.py:273`,
 `cli/migration_pipeline.py:209`, `:362`), which only the enforcing apply builds.
 
 ### 6. The per-hop visibility gate
@@ -640,7 +642,7 @@ above, and judged on `may_surface` and `may_disclose`:
 - **A missing endpoint is withheld,** exactly as a withheld one is.
 - **The read is scoped by the edge's `project_id`.** Edges are listed by the
   request's project — both edge indexes lead with `project_id`
-  (`schema.py:400-401`) — and each endpoint is read in the edge row's
+  (`schema.py:425-426`) — and each endpoint is read in the edge row's
   `project_id`, which that listing makes the request's. A `TraceNode` carries no
   project, so the edge row is the only thing that can scope the read.
   [#845](https://github.com/theurian/theurian/issues/845)'s M-4, the gate's
