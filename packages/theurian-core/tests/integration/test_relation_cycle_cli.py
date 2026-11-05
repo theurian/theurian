@@ -20,7 +20,14 @@ from typing import Final
 
 import pytest
 from adr_0039_support import SRC, _named, _scoped
-from label_inheritance_support import ITEM_ID, cli, labelled_project
+from label_inheritance_support import (
+    ITEM_ID,
+    cli,
+    cli_propose,
+    labelled_project,
+    landing_zone,
+    proposals_tree,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -112,7 +119,49 @@ def test_migrate_validate_marks_the_cycle_unavailable_while_apply_refuses_it(
     assert CYCLE in applied[1]["error"]
 
 
-#: The tests above render the first two; the other four are the proposal service's.
+def _assert_names_migrate_apply_not_the_set_edits(payload: dict[str, str]) -> None:
+    assert CYCLE in payload["error"]
+    assert "migrate apply" in payload["remedy"]
+    assert "break the dependency cycle" not in payload["remedy"]
+    assert "fix the migration set" not in payload["remedy"]
+
+
+def test_propose_over_a_landed_cycle_refuses_with_the_cycle_and_writes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The proposal service's `current_item_in` site: a refusal that says nothing was
+    written must leave `.theurian/proposals` as it was, and name `migrate apply`."""
+    project = labelled_project(tmp_path, monkeypatch)
+    _land_the_cycle(project.root)
+    before = proposals_tree(project.root)
+
+    code, payload = cli_propose(project, ITEM_ID)
+
+    assert code == 2, payload
+    _assert_names_migrate_apply_not_the_set_edits(payload)
+    assert proposals_tree(project.root) == before
+
+
+def test_accept_over_a_landed_cycle_refuses_with_the_cycle_and_moves_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The proposal service's `rehearse_migration_set` site: the cycle is the landed set's,
+    not the proposal's, and a refused accept leaves its directory intact."""
+    project = labelled_project(tmp_path, monkeypatch)
+    code, drafted = cli_propose(project, "architecture.new-item")
+    assert code == 0, drafted
+    _land_the_cycle(project.root)
+    before = landing_zone(project.root)
+
+    code, payload = cli("propose", "accept", drafted["proposalId"])
+
+    assert code == 4, payload
+    _assert_names_migrate_apply_not_the_set_edits(payload)
+    assert landing_zone(project.root) == before
+
+
+#: The tests above render the first four sites in `SITES` (`migrate apply` and `validate`,
+#: and `propose_commands.py`'s two); the okf pair is rendered by none.
 SITES: Final = {
     ("commands.py", "migrate_apply", "apply_migration_set"),
     ("commands.py", "_permissive_move_fields", "permissive_moves_in"),
