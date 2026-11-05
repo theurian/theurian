@@ -4,7 +4,7 @@ ADR-0040 ships no code, so each sentence it states about the repository was
 measured once, at ``5ad30799``. A *fact* pin recomputes it from live source or
 schema and goes RED when the tree moves; a *prose* pin goes RED when the record
 drifts. A dated fact's failure message names #1033 or #1034 and the sentence to
-update.
+update; a standing one, the sentence it holds.
 
 **Reach.** Each key, beside the claim it holds:
 
@@ -19,7 +19,9 @@ update.
   ``ingest_command``'s own body spells; a read through a function it calls is
   outside the key.
 - *Callers of ``must_be_acyclic``* are source lines under ``src`` matching
-  ``\\.must_be_acyclic([^a-z_]|$)``; a call through an alias is outside it.
+  ``\\.must_be_acyclic([^a-z_]|$)``; a call through an alias is outside it. The
+  function each call sits in, and the guard's own caller, are read as calls in
+  the syntax tree.
 - *Adapters of the edge port* are source lines under ``src`` outside
   ``domain/ports/`` matching ``def (add_traceability_edge|list_traceability_edges)[(]``.
 - *Append-only* is ADR-0016 and ADR-0039 against ``5ad30799``: every base line
@@ -27,8 +29,8 @@ update.
   run of lines inserted before it opens with ``*Amended in Amendment`` and is indented
   throughout (an indented stray line beside a marker passes).
 
-Decision 2's identity and digests, 3(c)'s cap and decision 5's guard have no fact
-side until #1033 builds them.
+Decision 2's identity and digests and 3(c)'s cap have no fact side until #1033
+builds them.
 """
 
 from __future__ import annotations
@@ -246,34 +248,75 @@ def test_the_schema_bump_and_inv_6_enforcement_land_together() -> None:
     )
 
 
-# --- Fact pins: dated --------------------------------------------------------
+# --- Fact pins: standing since #1033 (decisions 4 and 5) -----------------------
+
+STANDING: Final = "ADR-0040 {where} states {sentence!r}, and the tree no longer does."
+
+
+def _columns(table: str) -> list[tuple[str, str, int]]:
+    """Each column's name, declared type and NOT NULL flag, in declaration order."""
+    connection = _database()
+    columns = [
+        (row[1], row[2], row[3]) for row in connection.execute(f"PRAGMA table_info({table})")
+    ]
+    connection.close()
+    return columns
+
+
+def _calls_anywhere(name: str) -> set[tuple[str, str]]:
+    return {(relative, scope) for relative in _trees() for scope in _callers(relative, name)}
 
 
 def test_the_schema_version_is_five() -> None:
-    assert SCHEMA_VERSION == 5, DATED.format(
-        where="F6", issue=1033, sentence="F6's 'SCHEMA_VERSION is 4' and decision 4"
+    assert SCHEMA_VERSION == 5, STANDING.format(
+        where="decision 4", sentence="These are DDL changes, so `SCHEMA_VERSION` goes from 4 to 5."
     )
 
 
 def test_schema_metadata_has_the_walk_record_columns() -> None:
-    assert _tables()["schema_metadata"] == {
-        "id",
-        "schema_version",
-        "engine_version",
-        "state_hash",
-        "created_at",
-        "walk_commit",
-        "walk_shallow_digest",
-        "walk_depth_bounded",
-        "walk_budget_bounded",
-        "walk_capped_digest",
-    }, DATED.format(where="decision 4", issue=1033, sentence="decision 4's `schema_metadata` gains")
+    assert _columns("schema_metadata") == [
+        ("id", "INTEGER", 0),
+        ("schema_version", "INTEGER", 1),
+        ("engine_version", "INTEGER", 1),
+        ("state_hash", "TEXT", 1),
+        ("created_at", "TEXT", 1),
+        ("walk_commit", "TEXT", 0),
+        ("walk_shallow_digest", "TEXT", 0),
+        ("walk_depth_bounded", "INTEGER", 0),
+        ("walk_budget_bounded", "INTEGER", 0),
+        ("walk_capped_digest", "TEXT", 0),
+    ], STANDING.format(
+        where="decision 4",
+        sentence="`schema_metadata` gains decision 2's walk commit and boundary — the shallow "
+        "digest, the depth and budget flags and the capped digest — all null with no walk.",
+    )
 
 
 def test_traceability_edges_has_a_source_commit_column() -> None:
-    assert "source_commit" in _tables()["traceability_edges"], DATED.format(
-        where="F6", issue=1033, sentence="F6's 'has no source_commit column'"
+    assert [c for c in _columns("traceability_edges") if c[0] == "source_commit"] == [
+        ("source_commit", "TEXT", 1)
+    ], STANDING.format(
+        where="decision 4", sentence="`traceability_edges` gains `source_commit TEXT NOT NULL`"
     )
+
+
+def test_must_be_acyclic_has_one_caller_under_src() -> None:
+    guard = STANDING.format(
+        where="decision 5", sentence="Enforcement is a whole-set guard in the migration engine"
+    )
+
+    assert [c.rpartition(":")[0] for c in _acyclic_callers(SRC)] == [
+        "application/migration_relation_guards.py"
+    ], guard
+    assert _calls_anywhere("must_be_acyclic") == {
+        ("application/migration_relation_guards.py", "refuse_relation_cycles")
+    }, guard
+    assert _calls_anywhere("refuse_relation_cycles") == {
+        ("application/migration_engine.py", "apply")
+    }, guard
+
+
+# --- Fact pins: dated --------------------------------------------------------
 
 
 _PORT_KEY: Final = re.compile(r"def (add_traceability_edge|list_traceability_edges)[(]")
@@ -296,12 +339,6 @@ def test_no_adapter_defines_the_edge_port_methods() -> None:
     assert not adapters, DATED.format(
         where="F5", issue=1033, sentence="F5's 'No adapter implements the edge port'"
     )
-
-
-def test_must_be_acyclic_has_one_caller_under_src() -> None:
-    assert [c.rpartition(":")[0] for c in _acyclic_callers(SRC)] == [
-        "application/migration_relation_guards.py"
-    ], DATED.format(where="F8", issue=1033, sentence="F8's 'has no caller in src' and decision 5")
 
 
 _GIT_LOG_AND_STATE: Final = frozenset(
