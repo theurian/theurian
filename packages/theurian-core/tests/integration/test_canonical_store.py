@@ -30,10 +30,11 @@ from theurian.domain.enums import (
     KnowledgeStatus,
     RelationType,
     Sensitivity,
+    TraceNodeType,
     TrustLevel,
 )
 from theurian.domain.errors import InvariantViolationError, RelationCycleError
-from theurian.domain.identifiers import ItemId, MigrationId, ProjectId, RevisionId
+from theurian.domain.identifiers import EdgeId, ItemId, MigrationId, ProjectId, RevisionId
 from theurian.domain.knowledge import (
     KnowledgeAlias,
     KnowledgeItem,
@@ -44,6 +45,7 @@ from theurian.domain.knowledge import (
 )
 from theurian.domain.migration import AddRelation, Migration, MigrationSet
 from theurian.domain.project import Project
+from theurian.domain.specification import TraceabilityEdge, TraceNode
 from theurian.domain.values import MARKDOWN, ContentHash, ValidityPeriod
 from theurian.infrastructure.sqlite import connection as opener
 from theurian.infrastructure.sqlite import schema
@@ -1097,6 +1099,98 @@ def test_an_alias_resolves_to_its_item(database: Path, lock: Path) -> None:
 
     assert resolved is not None
     assert resolved.item_id == ITEM
+
+
+# -- ADR-0040 decision 4: traceability edges and the walk record ------------
+
+
+def test_a_traceability_edge_round_trips_every_field(database: Path, lock: Path) -> None:
+    """`source_commit` is a column of its own beside the anchors' commits, and
+    `relation_type` must come back the closed enum, not a string equal to it."""
+    edge = TraceabilityEdge(
+        edge_id=EdgeId("01K1DEFEDG01234567890ABCDE"),
+        project_id=PROJECT,
+        source=TraceNode(TraceNodeType.CODE, "services/auth/token.py"),
+        relation_type=RelationType.RELATED_TO,
+        target=TraceNode(TraceNodeType.KNOWLEDGE, ITEM.value),
+        evidence=(ANCHOR, SourceAnchor(provider="git", source_uri="git://demo/b.md")),
+        confidence=0.75,
+        created_at=NOW,
+        source_commit="c" * 64,
+    )
+    other = replace(
+        edge,
+        edge_id=EdgeId("01K1DEFEDG01234567890ABCDF"),
+        source=TraceNode(TraceNodeType.TEST, "tests/test_token.py"),
+        target=TraceNode(TraceNodeType.KNOWLEDGE, OTHER_ITEM.value),
+        source_commit="d" * 40,
+    )
+    with write_transaction(database, lock) as connection:
+        writer = SqliteWriter(connection)
+        writer.register_project(_project())
+        writer.add_traceability_edge(other)
+        writer.add_traceability_edge(edge)
+
+    context = RequestContext(project_id=PROJECT)
+    with SqliteCanonicalStore(database) as store:
+        listed = store.list_traceability_edges(context)
+        by_source = store.list_traceability_edges(context, source=other.source)
+        by_target = store.list_traceability_edges(context, target=edge.target)
+
+    assert listed == (edge, other)
+    assert {type(loaded.relation_type) for loaded in listed} == {RelationType}
+    assert (by_source, by_target) == ((other,), (edge,))
+
+
+_DEPTH_NEEDS_A_COMMIT: Final = "(walk_commit IS NULL) = (walk_depth_bounded IS NULL)"
+_BUDGET_NEEDS_A_COMMIT: Final = "(walk_commit IS NULL) = (walk_budget_bounded IS NULL)"
+_FLAG: Final = "walk_%s_bounded IN (0, 1)"
+_DIGESTS_NEED_A_COMMIT: Final = (
+    "walk_commit IS NOT NULL OR (walk_shallow_digest IS NULL AND walk_capped_digest IS NULL)"
+)
+
+
+def test_a_new_state_records_no_walk_and_accepts_a_coherent_one(database: Path) -> None:
+    with closing(sqlite3.connect(database)) as raw, raw:
+        fresh = raw.execute(
+            "SELECT walk_commit, walk_shallow_digest, walk_depth_bounded, walk_budget_bounded, "
+            "walk_capped_digest FROM schema_metadata"
+        ).fetchone()
+        raw.execute(
+            "UPDATE schema_metadata SET walk_commit = 'c', walk_depth_bounded = 1, "
+            "walk_budget_bounded = 0"
+        )
+        raw.execute(
+            "UPDATE schema_metadata SET walk_shallow_digest = 's', walk_capped_digest = 'x'"
+        )
+
+    assert fresh == (None,) * 5
+
+
+@pytest.mark.parametrize(
+    ("assignment", "check"),
+    [
+        ("walk_depth_bounded = 0", _DEPTH_NEEDS_A_COMMIT),
+        ("walk_commit = 'c', walk_budget_bounded = 0", _DEPTH_NEEDS_A_COMMIT),
+        ("walk_budget_bounded = 0", _BUDGET_NEEDS_A_COMMIT),
+        ("walk_commit = 'c', walk_depth_bounded = 0", _BUDGET_NEEDS_A_COMMIT),
+        ("walk_shallow_digest = 's'", _DIGESTS_NEED_A_COMMIT),
+        ("walk_capped_digest = 'x'", _DIGESTS_NEED_A_COMMIT),
+        ("walk_commit = 'c', walk_depth_bounded = 2, walk_budget_bounded = 0", _FLAG % "depth"),
+        ("walk_commit = 'c', walk_depth_bounded = 0, walk_budget_bounded = 2", _FLAG % "budget"),
+    ],
+)
+def test_an_incoherent_walk_record_is_refused_by_its_own_check(
+    database: Path, assignment: str, check: str
+) -> None:
+    """Each assignment breaks exactly one CHECK, so the one SQLite names is the one under test."""
+    with (
+        closing(sqlite3.connect(database)) as raw,
+        pytest.raises(sqlite3.IntegrityError) as refused,
+    ):
+        raw.execute(f"UPDATE schema_metadata SET {assignment}")  # noqa: S608 - the parameters above
+
+    assert str(refused.value) == f"CHECK constraint failed: {check}"
 
 
 # -- Project isolation -----------------------------------------------------
