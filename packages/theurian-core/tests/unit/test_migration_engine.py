@@ -1,8 +1,10 @@
 """Migration engine guarantees (ADR-0005, ADR-0006).
 
 The four properties that make the canonical store trustworthy: an applied
-migration is frozen, conflicts are reported rather than merged, re-application
-is a no-op, and ordering is deterministic.
+migration is frozen, conflicts are reported rather than merged, re-applying an
+applied migration applies none of its operations again, and ordering is
+deterministic. Every apply also runs INV-6's guard over the relations the
+project holds (ADR-0040 decision 5).
 """
 
 from __future__ import annotations

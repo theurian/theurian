@@ -5,7 +5,9 @@ that make the store trustworthy:
 
 - an applied migration is frozen (checksum mismatch is fatal, never repaired);
 - ``expectedRevision`` conflicts are reported, never merged;
-- re-application is a no-op, so the engine is safe to run repeatedly;
+- re-applying an applied migration applies none of its operations again, so the
+  engine is safe to run repeatedly; every apply still runs INV-6's guard over
+  the relations the project holds (ADR-0040 decision 5);
 - all operations in one migration share one transaction.
 
 This module depends on the domain and on a writer protocol. It never imports an

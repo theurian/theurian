@@ -1044,8 +1044,11 @@ tenant/ACL and one-body-one-revision rules above.
 
 ### Idempotence
 
-Re-applying an applied migration is a no-op. This is a property of the engine,
-not something each migration author has to implement.
+Re-applying an applied migration applies none of its operations again. This is
+a property of the engine, not something each migration author has to implement.
+Every apply, including one with nothing pending, still runs INV-6's guard over
+the relations the project holds (ADR-0040 decision 5), so a re-apply is refused
+only if they form a cycle, which no guarded apply leaves.
 
 ### Tenant and ACL scope (issue #63)
 
