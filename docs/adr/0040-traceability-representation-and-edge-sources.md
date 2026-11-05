@@ -521,10 +521,45 @@ is frozen, ever needs editing. A refusal rolls the transaction back.
 ids, and the CLI's remedy for it is "Break the dependency cycle shown above, then
 retry." (`cli/commands.py:767-768`). A relation cycle's cure is a new migration
 with a `removeRelation`, so the new error names the relation type and the
-cycle's item ids, and its remedy says that. It is raised by `migrate apply` and
-by the CLI's proposal-accept rehearsal; the MCP composition root wires the
-rehearsal to `_accept_is_unreachable` (`mcp/tools.py:1973`), so no MCP response
-carries it.
+cycle's item ids, and its remedy says that. The guard is in the engine, so the
+error reaches every CLI site that replays a set: the first key below prints
+six wiring sites, five of them reachable, and each surfaces the error its own
+way:
+
+- `migrate apply`: the error and its own remedy, exit 4;
+- `migrate validate`: the error text in `permissiveMovesUnavailable`, with
+  `valid` still true — ADR-0027 decision 2's recorded design, which
+  [#1056](https://github.com/theurian/theurian/issues/1056) re-decides;
+- `theurian propose`, for an item the set creates, and `propose accept`: the
+  error text inside their own refusal, whose remedy names `migrate apply` when
+  the landed set holds the cycle, and the proposal's file when its own
+  relations close it;
+- `okf import`, for an item the set creates: the T-25 refusal literal, which
+  names only the class of the proposal service's refusal, `ProposalError`.
+
+The sixth, `okf_commands.py:382`'s rehearsal, is unreachable: `okf import`
+holds its service through `DraftOnlyProposals`, whose `__slots__` are the two
+draft entries, and of `ProposalService`'s public methods only `accept` reaches
+`self._rehearse`. The MCP composition root wires the rehearsal to
+`_accept_is_unreachable` (`mcp/tools.py:1973`), so no MCP response carries it.
+
+```sh
+# the six wiring sites; 9 lines without the ':!' exclusion
+git grep -n -P '\b(apply_migration_set|rehearse_migration_set|current_item_in|permissive_moves_in)\(' -- packages/theurian-core/src/theurian/cli ':!packages/theurian-core/src/theurian/cli/migration_pipeline.py' | grep -v -E ':[0-9]+:\s*(#|def )'
+# what `okf import` holds, then the public methods reaching the rehearsal:
+# ['accept'] from _rehearse, and ['accept', 'draft'] from _current_item
+grep -n '__slots__' packages/theurian-core/src/theurian/application/draft_only_proposals.py
+python3 -I - packages/theurian-core/src/theurian/application/proposal_service.py _rehearse <<'EOF'
+import ast, sys
+tree = ast.parse(open(sys.argv[1]).read())
+cls = next(n for n in tree.body if getattr(n, "name", "") == "ProposalService")
+uses = {f.name: {a.attr for a in ast.walk(f) if isinstance(a, ast.Attribute) and getattr(a.value, "id", "") == "self"} for f in cls.body if isinstance(f, ast.FunctionDef)}
+reach = {sys.argv[2]}
+for _ in uses:
+    reach |= {name for name, used in uses.items() if used & reach}
+print(sorted(name for name in reach if not name.startswith("_")))
+EOF
+```
 
 **What an existing cyclic corpus meets.** The dogfood corpus meets nothing: it
 holds no relation row (F2). Corpora in other repositories cannot be measured
